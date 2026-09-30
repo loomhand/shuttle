@@ -27,53 +27,6 @@ pub struct Cua {
     last: Mutex<Option<Snapshot>>,
 }
 
-struct Snapshot {
-    pid: i64,
-    window_id: Option<i64>,
-    tokens: HashMap<i64, String>,
-}
-
-#[derive(Deserialize)]
-struct StateArgs {
-    #[serde(default)]
-    pid: Option<i64>,
-    #[serde(default)]
-    window_id: Option<i64>,
-    #[serde(default)]
-    query: Option<String>,
-}
-
-#[derive(Default, Deserialize)]
-struct ActArgs {
-    action: String,
-    #[serde(default)]
-    element: Option<i64>,
-    #[serde(default)]
-    x: Option<f64>,
-    #[serde(default)]
-    y: Option<f64>,
-    #[serde(default)]
-    to_x: Option<f64>,
-    #[serde(default)]
-    to_y: Option<f64>,
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    key: Option<String>,
-    #[serde(default)]
-    keys: Option<Vec<String>>,
-    #[serde(default)]
-    direction: Option<String>,
-    #[serde(default)]
-    amount: Option<u32>,
-    #[serde(default)]
-    app: Option<String>,
-    #[serde(default)]
-    button: Option<String>,
-    #[serde(default)]
-    seconds: Option<f64>,
-}
-
 impl Cua {
     /// Creates a client for the driver socket at `socket`.
     pub fn new(socket: PathBuf) -> Self {
@@ -288,6 +241,53 @@ impl Cua {
         }
         Ok(result)
     }
+}
+
+struct Snapshot {
+    pid: i64,
+    window_id: Option<i64>,
+    tokens: HashMap<i64, String>,
+}
+
+#[derive(Deserialize)]
+struct StateArgs {
+    #[serde(default)]
+    pid: Option<i64>,
+    #[serde(default)]
+    window_id: Option<i64>,
+    #[serde(default)]
+    query: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct ActArgs {
+    action: String,
+    #[serde(default)]
+    element: Option<i64>,
+    #[serde(default)]
+    x: Option<f64>,
+    #[serde(default)]
+    y: Option<f64>,
+    #[serde(default)]
+    to_x: Option<f64>,
+    #[serde(default)]
+    to_y: Option<f64>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    key: Option<String>,
+    #[serde(default)]
+    keys: Option<Vec<String>>,
+    #[serde(default)]
+    direction: Option<String>,
+    #[serde(default)]
+    amount: Option<u32>,
+    #[serde(default)]
+    app: Option<String>,
+    #[serde(default)]
+    button: Option<String>,
+    #[serde(default)]
+    seconds: Option<f64>,
 }
 
 struct Window {
