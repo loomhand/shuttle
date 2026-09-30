@@ -42,10 +42,10 @@ impl Cua {
         let session = session_of(&args);
         let a: StateArgs =
             serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
-        let desktop = self
-            .request(&session, "get_desktop_state", json!({}))
+        let windows = self
+            .request(&session, "list_windows", json!({"on_screen_only": true}))
             .await?;
-        let listed = window_list(&desktop);
+        let listed = window_list(&windows);
         let mut text = String::from("Windows (frontmost first):\n");
         for w in &listed {
             let _ = writeln!(
@@ -93,10 +93,11 @@ impl Cua {
                 }
             }
         }
+        // the capture comes last: a later get_window_state replaces the session's pixel-click context
         Ok(Output {
             text,
             is_error: false,
-            image_b64: content_image(&desktop),
+            image_b64: self.screenshot(&session).await?,
         })
     }
 
