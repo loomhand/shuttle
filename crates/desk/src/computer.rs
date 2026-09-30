@@ -20,6 +20,7 @@ const SHELL_APPS: [&str; 2] = ["Xfce4-panel", "Xfdesktop"];
 const SETTLE: Duration = Duration::from_millis(600);
 const MAX_WAIT_SECS: f64 = 10.0;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const SESSION: &str = "cocoonbox";
 
 /// Screen executor client; remembers the element tokens of the latest window state.
 pub struct Cua {
@@ -212,6 +213,7 @@ impl Cua {
                 .map_err(|e| format!("connect cua-driver {}: {e}", self.socket.display()))?;
             let mut line = json!({"method": "call", "name": name});
             line["args"] = args;
+            line["args"]["session"] = SESSION.into();
             let mut bytes = serde_json::to_vec(&line).map_err(|e| format!("encode: {e}"))?;
             bytes.push(b'\n');
             stream
