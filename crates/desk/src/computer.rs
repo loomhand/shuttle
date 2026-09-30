@@ -128,6 +128,9 @@ impl Cua {
         if a.action == "type" && a.text.as_deref().is_some_and(|t| !t.is_ascii()) {
             return self.type_mixed(&session, &a).await;
         }
+        if a.action == "launch_app" {
+            return self.launch(&session, &a).await;
+        }
         let (tool, req) = self.action_request(&session, &a).await?;
         let input = self.input.lock().await;
         let result = self.request(&session, tool, req).await;
@@ -244,6 +247,71 @@ impl Cua {
         })
     }
 
+    /// Launches an app, or brings its existing window to the front when it already runs.
+    async fn launch(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
+        let app = required(&a.app, "app")?;
+        let input = self.input.lock().await;
+        let text = match self.app_windows(session, app).await?.first() {
+            Some(w) => {
+                let req = json!({"pid": w.pid, "window_id": w.window_id});
+                match self.request(session, "bring_to_front", req).await {
+                    Ok(_) => format!(
+                        "{app} is already running; brought its window {} \"{}\" (pid {}) to the front",
+                        w.window_id, w.title, w.pid
+                    ),
+                    Err(e) => format!(
+                        "{app} is already running as window {} \"{}\" (pid {}); raising it failed: {e}",
+                        w.window_id, w.title, w.pid
+                    ),
+                }
+            }
+            None => match self
+                .request(session, "launch_app", json!({"name": app}))
+                .await
+            {
+                Ok(v) => content_text(&v),
+                Err(e) => match self.app_windows(session, app).await?.first() {
+                    Some(w) => format!(
+                        "{app} is running as window {} \"{}\" (pid {}); the launcher reported: {e}",
+                        w.window_id, w.title, w.pid
+                    ),
+                    None => {
+                        drop(input);
+                        return Ok(Output {
+                            text: e,
+                            is_error: true,
+                            image_b64: self.screenshot(session, a.max_edge).await?,
+                        });
+                    }
+                },
+            },
+        };
+        tokio::time::sleep(SETTLE).await;
+        let shot = self.screenshot(session, a.max_edge).await?;
+        drop(input);
+        Ok(Output {
+            text,
+            is_error: false,
+            image_b64: shot,
+        })
+    }
+
+    /// On-screen windows of `app`, frontmost first, matched on the app name case-insensitively.
+    async fn app_windows(&self, session: &str, app: &str) -> Result<Vec<Window>, String> {
+        let windows = self
+            .request(session, "list_windows", json!({"on_screen_only": true}))
+            .await?;
+        let wanted = app.to_lowercase();
+        Ok(window_list(&windows)
+            .into_iter()
+            .filter(|w| {
+                let name = w.app.to_lowercase();
+                !name.is_empty()
+                    && (name == wanted || name.contains(&wanted) || wanted.contains(&name))
+            })
+            .collect())
+    }
+
     /// The frontmost application window, skipping the desktop and panels.
     async fn app_window(&self, session: &str) -> Result<Option<(i64, i64)>, String> {
         let windows = self
@@ -297,10 +365,6 @@ impl Cua {
                 };
                 req = json!({"from_x": x, "from_y": y, "to_x": tx, "to_y": ty, "target": desktop});
                 return Ok(("drag", req));
-            }
-            "launch_app" => {
-                req["name"] = required(&a.app, "app")?.into();
-                return Ok(("launch_app", req));
             }
             other => return Err(format!("unknown action {other}")),
         };
