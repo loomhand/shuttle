@@ -16,6 +16,7 @@ use super::rpc::Output;
 const STATE_ELEMENTS: u64 = 300;
 const TREE_CHARS: usize = 15_000;
 const MIN_WINDOW: i64 = 10;
+const SHELL_APPS: [&str; 2] = ["Xfce4-panel", "Xfdesktop"];
 const SETTLE: Duration = Duration::from_millis(600);
 const MAX_WAIT_SECS: f64 = 10.0;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -98,7 +99,11 @@ impl Cua {
         }
         let target = match a.pid {
             Some(pid) => Some((pid, a.window_id)),
-            None => listed.first().map(|w| (w.pid, Some(w.window_id))),
+            None => listed
+                .iter()
+                .find(|w| !SHELL_APPS.contains(&w.app.as_str()))
+                .or(listed.first())
+                .map(|w| (w.pid, Some(w.window_id))),
         };
         if let Some((pid, window_id)) = target {
             let mut req = json!({
@@ -328,13 +333,7 @@ fn window_list(result: &Value) -> Vec<Window> {
 fn element_tree(result: &Value) -> (String, HashMap<i64, String>) {
     let mut tokens = HashMap::new();
     let mut tree = String::new();
-    let sc = &result["structuredContent"];
-    let origin = &sc["window_bounds"];
-    let (ox, oy) = (
-        origin["x"].as_f64().unwrap_or(0.0),
-        origin["y"].as_f64().unwrap_or(0.0),
-    );
-    let elements = sc["elements"].as_array();
+    let elements = result["structuredContent"]["elements"].as_array();
     for e in elements.into_iter().flatten() {
         let Some(index) = e["element_index"].as_i64() else {
             continue;
@@ -365,12 +364,7 @@ fn element_tree(result: &Value) -> (String, HashMap<i64, String>) {
             f["w"].as_f64(),
             f["h"].as_f64(),
         ) {
-            let _ = write!(
-                tree,
-                " center=({:.0},{:.0})",
-                ox + x + w / 2.0,
-                oy + y + h / 2.0
-            );
+            let _ = write!(tree, " center=({:.0},{:.0})", x + w / 2.0, y + h / 2.0);
         }
         if e["enabled"] == false {
             tree.push_str(" disabled");
