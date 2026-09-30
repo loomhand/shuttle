@@ -114,7 +114,7 @@ impl Cua {
                 image_b64: self.screenshot(&session).await?,
             });
         }
-        let (tool, req) = self.action_request(&a).await?;
+        let (tool, req) = self.action_request(&session, &a).await?;
         let result = self.request(&session, tool, req).await;
         tokio::time::sleep(SETTLE).await;
         let shot = self.screenshot(&session).await?;
@@ -145,7 +145,11 @@ impl Cua {
         Ok(format!("ended session {session}"))
     }
 
-    async fn action_request(&self, a: &ActArgs) -> Result<(&'static str, Value), String> {
+    async fn action_request(
+        &self,
+        session: &str,
+        a: &ActArgs,
+    ) -> Result<(&'static str, Value), String> {
         let desktop = json!({"kind": "desktop", "display_id": "primary"});
         let mut req = json!({});
         let tool = match a.action.as_str() {
@@ -211,10 +215,16 @@ impl Cua {
             req["target"] = desktop;
         } else if matches!(tool, "click" | "double_click" | "right_click") {
             return Err(format!("{} needs element or x and y", a.action));
-        } else if let Some(snap) = self.last.lock().await.as_ref() {
-            req["pid"] = snap.pid.into();
-            if let Some(id) = snap.window_id {
-                req["window_id"] = id.into();
+        } else {
+            let windows = self
+                .request(session, "list_windows", json!({"on_screen_only": true}))
+                .await?;
+            if let Some(w) = window_list(&windows)
+                .iter()
+                .find(|w| !SHELL_APPS.contains(&w.app.as_str()))
+            {
+                req["pid"] = w.pid.into();
+                req["window_id"] = w.window_id.into();
             }
         }
         if a.foreground {
