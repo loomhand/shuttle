@@ -15,6 +15,7 @@ use super::rpc::Output;
 
 const STATE_ELEMENTS: u64 = 300;
 const TREE_CHARS: usize = 15_000;
+const MIN_WINDOW: i64 = 10;
 const SETTLE: Duration = Duration::from_millis(600);
 const MAX_WAIT_SECS: f64 = 10.0;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -85,19 +86,14 @@ impl Cua {
     pub async fn state(&self, args: Value) -> Result<Output, String> {
         let a: StateArgs =
             serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
-        let windows = self
-            .request("list_windows", json!({"on_screen_only": true}))
-            .await?;
+        let desktop = self.request("get_desktop_state", json!({})).await?;
+        let listed = window_list(&desktop);
         let mut text = String::from("Windows (frontmost first):\n");
-        let listed = window_list(&windows);
-        if listed.is_empty() {
-            text.push_str(&content_text(&windows));
-        }
         for w in &listed {
             let _ = writeln!(
                 text,
-                "- pid={} window_id={} \"{}\" at ({},{}) {}x{}",
-                w.pid, w.window_id, w.title, w.x, w.y, w.w, w.h
+                "- pid={} window_id={} {} \"{}\" at ({},{}) {}x{}",
+                w.pid, w.window_id, w.app, w.title, w.x, w.y, w.w, w.h
             );
         }
         let target = match a.pid {
@@ -119,7 +115,10 @@ impl Cua {
             match self.request("get_window_state", req).await {
                 Ok(state) => {
                     let (tree, tokens) = element_tree(&state);
-                    let _ = writeln!(text, "\nElements of pid={pid}:");
+                    let window_id = state["structuredContent"]["window_id"]
+                        .as_i64()
+                        .or(window_id);
+                    let _ = writeln!(text, "\nElements of pid={pid} (center = screen pixels):");
                     text.push_str(&tree);
                     *self.last.lock().await = Some(Snapshot {
                         pid,
@@ -132,11 +131,10 @@ impl Cua {
                 }
             }
         }
-        let shot = self.screenshot().await?;
         Ok(Output {
             text,
             is_error: false,
-            image_b64: shot,
+            image_b64: content_image(&desktop),
         })
     }
 
@@ -240,6 +238,11 @@ impl Cua {
             req["target"] = desktop;
         } else if matches!(tool, "click" | "double_click" | "right_click") {
             return Err(format!("{} needs element or x and y", a.action));
+        } else if let Some(snap) = self.last.lock().await.as_ref() {
+            req["pid"] = snap.pid.into();
+            if let Some(id) = snap.window_id {
+                req["window_id"] = id.into();
+            }
         }
         Ok((tool, req))
     }
@@ -285,6 +288,7 @@ impl Cua {
 struct Window {
     pid: i64,
     window_id: i64,
+    app: String,
     title: String,
     x: i64,
     y: i64,
@@ -294,9 +298,8 @@ struct Window {
 }
 
 fn window_list(result: &Value) -> Vec<Window> {
-    let sc = &result["structuredContent"];
-    let items = sc["windows"].as_array().or_else(|| sc.as_array());
-    let mut out: Vec<Window> = items
+    let mut out: Vec<Window> = result["structuredContent"]["windows"]
+        .as_array()
         .into_iter()
         .flatten()
         .filter_map(|w| {
@@ -304,6 +307,7 @@ fn window_list(result: &Value) -> Vec<Window> {
             Some(Window {
                 pid: w["pid"].as_i64()?,
                 window_id: w["window_id"].as_i64()?,
+                app: w["app_name"].as_str().unwrap_or_default().to_owned(),
                 title: w["title"].as_str().unwrap_or_default().to_owned(),
                 x: b["x"].as_i64().unwrap_or(0),
                 y: b["y"].as_i64().unwrap_or(0),
@@ -315,6 +319,7 @@ fn window_list(result: &Value) -> Vec<Window> {
                 z: w["z_index"].as_i64().unwrap_or(i64::MIN),
             })
         })
+        .filter(|w| w.w >= MIN_WINDOW && w.h >= MIN_WINDOW && w.x + w.w > 0 && w.y + w.h > 0)
         .collect();
     out.sort_by_key(|w| std::cmp::Reverse(w.z));
     out
@@ -323,7 +328,13 @@ fn window_list(result: &Value) -> Vec<Window> {
 fn element_tree(result: &Value) -> (String, HashMap<i64, String>) {
     let mut tokens = HashMap::new();
     let mut tree = String::new();
-    let elements = result["structuredContent"]["elements"].as_array();
+    let sc = &result["structuredContent"];
+    let origin = &sc["window_bounds"];
+    let (ox, oy) = (
+        origin["x"].as_f64().unwrap_or(0.0),
+        origin["y"].as_f64().unwrap_or(0.0),
+    );
+    let elements = sc["elements"].as_array();
     for e in elements.into_iter().flatten() {
         let Some(index) = e["element_index"].as_i64() else {
             continue;
@@ -354,7 +365,12 @@ fn element_tree(result: &Value) -> (String, HashMap<i64, String>) {
             f["w"].as_f64(),
             f["h"].as_f64(),
         ) {
-            let _ = write!(tree, " center=({:.0},{:.0})", x + w / 2.0, y + h / 2.0);
+            let _ = write!(
+                tree,
+                " center=({:.0},{:.0})",
+                ox + x + w / 2.0,
+                oy + y + h / 2.0
+            );
         }
         if e["enabled"] == false {
             tree.push_str(" disabled");
