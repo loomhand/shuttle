@@ -125,6 +125,9 @@ impl Cua {
                 image_b64: self.screenshot(&session, a.max_edge).await?,
             });
         }
+        if a.action == "type" && a.text.as_deref().is_some_and(|t| !t.is_ascii()) {
+            return self.type_mixed(&session, &a).await;
+        }
         let (tool, req) = self.action_request(&session, &a).await?;
         let input = self.input.lock().await;
         let result = self.request(&session, tool, req).await;
@@ -183,6 +186,73 @@ impl Cua {
             .filter(|s| *s > 0.0)
             .unwrap_or(1.0);
         Ok((content_image(&v), scale))
+    }
+
+    /// Types text with non-ASCII characters: ASCII runs in one call, every other character in its own call.
+    async fn type_mixed(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
+        let text = a.text.as_deref().unwrap_or_default();
+        let input = self.input.lock().await;
+        let mut failure = None;
+        if a.element.is_some() || (a.x.is_some() && a.y.is_some()) {
+            let focus = ActArgs {
+                action: "click".to_owned(),
+                element: a.element,
+                x: a.x,
+                y: a.y,
+                foreground: a.foreground,
+                ..ActArgs::default()
+            };
+            let (tool, req) = self.action_request(session, &focus).await?;
+            failure = self.request(session, tool, req).await.err();
+        }
+        let mut base = json!({});
+        if let Some((pid, window_id)) = self.app_window(session).await? {
+            base["pid"] = pid.into();
+            base["window_id"] = window_id.into();
+        }
+        if a.foreground {
+            base["delivery_mode"] = "foreground".into();
+        }
+        let runs = text_runs(text);
+        let mut typed = 0;
+        for run in &runs {
+            if failure.is_some() {
+                break;
+            }
+            let mut req = base.clone();
+            req["text"] = (*run).into();
+            match self.request(session, "type_text", req).await {
+                Ok(_) => typed += run.chars().count(),
+                Err(e) => failure = Some(e),
+            }
+        }
+        tokio::time::sleep(SETTLE).await;
+        let shot = self.screenshot(session, a.max_edge).await?;
+        drop(input);
+        let total = text.chars().count();
+        let summary = format!(
+            "typed {typed} of {total} characters in {} calls (non-ASCII characters go one per call); verify on the screenshot",
+            runs.len()
+        );
+        Ok(Output {
+            text: match &failure {
+                Some(e) => format!("{summary}; stopped: {e}"),
+                None => summary,
+            },
+            is_error: failure.is_some(),
+            image_b64: shot,
+        })
+    }
+
+    /// The frontmost application window, skipping the desktop and panels.
+    async fn app_window(&self, session: &str) -> Result<Option<(i64, i64)>, String> {
+        let windows = self
+            .request(session, "list_windows", json!({"on_screen_only": true}))
+            .await?;
+        Ok(window_list(&windows)
+            .iter()
+            .find(|w| !SHELL_APPS.contains(&w.app.as_str()))
+            .map(|w| (w.pid, w.window_id)))
     }
 
     async fn action_request(
@@ -255,17 +325,9 @@ impl Cua {
             req["target"] = desktop;
         } else if matches!(tool, "click" | "double_click" | "right_click") {
             return Err(format!("{} needs element or x and y", a.action));
-        } else {
-            let windows = self
-                .request(session, "list_windows", json!({"on_screen_only": true}))
-                .await?;
-            if let Some(w) = window_list(&windows)
-                .iter()
-                .find(|w| !SHELL_APPS.contains(&w.app.as_str()))
-            {
-                req["pid"] = w.pid.into();
-                req["window_id"] = w.window_id.into();
-            }
+        } else if let Some((pid, window_id)) = self.app_window(session).await? {
+            req["pid"] = pid.into();
+            req["window_id"] = window_id.into();
         }
         if a.foreground {
             req["delivery_mode"] = "foreground".into();
@@ -375,6 +437,26 @@ struct Window {
     w: i64,
     h: i64,
     z: i64,
+}
+
+/// Splits text into maximal ASCII runs and single non-ASCII characters; the driver
+/// remaps one spare keycode per non-ASCII character, so several in one call garble.
+fn text_runs(text: &str) -> Vec<&str> {
+    let mut runs = Vec::new();
+    let mut start = 0;
+    for (i, c) in text.char_indices() {
+        if !c.is_ascii() {
+            if start < i {
+                runs.push(&text[start..i]);
+            }
+            runs.push(&text[i..i + c.len_utf8()]);
+            start = i + c.len_utf8();
+        }
+    }
+    if start < text.len() {
+        runs.push(&text[start..]);
+    }
+    runs
 }
 
 fn session_of(args: &Value) -> String {
@@ -497,4 +579,20 @@ fn content_image(result: &Value) -> Option<String> {
 
 fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
     v.as_deref().ok_or_else(|| format!("missing {name}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_runs_isolate_every_non_ascii_character() {
+        assert_eq!(
+            text_runs("MCP — 你好 café 🙂!"),
+            ["MCP ", "—", " ", "你", "好", " caf", "é", " ", "🙂", "!"]
+        );
+        assert_eq!(text_runs("plain"), ["plain"]);
+        assert_eq!(text_runs("é"), ["é"]);
+        assert!(text_runs("").is_empty());
+    }
 }
