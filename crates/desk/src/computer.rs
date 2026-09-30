@@ -137,6 +137,14 @@ impl Cua {
         Ok(content_image(&v))
     }
 
+    /// Screenshot in a one-shot driver session that is ended right away.
+    pub async fn screenshot_once(&self) -> Result<Option<String>, String> {
+        let session = format!("shot-{}", uuid::Uuid::new_v4().simple());
+        let shot = self.screenshot(&session).await;
+        self.request(&session, "end_session", json!({})).await?;
+        shot
+    }
+
     /// Ends a driver session, releasing its input devices.
     pub async fn end(&self, args: Value) -> Result<String, String> {
         let session = session_of(&args);
@@ -333,8 +341,7 @@ struct Window {
     z: i64,
 }
 
-/// The driver session label carried in `args`.
-pub fn session_of(args: &Value) -> String {
+fn session_of(args: &Value) -> String {
     args["session"]
         .as_str()
         .unwrap_or(DEFAULT_SESSION)
