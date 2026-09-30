@@ -20,7 +20,7 @@ const SHELL_APPS: [&str; 2] = ["Xfce4-panel", "Xfdesktop"];
 const SETTLE: Duration = Duration::from_millis(600);
 const MAX_WAIT_SECS: f64 = 10.0;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
-const SESSION: &str = "cocoonbox";
+const DEFAULT_SESSION: &str = "cocoonbox";
 
 /// Screen executor client; remembers the element tokens of the latest window state.
 pub struct Cua {
@@ -39,9 +39,12 @@ impl Cua {
 
     /// `computer_state`: window list, accessibility elements and a desktop screenshot.
     pub async fn state(&self, args: Value) -> Result<Output, String> {
+        let session = session_of(&args);
         let a: StateArgs =
             serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
-        let desktop = self.request("get_desktop_state", json!({})).await?;
+        let desktop = self
+            .request(&session, "get_desktop_state", json!({}))
+            .await?;
         let listed = window_list(&desktop);
         let mut text = String::from("Windows (frontmost first):\n");
         for w in &listed {
@@ -71,7 +74,7 @@ impl Cua {
             if let Some(q) = a.query {
                 req["query"] = q.into();
             }
-            match self.request("get_window_state", req).await {
+            match self.request(&session, "get_window_state", req).await {
                 Ok(state) => {
                     let (tree, tokens) = element_tree(&state);
                     let window_id = state["structuredContent"]["window_id"]
@@ -99,6 +102,7 @@ impl Cua {
 
     /// `computer_act`: one input action followed by a fresh desktop screenshot.
     pub async fn act(&self, args: Value) -> Result<Output, String> {
+        let session = session_of(&args);
         let a: ActArgs =
             serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
         if a.action == "wait" {
@@ -107,13 +111,13 @@ impl Cua {
             return Ok(Output {
                 text: format!("waited {secs:.1}s"),
                 is_error: false,
-                image_b64: self.screenshot().await?,
+                image_b64: self.screenshot(&session).await?,
             });
         }
         let (tool, req) = self.action_request(&a).await?;
-        let result = self.request(tool, req).await;
+        let result = self.request(&session, tool, req).await;
         tokio::time::sleep(SETTLE).await;
-        let shot = self.screenshot().await?;
+        let shot = self.screenshot(&session).await?;
         let (text, is_error) = match result {
             Ok(v) => (content_text(&v), false),
             Err(e) => (e, true),
@@ -126,9 +130,19 @@ impl Cua {
     }
 
     /// Base64 PNG of the whole desktop.
-    pub async fn screenshot(&self) -> Result<Option<String>, String> {
-        let v = self.request("get_desktop_state", json!({})).await?;
+    pub async fn screenshot(&self, session: &str) -> Result<Option<String>, String> {
+        let v = self
+            .request(session, "get_desktop_state", json!({}))
+            .await?;
         Ok(content_image(&v))
+    }
+
+    /// Ends a driver session, releasing its input devices.
+    pub async fn end(&self, args: Value) -> Result<String, String> {
+        let session = session_of(&args);
+        self.request(&session, "end_session", json!({})).await?;
+        *self.last.lock().await = None;
+        Ok(format!("ended session {session}"))
     }
 
     async fn action_request(&self, a: &ActArgs) -> Result<(&'static str, Value), String> {
@@ -203,17 +217,20 @@ impl Cua {
                 req["window_id"] = id.into();
             }
         }
+        if a.foreground {
+            req["delivery_mode"] = "foreground".into();
+        }
         Ok((tool, req))
     }
 
-    async fn request(&self, name: &str, args: Value) -> Result<Value, String> {
+    async fn request(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
         let exchange = async {
             let mut stream = UnixStream::connect(&self.socket)
                 .await
                 .map_err(|e| format!("connect cua-driver {}: {e}", self.socket.display()))?;
             let mut line = json!({"method": "call", "name": name});
             line["args"] = args;
-            line["args"]["session"] = SESSION.into();
+            line["args"]["session"] = session.into();
             let mut bytes = serde_json::to_vec(&line).map_err(|e| format!("encode: {e}"))?;
             bytes.push(b'\n');
             stream
@@ -290,6 +307,8 @@ struct ActArgs {
     button: Option<String>,
     #[serde(default)]
     seconds: Option<f64>,
+    #[serde(default)]
+    foreground: bool,
 }
 
 struct Window {
@@ -302,6 +321,14 @@ struct Window {
     w: i64,
     h: i64,
     z: i64,
+}
+
+/// The driver session label carried in `args`.
+pub fn session_of(args: &Value) -> String {
+    args["session"]
+        .as_str()
+        .unwrap_or(DEFAULT_SESSION)
+        .to_owned()
 }
 
 fn window_list(result: &Value) -> Vec<Window> {
