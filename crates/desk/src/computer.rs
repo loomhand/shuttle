@@ -25,7 +25,8 @@ const DEFAULT_SESSION: &str = "cocoonbox";
 /// Screen executor client; remembers the element tokens of the latest window state.
 pub struct Cua {
     socket: PathBuf,
-    last: Mutex<Option<Snapshot>>,
+    last: Mutex<HashMap<String, Snapshot>>,
+    input: Mutex<()>,
 }
 
 impl Cua {
@@ -33,7 +34,8 @@ impl Cua {
     pub fn new(socket: PathBuf) -> Self {
         Self {
             socket,
-            last: Mutex::new(None),
+            last: Mutex::new(HashMap::new()),
+            input: Mutex::new(()),
         }
     }
 
@@ -62,6 +64,7 @@ impl Cua {
                 .or(listed.first())
                 .map(|w| (w.pid, Some(w.window_id))),
         };
+        let mut elements = None;
         if let Some((pid, window_id)) = target {
             let mut req = json!({
                 "pid": pid,
@@ -76,17 +79,7 @@ impl Cua {
             }
             match self.request(&session, "get_window_state", req).await {
                 Ok(state) => {
-                    let (tree, tokens) = element_tree(&state);
-                    let window_id = state["structuredContent"]["window_id"]
-                        .as_i64()
-                        .or(window_id);
-                    let _ = writeln!(text, "\nElements of pid={pid} (center = screen pixels):");
-                    text.push_str(&tree);
-                    *self.last.lock().await = Some(Snapshot {
-                        pid,
-                        window_id,
-                        tokens,
-                    });
+                    elements = Some((pid, window_id_of(&state).or(window_id), state));
                 }
                 Err(e) => {
                     let _ = writeln!(text, "\nElements of pid={pid} unavailable: {e}");
@@ -94,10 +87,27 @@ impl Cua {
             }
         }
         // the capture comes last: a later get_window_state replaces the session's pixel-click context
+        let (image_b64, scale) = self.capture(&session, a.max_edge).await?;
+        if let Some((pid, window_id, state)) = elements {
+            let (tree, tokens) = element_tree(&state, scale);
+            let _ = writeln!(
+                text,
+                "\nElements of pid={pid} (center = screenshot pixels):"
+            );
+            text.push_str(&tree);
+            self.last.lock().await.insert(
+                session.clone(),
+                Snapshot {
+                    pid,
+                    window_id,
+                    tokens,
+                },
+            );
+        }
         Ok(Output {
             text,
             is_error: false,
-            image_b64: self.screenshot(&session).await?,
+            image_b64,
         })
     }
 
@@ -112,13 +122,15 @@ impl Cua {
             return Ok(Output {
                 text: format!("waited {secs:.1}s"),
                 is_error: false,
-                image_b64: self.screenshot(&session).await?,
+                image_b64: self.screenshot(&session, a.max_edge).await?,
             });
         }
         let (tool, req) = self.action_request(&session, &a).await?;
+        let input = self.input.lock().await;
         let result = self.request(&session, tool, req).await;
         tokio::time::sleep(SETTLE).await;
-        let shot = self.screenshot(&session).await?;
+        let shot = self.screenshot(&session, a.max_edge).await?;
+        drop(input);
         let (text, is_error) = match result {
             Ok(v) => (content_text(&v), false),
             Err(e) => (e, true),
@@ -130,18 +142,19 @@ impl Cua {
         })
     }
 
-    /// Base64 PNG of the whole desktop.
-    pub async fn screenshot(&self, session: &str) -> Result<Option<String>, String> {
-        let v = self
-            .request(session, "get_desktop_state", json!({}))
-            .await?;
-        Ok(content_image(&v))
+    /// Base64 PNG of the whole desktop, scaled so its long edge is at most `max_edge`.
+    pub async fn screenshot(
+        &self,
+        session: &str,
+        max_edge: Option<u32>,
+    ) -> Result<Option<String>, String> {
+        Ok(self.capture(session, max_edge).await?.0)
     }
 
     /// Screenshot in a one-shot driver session that is ended right away.
-    pub async fn screenshot_once(&self) -> Result<Option<String>, String> {
+    pub async fn screenshot_once(&self, max_edge: Option<u32>) -> Result<Option<String>, String> {
         let session = format!("shot-{}", uuid::Uuid::new_v4().simple());
-        let shot = self.screenshot(&session).await;
+        let shot = self.screenshot(&session, max_edge).await;
         self.request(&session, "end_session", json!({})).await?;
         shot
     }
@@ -150,8 +163,26 @@ impl Cua {
     pub async fn end(&self, args: Value) -> Result<String, String> {
         let session = session_of(&args);
         self.request(&session, "end_session", json!({})).await?;
-        *self.last.lock().await = None;
+        self.last.lock().await.remove(&session);
         Ok(format!("ended session {session}"))
+    }
+
+    /// Captures the desktop; the driver maps desktop-scope pixels of this capture back to the screen.
+    async fn capture(
+        &self,
+        session: &str,
+        max_edge: Option<u32>,
+    ) -> Result<(Option<String>, f64), String> {
+        let mut args = json!({});
+        if let Some(edge) = max_edge {
+            args["max_image_dimension"] = edge.into();
+        }
+        let v = self.request(session, "get_desktop_state", args).await?;
+        let scale = v["structuredContent"]["frame_scale"]
+            .as_f64()
+            .filter(|s| *s > 0.0)
+            .unwrap_or(1.0);
+        Ok((content_image(&v), scale))
     }
 
     async fn action_request(
@@ -206,7 +237,7 @@ impl Cua {
         if let Some(index) = a.element {
             let last = self.last.lock().await;
             let snap = last
-                .as_ref()
+                .get(session)
                 .ok_or("no element list yet; call computer_state first")?;
             let token = snap.tokens.get(&index).ok_or_else(|| {
                 format!(
@@ -295,6 +326,8 @@ struct StateArgs {
     window_id: Option<i64>,
     #[serde(default)]
     query: Option<String>,
+    #[serde(default)]
+    max_edge: Option<u32>,
 }
 
 #[derive(Default, Deserialize)]
@@ -328,6 +361,8 @@ struct ActArgs {
     seconds: Option<f64>,
     #[serde(default)]
     foreground: bool,
+    #[serde(default)]
+    max_edge: Option<u32>,
 }
 
 struct Window {
@@ -377,7 +412,11 @@ fn window_list(result: &Value) -> Vec<Window> {
     out
 }
 
-fn element_tree(result: &Value) -> (String, HashMap<i64, String>) {
+fn window_id_of(state: &Value) -> Option<i64> {
+    state["structuredContent"]["window_id"].as_i64()
+}
+
+fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, String>) {
     let mut tokens = HashMap::new();
     let mut tree = String::new();
     let elements = result["structuredContent"]["elements"].as_array();
@@ -411,7 +450,12 @@ fn element_tree(result: &Value) -> (String, HashMap<i64, String>) {
             f["w"].as_f64(),
             f["h"].as_f64(),
         ) {
-            let _ = write!(tree, " center=({:.0},{:.0})", x + w / 2.0, y + h / 2.0);
+            let _ = write!(
+                tree,
+                " center=({:.0},{:.0})",
+                (x + w / 2.0) / scale,
+                (y + h / 2.0) / scale
+            );
         }
         if e["enabled"] == false {
             tree.push_str(" disabled");
