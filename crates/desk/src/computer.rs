@@ -335,9 +335,17 @@ impl Cua {
                 if let Some(b) = &a.button {
                     req["button"] = b.as_str().into();
                 }
-                match a.action.as_str() {
-                    "double_click" => "double_click",
-                    "right_click" => "right_click",
+                match (a.action.as_str(), a.element.is_some()) {
+                    ("double_click", true) => "double_click",
+                    ("right_click", true) => "right_click",
+                    ("double_click", false) => {
+                        req["count"] = 2.into();
+                        "click"
+                    }
+                    ("right_click", false) => {
+                        req["button"] = "right".into();
+                        "click"
+                    }
                     _ => "click",
                 }
             }
