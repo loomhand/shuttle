@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -20,6 +21,8 @@ const SHELL_APPS: [&str; 2] = ["Xfce4-panel", "Xfdesktop"];
 const SETTLE: Duration = Duration::from_millis(600);
 const MAX_WAIT_SECS: f64 = 10.0;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const CONNECT_RETRY: Duration = Duration::from_millis(250);
+const CONNECT_WAIT: Duration = Duration::from_secs(10);
 const DEFAULT_SESSION: &str = "cocoonbox";
 
 /// Screen executor client; remembers the element tokens of the latest window state.
@@ -332,10 +335,7 @@ impl Cua {
         let mut req = json!({});
         let tool = match a.action.as_str() {
             "click" | "double_click" | "right_click" => {
-                if let Some(b) = &a.button {
-                    req["button"] = b.as_str().into();
-                }
-                match (a.action.as_str(), a.element.is_some()) {
+                let tool = match (a.action.as_str(), a.element.is_some()) {
                     ("double_click", true) => "double_click",
                     ("right_click", true) => "right_click",
                     ("double_click", false) => {
@@ -347,7 +347,15 @@ impl Cua {
                         "click"
                     }
                     _ => "click",
+                };
+                if let Some(b) = a
+                    .button
+                    .as_deref()
+                    .filter(|_| tool == "click" && a.action != "right_click")
+                {
+                    req["button"] = b.into();
                 }
+                tool
             }
             "type" => {
                 req["text"] = required(&a.text, "text")?.into();
@@ -409,9 +417,7 @@ impl Cua {
 
     async fn request(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
         let exchange = async {
-            let mut stream = UnixStream::connect(&self.socket)
-                .await
-                .map_err(|e| format!("connect cua-driver {}: {e}", self.socket.display()))?;
+            let mut stream = self.connect().await?;
             let mut line = json!({"method": "call", "name": name});
             line["args"] = args;
             line["args"]["session"] = session.into();
@@ -443,6 +449,25 @@ impl Cua {
             return Err(format!("{name}: {}", content_text(&result)));
         }
         Ok(result)
+    }
+
+    /// Connects to the driver, waiting out the restart that each desktop session start triggers.
+    async fn connect(&self) -> Result<UnixStream, String> {
+        let deadline = tokio::time::Instant::now() + CONNECT_WAIT;
+        loop {
+            match UnixStream::connect(&self.socket).await {
+                Ok(stream) => return Ok(stream),
+                Err(e)
+                    if matches!(e.kind(), ErrorKind::ConnectionRefused | ErrorKind::NotFound)
+                        && tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(CONNECT_RETRY).await;
+                }
+                Err(e) => {
+                    return Err(format!("connect cua-driver {}: {e}", self.socket.display()));
+                }
+            }
+        }
     }
 }
 
@@ -656,6 +681,30 @@ fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_request_waits_for_a_driver_that_is_restarting() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let path = socket.clone();
+        let driver = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            let listener = tokio::net::UnixListener::bind(&path).unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            reader
+                .into_inner()
+                .write_all(b"{\"ok\":true,\"result\":{\"structuredContent\":{}}}\n")
+                .await
+                .unwrap();
+        });
+        let cua = Cua::new(socket);
+        let out = cua.request("s", "list_windows", json!({})).await;
+        assert!(out.is_ok(), "{out:?}");
+        driver.await.unwrap();
+    }
 
     #[test]
     fn text_runs_isolate_every_non_ascii_character() {
