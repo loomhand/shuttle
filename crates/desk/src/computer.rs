@@ -6,11 +6,14 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::Mutex;
+use tokio::time::Instant;
 
 use super::rpc::Output;
 use super::timing;
@@ -20,6 +23,10 @@ const TREE_CHARS: usize = 15_000;
 const MIN_WINDOW: i64 = 10;
 const SHELL_APPS: [&str; 2] = ["Xfce4-panel", "Xfdesktop"];
 const SETTLE: Duration = Duration::from_millis(600);
+const STILL_POLL: Duration = Duration::from_millis(40);
+const STILL_EDGE: u32 = 160;
+const STILL_TOLERANCE: u8 = 48;
+const JPEG_QUALITY: u8 = 80;
 const MAX_WAIT_SECS: f64 = 10.0;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECT_RETRY: Duration = Duration::from_millis(250);
@@ -37,15 +44,18 @@ pub struct Cua {
     socket: PathBuf,
     last: Mutex<HashMap<String, Snapshot>>,
     input: Mutex<()>,
+    /// The cbplan family: settles on a still screen, recompresses screenshots and runs action lists.
+    cbplan: bool,
 }
 
 impl Cua {
-    /// Creates a client for the driver socket at `socket`.
-    pub fn new(socket: PathBuf) -> Self {
+    /// Creates a client for the driver socket at `socket`; `cbplan` turns on the cbplan family's behaviour.
+    pub fn new(socket: PathBuf, cbplan: bool) -> Self {
         Self {
             socket,
             last: Mutex::new(HashMap::new()),
             input: Mutex::new(()),
+            cbplan,
         }
     }
 
@@ -123,11 +133,50 @@ impl Cua {
         })
     }
 
-    /// `computer_act`: one input action followed by a fresh desktop screenshot.
+    /// `computer_act`: one input action followed by a fresh desktop screenshot; on cbplan also a list of `actions`.
     pub async fn act(&self, args: Value) -> Result<Output, String> {
         let session = session_of(&args);
+        if self.cbplan && args.get("actions").is_some() {
+            let list: ActList =
+                serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
+            return self.act_list(&session, list).await;
+        }
         let a: ActArgs =
             serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
+        self.act_one(&session, a).await
+    }
+
+    /// Runs the actions in order, each settled, stops at the first failure and returns the last screenshot.
+    async fn act_list(&self, session: &str, list: ActList) -> Result<Output, String> {
+        let total = list.actions.len();
+        let mut lines = Vec::with_capacity(total);
+        let mut out = Output::default();
+        for (i, mut a) in list.actions.into_iter().enumerate() {
+            a.max_edge = list.max_edge;
+            let action = a.action.clone();
+            let step = self.act_one(session, a).await.unwrap_or_else(Output::error);
+            let failed = if step.is_error { " failed" } else { "" };
+            lines.push(format!("{}. {action}{failed}: {}", i + 1, step.text));
+            out.image_b64 = step.image_b64;
+            if step.is_error {
+                out.is_error = true;
+                if i + 1 < total {
+                    lines.push(format!(
+                        "the remaining {} actions did not run",
+                        total - i - 1
+                    ));
+                }
+                break;
+            }
+        }
+        if out.image_b64.is_none() {
+            out.image_b64 = self.screenshot(session, list.max_edge).await?;
+        }
+        out.text = lines.join("\n");
+        Ok(out)
+    }
+
+    async fn act_one(&self, session: &str, a: ActArgs) -> Result<Output, String> {
         timing::note("action", &a.action);
         if a.action == "wait" {
             let secs = a.seconds.unwrap_or(1.0).clamp(0.1, MAX_WAIT_SECS);
@@ -136,23 +185,23 @@ impl Cua {
             return Ok(Output {
                 text: format!("waited {secs:.1}s"),
                 is_error: false,
-                image_b64: self.screenshot(&session, a.max_edge).await?,
+                image_b64: self.screenshot(session, a.max_edge).await?,
             });
         }
         if a.action == "type" && a.text.as_deref().is_some_and(|t| !t.is_ascii()) {
-            return self.type_mixed(&session, &a).await;
+            return self.type_mixed(session, &a).await;
         }
         if a.action == "launch_app" {
-            return self.launch(&session, &a).await;
+            return self.launch(session, &a).await;
         }
-        let (tool, req) = self.action_request(&session, &a).await?;
+        let (tool, req) = self.action_request(session, &a).await?;
         let input = self.input.lock().await;
         timing::mark("resolve");
-        let result = self.request(&session, tool, req).await;
+        let before = self.before_input().await;
+        let result = self.request(session, tool, req).await;
         timing::mark("act");
-        tokio::time::sleep(SETTLE).await;
-        timing::mark("settle");
-        let shot = self.screenshot(&session, a.max_edge).await?;
+        self.settle(before).await;
+        let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         let (text, is_error) = match result {
             Ok(v) => (content_text(&v), false),
@@ -207,7 +256,13 @@ impl Cua {
             .as_f64()
             .filter(|s| *s > 0.0)
             .unwrap_or(1.0);
-        let image = content_image(&v);
+        let mut image = content_image(&v);
+        if self.cbplan
+            && let Some(smaller) = image.as_deref().and_then(shrink)
+        {
+            image = Some(smaller);
+            timing::mark("encode");
+        }
         timing::note("image_bytes", image.as_ref().map_or(0, |b| b.len() / 4 * 3));
         Ok((image, scale))
     }
@@ -216,6 +271,7 @@ impl Cua {
     async fn type_mixed(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
         let text = a.text.as_deref().unwrap_or_default();
         let input = self.input.lock().await;
+        let before = self.before_input().await;
         let mut failure = None;
         if a.element.is_some() || (a.x.is_some() && a.y.is_some()) {
             let focus = ActArgs {
@@ -252,8 +308,7 @@ impl Cua {
             }
         }
         timing::mark("act");
-        tokio::time::sleep(SETTLE).await;
-        timing::mark("settle");
+        self.settle(before).await;
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         let total = text.chars().count();
@@ -275,6 +330,7 @@ impl Cua {
     async fn launch(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
         let app = required(&a.app, "app")?;
         let input = self.input.lock().await;
+        let before = self.before_input().await;
         let text = match self.app_windows(session, app).await?.first() {
             Some(w) => {
                 let req = json!({"pid": w.pid, "window_id": w.window_id});
@@ -300,6 +356,9 @@ impl Cua {
                         w.window_id, w.title, w.pid
                     ),
                     None => {
+                        if let Some(b) = before {
+                            let _ = self.request(&b.probe, "end_session", json!({})).await;
+                        }
                         drop(input);
                         return Ok(Output {
                             text: e,
@@ -311,8 +370,7 @@ impl Cua {
             },
         };
         timing::mark("act");
-        tokio::time::sleep(SETTLE).await;
-        timing::mark("settle");
+        self.settle(before).await;
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         Ok(Output {
@@ -320,6 +378,62 @@ impl Cua {
             is_error: false,
             image_b64: shot,
         })
+    }
+
+    /// On cbplan, a frame taken before an input action in a probe session of its own, which leaves the
+    /// capture context of the action's session as it was.
+    async fn before_input(&self) -> Option<Before> {
+        if !self.cbplan {
+            return None;
+        }
+        let probe = format!("still-{}", uuid::Uuid::new_v4().simple());
+        let before = match self.frame(&probe).await {
+            Some(frame) => Some(Before { probe, frame }),
+            None => {
+                let _ = self.request(&probe, "end_session", json!({})).await;
+                None
+            }
+        };
+        timing::mark("probe");
+        before
+    }
+
+    /// Waits after an input action until the screen changed from `before` and held still for one
+    /// poll, at most [`SETTLE`]; without `before`, the fixed [`SETTLE`]. Frames are thumbnails
+    /// compared with a tolerance, so a caret or a small animation does not count as a change.
+    async fn settle(&self, before: Option<Before>) {
+        let Some(Before {
+            probe,
+            frame: first,
+        }) = before
+        else {
+            tokio::time::sleep(SETTLE).await;
+            timing::mark("settle");
+            return;
+        };
+        let deadline = Instant::now() + SETTLE;
+        let mut last = None;
+        let mut still = false;
+        while !still && Instant::now() < deadline {
+            tokio::time::sleep(STILL_POLL.min(deadline.saturating_duration_since(Instant::now())))
+                .await;
+            let Some(frame) = self.frame(&probe).await else {
+                tokio::time::sleep_until(deadline).await;
+                break;
+            };
+            still = differs(&first, &frame) && last.as_deref().is_some_and(|l| !differs(l, &frame));
+            last = Some(frame);
+        }
+        timing::mark("settle");
+        timing::note("still", still);
+        let _ = self.request(&probe, "end_session", json!({})).await;
+    }
+
+    async fn frame(&self, probe: &str) -> Option<Vec<u8>> {
+        let edge = json!({"max_image_dimension": STILL_EDGE});
+        let v = self.request(probe, "get_desktop_state", edge).await.ok()?;
+        let data = B64.decode(content_image(&v)?).ok()?;
+        Some(decode_png(&data)?.1)
     }
 
     /// On-screen windows of `app`, frontmost first, matched on the app name case-insensitively.
@@ -505,6 +619,11 @@ impl Cua {
     }
 }
 
+struct Before {
+    probe: String,
+    frame: Vec<u8>,
+}
+
 struct Snapshot {
     pid: i64,
     window_id: Option<i64>,
@@ -554,6 +673,13 @@ struct ActArgs {
     seconds: Option<f64>,
     #[serde(default)]
     foreground: bool,
+    #[serde(default)]
+    max_edge: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct ActList {
+    actions: Vec<ActArgs>,
     #[serde(default)]
     max_edge: Option<u32>,
 }
@@ -708,6 +834,54 @@ fn content_image(result: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The PNG `b64` re-encoded at the same size: as JPEG when that takes under 40% of its bytes, as
+/// photos do, else pixel for pixel with adaptive filters and balanced deflate; `None` when not smaller.
+fn shrink(b64: &str) -> Option<String> {
+    let data = B64.decode(b64).ok()?;
+    let (info, pixels) = decode_png(&data)?;
+    let pixels = pixels.as_slice();
+    if info.color_type == png::ColorType::Rgba
+        && info.bit_depth == png::BitDepth::Eight
+        && let (Ok(w), Ok(h)) = (u16::try_from(info.width), u16::try_from(info.height))
+    {
+        let mut jpeg = Vec::new();
+        jpeg_encoder::Encoder::new(&mut jpeg, JPEG_QUALITY)
+            .encode(pixels, w, h, jpeg_encoder::ColorType::Rgba)
+            .ok()?;
+        if jpeg.len() * 5 < data.len() * 2 {
+            return Some(B64.encode(&jpeg));
+        }
+    }
+    let mut out = Vec::with_capacity(data.len() / 2);
+    let mut encoder = png::Encoder::new(&mut out, info.width, info.height);
+    encoder.set_color(info.color_type);
+    encoder.set_depth(info.bit_depth);
+    encoder.set_compression(png::Compression::Balanced);
+    encoder.set_filter(png::Filter::Adaptive);
+    let mut writer = encoder.write_header().ok()?;
+    writer.write_image_data(pixels).ok()?;
+    writer.finish().ok()?;
+    (out.len() < data.len()).then(|| B64.encode(&out))
+}
+
+fn decode_png(data: &[u8]) -> Option<(png::OutputInfo, Vec<u8>)> {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(data))
+        .read_info()
+        .ok()?;
+    let mut pixels = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut pixels).ok()?;
+    pixels.truncate(info.buffer_size());
+    Some((info, pixels))
+}
+
+/// Whether two frames differ by more than [`STILL_TOLERANCE`] in any channel of any pixel.
+fn differs(a: &[u8], b: &[u8]) -> bool {
+    a.len() != b.len()
+        || a.iter()
+            .zip(b)
+            .any(|(x, y)| x.abs_diff(*y) > STILL_TOLERANCE)
+}
+
 fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
     v.as_deref().ok_or_else(|| format!("missing {name}"))
 }
@@ -734,7 +908,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let cua = Cua::new(socket);
+        let cua = Cua::new(socket, false);
         let out = cua.request("s", "list_windows", json!({})).await;
         assert!(out.is_ok(), "{out:?}");
         driver.await.unwrap();
@@ -767,7 +941,7 @@ mod tests {
         let socket = dir.path().join("cua.sock");
         let driver = tokio::spawn(closing_then_answering_driver(socket.clone()));
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let out = Cua::new(socket)
+        let out = Cua::new(socket, false)
             .request("s", "list_windows", json!({}))
             .await;
         assert!(out.is_ok(), "{out:?}");
@@ -780,9 +954,66 @@ mod tests {
         let socket = dir.path().join("cua.sock");
         let driver = tokio::spawn(closing_then_answering_driver(socket.clone()));
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let out = Cua::new(socket).request("s", "click", json!({})).await;
+        let out = Cua::new(socket, false)
+            .request("s", "click", json!({}))
+            .await;
         assert!(out.unwrap_err().starts_with("decode cua-driver reply"));
         driver.abort();
+    }
+
+    fn fast_png(w: u32, h: u32, pixels: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, w, h);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_compression(png::Compression::Fast);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(pixels).unwrap();
+        writer.finish().unwrap();
+        out
+    }
+
+    #[test]
+    fn shrink_keeps_every_pixel_of_a_flat_png_and_turns_noise_into_jpeg() {
+        let (w, h) = (320u32, 200u32);
+        let flat: Vec<u8> = (0..w * h)
+            .flat_map(|i| {
+                let (x, y) = (i % w, i / w);
+                let v = if y % 20 == 0 || x % 40 == 0 { 40 } else { 230 };
+                [v, v, (x / 40 * 30) as u8, 255]
+            })
+            .collect();
+        let driver = fast_png(w, h, &flat);
+        let small = B64.decode(shrink(&B64.encode(&driver)).unwrap()).unwrap();
+        assert!(small.len() < driver.len());
+        let mut reader = png::Decoder::new(std::io::Cursor::new(&small))
+            .read_info()
+            .unwrap();
+        let mut decoded = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut decoded).unwrap();
+        assert_eq!((info.width, info.height), (w, h));
+        assert_eq!(&decoded[..info.buffer_size()], flat.as_slice());
+        assert!(shrink(&B64.encode(&small)).is_none());
+        assert!(shrink("iVBORw0KGgoAAAANSUhEUg==").is_none());
+
+        let mut seed = 7u32;
+        let noise: Vec<u8> = (0..w * h * 4)
+            .map(|i| {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                if i % 4 == 3 { 255 } else { (seed >> 24) as u8 }
+            })
+            .collect();
+        let photo = B64
+            .decode(shrink(&B64.encode(fast_png(w, h, &noise))).unwrap())
+            .unwrap();
+        assert!(photo.starts_with(&[0xff, 0xd8]), "{:?}", &photo[..4]);
+    }
+
+    #[test]
+    fn frames_differ_only_past_the_tolerance() {
+        let a = [200u8, 200, 200, 255];
+        assert!(!differs(&a, &[200 - STILL_TOLERANCE, 200, 200, 255]));
+        assert!(differs(&a, &[199 - STILL_TOLERANCE, 200, 200, 255]));
+        assert!(differs(&a, &a[..3]));
     }
 
     #[test]
