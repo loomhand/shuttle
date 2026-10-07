@@ -17,7 +17,7 @@ use tokio::time::Instant;
 
 use super::rpc::Output;
 use super::timing;
-use super::xshm::Grabber;
+use super::xshm::{Grabber, Placement};
 
 const STATE_ELEMENTS: u64 = 300;
 const TREE_CHARS: usize = 15_000;
@@ -26,7 +26,8 @@ const SHELL_APPS: [&str; 2] = ["Xfce4-panel", "Xfdesktop"];
 const SETTLE: Duration = Duration::from_millis(600);
 const STILL_POLL: Duration = Duration::from_millis(40);
 const SHM_POLL: Duration = Duration::from_millis(10);
-const STILL_FOR: Duration = Duration::from_millis(150);
+const STILL_FOR: Duration = Duration::from_millis(40);
+const WINDOW_STILL_FOR: Duration = Duration::from_millis(150);
 const STILL_EDGE: u32 = 160;
 const STILL_TOLERANCE: u8 = 48;
 const JPEG_QUALITY: u8 = 80;
@@ -53,6 +54,10 @@ pub struct Cua {
     cbplan: bool,
     /// The cbplan family's MIT-SHM grabber, opened on first use and again after a failure.
     grabber: std::sync::Mutex<Option<Grabber>>,
+    /// Titles of the windows an action opened, to name them when they close.
+    titles: std::sync::Mutex<HashMap<u32, String>>,
+    /// Per session, screen pixels per image pixel of the last screenshot returned on cbplan.
+    scales: std::sync::Mutex<HashMap<String, f64>>,
 }
 
 impl Cua {
@@ -64,6 +69,8 @@ impl Cua {
             input: Mutex::new(()),
             cbplan,
             grabber: std::sync::Mutex::new(None),
+            titles: std::sync::Mutex::new(HashMap::new()),
+            scales: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -208,11 +215,11 @@ impl Cua {
         let before = self.before_input().await;
         let result = self.request(session, tool, req).await;
         timing::mark("act");
-        self.settle(before).await;
+        let changes = self.settle(before).await;
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         let (text, is_error) = match result {
-            Ok(v) => (content_text(&v), false),
+            Ok(v) => (content_text(&v) + &changes, false),
             Err(e) => (e, true),
         };
         Ok(Output {
@@ -235,6 +242,7 @@ impl Cua {
     pub async fn screenshot_once(&self, max_edge: Option<u32>) -> Result<Option<String>, String> {
         let session = format!("shot-{}", uuid::Uuid::new_v4().simple());
         let shot = self.screenshot(&session, max_edge).await;
+        self.scales().remove(&session);
         self.request(&session, "end_session", json!({})).await?;
         timing::mark("end");
         shot
@@ -245,6 +253,7 @@ impl Cua {
         let session = session_of(&args);
         self.request(&session, "end_session", json!({})).await?;
         self.last.lock().await.remove(&session);
+        self.scales().remove(&session);
         Ok(format!("ended session {session}"))
     }
 
@@ -264,6 +273,7 @@ impl Cua {
             if let Some(image) = encode(w, h, &rgb) {
                 timing::mark("encode");
                 timing::note("image_bytes", image.len());
+                self.scales().insert(session.to_owned(), 1.0);
                 return Ok((Some(B64.encode(image)), 1.0));
             }
         }
@@ -278,10 +288,16 @@ impl Cua {
             .filter(|s| *s > 0.0)
             .unwrap_or(1.0);
         let mut image = content_image(&v);
-        if self.cbplan
-            && let Some(smaller) = image.as_deref().and_then(shrink)
-        {
-            image = Some(smaller);
+        if self.cbplan {
+            if let Some(smaller) = image.as_deref().and_then(shrink) {
+                image = Some(smaller);
+            }
+            self.scales().insert(session.to_owned(), scale);
+            // the driver rescales later desktop clicks by its last capture; a full-size one keeps it at 1
+            if scale != 1.0 {
+                let _ = self.request(session, "get_desktop_state", json!({})).await;
+                timing::mark("rescale");
+            }
         }
         timing::note("image_bytes", image.as_ref().map_or(0, |b| b.len() / 4 * 3));
         Ok((image, scale))
@@ -328,12 +344,12 @@ impl Cua {
             }
         }
         timing::mark("act");
-        self.settle(before).await;
+        let changes = self.settle(before).await;
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         let total = text.chars().count();
         let summary = format!(
-            "typed {typed} of {total} characters in {} calls (non-ASCII characters go one per call); verify on the screenshot",
+            "typed {typed} of {total} characters in {} calls (non-ASCII characters go one per call); verify on the screenshot{changes}",
             runs.len()
         );
         Ok(Output {
@@ -390,11 +406,11 @@ impl Cua {
             },
         };
         timing::mark("act");
-        self.settle(before).await;
+        let changes = self.settle(before).await;
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         Ok(Output {
-            text,
+            text: text + &changes,
             is_error: false,
             image_b64: shot,
         })
@@ -406,15 +422,24 @@ impl Cua {
         if !self.cbplan {
             return None;
         }
-        if let Some(frame) = self.shm(Grabber::thumb) {
+        if let Some((frame, windows, active)) =
+            self.shm(|g| Ok((g.thumb()?, g.mapped()?, g.active())))
+        {
             timing::mark("probe");
-            return Some(Before { probe: None, frame });
+            return Some(Before {
+                probe: None,
+                frame,
+                windows,
+                active,
+            });
         }
         let probe = format!("still-{}", uuid::Uuid::new_v4().simple());
         let before = match self.frame(Some(&probe)).await {
             Some(frame) => Some(Before {
                 probe: Some(probe),
                 frame,
+                windows: Vec::new(),
+                active: None,
             }),
             None => {
                 let _ = self.request(&probe, "end_session", json!({})).await;
@@ -425,18 +450,22 @@ impl Cua {
         before
     }
 
-    /// Waits after an input action until the screen changed from `before` and held still for
-    /// [`STILL_FOR`], at most [`SETTLE`]; without `before`, the fixed [`SETTLE`]. Frames are
-    /// thumbnails compared with a tolerance, so a caret or a small animation does not count as a change.
-    async fn settle(&self, before: Option<Before>) {
+    /// Waits after an input action until the screen changed from `before` and held still, at most
+    /// [`SETTLE`]; without `before`, the fixed [`SETTLE`]. The hold is [`STILL_FOR`], or
+    /// [`WINDOW_STILL_FOR`] once a window maps, unmaps or moves or the focus moves. Frames are
+    /// thumbnails compared with a tolerance, so a caret or a small animation does not count as a
+    /// change. Returns lines naming the windows the action opened, closed or brought to the front.
+    async fn settle(&self, before: Option<Before>) -> String {
         let Some(Before {
             probe,
             frame: first,
+            windows,
+            active,
         }) = before
         else {
             tokio::time::sleep(SETTLE).await;
             timing::mark("settle");
-            return;
+            return String::new();
         };
         let poll = if probe.is_some() {
             STILL_POLL
@@ -445,25 +474,114 @@ impl Cua {
         };
         let deadline = Instant::now() + SETTLE;
         let (mut last, mut since): (Option<Vec<u8>>, Instant) = (None, Instant::now());
+        let (mut seen, mut focus, mut hold) = (windows.clone(), active, STILL_FOR);
         let mut still = false;
         while !still && Instant::now() < deadline {
             tokio::time::sleep(poll.min(deadline.saturating_duration_since(Instant::now()))).await;
-            let Some(frame) = self.frame(probe.as_deref()).await else {
+            let polled = match probe.as_deref() {
+                Some(probe) => self
+                    .frame(Some(probe))
+                    .await
+                    .map(|f| (f, seen.clone(), focus)),
+                None => self.shm(|g| Ok((g.thumb()?, g.mapped()?, g.active()))),
+            };
+            let Some((frame, now, now_focus)) = polled else {
                 tokio::time::sleep_until(deadline).await;
                 break;
             };
+            if now != seen || now_focus != focus {
+                (seen, focus, hold) = (now, now_focus, WINDOW_STILL_FOR);
+                since = Instant::now();
+            }
             if last.as_deref().is_none_or(|l| differs(l, &frame)) {
                 since = Instant::now();
                 last = Some(frame);
             }
-            still =
-                last.as_deref().is_some_and(|l| differs(&first, l)) && since.elapsed() >= STILL_FOR;
+            still = last.as_deref().is_some_and(|l| differs(&first, l)) && since.elapsed() >= hold;
         }
         timing::mark("settle");
         timing::note("still", still);
+        timing::note("hold_ms", hold.as_millis());
         if let Some(probe) = probe {
             let _ = self.request(&probe, "end_session", json!({})).await;
+            return String::new();
         }
+        if seen == windows && focus == active {
+            return String::new();
+        }
+        let report = self
+            .shm(|g| Ok(self.window_report(g, &windows, &seen, active, focus)))
+            .unwrap_or_default();
+        timing::mark("report");
+        report
+    }
+
+    /// The windows that opened, closed or moved between `before` and `after`, and a new front window.
+    fn window_report(
+        &self,
+        g: &Grabber,
+        before: &[Placement],
+        after: &[Placement],
+        was_active: Option<u32>,
+        active: Option<u32>,
+    ) -> String {
+        let mut titles = self
+            .titles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut out = String::new();
+        let mut opened = Vec::new();
+        for p in after {
+            let old = before.iter().find(|b| b.id == p.id);
+            if p.popup {
+                if old.is_none() {
+                    out.push_str("\nmenu opened");
+                }
+                continue;
+            }
+            match old {
+                None => {
+                    let title = g.title(p.id);
+                    let _ = write!(
+                        out,
+                        "\nopened window \"{title}\" {}x{} at ({},{})",
+                        p.width, p.height, p.x, p.y
+                    );
+                    opened.push(title.clone());
+                    titles.insert(p.id, title);
+                }
+                Some(b) if b != p => {
+                    let title = titles.get(&p.id).cloned().unwrap_or_else(|| g.title(p.id));
+                    let _ = write!(
+                        out,
+                        "\nwindow \"{title}\" is now {}x{} at ({},{})",
+                        p.width, p.height, p.x, p.y
+                    );
+                }
+                Some(_) => {}
+            }
+        }
+        for b in before
+            .iter()
+            .filter(|b| !after.iter().any(|p| p.id == b.id))
+        {
+            match (b.popup, titles.remove(&b.id)) {
+                (true, _) => out.push_str("\nmenu closed"),
+                (false, Some(title)) => {
+                    let _ = write!(out, "\nclosed window \"{title}\"");
+                }
+                (false, None) => out.push_str("\nclosed a window"),
+            }
+        }
+        if active != was_active
+            && let Some(w) = active
+        {
+            let title = g.title(w);
+            if !title.is_empty() && !opened.contains(&title) {
+                let _ = write!(out, "\nfront window is now \"{title}\"");
+            }
+        }
+        out
     }
 
     /// A thumbnail from the probe driver session `probe`, or over MIT-SHM without one.
@@ -475,6 +593,17 @@ impl Cua {
         let v = self.request(probe, "get_desktop_state", edge).await.ok()?;
         let data = B64.decode(content_image(&v)?).ok()?;
         Some(decode_png(&data)?.1)
+    }
+
+    fn scales(&self) -> std::sync::MutexGuard<'_, HashMap<String, f64>> {
+        self.scales
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Screen pixels per pixel of the last screenshot `session` returned on cbplan, so its x,y map to the screen.
+    fn scale_of(&self, session: &str) -> f64 {
+        self.scales().get(session).copied().unwrap_or(1.0)
     }
 
     /// Runs `read` on the MIT-SHM grabber, opening it when needed; `None` when it is unavailable or fails.
@@ -582,6 +711,8 @@ impl Cua {
                 let (Some(x), Some(y), Some(tx), Some(ty)) = (a.x, a.y, a.to_x, a.to_y) else {
                     return Err("drag needs x, y, to_x and to_y".to_owned());
                 };
+                let k = self.scale_of(session);
+                let (x, y, tx, ty) = (x * k, y * k, tx * k, ty * k);
                 req = json!({"from_x": x, "from_y": y, "to_x": tx, "to_y": ty, "target": desktop});
                 return Ok(("drag", req));
             }
@@ -603,8 +734,9 @@ impl Cua {
                 req["window_id"] = id.into();
             }
         } else if let (Some(x), Some(y)) = (a.x, a.y) {
-            req["x"] = x.into();
-            req["y"] = y.into();
+            let k = self.scale_of(session);
+            req["x"] = (x * k).into();
+            req["y"] = (y * k).into();
             req["target"] = desktop;
         } else if matches!(tool, "click" | "double_click" | "right_click") {
             return Err(format!("{} needs element or x and y", a.action));
@@ -688,6 +820,9 @@ impl Cua {
 struct Before {
     probe: Option<String>,
     frame: Vec<u8>,
+    /// The mapped top-level windows over MIT-SHM; a change holds the settle for [`WINDOW_STILL_FOR`].
+    windows: Vec<Placement>,
+    active: Option<u32>,
 }
 
 struct Snapshot {
