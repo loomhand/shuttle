@@ -334,7 +334,7 @@ impl Cua {
     async fn type_mixed(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
         let text = a.text.as_deref().unwrap_or_default();
         let input = self.input.lock().await;
-        let before = self.before_input(false).await;
+        let before = self.before_input(commits(a)).await;
         let mut failure = None;
         if a.element.is_some() || (a.x.is_some() && a.y.is_some()) {
             let focus = ActArgs {
@@ -460,7 +460,7 @@ impl Cua {
 
     /// On cbplan, a thumbnail of the screen before an input action: over MIT-SHM, else from a probe
     /// driver session of its own, which leaves the capture context of the action's session as it was.
-    /// A `commit` action (a click, or Return or a navigation key) in Chrome may load a page.
+    /// A `commit` action (see [`commits`]) in Chrome may load a page.
     async fn before_input(&self, commit: bool) -> Option<Before> {
         if !self.cbplan {
             return None;
@@ -1083,9 +1083,10 @@ fn text_runs(text: &str) -> Vec<&str> {
     runs
 }
 
-/// Whether `a` may commit a page load: a left click, or Return or a navigation key.
+/// Whether `a` may commit a page load: a left click, Return or a navigation key, or text ending in a newline.
 fn commits(a: &ActArgs) -> bool {
     let keys = match a.action.as_str() {
+        "type" => return a.text.as_deref().is_some_and(|t| t.ends_with(['\n', '\r'])),
         "click" | "double_click" => return a.button.as_deref().is_none_or(|b| b == "left"),
         "key" => a.key.clone().into_iter().collect(),
         "hotkey" => a
@@ -1470,7 +1471,7 @@ mod tests {
     }
 
     #[test]
-    fn a_left_click_or_a_navigation_key_commits() {
+    fn a_left_click_a_navigation_key_or_a_typed_newline_commits() {
         let act = |action: &str, key: Option<&str>, keys: Option<&[&str]>, button: Option<&str>| {
             ActArgs {
                 action: action.to_owned(),
@@ -1490,6 +1491,13 @@ mod tests {
         assert!(commits(&act("hotkey", None, Some(&["alt", "Left"]), None)));
         assert!(!commits(&act("hotkey", None, Some(&["ctrl", "l"]), None)));
         assert!(!commits(&act("type", None, None, None)));
+        let typed = |text: &str| ActArgs {
+            action: "type".to_owned(),
+            text: Some(text.to_owned()),
+            ..ActArgs::default()
+        };
+        assert!(commits(&typed("https://example.com\n")));
+        assert!(!commits(&typed("Ada Lovelace")));
     }
 
     #[test]
