@@ -254,9 +254,12 @@ impl Cua {
     async fn act_one(
         &self,
         session: &str,
-        a: ActArgs,
+        mut a: ActArgs,
         look: Option<Look>,
     ) -> Result<Output, String> {
+        if self.cbplan && a.action == "left_click" {
+            "click".clone_into(&mut a.action);
+        }
         timing::note("action", &a.action);
         if a.action == "wait" {
             let secs = a.seconds.unwrap_or(1.0).clamp(0.1, MAX_WAIT_SECS);
@@ -936,13 +939,18 @@ impl Cua {
         a: &ActArgs,
     ) -> Result<(&'static str, Value), String> {
         let desktop = json!({"kind": "desktop", "display_id": "primary"});
-        let clicks = matches!(a.action.as_str(), "click" | "double_click" | "right_click");
+        let clicks = matches!(a.action.as_str(), "click" | "double_click" | "right_click")
+            || (self.cbplan && a.action == "triple_click");
         let pixel = match a.element {
             Some(index) if clicks && !a.foreground => self.element_pixel(session, index).await,
             _ => None,
         };
         let mut req = json!({});
         let tool = match a.action.as_str() {
+            "triple_click" if self.cbplan => {
+                req["count"] = 3.into();
+                "click"
+            }
             "click" | "double_click" | "right_click" => {
                 let tool = match (a.action.as_str(), a.element.is_some() && pixel.is_none()) {
                     ("double_click", true) => "double_click",
@@ -1319,7 +1327,9 @@ fn text_runs(text: &str) -> Vec<&str> {
 fn commits(a: &ActArgs) -> bool {
     let keys = match a.action.as_str() {
         "type" => return a.text.as_deref().is_some_and(|t| t.ends_with(['\n', '\r'])),
-        "click" | "double_click" => return a.button.as_deref().is_none_or(|b| b == "left"),
+        "click" | "double_click" | "triple_click" => {
+            return a.button.as_deref().is_none_or(|b| b == "left");
+        }
         "key" => a.key.clone().into_iter().collect(),
         "hotkey" => a
             .keys
