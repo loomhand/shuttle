@@ -34,6 +34,9 @@ const WINDOW_STILL_FOR: Duration = Duration::from_millis(150);
 const COMMIT_STILL_FOR: Duration = Duration::from_millis(400);
 const STILL_EDGE: u32 = 160;
 const STILL_TOLERANCE: u8 = 48;
+const FINE_TOLERANCE: u8 = 8;
+const SMALL_BLOCKS: usize = 8;
+const STRIP_ROWS: usize = 15;
 const MOVED_PERCENT: usize = 5;
 const POPUP_ROWS: [&str; 6] = [
     "menu item",
@@ -229,7 +232,7 @@ impl Cua {
         let (tool, req) = self.action_request(session, &a).await?;
         let input = self.input.lock().await;
         timing::mark("resolve");
-        let before = self.before_input(commits(&a)).await;
+        let before = self.before_input(Some(&a)).await;
         let once = self.once(&req);
         let result = self
             .request(once.as_deref().unwrap_or(session), tool, req)
@@ -334,7 +337,7 @@ impl Cua {
     async fn type_mixed(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
         let text = a.text.as_deref().unwrap_or_default();
         let input = self.input.lock().await;
-        let before = self.before_input(commits(a)).await;
+        let before = self.before_input(Some(a)).await;
         let mut failure = None;
         if a.element.is_some() || (a.x.is_some() && a.y.is_some()) {
             let focus = ActArgs {
@@ -408,7 +411,7 @@ impl Cua {
     async fn launch(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
         let app = required(&a.app, "app")?;
         let input = self.input.lock().await;
-        let before = self.before_input(false).await;
+        let before = self.before_input(None).await;
         let text = match self.app_windows(session, app).await?.first() {
             Some(w) => {
                 let req = json!({"pid": w.pid, "window_id": w.window_id});
@@ -460,23 +463,26 @@ impl Cua {
 
     /// On cbplan, a thumbnail of the screen before an input action: over MIT-SHM, else from a probe
     /// driver session of its own, which leaves the capture context of the action's session as it was.
-    /// A `commit` action (see [`commits`]) in Chrome may load a page.
-    async fn before_input(&self, commit: bool) -> Option<Before> {
+    /// A commit action `a` (see [`commits`]) in Chrome may load a page; a [`fine`] one shows a small change.
+    async fn before_input(&self, a: Option<&ActArgs>) -> Option<Before> {
         if !self.cbplan {
             return None;
         }
-        if let Some((frame, windows, active, page)) = self.shm(|g| {
+        let (commit, fine) = a.map_or((false, false), |a| (commits(a), fine(a)));
+        if let Some((frame, columns, windows, active, page)) = self.shm(|g| {
             let active = g.active();
             let page = commit && active.is_some_and(|w| g.class(w) == CHROME_CLASS);
-            Ok((g.thumb()?, g.mapped()?, active, page))
+            Ok((g.thumb()?, g.thumb_columns(), g.mapped()?, active, page))
         }) {
             timing::mark("probe");
             return Some(Before {
                 probe: None,
                 frame,
+                columns,
                 windows,
                 active,
                 page,
+                fine,
             });
         }
         let probe = format!("still-{}", uuid::Uuid::new_v4().simple());
@@ -484,9 +490,11 @@ impl Cua {
             Some(frame) => Some(Before {
                 probe: Some(probe),
                 frame,
+                columns: STILL_EDGE as usize,
                 windows: Vec::new(),
                 active: None,
                 page: false,
+                fine,
             }),
             None => {
                 let _ = self.request(&probe, "end_session", json!({})).await;
@@ -502,15 +510,20 @@ impl Cua {
     /// [`WINDOW_STILL_FOR`] once a window maps, unmaps or moves or the focus moves; after a commit
     /// in Chrome it is [`COMMIT_STILL_FOR`], at most [`COMMIT_SETTLE`] once the screen changed, so a
     /// page that loads over the network or adds content from timers is in the frame. Frames are
-    /// thumbnails compared with a tolerance, so a caret or a small animation does not count as a
-    /// change. Returns lines naming the windows the action opened, closed or brought to the front.
+    /// thumbnails compared with a tolerance; a change within [`SMALL_BLOCKS`] square, such as a caret
+    /// or a spinner, does not restart the hold, except in the Chrome tab strip and toolbar after a
+    /// commit, where it shows a page loading. A [`fine`] action counts a change past
+    /// [`FINE_TOLERANCE`], so one typed character ends the wait. Returns lines naming the windows the
+    /// action opened, closed or brought to the front.
     async fn settle(&self, before: Option<Before>) -> String {
         let Some(Before {
             probe,
             frame: first,
+            columns,
             windows,
             active,
             page,
+            fine,
         }) = before
         else {
             tokio::time::sleep(SETTLE).await;
@@ -531,7 +544,12 @@ impl Cua {
         let mut deadline = start + SETTLE;
         let (mut last, mut since): (Option<Vec<u8>>, Instant) = (None, Instant::now());
         let (mut seen, mut focus, mut hold) = (windows.clone(), active, first_hold);
-        let mut still = false;
+        let tolerance = if fine {
+            FINE_TOLERANCE
+        } else {
+            STILL_TOLERANCE
+        };
+        let (mut still, mut changed) = (false, false);
         while !still && Instant::now() < deadline {
             tokio::time::sleep(poll.min(deadline.saturating_duration_since(Instant::now()))).await;
             let polled = match probe.as_deref() {
@@ -549,11 +567,17 @@ impl Cua {
                 (seen, focus, hold) = (now, now_focus, window_hold);
                 since = Instant::now();
             }
-            if last.as_deref().is_none_or(|l| differs(l, &frame)) {
-                since = Instant::now();
+            changed |= change_box(&first, &frame, columns, tolerance).is_some();
+            let moved = match last.as_deref() {
+                Some(l) => change_box(l, &frame, columns, STILL_TOLERANCE),
+                None => Some([0, 0, columns, usize::MAX]),
+            };
+            if let Some([x0, y0, x1, y1]) = moved {
+                if x1 - x0 > SMALL_BLOCKS || y1 - y0 > SMALL_BLOCKS || (page && y0 < STRIP_ROWS) {
+                    since = Instant::now();
+                }
                 last = Some(frame);
             }
-            let changed = last.as_deref().is_some_and(|l| differs(&first, l));
             if page && changed {
                 deadline = start + COMMIT_SETTLE;
             }
@@ -972,6 +996,10 @@ struct Before {
     active: Option<u32>,
     /// A commit action in Chrome: the settle holds [`COMMIT_STILL_FOR`], at most [`COMMIT_SETTLE`].
     page: bool,
+    /// Columns of a `frame` row.
+    columns: usize,
+    /// The action shows small changes, which count past [`FINE_TOLERANCE`].
+    fine: bool,
 }
 
 struct Snapshot {
@@ -1098,6 +1126,12 @@ fn commits(a: &ActArgs) -> bool {
     };
     keys.iter()
         .any(|k| COMMIT_KEYS.contains(&k.to_lowercase().as_str()))
+}
+
+/// Whether `a` is typing or a key whose change may be one character: text without a newline, or a key
+/// or hotkey that does not commit.
+fn fine(a: &ActArgs) -> bool {
+    matches!(a.action.as_str(), "type" | "key" | "hotkey") && !commits(a)
 }
 
 fn session_of(args: &Value) -> String {
@@ -1316,6 +1350,29 @@ fn differs(a: &[u8], b: &[u8]) -> bool {
             .any(|(x, y)| x.abs_diff(*y) > STILL_TOLERANCE)
 }
 
+/// The blocks `[x0, y0, x1, y1)` of RGB frames `a` and `b`, `columns` pixels a row, where a channel
+/// differs by more than `tolerance`; the whole frame when the sizes differ.
+fn change_box(a: &[u8], b: &[u8], columns: usize, tolerance: u8) -> Option<[usize; 4]> {
+    if a.len() != b.len() || columns == 0 {
+        return Some([0, 0, columns, usize::MAX]);
+    }
+    let mut out: Option<[usize; 4]> = None;
+    for (i, (p, q)) in a
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(b.as_chunks::<3>().0)
+        .enumerate()
+    {
+        if p.iter().zip(q).any(|(x, y)| x.abs_diff(*y) > tolerance) {
+            let (x, y) = (i % columns, i / columns);
+            let o = out.get_or_insert([x, y, x + 1, y + 1]);
+            *o = [o[0].min(x), o[1].min(y), o[2].max(x + 1), o[3].max(y + 1)];
+        }
+    }
+    out
+}
+
 fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
     v.as_deref().ok_or_else(|| format!("missing {name}"))
 }
@@ -1460,6 +1517,18 @@ mod tests {
         now[0] = 255;
         assert!(moved(&screen, rect, &now));
         assert!(moved(&screen, rect, &now[3..]));
+    }
+
+    #[test]
+    fn a_change_box_bounds_the_blocks_past_the_tolerance() {
+        let mut a = vec![100u8; 4 * 3 * 3];
+        assert_eq!(change_box(&a, &a, 4, 8), None);
+        let b = a.clone();
+        a[(4 + 1) * 3] = 120;
+        a[(2 * 4 + 2) * 3 + 1] = 90;
+        assert_eq!(change_box(&a, &b, 4, 8), Some([1, 1, 3, 3]));
+        assert_eq!(change_box(&a, &b, 4, 48), None);
+        assert_eq!(change_box(&a, &b[3..], 4, 8), Some([0, 0, 4, usize::MAX]));
     }
 
     #[test]
