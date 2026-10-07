@@ -17,6 +17,7 @@ use tokio::time::Instant;
 
 use super::rpc::Output;
 use super::timing;
+use super::xshm::Grabber;
 
 const STATE_ELEMENTS: u64 = 300;
 const TREE_CHARS: usize = 15_000;
@@ -24,6 +25,8 @@ const MIN_WINDOW: i64 = 10;
 const SHELL_APPS: [&str; 2] = ["Xfce4-panel", "Xfdesktop"];
 const SETTLE: Duration = Duration::from_millis(600);
 const STILL_POLL: Duration = Duration::from_millis(40);
+const SHM_POLL: Duration = Duration::from_millis(10);
+const STILL_FOR: Duration = Duration::from_millis(40);
 const STILL_EDGE: u32 = 160;
 const STILL_TOLERANCE: u8 = 48;
 const JPEG_QUALITY: u8 = 80;
@@ -48,6 +51,8 @@ pub struct Cua {
     input: Mutex<()>,
     /// The cbplan family: settles on a still screen, recompresses screenshots and runs action lists.
     cbplan: bool,
+    /// The cbplan family's MIT-SHM grabber, opened on first use and again after a failure.
+    grabber: std::sync::Mutex<Option<Grabber>>,
 }
 
 impl Cua {
@@ -58,6 +63,7 @@ impl Cua {
             last: Mutex::new(HashMap::new()),
             input: Mutex::new(()),
             cbplan,
+            grabber: std::sync::Mutex::new(None),
         }
     }
 
@@ -248,6 +254,19 @@ impl Cua {
         session: &str,
         max_edge: Option<u32>,
     ) -> Result<(Option<String>, f64), String> {
+        if self.cbplan
+            && max_edge.is_none()
+            && let Some((w, h, rgb)) = self
+                .shm(|g| (!g.overlay_shown()?).then(|| g.rgb()).transpose())
+                .flatten()
+        {
+            timing::mark("grab");
+            if let Some(image) = encode(w, h, &rgb) {
+                timing::mark("encode");
+                timing::note("image_bytes", image.len());
+                return Ok((Some(B64.encode(image)), 1.0));
+            }
+        }
         let mut args = json!({});
         if let Some(edge) = max_edge {
             args["max_image_dimension"] = edge.into();
@@ -357,8 +376,8 @@ impl Cua {
                         w.window_id, w.title, w.pid
                     ),
                     None => {
-                        if let Some(b) = before {
-                            let _ = self.request(&b.probe, "end_session", json!({})).await;
+                        if let Some(probe) = before.and_then(|b| b.probe) {
+                            let _ = self.request(&probe, "end_session", json!({})).await;
                         }
                         drop(input);
                         return Ok(Output {
@@ -381,15 +400,22 @@ impl Cua {
         })
     }
 
-    /// On cbplan, a frame taken before an input action in a probe session of its own, which leaves the
-    /// capture context of the action's session as it was.
+    /// On cbplan, a thumbnail of the screen before an input action: over MIT-SHM, else from a probe
+    /// driver session of its own, which leaves the capture context of the action's session as it was.
     async fn before_input(&self) -> Option<Before> {
         if !self.cbplan {
             return None;
         }
+        if let Some(frame) = self.shm(Grabber::thumb) {
+            timing::mark("probe");
+            return Some(Before { probe: None, frame });
+        }
         let probe = format!("still-{}", uuid::Uuid::new_v4().simple());
-        let before = match self.frame(&probe).await {
-            Some(frame) => Some(Before { probe, frame }),
+        let before = match self.frame(Some(&probe)).await {
+            Some(frame) => Some(Before {
+                probe: Some(probe),
+                frame,
+            }),
             None => {
                 let _ = self.request(&probe, "end_session", json!({})).await;
                 None
@@ -399,9 +425,9 @@ impl Cua {
         before
     }
 
-    /// Waits after an input action until the screen changed from `before` and held still for one
-    /// poll, at most [`SETTLE`]; without `before`, the fixed [`SETTLE`]. Frames are thumbnails
-    /// compared with a tolerance, so a caret or a small animation does not count as a change.
+    /// Waits after an input action until the screen changed from `before` and held still for
+    /// [`STILL_FOR`], at most [`SETTLE`]; without `before`, the fixed [`SETTLE`]. Frames are
+    /// thumbnails compared with a tolerance, so a caret or a small animation does not count as a change.
     async fn settle(&self, before: Option<Before>) {
         let Some(Before {
             probe,
@@ -412,29 +438,68 @@ impl Cua {
             timing::mark("settle");
             return;
         };
+        let poll = if probe.is_some() {
+            STILL_POLL
+        } else {
+            SHM_POLL
+        };
         let deadline = Instant::now() + SETTLE;
-        let mut last = None;
+        let (mut last, mut since): (Option<Vec<u8>>, Instant) = (None, Instant::now());
         let mut still = false;
         while !still && Instant::now() < deadline {
-            tokio::time::sleep(STILL_POLL.min(deadline.saturating_duration_since(Instant::now())))
-                .await;
-            let Some(frame) = self.frame(&probe).await else {
+            tokio::time::sleep(poll.min(deadline.saturating_duration_since(Instant::now()))).await;
+            let Some(frame) = self.frame(probe.as_deref()).await else {
                 tokio::time::sleep_until(deadline).await;
                 break;
             };
-            still = differs(&first, &frame) && last.as_deref().is_some_and(|l| !differs(l, &frame));
-            last = Some(frame);
+            if last.as_deref().is_none_or(|l| differs(l, &frame)) {
+                since = Instant::now();
+                last = Some(frame);
+            }
+            still =
+                last.as_deref().is_some_and(|l| differs(&first, l)) && since.elapsed() >= STILL_FOR;
         }
         timing::mark("settle");
         timing::note("still", still);
-        let _ = self.request(&probe, "end_session", json!({})).await;
+        if let Some(probe) = probe {
+            let _ = self.request(&probe, "end_session", json!({})).await;
+        }
     }
 
-    async fn frame(&self, probe: &str) -> Option<Vec<u8>> {
+    /// A thumbnail from the probe driver session `probe`, or over MIT-SHM without one.
+    async fn frame(&self, probe: Option<&str>) -> Option<Vec<u8>> {
+        let Some(probe) = probe else {
+            return self.shm(Grabber::thumb);
+        };
         let edge = json!({"max_image_dimension": STILL_EDGE});
         let v = self.request(probe, "get_desktop_state", edge).await.ok()?;
         let data = B64.decode(content_image(&v)?).ok()?;
         Some(decode_png(&data)?.1)
+    }
+
+    /// Runs `read` on the MIT-SHM grabber, opening it when needed; `None` when it is unavailable or fails.
+    fn shm<T>(&self, read: impl FnOnce(&Grabber) -> Result<T, String>) -> Option<T> {
+        let mut slot = self
+            .grabber
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.is_none() {
+            match Grabber::open() {
+                Ok(g) => *slot = Some(g),
+                Err(e) => {
+                    eprintln!("toolhost: MIT-SHM capture unavailable, using cua-driver: {e}");
+                    return None;
+                }
+            }
+        }
+        match read(slot.as_ref()?) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                eprintln!("toolhost: MIT-SHM capture: {e}");
+                *slot = None;
+                None
+            }
+        }
     }
 
     /// On-screen windows of `app`, frontmost first, matched on the app name case-insensitively.
@@ -621,7 +686,7 @@ impl Cua {
 }
 
 struct Before {
-    probe: String,
+    probe: Option<String>,
     frame: Vec<u8>,
 }
 
