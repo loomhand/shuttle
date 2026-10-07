@@ -15,6 +15,7 @@ use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
+use super::gmenu;
 use super::rpc::Output;
 use super::timing;
 use super::xshm::{Grabber, Placement};
@@ -851,8 +852,16 @@ impl Cua {
         let walked = self.walk(session, pin, query).await;
         timing::mark("elements");
         let size = self.shm(|g| Ok(g.size()));
+        let toggles = match &walked {
+            Ok((_, pid, _, state)) if state["structuredContent"]["popup"] == true => {
+                let toggles = gmenu::toggles(*pid).await;
+                timing::mark("toggles");
+                toggles
+            }
+            _ => HashMap::new(),
+        };
         let listed = match &walked {
-            Ok((.., state)) => compact(state, size, all).2,
+            Ok((.., state)) => compact(state, size, all, &toggles).2,
             Err(_) => 0,
         };
         let (image, screen) = if view == View::Both || failed || listed < VIEW_MIN {
@@ -867,7 +876,7 @@ impl Cua {
         };
         let text = match walked {
             Ok((head, pid, window_id, state)) => {
-                let (list, elements, listed) = compact(&state, size, all);
+                let (list, elements, listed) = compact(&state, size, all, &toggles);
                 timing::note("view_listed", listed);
                 self.last.lock().await.insert(
                     session.to_owned(),
@@ -1479,11 +1488,13 @@ fn moved(screen: &Screen, [x, y, w, h]: [i32; 4], now: &[u8]) -> bool {
 
 /// The elements of a window state, one line each without structural containers: on-screen ones with
 /// their centre in screen pixels, off-screen ones too when `all`, then the disabled controls the driver
-/// gives no id; returns the text, every element by index and the line count.
+/// gives no id; a menu item named in `toggles` shows that state. Returns the text, every element by index
+/// and the line count.
 fn compact(
     result: &Value,
     screen: Option<(u16, u16)>,
     all: bool,
+    toggles: &HashMap<String, bool>,
 ) -> (String, HashMap<i64, Element>, usize) {
     let state = &result["structuredContent"];
     let (names, disabled) = tree_extras(
@@ -1551,6 +1562,10 @@ fn compact(
         if e["selected"] == true {
             let toggle = TOGGLES.iter().any(|t| role.contains(t));
             list.push_str(if toggle { " checked" } else { " selected" });
+        } else if role.contains("menu item")
+            && let Some(&on) = toggles.get(&gmenu::label_key(&label))
+        {
+            list.push_str(if on { " checked" } else { " unchecked" });
         }
         let description = e["description"].as_str().unwrap_or_default();
         if description.contains("not expanded") || description.contains("closed menu") {
@@ -1952,14 +1967,14 @@ mod tests {
             {"element_index": 6, "element_token": "t6", "role": "push button", "label": "Help", "description": "off-screen"},
             {"element_index": 7, "element_token": "t7", "role": "table cell", "frame": {"x": 0, "y": 0, "w": 2, "h": 2}}
         ]}});
-        let (list, elements, listed) = compact(&state, Some((1280, 800)), false);
+        let (list, elements, listed) = compact(&state, Some((1280, 800)), false, &HashMap::new());
         assert_eq!(
             list,
             "[1] check box \"Wrap long lines\" (25,25) checked\n[2] text \"Name:\" = \"a.txt\" (25,5)\n[3] list item \"Home\" (50,50) selected\n[4] menu \"File\" (220,10) closed\ndisabled, no id: push button \"Save\", menu item \"Undo\"\n(2 more are off-screen, in closed menus or past the limit; computer_state with query lists them)\n"
         );
         assert_eq!((elements.len(), listed), (8, 4));
         assert_eq!(elements[&1].frame, Some([10.0, 20.0, 30.0, 10.0]));
-        let (all, _, listed) = compact(&state, Some((1280, 800)), true);
+        let (all, _, listed) = compact(&state, Some((1280, 800)), true, &HashMap::new());
         assert!(
             all.contains(
                 "[5] push button \"Cancel\" off-screen\n[6] push button \"Help\" off-screen\n"
@@ -1969,10 +1984,24 @@ mod tests {
         assert_eq!(listed, 6);
         let mut window = state.clone();
         window["structuredContent"]["popup"] = false.into();
-        let (list, ..) = compact(&window, Some((1280, 800)), false);
+        let (list, ..) = compact(&window, Some((1280, 800)), false, &HashMap::new());
         assert!(
             list.contains("disabled, no id: push button \"Save\"\n"),
             "{list}"
+        );
+        let menu = json!({"structuredContent": {"popup": true, "elements": [
+            {"element_index": 0, "element_token": "t0", "role": "menu item", "label": "Word Wrap      ", "frame": {"x": 10, "y": 10, "w": 100, "h": 20}},
+            {"element_index": 1, "element_token": "t1", "role": "menu item", "label": "Line Numbers", "frame": {"x": 10, "y": 30, "w": 100, "h": 20}},
+            {"element_index": 2, "element_token": "t2", "role": "menu item", "label": "Save", "frame": {"x": 10, "y": 50, "w": 100, "h": 20}}
+        ]}});
+        let toggles = HashMap::from([
+            ("word wrap".to_owned(), true),
+            ("line numbers".to_owned(), false),
+        ]);
+        let (list, ..) = compact(&menu, Some((1280, 800)), false, &toggles);
+        assert_eq!(
+            list,
+            "[0] menu item \"Word Wrap\" (60,20) checked\n[1] menu item \"Line Numbers\" (60,40) unchecked\n[2] menu item \"Save\" (60,60)\n"
         );
     }
 
