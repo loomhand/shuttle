@@ -23,11 +23,15 @@ const STATE_ELEMENTS: u64 = 300;
 const TREE_CHARS: usize = 15_000;
 const MIN_WINDOW: i64 = 10;
 pub(super) const SHELL_APPS: [&str; 2] = ["Xfce4-panel", "Xfdesktop"];
+const CHROME_CLASS: &str = "Google-chrome";
+const COMMIT_KEYS: [&str; 6] = ["return", "enter", "kp_enter", "f5", "alt+left", "alt+right"];
 const SETTLE: Duration = Duration::from_millis(600);
+const COMMIT_SETTLE: Duration = Duration::from_millis(3000);
 const STILL_POLL: Duration = Duration::from_millis(40);
 const SHM_POLL: Duration = Duration::from_millis(10);
 const STILL_FOR: Duration = Duration::from_millis(40);
 const WINDOW_STILL_FOR: Duration = Duration::from_millis(150);
+const COMMIT_STILL_FOR: Duration = Duration::from_millis(400);
 const STILL_EDGE: u32 = 160;
 const STILL_TOLERANCE: u8 = 48;
 const MOVED_PERCENT: usize = 5;
@@ -225,7 +229,7 @@ impl Cua {
         let (tool, req) = self.action_request(session, &a).await?;
         let input = self.input.lock().await;
         timing::mark("resolve");
-        let before = self.before_input().await;
+        let before = self.before_input(commits(&a)).await;
         let once = self.once(&req);
         let result = self
             .request(once.as_deref().unwrap_or(session), tool, req)
@@ -330,7 +334,7 @@ impl Cua {
     async fn type_mixed(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
         let text = a.text.as_deref().unwrap_or_default();
         let input = self.input.lock().await;
-        let before = self.before_input().await;
+        let before = self.before_input(false).await;
         let mut failure = None;
         if a.element.is_some() || (a.x.is_some() && a.y.is_some()) {
             let focus = ActArgs {
@@ -404,7 +408,7 @@ impl Cua {
     async fn launch(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
         let app = required(&a.app, "app")?;
         let input = self.input.lock().await;
-        let before = self.before_input().await;
+        let before = self.before_input(false).await;
         let text = match self.app_windows(session, app).await?.first() {
             Some(w) => {
                 let req = json!({"pid": w.pid, "window_id": w.window_id});
@@ -456,19 +460,23 @@ impl Cua {
 
     /// On cbplan, a thumbnail of the screen before an input action: over MIT-SHM, else from a probe
     /// driver session of its own, which leaves the capture context of the action's session as it was.
-    async fn before_input(&self) -> Option<Before> {
+    /// A `commit` action (a click, or Return or a navigation key) in Chrome may load a page.
+    async fn before_input(&self, commit: bool) -> Option<Before> {
         if !self.cbplan {
             return None;
         }
-        if let Some((frame, windows, active)) =
-            self.shm(|g| Ok((g.thumb()?, g.mapped()?, g.active())))
-        {
+        if let Some((frame, windows, active, page)) = self.shm(|g| {
+            let active = g.active();
+            let page = commit && active.is_some_and(|w| g.class(w) == CHROME_CLASS);
+            Ok((g.thumb()?, g.mapped()?, active, page))
+        }) {
             timing::mark("probe");
             return Some(Before {
                 probe: None,
                 frame,
                 windows,
                 active,
+                page,
             });
         }
         let probe = format!("still-{}", uuid::Uuid::new_v4().simple());
@@ -478,6 +486,7 @@ impl Cua {
                 frame,
                 windows: Vec::new(),
                 active: None,
+                page: false,
             }),
             None => {
                 let _ = self.request(&probe, "end_session", json!({})).await;
@@ -490,7 +499,9 @@ impl Cua {
 
     /// Waits after an input action until the screen changed from `before` and held still, at most
     /// [`SETTLE`]; without `before`, the fixed [`SETTLE`]. The hold is [`STILL_FOR`], or
-    /// [`WINDOW_STILL_FOR`] once a window maps, unmaps or moves or the focus moves. Frames are
+    /// [`WINDOW_STILL_FOR`] once a window maps, unmaps or moves or the focus moves; after a commit
+    /// in Chrome it is [`COMMIT_STILL_FOR`], at most [`COMMIT_SETTLE`] once the screen changed, so a
+    /// page that loads over the network or adds content from timers is in the frame. Frames are
     /// thumbnails compared with a tolerance, so a caret or a small animation does not count as a
     /// change. Returns lines naming the windows the action opened, closed or brought to the front.
     async fn settle(&self, before: Option<Before>) -> String {
@@ -499,6 +510,7 @@ impl Cua {
             frame: first,
             windows,
             active,
+            page,
         }) = before
         else {
             tokio::time::sleep(SETTLE).await;
@@ -510,9 +522,15 @@ impl Cua {
         } else {
             SHM_POLL
         };
-        let deadline = Instant::now() + SETTLE;
+        let (first_hold, window_hold) = if page {
+            (COMMIT_STILL_FOR, COMMIT_STILL_FOR)
+        } else {
+            (STILL_FOR, WINDOW_STILL_FOR)
+        };
+        let start = Instant::now();
+        let mut deadline = start + SETTLE;
         let (mut last, mut since): (Option<Vec<u8>>, Instant) = (None, Instant::now());
-        let (mut seen, mut focus, mut hold) = (windows.clone(), active, STILL_FOR);
+        let (mut seen, mut focus, mut hold) = (windows.clone(), active, first_hold);
         let mut still = false;
         while !still && Instant::now() < deadline {
             tokio::time::sleep(poll.min(deadline.saturating_duration_since(Instant::now()))).await;
@@ -528,18 +546,23 @@ impl Cua {
                 break;
             };
             if now != seen || now_focus != focus {
-                (seen, focus, hold) = (now, now_focus, WINDOW_STILL_FOR);
+                (seen, focus, hold) = (now, now_focus, window_hold);
                 since = Instant::now();
             }
             if last.as_deref().is_none_or(|l| differs(l, &frame)) {
                 since = Instant::now();
                 last = Some(frame);
             }
-            still = last.as_deref().is_some_and(|l| differs(&first, l)) && since.elapsed() >= hold;
+            let changed = last.as_deref().is_some_and(|l| differs(&first, l));
+            if page && changed {
+                deadline = start + COMMIT_SETTLE;
+            }
+            still = changed && since.elapsed() >= hold;
         }
         timing::mark("settle");
         timing::note("still", still);
         timing::note("hold_ms", hold.as_millis());
+        timing::note("page", page);
         if let Some(probe) = probe {
             let _ = self.request(&probe, "end_session", json!({})).await;
             return String::new();
@@ -947,6 +970,8 @@ struct Before {
     /// The mapped top-level windows over MIT-SHM; a change holds the settle for [`WINDOW_STILL_FOR`].
     windows: Vec<Placement>,
     active: Option<u32>,
+    /// A commit action in Chrome: the settle holds [`COMMIT_STILL_FOR`], at most [`COMMIT_SETTLE`].
+    page: bool,
 }
 
 struct Snapshot {
@@ -1056,6 +1081,22 @@ fn text_runs(text: &str) -> Vec<&str> {
         runs.push(&text[start..]);
     }
     runs
+}
+
+/// Whether `a` may commit a page load: a left click, or Return or a navigation key.
+fn commits(a: &ActArgs) -> bool {
+    let keys = match a.action.as_str() {
+        "click" | "double_click" => return a.button.as_deref().is_none_or(|b| b == "left"),
+        "key" => a.key.clone().into_iter().collect(),
+        "hotkey" => a
+            .keys
+            .clone()
+            .map(|k| vec![k.join("+")])
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    keys.iter()
+        .any(|k| COMMIT_KEYS.contains(&k.to_lowercase().as_str()))
 }
 
 fn session_of(args: &Value) -> String {
@@ -1426,6 +1467,29 @@ mod tests {
         assert!(!differs(&a, &[200 - STILL_TOLERANCE, 200, 200, 255]));
         assert!(differs(&a, &[199 - STILL_TOLERANCE, 200, 200, 255]));
         assert!(differs(&a, &a[..3]));
+    }
+
+    #[test]
+    fn a_left_click_or_a_navigation_key_commits() {
+        let act = |action: &str, key: Option<&str>, keys: Option<&[&str]>, button: Option<&str>| {
+            ActArgs {
+                action: action.to_owned(),
+                key: key.map(str::to_owned),
+                keys: keys.map(|k| k.iter().map(|s| (*s).to_owned()).collect()),
+                button: button.map(str::to_owned),
+                ..ActArgs::default()
+            }
+        };
+        assert!(commits(&act("click", None, None, None)));
+        assert!(commits(&act("double_click", None, None, Some("left"))));
+        assert!(!commits(&act("click", None, None, Some("right"))));
+        assert!(!commits(&act("right_click", None, None, None)));
+        assert!(commits(&act("key", Some("Return"), None, None)));
+        assert!(commits(&act("key", Some("KP_Enter"), None, None)));
+        assert!(!commits(&act("key", Some("Tab"), None, None)));
+        assert!(commits(&act("hotkey", None, Some(&["alt", "Left"]), None)));
+        assert!(!commits(&act("hotkey", None, Some(&["ctrl", "l"]), None)));
+        assert!(!commits(&act("type", None, None, None)));
     }
 
     #[test]
