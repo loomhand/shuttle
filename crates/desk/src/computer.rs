@@ -13,6 +13,7 @@ use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 
 use super::rpc::Output;
+use super::timing;
 
 const STATE_ELEMENTS: u64 = 300;
 const TREE_CHARS: usize = 15_000;
@@ -56,6 +57,7 @@ impl Cua {
         let windows = self
             .request(&session, "list_windows", json!({"on_screen_only": true}))
             .await?;
+        timing::mark("windows");
         let listed = window_list(&windows);
         let mut text = String::from("Windows (frontmost first):\n");
         for w in &listed {
@@ -94,6 +96,7 @@ impl Cua {
                     let _ = writeln!(text, "\nElements of pid={pid} unavailable: {e}");
                 }
             }
+            timing::mark("elements");
         }
         // the capture comes last: a later get_window_state replaces the session's pixel-click context
         let (image_b64, scale) = self.capture(&session, a.max_edge).await?;
@@ -125,9 +128,11 @@ impl Cua {
         let session = session_of(&args);
         let a: ActArgs =
             serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
+        timing::note("action", &a.action);
         if a.action == "wait" {
             let secs = a.seconds.unwrap_or(1.0).clamp(0.1, MAX_WAIT_SECS);
             tokio::time::sleep(Duration::from_secs_f64(secs)).await;
+            timing::mark("wait");
             return Ok(Output {
                 text: format!("waited {secs:.1}s"),
                 is_error: false,
@@ -142,8 +147,11 @@ impl Cua {
         }
         let (tool, req) = self.action_request(&session, &a).await?;
         let input = self.input.lock().await;
+        timing::mark("resolve");
         let result = self.request(&session, tool, req).await;
+        timing::mark("act");
         tokio::time::sleep(SETTLE).await;
+        timing::mark("settle");
         let shot = self.screenshot(&session, a.max_edge).await?;
         drop(input);
         let (text, is_error) = match result {
@@ -171,6 +179,7 @@ impl Cua {
         let session = format!("shot-{}", uuid::Uuid::new_v4().simple());
         let shot = self.screenshot(&session, max_edge).await;
         self.request(&session, "end_session", json!({})).await?;
+        timing::mark("end");
         shot
     }
 
@@ -193,11 +202,14 @@ impl Cua {
             args["max_image_dimension"] = edge.into();
         }
         let v = self.request(session, "get_desktop_state", args).await?;
+        timing::mark("capture");
         let scale = v["structuredContent"]["frame_scale"]
             .as_f64()
             .filter(|s| *s > 0.0)
             .unwrap_or(1.0);
-        Ok((content_image(&v), scale))
+        let image = content_image(&v);
+        timing::note("image_bytes", image.as_ref().map_or(0, |b| b.len() / 4 * 3));
+        Ok((image, scale))
     }
 
     /// Types text with non-ASCII characters: ASCII runs in one call, every other character in its own call.
@@ -225,6 +237,7 @@ impl Cua {
         if a.foreground {
             base["delivery_mode"] = "foreground".into();
         }
+        timing::mark("resolve");
         let runs = text_runs(text);
         let mut typed = 0;
         for run in &runs {
@@ -238,7 +251,9 @@ impl Cua {
                 Err(e) => failure = Some(e),
             }
         }
+        timing::mark("act");
         tokio::time::sleep(SETTLE).await;
+        timing::mark("settle");
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         let total = text.chars().count();
@@ -295,7 +310,9 @@ impl Cua {
                 },
             },
         };
+        timing::mark("act");
         tokio::time::sleep(SETTLE).await;
+        timing::mark("settle");
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         Ok(Output {
