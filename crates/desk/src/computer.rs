@@ -208,10 +208,7 @@ impl Cua {
         Ok(out)
     }
 
-    async fn act_one(&self, session: &str, mut a: ActArgs) -> Result<Output, String> {
-        if self.cbplan && a.action == "left_click" {
-            a.action = "click".to_owned();
-        }
+    async fn act_one(&self, session: &str, a: ActArgs) -> Result<Output, String> {
         timing::note("action", &a.action);
         if a.action == "wait" {
             let secs = a.seconds.unwrap_or(1.0).clamp(0.1, MAX_WAIT_SECS);
@@ -285,29 +282,29 @@ impl Cua {
     }
 
     /// Captures the desktop; the driver maps desktop-scope pixels of this capture back to the screen.
-    /// A capture over MIT-SHM also returns the full-size pixels.
+    /// A full-size capture over MIT-SHM also returns its pixels.
     async fn capture(
         &self,
         session: &str,
         max_edge: Option<u32>,
     ) -> Result<(Option<String>, f64, Option<Screen>), String> {
         if self.cbplan
+            && max_edge.is_none()
             && let Some((w, h, rgb)) = self
                 .shm(|g| (!g.overlay_shown()?).then(|| g.rgb()).transpose())
                 .flatten()
         {
             timing::mark("grab");
-            let (tw, th, small, scale) = thumbnail(w, h, &rgb, max_edge);
-            if let Some(image) = encode(tw, th, small.as_deref().unwrap_or(&rgb)) {
+            if let Some(image) = encode(w, h, &rgb) {
                 timing::mark("encode");
                 timing::note("image_bytes", image.len());
-                self.scales().insert(session.to_owned(), scale);
+                self.scales().insert(session.to_owned(), 1.0);
                 let screen = Screen {
                     width: w,
                     height: h,
                     rgb,
                 };
-                return Ok((Some(B64.encode(image)), scale, Some(screen)));
+                return Ok((Some(B64.encode(image)), 1.0, Some(screen)));
             }
         }
         let mut args = json!({});
@@ -752,20 +749,13 @@ impl Cua {
         a: &ActArgs,
     ) -> Result<(&'static str, Value), String> {
         let desktop = json!({"kind": "desktop", "display_id": "primary"});
-        let clicks = matches!(
-            a.action.as_str(),
-            "click" | "double_click" | "right_click" | "triple_click"
-        );
+        let clicks = matches!(a.action.as_str(), "click" | "double_click" | "right_click");
         let pixel = match a.element {
             Some(index) if clicks && !a.foreground => self.element_pixel(session, index).await,
             _ => None,
         };
         let mut req = json!({});
         let tool = match a.action.as_str() {
-            "triple_click" if self.cbplan => {
-                req["count"] = 3.into();
-                "click"
-            }
             "click" | "double_click" | "right_click" => {
                 let tool = match (a.action.as_str(), a.element.is_some() && pixel.is_none()) {
                     ("double_click", true) => "double_click",
@@ -1273,51 +1263,6 @@ fn moved(screen: &Screen, [x, y, w, h]: [i32; 4], now: &[u8]) -> bool {
     changed * 100 > w * h * MOVED_PERCENT
 }
 
-/// RGB rows shrunk by area averaging so the long edge is `edge`.
-fn fit(width: u32, height: u32, rgb: &[u8], edge: u32) -> (u32, u32, Vec<u8>) {
-    let (tw, th) = if width >= height {
-        (edge, (height * edge / width).max(1))
-    } else {
-        ((width * edge / height).max(1), edge)
-    };
-    let (w, h, ow, oh) = (width as usize, height as usize, tw as usize, th as usize);
-    let mut out = Vec::with_capacity(ow * oh * 3);
-    for oy in 0..oh {
-        let (y0, y1) = (oy * h / oh, ((oy + 1) * h / oh).max(oy * h / oh + 1));
-        for ox in 0..ow {
-            let (x0, x1) = (ox * w / ow, ((ox + 1) * w / ow).max(ox * w / ow + 1));
-            let mut sum = [0u32; 3];
-            for y in y0..y1 {
-                for p in rgb[(y * w + x0) * 3..(y * w + x1) * 3].as_chunks::<3>().0 {
-                    for (s, c) in sum.iter_mut().zip(p) {
-                        *s += u32::from(*c);
-                    }
-                }
-            }
-            let n = u32::try_from((y1 - y0) * (x1 - x0)).unwrap_or(u32::MAX);
-            out.extend(sum.map(|s| u8::try_from(s / n).unwrap_or(u8::MAX)));
-        }
-    }
-    (tw, th, out)
-}
-
-/// The size of the frame a screenshot with `max_edge` shows, its RGB rows when shrunk, and the
-/// screen pixels per image pixel by which clicks on it are scaled.
-fn thumbnail(
-    width: u32,
-    height: u32,
-    rgb: &[u8],
-    max_edge: Option<u32>,
-) -> (u32, u32, Option<Vec<u8>>, f64) {
-    match max_edge {
-        Some(edge) if edge > 0 && edge < width.max(height) => {
-            let (tw, th, small) = fit(width, height, rgb, edge);
-            (tw, th, Some(small), f64::from(width) / f64::from(tw))
-        }
-        _ => (width, height, None, 1.0),
-    }
-}
-
 fn content_text(result: &Value) -> String {
     let mut text = String::new();
     for c in result["content"].as_array().into_iter().flatten() {
@@ -1584,35 +1529,6 @@ mod tests {
         assert_eq!(change_box(&a, &b, 4, 8), Some([1, 1, 3, 3]));
         assert_eq!(change_box(&a, &b, 4, 48), None);
         assert_eq!(change_box(&a, &b[3..], 4, 8), Some([0, 0, 4, usize::MAX]));
-    }
-
-    #[test]
-    fn fit_averages_blocks_down_to_the_long_edge() {
-        let (w, h) = (8u32, 4u32);
-        let rgb: Vec<u8> = (0..w * h)
-            .flat_map(|i| {
-                let v = if (i % w) % 2 == 0 { 0 } else { 200 };
-                [v, v, 50]
-            })
-            .collect();
-        let (tw, th, small) = fit(w, h, &rgb, 4);
-        assert_eq!((tw, th), (4, 2));
-        assert_eq!(small, [100, 100, 50].repeat(8));
-    }
-
-    #[test]
-    fn a_thumbnail_scales_clicks_by_the_full_width_over_its_own() {
-        let rgb = vec![0u8; 1280 * 800 * 3];
-        let (tw, th, small, scale) = thumbnail(1280, 800, &rgb, Some(640));
-        assert_eq!((tw, th, scale), (640, 400, 2.0));
-        assert_eq!(small.map(|s| s.len()), Some(640 * 400 * 3));
-        let (tw, th, small, scale) = thumbnail(1280, 800, &rgb, Some(1000));
-        assert_eq!((tw, th, scale), (1000, 625, 1.28));
-        assert_eq!(small.map(|s| s.len()), Some(1000 * 625 * 3));
-        for edge in [None, Some(0), Some(1280), Some(4096)] {
-            let (tw, th, small, scale) = thumbnail(1280, 800, &rgb, edge);
-            assert_eq!((tw, th, small, scale), (1280, 800, None, 1.0), "{edge:?}");
-        }
     }
 
     #[test]
