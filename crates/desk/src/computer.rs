@@ -22,7 +22,7 @@ use super::xshm::{Grabber, Placement};
 const STATE_ELEMENTS: u64 = 300;
 const TREE_CHARS: usize = 15_000;
 const MIN_WINDOW: i64 = 10;
-const SHELL_APPS: [&str; 2] = ["Xfce4-panel", "Xfdesktop"];
+pub(super) const SHELL_APPS: [&str; 2] = ["Xfce4-panel", "Xfdesktop"];
 const SETTLE: Duration = Duration::from_millis(600);
 const STILL_POLL: Duration = Duration::from_millis(40);
 const SHM_POLL: Duration = Duration::from_millis(10);
