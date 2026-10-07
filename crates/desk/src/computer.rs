@@ -1,6 +1,6 @@
 //! cua-driver client: line-delimited JSON over its unix socket.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::ErrorKind;
 use std::path::PathBuf;
@@ -27,6 +27,8 @@ const STILL_POLL: Duration = Duration::from_millis(40);
 const STILL_EDGE: u32 = 160;
 const STILL_TOLERANCE: u8 = 48;
 const JPEG_QUALITY: u8 = 80;
+const PHOTO_COLORS: usize = 2500;
+const COLOR_STRIDE: usize = 7;
 const MAX_WAIT_SECS: f64 = 10.0;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECT_RETRY: Duration = Duration::from_millis(250);
@@ -261,7 +263,6 @@ impl Cua {
             && let Some(smaller) = image.as_deref().and_then(shrink)
         {
             image = Some(smaller);
-            timing::mark("encode");
         }
         timing::note("image_bytes", image.as_ref().map_or(0, |b| b.len() / 4 * 3));
         Ok((image, scale))
@@ -834,34 +835,49 @@ fn content_image(result: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The PNG `b64` re-encoded at the same size: as JPEG when that takes under 40% of its bytes, as
-/// photos do, else pixel for pixel with adaptive filters and balanced deflate; `None` when not smaller.
+/// The opaque RGBA PNG `b64` re-encoded at the same size by [`encode`]; `None` when that is not smaller.
 fn shrink(b64: &str) -> Option<String> {
     let data = B64.decode(b64).ok()?;
-    let (info, pixels) = decode_png(&data)?;
-    let pixels = pixels.as_slice();
-    if info.color_type == png::ColorType::Rgba
-        && info.bit_depth == png::BitDepth::Eight
-        && let (Ok(w), Ok(h)) = (u16::try_from(info.width), u16::try_from(info.height))
-    {
-        let mut jpeg = Vec::new();
-        jpeg_encoder::Encoder::new(&mut jpeg, JPEG_QUALITY)
-            .encode(pixels, w, h, jpeg_encoder::ColorType::Rgba)
-            .ok()?;
-        if jpeg.len() * 5 < data.len() * 2 {
-            return Some(B64.encode(&jpeg));
-        }
+    let (info, rgba) = decode_png(&data)?;
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return None;
     }
-    let mut out = Vec::with_capacity(data.len() / 2);
-    let mut encoder = png::Encoder::new(&mut out, info.width, info.height);
-    encoder.set_color(info.color_type);
-    encoder.set_depth(info.bit_depth);
-    encoder.set_compression(png::Compression::Balanced);
-    encoder.set_filter(png::Filter::Adaptive);
-    let mut writer = encoder.write_header().ok()?;
-    writer.write_image_data(pixels).ok()?;
-    writer.finish().ok()?;
+    let rgb: Vec<u8> = rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|p| [p[0], p[1], p[2]])
+        .collect();
+    timing::mark("decode");
+    let out = encode(info.width, info.height, &rgb)?;
+    timing::mark("encode");
     (out.len() < data.len()).then(|| B64.encode(&out))
+}
+
+/// RGB rows as JPEG when a pixel sample has photo-like colour counts, else as lossless WebP.
+fn encode(width: u32, height: u32, rgb: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    if photo(rgb) {
+        let (w, h) = (u16::try_from(width).ok()?, u16::try_from(height).ok()?);
+        jpeg_encoder::Encoder::new(&mut out, JPEG_QUALITY)
+            .encode(rgb, w, h, jpeg_encoder::ColorType::Rgb)
+            .ok()?;
+    } else {
+        image_webp::WebPEncoder::new(&mut out)
+            .encode(rgb, width, height, image_webp::ColorType::Rgb8)
+            .ok()?;
+    }
+    Some(out)
+}
+
+/// Whether every [`COLOR_STRIDE`]th pixel shows more than [`PHOTO_COLORS`] distinct colours.
+fn photo(rgb: &[u8]) -> bool {
+    let mut seen = HashSet::new();
+    rgb.as_chunks::<3>()
+        .0
+        .iter()
+        .step_by(COLOR_STRIDE)
+        .any(|p| seen.insert(*p) && seen.len() > PHOTO_COLORS)
 }
 
 fn decode_png(data: &[u8]) -> Option<(png::OutputInfo, Vec<u8>)> {
@@ -973,7 +989,7 @@ mod tests {
     }
 
     #[test]
-    fn shrink_keeps_every_pixel_of_a_flat_png_and_turns_noise_into_jpeg() {
+    fn shrink_keeps_every_pixel_of_a_flat_screen_as_webp_and_turns_noise_into_jpeg() {
         let (w, h) = (320u32, 200u32);
         let flat: Vec<u8> = (0..w * h)
             .flat_map(|i| {
@@ -985,14 +1001,17 @@ mod tests {
         let driver = fast_png(w, h, &flat);
         let small = B64.decode(shrink(&B64.encode(&driver)).unwrap()).unwrap();
         assert!(small.len() < driver.len());
-        let mut reader = png::Decoder::new(std::io::Cursor::new(&small))
-            .read_info()
-            .unwrap();
-        let mut decoded = vec![0; reader.output_buffer_size().unwrap()];
-        let info = reader.next_frame(&mut decoded).unwrap();
-        assert_eq!((info.width, info.height), (w, h));
-        assert_eq!(&decoded[..info.buffer_size()], flat.as_slice());
-        assert!(shrink(&B64.encode(&small)).is_none());
+        let mut webp = image_webp::WebPDecoder::new(std::io::Cursor::new(&small)).unwrap();
+        assert_eq!((webp.dimensions(), webp.has_alpha()), ((w, h), false));
+        let mut decoded = vec![0; webp.output_buffer_size().unwrap()];
+        webp.read_image(&mut decoded).unwrap();
+        let rgb: Vec<u8> = flat
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| [p[0], p[1], p[2]])
+            .collect();
+        assert_eq!(decoded, rgb);
         assert!(shrink("iVBORw0KGgoAAAANSUhEUg==").is_none());
 
         let mut seed = 7u32;
