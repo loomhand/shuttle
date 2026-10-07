@@ -208,7 +208,10 @@ impl Cua {
         Ok(out)
     }
 
-    async fn act_one(&self, session: &str, a: ActArgs) -> Result<Output, String> {
+    async fn act_one(&self, session: &str, mut a: ActArgs) -> Result<Output, String> {
+        if self.cbplan && a.action == "left_click" {
+            a.action = "click".to_owned();
+        }
         timing::note("action", &a.action);
         if a.action == "wait" {
             let secs = a.seconds.unwrap_or(1.0).clamp(0.1, MAX_WAIT_SECS);
@@ -749,13 +752,20 @@ impl Cua {
         a: &ActArgs,
     ) -> Result<(&'static str, Value), String> {
         let desktop = json!({"kind": "desktop", "display_id": "primary"});
-        let clicks = matches!(a.action.as_str(), "click" | "double_click" | "right_click");
+        let clicks = matches!(
+            a.action.as_str(),
+            "click" | "double_click" | "right_click" | "triple_click"
+        );
         let pixel = match a.element {
             Some(index) if clicks && !a.foreground => self.element_pixel(session, index).await,
             _ => None,
         };
         let mut req = json!({});
         let tool = match a.action.as_str() {
+            "triple_click" if self.cbplan => {
+                req["count"] = 3.into();
+                "click"
+            }
             "click" | "double_click" | "right_click" => {
                 let tool = match (a.action.as_str(), a.element.is_some() && pixel.is_none()) {
                     ("double_click", true) => "double_click",
