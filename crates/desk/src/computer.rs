@@ -24,6 +24,12 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECT_RETRY: Duration = Duration::from_millis(250);
 const CONNECT_WAIT: Duration = Duration::from_secs(10);
 const DEFAULT_SESSION: &str = "cocoonbox";
+const RETRIED: [&str; 4] = [
+    "list_windows",
+    "get_window_state",
+    "get_desktop_state",
+    "end_session",
+];
 
 /// Screen executor client; remembers the element tokens of the latest window state.
 pub struct Cua {
@@ -416,6 +422,29 @@ impl Cua {
     }
 
     async fn request(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
+        let retry = RETRIED.contains(&name).then(|| args.clone());
+        let mut reply = self.exchange(session, name, args).await?;
+        if let Some(args) = retry.filter(|_| reply.trim().is_empty()) {
+            tokio::time::sleep(CONNECT_RETRY).await;
+            reply = self.exchange(session, name, args).await?;
+        }
+        let mut v = serde_json::from_str::<Value>(&reply)
+            .map_err(|e| format!("decode cua-driver reply: {e}"))?;
+        if v["ok"] != true {
+            return Err(format!(
+                "{name}: {}",
+                v["error"].as_str().unwrap_or("cua-driver call failed")
+            ));
+        }
+        let result = v["result"].take();
+        if result["isError"] == true {
+            return Err(format!("{name}: {}", content_text(&result)));
+        }
+        Ok(result)
+    }
+
+    /// Sends one call and returns the raw reply line, empty when the driver closed without one.
+    async fn exchange(&self, session: &str, name: &str, args: Value) -> Result<String, String> {
         let exchange = async {
             let mut stream = self.connect().await?;
             let mut line = json!({"method": "call", "name": name});
@@ -432,23 +461,11 @@ impl Cua {
                 .read_line(&mut reply)
                 .await
                 .map_err(|e| format!("read cua-driver: {e}"))?;
-            serde_json::from_str::<Value>(&reply)
-                .map_err(|e| format!("decode cua-driver reply: {e}"))
+            Ok(reply)
         };
-        let mut v = tokio::time::timeout(REQUEST_TIMEOUT, exchange)
+        tokio::time::timeout(REQUEST_TIMEOUT, exchange)
             .await
-            .map_err(|_| format!("cua-driver {name} timed out"))??;
-        if v["ok"] != true {
-            return Err(format!(
-                "{name}: {}",
-                v["error"].as_str().unwrap_or("cua-driver call failed")
-            ));
-        }
-        let result = v["result"].take();
-        if result["isError"] == true {
-            return Err(format!("{name}: {}", content_text(&result)));
-        }
-        Ok(result)
+            .map_err(|_| format!("cua-driver {name} timed out"))?
     }
 
     /// Connects to the driver, waiting out the restart that each desktop session start triggers.
@@ -704,6 +721,51 @@ mod tests {
         let out = cua.request("s", "list_windows", json!({})).await;
         assert!(out.is_ok(), "{out:?}");
         driver.await.unwrap();
+    }
+
+    async fn closing_then_answering_driver(socket: PathBuf) -> Vec<String> {
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let mut names = Vec::new();
+        for answer in [false, true] {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let req: Value = serde_json::from_str(&line).unwrap();
+            names.push(req["name"].as_str().unwrap().to_owned());
+            if answer {
+                reader
+                    .into_inner()
+                    .write_all(b"{\"ok\":true,\"result\":{\"structuredContent\":{}}}\n")
+                    .await
+                    .unwrap();
+            }
+        }
+        names
+    }
+
+    #[tokio::test]
+    async fn a_read_is_retried_once_after_an_empty_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let driver = tokio::spawn(closing_then_answering_driver(socket.clone()));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let out = Cua::new(socket)
+            .request("s", "list_windows", json!({}))
+            .await;
+        assert!(out.is_ok(), "{out:?}");
+        assert_eq!(driver.await.unwrap(), ["list_windows", "list_windows"]);
+    }
+
+    #[tokio::test]
+    async fn an_input_action_is_never_retried_after_an_empty_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let driver = tokio::spawn(closing_then_answering_driver(socket.clone()));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let out = Cua::new(socket).request("s", "click", json!({})).await;
+        assert!(out.unwrap_err().starts_with("decode cua-driver reply"));
+        driver.abort();
     }
 
     #[test]
