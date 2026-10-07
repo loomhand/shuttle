@@ -30,6 +30,15 @@ const STILL_FOR: Duration = Duration::from_millis(40);
 const WINDOW_STILL_FOR: Duration = Duration::from_millis(150);
 const STILL_EDGE: u32 = 160;
 const STILL_TOLERANCE: u8 = 48;
+const MOVED_PERCENT: usize = 5;
+const POPUP_ROWS: [&str; 6] = [
+    "menu item",
+    "menu",
+    "list item",
+    "tree item",
+    "table cell",
+    "option",
+];
 const JPEG_QUALITY: u8 = 80;
 const PHOTO_COLORS: usize = 2500;
 const COLOR_STRIDE: usize = 7;
@@ -124,9 +133,9 @@ impl Cua {
             timing::mark("elements");
         }
         // the capture comes last: a later get_window_state replaces the session's pixel-click context
-        let (image_b64, scale) = self.capture(&session, a.max_edge).await?;
+        let (image_b64, scale, screen) = self.capture(&session, a.max_edge).await?;
         if let Some((pid, window_id, state)) = elements {
-            let (tree, tokens) = element_tree(&state, scale);
+            let (tree, elements) = element_tree(&state, scale);
             let _ = writeln!(
                 text,
                 "\nElements of pid={pid} (center = screenshot pixels):"
@@ -137,7 +146,8 @@ impl Cua {
                 Snapshot {
                     pid,
                     window_id,
-                    tokens,
+                    elements,
+                    screen,
                 },
             );
         }
@@ -203,7 +213,10 @@ impl Cua {
                 image_b64: self.screenshot(session, a.max_edge).await?,
             });
         }
-        if a.action == "type" && a.text.as_deref().is_some_and(|t| !t.is_ascii()) {
+        if a.action == "type"
+            && (a.text.as_deref().is_some_and(|t| !t.is_ascii())
+                || self.web_pixel(session, &a).await)
+        {
             return self.type_mixed(session, &a).await;
         }
         if a.action == "launch_app" {
@@ -213,7 +226,11 @@ impl Cua {
         let input = self.input.lock().await;
         timing::mark("resolve");
         let before = self.before_input().await;
-        let result = self.request(session, tool, req).await;
+        let once = self.once(&req);
+        let result = self
+            .request(once.as_deref().unwrap_or(session), tool, req)
+            .await;
+        self.end_once(once).await;
         timing::mark("act");
         let changes = self.settle(before).await;
         let shot = self.screenshot(session, a.max_edge).await?;
@@ -258,11 +275,12 @@ impl Cua {
     }
 
     /// Captures the desktop; the driver maps desktop-scope pixels of this capture back to the screen.
+    /// A full-size capture over MIT-SHM also returns its pixels.
     async fn capture(
         &self,
         session: &str,
         max_edge: Option<u32>,
-    ) -> Result<(Option<String>, f64), String> {
+    ) -> Result<(Option<String>, f64, Option<Screen>), String> {
         if self.cbplan
             && max_edge.is_none()
             && let Some((w, h, rgb)) = self
@@ -274,7 +292,12 @@ impl Cua {
                 timing::mark("encode");
                 timing::note("image_bytes", image.len());
                 self.scales().insert(session.to_owned(), 1.0);
-                return Ok((Some(B64.encode(image)), 1.0));
+                let screen = Screen {
+                    width: w,
+                    height: h,
+                    rgb,
+                };
+                return Ok((Some(B64.encode(image)), 1.0, Some(screen)));
             }
         }
         let mut args = json!({});
@@ -300,7 +323,7 @@ impl Cua {
             }
         }
         timing::note("image_bytes", image.as_ref().map_or(0, |b| b.len() / 4 * 3));
-        Ok((image, scale))
+        Ok((image, scale, None))
     }
 
     /// Types text with non-ASCII characters: ASCII runs in one call, every other character in its own call.
@@ -319,12 +342,22 @@ impl Cua {
                 ..ActArgs::default()
             };
             let (tool, req) = self.action_request(session, &focus).await?;
-            failure = self.request(session, tool, req).await.err();
+            let once = self.once(&req);
+            failure = self
+                .request(once.as_deref().unwrap_or(session), tool, req)
+                .await
+                .err();
+            self.end_once(once).await;
         }
         let mut base = json!({});
         if let Some((pid, window_id)) = self.app_window(session).await? {
-            base["pid"] = pid.into();
-            base["window_id"] = window_id.into();
+            if !a.foreground && self.keyboard(pid, window_id) {
+                timing::note("route", "desktop");
+                base["target"] = json!({"kind": "desktop", "display_id": "primary"});
+            } else {
+                base["pid"] = pid.into();
+                base["window_id"] = window_id.into();
+            }
         }
         if a.foreground {
             base["delivery_mode"] = "foreground".into();
@@ -332,17 +365,22 @@ impl Cua {
         timing::mark("resolve");
         let runs = text_runs(text);
         let mut typed = 0;
+        let once = self.once(&base);
         for run in &runs {
             if failure.is_some() {
                 break;
             }
             let mut req = base.clone();
             req["text"] = (*run).into();
-            match self.request(session, "type_text", req).await {
+            match self
+                .request(once.as_deref().unwrap_or(session), "type_text", req)
+                .await
+            {
                 Ok(_) => typed += run.chars().count(),
                 Err(e) => failure = Some(e),
             }
         }
+        self.end_once(once).await;
         timing::mark("act");
         let changes = self.settle(before).await;
         let shot = self.screenshot(session, a.max_edge).await?;
@@ -664,10 +702,15 @@ impl Cua {
         a: &ActArgs,
     ) -> Result<(&'static str, Value), String> {
         let desktop = json!({"kind": "desktop", "display_id": "primary"});
+        let clicks = matches!(a.action.as_str(), "click" | "double_click" | "right_click");
+        let pixel = match a.element {
+            Some(index) if clicks && !a.foreground => self.element_pixel(session, index).await,
+            _ => None,
+        };
         let mut req = json!({});
         let tool = match a.action.as_str() {
             "click" | "double_click" | "right_click" => {
-                let tool = match (a.action.as_str(), a.element.is_some()) {
+                let tool = match (a.action.as_str(), a.element.is_some() && pixel.is_none()) {
                     ("double_click", true) => "double_click",
                     ("right_click", true) => "right_click",
                     ("double_click", false) => {
@@ -718,18 +761,23 @@ impl Cua {
             }
             other => return Err(format!("unknown action {other}")),
         };
-        if let Some(index) = a.element {
+        if let Some((x, y)) = pixel {
+            timing::note("route", "pixel");
+            req["x"] = x.into();
+            req["y"] = y.into();
+            req["target"] = desktop;
+        } else if let Some(index) = a.element {
             let last = self.last.lock().await;
             let snap = last
                 .get(session)
                 .ok_or("no element list yet; call computer_state first")?;
-            let token = snap.tokens.get(&index).ok_or_else(|| {
+            let element = snap.elements.get(&index).ok_or_else(|| {
                 format!(
                     "element {index} is not in the latest computer_state; call computer_state again"
                 )
             })?;
             req["pid"] = snap.pid.into();
-            req["element_token"] = token.as_str().into();
+            req["element_token"] = element.token.as_str().into();
             if let Some(id) = snap.window_id {
                 req["window_id"] = id.into();
             }
@@ -738,16 +786,92 @@ impl Cua {
             req["x"] = (x * k).into();
             req["y"] = (y * k).into();
             req["target"] = desktop;
-        } else if matches!(tool, "click" | "double_click" | "right_click") {
+        } else if clicks {
             return Err(format!("{} needs element or x and y", a.action));
         } else if let Some((pid, window_id)) = self.app_window(session).await? {
-            req["pid"] = pid.into();
-            req["window_id"] = window_id.into();
+            if tool != "scroll" && !a.foreground && self.keyboard(pid, window_id) {
+                timing::note("route", "desktop");
+                req["target"] = desktop;
+            } else {
+                req["pid"] = pid.into();
+                req["window_id"] = window_id.into();
+            }
         }
         if a.foreground {
             req["delivery_mode"] = "foreground".into();
         }
         Ok((tool, req))
+    }
+
+    /// On cbplan, a driver session of its own for the pid-addressed input `req`, ended by [`Self::end_once`]
+    /// right after: the virtual master keyboard the driver makes for it would outlive the call, and while
+    /// one exists Chrome drops core keyboard input, from XTest and VNC alike.
+    fn once(&self, req: &Value) -> Option<String> {
+        (self.cbplan && req.get("pid").is_some())
+            .then(|| format!("input-{}", uuid::Uuid::new_v4().simple()))
+    }
+
+    async fn end_once(&self, once: Option<String>) {
+        if let Some(session) = once {
+            let _ = self.request(&session, "end_session", json!({})).await;
+            timing::mark("end");
+        }
+    }
+
+    /// On cbplan, whether keys for `window` of `pid` can go to the desktop, which skips the driver's
+    /// 220 ms focus guard: the window is active and holds the input focus, and no popup of another app is open.
+    fn keyboard(&self, pid: i64, window: i64) -> bool {
+        let (Ok(pid), Ok(window)) = (u32::try_from(pid), u32::try_from(window)) else {
+            return false;
+        };
+        self.cbplan && self.shm(|g| g.keyboard(window, pid)).unwrap_or(false)
+    }
+
+    /// Whether `a` types into a web page element of `session`'s snapshot that a pixel click can focus.
+    async fn web_pixel(&self, session: &str, a: &ActArgs) -> bool {
+        let Some(index) = a.element.filter(|_| !a.foreground) else {
+            return false;
+        };
+        let web = self
+            .last
+            .lock()
+            .await
+            .get(session)
+            .and_then(|s| s.elements.get(&index))
+            .is_some_and(|e| e.web);
+        web && self.element_pixel(session, index).await.is_some()
+    }
+
+    /// On cbplan, the screen point at which a pixel click reaches element `index` of `session`'s snapshot,
+    /// which skips the driver's 270 ms accessibility click: the element looks as it did in the snapshot,
+    /// and the top window at its centre is the snapshot's window while that is active and nothing grabs
+    /// the pointer, or a popup of the same app around a menu or list row.
+    async fn element_pixel(&self, session: &str, index: i64) -> Option<(f64, f64)> {
+        let last = self.last.lock().await;
+        let snap = last.get(session)?;
+        let (element, screen) = (snap.elements.get(&index)?, snap.screen.as_ref()?);
+        let [x, y, w, h] = element.frame?;
+        let (cx, cy) = ((x + w / 2.0).floor(), (y + h / 2.0).floor());
+        let rect = clip([x, y, w, h], screen)?;
+        let (pid, window) = (
+            u32::try_from(snap.pid).ok()?,
+            u32::try_from(snap.window_id?).ok()?,
+        );
+        let reached = self.shm(|g| {
+            let Some(top) = g.top_at(cx as i32, cy as i32)? else {
+                return Ok(false);
+            };
+            let reachable = if top.popup {
+                let role = element.role.to_ascii_lowercase();
+                g.pid(top.id) == Some(pid)
+                    && POPUP_ROWS.iter().any(|r| role.contains(r))
+                    && top.holds(rect)
+            } else {
+                g.active() == Some(window) && g.top_level(window)? == top.id && !g.grabbed(true)?
+            };
+            Ok(reachable && !moved(screen, rect, &g.region(rect)?))
+        });
+        reached.unwrap_or(false).then_some((cx, cy))
     }
 
     async fn request(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
@@ -828,7 +952,24 @@ struct Before {
 struct Snapshot {
     pid: i64,
     window_id: Option<i64>,
-    tokens: HashMap<i64, String>,
+    elements: HashMap<i64, Element>,
+    /// On cbplan, the screen when the elements were read, to tell whether one has moved since.
+    screen: Option<Screen>,
+}
+
+struct Element {
+    token: String,
+    role: String,
+    /// The screen rectangle `[x, y, w, h]`.
+    frame: Option<[f64; 4]>,
+    /// Inside a web page, whose fields only take typing after a click.
+    web: bool,
+}
+
+struct Screen {
+    width: u32,
+    height: u32,
+    rgb: Vec<u8>,
 }
 
 #[derive(Deserialize)]
@@ -956,16 +1097,28 @@ fn window_id_of(state: &Value) -> Option<i64> {
     state["structuredContent"]["window_id"].as_i64()
 }
 
-fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, String>) {
-    let mut tokens = HashMap::new();
+fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
+    let mut by_index = HashMap::new();
     let mut tree = String::new();
     let elements = result["structuredContent"]["elements"].as_array();
     for e in elements.into_iter().flatten() {
         let Some(index) = e["element_index"].as_i64() else {
             continue;
         };
+        let f = &e["frame"];
+        let frame = [&f["x"], &f["y"], &f["w"], &f["h"]].map(Value::as_f64);
+        let frame = frame
+            .iter()
+            .all(Option::is_some)
+            .then(|| frame.map(Option::unwrap_or_default));
         if let Some(t) = e["element_token"].as_str() {
-            tokens.insert(index, t.to_owned());
+            let element = Element {
+                token: t.to_owned(),
+                role: e["role"].as_str().unwrap_or_default().to_owned(),
+                frame,
+                web: e["in_web_content"] == true,
+            };
+            by_index.insert(index, element);
         }
         if tree.len() >= TREE_CHARS {
             continue;
@@ -983,13 +1136,7 @@ fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, String>) {
             let v: String = v.chars().take(60).collect();
             let _ = write!(tree, " value=\"{v}\"");
         }
-        let f = &e["frame"];
-        if let (Some(x), Some(y), Some(w), Some(h)) = (
-            f["x"].as_f64(),
-            f["y"].as_f64(),
-            f["w"].as_f64(),
-            f["h"].as_f64(),
-        ) {
+        if let Some([x, y, w, h]) = frame {
             let _ = write!(
                 tree,
                 " center=({:.0},{:.0})",
@@ -1008,7 +1155,36 @@ fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, String>) {
     if tree.is_empty() {
         tree = content_text(result);
     }
-    (tree, tokens)
+    (tree, by_index)
+}
+
+/// The screen rectangle `[x, y, w, h]` clipped to `screen`, in whole pixels; `None` when nothing is left.
+fn clip([x, y, w, h]: [f64; 4], screen: &Screen) -> Option<[i32; 4]> {
+    let (width, height) = (f64::from(screen.width), f64::from(screen.height));
+    let (left, top) = (x.max(0.0).floor(), y.max(0.0).floor());
+    let (right, bottom) = ((x + w).min(width).ceil(), (y + h).min(height).ceil());
+    (right > left && bottom > top)
+        .then(|| [left, top, right - left, bottom - top].map(|v| v as i32))
+}
+
+/// Whether more than [`MOVED_PERCENT`] of the pixels of `rect` in `screen` differ by more than
+/// [`STILL_TOLERANCE`] from `now`, the same rectangle's RGB rows.
+fn moved(screen: &Screen, [x, y, w, h]: [i32; 4], now: &[u8]) -> bool {
+    let (x, y, w, h) = (x as usize, y as usize, w as usize, h as usize);
+    if now.len() != w * h * 3 {
+        return true;
+    }
+    let stride = screen.width as usize * 3;
+    let changed = (0..h)
+        .flat_map(|row| {
+            let start = (y + row) * stride + x * 3;
+            let then = &screen.rgb[start..start + w * 3];
+            let now = &now[row * w * 3..(row + 1) * w * 3];
+            then.as_chunks::<3>().0.iter().zip(now.as_chunks::<3>().0)
+        })
+        .filter(|(a, b)| differs(&a[..], &b[..]))
+        .count();
+    changed * 100 > w * h * MOVED_PERCENT
 }
 
 fn content_text(result: &Value) -> String {
@@ -1225,6 +1401,23 @@ mod tests {
             .decode(shrink(&B64.encode(fast_png(w, h, &noise))).unwrap())
             .unwrap();
         assert!(photo.starts_with(&[0xff, 0xd8]), "{:?}", &photo[..4]);
+    }
+
+    #[test]
+    fn an_element_has_moved_once_enough_of_its_pixels_changed() {
+        let screen = Screen {
+            width: 4,
+            height: 2,
+            rgb: vec![100; 4 * 2 * 3],
+        };
+        assert_eq!(clip([-1.5, 0.5, 3.0, 9.0], &screen), Some([0, 0, 2, 2]));
+        assert_eq!(clip([4.0, 0.0, 2.0, 2.0], &screen), None);
+        let rect = [1, 0, 2, 2];
+        let mut now = vec![100 + STILL_TOLERANCE; 2 * 2 * 3];
+        assert!(!moved(&screen, rect, &now));
+        now[0] = 255;
+        assert!(moved(&screen, rect, &now));
+        assert!(moved(&screen, rect, &now[3..]));
     }
 
     #[test]
