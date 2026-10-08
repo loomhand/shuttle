@@ -17,7 +17,8 @@ use tokio::time::Instant;
 
 use super::rpc::Output;
 use super::timing;
-use super::xshm::{Grabber, Placement};
+use super::volatile::{Block, Shown, Volatile};
+use super::xshm::{self, Grabber, Placement};
 
 const STATE_ELEMENTS: u64 = 300;
 const TREE_CHARS: usize = 15_000;
@@ -34,9 +35,7 @@ const WINDOW_STILL_FOR: Duration = Duration::from_millis(150);
 const COMMIT_STILL_FOR: Duration = Duration::from_millis(400);
 const STILL_EDGE: u32 = 160;
 const STILL_TOLERANCE: u8 = 48;
-const FINE_TOLERANCE: u8 = 8;
-const SMALL_BLOCKS: usize = 8;
-const STRIP_ROWS: usize = 15;
+const VISIBLE_STEP: u8 = 24;
 const MOVED_PERCENT: usize = 5;
 const POPUP_ROWS: [&str; 6] = [
     "menu item",
@@ -74,6 +73,8 @@ pub struct Cua {
     titles: std::sync::Mutex<HashMap<u32, String>>,
     /// Per session, screen pixels per image pixel of the last screenshot returned on cbplan.
     scales: std::sync::Mutex<HashMap<String, f64>>,
+    /// On cbplan, the screen blocks that change while no action runs, which the settle ignores.
+    volatile: Option<Volatile>,
 }
 
 impl Cua {
@@ -87,11 +88,13 @@ impl Cua {
             grabber: std::sync::Mutex::new(None),
             titles: std::sync::Mutex::new(HashMap::new()),
             scales: std::sync::Mutex::new(HashMap::new()),
+            volatile: cbplan.then(Volatile::start),
         }
     }
 
     /// `computer_state`: window list, accessibility elements and a desktop screenshot.
     pub async fn state(&self, args: Value) -> Result<Output, String> {
+        self.touch();
         let session = session_of(&args);
         let a: StateArgs =
             serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
@@ -167,6 +170,7 @@ impl Cua {
 
     /// `computer_act`: one input action followed by a fresh desktop screenshot; on cbplan also a list of `actions`.
     pub async fn act(&self, args: Value) -> Result<Output, String> {
+        self.touch();
         let session = session_of(&args);
         if self.cbplan && args.get("actions").is_some() {
             let list: ActList =
@@ -262,6 +266,7 @@ impl Cua {
         session: &str,
         max_edge: Option<u32>,
     ) -> Result<Option<String>, String> {
+        self.touch();
         Ok(self.capture(session, max_edge).await?.0)
     }
 
@@ -446,6 +451,7 @@ impl Cua {
                         w.window_id, w.title, w.pid
                     ),
                     None => {
+                        self.end_volatile();
                         if let Some(probe) = before.and_then(|b| b.probe) {
                             let _ = self.request(&probe, "end_session", json!({})).await;
                         }
@@ -470,40 +476,53 @@ impl Cua {
         })
     }
 
-    /// On cbplan, a thumbnail of the screen before an input action: over MIT-SHM, else from a probe
-    /// driver session of its own, which leaves the capture context of the action's session as it was.
-    /// A commit action `a` (see [`commits`]) in Chrome may load a page; a [`fine`] one shows a small change.
+    /// On cbplan, the screen before an input action: its pixels and block hashes over MIT-SHM with what
+    /// each block did before it, else a thumbnail from a probe driver session of its own, which leaves
+    /// the capture context of the action's session as it was. A commit action `a` (see [`commits`])
+    /// in Chrome may load a page.
     async fn before_input(&self, a: Option<&ActArgs>) -> Option<Before> {
         if !self.cbplan {
             return None;
         }
-        let (commit, fine) = a.map_or((false, false), |a| (commits(a), fine(a)));
-        if let Some((frame, columns, windows, active, page)) = self.shm(|g| {
+        let commit = a.is_some_and(commits);
+        if let Some((pixels, blocks, windows, active, page)) = self.shm(|g| {
             let active = g.active();
             let page = commit && active.is_some_and(|w| g.class(w) == CHROME_CLASS);
-            Ok((g.thumb()?, g.thumb_columns(), g.mapped()?, active, page))
+            let (width, height) = g.size();
+            let pixels = g.pixels()?.to_vec();
+            let blocks = xshm::block_hashes(&pixels, width, height);
+            Ok((pixels, blocks, g.mapped()?, active, page))
         }) {
+            let volatile = self
+                .volatile
+                .as_ref()
+                .map(|v| v.begin(&blocks))
+                .unwrap_or_default();
             timing::mark("probe");
+            timing::note(
+                "volatile",
+                volatile.iter().filter(|b| **b != Block::Quiet).count(),
+            );
             return Some(Before {
                 probe: None,
-                frame,
-                columns,
+                frame: Frame::Blocks(blocks),
+                pixels,
+                volatile,
                 windows,
                 active,
                 page,
-                fine,
             });
         }
         let probe = format!("still-{}", uuid::Uuid::new_v4().simple());
         let before = match self.frame(Some(&probe)).await {
             Some(frame) => Some(Before {
                 probe: Some(probe),
-                frame,
-                columns: STILL_EDGE as usize,
+                frame: Frame::Thumb(frame),
+                pixels: Vec::new(),
+                volatile: Vec::new(),
                 windows: Vec::new(),
                 active: None,
                 page: false,
-                fine,
             }),
             None => {
                 let _ = self.request(&probe, "end_session", json!({})).await;
@@ -514,25 +533,29 @@ impl Cua {
         before
     }
 
-    /// Waits after an input action until the screen changed from `before` and held still, at most
-    /// [`SETTLE`]; without `before`, the fixed [`SETTLE`]. The hold is [`STILL_FOR`], or
-    /// [`WINDOW_STILL_FOR`] once a window maps, unmaps or moves or the focus moves; after a commit
-    /// in Chrome it is [`COMMIT_STILL_FOR`], at most [`COMMIT_SETTLE`] once the screen changed, so a
-    /// page that loads over the network or adds content from timers is in the frame. Frames are
-    /// thumbnails compared with a tolerance; a change within [`SMALL_BLOCKS`] square, such as a caret
-    /// or a spinner, does not restart the hold, except in the Chrome tab strip and toolbar after a
-    /// commit, where it shows a page loading. A [`fine`] action counts a change past
-    /// [`FINE_TOLERANCE`], so one typed character ends the wait. Returns lines naming the windows the
-    /// action opened, closed or brought to the front.
+    /// Waits after an input action until the screen differs from `before` and held still, at most
+    /// [`SETTLE`] for a change and [`SETTLE`] after it, so an effect that shows late, like a Save As
+    /// dialog closing, is still in the frame; a flash that reverts, like a pressed button, is no
+    /// change. Without `before`, the fixed [`SETTLE`]. Over MIT-SHM the screen is split into 16-pixel
+    /// blocks whose new contents count (see [`Block`]): a block that kept changing before the action,
+    /// like a clock, a spinner or a video, never counts; a caret counts only with contents it did not
+    /// blink between; and a block back at its contents from before toggles from then on (see
+    /// [`Shown`]). The screen differs once a counting block has a pixel more than [`VISIBLE_STEP`]
+    /// off its value from before, so a faint hover fade is not the effect; any change of a counting
+    /// block restarts the hold. The hold is [`STILL_FOR`], or [`WINDOW_STILL_FOR`] once a window
+    /// maps, unmaps or moves or the focus moves; after a commit in Chrome it is [`COMMIT_STILL_FOR`],
+    /// at most [`COMMIT_SETTLE`] once the screen changed, so a page that loads over the network or
+    /// adds content from timers is in the frame. Returns lines naming the windows the action opened,
+    /// closed or brought to the front.
     async fn settle(&self, before: Option<Before>) -> String {
         let Some(Before {
             probe,
             frame: first,
-            columns,
+            pixels,
+            mut volatile,
             windows,
             active,
             page,
-            fine,
         }) = before
         else {
             tokio::time::sleep(SETTLE).await;
@@ -551,24 +574,48 @@ impl Cua {
         };
         let start = Instant::now();
         let mut deadline = start + SETTLE;
-        let (mut last, mut since): (Option<Vec<u8>>, Instant) = (None, Instant::now());
+        let (mut last, mut since): (Option<Frame>, Instant) = (None, Instant::now());
         let (mut seen, mut focus, mut hold) = (windows.clone(), active, first_hold);
-        let tolerance = if fine {
-            FINE_TOLERANCE
-        } else {
-            STILL_TOLERANCE
-        };
         let (mut still, mut changed) = (false, false);
+        let (mut shown, mut prev) = (Shown::default(), None::<Vec<u64>>);
         while !still && Instant::now() < deadline {
-            tokio::time::sleep(poll.min(deadline.saturating_duration_since(Instant::now()))).await;
+            let at = Instant::now();
+            let mut nap = poll.min(deadline.saturating_duration_since(at));
+            if changed {
+                nap = nap.min((since + hold).saturating_duration_since(at));
+            }
+            tokio::time::sleep(nap).await;
             let polled = match probe.as_deref() {
-                Some(probe) => self
-                    .frame(Some(probe))
-                    .await
-                    .map(|f| (f, seen.clone(), focus)),
-                None => self.shm(|g| Ok((g.thumb()?, g.mapped()?, g.active()))),
+                Some(probe) => self.frame(Some(probe)).await.map(|f| {
+                    let f = Frame::Thumb(f);
+                    let differs = first.changes(&f, &volatile);
+                    (f, differs, seen.clone(), focus)
+                }),
+                None => self.shm(|g| {
+                    let (width, height) = g.size();
+                    let current = g.pixels()?;
+                    let blocks = xshm::block_hashes(current, width, height);
+                    let differs = match &first {
+                        Frame::Blocks(before) => {
+                            before.iter().zip(&blocks).enumerate().any(|(i, (x, y))| {
+                                x != y
+                                    && volatile.get(i).is_none_or(|v| v.counts(*y))
+                                    && xshm::visible(
+                                        &pixels,
+                                        current,
+                                        width,
+                                        height,
+                                        i,
+                                        VISIBLE_STEP,
+                                    )
+                            })
+                        }
+                        Frame::Thumb(_) => true,
+                    };
+                    Ok((Frame::Blocks(blocks), differs, g.mapped()?, g.active()))
+                }),
             };
-            let Some((frame, now, now_focus)) = polled else {
+            let Some((frame, differs, now, now_focus)) = polled else {
                 tokio::time::sleep_until(deadline).await;
                 break;
             };
@@ -576,15 +623,19 @@ impl Cua {
                 (seen, focus, hold) = (now, now_focus, window_hold);
                 since = Instant::now();
             }
-            changed |= change_box(&first, &frame, columns, tolerance).is_some();
-            let moved = match last.as_deref() {
-                Some(l) => change_box(l, &frame, columns, STILL_TOLERANCE),
-                None => Some([0, 0, columns, usize::MAX]),
-            };
-            if let Some([x0, y0, x1, y1]) = moved {
-                if x1 - x0 > SMALL_BLOCKS || y1 - y0 > SMALL_BLOCKS || (page && y0 < STRIP_ROWS) {
-                    since = Instant::now();
+            if differs && !changed {
+                deadline = deadline.max((Instant::now() + SETTLE).min(start + COMMIT_SETTLE));
+            }
+            changed = differs;
+            let moved = last.as_ref().is_none_or(|l| l.changes(&frame, &volatile));
+            if let Frame::Blocks(blocks) = &frame {
+                if let (Frame::Blocks(first), Some(prev)) = (&first, prev.as_deref()) {
+                    shown.learn(first, prev, blocks, &mut volatile);
                 }
+                prev = Some(blocks.clone());
+            }
+            if moved {
+                since = Instant::now();
                 last = Some(frame);
             }
             if page && changed {
@@ -592,6 +643,7 @@ impl Cua {
             }
             still = changed && since.elapsed() >= hold;
         }
+        self.end_volatile();
         timing::mark("settle");
         timing::note("still", still);
         timing::note("hold_ms", hold.as_millis());
@@ -608,6 +660,18 @@ impl Cua {
             .unwrap_or_default();
         timing::mark("report");
         report
+    }
+
+    fn touch(&self) {
+        if let Some(v) = &self.volatile {
+            v.touch();
+        }
+    }
+
+    fn end_volatile(&self) {
+        if let Some(v) = &self.volatile {
+            v.end();
+        }
     }
 
     /// The windows that opened, closed or moved between `before` and `after`, and a new front window.
@@ -1004,16 +1068,40 @@ impl Cua {
 
 struct Before {
     probe: Option<String>,
-    frame: Vec<u8>,
+    frame: Frame,
+    /// The BGRX pixels of a [`Frame::Blocks`].
+    pixels: Vec<u8>,
+    /// Per block of a [`Frame::Blocks`], what it did before the action.
+    volatile: Vec<Block>,
     /// The mapped top-level windows over MIT-SHM; a change holds the settle for [`WINDOW_STILL_FOR`].
     windows: Vec<Placement>,
     active: Option<u32>,
     /// A commit action in Chrome: the settle holds [`COMMIT_STILL_FOR`], at most [`COMMIT_SETTLE`].
     page: bool,
-    /// Columns of a `frame` row.
-    columns: usize,
-    /// The action shows small changes, which count past [`FINE_TOLERANCE`].
-    fine: bool,
+}
+
+/// A settle frame: block hashes over MIT-SHM, or a probe session's thumbnail.
+enum Frame {
+    Blocks(Vec<u64>),
+    Thumb(Vec<u8>),
+}
+
+impl Frame {
+    /// Whether `other` differs from this frame: in a block whose new contents count (see
+    /// [`Block::counts`]), or past [`STILL_TOLERANCE`] between thumbnails.
+    fn changes(&self, other: &Self, volatile: &[Block]) -> bool {
+        match (self, other) {
+            (Self::Blocks(a), Self::Blocks(b)) => {
+                a.len() != b.len()
+                    || a.iter()
+                        .zip(b)
+                        .enumerate()
+                        .any(|(i, (x, y))| x != y && volatile.get(i).is_none_or(|v| v.counts(*y)))
+            }
+            (Self::Thumb(a), Self::Thumb(b)) => differs(a, b),
+            _ => true,
+        }
+    }
 }
 
 struct Snapshot {
@@ -1142,12 +1230,6 @@ fn commits(a: &ActArgs) -> bool {
     };
     keys.iter()
         .any(|k| COMMIT_KEYS.contains(&k.to_lowercase().as_str()))
-}
-
-/// Whether `a` is typing or a key whose change may be one character: text without a newline, or a key
-/// or hotkey that does not commit.
-fn fine(a: &ActArgs) -> bool {
-    matches!(a.action.as_str(), "type" | "key" | "hotkey") && !commits(a)
 }
 
 fn session_of(args: &Value) -> String {
@@ -1394,29 +1476,6 @@ fn differs(a: &[u8], b: &[u8]) -> bool {
             .any(|(x, y)| x.abs_diff(*y) > STILL_TOLERANCE)
 }
 
-/// The blocks `[x0, y0, x1, y1)` of RGB frames `a` and `b`, `columns` pixels a row, where a channel
-/// differs by more than `tolerance`; the whole frame when the sizes differ.
-fn change_box(a: &[u8], b: &[u8], columns: usize, tolerance: u8) -> Option<[usize; 4]> {
-    if a.len() != b.len() || columns == 0 {
-        return Some([0, 0, columns, usize::MAX]);
-    }
-    let mut out: Option<[usize; 4]> = None;
-    for (i, (p, q)) in a
-        .as_chunks::<3>()
-        .0
-        .iter()
-        .zip(b.as_chunks::<3>().0)
-        .enumerate()
-    {
-        if p.iter().zip(q).any(|(x, y)| x.abs_diff(*y) > tolerance) {
-            let (x, y) = (i % columns, i / columns);
-            let o = out.get_or_insert([x, y, x + 1, y + 1]);
-            *o = [o[0].min(x), o[1].min(y), o[2].max(x + 1), o[3].max(y + 1)];
-        }
-    }
-    out
-}
-
 fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
     v.as_deref().ok_or_else(|| format!("missing {name}"))
 }
@@ -1564,15 +1623,19 @@ mod tests {
     }
 
     #[test]
-    fn a_change_box_bounds_the_blocks_past_the_tolerance() {
-        let mut a = vec![100u8; 4 * 3 * 3];
-        assert_eq!(change_box(&a, &a, 4, 8), None);
-        let b = a.clone();
-        a[(4 + 1) * 3] = 120;
-        a[(2 * 4 + 2) * 3 + 1] = 90;
-        assert_eq!(change_box(&a, &b, 4, 8), Some([1, 1, 3, 3]));
-        assert_eq!(change_box(&a, &b, 4, 48), None);
-        assert_eq!(change_box(&a, &b[3..], 4, 8), Some([0, 0, 4, usize::MAX]));
+    fn a_change_counts_outside_the_volatile_blocks_only() {
+        let first = Frame::Blocks(vec![1, 2, 3]);
+        let toggling = [Block::Quiet, Block::Toggling(vec![2, 9]), Block::Churning];
+        assert!(!first.changes(&Frame::Blocks(vec![1, 2, 3]), &[]));
+        assert!(first.changes(&Frame::Blocks(vec![1, 9, 3]), &[]));
+        assert!(!first.changes(&Frame::Blocks(vec![1, 9, 4]), &toggling));
+        assert!(first.changes(&Frame::Blocks(vec![1, 8, 3]), &toggling));
+        assert!(first.changes(&Frame::Blocks(vec![7, 2, 3]), &toggling));
+        assert!(first.changes(&Frame::Blocks(vec![1, 2]), &[]));
+        assert!(first.changes(&Frame::Thumb(vec![1, 2, 3]), &[]));
+        let thumb = Frame::Thumb(vec![100; 6]);
+        assert!(!thumb.changes(&Frame::Thumb(vec![100 + STILL_TOLERANCE; 6]), &[]));
+        assert!(thumb.changes(&Frame::Thumb(vec![101 + STILL_TOLERANCE; 6]), &[]));
     }
 
     #[test]
