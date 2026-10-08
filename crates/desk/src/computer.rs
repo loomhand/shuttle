@@ -15,36 +15,12 @@ use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use super::gmenu;
 use super::rpc::Output;
 use super::timing;
 use super::xshm::{Grabber, Placement};
 
 const STATE_ELEMENTS: u64 = 300;
 const TREE_CHARS: usize = 15_000;
-const VIEW_MIN: usize = 3;
-const VIEW_LABEL: usize = 60;
-const VIEW_VALUE: usize = 80;
-const VIEW_DISABLED: usize = 16;
-const STRUCTURE: [&str; 16] = [
-    "panel",
-    "section",
-    "filler",
-    "frame",
-    "document web",
-    "form",
-    "landmark",
-    "tool bar",
-    "page tab list",
-    "split pane",
-    "internal frame",
-    "scroll bar",
-    "scroll pane",
-    "viewport",
-    "file chooser",
-    "menu bar",
-];
-const TOGGLES: [&str; 3] = ["check", "radio", "toggle"];
 const MIN_WINDOW: i64 = 10;
 pub(super) const SHELL_APPS: [&str; 2] = ["Xfce4-panel", "Xfdesktop"];
 const CHROME_CLASS: &str = "Google-chrome";
@@ -96,6 +72,8 @@ pub struct Cua {
     grabber: std::sync::Mutex<Option<Grabber>>,
     /// Titles of the windows an action opened, to name them when they close.
     titles: std::sync::Mutex<HashMap<u32, String>>,
+    /// Per session, screen pixels per image pixel of the last screenshot returned on cbplan.
+    scales: std::sync::Mutex<HashMap<String, f64>>,
 }
 
 impl Cua {
@@ -108,6 +86,7 @@ impl Cua {
             cbplan,
             grabber: std::sync::Mutex::new(None),
             titles: std::sync::Mutex::new(HashMap::new()),
+            scales: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -128,19 +107,6 @@ impl Cua {
                 "- pid={} window_id={} {} \"{}\" at ({},{}) {}x{}",
                 w.pid, w.window_id, w.app, w.title, w.x, w.y, w.w, w.h
             );
-        }
-        let view = self.view(a.view.as_deref());
-        if view != View::Screenshot {
-            let pin = a.pid.map(|pid| (pid, a.window_id));
-            let (image_b64, seen) = self
-                .observe(&session, view, a.max_edge, false, pin, a.query)
-                .await?;
-            text.push_str(&seen);
-            return Ok(Output {
-                text,
-                is_error: false,
-                image_b64,
-            });
         }
         let target = match a.pid {
             Some(pid) => Some((pid, a.window_id)),
@@ -209,28 +175,23 @@ impl Cua {
         }
         let a: ActArgs =
             serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
-        let look = Look {
-            view: self.view(a.view.as_deref()),
-            max_edge: a.max_edge,
-        };
-        self.act_one(&session, a, Some(look)).await
+        self.act_one(&session, a).await
     }
 
-    /// Runs the actions in order, each settled, stops at the first failure and observes once at the end.
+    /// Runs the actions in order, each settled, stops at the first failure and returns the last screenshot.
     async fn act_list(&self, session: &str, list: ActList) -> Result<Output, String> {
         let total = list.actions.len();
         let mut lines = Vec::with_capacity(total);
-        let mut failed = false;
-        for (i, a) in list.actions.into_iter().enumerate() {
+        let mut out = Output::default();
+        for (i, mut a) in list.actions.into_iter().enumerate() {
+            a.max_edge = list.max_edge;
             let action = a.action.clone();
-            let step = self
-                .act_one(session, a, None)
-                .await
-                .unwrap_or_else(Output::error);
-            let mark = if step.is_error { " failed" } else { "" };
-            lines.push(format!("{}. {action}{mark}: {}", i + 1, step.text));
+            let step = self.act_one(session, a).await.unwrap_or_else(Output::error);
+            let failed = if step.is_error { " failed" } else { "" };
+            lines.push(format!("{}. {action}{failed}: {}", i + 1, step.text));
+            out.image_b64 = step.image_b64;
             if step.is_error {
-                failed = true;
+                out.is_error = true;
                 if i + 1 < total {
                     lines.push(format!(
                         "the remaining {} actions did not run",
@@ -240,24 +201,14 @@ impl Cua {
                 break;
             }
         }
-        let view = self.view(list.view.as_deref());
-        let (image_b64, seen) = self
-            .observe(session, view, list.max_edge, failed, None, None)
-            .await?;
-        Ok(Output {
-            text: lines.join("\n") + &seen,
-            is_error: failed,
-            image_b64,
-        })
+        if out.image_b64.is_none() {
+            out.image_b64 = self.screenshot(session, list.max_edge).await?;
+        }
+        out.text = lines.join("\n");
+        Ok(out)
     }
 
-    /// Runs one action; with `look`, also the observation after it, else no screenshot or view.
-    async fn act_one(
-        &self,
-        session: &str,
-        mut a: ActArgs,
-        look: Option<Look>,
-    ) -> Result<Output, String> {
+    async fn act_one(&self, session: &str, mut a: ActArgs) -> Result<Output, String> {
         if self.cbplan && a.action == "left_click" {
             "click".clone_into(&mut a.action);
         }
@@ -266,21 +217,20 @@ impl Cua {
             let secs = a.seconds.unwrap_or(1.0).clamp(0.1, MAX_WAIT_SECS);
             tokio::time::sleep(Duration::from_secs_f64(secs)).await;
             timing::mark("wait");
-            let (image_b64, seen) = self.look(session, look, false).await?;
             return Ok(Output {
-                text: format!("waited {secs:.1}s{seen}"),
+                text: format!("waited {secs:.1}s"),
                 is_error: false,
-                image_b64,
+                image_b64: self.screenshot(session, a.max_edge).await?,
             });
         }
         if a.action == "type"
             && (a.text.as_deref().is_some_and(|t| !t.is_ascii())
                 || self.web_pixel(session, &a).await)
         {
-            return self.type_mixed(session, &a, look).await;
+            return self.type_mixed(session, &a).await;
         }
         if a.action == "launch_app" {
-            return self.launch(session, &a, look).await;
+            return self.launch(session, &a).await;
         }
         let (tool, req) = self.action_request(session, &a).await?;
         let input = self.input.lock().await;
@@ -293,11 +243,11 @@ impl Cua {
         self.end_once(once).await;
         timing::mark("act");
         let changes = self.settle(before).await;
-        let (shot, seen) = self.look(session, look, result.is_err()).await?;
+        let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         let (text, is_error) = match result {
-            Ok(v) => (content_text(&v) + &changes + &seen, false),
-            Err(e) => (e + &seen, true),
+            Ok(v) => (content_text(&v) + &changes, false),
+            Err(e) => (e, true),
         };
         Ok(Output {
             text,
@@ -319,6 +269,7 @@ impl Cua {
     pub async fn screenshot_once(&self, max_edge: Option<u32>) -> Result<Option<String>, String> {
         let session = format!("shot-{}", uuid::Uuid::new_v4().simple());
         let shot = self.screenshot(&session, max_edge).await;
+        self.scales().remove(&session);
         self.request(&session, "end_session", json!({})).await?;
         timing::mark("end");
         shot
@@ -329,13 +280,12 @@ impl Cua {
         let session = session_of(&args);
         self.request(&session, "end_session", json!({})).await?;
         self.last.lock().await.remove(&session);
+        self.scales().remove(&session);
         Ok(format!("ended session {session}"))
     }
 
-    /// Captures the desktop and returns the screen pixels per image pixel that element centres divide by:
-    /// the driver's frame scale on cbdesk, where it maps desktop-scope pixels of this capture back to the
-    /// screen; 1 on cbplan, where x,y and centres are always screen pixels. A capture over MIT-SHM is
-    /// shrunk to `max_edge` here and also returns the full-size pixels.
+    /// Captures the desktop; the driver maps desktop-scope pixels of this capture back to the screen.
+    /// A capture over MIT-SHM is shrunk to `max_edge` here and also returns the full-size pixels.
     async fn capture(
         &self,
         session: &str,
@@ -350,19 +300,20 @@ impl Cua {
             let image = match max_edge {
                 Some(edge) if edge > 0 && edge < w.max(h) => {
                     let (tw, th, small) = fit(w, h, &rgb, edge);
-                    encode(tw, th, &small)
+                    encode(tw, th, &small).map(|i| (i, f64::from(w) / f64::from(tw)))
                 }
-                _ => encode(w, h, &rgb),
+                _ => encode(w, h, &rgb).map(|i| (i, 1.0)),
             };
-            if let Some(image) = image {
+            if let Some((image, scale)) = image {
                 timing::mark("encode");
                 timing::note("image_bytes", image.len());
+                self.scales().insert(session.to_owned(), scale);
                 let screen = Screen {
                     width: w,
                     height: h,
                     rgb,
                 };
-                return Ok((Some(B64.encode(image)), 1.0, Some(screen)));
+                return Ok((Some(B64.encode(image)), scale, Some(screen)));
             }
         }
         let mut args = json!({});
@@ -371,7 +322,7 @@ impl Cua {
         }
         let v = self.request(session, "get_desktop_state", args).await?;
         timing::mark("capture");
-        let mut scale = v["structuredContent"]["frame_scale"]
+        let scale = v["structuredContent"]["frame_scale"]
             .as_f64()
             .filter(|s| *s > 0.0)
             .unwrap_or(1.0);
@@ -380,24 +331,19 @@ impl Cua {
             if let Some(smaller) = image.as_deref().and_then(shrink) {
                 image = Some(smaller);
             }
+            self.scales().insert(session.to_owned(), scale);
             // the driver rescales later desktop clicks by its last capture; a full-size one keeps it at 1
             if scale != 1.0 {
                 let _ = self.request(session, "get_desktop_state", json!({})).await;
                 timing::mark("rescale");
             }
-            scale = 1.0;
         }
         timing::note("image_bytes", image.as_ref().map_or(0, |b| b.len() / 4 * 3));
         Ok((image, scale, None))
     }
 
     /// Types text with non-ASCII characters: ASCII runs in one call, every other character in its own call.
-    async fn type_mixed(
-        &self,
-        session: &str,
-        a: &ActArgs,
-        look: Option<Look>,
-    ) -> Result<Output, String> {
+    async fn type_mixed(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
         let text = a.text.as_deref().unwrap_or_default();
         let input = self.input.lock().await;
         let before = self.before_input(Some(a)).await;
@@ -453,21 +399,17 @@ impl Cua {
         self.end_once(once).await;
         timing::mark("act");
         let changes = self.settle(before).await;
-        let (shot, seen) = self.look(session, look, failure.is_some()).await?;
+        let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         let total = text.chars().count();
-        let check = match look.map(|l| l.view) {
-            Some(View::Elements) => "the elements",
-            _ => "the screenshot",
-        };
         let summary = format!(
-            "typed {typed} of {total} characters in {} calls (non-ASCII characters go one per call); verify on {check}{changes}",
+            "typed {typed} of {total} characters in {} calls (non-ASCII characters go one per call); verify on the screenshot{changes}",
             runs.len()
         );
         Ok(Output {
             text: match &failure {
-                Some(e) => format!("{summary}; stopped: {e}{seen}"),
-                None => summary + &seen,
+                Some(e) => format!("{summary}; stopped: {e}"),
+                None => summary,
             },
             is_error: failure.is_some(),
             image_b64: shot,
@@ -475,12 +417,7 @@ impl Cua {
     }
 
     /// Launches an app, or brings its existing window to the front when it already runs.
-    async fn launch(
-        &self,
-        session: &str,
-        a: &ActArgs,
-        look: Option<Look>,
-    ) -> Result<Output, String> {
+    async fn launch(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
         let app = required(&a.app, "app")?;
         let input = self.input.lock().await;
         let before = self.before_input(None).await;
@@ -513,11 +450,10 @@ impl Cua {
                             let _ = self.request(&probe, "end_session", json!({})).await;
                         }
                         drop(input);
-                        let (image_b64, seen) = self.look(session, look, true).await?;
                         return Ok(Output {
-                            text: e + &seen,
+                            text: e,
                             is_error: true,
-                            image_b64,
+                            image_b64: self.screenshot(session, a.max_edge).await?,
                         });
                     }
                 },
@@ -525,10 +461,10 @@ impl Cua {
         };
         timing::mark("act");
         let changes = self.settle(before).await;
-        let (shot, seen) = self.look(session, look, false).await?;
+        let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         Ok(Output {
-            text: text + &changes + &seen,
+            text: text + &changes,
             is_error: false,
             image_b64: shot,
         })
@@ -753,6 +689,17 @@ impl Cua {
         Some(decode_png(&data)?.1)
     }
 
+    fn scales(&self) -> std::sync::MutexGuard<'_, HashMap<String, f64>> {
+        self.scales
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Screen pixels per pixel of the last screenshot `session` returned on cbplan, so its x,y map to the screen.
+    fn scale_of(&self, session: &str) -> f64 {
+        self.scales().get(session).copied().unwrap_or(1.0)
+    }
+
     /// Runs `read` on the MIT-SHM grabber, opening it when needed; `None` when it is unavailable or fails.
     fn shm<T>(&self, read: impl FnOnce(&Grabber) -> Result<T, String>) -> Option<T> {
         let mut slot = self
@@ -796,150 +743,13 @@ impl Cua {
 
     /// The frontmost application window, skipping the desktop and panels.
     async fn app_window(&self, session: &str) -> Result<Option<(i64, i64)>, String> {
-        Ok(self.front(session).await?.map(|w| (w.pid, w.window_id)))
-    }
-
-    async fn front(&self, session: &str) -> Result<Option<Window>, String> {
         let windows = self
             .request(session, "list_windows", json!({"on_screen_only": true}))
             .await?;
         Ok(window_list(&windows)
-            .into_iter()
-            .find(|w| !SHELL_APPS.contains(&w.app.as_str())))
-    }
-
-    /// The observation a `view` argument asks for on cbplan; the screenshot without one or on cbdesk.
-    fn view(&self, view: Option<&str>) -> View {
-        match (self.cbplan, view) {
-            (true, Some("elements")) => View::Elements,
-            (true, Some("both")) => View::Both,
-            _ => View::Screenshot,
-        }
-    }
-
-    /// The observation `look` asks for after an action, or nothing without one.
-    async fn look(
-        &self,
-        session: &str,
-        look: Option<Look>,
-        failed: bool,
-    ) -> Result<(Option<String>, String), String> {
-        match look {
-            Some(l) => {
-                self.observe(session, l.view, l.max_edge, failed, None, None)
-                    .await
-            }
-            None => Ok((None, String::new())),
-        }
-    }
-
-    /// The screenshot and the text of an observation: on the elements view, the compact element list of
-    /// the open popup, of `pin` or of the frontmost window, with the screenshot only for `both`, a
-    /// `failed` action or a list shorter than [`VIEW_MIN`].
-    async fn observe(
-        &self,
-        session: &str,
-        view: View,
-        max_edge: Option<u32>,
-        failed: bool,
-        pin: Option<(i64, Option<i64>)>,
-        query: Option<String>,
-    ) -> Result<(Option<String>, String), String> {
-        if view == View::Screenshot {
-            return Ok((self.screenshot(session, max_edge).await?, String::new()));
-        }
-        let all = query.is_some();
-        let walked = self.walk(session, pin, query).await;
-        timing::mark("elements");
-        let size = self.shm(|g| Ok(g.size()));
-        let toggles = match &walked {
-            Ok((_, pid, _, state)) if state["structuredContent"]["popup"] == true => {
-                let toggles = gmenu::toggles(*pid).await;
-                timing::mark("toggles");
-                toggles
-            }
-            _ => HashMap::new(),
-        };
-        let listed = match &walked {
-            Ok((.., state)) => compact(state, size, all, &toggles).2,
-            Err(_) => 0,
-        };
-        let (image, screen) = if view == View::Both || failed || listed < VIEW_MIN {
-            let (image, _, screen) = self.capture(session, max_edge).await?;
-            (image, screen)
-        } else {
-            let screen = self.shm(|g| {
-                let (width, height, rgb) = g.rgb()?;
-                Ok(Screen { width, height, rgb })
-            });
-            (None, screen)
-        };
-        let text = match walked {
-            Ok((head, pid, window_id, state)) => {
-                let (list, elements, listed) = compact(&state, size, all, &toggles);
-                timing::note("view_listed", listed);
-                self.last.lock().await.insert(
-                    session.to_owned(),
-                    Snapshot {
-                        pid,
-                        window_id: window_id_of(&state).or(window_id),
-                        elements,
-                        screen,
-                    },
-                );
-                format!(
-                    "\n\nElements of {head}, [id] role \"name\" = \"value\" (center x,y) state:\n{list}"
-                )
-            }
-            Err(e) => format!("\n\nNo element view: {e}"),
-        };
-        timing::note("view_chars", text.len());
-        Ok((image, text))
-    }
-
-    /// The window state of the open popup, of `pin` or of the frontmost window, with a heading naming it.
-    async fn walk(
-        &self,
-        session: &str,
-        pin: Option<(i64, Option<i64>)>,
-        query: Option<String>,
-    ) -> Result<(String, i64, Option<i64>, Value), String> {
-        let popup = match pin {
-            Some(_) => None,
-            None => self.shm(Grabber::popup).flatten(),
-        };
-        let (pid, window_id, head) = match (pin, popup) {
-            (Some((pid, window_id)), _) => (pid, window_id, format!("pid {pid}")),
-            (None, Some((pid, w))) => (
-                i64::from(pid),
-                Some(i64::from(w)),
-                format!("the open menu or popup of pid {pid}"),
-            ),
-            (None, None) => {
-                let w = self
-                    .front(session)
-                    .await?
-                    .ok_or("no application window is open")?;
-                (
-                    w.pid,
-                    Some(w.window_id),
-                    format!("{} \"{}\" (pid {})", w.app, w.title, w.pid),
-                )
-            }
-        };
-        let mut req = json!({
-            "pid": pid,
-            "include_screenshot": false,
-            "max_elements": STATE_ELEMENTS,
-        });
-        if let Some(id) = window_id {
-            req["window_id"] = id.into();
-        }
-        if let Some(q) = query {
-            req["query"] = q.into();
-        }
-        let state = self.request(session, "get_window_state", req).await?;
-        Ok((head, pid, window_id, state))
+            .iter()
+            .find(|w| !SHELL_APPS.contains(&w.app.as_str()))
+            .map(|w| (w.pid, w.window_id)))
     }
 
     async fn action_request(
@@ -1005,6 +815,8 @@ impl Cua {
                 let (Some(x), Some(y), Some(tx), Some(ty)) = (a.x, a.y, a.to_x, a.to_y) else {
                     return Err("drag needs x, y, to_x and to_y".to_owned());
                 };
+                let k = self.scale_of(session);
+                let (x, y, tx, ty) = (x * k, y * k, tx * k, ty * k);
                 req = json!({"from_x": x, "from_y": y, "to_x": tx, "to_y": ty, "target": desktop});
                 return Ok(("drag", req));
             }
@@ -1031,8 +843,9 @@ impl Cua {
                 req["window_id"] = id.into();
             }
         } else if let (Some(x), Some(y)) = (a.x, a.y) {
-            req["x"] = x.into();
-            req["y"] = y.into();
+            let k = self.scale_of(session);
+            req["x"] = (x * k).into();
+            req["y"] = (y * k).into();
             req["target"] = desktop;
         } else if clicks {
             return Err(format!("{} needs element or x and y", a.action));
@@ -1236,8 +1049,6 @@ struct StateArgs {
     query: Option<String>,
     #[serde(default)]
     max_edge: Option<u32>,
-    #[serde(default)]
-    view: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -1273,30 +1084,12 @@ struct ActArgs {
     foreground: bool,
     #[serde(default)]
     max_edge: Option<u32>,
-    #[serde(default)]
-    view: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct ActList {
     actions: Vec<ActArgs>,
     #[serde(default)]
-    max_edge: Option<u32>,
-    #[serde(default)]
-    view: Option<String>,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum View {
-    Screenshot,
-    Elements,
-    Both,
-}
-
-/// The observation after an action and the long edge of its screenshot.
-#[derive(Clone, Copy)]
-struct Look {
-    view: View,
     max_edge: Option<u32>,
 }
 
@@ -1484,176 +1277,6 @@ fn moved(screen: &Screen, [x, y, w, h]: [i32; 4], now: &[u8]) -> bool {
         .filter(|(a, b)| differs(&a[..], &b[..]))
         .count();
     changed * 100 > w * h * MOVED_PERCENT
-}
-
-/// The elements of a window state, one line each without structural containers: on-screen ones with
-/// their centre in screen pixels, off-screen ones too when `all`, then the disabled controls the driver
-/// gives no id; a menu item named in `toggles` shows that state. Returns the text, every element by index
-/// and the line count.
-fn compact(
-    result: &Value,
-    screen: Option<(u16, u16)>,
-    all: bool,
-    toggles: &HashMap<String, bool>,
-) -> (String, HashMap<i64, Element>, usize) {
-    let state = &result["structuredContent"];
-    let (names, disabled) = tree_extras(
-        state["tree_markdown"].as_str().unwrap_or_default(),
-        state["popup"] == true,
-    );
-    let mut by_index = HashMap::new();
-    let mut list = String::new();
-    let (mut listed, mut hidden) = (0, 0);
-    for e in state["elements"].as_array().into_iter().flatten() {
-        let Some(index) = e["element_index"].as_i64() else {
-            continue;
-        };
-        let role = e["role"].as_str().unwrap_or("?");
-        let f = &e["frame"];
-        let frame = [&f["x"], &f["y"], &f["w"], &f["h"]].map(Value::as_f64);
-        let frame = frame
-            .iter()
-            .all(Option::is_some)
-            .then(|| frame.map(Option::unwrap_or_default));
-        if let Some(t) = e["element_token"].as_str() {
-            let element = Element {
-                token: t.to_owned(),
-                role: role.to_owned(),
-                frame,
-                web: e["in_web_content"] == true,
-            };
-            by_index.insert(index, element);
-        }
-        let mut label = clean(e["label"].as_str().unwrap_or_default(), VIEW_LABEL);
-        if label.is_empty()
-            && let Some(name) = names.get(&index)
-        {
-            label.clone_from(name);
-        }
-        let value = clean(e["value"].as_str().unwrap_or_default(), VIEW_VALUE);
-        if STRUCTURE.contains(&role)
-            || (role == "table cell" && label.is_empty() && value.is_empty())
-        {
-            continue;
-        }
-        let center = frame.map(|[x, y, w, h]| (x + w / 2.0, y + h / 2.0));
-        let on_screen = center.is_some_and(|(x, y)| {
-            screen.is_none_or(|(w, h)| {
-                (0.0..f64::from(w)).contains(&x) && (0.0..f64::from(h)).contains(&y)
-            })
-        });
-        if (!on_screen && !all) || list.len() >= TREE_CHARS {
-            hidden += 1;
-            continue;
-        }
-        let _ = write!(list, "[{index}] {role}");
-        if !label.is_empty() {
-            let _ = write!(list, " \"{label}\"");
-        }
-        if !value.is_empty() && value != label {
-            let _ = write!(list, " = \"{value}\"");
-        }
-        match center.filter(|_| on_screen) {
-            Some((x, y)) => {
-                let _ = write!(list, " ({x:.0},{y:.0})");
-            }
-            None => list.push_str(" off-screen"),
-        }
-        if e["selected"] == true {
-            let toggle = TOGGLES.iter().any(|t| role.contains(t));
-            list.push_str(if toggle { " checked" } else { " selected" });
-        } else if role.contains("menu item")
-            && let Some(&on) = toggles.get(&gmenu::label_key(&label))
-        {
-            list.push_str(if on { " checked" } else { " unchecked" });
-        }
-        let description = e["description"].as_str().unwrap_or_default();
-        if description.contains("not expanded") || description.contains("closed menu") {
-            list.push_str(" closed");
-        }
-        if e["enabled"] == false {
-            list.push_str(" disabled");
-        }
-        list.push('\n');
-        listed += 1;
-    }
-    if !disabled.is_empty() {
-        let _ = writeln!(list, "disabled, no id: {}", disabled.join(", "));
-    }
-    if hidden > 0 {
-        let _ = writeln!(
-            list,
-            "({hidden} more are off-screen, in closed menus or past the limit; computer_state with query lists them)"
-        );
-    }
-    (list, by_index, listed)
-}
-
-/// From the driver's tree outline: names for unlabelled elements taken from a label inside them, and
-/// the disabled controls it lists without an id; disabled menu items only for an open `popup`, since a
-/// closed menu keeps its items in the tree.
-fn tree_extras(outline: &str, popup: bool) -> (HashMap<i64, String>, Vec<String>) {
-    let mut names = HashMap::new();
-    let mut disabled: Vec<String> = Vec::new();
-    // indexed ancestors of the current line: indent, index, unlabelled
-    let mut stack: Vec<(usize, i64, bool)> = Vec::new();
-    for line in outline.lines() {
-        let body = line.trim_start();
-        let indent = line.len() - body.len();
-        let Some(body) = body.strip_prefix("- ") else {
-            continue;
-        };
-        while stack.last().is_some_and(|(i, ..)| *i >= indent) {
-            stack.pop();
-        }
-        if let Some((n, rest)) = body.strip_prefix('[').and_then(|b| b.split_once("] ")) {
-            if let Ok(index) = n.parse() {
-                let unlabelled = rest
-                    .split_once(" \"")
-                    .is_some_and(|(_, label)| label.starts_with('"'));
-                stack.push((indent, index, unlabelled));
-            }
-            continue;
-        }
-        let Some((role, rest)) = body.split_once(" = \"") else {
-            continue;
-        };
-        let Some((text, tail)) = rest.rsplit_once('"') else {
-            continue;
-        };
-        let text = clean(text, VIEW_LABEL);
-        if text.is_empty() {
-            continue;
-        }
-        if tail.trim() == "(disabled)" {
-            if role == "menu item" && !popup {
-                continue;
-            }
-            let entry = format!("{role} \"{text}\"");
-            if disabled.len() < VIEW_DISABLED && !disabled.contains(&entry) {
-                disabled.push(entry);
-            }
-        } else if matches!(role, "label" | "static")
-            && let Some(&(_, index, true)) = stack.last()
-        {
-            names.entry(index).or_insert(text);
-        }
-    }
-    (names, disabled)
-}
-
-/// `s` on one line without object-replacement characters, cut to `max` characters; the driver's off-screen note is no name.
-fn clean(s: &str, max: usize) -> String {
-    let s = s.replace('\u{fffc}', "");
-    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if s.starts_with("off-screen:") {
-        return String::new();
-    }
-    let mut out: String = s.chars().take(max).collect();
-    if s.chars().count() > max {
-        out.push('…');
-    }
-    out
 }
 
 /// RGB rows shrunk by area averaging so the long edge is `edge`.
@@ -1950,59 +1573,6 @@ mod tests {
         assert_eq!(change_box(&a, &b, 4, 8), Some([1, 1, 3, 3]));
         assert_eq!(change_box(&a, &b, 4, 48), None);
         assert_eq!(change_box(&a, &b[3..], 4, 8), Some([0, 0, 4, usize::MAX]));
-    }
-
-    #[test]
-    fn compact_lists_on_screen_controls_with_states_and_drops_containers() {
-        let state = json!({"structuredContent": {
-        "popup": true,
-        "tree_markdown": "- dialog = \"Save As\"\n  - [0] panel \"\"\n    - [1] check box \"Wrap  long lines\" [actions=[click]]\n    - [3] list item \"\" [actions=[]]\n        - label = \"Home\"\n        - label = \"New bookmark\"\n    - push button = \"Save\" (disabled)\n    - menu item = \"Undo      \" (disabled)\n    - push button = \"Save\" (disabled)\n",
-        "elements": [
-            {"element_index": 0, "element_token": "t0", "role": "panel", "label": "\u{fffc}\u{fffc}", "frame": {"x": 0, "y": 0, "w": 100, "h": 100}},
-            {"element_index": 1, "element_token": "t1", "role": "check box", "label": "Wrap  long lines", "selected": true, "frame": {"x": 10, "y": 20, "w": 30, "h": 10}},
-            {"element_index": 2, "element_token": "t2", "role": "text", "label": "Name:", "value": "a.txt", "frame": {"x": 0, "y": 0, "w": 50, "h": 10}},
-            {"element_index": 3, "element_token": "t3", "role": "list item", "selected": true, "frame": {"x": 0, "y": 40, "w": 100, "h": 20}},
-            {"element_index": 4, "element_token": "t4", "role": "menu", "label": "File", "description": "closed menu with 19 items; not expanded: click it to open", "frame": {"x": 200, "y": 0, "w": 40, "h": 20}},
-            {"element_index": 5, "element_token": "t5", "role": "push button", "label": "Cancel", "frame": {"x": 900, "y": 860, "w": 80, "h": 30}},
-            {"element_index": 6, "element_token": "t6", "role": "push button", "label": "Help", "description": "off-screen"},
-            {"element_index": 7, "element_token": "t7", "role": "table cell", "frame": {"x": 0, "y": 0, "w": 2, "h": 2}}
-        ]}});
-        let (list, elements, listed) = compact(&state, Some((1280, 800)), false, &HashMap::new());
-        assert_eq!(
-            list,
-            "[1] check box \"Wrap long lines\" (25,25) checked\n[2] text \"Name:\" = \"a.txt\" (25,5)\n[3] list item \"Home\" (50,50) selected\n[4] menu \"File\" (220,10) closed\ndisabled, no id: push button \"Save\", menu item \"Undo\"\n(2 more are off-screen, in closed menus or past the limit; computer_state with query lists them)\n"
-        );
-        assert_eq!((elements.len(), listed), (8, 4));
-        assert_eq!(elements[&1].frame, Some([10.0, 20.0, 30.0, 10.0]));
-        let (all, _, listed) = compact(&state, Some((1280, 800)), true, &HashMap::new());
-        assert!(
-            all.contains(
-                "[5] push button \"Cancel\" off-screen\n[6] push button \"Help\" off-screen\n"
-            ),
-            "{all}"
-        );
-        assert_eq!(listed, 6);
-        let mut window = state.clone();
-        window["structuredContent"]["popup"] = false.into();
-        let (list, ..) = compact(&window, Some((1280, 800)), false, &HashMap::new());
-        assert!(
-            list.contains("disabled, no id: push button \"Save\"\n"),
-            "{list}"
-        );
-        let menu = json!({"structuredContent": {"popup": true, "elements": [
-            {"element_index": 0, "element_token": "t0", "role": "menu item", "label": "Word Wrap      ", "frame": {"x": 10, "y": 10, "w": 100, "h": 20}},
-            {"element_index": 1, "element_token": "t1", "role": "menu item", "label": "Line Numbers", "frame": {"x": 10, "y": 30, "w": 100, "h": 20}},
-            {"element_index": 2, "element_token": "t2", "role": "menu item", "label": "Save", "frame": {"x": 10, "y": 50, "w": 100, "h": 20}}
-        ]}});
-        let toggles = HashMap::from([
-            ("word wrap".to_owned(), true),
-            ("line numbers".to_owned(), false),
-        ]);
-        let (list, ..) = compact(&menu, Some((1280, 800)), false, &toggles);
-        assert_eq!(
-            list,
-            "[0] menu item \"Word Wrap\" (60,20) checked\n[1] menu item \"Line Numbers\" (60,40) unchecked\n[2] menu item \"Save\" (60,60)\n"
-        );
     }
 
     #[test]
