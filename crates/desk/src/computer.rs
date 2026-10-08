@@ -33,6 +33,7 @@ const SHM_POLL: Duration = Duration::from_millis(10);
 const STILL_FOR: Duration = Duration::from_millis(40);
 const WINDOW_STILL_FOR: Duration = Duration::from_millis(150);
 const COMMIT_STILL_FOR: Duration = Duration::from_millis(400);
+const COMMIT_FIRST: Duration = Duration::from_millis(1500);
 const STILL_EDGE: u32 = 160;
 const STILL_TOLERANCE: u8 = 48;
 const VISIBLE_STEP: u8 = 24;
@@ -485,13 +486,16 @@ impl Cua {
             return None;
         }
         let commit = a.is_some_and(commits);
-        if let Some((pixels, blocks, windows, active, page)) = self.shm(|g| {
+        if let Some((pixels, blocks, windows, active, page, confirm)) = self.shm(|g| {
             let active = g.active();
             let page = commit && active.is_some_and(|w| g.class(w) == CHROME_CLASS);
+            let confirm = a.is_some_and(|a| {
+                confirms(a) || (clicks_left(a) && active.is_some_and(|w| g.dialog(w)))
+            });
             let (width, height) = g.size();
             let pixels = g.pixels()?.to_vec();
             let blocks = xshm::block_hashes(&pixels, width, height);
-            Ok((pixels, blocks, g.mapped()?, active, page))
+            Ok((pixels, blocks, g.mapped()?, active, page, confirm))
         }) {
             let volatile = self
                 .volatile
@@ -511,6 +515,7 @@ impl Cua {
                 windows,
                 active,
                 page,
+                confirm,
             });
         }
         let probe = format!("still-{}", uuid::Uuid::new_v4().simple());
@@ -523,6 +528,7 @@ impl Cua {
                 windows: Vec::new(),
                 active: None,
                 page: false,
+                confirm: false,
             }),
             None => {
                 let _ = self.request(&probe, "end_session", json!({})).await;
@@ -534,19 +540,20 @@ impl Cua {
     }
 
     /// Waits after an input action until the screen differs from `before` and held still, at most
-    /// [`SETTLE`] for a change and [`SETTLE`] after it, so an effect that shows late, like a Save As
-    /// dialog closing, is still in the frame; a flash that reverts, like a pressed button, is no
-    /// change. Without `before`, the fixed [`SETTLE`]. Over MIT-SHM the screen is split into 16-pixel
-    /// blocks whose new contents count (see [`Block`]): a block that kept changing before the action,
-    /// like a clock, a spinner or a video, never counts; a caret counts only with contents it did not
-    /// blink between; and a block back at its contents from before toggles from then on (see
-    /// [`Shown`]). The screen differs once a counting block has a pixel more than [`VISIBLE_STEP`]
-    /// off its value from before, so a faint hover fade is not the effect; any change of a counting
-    /// block restarts the hold. The hold is [`STILL_FOR`], or [`WINDOW_STILL_FOR`] once a window
-    /// maps, unmaps or moves or the focus moves; after a commit in Chrome it is [`COMMIT_STILL_FOR`],
-    /// at most [`COMMIT_SETTLE`] once the screen changed, so a page that loads over the network or
-    /// adds content from timers is in the frame. Returns lines naming the windows the action opened,
-    /// closed or brought to the front.
+    /// [`SETTLE`] for a change, [`COMMIT_FIRST`] after a confirm, and [`SETTLE`] after it, so an
+    /// effect that shows late, like a Save As dialog closing, is still in the frame; a flash that
+    /// reverts, like a pressed button, is no change. Without `before`, the fixed [`SETTLE`]. Over
+    /// MIT-SHM the screen is split into 16-pixel blocks whose new contents count (see [`Block`]): a
+    /// block that kept changing before the action, like a clock, a spinner or a video, never
+    /// counts; a caret counts only with contents it did not blink between; and a block back at its
+    /// contents from before toggles from then on (see [`Shown`]). The screen differs once a
+    /// counting block has a pixel more than [`VISIBLE_STEP`] off its value from before, so a faint
+    /// hover fade is not the effect; any change of a counting block restarts the hold. The hold is
+    /// [`STILL_FOR`], or [`WINDOW_STILL_FOR`] once a window maps, unmaps or moves or the focus
+    /// moves; after a commit in Chrome it is [`COMMIT_STILL_FOR`], at most [`COMMIT_SETTLE`] once
+    /// the screen changed, so a page that loads over the network or adds content from timers is in
+    /// the frame. Returns lines naming the windows the action opened, closed or brought to the
+    /// front.
     async fn settle(&self, before: Option<Before>) -> String {
         let Some(Before {
             probe,
@@ -556,6 +563,7 @@ impl Cua {
             windows,
             active,
             page,
+            confirm,
         }) = before
         else {
             tokio::time::sleep(SETTLE).await;
@@ -573,7 +581,7 @@ impl Cua {
             (STILL_FOR, WINDOW_STILL_FOR)
         };
         let start = Instant::now();
-        let mut deadline = start + SETTLE;
+        let mut deadline = start + if confirm { COMMIT_FIRST } else { SETTLE };
         let (mut last, mut since): (Option<Frame>, Instant) = (None, Instant::now());
         let (mut seen, mut focus, mut hold) = (windows.clone(), active, first_hold);
         let (mut still, mut changed) = (false, false);
@@ -1078,6 +1086,7 @@ struct Before {
     active: Option<u32>,
     /// A commit action in Chrome: the settle holds [`COMMIT_STILL_FOR`], at most [`COMMIT_SETTLE`].
     page: bool,
+    confirm: bool,
 }
 
 /// A settle frame: block hashes over MIT-SHM, or a probe session's thumbnail.
@@ -1211,6 +1220,26 @@ fn text_runs(text: &str) -> Vec<&str> {
         runs.push(&text[start..]);
     }
     runs
+}
+
+fn confirms(a: &ActArgs) -> bool {
+    let keys = match a.action.as_str() {
+        "type" => return a.text.as_deref().is_some_and(|t| t.ends_with(['\n', '\r'])),
+        "key" => a.key.clone().into_iter().collect(),
+        "hotkey" => a
+            .keys
+            .clone()
+            .map(|k| vec![k.join("+")])
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    keys.iter()
+        .any(|k| ["return", "enter", "kp_enter"].contains(&k.to_lowercase().as_str()))
+}
+
+fn clicks_left(a: &ActArgs) -> bool {
+    matches!(a.action.as_str(), "click" | "double_click" | "triple_click")
+        && a.button.as_deref().is_none_or(|b| b == "left")
 }
 
 /// Whether `a` may commit a page load: a left click, Return or a navigation key, or text ending in a newline.
@@ -1688,6 +1717,26 @@ mod tests {
         };
         assert!(commits(&typed("https://example.com\n")));
         assert!(!commits(&typed("Ada Lovelace")));
+    }
+
+    #[test]
+    fn return_enter_and_a_typed_line_confirm_and_only_left_clicks_click_left() {
+        let act =
+            |action: &str, key: Option<&str>, text: Option<&str>, button: Option<&str>| ActArgs {
+                action: action.to_owned(),
+                key: key.map(str::to_owned),
+                text: text.map(str::to_owned),
+                button: button.map(str::to_owned),
+                ..ActArgs::default()
+            };
+        assert!(confirms(&act("key", Some("Return"), None, None)));
+        assert!(confirms(&act("key", Some("KP_Enter"), None, None)));
+        assert!(!confirms(&act("key", Some("F5"), None, None)));
+        assert!(confirms(&act("type", None, Some("name.txt\n"), None)));
+        assert!(!confirms(&act("type", None, Some("name.txt"), None)));
+        assert!(clicks_left(&act("click", None, None, None)));
+        assert!(!clicks_left(&act("click", None, None, Some("right"))));
+        assert!(!clicks_left(&act("right_click", None, None, None)));
     }
 
     #[test]
