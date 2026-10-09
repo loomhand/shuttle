@@ -386,7 +386,11 @@ impl Cua {
             base["delivery_mode"] = "foreground".into();
         }
         timing::mark("resolve");
-        let runs = text_runs(text);
+        let runs = if self.cbplan {
+            vec![text]
+        } else {
+            text_runs(text)
+        };
         let mut typed = 0;
         let once = self.once(&base);
         for run in &runs {
@@ -412,10 +416,14 @@ impl Cua {
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         let total = text.chars().count();
-        let summary = format!(
-            "typed {typed} of {total} characters in {} calls (non-ASCII characters go one per call); verify on the screenshot{changes}",
-            runs.len()
-        );
+        let summary = if self.cbplan {
+            format!("typed {typed} of {total} characters; verify on the screenshot{changes}")
+        } else {
+            format!(
+                "typed {typed} of {total} characters in {} calls (non-ASCII characters go one per call); verify on the screenshot{changes}",
+                runs.len()
+            )
+        };
         Ok(Output {
             text: match &failure {
                 Some(e) => format!("{summary}; stopped: {e}"),
@@ -1207,8 +1215,8 @@ struct Window {
     z: i64,
 }
 
-/// Splits text into maximal ASCII runs and single non-ASCII characters; the driver
-/// remaps one spare keycode per non-ASCII character, so several in one call garble.
+/// Splits text into maximal ASCII runs and single non-ASCII characters; cbdesk's driver
+/// remaps one spare keycode per call, so several non-ASCII characters in one call garble.
 fn text_runs(text: &str) -> Vec<&str> {
     let mut runs = Vec::new();
     let mut start = 0;
