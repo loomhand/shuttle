@@ -4,6 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::ErrorKind;
 use std::path::PathBuf;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use base64::Engine;
@@ -76,6 +78,10 @@ pub struct Cua {
     scales: std::sync::Mutex<HashMap<String, f64>>,
     /// On cbplan, the screen blocks that change while no action runs, which the settle ignores.
     volatile: Option<Volatile>,
+    /// On cbplan, the keycodes without a keysym at the first reclaim.
+    spare: OnceLock<Vec<u8>>,
+    /// Script runs in flight; Enigo in a run types through the keycodes it bound until it exits.
+    live: AtomicUsize,
 }
 
 impl Cua {
@@ -90,6 +96,42 @@ impl Cua {
             titles: std::sync::Mutex::new(HashMap::new()),
             scales: std::sync::Mutex::new(HashMap::new()),
             volatile: cbplan.then(Volatile::start),
+            spare: OnceLock::new(),
+            live: AtomicUsize::new(0),
+        }
+    }
+
+    /// Marks a Script run live until the guard drops, first giving the spare keycodes back when no other run is live.
+    pub async fn script_live(&self) -> Live<'_> {
+        let _input = self.input.lock().await;
+        self.unbind_spare();
+        self.live.fetch_add(1, Ordering::SeqCst);
+        Live(&self.live)
+    }
+
+    /// Gives the spare keycodes back unless a Script run is live.
+    pub async fn reclaim_keycodes(&self) {
+        let _input = self.input.lock().await;
+        self.unbind_spare();
+    }
+
+    /// On cbplan with no Script run live, unbinds the spare keycodes bound since: Enigo never unbinds its
+    /// own when a run exits, and the driver leaves one bound per character outside the layout.
+    fn unbind_spare(&self) {
+        if !self.cbplan || self.live.load(Ordering::SeqCst) > 0 {
+            return;
+        }
+        let spare = match self.spare.get() {
+            Some(spare) => spare,
+            None => match self.shm(Grabber::spare_keycodes) {
+                Some(spare) => self.spare.get_or_init(|| spare),
+                None => return,
+            },
+        };
+        if let Some(n) = self.shm(|g| g.unbind(spare))
+            && n > 0
+        {
+            timing::note("keycodes_freed", n);
         }
     }
 
@@ -391,6 +433,9 @@ impl Cua {
         for run in &runs {
             if failure.is_some() {
                 break;
+            }
+            if !run.is_ascii() {
+                self.unbind_spare();
             }
             let mut req = base.clone();
             req["text"] = (*run).into();
@@ -1071,6 +1116,15 @@ impl Cua {
                 }
             }
         }
+    }
+}
+
+/// A live Script run, counted until dropped.
+pub struct Live<'a>(&'a AtomicUsize);
+
+impl Drop for Live<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
