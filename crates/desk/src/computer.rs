@@ -987,11 +987,12 @@ impl Cua {
         Ok((tool, req))
     }
 
-    /// On cbplan, a driver session of its own for the pid-addressed input `req`, ended by [`Self::end_once`]
-    /// right after: the virtual master keyboard the driver makes for it would outlive the call, and while
-    /// one exists Chrome drops core keyboard input, from XTest and VNC alike.
+    /// A driver session of its own for the pid-addressed input `req`, ended by [`Self::end_once`] right
+    /// after: the virtual master keyboard the driver makes for it would outlive the call, and while one
+    /// exists Chrome drops core keyboard input, from XTest and VNC alike.
     fn once(&self, req: &Value) -> Option<String> {
-        (self.cbplan && req.get("pid").is_some())
+        req.get("pid")
+            .is_some()
             .then(|| format!("input-{}", uuid::Uuid::new_v4().simple()))
     }
 
