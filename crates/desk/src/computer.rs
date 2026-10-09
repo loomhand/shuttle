@@ -56,6 +56,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECT_RETRY: Duration = Duration::from_millis(250);
 const CONNECT_WAIT: Duration = Duration::from_secs(10);
 const DEFAULT_SESSION: &str = "cocoonbox";
+const SKIPPED: &str = "had no keycode";
 const RETRIED: [&str; 4] = [
     "list_windows",
     "get_window_state",
@@ -116,23 +117,24 @@ impl Cua {
     }
 
     /// On cbplan with no Script run live, unbinds the spare keycodes bound since: Enigo never unbinds its
-    /// own when a run exits, and the driver leaves one bound per character outside the layout.
-    fn unbind_spare(&self) {
+    /// own when a run exits, and the driver leaves one bound per character outside the layout. Returns how
+    /// many keycodes are empty after, `None` when it did not look.
+    fn unbind_spare(&self) -> Option<usize> {
         if !self.cbplan || self.live.load(Ordering::SeqCst) > 0 {
-            return;
+            return None;
         }
         let spare = match self.spare.get() {
             Some(spare) => spare,
-            None => match self.shm(Grabber::spare_keycodes) {
-                Some(spare) => self.spare.get_or_init(|| spare),
-                None => return,
-            },
+            None => {
+                let spare = self.shm(Grabber::spare_keycodes)?;
+                self.spare.get_or_init(|| spare)
+            }
         };
-        if let Some(n) = self.shm(|g| g.unbind(spare))
-            && n > 0
-        {
-            timing::note("keycodes_freed", n);
+        let (unbound, empty) = self.shm(|g| g.unbind(spare))?;
+        if unbound > 0 {
+            timing::note("keycodes_freed", unbound);
         }
+        Some(empty)
     }
 
     /// `computer_state`: window list, accessibility elements and a desktop screenshot.
@@ -434,8 +436,9 @@ impl Cua {
             if failure.is_some() {
                 break;
             }
-            if !run.is_ascii() {
-                self.unbind_spare();
+            if !run.is_ascii() && self.unbind_spare() == Some(0) {
+                failure = Some(format!("no free X keycode to type {run:?}"));
+                break;
             }
             let mut req = base.clone();
             req["text"] = (*run).into();
@@ -443,6 +446,9 @@ impl Cua {
                 .request(once.as_deref().unwrap_or(session), "type_text", req)
                 .await
             {
+                Ok(v) if self.cbplan && content_text(&v).contains(SKIPPED) => {
+                    failure = Some(content_text(&v));
+                }
                 Ok(_) => typed += run.chars().count(),
                 Err(e) => failure = Some(e),
             }
