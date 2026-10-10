@@ -890,7 +890,10 @@ impl Cua {
         let pixel = match a.element {
             Some(index) if clicks && !a.foreground && (self.cbplan || presses(a)) => {
                 match self.element_pixel(session, index, false).await {
-                    None if presses(a) => self.open_menus(session, index).await,
+                    None if presses(a) => match self.open_menus(session, index).await {
+                        None => self.hidden_press(session, index).await?,
+                        pixel => pixel,
+                    },
                     pixel => pixel,
                 }
             }
@@ -1128,17 +1131,149 @@ impl Cua {
         }
         for menu in menus.into_iter().rev() {
             let (x, y) = self.poll_pixel(session, menu, true).await?;
-            let desktop = json!({"kind": "desktop", "display_id": "primary"});
-            let req = json!({"x": x, "y": y, "target": desktop});
-            let once = self.once(&req, true);
-            let opened = self
-                .request(once.as_deref().unwrap_or(session), "click", req)
-                .await;
-            self.end_once(once).await;
-            opened.ok()?;
+            self.pixel_click(x, y).await.ok()?;
         }
         timing::mark("menus");
         self.poll_pixel(session, index, false).await
+    }
+
+    /// For a push button or menu item of `session`'s snapshot that is not on the screen, in a GTK app
+    /// and outside a web page, whose accessibility action would deadlock the app if it opened a modal
+    /// dialog: the point of the menu bar item of the same name, opened in its menu, else an error;
+    /// `None` for any other element.
+    async fn hidden_press(&self, session: &str, index: i64) -> Result<Option<(f64, f64)>, String> {
+        let (pid, window_id, name, button, menus) = {
+            let last = self.last.lock().await;
+            let Some(snap) = last.get(session) else {
+                return Ok(None);
+            };
+            let (Some(element), Some(screen)) = (snap.elements.get(&index), snap.screen.as_ref())
+            else {
+                return Ok(None);
+            };
+            let shown = element.frame.and_then(|f| clip(f, screen)).is_some();
+            if shown || element.web || !PRESSED.contains(&element.role.as_str()) {
+                return Ok(None);
+            }
+            let mut menus: Vec<(f64, i64)> = snap
+                .elements
+                .iter()
+                .filter(|(_, e)| {
+                    e.role == "menu"
+                        && e.parent
+                            .and_then(|p| snap.elements.get(&p))
+                            .is_none_or(|p| p.role != "menu")
+                })
+                .filter_map(|(i, e)| Some((e.frame?[0], *i)))
+                .collect();
+            menus.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let menus: Vec<i64> = menus.into_iter().map(|(_, i)| i).collect();
+            let button = element.role == "push button";
+            (
+                snap.pid,
+                snap.window_id,
+                label_key(&element.label),
+                button,
+                menus,
+            )
+        };
+        if !gtk(pid) {
+            return Ok(None);
+        }
+        if button && let Some(point) = self.menu_twin(session, pid, window_id, &name, &menus).await
+        {
+            return Ok(Some(point));
+        }
+        Err(format!(
+            "element {index} is not on the screen; open its menu or use a visible control"
+        ))
+    }
+
+    /// Opens the menu bar `menus` of `session`'s snapshot in turn and returns the point of the first
+    /// shown menu item named `name` that a pixel click reaches; closes the menu when none is.
+    async fn menu_twin(
+        &self,
+        session: &str,
+        pid: i64,
+        window_id: Option<i64>,
+        name: &str,
+        menus: &[i64],
+    ) -> Option<(f64, f64)> {
+        let owner = u32::try_from(pid).ok()?;
+        let mut req =
+            json!({"pid": pid, "include_screenshot": false, "max_elements": STATE_ELEMENTS});
+        if let Some(id) = window_id {
+            req["window_id"] = id.into();
+        }
+        for (n, menu) in menus.iter().enumerate() {
+            if n > 0 {
+                self.escape().await;
+            }
+            let Some((x, y)) = self.poll_pixel(session, *menu, true).await else {
+                continue;
+            };
+            if self.pixel_click(x, y).await.is_err() {
+                continue;
+            }
+            let probe = format!("menu-{}", uuid::Uuid::new_v4().simple());
+            let state = self.request(&probe, "get_window_state", req.clone()).await;
+            let _ = self.request(&probe, "end_session", json!({})).await;
+            timing::mark("twin");
+            let Ok(state) = state else {
+                continue;
+            };
+            let frames = state["structuredContent"]["elements"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|e| e["role"] == "menu item")
+                .filter(|e| e["label"].as_str().is_some_and(|l| label_key(l) == name))
+                .filter_map(|e| {
+                    let f = &e["frame"];
+                    Some([
+                        f["x"].as_f64()?,
+                        f["y"].as_f64()?,
+                        f["w"].as_f64()?,
+                        f["h"].as_f64()?,
+                    ])
+                });
+            for [fx, fy, fw, fh] in frames {
+                let (cx, cy) = ((fx + fw / 2.0).floor(), (fy + fh / 2.0).floor());
+                let rect = [fx, fy, fw, fh].map(|v| v.round() as i32);
+                let reached = self.shm(|g| {
+                    Ok(g.top_at(cx as i32, cy as i32)?
+                        .is_some_and(|t| t.popup && g.pid(t.id) == Some(owner) && t.holds(rect)))
+                });
+                if reached == Some(true) {
+                    return Some((cx, cy));
+                }
+            }
+        }
+        if !menus.is_empty() {
+            self.escape().await;
+        }
+        None
+    }
+
+    /// A left click at the screen point `(x, y)`.
+    async fn pixel_click(&self, x: f64, y: f64) -> Result<Value, String> {
+        self.desktop_input("click", json!({"x": x, "y": y})).await
+    }
+
+    /// Escape to the focused window, which closes an open menu.
+    async fn escape(&self) {
+        let _ = self
+            .desktop_input("press_key", json!({"key": "Escape"}))
+            .await;
+    }
+
+    /// The desktop-addressed input `req` of `tool` in a driver session of its own (see [`Self::once`]).
+    async fn desktop_input(&self, tool: &str, mut req: Value) -> Result<Value, String> {
+        req["target"] = json!({"kind": "desktop", "display_id": "primary"});
+        let once = format!("input-{}", uuid::Uuid::new_v4().simple());
+        let done = self.request(&once, tool, req).await;
+        self.end_once(Some(once)).await;
+        done
     }
 
     /// [`Self::element_pixel`] once it answers, at most [`MENU_POLLS`] times [`MENU_POLL`] apart.
@@ -1274,6 +1409,7 @@ struct Snapshot {
 struct Element {
     token: String,
     role: String,
+    label: String,
     parent: Option<i64>,
     /// The screen rectangle `[x, y, w, h]`.
     frame: Option<[f64; 4]>,
@@ -1406,6 +1542,26 @@ fn confirms(a: &ActArgs) -> bool {
         .any(|k| ["return", "enter", "kp_enter"].contains(&k.to_lowercase().as_str()))
 }
 
+/// `label` without case, mnemonic underscores, a trailing ellipsis or colon, and extra spaces, so a
+/// toolbar button and its menu item compare equal.
+fn label_key(label: &str) -> String {
+    let words = label.replace('_', "").to_lowercase();
+    let words = words.split_whitespace().collect::<Vec<_>>().join(" ");
+    words
+        .trim_end_matches(['.', '\u{2026}', ':'])
+        .trim_end()
+        .to_owned()
+}
+
+/// Whether process `pid` has GTK loaded.
+fn gtk(pid: i64) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/maps")).is_ok_and(|maps| {
+        maps.contains("/libgtk-3.so")
+            || maps.contains("/libgtk-x11-2.0.so")
+            || maps.contains("/libgtk-4.so")
+    })
+}
+
 /// Whether `a` is a single left click, which presses a button or menu item.
 fn presses(a: &ActArgs) -> bool {
     a.action == "click" && a.button.as_deref().is_none_or(|b| b == "left")
@@ -1492,6 +1648,7 @@ fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
             let element = Element {
                 token: t.to_owned(),
                 role: e["role"].as_str().unwrap_or_default().to_owned(),
+                label: e["label"].as_str().unwrap_or_default().to_owned(),
                 parent: e["parent_index"].as_i64(),
                 frame,
                 web: e["in_web_content"] == true,
@@ -1930,6 +2087,15 @@ mod tests {
         for kept in ["\n", "plain", "a\nb"] {
             assert_eq!(before_newline(kept), None);
         }
+    }
+
+    #[test]
+    fn a_toolbar_button_and_its_menu_item_have_one_label_key() {
+        assert_eq!(label_key("Save As..."), "save as");
+        assert_eq!(label_key("Save _As\u{2026}      "), "save as");
+        assert_eq!(label_key("Go to..."), "go to");
+        assert_eq!(label_key("Find and Replace..."), "find and replace");
+        assert_ne!(label_key("Save"), label_key("Save As..."));
     }
 
     #[test]
