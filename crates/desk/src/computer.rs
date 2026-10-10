@@ -34,6 +34,7 @@ const STILL_FOR: Duration = Duration::from_millis(40);
 const WINDOW_STILL_FOR: Duration = Duration::from_millis(150);
 const COMMIT_STILL_FOR: Duration = Duration::from_millis(400);
 const COMMIT_FIRST: Duration = Duration::from_millis(1500);
+const RETURN_GAP: Duration = Duration::from_millis(300);
 const STILL_EDGE: u32 = 160;
 const STILL_TOLERANCE: u8 = 48;
 const VISIBLE_STEP: u8 = 24;
@@ -238,14 +239,22 @@ impl Cua {
         if a.action == "launch_app" {
             return self.launch(session, &a).await;
         }
-        let (tool, req) = self.action_request(session, &a).await?;
+        let (tool, mut req) = self.action_request(session, &a).await?;
+        let enter = tool == "type_text"
+            && req.get("element_token").is_none()
+            && pop_newline(&mut req["text"]);
         let input = self.input.lock().await;
         timing::mark("resolve");
         let before = self.before_input(Some(&a)).await;
         let once = self.once(&req);
-        let result = self
-            .request(once.as_deref().unwrap_or(session), tool, req)
-            .await;
+        let target = once.as_deref().unwrap_or(session);
+        let typed = enter.then(|| req.clone());
+        let mut result = self.request(target, tool, req).await;
+        if let Some(typed) = typed
+            && result.is_ok()
+        {
+            result = self.press_return(target, &typed).await.and(result);
+        }
         self.end_once(once).await;
         timing::mark("act");
         let changes = self.settle(before).await;
@@ -351,7 +360,11 @@ impl Cua {
 
     /// Types text with non-ASCII characters: ASCII runs in one call, every other character in its own call.
     async fn type_mixed(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
-        let text = a.text.as_deref().unwrap_or_default();
+        let full = a.text.as_deref().unwrap_or_default();
+        let text = full
+            .strip_suffix(['\n', '\r'])
+            .filter(|t| !t.is_empty())
+            .unwrap_or(full);
         let input = self.input.lock().await;
         let before = self.before_input(Some(a)).await;
         let mut failure = None;
@@ -410,12 +423,21 @@ impl Cua {
                 Err(e) => failure = Some(e),
             }
         }
+        if failure.is_none() && text.len() < full.len() {
+            match self
+                .press_return(once.as_deref().unwrap_or(session), &base)
+                .await
+            {
+                Ok(_) => typed += 1,
+                Err(e) => failure = Some(e),
+            }
+        }
         self.end_once(once).await;
         timing::mark("act");
         let changes = self.settle(before).await;
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
-        let total = text.chars().count();
+        let total = full.chars().count();
         let summary = if self.cbplan {
             format!("typed {typed} of {total} characters; verify on the screenshot{changes}")
         } else {
@@ -948,6 +970,18 @@ impl Cua {
         Ok((tool, req))
     }
 
+    async fn press_return(&self, session: &str, typed: &Value) -> Result<Value, String> {
+        tokio::time::sleep(RETURN_GAP).await;
+        let mut req = typed.clone();
+        if let Some(fields) = req.as_object_mut() {
+            for k in ["text", "x", "y"] {
+                fields.remove(k);
+            }
+        }
+        req["key"] = "return".into();
+        self.request(session, "press_key", req).await
+    }
+
     /// A driver session of its own for the pid-addressed input `req`, ended by [`Self::end_once`] right
     /// after: the virtual master keyboard the driver makes for it would outlive the call, and while one
     /// exists Chrome drops core keyboard input, from XTest and VNC alike.
@@ -1233,6 +1267,19 @@ fn text_runs(text: &str) -> Vec<&str> {
         runs.push(&text[start..]);
     }
     runs
+}
+
+fn pop_newline(text: &mut Value) -> bool {
+    let Some(rest) = text
+        .as_str()
+        .and_then(|t| t.strip_suffix(['\n', '\r']))
+        .filter(|t| !t.is_empty())
+        .map(str::to_owned)
+    else {
+        return false;
+    };
+    *text = rest.into();
+    true
 }
 
 fn confirms(a: &ActArgs) -> bool {
@@ -1750,6 +1797,21 @@ mod tests {
         assert!(clicks_left(&act("click", None, None, None)));
         assert!(!clicks_left(&act("click", None, None, Some("right"))));
         assert!(!clicks_left(&act("right_click", None, None, None)));
+    }
+
+    #[test]
+    fn only_a_newline_after_other_text_is_popped() {
+        let mut line = json!("/tmp/name.txt\n");
+        assert!(pop_newline(&mut line));
+        assert_eq!(line, "/tmp/name.txt");
+        let mut lines = json!("a\nb\r");
+        assert!(pop_newline(&mut lines));
+        assert_eq!(lines, "a\nb");
+        for kept in ["\n", "plain", "a\nb"] {
+            let mut text = json!(kept);
+            assert!(!pop_newline(&mut text));
+            assert_eq!(text, kept);
+        }
     }
 
     #[test]
