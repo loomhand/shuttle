@@ -47,6 +47,9 @@ const POPUP_ROWS: [&str; 6] = [
     "table cell",
     "option",
 ];
+const PRESSED: [&str; 2] = ["push button", "menu item"];
+const MENU_POLL: Duration = Duration::from_millis(30);
+const MENU_POLLS: u32 = 10;
 const JPEG_QUALITY: u8 = 80;
 const PHOTO_COLORS: usize = 2500;
 const COLOR_STRIDE: usize = 7;
@@ -147,8 +150,16 @@ impl Cua {
             timing::mark("elements");
         }
         // the capture comes last: a later get_window_state replaces the session's pixel-click context
-        let (image_b64, scale, screen) = self.capture(&session, a.max_edge).await?;
+        let (image_b64, scale, mut screen) = self.capture(&session, a.max_edge).await?;
         if let Some((pid, window_id, state)) = elements {
+            if screen.is_none() && !self.cbplan {
+                screen = self.shm(Grabber::rgb).map(|(width, height, rgb)| Screen {
+                    width,
+                    height,
+                    rgb,
+                });
+                timing::mark("grab");
+            }
             let (tree, elements) = element_tree(&state, scale);
             let _ = writeln!(
                 text,
@@ -240,7 +251,7 @@ impl Cua {
         if a.action == "launch_app" {
             return self.launch(session, &a).await;
         }
-        let (tool, mut req) = self.action_request(session, &a).await?;
+        let (tool, mut req, pixel) = self.action_request(session, &a).await?;
         let line = req["text"]
             .as_str()
             .and_then(before_newline)
@@ -255,7 +266,7 @@ impl Cua {
         let input = self.input.lock().await;
         timing::mark("resolve");
         let before = self.before_input(Some(&a)).await;
-        let once = self.once(&req);
+        let once = self.once(&req, pixel);
         let target = once.as_deref().unwrap_or(session);
         let typed = enter.then(|| req.clone());
         let mut result = self.request(target, tool, req).await;
@@ -383,8 +394,8 @@ impl Cua {
                 foreground: a.foreground,
                 ..ActArgs::default()
             };
-            let (tool, req) = self.action_request(session, &focus).await?;
-            let once = self.once(&req);
+            let (tool, req, pixel) = self.action_request(session, &focus).await?;
+            let once = self.once(&req, pixel);
             failure = self
                 .request(once.as_deref().unwrap_or(session), tool, req)
                 .await
@@ -414,7 +425,7 @@ impl Cua {
             text_runs(text)
         };
         let mut typed = 0;
-        let once = self.once(&base);
+        let once = self.once(&base, false);
         for run in &runs {
             if failure.is_some() {
                 break;
@@ -872,12 +883,17 @@ impl Cua {
         &self,
         session: &str,
         a: &ActArgs,
-    ) -> Result<(&'static str, Value), String> {
+    ) -> Result<(&'static str, Value, bool), String> {
         let desktop = json!({"kind": "desktop", "display_id": "primary"});
         let clicks = matches!(a.action.as_str(), "click" | "double_click" | "right_click")
             || (self.cbplan && a.action == "triple_click");
         let pixel = match a.element {
-            Some(index) if clicks && !a.foreground => self.element_pixel(session, index).await,
+            Some(index) if clicks && !a.foreground && (self.cbplan || presses(a)) => {
+                match self.element_pixel(session, index, false).await {
+                    None if presses(a) => self.open_menus(session, index).await,
+                    pixel => pixel,
+                }
+            }
             _ => None,
         };
         let mut req = json!({});
@@ -934,7 +950,7 @@ impl Cua {
                 let k = self.scale_of(session);
                 let (x, y, tx, ty) = (x * k, y * k, tx * k, ty * k);
                 req = json!({"from_x": x, "from_y": y, "to_x": tx, "to_y": ty, "target": desktop});
-                return Ok(("drag", req));
+                return Ok(("drag", req, false));
             }
             other => return Err(format!("unknown action {other}")),
         };
@@ -977,7 +993,7 @@ impl Cua {
         if a.foreground {
             req["delivery_mode"] = "foreground".into();
         }
-        Ok((tool, req))
+        Ok((tool, req, pixel.is_some()))
     }
 
     fn to_dialog(&self, req: &Value) -> bool {
@@ -1002,10 +1018,11 @@ impl Cua {
 
     /// A driver session of its own for the pid-addressed input `req`, ended by [`Self::end_once`] right
     /// after: the virtual master keyboard the driver makes for it would outlive the call, and while one
-    /// exists Chrome drops core keyboard input, from XTest and VNC alike.
-    fn once(&self, req: &Value) -> Option<String> {
-        req.get("pid")
-            .is_some()
+    /// exists Chrome drops core keyboard input, from XTest and VNC alike. A `pixel` click at an element
+    /// gets one too: its x,y are screen pixels, which the driver maps by the capture of a session that
+    /// took one, and a session's second pointer action waits 1.1 s for its agent cursor to glide.
+    fn once(&self, req: &Value, pixel: bool) -> Option<String> {
+        (pixel || req.get("pid").is_some())
             .then(|| format!("input-{}", uuid::Uuid::new_v4().simple()))
     }
 
@@ -1037,17 +1054,23 @@ impl Cua {
             .get(session)
             .and_then(|s| s.elements.get(&index))
             .is_some_and(|e| e.web);
-        web && self.element_pixel(session, index).await.is_some()
+        web && self.element_pixel(session, index, false).await.is_some()
     }
 
-    /// On cbplan, the screen point at which a pixel click reaches element `index` of `session`'s snapshot,
-    /// which skips the driver's 270 ms accessibility click: the element looks as it did in the snapshot,
-    /// and the top window at its centre is the snapshot's window while that is active and nothing grabs
-    /// the pointer, or a popup of the same app around a menu or list row.
-    async fn element_pixel(&self, session: &str, index: i64) -> Option<(f64, f64)> {
+    /// The screen point at which a pixel click reaches element `index` of `session`'s snapshot, on
+    /// cbdesk only for a push button or menu item outside a web page, whose accessibility action runs
+    /// its handler inside the app's accessibility dispatch, where a modal dialog it opens deadlocks the
+    /// app on the first key; on cbplan it also skips the driver's 270 ms accessibility click. The
+    /// element looks as it did in the snapshot, and the top window at its centre is the snapshot's
+    /// window while that is active and nothing grabs the pointer, or a popup of the same app around a
+    /// menu or list row. A `menu` to open need not look as it did, since it showed open then.
+    async fn element_pixel(&self, session: &str, index: i64, menu: bool) -> Option<(f64, f64)> {
         let last = self.last.lock().await;
         let snap = last.get(session)?;
         let (element, screen) = (snap.elements.get(&index)?, snap.screen.as_ref()?);
+        if !self.cbplan && !menu && (element.web || !PRESSED.contains(&element.role.as_str())) {
+            return None;
+        }
         let [x, y, w, h] = element.frame?;
         let (cx, cy) = ((x + w / 2.0).floor(), (y + h / 2.0).floor());
         let rect = clip([x, y, w, h], screen)?;
@@ -1067,9 +1090,66 @@ impl Cua {
             } else {
                 g.active() == Some(window) && g.top_level(window)? == top.id && !g.grabbed(true)?
             };
-            Ok(reachable && !moved(screen, rect, &g.region(rect)?))
+            Ok(reachable && (menu || !moved(screen, rect, &g.region(rect)?)))
         });
         reached.unwrap_or(false).then_some((cx, cy))
+    }
+
+    /// For menu item `index` of `session`'s snapshot while no popup of its app is open, opens the
+    /// menus that hold it, outermost first, with pixel clicks, and returns the point at which a pixel
+    /// click then reaches the item.
+    async fn open_menus(&self, session: &str, index: i64) -> Option<(f64, f64)> {
+        let (pid, menus) = {
+            let last = self.last.lock().await;
+            let snap = last.get(session)?;
+            let mut element = snap
+                .elements
+                .get(&index)
+                .filter(|e| e.role == "menu item")?;
+            let mut menus = Vec::new();
+            while let Some((parent, menu)) = element
+                .parent
+                .and_then(|p| snap.elements.get(&p).map(|e| (p, e)))
+                .filter(|(_, e)| e.role == "menu")
+            {
+                menus.push(parent);
+                element = menu;
+            }
+            (snap.pid, menus)
+        };
+        let owner = u32::try_from(pid).ok()?;
+        let open = self.shm(|g| {
+            Ok(g.mapped()?
+                .iter()
+                .any(|p| p.popup && p.drawn && g.pid(p.id) == Some(owner)))
+        });
+        if menus.is_empty() || open != Some(false) {
+            return None;
+        }
+        for menu in menus.into_iter().rev() {
+            let (x, y) = self.poll_pixel(session, menu, true).await?;
+            let desktop = json!({"kind": "desktop", "display_id": "primary"});
+            let req = json!({"x": x, "y": y, "target": desktop});
+            let once = self.once(&req, true);
+            let opened = self
+                .request(once.as_deref().unwrap_or(session), "click", req)
+                .await;
+            self.end_once(once).await;
+            opened.ok()?;
+        }
+        timing::mark("menus");
+        self.poll_pixel(session, index, false).await
+    }
+
+    /// [`Self::element_pixel`] once it answers, at most [`MENU_POLLS`] times [`MENU_POLL`] apart.
+    async fn poll_pixel(&self, session: &str, index: i64, menu: bool) -> Option<(f64, f64)> {
+        for _ in 0..MENU_POLLS {
+            if let Some(point) = self.element_pixel(session, index, menu).await {
+                return Some(point);
+            }
+            tokio::time::sleep(MENU_POLL).await;
+        }
+        None
     }
 
     async fn request(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
@@ -1194,6 +1274,7 @@ struct Snapshot {
 struct Element {
     token: String,
     role: String,
+    parent: Option<i64>,
     /// The screen rectangle `[x, y, w, h]`.
     frame: Option<[f64; 4]>,
     /// Inside a web page, whose fields only take typing after a click.
@@ -1325,6 +1406,11 @@ fn confirms(a: &ActArgs) -> bool {
         .any(|k| ["return", "enter", "kp_enter"].contains(&k.to_lowercase().as_str()))
 }
 
+/// Whether `a` is a single left click, which presses a button or menu item.
+fn presses(a: &ActArgs) -> bool {
+    a.action == "click" && a.button.as_deref().is_none_or(|b| b == "left")
+}
+
 fn clicks_left(a: &ActArgs) -> bool {
     matches!(a.action.as_str(), "click" | "double_click" | "triple_click")
         && a.button.as_deref().is_none_or(|b| b == "left")
@@ -1406,6 +1492,7 @@ fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
             let element = Element {
                 token: t.to_owned(),
                 role: e["role"].as_str().unwrap_or_default().to_owned(),
+                parent: e["parent_index"].as_i64(),
                 frame,
                 web: e["in_web_content"] == true,
             };
