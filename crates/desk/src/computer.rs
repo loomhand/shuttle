@@ -367,7 +367,8 @@ impl Cua {
         Ok((image, scale, None))
     }
 
-    /// Types text with non-ASCII characters: on cbdesk in calls of at most [`RUN_CHARS`] distinct non-ASCII characters.
+    /// Types text with non-ASCII characters; on cbdesk and on cbplan's pid route in calls of at most [`RUN_CHARS`]
+    /// distinct non-ASCII characters.
     async fn type_mixed(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
         let full = a.text.as_deref().unwrap_or_default();
         let input = self.input.lock().await;
@@ -407,7 +408,7 @@ impl Cua {
             .filter(|_| self.to_dialog(&base))
             .unwrap_or(full);
         timing::mark("resolve");
-        let runs = if self.cbplan {
+        let runs = if self.cbplan && (a.foreground || base.get("target").is_some()) {
             vec![text]
         } else {
             text_runs(text)
@@ -1265,8 +1266,8 @@ struct Window {
     z: i64,
 }
 
-/// Splits text into runs with at most [`RUN_CHARS`] distinct non-ASCII characters; cbdesk's driver
-/// binds a spare keycode to each of them for the call and has fewer than 20 to lend.
+/// Splits text into runs with at most [`RUN_CHARS`] distinct non-ASCII characters; the driver's
+/// virtual-keyboard route binds a spare keycode to each of them for the call and has fewer than 20 to lend.
 fn text_runs(text: &str) -> Vec<&str> {
     let (mut runs, mut start, mut seen) = (Vec::new(), 0, Vec::new());
     for (i, c) in text.char_indices() {
