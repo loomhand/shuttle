@@ -240,9 +240,17 @@ impl Cua {
             return self.launch(session, &a).await;
         }
         let (tool, mut req) = self.action_request(session, &a).await?;
+        let line = req["text"]
+            .as_str()
+            .and_then(before_newline)
+            .map(str::to_owned);
         let enter = tool == "type_text"
             && req.get("element_token").is_none()
-            && pop_newline(&mut req["text"]);
+            && line.is_some()
+            && self.to_dialog(&req);
+        if enter && let Some(line) = line {
+            req["text"] = line.into();
+        }
         let input = self.input.lock().await;
         timing::mark("resolve");
         let before = self.before_input(Some(&a)).await;
@@ -361,10 +369,6 @@ impl Cua {
     /// Types text with non-ASCII characters: ASCII runs in one call, every other character in its own call.
     async fn type_mixed(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
         let full = a.text.as_deref().unwrap_or_default();
-        let text = full
-            .strip_suffix(['\n', '\r'])
-            .filter(|t| !t.is_empty())
-            .unwrap_or(full);
         let input = self.input.lock().await;
         let before = self.before_input(Some(a)).await;
         let mut failure = None;
@@ -398,6 +402,9 @@ impl Cua {
         if a.foreground {
             base["delivery_mode"] = "foreground".into();
         }
+        let text = before_newline(full)
+            .filter(|_| self.to_dialog(&base))
+            .unwrap_or(full);
         timing::mark("resolve");
         let runs = if self.cbplan {
             vec![text]
@@ -970,6 +977,14 @@ impl Cua {
         Ok((tool, req))
     }
 
+    fn to_dialog(&self, req: &Value) -> bool {
+        let window = req["window_id"]
+            .as_u64()
+            .and_then(|w| u32::try_from(w).ok());
+        self.shm(|g| Ok(window.or_else(|| g.active()).is_some_and(|w| g.dialog(w))))
+            .unwrap_or(true)
+    }
+
     async fn press_return(&self, session: &str, typed: &Value) -> Result<Value, String> {
         tokio::time::sleep(RETURN_GAP).await;
         let mut req = typed.clone();
@@ -1269,17 +1284,8 @@ fn text_runs(text: &str) -> Vec<&str> {
     runs
 }
 
-fn pop_newline(text: &mut Value) -> bool {
-    let Some(rest) = text
-        .as_str()
-        .and_then(|t| t.strip_suffix(['\n', '\r']))
-        .filter(|t| !t.is_empty())
-        .map(str::to_owned)
-    else {
-        return false;
-    };
-    *text = rest.into();
-    true
+fn before_newline(text: &str) -> Option<&str> {
+    text.strip_suffix(['\n', '\r']).filter(|t| !t.is_empty())
 }
 
 fn confirms(a: &ActArgs) -> bool {
@@ -1800,17 +1806,11 @@ mod tests {
     }
 
     #[test]
-    fn only_a_newline_after_other_text_is_popped() {
-        let mut line = json!("/tmp/name.txt\n");
-        assert!(pop_newline(&mut line));
-        assert_eq!(line, "/tmp/name.txt");
-        let mut lines = json!("a\nb\r");
-        assert!(pop_newline(&mut lines));
-        assert_eq!(lines, "a\nb");
+    fn only_a_newline_after_other_text_is_split_off() {
+        assert_eq!(before_newline("/tmp/name.txt\n"), Some("/tmp/name.txt"));
+        assert_eq!(before_newline("a\nb\r"), Some("a\nb"));
         for kept in ["\n", "plain", "a\nb"] {
-            let mut text = json!(kept);
-            assert!(!pop_newline(&mut text));
-            assert_eq!(text, kept);
+            assert_eq!(before_newline(kept), None);
         }
     }
 
