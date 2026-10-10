@@ -56,6 +56,7 @@ const CONNECT_RETRY: Duration = Duration::from_millis(250);
 const CONNECT_WAIT: Duration = Duration::from_secs(10);
 const DEFAULT_SESSION: &str = "cocoonbox";
 const SKIPPED: &str = "had no keycode";
+const RUN_CHARS: usize = 8;
 const RETRIED: [&str; 4] = [
     "list_windows",
     "get_window_state",
@@ -366,7 +367,7 @@ impl Cua {
         Ok((image, scale, None))
     }
 
-    /// Types text with non-ASCII characters: ASCII runs in one call, every other character in its own call.
+    /// Types text with non-ASCII characters: on cbdesk in calls of at most [`RUN_CHARS`] distinct non-ASCII characters.
     async fn type_mixed(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
         let full = a.text.as_deref().unwrap_or_default();
         let input = self.input.lock().await;
@@ -449,7 +450,7 @@ impl Cua {
             format!("typed {typed} of {total} characters; verify on the screenshot{changes}")
         } else {
             format!(
-                "typed {typed} of {total} characters in {} calls (non-ASCII characters go one per call); verify on the screenshot{changes}",
+                "typed {typed} of {total} characters in {} calls (at most {RUN_CHARS} distinct non-ASCII characters per call); verify on the screenshot{changes}",
                 runs.len()
             )
         };
@@ -1264,19 +1265,19 @@ struct Window {
     z: i64,
 }
 
-/// Splits text into maximal ASCII runs and single non-ASCII characters; cbdesk's driver
-/// remaps one spare keycode per call, so several non-ASCII characters in one call garble.
+/// Splits text into runs with at most [`RUN_CHARS`] distinct non-ASCII characters; cbdesk's driver
+/// binds a spare keycode to each of them for the call and has fewer than 20 to lend.
 fn text_runs(text: &str) -> Vec<&str> {
-    let mut runs = Vec::new();
-    let mut start = 0;
+    let (mut runs, mut start, mut seen) = (Vec::new(), 0, Vec::new());
     for (i, c) in text.char_indices() {
-        if !c.is_ascii() {
-            if start < i {
-                runs.push(&text[start..i]);
-            }
-            runs.push(&text[i..i + c.len_utf8()]);
-            start = i + c.len_utf8();
+        if c.is_ascii() || seen.contains(&c) {
+            continue;
         }
+        if seen.len() == RUN_CHARS {
+            runs.push(&text[start..i]);
+            (start, seen) = (i, Vec::new());
+        }
+        seen.push(c);
     }
     if start < text.len() {
         runs.push(&text[start..]);
@@ -1815,10 +1816,14 @@ mod tests {
     }
 
     #[test]
-    fn text_runs_isolate_every_non_ascii_character() {
+    fn text_runs_hold_at_most_eight_distinct_non_ascii_characters() {
         assert_eq!(
-            text_runs("MCP — 你好 café 🙂!"),
-            ["MCP ", "—", " ", "你", "好", " caf", "é", " ", "🙂", "!"]
+            text_runs("MCP — 你好 café 🙂! 一二三四五六七八九十"),
+            ["MCP — 你好 café 🙂! 一二三", "四五六七八九十"]
+        );
+        assert_eq!(
+            text_runs("你你你你你你你你你你好"),
+            ["你你你你你你你你你你好"]
         );
         assert_eq!(text_runs("plain"), ["plain"]);
         assert_eq!(text_runs("é"), ["é"]);
