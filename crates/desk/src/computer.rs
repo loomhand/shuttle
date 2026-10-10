@@ -422,11 +422,12 @@ impl Cua {
             let mut req = base.clone();
             req["text"] = (*run).into();
             match self
-                .request(once.as_deref().unwrap_or(session), "type_text", req)
+                .call(once.as_deref().unwrap_or(session), "type_text", req)
                 .await
             {
-                Ok(v) if self.cbplan && content_text(&v).contains(SKIPPED) => {
-                    failure = Some(content_text(&v));
+                Ok(v) if v["isError"] == true || content_text(&v).contains(SKIPPED) => {
+                    typed += landed(run, &v);
+                    failure = Some(format!("type_text: {}", content_text(&v)));
                 }
                 Ok(_) => typed += run.chars().count(),
                 Err(e) => failure = Some(e),
@@ -1072,6 +1073,15 @@ impl Cua {
     }
 
     async fn request(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
+        let result = self.call(session, name, args).await?;
+        if result["isError"] == true {
+            return Err(format!("{name}: {}", content_text(&result)));
+        }
+        Ok(result)
+    }
+
+    /// One driver call; a result the driver marks isError comes back as is.
+    async fn call(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
         let retry = RETRIED.contains(&name).then(|| args.clone());
         let mut reply = self.exchange(session, name, args).await?;
         if let Some(args) = retry.filter(|_| reply.trim().is_empty()) {
@@ -1086,11 +1096,7 @@ impl Cua {
                 v["error"].as_str().unwrap_or("cua-driver call failed")
             ));
         }
-        let result = v["result"].take();
-        if result["isError"] == true {
-            return Err(format!("{name}: {}", content_text(&result)));
-        }
-        Ok(result)
+        Ok(v["result"].take())
     }
 
     /// Sends one call and returns the raw reply line, empty when the driver closed without one.
@@ -1288,6 +1294,20 @@ fn text_runs(text: &str) -> Vec<&str> {
 
 fn before_newline(text: &str) -> Option<&str> {
     text.strip_suffix(['\n', '\r']).filter(|t| !t.is_empty())
+}
+
+/// How many characters of `run` a failed type_text call typed: all but the skipped ones on the
+/// virtual-keyboard route, else the count its "typed N of" error names.
+fn landed(run: &str, result: &Value) -> usize {
+    if let Some(skipped) = result["structuredContent"]["skipped_characters"].as_str() {
+        return run.chars().count().saturating_sub(skipped.chars().count());
+    }
+    content_text(result)
+        .split("typed ")
+        .nth(1)
+        .and_then(|t| t.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
 }
 
 fn confirms(a: &ActArgs) -> bool {
@@ -1805,6 +1825,15 @@ mod tests {
         assert!(clicks_left(&act("click", None, None, None)));
         assert!(!clicks_left(&act("click", None, None, Some("right"))));
         assert!(!clicks_left(&act("right_click", None, None, None)));
+    }
+
+    #[test]
+    fn a_failed_type_counts_the_characters_that_landed() {
+        let mpx = json!({"isError": true, "content": [{"type": "text", "text": "Typed 5 character(s)"}], "structuredContent": {"skipped_characters": "三四"}});
+        assert_eq!(landed("一二三四五", &mpx), 3);
+        let xtest = json!({"isError": true, "content": [{"type": "text", "text": "type_text failed: typed 2 of 5 characters: no spare keycode"}]});
+        assert_eq!(landed("一二三四五", &xtest), 2);
+        assert_eq!(landed("一二", &json!({"isError": true})), 0);
     }
 
     #[test]
