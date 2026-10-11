@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use base64::Engine;
@@ -62,6 +62,7 @@ const SKIPPED: &str = "had no keycode";
 const RUN_CHARS: usize = 8;
 const WM_WAIT: Duration = Duration::from_secs(10);
 const WM_POLL: Duration = Duration::from_millis(100);
+const CARD_FILE_MAX: u64 = 64 * 1024;
 const NO_TEXT_TARGET: &str =
     "no application window is on the screen to type into; open or focus one first";
 const RETRIED: [&str; 4] = [
@@ -234,7 +235,29 @@ impl Cua {
         Ok(out)
     }
 
+    /// Runs one action; `type_from_file` types a card field through the `type` path and returns only its length.
     async fn act_one(&self, session: &str, mut a: ActArgs) -> Result<Output, String> {
+        if a.action != "type_from_file" {
+            return self.act_input(session, a).await;
+        }
+        let field = required(&a.field, "field")?.to_owned();
+        let value = card_field(required(&a.path, "path")?, &field).await?;
+        let typed = value.chars().count();
+        "type".clone_into(&mut a.action);
+        a.text = Some(value.clone());
+        let out = self.act_input(session, a).await?;
+        let text = if out.is_error {
+            format!(
+                "typing {field} failed: {}",
+                out.text.replace(&value, "[card field]")
+            )
+        } else {
+            format!("typed {typed} characters of {field}; verify on the screenshot")
+        };
+        Ok(Output { text, ..out })
+    }
+
+    async fn act_input(&self, session: &str, mut a: ActArgs) -> Result<Output, String> {
         if self.cbplan && a.action == "left_click" {
             "click".clone_into(&mut a.action);
         }
@@ -1520,6 +1543,10 @@ struct ActArgs {
     #[serde(default)]
     foreground: bool,
     #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    field: Option<String>,
+    #[serde(default)]
     max_edge: Option<u32>,
 }
 
@@ -1890,6 +1917,47 @@ fn differs(a: &[u8], b: &[u8]) -> bool {
             .any(|(x, y)| x.abs_diff(*y) > STILL_TOLERANCE)
 }
 
+/// Reads `field` of the card in a link-cli `--output-file` JSON file under /tmp or $HOME; no error carries a value.
+async fn card_field(path: &str, field: &str) -> Result<String, String> {
+    let real = tokio::fs::canonicalize(path)
+        .await
+        .map_err(|e| format!("{path}: {e}"))?;
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let allowed = real.starts_with("/tmp") || home.is_some_and(|h| real.starts_with(h));
+    if !Path::new(path).is_absolute() || !allowed {
+        return Err(format!("{path}: give an absolute path under /tmp or $HOME"));
+    }
+    let size = tokio::fs::metadata(&real)
+        .await
+        .map_err(|e| format!("{path}: {e}"))?
+        .len();
+    if size > CARD_FILE_MAX {
+        return Err(format!("{path}: larger than {CARD_FILE_MAX} bytes"));
+    }
+    let raw = tokio::fs::read(&real)
+        .await
+        .map_err(|e| format!("{path}: {e}"))?;
+    let doc: Value = serde_json::from_slice(&raw)
+        .map_err(|_| format!("{path}: not a link-cli card file (no JSON)"))?;
+    let card = &doc["card"];
+    let text = |v: &Value| match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    };
+    let month = || text(&card["exp_month"]).and_then(|m| m.parse::<u32>().ok());
+    let value = match field {
+        "exp_month" => month().map(|m| format!("{m:02}")),
+        "exp" => month()
+            .zip(text(&card["exp_year"]).and_then(|y| y.parse::<u32>().ok()))
+            .map(|(m, y)| format!("{m:02}/{:02}", y % 100)),
+        _ => text(field.split('.').fold(card, |v, k| &v[k])),
+    };
+    value
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| format!("{path}: the card has no {field}"))
+}
+
 fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
     v.as_deref().ok_or_else(|| format!("missing {name}"))
 }
@@ -2027,6 +2095,109 @@ mod tests {
             "{:?}",
             calls.lock().unwrap()
         );
+        driver.abort();
+    }
+
+    const PAN: &str = "4000056655665556";
+
+    fn card_file(dir: &Path) -> String {
+        let path = dir.join("card.json");
+        let card = json!({"spend_request_id": "lsrq_1", "card": {"number": PAN, "cvc": "321", "exp_month": 3, "exp_year": 2029, "brand": "visa", "billing_address": {"postal_code": "94107"}}});
+        std::fs::write(&path, card.to_string()).unwrap();
+        path.display().to_string()
+    }
+
+    #[tokio::test]
+    async fn card_field_reads_a_link_cli_card_file_under_tmp_only() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let path = card_file(dir.path());
+        for (field, want) in [
+            ("number", PAN),
+            ("cvc", "321"),
+            ("exp_month", "03"),
+            ("exp_year", "2029"),
+            ("exp", "03/29"),
+            ("billing_address.postal_code", "94107"),
+        ] {
+            assert_eq!(card_field(&path, field).await.unwrap(), want, "{field}");
+        }
+        let missing = card_field(&path, "billing_address.line1")
+            .await
+            .unwrap_err();
+        assert!(
+            missing.contains("no billing_address.line1") && !missing.contains(PAN),
+            "{missing}"
+        );
+        let big = dir.path().join("big.json");
+        std::fs::write(&big, vec![b' '; 64 * 1024 + 1]).unwrap();
+        assert!(
+            card_field(big.to_str().unwrap(), "number")
+                .await
+                .unwrap_err()
+                .contains("larger than")
+        );
+        assert!(
+            card_field("/etc/passwd", "number")
+                .await
+                .unwrap_err()
+                .contains("under /tmp or $HOME")
+        );
+        assert!(card_field("../../etc/passwd", "number").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn type_from_file_types_the_field_and_returns_only_its_length() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let path = card_file(dir.path());
+        let socket = dir.path().join("cua.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let typed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let log = std::sync::Arc::clone(&typed);
+        let driver = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let text = req["args"]["text"].as_str().unwrap_or_default().to_owned();
+                let reply = if req["name"] == "type_text" {
+                    log.lock().unwrap().push(text.clone());
+                    if log.lock().unwrap().len() == 1 {
+                        json!({"ok": true, "result": {"content": [{"type": "text", "text": format!("Typed {text}")}]}})
+                    } else {
+                        json!({"ok": false, "error": format!("cannot type {text}")})
+                    }
+                } else {
+                    json!({"ok": true, "result": {"structuredContent": {}}})
+                };
+                let mut out = reply.to_string().into_bytes();
+                out.push(b'\n');
+                reader.into_inner().write_all(&out).await.unwrap();
+            }
+        });
+        let cua = Cua::new(socket, false);
+        let act =
+            json!({"action": "type_from_file", "path": path, "field": "number", "x": 10, "y": 10});
+        let ok = cua.act(act.clone()).await.unwrap();
+        assert!(!ok.is_error, "{}", ok.text);
+        assert_eq!(
+            ok.text,
+            "typed 16 characters of number; verify on the screenshot"
+        );
+        let failed = cua.act(act).await.unwrap();
+        assert!(
+            failed.is_error && failed.text.contains("cannot type [card field]"),
+            "{}",
+            failed.text
+        );
+        assert_eq!(*typed.lock().unwrap(), [PAN, PAN]);
+        let refused = cua
+            .act(json!({"action": "type_from_file", "path": "/etc/passwd", "field": "number", "x": 10, "y": 10}))
+            .await
+            .unwrap_err();
+        assert!(refused.contains("under /tmp or $HOME"), "{refused}");
+        assert_eq!(typed.lock().unwrap().len(), 2);
         driver.abort();
     }
 
