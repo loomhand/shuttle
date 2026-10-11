@@ -15,6 +15,7 @@ use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
+use super::browser::Browser;
 use super::rpc::Output;
 use super::timing;
 use super::volatile::{Block, Shown, Volatile};
@@ -198,28 +199,36 @@ impl Cua {
     }
 
     /// `computer_act`: one input action followed by a fresh desktop screenshot; on cbplan also a list of `actions`.
-    pub async fn act(&self, args: Value) -> Result<Output, String> {
+    pub async fn act(&self, browser: &Browser, args: Value) -> Result<Output, String> {
         self.touch();
         let session = session_of(&args);
         if self.cbplan && args.get("actions").is_some() {
             let list: ActList =
                 serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
-            return self.act_list(&session, list).await;
+            return self.act_list(browser, &session, list).await;
         }
         let a: ActArgs =
             serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
-        self.act_one(&session, a).await
+        self.act_one(browser, &session, a).await
     }
 
     /// Runs the actions in order, each settled, stops at the first failure and returns the last screenshot.
-    async fn act_list(&self, session: &str, list: ActList) -> Result<Output, String> {
+    async fn act_list(
+        &self,
+        browser: &Browser,
+        session: &str,
+        list: ActList,
+    ) -> Result<Output, String> {
         let total = list.actions.len();
         let mut lines = Vec::with_capacity(total);
         let mut out = Output::default();
         for (i, mut a) in list.actions.into_iter().enumerate() {
             a.max_edge = list.max_edge;
             let action = a.action.clone();
-            let step = self.act_one(session, a).await.unwrap_or_else(Output::error);
+            let step = self
+                .act_one(browser, session, a)
+                .await
+                .unwrap_or_else(Output::error);
             let failed = if step.is_error { " failed" } else { "" };
             lines.push(format!("{}. {action}{failed}: {}", i + 1, step.text));
             out.image_b64 = step.image_b64;
@@ -242,14 +251,54 @@ impl Cua {
         Ok(out)
     }
 
-    /// Runs one action; `type_from_file` types a card field through the `type` path, returns only
-    /// its length and hands the field to the agent as a secret.
-    async fn act_one(&self, session: &str, mut a: ActArgs) -> Result<Output, String> {
+    /// Runs one action; `type_from_file` clicks its target, types a card field through the `type` path
+    /// only while the focus is in a web page field (see [`Browser::page_field`]), returns only its
+    /// length and hands the field to the agent as a secret.
+    async fn act_one(
+        &self,
+        browser: &Browser,
+        session: &str,
+        mut a: ActArgs,
+    ) -> Result<Output, String> {
         if a.action != "type_from_file" {
             return self.act_input(session, a).await;
         }
         let field = required(&a.field, "field")?.to_owned();
         let value = card_field(required(&a.path, "path")?, &field).await?;
+        let mut shot = None;
+        if a.element.is_some() || (a.x.is_some() && a.y.is_some()) {
+            let click = ActArgs {
+                action: "click".to_owned(),
+                element: a.element.take(),
+                x: a.x.take(),
+                y: a.y.take(),
+                foreground: a.foreground,
+                max_edge: a.max_edge,
+                ..ActArgs::default()
+            };
+            let clicked = self.act_input(session, click).await?;
+            if clicked.is_error {
+                return Ok(Output {
+                    text: format!(
+                        "clicking the {field} field failed; nothing was typed: {}",
+                        clicked.text
+                    ),
+                    ..clicked
+                });
+            }
+            shot = clicked.image_b64;
+        }
+        if let Err(e) = browser.page_field().await {
+            if shot.is_none() {
+                shot = self.screenshot(session, a.max_edge).await?;
+            }
+            return Ok(Output {
+                text: e,
+                is_error: true,
+                image_b64: shot,
+                ..Output::default()
+            });
+        }
         let typed = value.chars().count();
         "type".clone_into(&mut a.action);
         a.text = Some(value.clone());
@@ -2017,6 +2066,7 @@ fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::browser::tests::web_chrome;
     use super::*;
 
     #[tokio::test]
@@ -2145,8 +2195,9 @@ mod tests {
             }
         });
         let cua = Cua::new(socket, false);
+        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1);
         let out = cua
-            .act(json!({"action": "key", "key": "escape"}))
+            .act(&browser, json!({"action": "key", "key": "escape"}))
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.text);
@@ -2159,7 +2210,10 @@ mod tests {
         assert_eq!(pressed["args"]["session"], DEFAULT_SESSION);
         assert!(pressed["args"].get("pid").is_none(), "{pressed}");
         for text in ["hello", "héllo"] {
-            let failed = match cua.act(json!({"action": "type", "text": text})).await {
+            let failed = match cua
+                .act(&browser, json!({"action": "type", "text": text}))
+                .await
+            {
                 Ok(out) => {
                     assert!(out.is_error, "{text}: {}", out.text);
                     out.text
@@ -2228,13 +2282,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn type_from_file_types_the_field_and_returns_only_its_length() {
+    async fn type_from_file_clicks_types_only_into_a_page_field_and_returns_only_its_length() {
         let dir = tempfile::tempdir_in("/tmp").unwrap();
         let path = card_file(dir.path());
         let socket = dir.path().join("cua.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let typed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let log = std::sync::Arc::clone(&typed);
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let log = std::sync::Arc::clone(&calls);
         let driver = tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
@@ -2243,45 +2297,94 @@ mod tests {
                 reader.read_line(&mut line).await.unwrap();
                 let req: Value = serde_json::from_str(&line).unwrap();
                 let text = req["args"]["text"].as_str().unwrap_or_default().to_owned();
-                let reply = if req["name"] == "type_text" {
-                    log.lock().unwrap().push(text.clone());
-                    if log.lock().unwrap().len() == 1 {
+                let typed = log
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|c| c["name"] == "type_text")
+                    .count();
+                let reply = match req["name"].as_str().unwrap_or_default() {
+                    "type_text" if typed == 0 => {
                         json!({"ok": true, "result": {"content": [{"type": "text", "text": format!("Typed {text}")}]}})
-                    } else {
-                        json!({"ok": false, "error": format!("cannot type {text}")})
                     }
-                } else {
-                    json!({"ok": true, "result": {"structuredContent": {}}})
+                    "type_text" => json!({"ok": false, "error": format!("cannot type {text}")}),
+                    "list_windows" => {
+                        json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Google-chrome", "title": "checkout", "bounds": {"x": 0, "y": 0, "width": 800, "height": 600}, "z_index": 1}]}}})
+                    }
+                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
                 };
+                log.lock().unwrap().push(req);
                 let mut out = reply.to_string().into_bytes();
                 out.push(b'\n');
                 reader.into_inner().write_all(&out).await.unwrap();
             }
         });
+        let names = || -> Vec<String> {
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|c| c["name"].as_str().unwrap_or_default().to_owned())
+                .filter(|n| n == "click" || n == "type_text")
+                .collect()
+        };
         let cua = Cua::new(socket, false);
+        let field = Browser::new(
+            "/nonexistent/chrome".into(),
+            dir.path().into(),
+            web_chrome(&[("page", "https://shop.test/checkout", "field")]).await,
+        );
         let act =
             json!({"action": "type_from_file", "path": path, "field": "number", "x": 10, "y": 10});
-        let ok = cua.act(act.clone()).await.unwrap();
+        let ok = cua.act(&field, act.clone()).await.unwrap();
         assert!(!ok.is_error, "{}", ok.text);
         assert_eq!(
             ok.text,
             "typed 16 characters of number; verify on the screenshot"
         );
         assert_eq!(ok.secrets, [("number".to_owned(), PAN.to_owned())]);
-        let failed = cua.act(act).await.unwrap();
+        assert_eq!(names(), ["click", "type_text"]);
+        let typed = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == "type_text")
+            .cloned()
+            .unwrap();
+        assert!(typed["args"].get("x").is_none(), "{typed}");
+        let failed = cua.act(&field, act.clone()).await.unwrap();
         assert!(
             failed.is_error && failed.text.contains("cannot type [card field]"),
             "{}",
             failed.text
         );
         assert_eq!(failed.secrets, ok.secrets);
-        assert_eq!(*typed.lock().unwrap(), [PAN, PAN]);
-        let refused = cua
-            .act(json!({"action": "type_from_file", "path": "/etc/passwd", "field": "number", "x": 10, "y": 10}))
+
+        let omnibox = Browser::new(
+            "/nonexistent/chrome".into(),
+            dir.path().into(),
+            web_chrome(&[("page", "https://shop.test/checkout", "")]).await,
+        );
+        let refused = cua.act(&omnibox, act).await.unwrap();
+        assert!(
+            refused.is_error
+                && refused
+                    .text
+                    .starts_with("focus a card field on the checkout page first"),
+            "{}",
+            refused.text
+        );
+        assert!(refused.secrets.is_empty());
+        assert_eq!(
+            names(),
+            ["click", "type_text", "click", "type_text", "click"]
+        );
+        let unreadable = cua
+            .act(&field, json!({"action": "type_from_file", "path": "/etc/passwd", "field": "number", "x": 10, "y": 10}))
             .await
             .unwrap_err();
-        assert!(refused.contains("under /tmp or $HOME"), "{refused}");
-        assert_eq!(typed.lock().unwrap().len(), 2);
+        assert!(unreadable.contains("under /tmp or $HOME"), "{unreadable}");
+        assert_eq!(names().len(), 5);
         driver.abort();
     }
 
