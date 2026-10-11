@@ -336,6 +336,7 @@ impl Cua {
         }
         if a.action == "type"
             && (a.text.as_deref().is_some_and(|t| !t.is_ascii())
+                || (a.element.is_none() && a.x.is_some() && a.y.is_some())
                 || self.web_pixel(session, &a).await)
         {
             return self.type_mixed(session, &a).await;
@@ -475,8 +476,8 @@ impl Cua {
         Ok((image, scale, None))
     }
 
-    /// Types text with non-ASCII characters; on cbdesk and on cbplan's pid route in calls of at most [`RUN_CHARS`]
-    /// distinct non-ASCII characters.
+    /// Types text with non-ASCII characters or at a point, which a click focuses first; on cbdesk and on cbplan's
+    /// pid route in calls of at most [`RUN_CHARS`] distinct non-ASCII characters.
     async fn type_mixed(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
         let full = a.text.as_deref().unwrap_or_default();
         let input = self.input.lock().await;
@@ -2281,15 +2282,15 @@ mod tests {
         assert!(card_field("../../etc/passwd", "number").await.is_err());
     }
 
-    #[tokio::test]
-    async fn type_from_file_clicks_types_only_into_a_page_field_and_returns_only_its_length() {
-        let dir = tempfile::tempdir_in("/tmp").unwrap();
-        let path = card_file(dir.path());
-        let socket = dir.path().join("cua.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
-        let log = std::sync::Arc::clone(&calls);
-        let driver = tokio::spawn(async move {
+    /// A driver on `socket` that logs every call in `calls`, lists one Chrome window and types the first `typed` texts.
+    fn window_driver(
+        socket: &Path,
+        calls: &std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+        typed: usize,
+    ) -> tokio::task::JoinHandle<()> {
+        let listener = tokio::net::UnixListener::bind(socket).unwrap();
+        let log = std::sync::Arc::clone(calls);
+        tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
                 let mut reader = BufReader::new(stream);
@@ -2297,14 +2298,14 @@ mod tests {
                 reader.read_line(&mut line).await.unwrap();
                 let req: Value = serde_json::from_str(&line).unwrap();
                 let text = req["args"]["text"].as_str().unwrap_or_default().to_owned();
-                let typed = log
+                let types = log
                     .lock()
                     .unwrap()
                     .iter()
                     .filter(|c| c["name"] == "type_text")
                     .count();
                 let reply = match req["name"].as_str().unwrap_or_default() {
-                    "type_text" if typed == 0 => {
+                    "type_text" if types < typed => {
                         json!({"ok": true, "result": {"content": [{"type": "text", "text": format!("Typed {text}")}]}})
                     }
                     "type_text" => json!({"ok": false, "error": format!("cannot type {text}")}),
@@ -2318,7 +2319,54 @@ mod tests {
                 out.push(b'\n');
                 reader.into_inner().write_all(&out).await.unwrap();
             }
-        });
+        })
+    }
+
+    #[tokio::test]
+    async fn a_type_at_a_point_clicks_it_then_types_into_the_focus() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1);
+        for cbplan in [false, true] {
+            calls.lock().unwrap().clear();
+            let cua = Cua::new(socket.clone(), cbplan);
+            let out = cua
+                .act(
+                    &browser,
+                    json!({"action": "type", "text": "hello", "x": 10, "y": 20}),
+                )
+                .await
+                .unwrap();
+            assert!(!out.is_error, "{}", out.text);
+            let calls = calls.lock().unwrap();
+            let input: Vec<&Value> = calls
+                .iter()
+                .filter(|c| c["name"] == "click" || c["name"] == "type_text")
+                .collect();
+            assert_eq!(input.len(), 2, "{input:?}");
+            assert_eq!(input[0]["name"], "click");
+            assert_eq!(
+                (
+                    input[0]["args"]["x"].as_f64(),
+                    input[0]["args"]["y"].as_f64()
+                ),
+                (Some(10.0), Some(20.0))
+            );
+            assert_eq!(input[1]["args"]["text"], "hello");
+            assert!(input[1]["args"].get("x").is_none(), "{}", input[1]);
+        }
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn type_from_file_clicks_types_only_into_a_page_field_and_returns_only_its_length() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let path = card_file(dir.path());
+        let socket = dir.path().join("cua.sock");
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, 1);
         let names = || -> Vec<String> {
             calls
                 .lock()
