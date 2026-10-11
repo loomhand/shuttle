@@ -198,24 +198,25 @@ impl Cua {
         })
     }
 
-    /// `computer_act`: one input action followed by a fresh desktop screenshot; on cbplan also a list of `actions`.
-    pub async fn act(&self, browser: &Browser, args: Value) -> Result<Output, String> {
+    /// `computer_act` of agent `owner`: one input action followed by a fresh desktop screenshot; on cbplan also a list of `actions`.
+    pub async fn act(&self, browser: &Browser, owner: &str, args: Value) -> Result<Output, String> {
         self.touch();
         let session = session_of(&args);
         if self.cbplan && args.get("actions").is_some() {
             let list: ActList =
                 serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
-            return self.act_list(browser, &session, list).await;
+            return self.act_list(browser, owner, &session, list).await;
         }
         let a: ActArgs =
             serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
-        self.act_one(browser, &session, a).await
+        self.act_one(browser, owner, &session, a).await
     }
 
     /// Runs the actions in order, each settled, stops at the first failure and returns the last screenshot.
     async fn act_list(
         &self,
         browser: &Browser,
+        owner: &str,
         session: &str,
         list: ActList,
     ) -> Result<Output, String> {
@@ -226,7 +227,7 @@ impl Cua {
             a.max_edge = list.max_edge;
             let action = a.action.clone();
             let step = self
-                .act_one(browser, session, a)
+                .act_one(browser, owner, session, a)
                 .await
                 .unwrap_or_else(Output::error);
             let failed = if step.is_error { " failed" } else { "" };
@@ -257,9 +258,14 @@ impl Cua {
     async fn act_one(
         &self,
         browser: &Browser,
+        owner: &str,
         session: &str,
         mut a: ActArgs,
     ) -> Result<Output, String> {
+        if a.action == "launch_app" {
+            timing::note("action", &a.action);
+            return self.launch(browser, owner, session, &a).await;
+        }
         if a.action != "type_from_file" {
             return self.act_input(session, a).await;
         }
@@ -340,9 +346,6 @@ impl Cua {
                 || self.web_pixel(session, &a).await)
         {
             return self.type_mixed(session, &a).await;
-        }
-        if a.action == "launch_app" {
-            return self.launch(session, &a).await;
         }
         let (tool, mut req) = self.action_request(session, &a).await?;
         let line = req["text"]
@@ -578,50 +581,69 @@ impl Cua {
         })
     }
 
-    /// Launches an app, or brings its existing window to the front when it already runs.
-    async fn launch(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
+    /// Launches an app, or brings its existing window to the front when it already runs. On cbplan, Chrome by
+    /// any name is the window of `owner` in the browser tools' Chrome, so they and `type_from_file` see it.
+    async fn launch(
+        &self,
+        browser: &Browser,
+        owner: &str,
+        session: &str,
+        a: &ActArgs,
+    ) -> Result<Output, String> {
         let app = required(&a.app, "app")?;
         let input = self.input.lock().await;
         let before = self.before_input(None).await;
-        let text = match self.app_windows(session, app).await?.first() {
-            Some(w) => {
-                let req = json!({"pid": w.pid, "window_id": w.window_id});
-                match self.request(session, "bring_to_front", req).await {
-                    Ok(_) => format!(
-                        "{app} is already running; brought its window {} \"{}\" (pid {}) to the front",
-                        w.window_id, w.title, w.pid
-                    ),
-                    Err(e) => format!(
-                        "{app} is already running as window {} \"{}\" (pid {}); raising it failed: {e}",
-                        w.window_id, w.title, w.pid
-                    ),
-                }
-            }
-            None => match self
-                .request(session, "launch_app", json!({"name": app}))
+        let launched = if self.cbplan && is_chrome(app) {
+            browser
+                .run(owner, "browser_show", Value::Null)
                 .await
-            {
-                Ok(v) => content_text(&v),
-                Err(e) => match self.app_windows(session, app).await?.first() {
-                    Some(w) => format!(
-                        "{app} is running as window {} \"{}\" (pid {}); the launcher reported: {e}",
-                        w.window_id, w.title, w.pid
-                    ),
-                    None => {
-                        self.end_volatile();
-                        if let Some(probe) = before.and_then(|b| b.probe) {
-                            let _ = self.request(&probe, "end_session", json!({})).await;
-                        }
-                        drop(input);
-                        return Ok(Output {
-                            text: e,
-                            is_error: true,
-                            image_b64: self.screenshot(session, a.max_edge).await?,
-                            ..Output::default()
-                        });
-                    }
+                .map(|title| format!("brought this agent's window \"{title}\" of the box's Chrome to the front; the browser tools and type_from_file see it"))
+                .map_err(|e| format!("opening the box's Chrome failed: {e}"))
+        } else {
+            match self.app_windows(session, app).await?.first() {
+                Some(w) => {
+                    let req = json!({"pid": w.pid, "window_id": w.window_id});
+                    Ok(match self.request(session, "bring_to_front", req).await {
+                        Ok(_) => format!(
+                            "{app} is already running; brought its window {} \"{}\" (pid {}) to the front",
+                            w.window_id, w.title, w.pid
+                        ),
+                        Err(e) => format!(
+                            "{app} is already running as window {} \"{}\" (pid {}); raising it failed: {e}",
+                            w.window_id, w.title, w.pid
+                        ),
+                    })
+                }
+                None => match self
+                    .request(session, "launch_app", json!({"name": app}))
+                    .await
+                {
+                    Ok(v) => Ok(content_text(&v)),
+                    Err(e) => match self.app_windows(session, app).await?.first() {
+                        Some(w) => Ok(format!(
+                            "{app} is running as window {} \"{}\" (pid {}); the launcher reported: {e}",
+                            w.window_id, w.title, w.pid
+                        )),
+                        None => Err(e),
+                    },
                 },
-            },
+            }
+        };
+        let text = match launched {
+            Ok(text) => text,
+            Err(e) => {
+                self.end_volatile();
+                if let Some(probe) = before.and_then(|b| b.probe) {
+                    let _ = self.request(&probe, "end_session", json!({})).await;
+                }
+                drop(input);
+                return Ok(Output {
+                    text: e,
+                    is_error: true,
+                    image_b64: self.screenshot(session, a.max_edge).await?,
+                    ..Output::default()
+                });
+            }
         };
         timing::mark("act");
         let changes = self.settle(before).await;
@@ -2061,13 +2083,19 @@ async fn card_field(path: &str, field: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{path}: the card has no {field}"))
 }
 
+/// Whether `launch_app` names Chrome or Chromium by command, display name or desktop file id.
+fn is_chrome(app: &str) -> bool {
+    let app = app.to_lowercase();
+    app.contains("chrome") || app.contains("chromium")
+}
+
 fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
     v.as_deref().ok_or_else(|| format!("missing {name}"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::browser::tests::web_chrome;
+    use super::super::browser::tests::{slow_chrome, web_chrome};
     use super::*;
 
     #[tokio::test]
@@ -2198,7 +2226,7 @@ mod tests {
         let cua = Cua::new(socket, false);
         let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1);
         let out = cua
-            .act(&browser, json!({"action": "key", "key": "escape"}))
+            .act(&browser, "ag", json!({"action": "key", "key": "escape"}))
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.text);
@@ -2212,7 +2240,7 @@ mod tests {
         assert!(pressed["args"].get("pid").is_none(), "{pressed}");
         for text in ["hello", "héllo"] {
             let failed = match cua
-                .act(&browser, json!({"action": "type", "text": text}))
+                .act(&browser, "ag", json!({"action": "type", "text": text}))
                 .await
             {
                 Ok(out) => {
@@ -2335,6 +2363,7 @@ mod tests {
             let out = cua
                 .act(
                     &browser,
+                    "ag",
                     json!({"action": "type", "text": "hello", "x": 10, "y": 20}),
                 )
                 .await
@@ -2357,6 +2386,52 @@ mod tests {
             assert_eq!(input[1]["args"]["text"], "hello");
             assert!(input[1]["args"].get("x").is_none(), "{}", input[1]);
         }
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn on_cbplan_chrome_by_any_name_opens_the_agent_window_of_the_browser_tools_chrome() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        let launches = || -> Vec<String> {
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| c["name"] == "launch_app" || c["name"] == "bring_to_front")
+                .map(|c| c["name"].as_str().unwrap_or_default().to_owned())
+                .collect()
+        };
+        let port = slow_chrome(Duration::ZERO).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), port);
+        let launch = |app: &str| json!({"action": "launch_app", "app": app});
+        let cbplan = Cua::new(socket.clone(), true);
+        for app in [
+            "google-chrome",
+            "Google Chrome",
+            "chromium",
+            "com.google.Chrome.desktop",
+        ] {
+            let out = cbplan.act(&browser, "ag", launch(app)).await.unwrap();
+            assert!(
+                !out.is_error
+                    && out
+                        .text
+                        .contains("window \"Page: slow\" of the box's Chrome"),
+                "{app}: {}",
+                out.text
+            );
+        }
+        assert!(launches().is_empty(), "{:?}", launches());
+        cbplan.act(&browser, "ag", launch("mousepad")).await.unwrap();
+        Cua::new(socket, false)
+            .act(&browser, "ag", launch("google-chrome"))
+            .await
+            .unwrap();
+        assert_eq!(launches(), ["launch_app", "bring_to_front"]);
         driver.abort();
     }
 
@@ -2384,7 +2459,7 @@ mod tests {
         );
         let act =
             json!({"action": "type_from_file", "path": path, "field": "number", "x": 10, "y": 10});
-        let ok = cua.act(&field, act.clone()).await.unwrap();
+        let ok = cua.act(&field, "ag", act.clone()).await.unwrap();
         assert!(!ok.is_error, "{}", ok.text);
         assert_eq!(
             ok.text,
@@ -2400,7 +2475,7 @@ mod tests {
             .cloned()
             .unwrap();
         assert!(typed["args"].get("x").is_none(), "{typed}");
-        let failed = cua.act(&field, act.clone()).await.unwrap();
+        let failed = cua.act(&field, "ag", act.clone()).await.unwrap();
         assert!(
             failed.is_error && failed.text.contains("cannot type [card field]"),
             "{}",
@@ -2413,7 +2488,7 @@ mod tests {
             dir.path().into(),
             web_chrome(&[("page", "https://shop.test/checkout", "")]).await,
         );
-        let refused = cua.act(&omnibox, act).await.unwrap();
+        let refused = cua.act(&omnibox, "ag", act).await.unwrap();
         assert!(
             refused.is_error
                 && refused
@@ -2428,7 +2503,7 @@ mod tests {
             ["click", "type_text", "click", "type_text", "click"]
         );
         let unreadable = cua
-            .act(&field, json!({"action": "type_from_file", "path": "/etc/passwd", "field": "number", "x": 10, "y": 10}))
+            .act(&field, "ag", json!({"action": "type_from_file", "path": "/etc/passwd", "field": "number", "x": 10, "y": 10}))
             .await
             .unwrap_err();
         assert!(unreadable.contains("under /tmp or $HOME"), "{unreadable}");
