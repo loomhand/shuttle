@@ -193,6 +193,7 @@ impl Cua {
             text,
             is_error: false,
             image_b64,
+            ..Output::default()
         })
     }
 
@@ -222,6 +223,7 @@ impl Cua {
             let failed = if step.is_error { " failed" } else { "" };
             lines.push(format!("{}. {action}{failed}: {}", i + 1, step.text));
             out.image_b64 = step.image_b64;
+            out.secrets.extend(step.secrets);
             if step.is_error {
                 out.is_error = true;
                 if i + 1 < total {
@@ -240,7 +242,8 @@ impl Cua {
         Ok(out)
     }
 
-    /// Runs one action; `type_from_file` types a card field through the `type` path and returns only its length.
+    /// Runs one action; `type_from_file` types a card field through the `type` path, returns only
+    /// its length and hands the field to the agent as a secret.
     async fn act_one(&self, session: &str, mut a: ActArgs) -> Result<Output, String> {
         if a.action != "type_from_file" {
             return self.act_input(session, a).await;
@@ -250,8 +253,11 @@ impl Cua {
         let typed = value.chars().count();
         "type".clone_into(&mut a.action);
         a.text = Some(value.clone());
-        let out = self.act_input(session, a).await?;
-        let text = if out.is_error {
+        let mut out = self
+            .act_input(session, a)
+            .await
+            .unwrap_or_else(Output::error);
+        out.text = if out.is_error {
             format!(
                 "typing {field} failed: {}",
                 out.text.replace(&value, "[card field]")
@@ -259,7 +265,8 @@ impl Cua {
         } else {
             format!("typed {typed} characters of {field}; verify on the screenshot")
         };
-        Ok(Output { text, ..out })
+        out.secrets.push((field, value));
+        Ok(out)
     }
 
     async fn act_input(&self, session: &str, mut a: ActArgs) -> Result<Output, String> {
@@ -275,6 +282,7 @@ impl Cua {
                 text: format!("waited {secs:.1}s"),
                 is_error: false,
                 image_b64: self.screenshot(session, a.max_edge).await?,
+                ..Output::default()
             });
         }
         if a.action == "type"
@@ -323,6 +331,7 @@ impl Cua {
             text,
             is_error,
             image_b64: shot,
+            ..Output::default()
         })
     }
 
@@ -515,6 +524,7 @@ impl Cua {
             },
             is_error: failure.is_some(),
             image_b64: shot,
+            ..Output::default()
         })
     }
 
@@ -557,6 +567,7 @@ impl Cua {
                             text: e,
                             is_error: true,
                             image_b64: self.screenshot(session, a.max_edge).await?,
+                            ..Output::default()
                         });
                     }
                 },
@@ -570,6 +581,7 @@ impl Cua {
             text: text + &changes,
             is_error: false,
             image_b64: shot,
+            ..Output::default()
         })
     }
 
@@ -2255,12 +2267,14 @@ mod tests {
             ok.text,
             "typed 16 characters of number; verify on the screenshot"
         );
+        assert_eq!(ok.secrets, [("number".to_owned(), PAN.to_owned())]);
         let failed = cua.act(act).await.unwrap();
         assert!(
             failed.is_error && failed.text.contains("cannot type [card field]"),
             "{}",
             failed.text
         );
+        assert_eq!(failed.secrets, ok.secrets);
         assert_eq!(*typed.lock().unwrap(), [PAN, PAN]);
         let refused = cua
             .act(json!({"action": "type_from_file", "path": "/etc/passwd", "field": "number", "x": 10, "y": 10}))
