@@ -84,6 +84,8 @@ pub struct Cua {
     titles: std::sync::Mutex<HashMap<u32, String>>,
     /// Per session, screen pixels per image pixel of the last screenshot returned on cbplan.
     scales: std::sync::Mutex<HashMap<String, f64>>,
+    /// Per session on cbdesk, screen pixels per image pixel of the driver's last capture, which maps its desktop x,y.
+    driver_scales: std::sync::Mutex<HashMap<String, f64>>,
     /// On cbplan, the screen blocks that change while no action runs, which the settle ignores.
     volatile: Option<Volatile>,
 }
@@ -99,6 +101,7 @@ impl Cua {
             grabber: std::sync::Mutex::new(None),
             titles: std::sync::Mutex::new(HashMap::new()),
             scales: std::sync::Mutex::new(HashMap::new()),
+            driver_scales: std::sync::Mutex::new(HashMap::new()),
             volatile: cbplan.then(Volatile::start),
         }
     }
@@ -255,7 +258,7 @@ impl Cua {
         if a.action == "launch_app" {
             return self.launch(session, &a).await;
         }
-        let (tool, mut req, pixel) = self.action_request(session, &a).await?;
+        let (tool, mut req) = self.action_request(session, &a).await?;
         let line = req["text"]
             .as_str()
             .and_then(before_newline)
@@ -270,7 +273,7 @@ impl Cua {
         let input = self.input.lock().await;
         timing::mark("resolve");
         let before = self.before_input(Some(&a)).await;
-        let once = self.once(&req, pixel);
+        let once = self.once(&req);
         let target = once.as_deref().unwrap_or(session);
         let typed = enter.then(|| req.clone());
         let mut result = self.request(target, tool, req).await;
@@ -310,6 +313,7 @@ impl Cua {
         let session = format!("shot-{}", uuid::Uuid::new_v4().simple());
         let shot = self.screenshot(&session, max_edge).await;
         self.scales().remove(&session);
+        self.driver_scales().remove(&session);
         self.request(&session, "end_session", json!({})).await?;
         timing::mark("end");
         shot
@@ -321,6 +325,7 @@ impl Cua {
         self.request(&session, "end_session", json!({})).await?;
         self.last.lock().await.remove(&session);
         self.scales().remove(&session);
+        self.driver_scales().remove(&session);
         Ok(format!("ended session {session}"))
     }
 
@@ -377,6 +382,8 @@ impl Cua {
                 let _ = self.request(session, "get_desktop_state", json!({})).await;
                 timing::mark("rescale");
             }
+        } else {
+            self.driver_scales().insert(session.to_owned(), scale);
         }
         timing::note("image_bytes", image.as_ref().map_or(0, |b| b.len() / 4 * 3));
         Ok((image, scale, None))
@@ -398,8 +405,8 @@ impl Cua {
                 foreground: a.foreground,
                 ..ActArgs::default()
             };
-            let (tool, req, pixel) = self.action_request(session, &focus).await?;
-            let once = self.once(&req, pixel);
+            let (tool, req) = self.action_request(session, &focus).await?;
+            let once = self.once(&req);
             failure = self
                 .request(once.as_deref().unwrap_or(session), tool, req)
                 .await
@@ -431,7 +438,7 @@ impl Cua {
             text_runs(text)
         };
         let mut typed = 0;
-        let once = self.once(&base, false);
+        let once = self.once(&base);
         for run in &runs {
             if failure.is_some() {
                 break;
@@ -833,6 +840,17 @@ impl Cua {
         self.scales().get(session).copied().unwrap_or(1.0)
     }
 
+    fn driver_scales(&self) -> std::sync::MutexGuard<'_, HashMap<String, f64>> {
+        self.driver_scales
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The factor by which the driver maps `session`'s desktop x,y; a screen pixel divided by it lands on itself.
+    fn driver_scale(&self, session: &str) -> f64 {
+        self.driver_scales().get(session).copied().unwrap_or(1.0)
+    }
+
     /// Runs `read` on the MIT-SHM grabber, opening it when needed; `None` when it is unavailable or fails.
     fn shm<T>(&self, read: impl FnOnce(&Grabber) -> Result<T, String>) -> Option<T> {
         let mut slot = self
@@ -913,7 +931,7 @@ impl Cua {
         &self,
         session: &str,
         a: &ActArgs,
-    ) -> Result<(&'static str, Value, bool), String> {
+    ) -> Result<(&'static str, Value), String> {
         let desktop = json!({"kind": "desktop", "display_id": "primary"});
         let clicks = matches!(a.action.as_str(), "click" | "double_click" | "right_click")
             || (self.cbplan && a.action == "triple_click");
@@ -983,14 +1001,15 @@ impl Cua {
                 let k = self.scale_of(session);
                 let (x, y, tx, ty) = (x * k, y * k, tx * k, ty * k);
                 req = json!({"from_x": x, "from_y": y, "to_x": tx, "to_y": ty, "target": desktop});
-                return Ok(("drag", req, false));
+                return Ok(("drag", req));
             }
             other => return Err(format!("unknown action {other}")),
         };
         if let Some((x, y)) = pixel {
             timing::note("route", "pixel");
-            req["x"] = x.into();
-            req["y"] = y.into();
+            let k = self.driver_scale(session);
+            req["x"] = (x / k).into();
+            req["y"] = (y / k).into();
             req["target"] = desktop;
         } else if let Some(index) = a.element {
             let last = self.last.lock().await;
@@ -1031,7 +1050,7 @@ impl Cua {
         if a.foreground {
             req["delivery_mode"] = "foreground".into();
         }
-        Ok((tool, req, pixel.is_some()))
+        Ok((tool, req))
     }
 
     fn to_dialog(&self, req: &Value) -> bool {
@@ -1056,11 +1075,10 @@ impl Cua {
 
     /// A driver session of its own for the pid-addressed input `req`, ended by [`Self::end_once`] right
     /// after: the virtual master keyboard the driver makes for it would outlive the call, and while one
-    /// exists Chrome drops core keyboard input, from XTest and VNC alike. A `pixel` click at an element
-    /// gets one too: its x,y are screen pixels, which the driver maps by the capture of a session that
-    /// took one, and a session's second pointer action waits 1.1 s for its agent cursor to glide.
-    fn once(&self, req: &Value, pixel: bool) -> Option<String> {
-        (pixel || req.get("pid").is_some())
+    /// exists Chrome drops core keyboard input, from XTest and VNC alike.
+    fn once(&self, req: &Value) -> Option<String> {
+        req.get("pid")
+            .is_some()
             .then(|| format!("input-{}", uuid::Uuid::new_v4().simple()))
     }
 
@@ -1302,7 +1320,7 @@ impl Cua {
             .await;
     }
 
-    /// The desktop-addressed input `req` of `tool` in a driver session of its own (see [`Self::once`]).
+    /// The desktop-addressed input `req` of `tool` in a driver session of its own, whose x,y no capture maps.
     async fn desktop_input(&self, tool: &str, mut req: Value) -> Result<Value, String> {
         req["target"] = json!({"kind": "desktop", "display_id": "primary"});
         let once = format!("input-{}", uuid::Uuid::new_v4().simple());
