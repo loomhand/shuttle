@@ -35,6 +35,8 @@ const WINDOW_STILL_FOR: Duration = Duration::from_millis(150);
 const COMMIT_STILL_FOR: Duration = Duration::from_millis(400);
 const COMMIT_FIRST: Duration = Duration::from_millis(1500);
 const RETURN_GAP: Duration = Duration::from_millis(300);
+const CLICK_SPACING: Duration = Duration::from_millis(500);
+const CLICK_DISTANCE: f64 = 16.0;
 const STILL_EDGE: u32 = 160;
 const STILL_TOLERANCE: u8 = 48;
 const VISIBLE_STEP: u8 = 24;
@@ -89,6 +91,7 @@ pub struct Cua {
     driver_scales: std::sync::Mutex<HashMap<String, f64>>,
     /// On cbplan, the screen blocks that change while no action runs, which the settle ignores.
     volatile: Option<Volatile>,
+    last_click: std::sync::Mutex<Option<(Instant, f64, f64)>>,
 }
 
 impl Cua {
@@ -104,6 +107,7 @@ impl Cua {
             scales: std::sync::Mutex::new(HashMap::new()),
             driver_scales: std::sync::Mutex::new(HashMap::new()),
             volatile: cbplan.then(Volatile::start),
+            last_click: std::sync::Mutex::new(None),
         }
     }
 
@@ -1364,11 +1368,40 @@ impl Cua {
     }
 
     async fn request(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
-        let result = self.call(session, name, args).await?;
+        let point = match (args["x"].as_f64(), args["y"].as_f64()) {
+            (Some(x), Some(y)) if self.cbplan && name == "click" => Some((x, y)),
+            _ => None,
+        };
+        if let Some(point) = point {
+            self.space_click(point).await;
+        }
+        let result = self.call(session, name, args).await;
+        if let Some((x, y)) = point {
+            *self.last_click() = Some((Instant::now(), x, y));
+        }
+        let result = result?;
         if result["isError"] == true {
             return Err(format!("{name}: {}", content_text(&result)));
         }
         Ok(result)
+    }
+
+    async fn space_click(&self, (x, y): (f64, f64)) {
+        let last = *self.last_click();
+        let wait = last
+            .filter(|(_, lx, ly)| (x - lx).hypot(y - ly) <= CLICK_DISTANCE)
+            .map(|(at, _, _)| CLICK_SPACING.saturating_sub(at.elapsed()))
+            .filter(|w| !w.is_zero());
+        if let Some(wait) = wait {
+            timing::note("click_gap_ms", wait.as_millis());
+            tokio::time::sleep(wait).await;
+        }
+    }
+
+    fn last_click(&self) -> std::sync::MutexGuard<'_, Option<(Instant, f64, f64)>> {
+        self.last_click
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// One driver call; a result the driver marks isError comes back as is.
@@ -1988,6 +2021,35 @@ mod tests {
         let out = cua.request("s", "list_windows", json!({})).await;
         assert!(out.is_ok(), "{out:?}");
         driver.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_click_near_the_last_one_waits_out_the_double_click_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let driver = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                reader
+                    .into_inner()
+                    .write_all(b"{\"ok\":true,\"result\":{}}\n")
+                    .await
+                    .unwrap();
+            }
+        });
+        let cua = Cua::new(socket, true);
+        let click = |x: f64| json!({"x": x, "y": 300.0});
+        cua.request("s", "click", click(300.0)).await.unwrap();
+        let start = Instant::now();
+        cua.request("s", "click", click(400.0)).await.unwrap();
+        assert!(start.elapsed() < CLICK_SPACING / 2, "{:?}", start.elapsed());
+        cua.request("s", "click", click(405.0)).await.unwrap();
+        assert!(start.elapsed() >= CLICK_SPACING, "{:?}", start.elapsed());
+        driver.abort();
     }
 
     async fn closing_then_answering_driver(socket: PathBuf) -> Vec<String> {
