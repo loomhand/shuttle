@@ -60,6 +60,10 @@ const CONNECT_WAIT: Duration = Duration::from_secs(10);
 const DEFAULT_SESSION: &str = "cocoonbox";
 const SKIPPED: &str = "had no keycode";
 const RUN_CHARS: usize = 8;
+const WM_WAIT: Duration = Duration::from_secs(10);
+const WM_POLL: Duration = Duration::from_millis(100);
+const NO_TEXT_TARGET: &str =
+    "no application window is on the screen to type into; open or focus one first";
 const RETRIED: [&str; 4] = [
     "list_windows",
     "get_window_state",
@@ -403,7 +407,7 @@ impl Cua {
             self.end_once(once).await;
         }
         let mut base = json!({});
-        if let Some((pid, window_id)) = self.app_window(session).await? {
+        if let Some((pid, window_id)) = self.key_window(session).await? {
             if !a.foreground && self.keyboard(pid, window_id) {
                 timing::note("route", "desktop");
                 base["target"] = json!({"kind": "desktop", "display_id": "primary"});
@@ -411,6 +415,8 @@ impl Cua {
                 base["pid"] = pid.into();
                 base["window_id"] = window_id.into();
             }
+        } else {
+            failure = failure.or_else(|| Some(NO_TEXT_TARGET.to_owned()));
         }
         if a.foreground {
             base["delivery_mode"] = "foreground".into();
@@ -879,6 +885,30 @@ impl Cua {
             .map(|w| (w.pid, w.window_id)))
     }
 
+    /// [`Self::app_window`] once a window manager runs; while none does, as for a while after a desktop
+    /// start, waits for one at most [`WM_WAIT`], then fails.
+    async fn key_window(&self, session: &str) -> Result<Option<(i64, i64)>, String> {
+        if let Some(window) = self.app_window(session).await? {
+            return Ok(Some(window));
+        }
+        let (start, mut waited) = (Instant::now(), false);
+        while !self.shm(Grabber::wm).unwrap_or(true) {
+            if start.elapsed() >= WM_WAIT {
+                return Err(format!(
+                    "no window manager after {} s: the desktop is still starting; try again",
+                    WM_WAIT.as_secs()
+                ));
+            }
+            waited = true;
+            tokio::time::sleep(WM_POLL).await;
+        }
+        if !waited {
+            return Ok(None);
+        }
+        timing::note("wm_wait_ms", start.elapsed().as_millis());
+        self.app_window(session).await
+    }
+
     async fn action_request(
         &self,
         session: &str,
@@ -984,7 +1014,7 @@ impl Cua {
             req["target"] = desktop;
         } else if clicks {
             return Err(format!("{} needs element or x and y", a.action));
-        } else if let Some((pid, window_id)) = self.app_window(session).await? {
+        } else if let Some((pid, window_id)) = self.key_window(session).await? {
             if tool != "scroll" && !a.foreground && self.keyboard(pid, window_id) {
                 timing::note("route", "desktop");
                 req["target"] = desktop;
@@ -992,6 +1022,11 @@ impl Cua {
                 req["pid"] = pid.into();
                 req["window_id"] = window_id.into();
             }
+        } else if tool == "type_text" {
+            return Err(NO_TEXT_TARGET.to_owned());
+        } else if tool != "scroll" && !a.foreground {
+            timing::note("route", "desktop");
+            req["target"] = desktop;
         }
         if a.foreground {
             req["delivery_mode"] = "foreground".into();
@@ -1913,6 +1948,67 @@ mod tests {
             .request("s", "click", json!({}))
             .await;
         assert!(out.unwrap_err().starts_with("decode cua-driver reply"));
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_key_with_no_window_on_the_screen_goes_to_the_desktop_and_typing_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let log = std::sync::Arc::clone(&calls);
+        let driver = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                log.lock()
+                    .unwrap()
+                    .push(serde_json::from_str::<Value>(&line).unwrap());
+                reader
+                    .into_inner()
+                    .write_all(
+                        b"{\"ok\":true,\"result\":{\"structuredContent\":{\"windows\":[]}}}\n",
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+        let cua = Cua::new(socket, false);
+        let out = cua
+            .act(json!({"action": "key", "key": "escape"}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        let pressed = calls.lock().unwrap()[1].clone();
+        assert_eq!(pressed["name"], "press_key");
+        assert_eq!(
+            pressed["args"]["target"],
+            json!({"kind": "desktop", "display_id": "primary"})
+        );
+        assert_eq!(pressed["args"]["session"], DEFAULT_SESSION);
+        assert!(pressed["args"].get("pid").is_none(), "{pressed}");
+        for text in ["hello", "héllo"] {
+            let failed = match cua.act(json!({"action": "type", "text": text})).await {
+                Ok(out) => {
+                    assert!(out.is_error, "{text}: {}", out.text);
+                    out.text
+                }
+                Err(e) => e,
+            };
+            assert!(failed.contains(NO_TEXT_TARGET), "{text}: {failed}");
+        }
+        assert!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|c| c["name"] != "type_text"),
+            "{:?}",
+            calls.lock().unwrap()
+        );
         driver.abort();
     }
 
