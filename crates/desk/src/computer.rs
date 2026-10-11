@@ -27,6 +27,7 @@ pub(super) const SHELL_APPS: [&str; 2] = ["Xfce4-panel", "Xfdesktop"];
 const CHROME_CLASS: &str = "Google-chrome";
 const COMMIT_KEYS: [&str; 6] = ["return", "enter", "kp_enter", "f5", "alt+left", "alt+right"];
 const SETTLE: Duration = Duration::from_millis(600);
+const NO_CHANGE: Duration = Duration::from_millis(300);
 const COMMIT_SETTLE: Duration = Duration::from_millis(3000);
 const STILL_POLL: Duration = Duration::from_millis(40);
 const SHM_POLL: Duration = Duration::from_millis(10);
@@ -581,7 +582,7 @@ impl Cua {
             return None;
         }
         let commit = a.is_some_and(commits);
-        if let Some((pixels, blocks, windows, active, page, confirm)) = self.shm(|g| {
+        if let Some((pixels, blocks, windows, active, page, wait)) = self.shm(|g| {
             let active = g.active();
             let page = commit && active.is_some_and(|w| g.class(w) == CHROME_CLASS);
             let confirm = a.is_some_and(|a| {
@@ -590,7 +591,14 @@ impl Cua {
             let (width, height) = g.size();
             let pixels = g.pixels()?.to_vec();
             let blocks = xshm::block_hashes(&pixels, width, height);
-            Ok((pixels, blocks, g.mapped()?, active, page, confirm))
+            let wait = if confirm {
+                COMMIT_FIRST
+            } else if page || a.is_none() {
+                SETTLE
+            } else {
+                NO_CHANGE
+            };
+            Ok((pixels, blocks, g.mapped()?, active, page, wait))
         }) {
             let volatile = self
                 .volatile
@@ -610,7 +618,7 @@ impl Cua {
                 windows,
                 active,
                 page,
-                confirm,
+                wait,
             });
         }
         let probe = format!("still-{}", uuid::Uuid::new_v4().simple());
@@ -623,7 +631,7 @@ impl Cua {
                 windows: Vec::new(),
                 active: None,
                 page: false,
-                confirm: false,
+                wait: SETTLE,
             }),
             None => {
                 let _ = self.request(&probe, "end_session", json!({})).await;
@@ -635,20 +643,20 @@ impl Cua {
     }
 
     /// Waits after an input action until the screen differs from `before` and held still, at most
-    /// [`SETTLE`] for a change, [`COMMIT_FIRST`] after a confirm, and [`SETTLE`] after it, so an
-    /// effect that shows late, like a Save As dialog closing, is still in the frame; a flash that
-    /// reverts, like a pressed button, is no change. Without `before`, the fixed [`SETTLE`]. Over
-    /// MIT-SHM the screen is split into 16-pixel blocks whose new contents count (see [`Block`]): a
-    /// block that kept changing before the action, like a clock, a spinner or a video, never
-    /// counts; a caret counts only with contents it did not blink between; and a block back at its
-    /// contents from before toggles from then on (see [`Shown`]). The screen differs once a
-    /// counting block has a pixel more than [`VISIBLE_STEP`] off its value from before, so a faint
-    /// hover fade is not the effect; any change of a counting block restarts the hold. The hold is
-    /// [`STILL_FOR`], or [`WINDOW_STILL_FOR`] once a window maps, unmaps or moves or the focus
-    /// moves; after a commit in Chrome it is [`COMMIT_STILL_FOR`], at most [`COMMIT_SETTLE`] once
-    /// the screen changed, so a page that loads over the network or adds content from timers is in
-    /// the frame. Returns lines naming the windows the action opened, closed or brought to the
-    /// front.
+    /// [`NO_CHANGE`] for a change, [`SETTLE`] after a launch, a commit in Chrome or without
+    /// MIT-SHM, [`COMMIT_FIRST`] after a confirm, and [`SETTLE`] after it, so an effect that shows
+    /// late, like a Save As dialog closing, is still in the frame; a flash that reverts, like a
+    /// pressed button, is no change. Without `before`, the fixed [`SETTLE`]. Over MIT-SHM the
+    /// screen is split into 16-pixel blocks whose new contents count (see [`Block`]): a block that
+    /// kept changing before the action, like a clock, a spinner or a video, never counts; a caret
+    /// counts only with contents it did not blink between; and a block back at its contents from
+    /// before toggles from then on (see [`Shown`]). The screen differs once a counting block has a
+    /// pixel more than [`VISIBLE_STEP`] off its value from before, so a faint hover fade is not the
+    /// effect; any change of a counting block restarts the hold. The hold is [`STILL_FOR`], or
+    /// [`WINDOW_STILL_FOR`] once a window maps, unmaps or moves or the focus moves; after a commit
+    /// in Chrome it is [`COMMIT_STILL_FOR`], at most [`COMMIT_SETTLE`] once the screen changed, so
+    /// a page that loads over the network or adds content from timers is in the frame. Returns
+    /// lines naming the windows the action opened, closed or brought to the front.
     async fn settle(&self, before: Option<Before>) -> String {
         let Some(Before {
             probe,
@@ -658,7 +666,7 @@ impl Cua {
             windows,
             active,
             page,
-            confirm,
+            wait,
         }) = before
         else {
             tokio::time::sleep(SETTLE).await;
@@ -676,7 +684,7 @@ impl Cua {
             (STILL_FOR, WINDOW_STILL_FOR)
         };
         let start = Instant::now();
-        let mut deadline = start + if confirm { COMMIT_FIRST } else { SETTLE };
+        let mut deadline = start + wait;
         let (mut last, mut since): (Option<Frame>, Instant) = (None, Instant::now());
         let (mut seen, mut focus, mut hold) = (windows.clone(), active, first_hold);
         let (mut still, mut changed) = (false, false);
@@ -1480,7 +1488,7 @@ struct Before {
     active: Option<u32>,
     /// A commit action in Chrome: the settle holds [`COMMIT_STILL_FOR`], at most [`COMMIT_SETTLE`].
     page: bool,
-    confirm: bool,
+    wait: Duration,
 }
 
 /// A settle frame: block hashes over MIT-SHM, or a probe session's thumbnail.
