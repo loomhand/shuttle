@@ -113,8 +113,9 @@ struct State {
     acting: bool,
     /// Block hashes sampled since the last action ended, oldest first.
     samples: VecDeque<(Instant, Vec<u64>)>,
-    /// The blocks of the previous action, kept while the history is shorter than [`WINDOW`].
-    carried: Vec<Block>,
+    /// The samples of the pauses before earlier actions, newest first, kept while the newer ones
+    /// span less than [`WINDOW`] by more than [`SAMPLE_EVERY`].
+    pauses: VecDeque<Vec<(Instant, Vec<u64>)>>,
 }
 
 impl Volatile {
@@ -141,36 +142,40 @@ impl Volatile {
     }
 
     /// Marks an action begun and returns what each block did over the samples of the last [`WINDOW`]
-    /// and `now`, the hashes just before the action.
+    /// and `now`, the hashes just before the action, and in the pauses before earlier actions kept
+    /// in [`State::pauses`].
     pub fn begin(&self, now: &[u64]) -> Vec<Block> {
         let mut s = self.shared.lock();
         s.actions += 1;
         s.acting = true;
         let at = Instant::now();
-        let mut recent: Vec<&[u64]> = s
-            .samples
-            .iter()
-            .filter(|(t, _)| at.duration_since(*t) <= WINDOW)
-            .map(|(_, h)| h.as_slice())
+        let mut pause: Vec<(Instant, Vec<u64>)> = std::mem::take(&mut s.samples)
+            .into_iter()
+            .filter(|(t, h)| at.duration_since(*t) <= WINDOW && h.len() == now.len())
             .collect();
-        recent.retain(|h| h.len() == now.len());
-        recent.push(now);
-        let mut blocks: Vec<Block> = (0..now.len())
-            .map(|i| Block::of(recent.iter().map(|h| h[i])))
-            .collect();
-        let short = s
-            .samples
-            .front()
-            .is_none_or(|(t, _)| at.duration_since(*t) + SAMPLE_EVERY < WINDOW);
-        if short && s.carried.len() == blocks.len() {
-            blocks = blocks
-                .into_iter()
-                .zip(&s.carried)
-                .map(|(b, c)| b.merge(c))
-                .collect();
+        pause.push((at, now.to_vec()));
+        s.pauses.retain(|p| p[0].1.len() == now.len());
+        if pause.len() >= 3 {
+            s.pauses.push_front(pause);
         }
-        s.carried.clone_from(&blocks);
-        blocks
+        let mut span = Duration::ZERO;
+        let kept = s
+            .pauses
+            .iter()
+            .take_while(|p| {
+                let newer = span;
+                span += p[p.len() - 1].0.duration_since(p[0].0);
+                newer + SAMPLE_EVERY < WINDOW
+            })
+            .count();
+        s.pauses.truncate(kept);
+        (0..now.len())
+            .map(|i| {
+                s.pauses.iter().fold(Block::Quiet, |carried, p| {
+                    Block::of(p.iter().map(|(_, h)| h[i])).merge(&carried)
+                })
+            })
+            .collect()
     }
 
     /// Marks the action ended; the samples taken across it are dropped.
@@ -239,7 +244,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn two_contents_toggle_more_churn_one_change_stays_quiet_and_all_carry_over() {
+    fn two_contents_toggle_more_churn_one_stays_quiet_and_all_last_while_newer_pauses_are_short() {
         let volatile = Volatile::start();
         let at = Instant::now();
         volatile.shared.lock().samples.extend([
@@ -265,13 +270,17 @@ mod tests {
             volatile.begin(&[1, 3, 7, 1])[1],
             Block::Toggling(vec![1, 2])
         );
-        volatile.end();
-        volatile
-            .shared
-            .lock()
-            .samples
-            .extend([(at - WINDOW, vec![1, 1, 1, 1]), (at, vec![5, 1, 1, 1])]);
-        assert_eq!(volatile.begin(&[5, 1, 1, 1]), vec![Block::Quiet; 4]);
+        for kept in [true, false] {
+            volatile.end();
+            let t = Instant::now();
+            volatile.shared.lock().samples.extend([
+                (t - WINDOW * 3 / 4, vec![1, 3, 7, 1]),
+                (t - WINDOW / 2, vec![1, 3, 7, 1]),
+            ]);
+            let blocks = volatile.begin(&[1, 3, 7, 1]);
+            assert_eq!(blocks[2] == Block::Churning, kept);
+            assert_eq!(blocks.iter().all(|b| *b == Block::Quiet), !kept);
+        }
     }
 
     #[test]
