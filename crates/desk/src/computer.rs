@@ -1440,6 +1440,47 @@ impl Cua {
             .await;
     }
 
+    /// The desk tools' input: `req` of `tool` addressed to the desktop, serialized with every other input.
+    pub async fn desk_input(&self, tool: &str, req: Value) -> Result<Value, String> {
+        let _input = self.input.lock().await;
+        self.desktop_input(tool, req).await
+    }
+
+    /// The desk tools' other driver calls, each in a driver session of its own.
+    pub async fn desk_call(&self, tool: &str, req: Value) -> Result<Value, String> {
+        let once = format!("desk-{}", uuid::Uuid::new_v4().simple());
+        let done = self.request(&once, tool, req).await;
+        self.end_once(Some(once)).await;
+        done
+    }
+
+    /// The screen rectangle `[x, y, w, h]`, clipped to the screen, as `(width, height, PNG)` over MIT-SHM.
+    pub fn region_png(&self, [x, y, w, h]: [f64; 4]) -> Result<(u32, u32, Vec<u8>), String> {
+        self.shm(|g| {
+            let (sw, sh) = g.size();
+            let screen = Screen {
+                width: u32::try_from(sw).unwrap_or(0),
+                height: u32::try_from(sh).unwrap_or(0),
+                rgb: Vec::new(),
+            };
+            let Some(rect) = clip([x, y, w, h], &screen) else {
+                return Ok(None);
+            };
+            let rgb = g.region(rect)?;
+            let (rw, rh) = (rect[2].unsigned_abs(), rect[3].unsigned_abs());
+            let mut out = Vec::new();
+            let mut enc = png::Encoder::new(&mut out, rw, rh);
+            enc.set_color(png::ColorType::Rgb);
+            enc.set_depth(png::BitDepth::Eight);
+            enc.write_header()
+                .and_then(|mut w| w.write_image_data(&rgb))
+                .map_err(|e| format!("encode PNG: {e}"))?;
+            Ok(Some((rw, rh, out)))
+        })
+        .ok_or_else(|| "no screen capture over MIT-SHM".to_owned())?
+        .ok_or_else(|| "the rectangle is off the screen".to_owned())
+    }
+
     /// The desktop-addressed input `req` of `tool` in a driver session of its own, whose x,y no capture maps.
     async fn desktop_input(&self, tool: &str, mut req: Value) -> Result<Value, String> {
         req["target"] = json!({"kind": "desktop", "display_id": "primary"});
