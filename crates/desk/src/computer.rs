@@ -21,6 +21,7 @@ use super::scope;
 use super::timing;
 use super::volatile::{Block, Shown, Volatile};
 use super::xshm::{self, Grabber, Placement};
+use super::xtest;
 
 const STATE_ELEMENTS: u64 = 300;
 const TREE_CHARS: usize = 15_000;
@@ -1444,6 +1445,17 @@ impl Cua {
     pub async fn desk_input(&self, tool: &str, req: Value) -> Result<Value, String> {
         let _input = self.input.lock().await;
         self.desktop_input(tool, req).await
+    }
+
+    /// The desk tools' typing: XTest when the keyboard map holds every character, else the driver's, serialized with every other input.
+    pub async fn desk_type(&self, text: &str) -> Result<(), String> {
+        let _input = self.input.lock().await;
+        if xtest::type_mapped(text)? {
+            return Ok(());
+        }
+        self.desktop_input("type_text", json!({"text": text}))
+            .await
+            .map(|_| ())
     }
 
     /// The desk tools' other driver calls, each in a driver session of its own.
