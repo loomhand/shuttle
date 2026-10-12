@@ -64,9 +64,9 @@ async function current() {
   tick('settle', t0); return focused()
 }
 const titled = async (title: string, pid: number | null) => pid !== null && (await desk.windows()).some((x) => x.title === title && x.pid === pid)
-// the accessibility tree of a window, with the key bindings of its entries
-async function snapOf(w: Win): Promise<desk.Snap> {
-  return desk.snapshot(w.title, { pid: w.pid, keys: true })
+// the accessibility tree of a window; `keys` adds the key bindings of its entries
+async function snapOf(w: Win, keys = false): Promise<desk.Snap> {
+  return desk.snapshot(w.title, { pid: w.pid, keys })
 }
 // one line per element, `- role "name" [disabled] [checked] [ref=N]: "value"`; a big tree keeps only what a step can act on
 function render(nodes: Node[], max: number, interactive: boolean) {
@@ -74,14 +74,14 @@ function render(nodes: Node[], max: number, interactive: boolean) {
   return nodes.filter((n) => !interactive || n.depth === 0 || SHOWN_ROLES.has(n.role)).map((n) =>
     `${'  '.repeat(n.depth)}- ${n.role}${n.name ? ` "${q(n.name)}"` : ''}${n.disabled ? ' [disabled]' : ''}${n.checked ? ' [checked]' : ''}${n.keys ? ` [${n.keys}]` : ''} [ref=${n.ref}]${n.value ? `: "${q(n.value)}"` : ''}`).join('\n')
 }
-async function outline(w?: Win | null) {
+async function outline(w?: Win | null, keys = false) {
   if (w === undefined) w = await focused()
   if (!w) return '(no focused window)'
-  try { const s = await snapOf(w); const nodes = parse(s); return render(nodes, 100, nodes.length > 60).slice(0, 1800) + (s.truncated ? CUT : '') } catch (e) { return String(e) }
+  try { const s = await snapOf(w, keys); const nodes = parse(s); return render(nodes, 100, nodes.length > 60).slice(0, 1800) + (s.truncated ? CUT : '') } catch (e) { return String(e) }
 }
 async function seen() {
   const w = await focused()
-  return { window: w?.title ?? null, windows: (await desk.windows()).map((x) => x.title).filter((t) => t && !/^(Desktop|xfce4-panel)$/.test(t)), outline: await outline(w) }
+  return { window: w?.title ?? null, windows: (await desk.windows()).map((x) => x.title).filter((t) => t && !/^(Desktop|xfce4-panel)$/.test(t)), outline: await outline(w, true) }
 }
 const blocked = (o: string) => /AT-SPI peer \S+ is not responding/.test(o)
 const unanswered = (title: string) => `"${title}" answers no accessibility calls (a dialog opened by an accessibility action blocks its app, and a key would deadlock it): close it with {close: true}, then reopen it by its keyboard shortcut`
@@ -420,7 +420,7 @@ async function run(s: Step, rec: Record<string, unknown>) {
   const w = await windowFor(s.window, 3000, s.seen)
   rec.seen = w.title; if (w.title.trim()) lastSeen = w.title
   let t0 = Date.now(); let snap: desk.Snap
-  try { snap = await snapOf(w) } catch (e) {
+  try { snap = await snapOf(w, !!(s.menu || s.click)) } catch (e) {
     if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen())
     throw e
   }
