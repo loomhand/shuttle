@@ -83,34 +83,34 @@ pub struct Cua {
     socket: PathBuf,
     last: Mutex<HashMap<String, Snapshot>>,
     input: Mutex<()>,
-    /// The cbplan family: settles on a still screen, recompresses screenshots and runs action lists.
-    cbplan: bool,
-    /// The cbplan family's MIT-SHM grabber, opened on first use and again after a failure.
+    /// A box that runs GUI plans: settles on a still screen, recompresses screenshots and runs action lists.
+    plans: bool,
+    /// The MIT-SHM grabber of a box that runs GUI plans, opened on first use and again after a failure.
     grabber: std::sync::Mutex<Option<Grabber>>,
     /// Titles of the windows an action opened, to name them when they close.
     titles: std::sync::Mutex<HashMap<u32, String>>,
-    /// Per session, screen pixels per image pixel of the last screenshot returned on cbplan.
+    /// Per session, screen pixels per image pixel of the last screenshot returned with plans.
     scales: std::sync::Mutex<HashMap<String, f64>>,
     /// Per session on cbdesk, screen pixels per image pixel of the driver's last capture, which maps its desktop x,y.
     driver_scales: std::sync::Mutex<HashMap<String, f64>>,
-    /// On cbplan, the screen blocks that change while no action runs, which the settle ignores.
+    /// With plans, the screen blocks that change while no action runs, which the settle ignores.
     volatile: Option<Volatile>,
     last_click: std::sync::Mutex<Option<(Instant, f64, f64)>>,
 }
 
 impl Cua {
-    /// Creates a client for the driver socket at `socket`; `cbplan` turns on the cbplan family's behaviour.
-    pub fn new(socket: PathBuf, cbplan: bool) -> Self {
+    /// Creates a client for the driver socket at `socket`; `plans` turns on the behaviour of a box that runs GUI plans.
+    pub fn new(socket: PathBuf, plans: bool) -> Self {
         Self {
             socket,
             last: Mutex::new(HashMap::new()),
             input: Mutex::new(()),
-            cbplan,
+            plans,
             grabber: std::sync::Mutex::new(None),
             titles: std::sync::Mutex::new(HashMap::new()),
             scales: std::sync::Mutex::new(HashMap::new()),
             driver_scales: std::sync::Mutex::new(HashMap::new()),
-            volatile: cbplan.then(Volatile::start),
+            volatile: plans.then(Volatile::start),
             last_click: std::sync::Mutex::new(None),
         }
     }
@@ -168,7 +168,7 @@ impl Cua {
         // the capture comes last: a later get_window_state replaces the session's pixel-click context
         let (image_b64, scale, mut screen) = self.capture(&session, a.max_edge).await?;
         if let Some((pid, window_id, state)) = elements {
-            if screen.is_none() && !self.cbplan {
+            if screen.is_none() && !self.plans {
                 screen = self.shm(Grabber::rgb).map(|(width, height, rgb)| Screen {
                     width,
                     height,
@@ -200,11 +200,11 @@ impl Cua {
         })
     }
 
-    /// `computer_act` of agent `owner`: one input action followed by a fresh desktop screenshot; on cbplan also a list of `actions`.
+    /// `computer_act` of agent `owner`: one input action followed by a fresh desktop screenshot; with plans also a list of `actions`.
     pub async fn act(&self, browser: &Browser, owner: &str, args: Value) -> Result<Output, String> {
         self.touch();
         let session = session_of(&args);
-        if self.cbplan && args.get("actions").is_some() {
+        if self.plans && args.get("actions").is_some() {
             let list: ActList =
                 serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
             return self.act_list(browser, owner, &session, list).await;
@@ -327,7 +327,7 @@ impl Cua {
     }
 
     async fn act_input(&self, session: &str, mut a: ActArgs) -> Result<Output, String> {
-        if self.cbplan && a.action == "left_click" {
+        if self.plans && a.action == "left_click" {
             "click".clone_into(&mut a.action);
         }
         timing::note("action", &a.action);
@@ -428,7 +428,7 @@ impl Cua {
         session: &str,
         max_edge: Option<u32>,
     ) -> Result<(Option<String>, f64, Option<Screen>), String> {
-        if self.cbplan
+        if self.plans
             && let Some((w, h, rgb)) = self
                 .shm(|g| (!g.overlay_shown()?).then(|| g.rgb()).transpose())
                 .flatten()
@@ -464,7 +464,7 @@ impl Cua {
             .filter(|s| *s > 0.0)
             .unwrap_or(1.0);
         let mut image = content_image(&v);
-        if self.cbplan {
+        if self.plans {
             if let Some(smaller) = image.as_deref().and_then(shrink) {
                 image = Some(smaller);
             }
@@ -481,8 +481,8 @@ impl Cua {
         Ok((image, scale, None))
     }
 
-    /// Types text with non-ASCII characters or at a point, which a click focuses first; on cbdesk and on cbplan's
-    /// pid route in calls of at most [`RUN_CHARS`] distinct non-ASCII characters.
+    /// Types text with non-ASCII characters or at a point, which a click focuses first; on cbdesk and on the
+    /// pid route of a box with plans, in calls of at most [`RUN_CHARS`] distinct non-ASCII characters.
     async fn type_mixed(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
         let full = a.text.as_deref().unwrap_or_default();
         let input = self.input.lock().await;
@@ -524,7 +524,7 @@ impl Cua {
             .filter(|_| self.to_dialog(&base))
             .unwrap_or(full);
         timing::mark("resolve");
-        let runs = if self.cbplan && (a.foreground || base.get("target").is_some()) {
+        let runs = if self.plans && (a.foreground || base.get("target").is_some()) {
             vec![text]
         } else {
             text_runs(text)
@@ -564,7 +564,7 @@ impl Cua {
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         let total = full.chars().count();
-        let summary = if self.cbplan {
+        let summary = if self.plans {
             format!("typed {typed} of {total} characters; verify on the screenshot{changes}")
         } else {
             format!(
@@ -583,7 +583,7 @@ impl Cua {
         })
     }
 
-    /// Launches an app, or brings its existing window to the front when it already runs. On cbplan, Chrome by
+    /// Launches an app, or brings its existing window to the front when it already runs. With plans, Chrome by
     /// any name is the window of `owner` in the browser tools' Chrome, so they and `type_from_file` see it.
     async fn launch(
         &self,
@@ -595,7 +595,7 @@ impl Cua {
         let app = required(&a.app, "app")?;
         let input = self.input.lock().await;
         let before = self.before_input(None).await;
-        let launched = if self.cbplan && is_chrome(app) {
+        let launched = if self.plans && is_chrome(app) {
             browser
                 .run(owner, "browser_show", Value::Null)
                 .await
@@ -659,12 +659,12 @@ impl Cua {
         })
     }
 
-    /// On cbplan, the screen before an input action: its pixels and block hashes over MIT-SHM with what
+    /// With plans, the screen before an input action: its pixels and block hashes over MIT-SHM with what
     /// each block did before it, else a thumbnail from a probe driver session of its own, which leaves
     /// the capture context of the action's session as it was. A commit action `a` (see [`commits`])
     /// in Chrome may load a page.
     async fn before_input(&self, a: Option<&ActArgs>) -> Option<Before> {
-        if !self.cbplan {
+        if !self.plans {
             return None;
         }
         let commit = a.is_some_and(commits);
@@ -956,7 +956,7 @@ impl Cua {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Screen pixels per pixel of the last screenshot `session` returned on cbplan, so its x,y map to the screen.
+    /// Screen pixels per pixel of the last screenshot `session` returned with plans, so its x,y map to the screen.
     fn scale_of(&self, session: &str) -> f64 {
         self.scales().get(session).copied().unwrap_or(1.0)
     }
@@ -1055,9 +1055,9 @@ impl Cua {
     ) -> Result<(&'static str, Value), String> {
         let desktop = json!({"kind": "desktop", "display_id": "primary"});
         let clicks = matches!(a.action.as_str(), "click" | "double_click" | "right_click")
-            || (self.cbplan && a.action == "triple_click");
+            || (self.plans && a.action == "triple_click");
         let pixel = match a.element {
-            Some(index) if clicks && !a.foreground && (self.cbplan || presses(a)) => {
+            Some(index) if clicks && !a.foreground && (self.plans || presses(a)) => {
                 match self.element_pixel(session, index, false).await {
                     None if presses(a) => match self.open_menus(session, index).await {
                         None => self.hidden_press(session, index).await?,
@@ -1070,7 +1070,7 @@ impl Cua {
         };
         let mut req = json!({});
         let tool = match a.action.as_str() {
-            "triple_click" if self.cbplan => {
+            "triple_click" if self.plans => {
                 req["count"] = 3.into();
                 "click"
             }
@@ -1210,13 +1210,13 @@ impl Cua {
         }
     }
 
-    /// On cbplan, whether keys for `window` of `pid` can go to the desktop, which skips the driver's
+    /// With plans, whether keys for `window` of `pid` can go to the desktop, which skips the driver's
     /// 220 ms focus guard: the window is active and holds the input focus, and no popup of another app is open.
     fn keyboard(&self, pid: i64, window: i64) -> bool {
         let (Ok(pid), Ok(window)) = (u32::try_from(pid), u32::try_from(window)) else {
             return false;
         };
-        self.cbplan && self.shm(|g| g.keyboard(window, pid)).unwrap_or(false)
+        self.plans && self.shm(|g| g.keyboard(window, pid)).unwrap_or(false)
     }
 
     /// Whether `a` types into a web page element of `session`'s snapshot that a pixel click can focus.
@@ -1237,7 +1237,7 @@ impl Cua {
     /// The screen point at which a pixel click reaches element `index` of `session`'s snapshot, on
     /// cbdesk only for a push button or menu item outside a web page, whose accessibility action runs
     /// its handler inside the app's accessibility dispatch, where a modal dialog it opens deadlocks the
-    /// app on the first key; on cbplan it also skips the driver's 270 ms accessibility click. The
+    /// app on the first key; with plans it also skips the driver's 270 ms accessibility click. The
     /// element looks as it did in the snapshot, and the top window at its centre is the snapshot's
     /// window while that is active and nothing grabs the pointer, or a popup of the same app around a
     /// menu or list row. A `menu` to open need not look as it did, since it showed open then.
@@ -1245,7 +1245,7 @@ impl Cua {
         let last = self.last.lock().await;
         let snap = last.get(session)?;
         let (element, screen) = (snap.elements.get(&index)?, snap.screen.as_ref()?);
-        if !self.cbplan && !menu && (element.web || !PRESSED.contains(&element.role.as_str())) {
+        if !self.plans && !menu && (element.web || !PRESSED.contains(&element.role.as_str())) {
             return None;
         }
         let [x, y, w, h] = element.frame?;
@@ -1515,7 +1515,7 @@ impl Cua {
 
     async fn request(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
         let point = match (args["x"].as_f64(), args["y"].as_f64()) {
-            (Some(x), Some(y)) if self.cbplan && name == "click" => Some((x, y)),
+            (Some(x), Some(y)) if self.plans && name == "click" => Some((x, y)),
             _ => None,
         };
         if let Some(point) = point {
@@ -1529,7 +1529,7 @@ impl Cua {
         if result["isError"] == true {
             return Err(format!("{name}: {}", content_text(&result)));
         }
-        if self.cbplan
+        if self.plans
             && name == "launch_app"
             && let Err(e) = scope::adopt(&result).await
         {
@@ -1663,7 +1663,7 @@ struct Snapshot {
     pid: i64,
     window_id: Option<i64>,
     elements: HashMap<i64, Element>,
-    /// On cbplan, the screen when the elements were read, to tell whether one has moved since.
+    /// With plans, the screen when the elements were read, to tell whether one has moved since.
     screen: Option<Screen>,
 }
 
@@ -2417,9 +2417,9 @@ mod tests {
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1);
-        for cbplan in [false, true] {
+        for plans in [false, true] {
             calls.lock().unwrap().clear();
-            let cua = Cua::new(socket.clone(), cbplan);
+            let cua = Cua::new(socket.clone(), plans);
             let out = cua
                 .act(
                     &browser,
@@ -2450,7 +2450,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn on_cbplan_chrome_by_any_name_opens_the_agent_window_of_the_browser_tools_chrome() {
+    async fn with_plans_chrome_by_any_name_opens_the_agent_window_of_the_browser_tools_chrome() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("cua.sock");
         let calls = std::sync::Arc::default();
@@ -2468,14 +2468,14 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), port);
         let launch = |app: &str| json!({"action": "launch_app", "app": app});
-        let cbplan = Cua::new(socket.clone(), true);
+        let plans = Cua::new(socket.clone(), true);
         for app in [
             "google-chrome",
             "Google Chrome",
             "chromium",
             "com.google.Chrome.desktop",
         ] {
-            let out = cbplan.act(&browser, "ag", launch(app)).await.unwrap();
+            let out = plans.act(&browser, "ag", launch(app)).await.unwrap();
             assert!(
                 !out.is_error
                     && out
@@ -2486,7 +2486,7 @@ mod tests {
             );
         }
         assert!(launches().is_empty(), "{:?}", launches());
-        cbplan.act(&browser, "ag", launch("mousepad")).await.unwrap();
+        plans.act(&browser, "ag", launch("mousepad")).await.unwrap();
         Cua::new(socket, false)
             .act(&browser, "ag", launch("google-chrome"))
             .await
