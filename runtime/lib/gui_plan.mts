@@ -10,7 +10,7 @@ type Step = {
   timeout_ms?: number; enabled?: boolean; fp?: Fp; seen?: string; blank?: Fp
 }
 type Fp = { role: string; name: string; parent: string; nth: number; label?: string }
-type Node = { ref: number; id: string; depth: number; role: string; name: string; value: string; disabled: boolean; parent: number; keys: string; accel: string; checked: boolean; shown: boolean; bounds?: [number, number, number, number] }
+type Node = { ref: number; id: string; depth: number; role: string; name: string; value: string; disabled: boolean; parent: number; shortcut: string; checked: boolean; shown: boolean; bounds?: [number, number, number, number] }
 type Hit = { n: Node; i: number; how: string; p?: number; margin?: number }
 type Flow = { name: string; params: Record<string, string>; steps: Step[]; idempotent: boolean; runs: number; saved_at: string; rewrites: number; usage?: desk.Usage }
 type Chain = { at: number; window: string | null; pid: number | null; name?: string; named?: boolean; params: Record<string, string>; steps: Step[]; dirty: boolean; saved?: boolean; escalated?: boolean; usage?: desk.Usage }
@@ -49,13 +49,10 @@ class Surprise extends Error {
 }
 
 function parse(snap: desk.Snap): Node[] {
-  return snap.nodes.map((n) => {
-    const binding = n.keys ?? ''
-    return {
-      ref: n.ref, id: n.id, depth: n.depth, role: n.role, name: n.name.slice(0, 80).trim(), value: n.value ?? '', disabled: n.states.includes('disabled'), parent: n.parent,
-      keys: binding.startsWith('<') ? binding : '', accel: binding.split(';')[2] ?? '', checked: n.states.includes('checked') || n.states.includes('pressed'), shown: n.states.includes('showing'), bounds: n.bounds,
-    }
-  })
+  return snap.nodes.map((n) => ({
+    ref: n.ref, id: n.id, depth: n.depth, role: n.role, name: n.name.slice(0, 80).trim(), value: n.value ?? '', disabled: n.states.includes('disabled'), parent: n.parent,
+    shortcut: n.shortcut ?? '', checked: n.states.includes('checked') || n.states.includes('pressed'), shown: n.states.includes('showing'), bounds: n.bounds,
+  }))
 }
 
 const focused = () => desk.focused()
@@ -73,7 +70,7 @@ async function snapOf(w: Win, keys = false): Promise<desk.Snap> {
 function render(nodes: Node[], max: number, interactive: boolean) {
   const q = (s: string) => s.slice(0, max).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')
   return nodes.filter((n) => !interactive || n.depth === 0 || SHOWN_ROLES.has(n.role)).map((n) =>
-    `${'  '.repeat(n.depth)}- ${n.role}${n.name ? ` "${q(n.name)}"` : ''}${n.disabled ? ' [disabled]' : ''}${n.checked ? ' [checked]' : ''}${n.keys ? ` [${n.keys}]` : ''} [ref=${n.ref}]${n.value ? `: "${q(n.value)}"` : ''}`).join('\n')
+    `${'  '.repeat(n.depth)}- ${n.role}${n.name ? ` "${q(n.name)}"` : ''}${n.disabled ? ' [disabled]' : ''}${n.checked ? ' [checked]' : ''}${n.shortcut ? ` [${n.shortcut}]` : ''} [ref=${n.ref}]${n.value ? `: "${q(n.value)}"` : ''}`).join('\n')
 }
 async function outline(w?: Win | null, keys = false) {
   if (w === undefined) w = await focused()
@@ -223,7 +220,7 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   const ranked = shown.map((c) => ({ c, s: words.filter((x) => norm(`${c.n.role} ${c.n.name} ${c.n.value}`).includes(x)).length })).sort((a, b) => b.s - a.s).slice(0, 40)
   const label = (c: { n: Node; i: number }) => {
     const sib = sibling(nodes, c.i); const par = c.n.parent >= 0 ? nodes[c.n.parent].name : ''
-    return `${c.n.role} "${c.n.name}"${c.n.value ? ` value "${c.n.value}"` : ''}${sib ? ` labelled "${sib}"` : ''}${c.n.keys ? ` shortcut ${c.n.keys}` : ''}${par ? ` in "${par}"` : ''}`
+    return `${c.n.role} "${c.n.name}"${c.n.value ? ` value "${c.n.value}"` : ''}${sib ? ` labelled "${sib}"` : ''}${c.n.shortcut ? ` shortcut ${c.n.shortcut}` : ''}${par ? ` in "${par}"` : ''}`
   }
   const opts: Record<string, string> = { none: 'none of these elements' }
   for (const { c } of ranked) opts[`r${c.n.ref}`] = label(c)
@@ -253,11 +250,10 @@ async function act(n: Node) {
 async function choose(nodes: Node[], n: Node, rec: Record<string, unknown>, open = false) {
   const t0 = Date.now()
   try {
-    const mods = (n.accel.match(/<\w+>/g) ?? []).map((x) => ({ '<Primary>': 'ctrl', '<Control>': 'ctrl', '<Shift>': 'shift', '<Alt>': 'alt' } as Record<string, string>)[x])
-    const key = n.accel.replace(/<\w+>/g, '')
-    if (key && mods.every(Boolean) && (mods.some((x) => x !== 'shift') || /^F\d+$/.test(key))) {
+    const mods = n.shortcut.split('+').slice(0, -1)
+    if (n.shortcut && (mods.some((x) => x !== 'shift') || /^f\d+$/.test(n.shortcut))) {
       if (open) for (let q = n.parent; q >= 0 && nodes[q].role === 'menu'; q = nodes[q].parent) await press('Escape')
-      try { await press([...mods, key].join('+')); rec.via = 'shortcut'; return } catch {}
+      try { await press(n.shortcut); rec.via = 'shortcut'; return } catch {}
     }
     rec.via = await act(n)
   } finally { tick('act', t0) }

@@ -6,7 +6,7 @@ import { createConnection } from 'node:net'
 export type Win = { id: string; title: string; role: string; pid: number | null; active: boolean }
 export type El = {
   ref: number; id: string; parent: number; depth: number; role: string; name: string; states: string[]
-  value?: string; keys?: string; description?: string; bounds?: [number, number, number, number]
+  value?: string; keys?: string; shortcut?: string; mnemonic?: string; native_role?: string; description?: string; bounds?: [number, number, number, number]
 }
 export type Snap = { window: Win; nodes: El[]; truncated: boolean; ms: number }
 export type Question = { type: 'noul'; instructions: string } | { type: 'choice'; instructions: string; criteria: Record<string, string> }
