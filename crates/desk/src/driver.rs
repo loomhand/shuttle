@@ -1,6 +1,7 @@
 //! cua-driver client: one line of JSON each way over its daemon socket, a named pipe on Windows.
 
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -15,15 +16,19 @@ pub trait Input {
     fn call(&self, tool: &str, args: Value) -> impl Future<Output = Result<Value, String>> + Send;
 }
 
-/// A client of the cua-driver daemon at `endpoint`.
-#[derive(Clone, Debug)]
+/// A client of the cua-driver daemon at `endpoint`, in one driver session with desktop capture scope.
+#[derive(Debug)]
 pub struct Driver {
     endpoint: String,
+    started: AtomicBool,
 }
 
 impl Driver {
     pub fn new(endpoint: String) -> Self {
-        Self { endpoint }
+        Self {
+            endpoint,
+            started: AtomicBool::new(false),
+        }
     }
 
     /// The daemon's endpoint: `CUA_DRIVER_SOCKET`, else the driver's default for this OS.
@@ -39,6 +44,17 @@ impl Driver {
         }
         let home = std::env::var("HOME").unwrap_or_default();
         format!("{home}/Library/Caches/cua-driver/cua-driver.sock")
+    }
+
+    async fn send(&self, tool: &str, mut args: Value) -> Result<Value, String> {
+        args["session"] = SESSION.into();
+        let mut line = serde_json::to_vec(&json!({"method": "call", "name": tool, "args": args}))
+            .map_err(|e| format!("encode: {e}"))?;
+        line.push(b'\n');
+        let reply = tokio::time::timeout(REQUEST_TIMEOUT, self.exchange(line))
+            .await
+            .map_err(|_| format!("cua-driver {tool} timed out"))??;
+        result(tool, &reply)
     }
 
     #[cfg(unix)]
@@ -67,15 +83,13 @@ impl Driver {
 }
 
 impl Input for Driver {
-    async fn call(&self, tool: &str, mut args: Value) -> Result<Value, String> {
-        args["session"] = SESSION.into();
-        let mut line = serde_json::to_vec(&json!({"method": "call", "name": tool, "args": args}))
-            .map_err(|e| format!("encode: {e}"))?;
-        line.push(b'\n');
-        let reply = tokio::time::timeout(REQUEST_TIMEOUT, self.exchange(line))
-            .await
-            .map_err(|_| format!("cua-driver {tool} timed out"))??;
-        result(tool, &reply)
+    async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+        if !self.started.load(Ordering::Relaxed) {
+            self.send("start_session", json!({"capture_scope": "desktop"}))
+                .await?;
+            self.started.store(true, Ordering::Relaxed);
+        }
+        self.send(tool, args).await
     }
 }
 
@@ -156,28 +170,39 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_call_is_one_line_each_way_with_the_desk_session() {
+    async fn the_first_call_starts_a_desktop_session() {
         use tokio::io::AsyncBufReadExt;
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("cua.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         let daemon = tokio::spawn(async move {
-            let (s, _) = listener.accept().await.unwrap();
-            let mut s = BufReader::new(s);
-            let mut line = String::new();
-            s.read_line(&mut line).await.unwrap();
-            s.get_mut()
-                .write_all(b"{\"ok\":true,\"result\":{\"structuredContent\":{\"width\":1280}}}\n")
-                .await
-                .unwrap();
-            serde_json::from_str::<Value>(&line).unwrap()
+            let mut lines = Vec::new();
+            for _ in 0..3 {
+                let (s, _) = listener.accept().await.unwrap();
+                let mut s = BufReader::new(s);
+                let mut line = String::new();
+                s.read_line(&mut line).await.unwrap();
+                s.get_mut()
+                    .write_all(
+                        b"{\"ok\":true,\"result\":{\"structuredContent\":{\"width\":1280}}}\n",
+                    )
+                    .await
+                    .unwrap();
+                lines.push(serde_json::from_str::<Value>(&line).unwrap());
+            }
+            lines
         });
         let d = Driver::new(socket.to_string_lossy().into_owned());
         let got = d.call("get_screen_size", json!({})).await.unwrap();
         assert_eq!(got["structuredContent"]["width"], 1280);
+        d.call("press_key", json!({"key": "a"})).await.unwrap();
         assert_eq!(
             daemon.await.unwrap(),
-            json!({"method": "call", "name": "get_screen_size", "args": {"session": "desk"}})
+            [
+                json!({"method": "call", "name": "start_session", "args": {"capture_scope": "desktop", "session": "desk"}}),
+                json!({"method": "call", "name": "get_screen_size", "args": {"session": "desk"}}),
+                json!({"method": "call", "name": "press_key", "args": {"key": "a", "session": "desk"}}),
+            ]
         );
     }
 }
