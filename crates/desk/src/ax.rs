@@ -162,7 +162,7 @@ impl Ax {
             marked: !a.mark.is_empty(),
         };
         let role = ax_roles::role(kind).unwrap_or("generic");
-        let shown = a.size.is_some_and(|(w, h)| w > 0.0 && h > 0.0);
+        let shown = a.role != "AXMenuItem" && a.size.is_some_and(|(w, h)| w > 0.0 && h > 0.0);
         let number = a
             .value
             .as_ref()
