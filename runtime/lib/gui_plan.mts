@@ -2,6 +2,7 @@
 // params: {steps, params?, save?, start?} | {save} | {flow, params?, start?} | {find} | {reindex}; result: {ok, done, ms, trace, saved?, escalate?}
 import { execFileSync, spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import * as desk from './desk.mts'
 
 type Step = {
@@ -17,7 +18,8 @@ type Chain = { at: number; window: string | null; pid: number | null; name?: str
 type Params = { steps?: Step[]; flow?: string; params?: Record<string, string>; save?: string; start?: number; find?: string; reindex?: boolean }
 type Win = desk.Win
 
-const FLOWS = '/workspace/flows'
+const OS = process.platform
+const FLOWS = OS === 'linux' ? '/workspace/flows' : `${homedir()}/workspace/flows`
 const LOG = `${FLOWS}/.runs.jsonl`
 const INDEX = `${FLOWS}/INDEX`
 const PENDING = `${FLOWS}/.pending.json`
@@ -29,7 +31,6 @@ const SHOWN_ROLES = new Set([...ACTIVE, 'dialog', 'alert'])
 const MARGIN = 0.25
 const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close']
 const CUT = '\n(the outline holds only the start of the web page: use the browser_* tools for page content)'
-const OS = process.platform
 const SHELL_WINDOWS = ({ linux: /^(Desktop|xfce4-panel)$/, win32: /^Program Manager$/ } as Record<string, RegExp>)[OS] ?? /^$/
 const CHOOSER = ({ linux: /File Chooser Widget/, win32: /^\s*- (combobox|textbox) "File name:?"/m, darwin: /^\s*- textbox "Save As:?"/m } as Record<string, RegExp>)[OS] ?? /$^/
 const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
