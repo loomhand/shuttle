@@ -24,7 +24,7 @@ const MAX_FOUND: usize = 20;
 const MENU_POLL: Duration = Duration::from_millis(30);
 const MENU_POLLS: u32 = 10;
 const SELECTED_ROLES: [&str; 5] = ["tab", "option", "radio", "listitem", "treeitem"];
-const TITLE_TIERS: usize = 4;
+const TITLE_TIERS: usize = 3;
 const TITLE_SEPARATORS: [&str; 2] = [" - ", " — "];
 
 /// The desk of one OS: `B` reads and acts on elements, `D` sends input.
@@ -459,8 +459,7 @@ pub fn pick(frames: Vec<Frame>, want: Option<&str>, pid: Option<u32>) -> Result<
             return Ok(f);
         }
     }
-    let titles: Vec<&str> = frames.iter().map(|f| f.title.as_str()).collect();
-    Err(format!("no window {want:?}; windows: {titles:?}"))
+    app_window(&frames, want)
 }
 
 /// The indexes of the nodes named `name`, else of those that contain it, ignoring case and punctuation.
@@ -611,29 +610,53 @@ fn titled(frames: Vec<Frame>, window: &str, pid: Option<u32>) -> Result<Frame, S
         .into_iter()
         .filter(|f| pid.is_none_or(|p| f.pid == Some(p)))
         .collect();
-    (0..TITLE_TIERS)
-        .find_map(|tier| {
-            frames
-                .iter()
-                .rfind(|f| title_matches(tier, &f.title, window))
-        })
-        .cloned()
-        .ok_or_else(|| format!("no window {window:?}"))
+    match (0..TITLE_TIERS).find_map(|tier| {
+        frames
+            .iter()
+            .rfind(|f| title_matches(tier, &f.title, window))
+    }) {
+        Some(f) => Ok(f.clone()),
+        None => app_window(&frames, window),
+    }
 }
 
 /// Whether window title `title` matches `want` at `tier`: 0 the same, 1 the same ignoring case and outer
-/// spaces, 2 containing it ignoring case, 3 ending with its app part, such as ` - Notepad` of `a.txt - Notepad`.
+/// spaces, 2 containing it ignoring case.
 fn title_matches(tier: usize, title: &str, want: &str) -> bool {
     let lower = want.trim().to_lowercase();
     match tier {
         0 => title == want,
         1 => title.trim().to_lowercase() == lower,
-        2 => title.to_lowercase().contains(&lower),
-        _ => TITLE_SEPARATORS
-            .iter()
-            .filter_map(|s| lower.rfind(s))
-            .max()
-            .is_some_and(|i| title.trim_end().to_lowercase().ends_with(&lower[i..])),
+        _ => title.to_lowercase().contains(&lower),
+    }
+}
+
+/// The window whose title ends with the app part of `want`, such as ` - Notepad` of `a.txt - Notepad`:
+/// the only one, else the active one among several; more than one and none active is an error naming them.
+fn app_window(frames: &[Frame], want: &str) -> Result<Frame, String> {
+    let lower = want.trim().to_lowercase();
+    let app = TITLE_SEPARATORS
+        .iter()
+        .filter_map(|s| lower.rfind(s))
+        .max()
+        .map(|i| &lower[i..]);
+    let hits: Vec<&Frame> = frames
+        .iter()
+        .filter(|f| app.is_some_and(|app| f.title.trim_end().to_lowercase().ends_with(app)))
+        .collect();
+    let active: Vec<&Frame> = hits.iter().copied().filter(|f| f.active).collect();
+    match (hits.as_slice(), active.as_slice()) {
+        ([one], _) | (_, [one]) => Ok(Frame::clone(one)),
+        ([], _) => {
+            let titles: Vec<&str> = frames.iter().map(|f| f.title.as_str()).collect();
+            Err(format!("no window {want:?}; windows: {titles:?}"))
+        }
+        _ => {
+            let titles: Vec<&str> = hits.iter().map(|f| f.title.as_str()).collect();
+            Err(format!(
+                "no window {want:?}; windows of its app: {titles:?}"
+            ))
+        }
     }
 }
 
@@ -972,6 +995,39 @@ mod tests {
         assert_eq!(found("Untitled - Notepad").unwrap(), "*b.txt - Notepad");
         assert_eq!(found("a.txt - Notepad").unwrap(), "a.txt - Notepad");
         assert!(found("Untitled - Paint").is_err());
+    }
+
+    #[test]
+    fn a_stale_title_takes_its_app_window_only_when_that_is_unambiguous() {
+        let frame = |title: &str, active: bool| Frame {
+            id: title.into(),
+            title: title.into(),
+            role: "window",
+            pid: Some(7),
+            active,
+        };
+        let one = vec![frame("a.txt - Notepad", false), frame("Save As", true)];
+        assert_eq!(
+            titled(one, "Untitled - Notepad", None).unwrap().title,
+            "a.txt - Notepad"
+        );
+        let active = vec![
+            frame("a.txt - Notepad", false),
+            frame("b.txt - Notepad", true),
+        ];
+        assert_eq!(
+            titled(active, "Untitled - Notepad", None).unwrap().title,
+            "b.txt - Notepad"
+        );
+        let none_active = vec![
+            frame("a.txt - Notepad", false),
+            frame("b.txt - Notepad", false),
+            frame("Save As", true),
+        ];
+        assert_eq!(
+            pick(none_active, Some("Untitled - Notepad"), None).unwrap_err(),
+            "no window \"Untitled - Notepad\"; windows of its app: [\"a.txt - Notepad\", \"b.txt - Notepad\"]"
+        );
     }
 
     #[test]
