@@ -13,7 +13,7 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Ole::{
     SafeArrayDestroy, SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound,
 };
-use windows::Win32::System::Variant::{VARIANT, VT_BOOL, VT_BSTR, VT_I4, VT_R8, VariantClear};
+use windows::Win32::System::Variant::{VT_BOOL, VT_BSTR, VT_I4, VT_R8, VariantClear};
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
@@ -245,28 +245,6 @@ impl Uia {
         Ok(false)
     }
 
-    fn find(
-        &self,
-        el: &IUIAutomationElement,
-        scope: TreeScope,
-        control_type: i32,
-        request: &IUIAutomationCacheRequest,
-    ) -> Vec<IUIAutomationElement> {
-        let mut v = VARIANT::default();
-        // SAFETY: the union field written matches the tag set with it.
-        unsafe {
-            (*v.Anonymous.Anonymous).vt = VT_I4;
-            (*v.Anonymous.Anonymous).Anonymous.lVal = control_type;
-        }
-        // SAFETY: `self.auto`, `el` and `request` are live UIA objects of this thread; `v` is a valid VT_I4 VARIANT.
-        let found = unsafe {
-            self.auto
-                .CreatePropertyCondition(UIA_ControlTypePropertyId, &v)
-                .and_then(|c| el.FindAllBuildCache(scope, &c, request))
-        };
-        found.map(|a| list(&a)).unwrap_or_default()
-    }
-
     fn top_of(&mut self, s: &Shown) -> Option<&Top> {
         let key = s.hwnd.0 as isize;
         if self.tops.get(&key).is_none_or(|t| t.pid != s.pid) {
@@ -352,7 +330,7 @@ impl Access for Uia {
             menus.extend(self.cached(&el, &subtree).ok());
         }
         if nodes.iter().any(|n| n.role == "menu" && n.has("expanded")) {
-            menus.extend(self.find(&cached, TreeScope_Descendants, MENU, &subtree));
+            menus_in(&cached, &mut menus);
         }
         for menu in menus {
             let listed = runtime_id(&menu).is_ok_and(|id| nodes.iter().any(|n| n.id == id));
@@ -709,6 +687,15 @@ fn value(el: &IUIAutomationElement, p: UIA_PROPERTY_ID) -> Val {
         };
         let _ = VariantClear(&mut v);
         out
+    }
+}
+
+fn menus_in(el: &IUIAutomationElement, out: &mut Vec<IUIAutomationElement>) {
+    for child in children(el) {
+        if raw_control_type(&child) == MENU {
+            out.push(child.clone());
+        }
+        menus_in(&child, out);
     }
 }
 
