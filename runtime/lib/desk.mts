@@ -10,6 +10,7 @@ export type El = {
 }
 export type Snap = { window: Win; nodes: El[]; truncated: boolean; ms: number }
 export type Question = { type: 'noul'; instructions: string } | { type: 'choice'; instructions: string; criteria: Record<string, string> }
+export type Usage = Record<string, { calls: number; input_tokens: number; output_tokens: number; cached_tokens: number }>
 
 const SOCKET = process.env.TOOLHOST_SOCKET || '/run/cocoonbox/toolhost.sock'
 const ENV_FILE = '/etc/cocoonbox/desk.env'
@@ -19,6 +20,7 @@ const GROUND_MODEL = 'qwen/qwen3-vl-235b-a22b-instruct'
 const MODEL_TIMEOUT = 60_000
 let screenSize: { width: number; height: number } | null = null
 let gwConfig: { base: string; key: string } | null = null
+export const usage: Usage = {}
 
 // one toolhost call: a big-endian u32 length and JSON each way
 export function call(op: string, args: Record<string, unknown> = {}): Promise<any> {
@@ -80,7 +82,7 @@ function gw() {
 }
 
 // a plain HTTP proxy request (absolute URL, no CONNECT), so the box's egress proxy can set gw's key
-function post(path: string, body: unknown): Promise<any> {
+function post(path: string, body: { model: string } & Record<string, unknown>): Promise<any> {
   const { base, key } = gw()
   const url = new URL(`${base}/${path}`)
   const proxy = process.env.http_proxy || process.env.HTTP_PROXY
@@ -96,7 +98,15 @@ function post(path: string, body: unknown): Promise<any> {
       res.on('end', () => {
         const text = Buffer.concat(chunks).toString()
         if ((res.statusCode ?? 500) >= 300) return reject(new Error(`gw ${path} returned ${res.statusCode}: ${text.slice(0, 300)}`))
-        try { resolve(JSON.parse(text)) } catch (e) { reject(e) }
+        try {
+          const r = JSON.parse(text)
+          const u = usage[body.model] ??= { calls: 0, input_tokens: 0, output_tokens: 0, cached_tokens: 0 }
+          u.calls += 1
+          u.input_tokens += r.usage?.prompt_tokens ?? r.usage?.input_tokens ?? 0
+          u.output_tokens += r.usage?.completion_tokens ?? r.usage?.output_tokens ?? 0
+          u.cached_tokens += r.usage?.prompt_tokens_details?.cached_tokens ?? 0
+          resolve(r)
+        } catch (e) { reject(e) }
       })
     })
     req.on('timeout', () => req.destroy(new Error(`gw ${path} timed out`)))

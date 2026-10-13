@@ -12,8 +12,9 @@ type Step = {
 type Fp = { role: string; name: string; parent: string; nth: number; label?: string }
 type Node = { ref: number; id: string; depth: number; role: string; name: string; value: string; disabled: boolean; parent: number; keys: string; accel: string; checked: boolean; shown: boolean; bounds?: [number, number, number, number] }
 type Hit = { n: Node; i: number; how: string; p?: number; margin?: number }
-type Flow = { name: string; params: Record<string, string>; steps: Step[]; idempotent: boolean; runs: number; saved_at: string; rewrites: number }
-type Chain = { at: number; window: string | null; pid: number | null; name?: string; named?: boolean; params: Record<string, string>; steps: Step[]; dirty: boolean; saved?: boolean; escalated?: boolean }
+type Flow = { name: string; params: Record<string, string>; steps: Step[]; idempotent: boolean; runs: number; saved_at: string; rewrites: number; usage?: desk.Usage }
+type Chain = { at: number; window: string | null; pid: number | null; name?: string; named?: boolean; params: Record<string, string>; steps: Step[]; dirty: boolean; saved?: boolean; escalated?: boolean; usage?: desk.Usage }
+type Params = { steps?: Step[]; flow?: string; params?: Record<string, string>; save?: string; start?: number; find?: string; reindex?: boolean }
 type Win = desk.Win
 
 const FLOWS = '/workspace/flows'
@@ -92,6 +93,15 @@ async function filled(w: Win) {
   let o = await outline(w)
   for (let i = 0; i < 20 && isDialog(o) && !o.trim().includes('\n'); i++) { await sleep(50); o = await outline(w) }
   return o
+}
+
+function plus(a: desk.Usage = {}, b: desk.Usage = {}): desk.Usage {
+  const out: desk.Usage = structuredClone(a)
+  for (const [k, v] of Object.entries(b)) {
+    const u = out[k] ??= { calls: 0, input_tokens: 0, output_tokens: 0, cached_tokens: 0 }
+    u.calls += v.calls; u.input_tokens += v.input_tokens; u.output_tokens += v.output_tokens; u.cached_tokens += v.cached_tokens
+  }
+  return out
 }
 
 async function decide(state: unknown, q: Record<string, desk.Question>) {
@@ -429,7 +439,7 @@ async function run(s: Step, rec: Record<string, unknown>) {
     const d = await decide({ window_title: w.title, contents: render(nodes, 60, false).slice(0, 4000) }, { ok: desk.yes(s.expect) })
     rec.p = +d.ok.probability.toFixed(2)
     if (d.ok.probability >= 0.5) return
-    const v = await vision(`You check the state of a computer screen.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot()); rec.vision = v
+    const v = await vision(`You check the state of a computer screen.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot()); rec.verdict = v
     if (!v.ok) throw new Surprise(`expectation not met: ${s.expect} (${v.why})`, await seen())
     return
   }
@@ -464,7 +474,7 @@ async function run(s: Step, rec: Record<string, unknown>) {
       }
     } else rec.how = 'fp'
     rec.fp = fingerprint(nodes, hit!)
-    if (hit!.p !== undefined) rec.jev = [hit!.p, hit!.margin]
+    if (hit!.p !== undefined) rec.pick = [hit!.p, hit!.margin]
     const pid = w.pid
     if (s.on === undefined) { await choose(nodes, hit!.n, rec); await settle(w.title); const now = pid === null ? null : gtkToggle(pid, hit!.n.name); if (now !== null) rec.now = now; return }
     const was = pid === null ? null : gtkToggle(pid, hit!.n.name)
@@ -508,7 +518,7 @@ async function run(s: Step, rec: Record<string, unknown>) {
     rec.how = 'ground'; rec.unsaved = true; await settle(w.title); return
   }
   rec.how = hit.how; rec.ref = `${hit.n.role} "${hit.n.name}"`; rec.fp = fingerprint(nodes, hit)
-  if (hit.p !== undefined) rec.jev = [+hit.p.toFixed(2), +hit.margin!.toFixed(2)]
+  if (hit.p !== undefined) rec.pick = [+hit.p.toFixed(2), +hit.margin!.toFixed(2)]
   if (hit.n.disabled) {
     t0 = Date.now(); let on = false
     for (let i = 0; i < 15 && !on; i++) { await sleep(40); on = !(await desk.read(hit.n.id)).states.includes('disabled') }
@@ -613,7 +623,7 @@ function store(chain: Chain) {
   const auto = slug([chain.steps[0].app, ...targets].filter(Boolean).map((x) => x!.split(' ').slice(0, 3).join(' ')).join(' ')) || undefined
   if (!chain.named && auto && chain.name && auto !== chain.name) git('rm', '-q', '--ignore-unmatch', `${chain.name}.json`)
   if (!chain.named) chain.name = auto
-  if (chain.name) saveFlow({ name: chain.name, params: tpl.params, steps: tpl.steps, idempotent: idempotent(chain.steps), runs: 1, saved_at: new Date().toISOString(), rewrites: 0 }, `saved from ${chain.steps.length} passing steps`)
+  if (chain.name) saveFlow({ name: chain.name, params: tpl.params, steps: tpl.steps, idempotent: idempotent(chain.steps), runs: 1, saved_at: new Date().toISOString(), rewrites: 0, usage: chain.usage ?? {} }, `saved from ${chain.steps.length} passing steps`)
   return chain.name
 }
 
@@ -653,7 +663,11 @@ async function find(request: string) {
   return { ok: true, flow: rows[+k.slice(1)].replace(/\(.*$/, ''), p: +p.toFixed(2) }
 }
 
-export async function main(p: { steps?: Step[]; flow?: string; params?: Record<string, string>; save?: string; start?: number; find?: string; reindex?: boolean }) {
+export async function main(p: Params) {
+  return { ...(await perform(p)), usage: desk.usage }
+}
+
+async function perform(p: Params) {
   const t0 = Date.now()
   if (p.reindex) { repo(); writeIndex(); git('add', '-A'); git('commit', '-q', '-m', 'sync from the flow library'); return { ok: true } }
   if (p.find) return await find(p.find)
@@ -719,7 +733,7 @@ export async function main(p: { steps?: Step[]; flow?: string; params?: Record<s
     opened = !!f && !startTitles.has(f.title) && isDialog(o)
   }
   let saved: string | undefined
-  const jevs = recs.filter((r) => r?.jev).length
+  const jevs = recs.filter((r) => r?.pick).length
   const settled = !escalate && !opened
   if (flow) {
     try { writeFileSync(PENDING, 'null') } catch {}
@@ -738,8 +752,8 @@ export async function main(p: { steps?: Step[]; flow?: string; params?: Record<s
     const dirty = recs.some((r) => r?.unsaved)
     let chain: Chain | null = null; let prev: Chain | null = null
     try { prev = JSON.parse(readFileSync(PENDING, 'utf8')) } catch {}
-    if (plan[0].app && !(p.start ?? 0)) chain = { at: Date.now(), window: null, pid: null, params: { ...(p.params ?? {}) }, steps: ran, dirty }
-    else if (prev && Date.now() - prev.at < CHAIN_AGE && (prev.window === startWindow || (prev.pid !== null && prev.pid === startPid))) chain = { ...prev, at: Date.now(), params: { ...prev.params, ...(p.params ?? {}) }, steps: [...prev.steps, ...ran], dirty: prev.dirty || dirty }
+    if (plan[0].app && !(p.start ?? 0)) chain = { at: Date.now(), window: null, pid: null, params: { ...(p.params ?? {}) }, steps: ran, dirty, usage: plus({}, desk.usage) }
+    else if (prev && Date.now() - prev.at < CHAIN_AGE && (prev.window === startWindow || (prev.pid !== null && prev.pid === startPid))) chain = { ...prev, at: Date.now(), params: { ...prev.params, ...(p.params ?? {}) }, steps: [...prev.steps, ...ran], dirty: prev.dirty || dirty, usage: plus(prev.usage, desk.usage) }
     if (chain) {
       if (p.save) { chain.name = slug(p.save); chain.named = true }
       const changes = chain.steps.some((s) => s.check || s.set || s.type !== undefined || (s.menu && s.on !== undefined))
@@ -752,9 +766,10 @@ export async function main(p: { steps?: Step[]; flow?: string; params?: Record<s
     } else if (prev) try { writeFileSync(PENDING, JSON.stringify({ ...prev, saved: false, escalated: false })) } catch {}
   }
   const ms = Date.now() - t0
-  try { mkdirSync(FLOWS, { recursive: true }); appendFileSync(LOG, JSON.stringify({ at: new Date().toISOString(), flow: p.flow ?? null, ok: !escalate, ms, jevs, saved: saved ?? null, steps: log }) + '\n') } catch {}
+  try { mkdirSync(FLOWS, { recursive: true }); appendFileSync(LOG, JSON.stringify({ at: new Date().toISOString(), flow: p.flow ?? null, ok: !escalate, ms, jevs, saved: saved ?? null, usage: desk.usage, steps: log }) + '\n') } catch {}
   const out: Record<string, unknown> = { ok: !escalate, done, ms, trace }
   if (saved) out[flow ? 'flow' : 'saved'] = saved
+  if (flow?.usage) out.recorded_usage = flow.usage
   if (escalate) out.escalate = escalate
   else out.window = (await focused())?.title ?? null
   return out
