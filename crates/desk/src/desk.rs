@@ -483,10 +483,10 @@ pub fn matches(nodes: &[Node], name: &str, role: Option<&str>) -> Vec<usize> {
         .collect()
 }
 
-/// One line per node: `- role "name" [disabled] [checked] [shortcut] [ref=N]: "value"`, indented by depth.
+/// One line per node: `- role "name" [disabled] [checked] [shortcut] [id=ID]: "value"`, indented by depth.
 pub fn outline(nodes: &[Node], max_chars: usize) -> String {
     let mut out = String::new();
-    for (i, n) in nodes.iter().enumerate() {
+    for n in nodes {
         let _ = write!(out, "{}- {}", "  ".repeat(n.depth), n.role);
         if !n.name.is_empty() {
             let _ = write!(out, " \"{}\"", quote(&n.name, max_chars));
@@ -499,7 +499,9 @@ pub fn outline(nodes: &[Node], max_chars: usize) -> String {
         if let Some(s) = &n.shortcut {
             let _ = write!(out, " [{s}]");
         }
-        let _ = write!(out, " [ref={i}]");
+        if !n.id.is_empty() {
+            let _ = write!(out, " [id={}]", n.id);
+        }
         if let Some(value) = &n.value {
             let _ = write!(out, ": \"{}\"", quote(value, max_chars));
         }
@@ -955,14 +957,16 @@ mod tests {
     }
 
     #[test]
-    fn the_outline_shows_states_shortcuts_and_values() {
+    fn the_outline_shows_states_shortcuts_ids_and_values() {
         let nodes = vec![
             Node {
+                id: "42-1".into(),
                 role: "dialog",
                 name: "Font".into(),
                 ..Node::default()
             },
             Node {
+                id: "42-1-7".into(),
                 role: "checkbox",
                 name: "Bold \"b\"".into(),
                 states: vec!["checked"],
@@ -983,7 +987,7 @@ mod tests {
         ];
         assert_eq!(
             outline(&nodes, 80),
-            "- dialog \"Font\" [ref=0]\n  - checkbox \"Bold \\\"b\\\"\" [checked] [ctrl+b] [ref=1]\n  - checkbox \"Mixed\" [disabled] [mixed] [ref=2]: \"12\"\n"
+            "- dialog \"Font\" [id=42-1]\n  - checkbox \"Bold \\\"b\\\"\" [checked] [ctrl+b] [id=42-1-7]\n  - checkbox \"Mixed\" [disabled] [mixed]: \"12\"\n"
         );
     }
 

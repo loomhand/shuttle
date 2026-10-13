@@ -71,11 +71,11 @@ const titled = async (title: string, pid: number | null) => pid !== null && (awa
 async function snapOf(w: Win, keys = false): Promise<desk.Snap> {
   return desk.snapshot(w.title, { pid: w.pid, keys })
 }
-// one line per element, `- role "name" [disabled] [checked] [ref=N]: "value"`; a big tree keeps only what a step can act on
+// one line per element, `- role "name" [disabled] [checked] [id=ID]: "value"`; a big tree keeps only what a step can act on
 function render(nodes: Node[], max: number, interactive: boolean) {
   const q = (s: string) => s.slice(0, max).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')
   return nodes.filter((n) => !interactive || n.depth === 0 || SHOWN_ROLES.has(n.role)).map((n) =>
-    `${'  '.repeat(n.depth)}- ${n.role}${n.name ? ` "${q(n.name)}"` : ''}${n.disabled ? ' [disabled]' : ''}${n.checked ? ' [checked]' : ''}${n.shortcut ? ` [${n.shortcut}]` : ''} [ref=${n.ref}]${n.value ? `: "${q(n.value)}"` : ''}`).join('\n')
+    `${'  '.repeat(n.depth)}- ${n.role}${n.name ? ` "${q(n.name)}"` : ''}${n.disabled ? ' [disabled]' : ''}${n.checked ? ' [checked]' : ''}${n.shortcut ? ` [${n.shortcut}]` : ''}${n.id ? ` [id=${n.id}]` : ''}${n.value ? `: "${q(n.value)}"` : ''}`).join('\n')
 }
 async function outline(w?: Win | null, keys = false) {
   if (w === undefined) w = await focused()
