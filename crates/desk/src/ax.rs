@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use core_foundation::array::{CFArray, CFArrayRef};
@@ -23,6 +24,8 @@ const MESSAGING_TIMEOUT: f32 = 3.0;
 const MAX_IDS: usize = 50_000;
 const VALUE_CHARS: usize = 200;
 const AX_SUCCESS: i32 = 0;
+
+static PROMPTED: AtomicBool = AtomicBool::new(false);
 const POINT_TYPE: u32 = 1;
 const SIZE_TYPE: u32 = 2;
 const ON_SCREEN_ONLY: u32 = 1;
@@ -56,7 +59,7 @@ struct Pair {
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
-    fn AXIsProcessTrusted() -> bool;
+    fn AXIsProcessTrustedWithOptions(options: CFTypeRef) -> bool;
     fn AXUIElementGetTypeID() -> CFTypeID;
     fn AXValueGetTypeID() -> CFTypeID;
     fn AXUIElementCreateApplication(pid: i32) -> CFTypeRef;
@@ -99,8 +102,13 @@ pub struct Ax {
 impl Ax {
     /// The backend, once this process holds the Accessibility permission.
     pub fn open() -> Result<Self, String> {
-        // SAFETY: AXIsProcessTrusted takes no arguments and only reads this process's TCC state.
-        if !unsafe { AXIsProcessTrusted() } {
+        let prompt = !PROMPTED.swap(true, Ordering::Relaxed);
+        let options = CFDictionary::from_CFType_pairs(&[(
+            CFString::from_static_string("AXTrustedCheckOptionPrompt"),
+            CFBoolean::from(prompt).as_CFType(),
+        )]);
+        // SAFETY: `options` is a live CFDictionary; the call reads this process's TCC state and, once, asks the user.
+        if !unsafe { AXIsProcessTrustedWithOptions(options.as_CFTypeRef()) } {
             let exe = std::env::current_exe()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
