@@ -24,6 +24,8 @@ const MAX_FOUND: usize = 20;
 const MENU_POLL: Duration = Duration::from_millis(30);
 const MENU_POLLS: u32 = 10;
 const SELECTED_ROLES: [&str; 5] = ["tab", "option", "radio", "listitem", "treeitem"];
+const TITLE_TIERS: usize = 4;
+const TITLE_SEPARATORS: [&str; 2] = [" - ", " — "];
 
 /// The desk of one OS: `B` reads and acts on elements, `D` sends input.
 pub struct Desk<B, D> {
@@ -434,7 +436,7 @@ fn reachable<B: Access>(b: &mut B, id: &str, node: &Node, chain: &[String]) -> O
     reaches.then_some((cx, cy))
 }
 
-/// The window named `want` (exact, then trimmed, then contained, ignoring case), else the focused one;
+/// The window named `want` (by [`title_matches`] tiers), else the focused one;
 /// among equals the active one, else the newest.
 pub fn pick(frames: Vec<Frame>, want: Option<&str>, pid: Option<u32>) -> Result<Frame, String> {
     let frames: Vec<Frame> = frames
@@ -448,14 +450,11 @@ pub fn pick(frames: Vec<Frame>, want: Option<&str>, pid: Option<u32>) -> Result<
             .collect();
         return best(&active).ok_or_else(|| "no focused window".to_owned());
     };
-    let lower = want.trim().to_lowercase();
-    let tests: [&dyn Fn(&Frame) -> bool; 3] = [
-        &|f| f.title == want,
-        &|f| f.title.trim().to_lowercase() == lower,
-        &|f| f.title.to_lowercase().contains(&lower),
-    ];
-    for test in tests {
-        let hits: Vec<&Frame> = frames.iter().filter(|f| test(f)).collect();
+    for tier in 0..TITLE_TIERS {
+        let hits: Vec<&Frame> = frames
+            .iter()
+            .filter(|f| title_matches(tier, &f.title, want))
+            .collect();
         if let Some(f) = best(&hits) {
             return Ok(f);
         }
@@ -608,21 +607,34 @@ fn best(c: &[&Frame]) -> Option<Frame> {
 }
 
 fn titled(frames: Vec<Frame>, window: &str, pid: Option<u32>) -> Result<Frame, String> {
-    let lower = window.trim().to_lowercase();
     let frames: Vec<Frame> = frames
         .into_iter()
         .filter(|f| pid.is_none_or(|p| f.pid == Some(p)))
         .collect();
-    let exact = frames.iter().rposition(|f| f.title == window);
-    let near = || {
-        frames
-            .iter()
-            .rposition(|f| f.title.to_lowercase().contains(&lower))
-    };
-    exact
-        .or_else(near)
-        .map(|i| frames[i].clone())
+    (0..TITLE_TIERS)
+        .find_map(|tier| {
+            frames
+                .iter()
+                .rfind(|f| title_matches(tier, &f.title, window))
+        })
+        .cloned()
         .ok_or_else(|| format!("no window {window:?}"))
+}
+
+/// Whether window title `title` matches `want` at `tier`: 0 the same, 1 the same ignoring case and outer
+/// spaces, 2 containing it ignoring case, 3 ending with its app part, such as ` - Notepad` of `a.txt - Notepad`.
+fn title_matches(tier: usize, title: &str, want: &str) -> bool {
+    let lower = want.trim().to_lowercase();
+    match tier {
+        0 => title == want,
+        1 => title.trim().to_lowercase() == lower,
+        2 => title.to_lowercase().contains(&lower),
+        _ => TITLE_SEPARATORS
+            .iter()
+            .filter_map(|s| lower.rfind(s))
+            .max()
+            .is_some_and(|i| title.trim_end().to_lowercase().ends_with(&lower[i..])),
+    }
 }
 
 fn quote(s: &str, max: usize) -> String {
@@ -936,6 +948,30 @@ mod tests {
             "Untitled - Notepad"
         );
         assert!(pick(frames, Some("Notepad"), Some(9)).is_err());
+    }
+
+    #[test]
+    fn a_stale_title_finds_the_window_of_its_app_unless_one_matches() {
+        let frame = |title: &str, active: bool| Frame {
+            id: title.into(),
+            title: title.into(),
+            role: "window",
+            pid: Some(7),
+            active,
+        };
+        let frames = vec![
+            frame("a.txt - Notepad", false),
+            frame("*b.txt - Notepad", true),
+            frame("Save As", false),
+        ];
+        let picked = |want: &str| pick(frames.clone(), Some(want), None).map(|f| f.title);
+        assert_eq!(picked("Untitled - Notepad").unwrap(), "*b.txt - Notepad");
+        assert_eq!(picked("a.txt - Notepad").unwrap(), "a.txt - Notepad");
+        assert!(picked("Untitled - Paint").is_err());
+        let found = |want: &str| titled(frames.clone(), want, None).map(|f| f.title);
+        assert_eq!(found("Untitled - Notepad").unwrap(), "*b.txt - Notepad");
+        assert_eq!(found("a.txt - Notepad").unwrap(), "a.txt - Notepad");
+        assert!(found("Untitled - Paint").is_err());
     }
 
     #[test]
