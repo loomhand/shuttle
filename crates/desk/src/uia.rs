@@ -82,19 +82,6 @@ pub struct Uia {
     tops: HashMap<isize, Top>,
 }
 
-struct Top {
-    pid: u32,
-    control_type: i32,
-    dialog: bool,
-    el: IUIAutomationElement,
-}
-
-struct Shown {
-    hwnd: HWND,
-    owner: isize,
-    pid: u32,
-}
-
 impl Uia {
     /// The backend on a COM multithreaded apartment, with per-monitor DPI awareness so bounds are pixels.
     pub fn open() -> Result<Self, String> {
@@ -468,6 +455,19 @@ impl Access for Uia {
         }
         .map_err(|e| format!("close {:?}: {e}", frame.title))
     }
+}
+
+struct Top {
+    pid: u32,
+    control_type: i32,
+    dialog: bool,
+    el: IUIAutomationElement,
+}
+
+struct Shown {
+    hwnd: HWND,
+    owner: isize,
+    pid: u32,
 }
 
 /// One element's cached properties; a property it lacks stays empty.
