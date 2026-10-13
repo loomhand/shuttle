@@ -1,0 +1,47 @@
+[package]
+name = "cocoonbox-desk"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "Desk host for Windows and macOS boxes: the desk calls over the toolhost framing"
+license = "AGPL-3.0-only"
+publish = false
+
+[[bin]]
+name = "cocoonbox-desk"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.22"
+png = "0.18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_UI_Accessibility",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

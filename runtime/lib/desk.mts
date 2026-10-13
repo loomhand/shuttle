@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { createConnection } from 'node:net'
+import { homedir } from 'node:os'
 
 export type Win = { id: string; title: string; role: string; pid: number | null; active: boolean }
 export type El = {
@@ -12,7 +13,8 @@ export type Snap = { window: Win; nodes: El[]; truncated: boolean; ms: number }
 export type Question = { type: 'noul'; instructions: string } | { type: 'choice'; instructions: string; criteria: Record<string, string> }
 export type Usage = Record<string, { calls: number; input_tokens: number; output_tokens: number; cached_tokens: number }>
 
-const SOCKET = process.env.TOOLHOST_SOCKET || '/run/cocoonbox/toolhost.sock'
+const SOCKETS: Record<string, string> = { win32: '\\\\.\\pipe\\cocoonbox-desk', darwin: `${homedir()}/Library/Caches/cocoonbox/desk.sock` }
+const SOCKET = process.env.TOOLHOST_SOCKET || SOCKETS[process.platform] || '/run/cocoonbox/toolhost.sock'
 const ENV_FILE = '/etc/cocoonbox/desk.env'
 const DECIDE_MODEL = 'typesafe/jev-1.13'
 const ASK_MODEL = 'anthropic/claude-sonnet-5'

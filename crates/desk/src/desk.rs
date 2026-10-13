@@ -1,0 +1,1024 @@
+//! The desk calls: snapshots and element actions through the OS backend, input, windows, launch and
+//! capture through cua-driver; the same verbs and JSON as the Linux toolhost.
+
+use std::fmt::Write as _;
+use std::time::{Duration, Instant};
+
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
+use serde_json::{Map, Value, json};
+
+use crate::driver::{Input, desktop, text_of};
+use crate::keys::{Os, key_names};
+use crate::model::{Access, Act, Extras, Frame, Node};
+use crate::rpc::Output;
+use crate::worker::Worker;
+
+const CALL_LIMIT: Duration = Duration::from_secs(3);
+const TREE_LIMIT: Duration = Duration::from_secs(10);
+const NAME_CHARS: usize = 80;
+const READ_CHARS: usize = 64 << 10;
+const MAX_FOUND: usize = 20;
+const MENU_POLL: Duration = Duration::from_millis(30);
+const MENU_POLLS: u32 = 10;
+const SELECTED_ROLES: [&str; 5] = ["tab", "option", "radio", "listitem", "treeitem"];
+
+/// The desk of one OS: `B` reads and acts on elements, `D` sends input.
+pub struct Desk<B, D> {
+    access: Worker<B>,
+    driver: D,
+    os: Os,
+}
+
+impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
+    /// A desk whose backend `open` makes on its worker thread.
+    pub fn new(open: fn() -> Result<B, String>, driver: D, os: Os) -> Self {
+        Self {
+            access: Worker::new(open),
+            driver,
+            os,
+        }
+    }
+
+    /// Runs desk call `tool`, a `desk_<verb>`.
+    pub async fn run(&self, tool: &str, args: Value) -> Result<Output, String> {
+        let text = match tool {
+            "desk_windows" => self.windows().await?,
+            "desk_snapshot" => self.snapshot(parse(args)?).await?,
+            "desk_find" => self.find(parse(args)?).await?,
+            "desk_read" => self.read(parse(args)?).await?,
+            "desk_press" => self.press(parse::<IdArgs>(args)?.id).await?,
+            "desk_act" => self.act(parse(args)?).await?,
+            "desk_at" => self.at(parse(args)?).await?,
+            "desk_key" => self.key(&parse::<KeyArgs>(args)?.keys).await?,
+            "desk_type" => self.type_text(&parse::<TypeArgs>(args)?.text).await?,
+            "desk_click" => self.click(parse(args)?).await?,
+            "desk_focus" => self.focus(parse(args)?).await?,
+            "desk_close" => self.close(parse(args)?).await?,
+            "desk_launch" => {
+                let app = parse::<LaunchArgs>(args)?.app;
+                let v = self.driver.call("launch_app", json!({"name": app})).await?;
+                json!({"ok": true, "launched": text_of(&v)}).to_string()
+            }
+            "desk_shot" => return self.shot(parse(args)?).await,
+            "desk_screen" => {
+                let v = self.driver.call("get_screen_size", json!({})).await?;
+                v["structuredContent"].to_string()
+            }
+            other => return Err(format!("unknown desk tool {other}")),
+        };
+        Ok(Output::text(text))
+    }
+
+    async fn windows(&self) -> Result<String, String> {
+        let mut frames = self.access.run(CALL_LIMIT, |a| a.frames()).await?;
+        frames.sort_by_key(|f| !f.active);
+        Ok(Value::Array(frames.iter().map(Frame::json).collect()).to_string())
+    }
+
+    async fn snapshot(&self, a: SnapArgs) -> Result<String, String> {
+        let started = Instant::now();
+        let extras = Extras {
+            values: true,
+            bounds: a.bounds.unwrap_or(true),
+            keys: a.keys,
+        };
+        let (window, pid) = (a.window, a.pid);
+        let (tree, found) = self
+            .access
+            .run(TREE_LIMIT, move |b| {
+                let frame = pick(b.frames()?, window.as_deref(), pid)?;
+                let found = started.elapsed().as_micros();
+                Ok((b.tree(&frame, extras)?, found))
+            })
+            .await?;
+        let mut phases = Map::new();
+        phases.insert("frames".into(), ms(found));
+        for (name, us) in &tree.phases {
+            phases.insert((*name).into(), ms(*us));
+        }
+        let mut out = json!({
+            "window": tree.frame.json(),
+            "ms": ms(started.elapsed().as_micros()),
+            "phases": phases,
+            "truncated": tree.truncated,
+        });
+        if a.text {
+            out["text"] = outline(&tree.nodes, a.max_chars.unwrap_or(NAME_CHARS)).into();
+        } else {
+            out["nodes"] = tree
+                .nodes
+                .iter()
+                .enumerate()
+                .map(|(i, n)| n.json(i))
+                .collect();
+        }
+        Ok(out.to_string())
+    }
+
+    async fn find(&self, a: FindArgs) -> Result<String, String> {
+        let extras = Extras {
+            values: true,
+            bounds: true,
+            keys: false,
+        };
+        let (window, pid) = (a.window, a.pid);
+        let tree = self
+            .access
+            .run(TREE_LIMIT, move |b| {
+                let frame = pick(b.frames()?, window.as_deref(), pid)?;
+                b.tree(&frame, extras)
+            })
+            .await?;
+        let found: Vec<Value> = matches(&tree.nodes, &a.name, a.role.as_deref())
+            .into_iter()
+            .take(MAX_FOUND)
+            .map(|i| tree.nodes[i].json(i))
+            .collect();
+        Ok(json!({"window": tree.frame.json(), "found": found}).to_string())
+    }
+
+    async fn read(&self, a: ReadArgs) -> Result<String, String> {
+        let extras = Extras {
+            values: true,
+            bounds: true,
+            keys: true,
+        };
+        let chars = if a.text { READ_CHARS } else { NAME_CHARS };
+        let node = self
+            .access
+            .run(CALL_LIMIT, move |b| b.node(&a.id, extras, chars))
+            .await?;
+        Ok(node.json(0).to_string())
+    }
+
+    async fn press(&self, id: String) -> Result<String, String> {
+        match self
+            .access
+            .run(TREE_LIMIT, move |b| plan_press(b, &id))
+            .await?
+        {
+            Press::Selected => Ok(json!({"ok": true, "how": "select"}).to_string()),
+            Press::Acted(ok) => Ok(json!({"ok": ok, "how": "action"}).to_string()),
+            Press::Click(x, y) => {
+                self.driver
+                    .call("click", desktop(json!({"x": x, "y": y})))
+                    .await?;
+                Ok(json!({"ok": true, "how": "click", "x": x, "y": y}).to_string())
+            }
+        }
+    }
+
+    async fn act(&self, a: ActArgs) -> Result<String, String> {
+        let act = match a.action.as_str() {
+            "action" => Act::Action,
+            "select" => Act::Select,
+            "focus" => Act::Focus,
+            "click" => {
+                let shown = Extras {
+                    bounds: true,
+                    ..Extras::default()
+                };
+                let n = self
+                    .access
+                    .run(CALL_LIMIT, move |b| b.node(&a.id, shown, 0))
+                    .await?;
+                let [x, y, w, h] = n.bounds.ok_or("the element has no screen position")?;
+                self.driver
+                    .call("click", desktop(json!({"x": x + w / 2, "y": y + h / 2})))
+                    .await?;
+                return Ok(json!({"ok": true}).to_string());
+            }
+            other => {
+                return Err(format!(
+                    "unknown action {other}; use click, action, select or focus"
+                ));
+            }
+        };
+        let ok = self
+            .access
+            .run(CALL_LIMIT, move |b| b.act(&a.id, act))
+            .await?;
+        Ok(json!({"ok": ok}).to_string())
+    }
+
+    async fn at(&self, a: AtArgs) -> Result<String, String> {
+        self.access
+            .run(CALL_LIMIT, move |b| {
+                let frame = pick(b.frames()?, a.window.as_deref(), a.pid)?;
+                let Some(hit) = b.at(&frame.id, a.x, a.y)? else {
+                    return Ok(json!({"found": null, "window": frame.json()}).to_string());
+                };
+                let node = b.node(&hit, Extras::default(), 0)?;
+                let path: Vec<Value> = b
+                    .ancestors(&hit)?
+                    .into_iter()
+                    .filter_map(|id| {
+                        let n = b.node(&id, Extras::default(), 0).ok()?;
+                        Some(json!({"id": id, "role": n.role, "name": n.name}))
+                    })
+                    .collect();
+                Ok(json!({"found": node.json(0), "path": path}).to_string())
+            })
+            .await
+    }
+
+    async fn close(&self, a: WindowArgs) -> Result<String, String> {
+        self.access
+            .run(CALL_LIMIT, move |b| {
+                let frame = titled(b.frames()?, &a.window, a.pid)?;
+                b.close(&frame)?;
+                Ok(json!({"ok": true, "title": frame.title}).to_string())
+            })
+            .await
+    }
+
+    async fn key(&self, combo: &str) -> Result<String, String> {
+        let keys = key_names(combo, self.os)?;
+        match keys.as_slice() {
+            [one] => {
+                self.driver
+                    .call("press_key", desktop(json!({"key": one})))
+                    .await?
+            }
+            _ => {
+                self.driver
+                    .call("hotkey", desktop(json!({"keys": keys})))
+                    .await?
+            }
+        };
+        Ok(json!({"ok": true}).to_string())
+    }
+
+    async fn type_text(&self, text: &str) -> Result<String, String> {
+        for (i, line) in text.split('\n').enumerate() {
+            if i > 0 {
+                self.driver
+                    .call("press_key", desktop(json!({"key": "return"})))
+                    .await?;
+            }
+            let line = line.trim_end_matches('\r');
+            if !line.is_empty() {
+                self.driver
+                    .call("type_text", desktop(json!({"text": line})))
+                    .await?;
+            }
+        }
+        Ok(json!({"ok": true, "chars": text.chars().count()}).to_string())
+    }
+
+    async fn click(&self, a: ClickArgs) -> Result<String, String> {
+        let mut req = json!({"x": a.x, "y": a.y});
+        if let Some(button) = a.button {
+            req["button"] = button.into();
+        }
+        if let Some(count) = a.count {
+            req["count"] = count.into();
+        }
+        self.driver.call("click", desktop(req)).await?;
+        Ok(json!({"ok": true}).to_string())
+    }
+
+    async fn focus(&self, a: WindowArgs) -> Result<String, String> {
+        let listed = self.driver.call("list_windows", json!({})).await?;
+        let windows: Vec<Frame> = listed["structuredContent"]["windows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|w| Frame {
+                id: w["window_id"].to_string(),
+                title: w["title"].as_str().unwrap_or_default().to_owned(),
+                pid: w["pid"].as_u64().and_then(|p| u32::try_from(p).ok()),
+                ..Frame::default()
+            })
+            .collect();
+        let w = titled(windows, &a.window, a.pid)?;
+        let window_id: Value = serde_json::from_str(&w.id).unwrap_or(Value::Null);
+        self.driver
+            .call(
+                "bring_to_front",
+                json!({"pid": w.pid, "window_id": window_id}),
+            )
+            .await?;
+        Ok(json!({"ok": true, "title": w.title, "pid": w.pid}).to_string())
+    }
+
+    async fn shot(&self, a: ShotArgs) -> Result<Output, String> {
+        let v = self.driver.call("get_desktop_state", json!({})).await?;
+        let png = v["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|c| c["type"] == "image")
+            .and_then(|c| c["data"].as_str())
+            .ok_or("the driver returned no screenshot")?;
+        let png = B64
+            .decode(png)
+            .map_err(|e| format!("decode screenshot: {e}"))?;
+        let s = &v["structuredContent"];
+        let shot_w = s["screenshot_width"].as_f64().unwrap_or(0.0);
+        let full_w = s["screenshot_original_width"].as_f64().unwrap_or(shot_w);
+        let factor = if full_w > 0.0 { shot_w / full_w } else { 1.0 };
+        let rect = [
+            a.x.unwrap_or(0.0),
+            a.y.unwrap_or(0.0),
+            a.w.unwrap_or(f64::MAX / 4.0),
+            a.h.unwrap_or(f64::MAX / 4.0),
+        ];
+        let (w, h, png) = crop_png(&png, rect, factor)?;
+        let image = B64.encode(&png);
+        let out = json!({"ok": true, "width": w, "height": h, "png_b64": image});
+        Ok(Output {
+            text: out.to_string(),
+            image_b64: Some(image),
+            ..Output::default()
+        })
+    }
+}
+
+/// What a press comes to after the backend's part of it.
+#[derive(Debug, PartialEq)]
+pub enum Press {
+    Selected,
+    Click(i32, i32),
+    Acted(bool),
+}
+
+/// Presses `id` the way a user would: selects a tab or list row, opens the menus above a hidden menu
+/// entry, clicks the element's centre when a hit test there finds it, else runs its action.
+pub fn plan_press<B: Access>(b: &mut B, id: &str) -> Result<Press, String> {
+    let shown = Extras {
+        bounds: true,
+        ..Extras::default()
+    };
+    let mut node = b.node(id, shown, 0)?;
+    if SELECTED_ROLES.contains(&node.role) && b.act(id, Act::Select).unwrap_or(false) {
+        return Ok(Press::Selected);
+    }
+    let chain = b.ancestors(id)?;
+    if node.role.starts_with("menu") && !node.has("showing") {
+        open_menus(b, &chain);
+        for _ in 0..MENU_POLLS {
+            node = b.node(id, shown, 0)?;
+            if node.has("showing") {
+                break;
+            }
+            std::thread::sleep(MENU_POLL);
+        }
+    }
+    if let Some((x, y)) = reachable(b, id, &node, &chain) {
+        return Ok(Press::Click(x, y));
+    }
+    Ok(Press::Acted(b.act(id, Act::Action)?))
+}
+
+fn open_menus<B: Access>(b: &mut B, chain: &[String]) {
+    let roles: Vec<&'static str> = chain
+        .iter()
+        .map(|id| b.node(id, Extras::default(), 0).map_or("", |n| n.role))
+        .collect();
+    let start = roles
+        .iter()
+        .rposition(|r| *r != "menu")
+        .map_or(0, |i| i + 1);
+    for menu in &chain[start..] {
+        let _ = b.act(menu, Act::Action);
+    }
+}
+
+fn reachable<B: Access>(b: &mut B, id: &str, node: &Node, chain: &[String]) -> Option<(i32, i32)> {
+    let [x, y, w, h] = node.bounds?;
+    if !node.has("showing") || w <= 0 || h <= 0 || x < 0 || y < 0 {
+        return None;
+    }
+    let (cx, cy) = (x + w / 2, y + h / 2);
+    if node.role.starts_with("menu") {
+        return Some((cx, cy));
+    }
+    let shown = Extras {
+        bounds: true,
+        ..Extras::default()
+    };
+    let inside = chain.iter().all(|a| {
+        b.node(a, shown, 0).is_ok_and(|n| {
+            n.role == "tab"
+                || n.bounds.is_none_or(|[bx, by, bw, bh]| {
+                    (bx..bx + bw).contains(&cx) && (by..by + bh).contains(&cy)
+                })
+        })
+    });
+    if !inside {
+        return None;
+    }
+    let hit = b.at(chain.first()?, cx, cy).ok()??;
+    let reaches =
+        hit == id || chain.contains(&hit) || b.ancestors(&hit).ok()?.iter().any(|a| a == id);
+    reaches.then_some((cx, cy))
+}
+
+/// The window named `want` (exact, then trimmed, then contained, ignoring case), else the focused one;
+/// among equals the active one, else the newest.
+pub fn pick(frames: Vec<Frame>, want: Option<&str>, pid: Option<u32>) -> Result<Frame, String> {
+    let frames: Vec<Frame> = frames
+        .into_iter()
+        .filter(|f| pid.is_none_or(|p| f.pid == Some(p)))
+        .collect();
+    let Some(want) = want else {
+        let active: Vec<&Frame> = frames
+            .iter()
+            .filter(|f| f.active && (f.role != "window" || !f.title.is_empty()))
+            .collect();
+        return best(&active).ok_or_else(|| "no focused window".to_owned());
+    };
+    let lower = want.trim().to_lowercase();
+    let tests: [&dyn Fn(&Frame) -> bool; 3] = [
+        &|f| f.title == want,
+        &|f| f.title.trim().to_lowercase() == lower,
+        &|f| f.title.to_lowercase().contains(&lower),
+    ];
+    for test in tests {
+        let hits: Vec<&Frame> = frames.iter().filter(|f| test(f)).collect();
+        if let Some(f) = best(&hits) {
+            return Ok(f);
+        }
+    }
+    let titles: Vec<&str> = frames.iter().map(|f| f.title.as_str()).collect();
+    Err(format!("no window {want:?}; windows: {titles:?}"))
+}
+
+/// The indexes of the nodes named `name`, else of those that contain it, ignoring case and punctuation.
+pub fn matches(nodes: &[Node], name: &str, role: Option<&str>) -> Vec<usize> {
+    let want = norm(name);
+    let pool: Vec<usize> = (0..nodes.len())
+        .filter(|&i| role.is_none_or(|r| r.split('|').any(|r| r == nodes[i].role)))
+        .collect();
+    let exact: Vec<usize> = pool
+        .iter()
+        .copied()
+        .filter(|&i| norm(&nodes[i].name) == want)
+        .collect();
+    if !exact.is_empty() {
+        return exact;
+    }
+    pool.into_iter()
+        .filter(|&i| !want.is_empty() && norm(&nodes[i].name).contains(&want))
+        .collect()
+}
+
+/// One line per node: `- role "name" [disabled] [checked] [shortcut] [ref=N]: "value"`, indented by depth.
+pub fn outline(nodes: &[Node], max_chars: usize) -> String {
+    let mut out = String::new();
+    for (i, n) in nodes.iter().enumerate() {
+        let _ = write!(out, "{}- {}", "  ".repeat(n.depth), n.role);
+        if !n.name.is_empty() {
+            let _ = write!(out, " \"{}\"", quote(&n.name, max_chars));
+        }
+        for state in ["disabled", "checked", "mixed"] {
+            if n.has(state) {
+                let _ = write!(out, " [{state}]");
+            }
+        }
+        if let Some(s) = &n.shortcut {
+            let _ = write!(out, " [{s}]");
+        }
+        let _ = write!(out, " [ref={i}]");
+        if let Some(value) = &n.value {
+            let _ = write!(out, ": \"{}\"", quote(value, max_chars));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// A crop of the screen rectangle `[x, y, w, h]` from a screenshot scaled by `factor`, as `(width, height, PNG)`.
+pub fn crop_png(
+    png: &[u8],
+    [x, y, w, h]: [f64; 4],
+    factor: f64,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    let mut dec = png::Decoder::new(std::io::Cursor::new(png));
+    dec.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = dec
+        .read_info()
+        .map_err(|e| format!("decode screenshot: {e}"))?;
+    let mut buf = vec![0; reader.output_buffer_size().ok_or("screenshot too large")?];
+    let info = reader
+        .next_frame(&mut buf)
+        .map_err(|e| format!("decode screenshot: {e}"))?;
+    let channels = info.color_type.samples();
+    let clip = |v: f64, max: u32| (v * factor).floor().clamp(0.0, f64::from(max)) as u32;
+    let (left, top) = (clip(x, info.width), clip(y, info.height));
+    let (right, bottom) = (clip(x + w, info.width), clip(y + h, info.height));
+    if right <= left || bottom <= top {
+        return Err("the rectangle is off the screen".to_owned());
+    }
+    let (cw, ch) = (right - left, bottom - top);
+    let mut rgb = Vec::with_capacity((cw * ch * 3) as usize);
+    for row in top..bottom {
+        for col in left..right {
+            let at = (row as usize * info.width as usize + col as usize) * channels;
+            let px = &buf[at..at + channels];
+            match channels {
+                1 | 2 => rgb.extend([px[0]; 3]),
+                _ => rgb.extend(&px[..3]),
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::new(&mut out, cw, ch);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .and_then(|mut w| w.write_image_data(&rgb))
+        .map_err(|e| format!("encode PNG: {e}"))?;
+    Ok((cw, ch, out))
+}
+
+/// Lower case without the punctuation that labels add: underscores, ellipses, a trailing colon.
+pub fn norm(s: &str) -> String {
+    let s = s.to_lowercase().replace(['_', '…'], "").replace("...", "");
+    let s = s.trim().trim_end_matches(':');
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// One JSON object, or `key=value` pairs whose values parse as JSON when they can.
+pub fn cli_args(rest: &[String]) -> Result<Value, String> {
+    if let [one] = rest
+        && one.trim_start().starts_with('{')
+    {
+        return serde_json::from_str(one).map_err(|e| format!("arguments: {e}"));
+    }
+    let mut args = Map::new();
+    for pair in rest {
+        let (k, v) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("{pair:?} is not key=value"))?;
+        let v = serde_json::from_str(v).unwrap_or_else(|_| Value::String(v.to_owned()));
+        args.insert(k.to_owned(), v);
+    }
+    Ok(Value::Object(args))
+}
+
+fn best(c: &[&Frame]) -> Option<Frame> {
+    c.iter()
+        .rev()
+        .find(|f| f.active)
+        .or_else(|| c.last())
+        .map(|f| (*f).clone())
+}
+
+fn titled(frames: Vec<Frame>, window: &str, pid: Option<u32>) -> Result<Frame, String> {
+    let lower = window.trim().to_lowercase();
+    let frames: Vec<Frame> = frames
+        .into_iter()
+        .filter(|f| pid.is_none_or(|p| f.pid == Some(p)))
+        .collect();
+    let exact = frames.iter().rposition(|f| f.title == window);
+    let near = || {
+        frames
+            .iter()
+            .rposition(|f| f.title.to_lowercase().contains(&lower))
+    };
+    exact
+        .or_else(near)
+        .map(|i| frames[i].clone())
+        .ok_or_else(|| format!("no window {window:?}"))
+}
+
+fn quote(s: &str, max: usize) -> String {
+    let cut: String = s.chars().take(max).collect();
+    cut.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+}
+
+fn ms(us: u128) -> Value {
+    json!((us as f64 / 100.0).round() / 10.0)
+}
+
+fn parse<T: DeserializeOwned>(args: Value) -> Result<T, String> {
+    serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))
+}
+
+#[derive(Deserialize)]
+struct SnapArgs {
+    #[serde(default)]
+    window: Option<String>,
+    #[serde(default)]
+    pid: Option<u32>,
+    #[serde(default)]
+    text: bool,
+    #[serde(default)]
+    keys: bool,
+    #[serde(default)]
+    bounds: Option<bool>,
+    #[serde(default)]
+    max_chars: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct FindArgs {
+    name: String,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    window: Option<String>,
+    #[serde(default)]
+    pid: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct ReadArgs {
+    id: String,
+    #[serde(default)]
+    text: bool,
+}
+
+#[derive(Deserialize)]
+struct IdArgs {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct ActArgs {
+    id: String,
+    action: String,
+}
+
+#[derive(Deserialize)]
+struct AtArgs {
+    x: i32,
+    y: i32,
+    #[serde(default)]
+    window: Option<String>,
+    #[serde(default)]
+    pid: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct KeyArgs {
+    keys: String,
+}
+
+#[derive(Deserialize)]
+struct TypeArgs {
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct ClickArgs {
+    x: f64,
+    y: f64,
+    #[serde(default)]
+    button: Option<String>,
+    #[serde(default)]
+    count: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct WindowArgs {
+    window: String,
+    #[serde(default)]
+    pid: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct LaunchArgs {
+    app: String,
+}
+
+#[derive(Deserialize)]
+struct ShotArgs {
+    #[serde(default)]
+    x: Option<f64>,
+    #[serde(default)]
+    y: Option<f64>,
+    #[serde(default)]
+    w: Option<f64>,
+    #[serde(default)]
+    h: Option<f64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::model::Tree;
+
+    #[derive(Default)]
+    struct Fake {
+        nodes: HashMap<String, (Node, Option<String>)>,
+        hits: HashMap<(i32, i32), String>,
+        acts: Vec<(String, Act)>,
+        opened: bool,
+    }
+
+    impl Fake {
+        fn add(
+            &mut self,
+            id: &str,
+            parent: Option<&str>,
+            role: &'static str,
+            states: &[&'static str],
+            bounds: Option<[i32; 4]>,
+        ) {
+            let n = Node {
+                id: id.into(),
+                role,
+                name: id.into(),
+                states: states.to_vec(),
+                bounds,
+                ..Node::default()
+            };
+            self.nodes.insert(id.into(), (n, parent.map(str::to_owned)));
+        }
+    }
+
+    impl Access for Fake {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            Ok(vec![Frame {
+                id: "w".into(),
+                title: "Untitled - Notepad".into(),
+                role: "window",
+                pid: Some(4),
+                active: true,
+            }])
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            Ok(Tree {
+                frame: frame.clone(),
+                ..Tree::default()
+            })
+        }
+
+        fn node(&mut self, id: &str, _: Extras, _: usize) -> Result<Node, String> {
+            let (mut n, _) = self.nodes.get(id).cloned().ok_or("gone")?;
+            if self.opened && n.role == "menuitem" {
+                n.states.push("showing");
+            }
+            Ok(n)
+        }
+
+        fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
+            let mut chain = Vec::new();
+            let mut at = self.nodes.get(id).and_then(|(_, p)| p.clone());
+            while let Some(p) = at {
+                at = self.nodes.get(&p).and_then(|(_, p)| p.clone());
+                chain.push(p);
+            }
+            chain.reverse();
+            Ok(chain)
+        }
+
+        fn at(&mut self, _: &str, x: i32, y: i32) -> Result<Option<String>, String> {
+            Ok(self.hits.get(&(x, y)).cloned())
+        }
+
+        fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
+            self.acts.push((id.into(), act));
+            if self.nodes.get(id).is_some_and(|(n, _)| n.role == "menu") {
+                self.opened = true;
+            }
+            Ok(act != Act::Select || self.nodes.get(id).is_some_and(|(n, _)| n.role == "tab"))
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn notepad() -> Fake {
+        let mut f = Fake::default();
+        f.add("w", None, "window", &["showing"], Some([0, 0, 800, 600]));
+        f.add(
+            "ok",
+            Some("w"),
+            "button",
+            &["showing"],
+            Some([100, 100, 80, 20]),
+        );
+        f.add(
+            "hidden",
+            Some("w"),
+            "button",
+            &["showing"],
+            Some([300, 100, 80, 20]),
+        );
+        f.add("tab", Some("w"), "tab", &["showing"], Some([0, 30, 60, 20]));
+        f.add(
+            "file",
+            Some("w"),
+            "menu",
+            &["showing"],
+            Some([0, 0, 40, 20]),
+        );
+        f.add("save", Some("file"), "menuitem", &[], None);
+        f.hits.insert((140, 110), "ok".into());
+        f.hits.insert((340, 110), "w".into());
+        f
+    }
+
+    #[test]
+    fn a_shown_control_that_a_hit_test_finds_takes_a_click() {
+        let mut f = notepad();
+        assert_eq!(plan_press(&mut f, "ok").unwrap(), Press::Click(140, 110));
+        assert!(f.acts.is_empty());
+    }
+
+    #[test]
+    fn a_covered_control_runs_its_action() {
+        let mut f = notepad();
+        f.hits.insert((340, 110), "elsewhere".into());
+        f.add("elsewhere", None, "button", &[], None);
+        assert_eq!(plan_press(&mut f, "hidden").unwrap(), Press::Acted(true));
+        assert_eq!(f.acts, [("hidden".to_owned(), Act::Action)]);
+    }
+
+    #[test]
+    fn a_tab_is_selected() {
+        let mut f = notepad();
+        assert_eq!(plan_press(&mut f, "tab").unwrap(), Press::Selected);
+    }
+
+    #[test]
+    fn a_hidden_menu_entry_opens_its_menu_first() {
+        let mut f = notepad();
+        f.nodes.get_mut("save").unwrap().0.bounds = Some([0, 20, 100, 20]);
+        assert_eq!(plan_press(&mut f, "save").unwrap(), Press::Click(50, 30));
+        assert_eq!(f.acts, [("file".to_owned(), Act::Action)]);
+    }
+
+    #[test]
+    fn a_window_is_picked_by_exact_then_trimmed_then_contained_title() {
+        let frame = |title: &str, active: bool, pid: u32| Frame {
+            id: title.into(),
+            title: title.into(),
+            role: "window",
+            pid: Some(pid),
+            active,
+        };
+        let frames = vec![
+            frame("Untitled - Notepad", false, 7),
+            frame("Save As", true, 7),
+            frame("Settings", false, 9),
+        ];
+        assert_eq!(pick(frames.clone(), None, None).unwrap().title, "Save As");
+        assert_eq!(
+            pick(frames.clone(), Some("settings"), None).unwrap().title,
+            "Settings"
+        );
+        assert_eq!(
+            pick(frames.clone(), Some("notepad"), Some(7))
+                .unwrap()
+                .title,
+            "Untitled - Notepad"
+        );
+        assert!(pick(frames, Some("Notepad"), Some(9)).is_err());
+    }
+
+    #[test]
+    fn names_match_exactly_before_they_match_contained() {
+        let n = |name: &str, role: &'static str| Node {
+            name: name.into(),
+            role,
+            ..Node::default()
+        };
+        let nodes = vec![
+            n("Save As…", "menuitem"),
+            n("Save", "menuitem"),
+            n("save", "button"),
+        ];
+        assert_eq!(matches(&nodes, "save", None), [1, 2]);
+        assert_eq!(matches(&nodes, "save as", None), [0]);
+        assert_eq!(matches(&nodes, "save", Some("button")), [2]);
+        assert!(matches(&nodes, "", None).is_empty());
+    }
+
+    #[test]
+    fn the_outline_shows_states_shortcuts_and_values() {
+        let nodes = vec![
+            Node {
+                role: "dialog",
+                name: "Font".into(),
+                ..Node::default()
+            },
+            Node {
+                role: "checkbox",
+                name: "Bold \"b\"".into(),
+                states: vec!["checked"],
+                depth: 1,
+                parent: Some(0),
+                shortcut: Some("ctrl+b".into()),
+                ..Node::default()
+            },
+            Node {
+                role: "checkbox",
+                name: "Mixed".into(),
+                states: vec!["mixed", "disabled"],
+                depth: 1,
+                parent: Some(0),
+                value: Some("12".into()),
+                ..Node::default()
+            },
+        ];
+        assert_eq!(
+            outline(&nodes, 80),
+            "- dialog \"Font\" [ref=0]\n  - checkbox \"Bold \\\"b\\\"\" [checked] [ctrl+b] [ref=1]\n  - checkbox \"Mixed\" [disabled] [mixed] [ref=2]: \"12\"\n"
+        );
+    }
+
+    #[test]
+    fn a_crop_scales_screen_pixels_to_the_screenshot() {
+        let mut png = Vec::new();
+        let mut enc = png::Encoder::new(&mut png, 4, 2);
+        enc.set_color(png::ColorType::Rgba);
+        let mut px = Vec::new();
+        for i in 0..8u8 {
+            px.extend([i, i, i, 255]);
+        }
+        enc.write_header().unwrap().write_image_data(&px).unwrap();
+        let (w, h, _) = crop_png(&png, [2.0, 0.0, 4.0, 4.0], 0.5).unwrap();
+        assert_eq!((w, h), (2, 2));
+        let (w, h, _) = crop_png(&png, [0.0, 0.0, f64::MAX / 4.0, f64::MAX / 4.0], 1.0).unwrap();
+        assert_eq!((w, h), (4, 2));
+        assert!(crop_png(&png, [100.0, 0.0, 4.0, 4.0], 1.0).is_err());
+    }
+
+    struct Recorder(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for Recorder {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(json!({}))
+        }
+    }
+
+    #[tokio::test]
+    async fn keys_and_text_go_to_the_desktop_in_driver_names() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(notepad()), Recorder(calls.clone()), Os::Mac);
+        desk.run("desk_key", json!({"keys": "Super+Shift+S"}))
+            .await
+            .unwrap();
+        desk.run("desk_type", json!({"text": "a\nb"}))
+            .await
+            .unwrap();
+        let got = calls.lock().unwrap().clone();
+        assert_eq!(
+            got,
+            [
+                (
+                    "hotkey".to_owned(),
+                    json!({"keys": ["cmd", "shift", "s"], "scope": "desktop"})
+                ),
+                (
+                    "type_text".to_owned(),
+                    json!({"text": "a", "scope": "desktop"})
+                ),
+                (
+                    "press_key".to_owned(),
+                    json!({"key": "return", "scope": "desktop"})
+                ),
+                (
+                    "type_text".to_owned(),
+                    json!({"text": "b", "scope": "desktop"})
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_press_click_goes_through_the_driver() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(notepad()), Recorder(calls.clone()), Os::Windows);
+        let out = desk.run("desk_press", json!({"id": "ok"})).await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&out.text).unwrap()["how"],
+            "click"
+        );
+        assert_eq!(
+            calls.lock().unwrap().clone(),
+            [(
+                "click".to_owned(),
+                json!({"x": 140, "y": 110, "scope": "desktop"})
+            )]
+        );
+    }
+
+    #[test]
+    fn cli_arguments_are_json_or_pairs_with_json_values() {
+        let pairs =
+            cli_args(&["window=Save As".into(), "text=true".into(), "pid=7".into()]).unwrap();
+        assert_eq!(pairs, json!({"window": "Save As", "text": true, "pid": 7}));
+        assert_eq!(
+            cli_args(&[r#"{"id": "1/2"}"#.into()]).unwrap(),
+            json!({"id": "1/2"})
+        );
+        assert!(cli_args(&["nope".into()]).is_err());
+    }
+}
