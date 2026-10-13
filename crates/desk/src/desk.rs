@@ -260,10 +260,21 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     .await?;
             }
             let line = line.trim_end_matches('\r');
-            for piece in pieces(line, self.os) {
-                self.driver
-                    .call("type_text", desktop(json!({"text": piece})))
-                    .await?;
+            if self.os == Os::Mac {
+                if !line.is_empty() {
+                    self.driver
+                        .call("type_text", desktop(json!({"text": line})))
+                        .await?;
+                }
+                continue;
+            }
+            for (i, c) in line.char_indices() {
+                let req = match keystroke(c) {
+                    Some(keys) if keys.len() == 1 => ("press_key", json!({"key": keys[0]})),
+                    Some(keys) => ("hotkey", json!({"keys": keys})),
+                    None => ("type_text", json!({"text": &line[i..i + c.len_utf8()]})),
+                };
+                self.driver.call(req.0, desktop(req.1)).await?;
             }
         }
         Ok(json!({"ok": true, "chars": text.chars().count()}).to_string())
@@ -561,11 +572,23 @@ pub fn cli_args(rest: &[String]) -> Result<Value, String> {
     Ok(Value::Object(args))
 }
 
-/// The pieces `line` is typed in; on Windows each ends at a space, as XAML text boxes garble a batch past a space.
-fn pieces(line: &str, os: Os) -> Vec<&str> {
-    match os {
-        Os::Windows => line.split_inclusive(' ').collect(),
-        Os::Mac => Some(line).filter(|l| !l.is_empty()).into_iter().collect(),
+/// The US-layout keys that type `c`, shift first for a shifted character; none for a character Windows types as Unicode.
+fn keystroke(c: char) -> Option<Vec<String>> {
+    const SHIFTED: &str = "!@#$%^&*()_+:\"<>?~{}|";
+    const BASE: &str = "1234567890-=;',./`[]\\";
+    match c {
+        'a'..='z' | '0'..='9' => Some(vec![c.to_string()]),
+        ' ' => Some(vec!["space".to_owned()]),
+        'A'..='Z' => Some(vec!["shift".to_owned(), c.to_ascii_lowercase().to_string()]),
+        _ => {
+            if let Some(i) = SHIFTED.find(c) {
+                return BASE[i..]
+                    .chars()
+                    .next()
+                    .map(|k| vec!["shift".to_owned(), k.to_string()]);
+            }
+            BASE.contains(c).then(|| vec![c.to_string()])
+        }
     }
 }
 
@@ -1019,14 +1042,17 @@ mod tests {
     }
 
     #[test]
-    fn windows_typing_breaks_after_each_space() {
-        assert_eq!(
-            pieces("abc def  g", Os::Windows),
-            ["abc ", "def ", " ", "g"]
-        );
-        assert_eq!(pieces("abc def", Os::Mac), ["abc def"]);
-        assert!(pieces("", Os::Windows).is_empty());
-        assert!(pieces("", Os::Mac).is_empty());
+    fn windows_characters_map_to_us_layout_keys() {
+        let k = |c| keystroke(c).map(|v| v.join("+"));
+        assert_eq!(k('a').as_deref(), Some("a"));
+        assert_eq!(k('Q').as_deref(), Some("shift+q"));
+        assert_eq!(k(' ').as_deref(), Some("space"));
+        assert_eq!(k('!').as_deref(), Some("shift+1"));
+        assert_eq!(k(':').as_deref(), Some("shift+;"));
+        assert_eq!(k('|').as_deref(), Some("shift+\\"));
+        assert_eq!(k('/').as_deref(), Some("/"));
+        assert_eq!(k('\\').as_deref(), Some("\\"));
+        assert_eq!(k('é'), None);
     }
 
     #[test]
