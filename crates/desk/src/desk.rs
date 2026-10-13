@@ -358,8 +358,7 @@ pub fn plan_press<B: Access>(b: &mut B, id: &str) -> Result<Press, String> {
         return Ok(Press::Selected);
     }
     let chain = b.ancestors(id)?;
-    if node.role.starts_with("menu") && !node.has("showing") {
-        open_menus(b, &chain);
+    if node.role.starts_with("menu") && !node.has("showing") && open_menus(b, &chain) {
         for _ in 0..MENU_POLLS {
             node = b.node(id, shown, 0)?;
             if node.has("showing") {
@@ -374,7 +373,7 @@ pub fn plan_press<B: Access>(b: &mut B, id: &str) -> Result<Press, String> {
     Ok(Press::Acted(b.act(id, Act::Action)?))
 }
 
-fn open_menus<B: Access>(b: &mut B, chain: &[String]) {
+fn open_menus<B: Access>(b: &mut B, chain: &[String]) -> bool {
     let roles: Vec<&'static str> = chain
         .iter()
         .map(|id| b.node(id, Extras::default(), 0).map_or("", |n| n.role))
@@ -386,6 +385,7 @@ fn open_menus<B: Access>(b: &mut B, chain: &[String]) {
     for menu in &chain[start..] {
         let _ = b.act(menu, Act::Action);
     }
+    start < chain.len()
 }
 
 fn reachable<B: Access>(b: &mut B, id: &str, node: &Node, chain: &[String]) -> Option<(i32, i32)> {

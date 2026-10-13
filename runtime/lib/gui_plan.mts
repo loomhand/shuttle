@@ -32,7 +32,7 @@ const MARGIN = 0.25
 const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close']
 const CUT = '\n(the outline holds only the start of the web page: use the browser_* tools for page content)'
 const SHELL_WINDOWS = ({ linux: /^(Desktop|xfce4-panel)$/, win32: /^Program Manager$/ } as Record<string, RegExp>)[OS] ?? /^$/
-const CHOOSER = ({ linux: /File Chooser Widget/, win32: /^\s*- (combobox|textbox) "File name:?"/m, darwin: /^\s*- textbox "Save As:?"/m } as Record<string, RegExp>)[OS] ?? /$^/
+const CHOOSER = ({ linux: /File Chooser Widget/, win32: /^\s*- (combobox|textbox) "File name:?"/m, darwin: /^\s*- text "Save As:"/m } as Record<string, RegExp>)[OS] ?? /$^/
 const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const norm = (s: string) => s.toLowerCase().replace(/[_…]|\.\.\.|:$/g, '').replace(/\s+/g, ' ').trim()
@@ -498,7 +498,7 @@ async function run(s: Step, rec: Record<string, unknown>) {
       if (now !== s.on) throw new Surprise(`menu toggle "${hit!.n.name}" is still ${now ? 'on' : 'off'}`, await seen())
       return
     }
-    if (hit!.n.role === 'menuitemcheckbox' || hit!.n.role === 'menuitemradio') {
+    if (hit!.n.role === 'menuitemcheckbox' || hit!.n.role === 'menuitemradio' || OS === 'darwin') {
       const now = await checked(hit!.n); rec.was = now; rec.state = 'atspi'
       if (now === s.on) { rec.noop = true; return }
       if (now !== null) { await act(hit!.n); await settle(w.title); return }

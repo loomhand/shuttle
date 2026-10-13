@@ -92,7 +92,6 @@ unsafe extern "C" {
 
 /// The AX backend: element ids are `pid/n`, kept while this backend lives.
 pub struct Ax {
-    system: CFType,
     scale: f64,
     ids: HashMap<String, CFType>,
     hashes: HashMap<usize, Vec<(CFType, String)>>,
@@ -121,7 +120,6 @@ impl Ax {
         // SAFETY: `system` is a live AXUIElement for the duration of the call.
         unsafe { AXUIElementSetMessagingTimeout(system.as_CFTypeRef(), MESSAGING_TIMEOUT) };
         Ok(Self {
-            system,
             scale: display_scale(),
             ids: HashMap::new(),
             hashes: HashMap::new(),
@@ -262,30 +260,36 @@ impl Ax {
 
 impl Access for Ax {
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
-        let pids = window_pids();
-        let front = attr(&self.system, "AXFocusedApplication")
-            .and_then(|a| pid(&a))
-            .or_else(|| pids.first().copied());
         let mut frames = Vec::new();
-        for p in pids {
+        for p in window_pids() {
             let app = application(p);
+            let front = attr(&app, "AXFrontmost")
+                .and_then(|v| v.downcast::<CFBoolean>())
+                .is_some_and(bool::from);
             let focused = attr(&app, "AXFocusedWindow").or_else(|| attr(&app, "AXMainWindow"));
             let Some(windows) = attr(&app, "AXWindows").map(|w| items(&w)) else {
                 continue;
             };
             for w in windows.iter() {
                 let a = attrs(w);
-                let mut active = front == Some(p) && focused.as_ref() == Some(w);
+                let sheets: Vec<&CFType> = a
+                    .children
+                    .iter()
+                    .filter(|c| attrs(c).role == "AXSheet")
+                    .collect();
+                let mine = focused
+                    .as_ref()
+                    .is_some_and(|f| f == w || sheets.contains(&f));
+                let mut active = front && mine;
                 let title = a.title.trim().to_owned();
-                for sheet in a.children.iter().filter(|c| attrs(c).role == "AXSheet") {
+                for sheet in sheets {
                     let s = attrs(sheet);
                     frames.push(Frame {
                         id: self.id_of(sheet),
-                        title: if s.title.is_empty() {
-                            title.clone()
-                        } else {
-                            s.title
-                        },
+                        title: [s.title, s.description]
+                            .into_iter()
+                            .find(|t| !t.is_empty())
+                            .unwrap_or_else(|| title.clone()),
                         role: "dialog",
                         pid: Some(p as u32),
                         active,
