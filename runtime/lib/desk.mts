@@ -133,8 +133,9 @@ function image(png: Buffer) {
 }
 
 // a vision model's answer about PNG images
-export async function ask(prompt: string, images: Buffer[] = []): Promise<string> {
-  const r = await post('chat/completions', { model: ASK_MODEL, max_tokens: 400, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...images.map(image)] }] })
+export async function ask(prompt: string, images: Buffer | Buffer[] = []): Promise<string> {
+  const pngs = Buffer.isBuffer(images) ? [images] : images
+  const r = await post('chat/completions', { model: ASK_MODEL, max_tokens: 400, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...pngs.map(image)] }] })
   return r.choices?.[0]?.message?.content ?? ''
 }
 
