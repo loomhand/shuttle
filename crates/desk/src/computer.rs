@@ -17,6 +17,7 @@ use tokio::time::Instant;
 
 use super::browser::Browser;
 use super::rpc::Output;
+use super::scope;
 use super::timing;
 use super::volatile::{Block, Shown, Volatile};
 use super::xshm::{self, Grabber, Placement};
@@ -1474,6 +1475,12 @@ impl Cua {
         let result = result?;
         if result["isError"] == true {
             return Err(format!("{name}: {}", content_text(&result)));
+        }
+        if self.cbplan
+            && name == "launch_app"
+            && let Err(e) = scope::adopt(&result).await
+        {
+            eprintln!("toolhost: scope the launch: {e}");
         }
         Ok(result)
     }
