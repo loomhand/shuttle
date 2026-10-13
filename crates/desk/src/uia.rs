@@ -164,7 +164,7 @@ impl Uia {
             name: r.name.trim_end().to_owned(),
             description: r.help.clone(),
             states: uia_roles::states(role, r.facts()),
-            value: value.filter(|_| extras.values && is_field(role)),
+            value: value.filter(|_| extras.values),
             shortcut: extras
                 .keys
                 .then(|| uia_combo(&r.accel, Os::Windows))
@@ -192,6 +192,9 @@ impl Uia {
             return Ok(true);
         }
         let mut node = self.node_of(el, extras, VALUE_CHARS)?;
+        if !is_field(node.role) {
+            node.value = None;
+        }
         let (parent, depth) = if node.role == "generic" && parent.is_some() {
             (parent, depth)
         } else {
@@ -309,7 +312,11 @@ impl Access for Uia {
         let el = self.element(id)?;
         let single = self.single.clone();
         let fresh = self.cached(&el, &single)?;
-        self.node_of(&fresh, extras, chars)
+        let mut node = self.node_of(&fresh, extras, chars)?;
+        if extras.values && node.value.is_none() {
+            node.value = document_text(&fresh, chars);
+        }
+        Ok(node)
     }
 
     fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
@@ -558,6 +565,17 @@ fn raw(el: &IUIAutomationElement) -> Raw {
     }
 }
 
+fn document_text(el: &IUIAutomationElement, chars: usize) -> Option<String> {
+    let max = i32::try_from(chars).unwrap_or(i32::MAX);
+    // SAFETY: `el` is a live UIA element of this thread; the text pattern and range come from it.
+    let text = unsafe {
+        el.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+            .and_then(|p| p.DocumentRange())
+            .and_then(|r| r.GetText(max))
+    };
+    text.ok().map(|t| t.to_string()).filter(|t| !t.is_empty())
+}
+
 fn owned_dialog(el: &IUIAutomationElement) -> bool {
     if raw_control_type(el) != WINDOW {
         return false;
@@ -626,7 +644,7 @@ fn runtime_id(el: &IUIAutomationElement) -> Result<String, String> {
             }
         }
         let _ = SafeArrayDestroy(ids);
-        Ok(parts.join("."))
+        Ok(parts.join("-"))
     }
 }
 

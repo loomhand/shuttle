@@ -260,9 +260,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     .await?;
             }
             let line = line.trim_end_matches('\r');
-            if !line.is_empty() {
+            for piece in pieces(line, self.os) {
                 self.driver
-                    .call("type_text", desktop(json!({"text": line})))
+                    .call("type_text", desktop(json!({"text": piece})))
                     .await?;
             }
         }
@@ -559,6 +559,14 @@ pub fn cli_args(rest: &[String]) -> Result<Value, String> {
         args.insert(k.to_owned(), v);
     }
     Ok(Value::Object(args))
+}
+
+/// The pieces `line` is typed in; on Windows each ends at a space, as XAML text boxes garble a batch past a space.
+fn pieces(line: &str, os: Os) -> Vec<&str> {
+    match os {
+        Os::Windows => line.split_inclusive(' ').collect(),
+        Os::Mac => Some(line).filter(|l| !l.is_empty()).into_iter().collect(),
+    }
 }
 
 fn best(c: &[&Frame]) -> Option<Frame> {
@@ -1008,6 +1016,17 @@ mod tests {
                 json!({"x": 140, "y": 110, "scope": "desktop"})
             )]
         );
+    }
+
+    #[test]
+    fn windows_typing_breaks_after_each_space() {
+        assert_eq!(
+            pieces("abc def  g", Os::Windows),
+            ["abc ", "def ", " ", "g"]
+        );
+        assert_eq!(pieces("abc def", Os::Mac), ["abc def"]);
+        assert!(pieces("", Os::Windows).is_empty());
+        assert!(pieces("", Os::Mac).is_empty());
     }
 
     #[test]

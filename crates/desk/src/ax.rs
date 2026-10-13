@@ -205,7 +205,8 @@ impl Ax {
             name: name.trim_end().to_owned(),
             description: a.help.clone(),
             states: ax_roles::states(role, facts),
-            value: (extras.values && is_field(role))
+            value: extras
+                .values
                 .then(|| a.value.as_ref().map(|v| text(v, chars)))
                 .flatten()
                 .filter(|v| !v.is_empty()),
@@ -237,6 +238,9 @@ impl Ax {
         }
         let a = attrs(el);
         let mut node = self.node_of(el, &a, extras, VALUE_CHARS);
+        if !is_field(node.role) {
+            node.value = None;
+        }
         let (parent, depth) = if node.role == "generic" && parent.is_some() {
             (parent, depth)
         } else {
