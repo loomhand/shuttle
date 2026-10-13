@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 use super::browser::Browser;
+use super::desk::key_names;
 use super::rpc::Output;
 use super::scope;
 use super::timing;
@@ -329,6 +330,9 @@ impl Cua {
     async fn act_input(&self, session: &str, mut a: ActArgs) -> Result<Output, String> {
         if self.plans && a.action == "left_click" {
             "click".clone_into(&mut a.action);
+        }
+        if self.plans {
+            driver_keys(&mut a)?;
         }
         timing::note("action", &a.action);
         if a.action == "wait" {
@@ -1792,6 +1796,38 @@ fn landed(run: &str, result: &Value) -> usize {
         .unwrap_or(0)
 }
 
+/// Rewrites the keys of a `key` or `hotkey` action in the driver's names; a `key` that names a
+/// combination such as `ctrl+l` becomes a `hotkey`, and a `hotkey` of one key a `key`.
+fn driver_keys(a: &mut ActArgs) -> Result<(), String> {
+    match a.action.as_str() {
+        "key" => {
+            let mut keys = key_names(required(&a.key, "key")?)?;
+            if keys.len() == 1 {
+                a.key = keys.pop();
+            } else {
+                "hotkey".clone_into(&mut a.action);
+                a.keys = Some(keys);
+            }
+        }
+        "hotkey" => {
+            let keys = a.keys.as_deref().ok_or("hotkey needs keys")?;
+            let mut names = keys
+                .iter()
+                .map(|k| key_names(k))
+                .collect::<Result<Vec<_>, _>>()?
+                .concat();
+            if names.len() == 1 {
+                "key".clone_into(&mut a.action);
+                a.key = names.pop();
+            } else {
+                a.keys = Some(names);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn confirms(a: &ActArgs) -> bool {
     let keys = match a.action.as_str() {
         "type" => return a.text.as_deref().is_some_and(|t| t.ends_with(['\n', '\r'])),
@@ -2674,6 +2710,60 @@ mod tests {
         assert!(!differs(&a, &[200 - STILL_TOLERANCE, 200, 200, 255]));
         assert!(differs(&a, &[199 - STILL_TOLERANCE, 200, 200, 255]));
         assert!(differs(&a, &a[..3]));
+    }
+
+    #[test]
+    fn key_aliases_become_driver_names_and_a_key_combination_a_hotkey() {
+        let rewrite = |action: &str, key: Option<&str>, keys: Option<&[&str]>| {
+            let mut a = ActArgs {
+                action: action.to_owned(),
+                key: key.map(str::to_owned),
+                keys: keys.map(|k| k.iter().map(|s| (*s).to_owned()).collect()),
+                ..ActArgs::default()
+            };
+            driver_keys(&mut a).map(|()| (a.action, a.key, a.keys))
+        };
+        let names = |k: &[&str]| Some(k.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
+        assert_eq!(
+            rewrite("key", Some("ctrl+l"), None).unwrap(),
+            (
+                "hotkey".to_owned(),
+                Some("ctrl+l".to_owned()),
+                names(&["ctrl", "l"])
+            )
+        );
+        assert_eq!(
+            rewrite("key", Some("Prior"), None).unwrap(),
+            ("key".to_owned(), Some("pageup".to_owned()), None)
+        );
+        assert_eq!(
+            rewrite("key", Some("Return"), None).unwrap().1.as_deref(),
+            Some("return")
+        );
+        assert_eq!(
+            rewrite("hotkey", None, Some(&["Control_L", "Next"]))
+                .unwrap()
+                .2,
+            names(&["ctrl", "pagedown"])
+        );
+        assert_eq!(
+            rewrite("hotkey", None, Some(&["CTRL+SHIFT+t"])).unwrap().2,
+            names(&["ctrl", "shift", "t"])
+        );
+        assert_eq!(
+            rewrite("hotkey", None, Some(&["BackSpace"])).unwrap(),
+            (
+                "key".to_owned(),
+                Some("backspace".to_owned()),
+                Some(vec!["BackSpace".to_owned()])
+            )
+        );
+        assert_eq!(
+            rewrite("click", None, None).unwrap(),
+            ("click".to_owned(), None, None)
+        );
+        assert!(rewrite("key", None, None).is_err());
+        assert!(rewrite("hotkey", None, Some(&["ctrl+"])).is_err());
     }
 
     #[test]
