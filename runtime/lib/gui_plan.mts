@@ -470,7 +470,7 @@ async function run(s: Step, rec: Record<string, unknown>) {
       for (const [k, part] of parts.entries()) {
         // a Windows menu lists its entries only while it is open
         if (OS === 'win32' && prev?.n.role === 'menu' && !nodes.some((x) => x.parent === prev!.i)) {
-          await act(prev.n); rec.opened = true; within = undefined
+          await act(prev.n); rec.opened = ((rec.opened as number) ?? 0) + 1; within = undefined
           for (let t = 0; t < 10; t++) { nodes = parse(await snapOf(w, true)); if (candidates(nodes).some(({ n }) => norm(n.name) === norm(part))) break; await sleep(30) }
         }
         hit = await soft(part, k < parts.length - 1 ? 'menu' : undefined, within) ?? await soft(part, undefined, within)
@@ -500,7 +500,7 @@ async function run(s: Step, rec: Record<string, unknown>) {
     }
     if (hit!.n.role === 'menuitemcheckbox' || hit!.n.role === 'menuitemradio' || OS === 'darwin') {
       const now = await checked(hit!.n); rec.was = now; rec.state = 'atspi'
-      if (now === s.on) { rec.noop = true; return }
+      if (now === s.on) { for (let k = 0; k < ((rec.opened as number) ?? 0); k++) await press('Escape'); rec.noop = true; return }
       if (now !== null) { await act(hit!.n); await settle(w.title); return }
     }
     const parent = hit!.n.parent >= 0 && nodes[hit!.n.parent].role === 'menu' ? nodes[hit!.n.parent] : null

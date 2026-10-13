@@ -204,7 +204,7 @@ impl Uia {
             return Ok(false);
         }
         for child in children(el) {
-            if raw_control_type(&child) == WINDOW {
+            if owned_dialog(&child) {
                 continue;
             }
             if self.walk(&child, parent, depth, extras, out)? {
@@ -214,9 +214,10 @@ impl Uia {
         Ok(false)
     }
 
-    fn windows_under(
+    fn find(
         &self,
         el: &IUIAutomationElement,
+        scope: TreeScope,
         control_type: i32,
         request: &IUIAutomationCacheRequest,
     ) -> Vec<IUIAutomationElement> {
@@ -230,7 +231,7 @@ impl Uia {
         let found = unsafe {
             self.auto
                 .CreatePropertyCondition(UIA_ControlTypePropertyId, &v)
-                .and_then(|c| el.FindAllBuildCache(TreeScope_Children, &c, request))
+                .and_then(|c| el.FindAllBuildCache(scope, &c, request))
         };
         found.map(|a| list(&a)).unwrap_or_default()
     }
@@ -258,8 +259,8 @@ impl Access for Uia {
         let root = self.root.clone();
         let single = self.single.clone();
         let mut frames = Vec::new();
-        for top in self.windows_under(&root, WINDOW, &single) {
-            for owned in self.windows_under(&top, WINDOW, &single) {
+        for top in self.find(&root, TreeScope_Children, WINDOW, &single) {
+            for owned in self.find(&top, TreeScope_Children, WINDOW, &single) {
                 frames.extend(self.frame_of(&owned, foreground));
             }
             frames.extend(self.frame_of(&top, foreground));
@@ -277,8 +278,14 @@ impl Access for Uia {
         let mut truncated = self.walk(&cached, None, 0, extras, &mut nodes)?;
         let walked = started.elapsed().as_micros() - fetched;
         let root = self.root.clone();
-        for menu in self.windows_under(&root, MENU, &subtree) {
-            if truncated || u32::try_from(raw(&menu).pid).ok() != frame.pid {
+        let mut menus = self.find(&root, TreeScope_Children, MENU, &subtree);
+        menus.retain(|m| u32::try_from(raw(m).pid).ok() == frame.pid);
+        if nodes.iter().any(|n| n.role == "menu" && n.has("expanded")) {
+            menus.extend(self.find(&cached, TreeScope_Descendants, MENU, &subtree));
+        }
+        for menu in menus {
+            let listed = runtime_id(&menu).is_ok_and(|id| nodes.iter().any(|n| n.id == id));
+            if truncated || listed {
                 continue;
             }
             truncated = self.walk(
@@ -549,6 +556,14 @@ fn raw(el: &IUIAutomationElement) -> Raw {
         dialog: boolean(UIA_IsDialogPropertyId).unwrap_or(false),
         toggles,
     }
+}
+
+fn owned_dialog(el: &IUIAutomationElement) -> bool {
+    if raw_control_type(el) != WINDOW {
+        return false;
+    }
+    let r = raw(el);
+    r.dialog || r.modal
 }
 
 fn raw_control_type(el: &IUIAutomationElement) -> i32 {
