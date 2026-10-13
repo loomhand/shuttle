@@ -9,6 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SESSION: &str = "desk";
+const ENDED: &str = "session has ended";
 
 /// The driver calls the desk makes: input, windows, launch and capture.
 pub trait Input {
@@ -44,6 +45,13 @@ impl Driver {
         }
         let home = std::env::var("HOME").unwrap_or_default();
         format!("{home}/Library/Caches/cua-driver/cua-driver.sock")
+    }
+
+    async fn start(&self) -> Result<(), String> {
+        self.send("start_session", json!({"capture_scope": "desktop"}))
+            .await?;
+        self.started.store(true, Ordering::Relaxed);
+        Ok(())
     }
 
     async fn send(&self, tool: &str, mut args: Value) -> Result<Value, String> {
@@ -85,11 +93,15 @@ impl Driver {
 impl Input for Driver {
     async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
         if !self.started.load(Ordering::Relaxed) {
-            self.send("start_session", json!({"capture_scope": "desktop"}))
-                .await?;
-            self.started.store(true, Ordering::Relaxed);
+            self.start().await?;
         }
-        self.send(tool, args).await
+        match self.send(tool, args.clone()).await {
+            Err(e) if e.contains(ENDED) => {
+                self.start().await?;
+                self.send(tool, args).await
+            }
+            done => done,
+        }
     }
 }
 
@@ -170,25 +182,24 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn the_first_call_starts_a_desktop_session() {
+    async fn the_first_call_starts_a_desktop_session_and_an_ended_one_starts_again() {
         use tokio::io::AsyncBufReadExt;
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("cua.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let ok = b"{\"ok\":true,\"result\":{\"structuredContent\":{\"width\":1280}}}\n";
+        let ended =
+            b"{\"ok\":false,\"error\":\"session has ended; tool call 'press_key' was rejected\"}\n";
         let daemon = tokio::spawn(async move {
             let mut lines = Vec::new();
-            for _ in 0..3 {
+            for i in 0..5 {
                 let (s, _) = listener.accept().await.unwrap();
                 let mut s = BufReader::new(s);
                 let mut line = String::new();
                 s.read_line(&mut line).await.unwrap();
-                s.get_mut()
-                    .write_all(
-                        b"{\"ok\":true,\"result\":{\"structuredContent\":{\"width\":1280}}}\n",
-                    )
-                    .await
-                    .unwrap();
-                lines.push(serde_json::from_str::<Value>(&line).unwrap());
+                let reply: &[u8] = if i == 2 { ended } else { ok };
+                s.get_mut().write_all(reply).await.unwrap();
+                lines.push(serde_json::from_str::<Value>(&line).unwrap()["name"].clone());
             }
             lines
         });
@@ -199,9 +210,11 @@ mod tests {
         assert_eq!(
             daemon.await.unwrap(),
             [
-                json!({"method": "call", "name": "start_session", "args": {"capture_scope": "desktop", "session": "desk"}}),
-                json!({"method": "call", "name": "get_screen_size", "args": {"session": "desk"}}),
-                json!({"method": "call", "name": "press_key", "args": {"key": "a", "session": "desk"}}),
+                "start_session",
+                "get_screen_size",
+                "press_key",
+                "start_session",
+                "press_key"
             ]
         );
     }
