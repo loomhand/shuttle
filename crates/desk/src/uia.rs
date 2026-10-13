@@ -1,10 +1,12 @@
-//! The Windows desk backend: window trees from one UIA cache request over the control view, with the
-//! Toggle, ExpandCollapse, SelectionItem, Value and Window properties cached; ids are UIA runtime ids.
+//! The Windows desk backend: top-level windows from the Win32 window list, window trees from one UIA cache
+//! request over the control view, with the Toggle, ExpandCollapse, SelectionItem, Value and Window properties
+//! cached; ids are UIA runtime ids.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
+use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, SAFEARRAY,
 };
@@ -16,7 +18,11 @@ use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, PostMessageW, WM_CLOSE};
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GW_OWNER, GetForegroundWindow, GetWindow, GetWindowTextW,
+    GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_CLOSE,
+};
+use windows::core::BOOL;
 
 use crate::keys::{Os, uia_combo};
 use crate::model::{Access, Act, Extras, Frame, Node, Tree, is_active, is_field};
@@ -31,7 +37,8 @@ const CACHE_RETRY: Duration = Duration::from_millis(40);
 const WINDOW: i32 = 50032;
 const MENU: i32 = 50009;
 const LEAF: i32 = 3;
-const PROPS: [UIA_PROPERTY_ID; 27] = [
+const TITLE_CHARS: usize = 512;
+const PROPS: [UIA_PROPERTY_ID; 24] = [
     UIA_ControlTypePropertyId,
     UIA_NamePropertyId,
     UIA_HelpTextPropertyId,
@@ -42,9 +49,6 @@ const PROPS: [UIA_PROPERTY_ID; 27] = [
     UIA_BoundingRectanglePropertyId,
     UIA_AcceleratorKeyPropertyId,
     UIA_AccessKeyPropertyId,
-    UIA_ProcessIdPropertyId,
-    UIA_NativeWindowHandlePropertyId,
-    UIA_RuntimeIdPropertyId,
     UIA_ToggleToggleStatePropertyId,
     UIA_ExpandCollapseExpandCollapseStatePropertyId,
     UIA_SelectionItemIsSelectedPropertyId,
@@ -60,14 +64,35 @@ const PROPS: [UIA_PROPERTY_ID; 27] = [
     UIA_IsRangeValuePatternAvailablePropertyId,
     UIA_IsWindowPatternAvailablePropertyId,
 ];
+const TOP_PROPS: [UIA_PROPERTY_ID; 4] = [
+    UIA_ControlTypePropertyId,
+    UIA_IsDialogPropertyId,
+    UIA_WindowIsModalPropertyId,
+    UIA_IsWindowPatternAvailablePropertyId,
+];
 
 /// The UIA backend of this thread.
 pub struct Uia {
     auto: IUIAutomation,
     subtree: IUIAutomationCacheRequest,
     single: IUIAutomationCacheRequest,
+    top: IUIAutomationCacheRequest,
     root: IUIAutomationElement,
     ids: HashMap<String, IUIAutomationElement>,
+    tops: HashMap<isize, Top>,
+}
+
+struct Top {
+    pid: u32,
+    control_type: i32,
+    dialog: bool,
+    el: IUIAutomationElement,
+}
+
+struct Shown {
+    hwnd: HWND,
+    owner: isize,
+    pid: u32,
 }
 
 impl Uia {
@@ -80,16 +105,19 @@ impl Uia {
             CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
         }
         .map_err(|e| format!("start UI Automation: {e}"))?;
-        let subtree = request(&auto, TreeScope_Subtree)?;
-        let single = request(&auto, TreeScope_Element)?;
+        let subtree = request(&auto, TreeScope_Subtree, &PROPS)?;
+        let single = request(&auto, TreeScope_Element, &PROPS)?;
+        let top = request(&auto, TreeScope_Element, &TOP_PROPS)?;
         // SAFETY: `auto` is a live IUIAutomation on this thread.
         let root = unsafe { auto.GetRootElement() }.map_err(|e| format!("UIA root: {e}"))?;
         Ok(Self {
             auto,
             subtree,
             single,
+            top,
             root,
             ids: HashMap::new(),
+            tops: HashMap::new(),
         })
     }
 
@@ -239,18 +267,47 @@ impl Uia {
         found.map(|a| list(&a)).unwrap_or_default()
     }
 
-    fn frame_of(&mut self, el: &IUIAutomationElement, foreground: HWND) -> Option<Frame> {
-        let r = raw(el);
+    fn top_of(&mut self, s: &Shown) -> Option<&Top> {
+        let key = s.hwnd.0 as isize;
+        if self.tops.get(&key).is_none_or(|t| t.pid != s.pid) {
+            // SAFETY: `self.auto` and `self.top` are live UIA objects of this thread; a stale handle fails.
+            let el = unsafe { self.auto.ElementFromHandleBuildCache(s.hwnd, &self.top) }.ok()?;
+            let r = raw(&el);
+            let top = Top {
+                pid: s.pid,
+                control_type: r.control_type,
+                dialog: r.dialog || r.modal,
+                el,
+            };
+            self.tops.insert(key, top);
+        }
+        self.tops.get(&key)
+    }
+
+    fn roots(&mut self) -> (Vec<Shown>, Vec<usize>) {
+        let shown = shown();
+        self.tops
+            .retain(|h, _| shown.iter().any(|s| s.hwnd.0 as isize == *h));
+        let roots = (0..shown.len())
+            .filter(|&i| {
+                let owner = shown[i].owner;
+                owner == 0 || !shown.iter().any(|o| o.hwnd.0 as isize == owner)
+            })
+            .collect();
+        (shown, roots)
+    }
+
+    fn frame_of(&mut self, s: &Shown, foreground: HWND) -> Option<Frame> {
+        let (dialog, el) = match self.top_of(s)? {
+            t if t.control_type == WINDOW => (t.dialog, t.el.clone()),
+            _ => return None,
+        };
         Some(Frame {
-            id: self.id_of(el).ok()?,
-            title: r.name.trim().to_owned(),
-            role: if r.dialog || r.modal {
-                "dialog"
-            } else {
-                "window"
-            },
-            pid: u32::try_from(r.pid).ok(),
-            active: r.hwnd != 0 && r.hwnd == foreground.0 as isize,
+            id: self.id_of(&el).ok()?,
+            title: title(s.hwnd).trim().to_owned(),
+            role: if dialog { "dialog" } else { "window" },
+            pid: Some(s.pid),
+            active: s.hwnd == foreground,
         })
     }
 }
@@ -259,14 +316,16 @@ impl Access for Uia {
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
         // SAFETY: GetForegroundWindow takes no arguments.
         let foreground = unsafe { GetForegroundWindow() };
-        let root = self.root.clone();
-        let single = self.single.clone();
+        let (shown, roots) = self.roots();
         let mut frames = Vec::new();
-        for top in self.find(&root, TreeScope_Children, WINDOW, &single) {
-            for owned in self.find(&top, TreeScope_Children, WINDOW, &single) {
-                frames.extend(self.frame_of(&owned, foreground));
+        for i in roots {
+            let Some(top) = self.frame_of(&shown[i], foreground) else {
+                continue;
+            };
+            for owned in shown.iter().filter(|o| o.owner == shown[i].hwnd.0 as isize) {
+                frames.extend(self.frame_of(owned, foreground));
             }
-            frames.extend(self.frame_of(&top, foreground));
+            frames.push(top);
         }
         Ok(frames)
     }
@@ -280,9 +339,18 @@ impl Access for Uia {
         let mut nodes = Vec::new();
         let mut truncated = self.walk(&cached, None, 0, extras, &mut nodes)?;
         let walked = started.elapsed().as_micros() - fetched;
-        let root = self.root.clone();
-        let mut menus = self.find(&root, TreeScope_Children, MENU, &subtree);
-        menus.retain(|m| u32::try_from(raw(m).pid).ok() == frame.pid);
+        let (shown, roots) = self.roots();
+        let mut menus = Vec::new();
+        for i in roots
+            .into_iter()
+            .filter(|&i| Some(shown[i].pid) == frame.pid)
+        {
+            let el = match self.top_of(&shown[i]) {
+                Some(t) if t.control_type == MENU => t.el.clone(),
+                _ => continue,
+            };
+            menus.extend(self.cached(&el, &subtree).ok());
+        }
         if nodes.iter().any(|n| n.role == "menu" && n.has("expanded")) {
             menus.extend(self.find(&cached, TreeScope_Descendants, MENU, &subtree));
         }
@@ -413,10 +481,14 @@ impl Access for Uia {
         if closed.is_ok() {
             return Ok(());
         }
-        let hwnd = raw(&self.cached(&el, &self.single.clone())?).hwnd;
-        // SAFETY: posting WM_CLOSE to a window handle has no memory effects; a stale handle fails.
-        unsafe { PostMessageW(Some(HWND(hwnd as _)), WM_CLOSE, WPARAM(0), LPARAM(0)) }
-            .map_err(|e| format!("close {:?}: {e}", frame.title))
+        // SAFETY: `el` is a live UIA element; posting WM_CLOSE to a window handle has no memory effects.
+        unsafe {
+            let hwnd = el
+                .CurrentNativeWindowHandle()
+                .map_err(|e| format!("close {:?}: {e}", frame.title))?;
+            PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0))
+        }
+        .map_err(|e| format!("close {:?}: {e}", frame.title))
     }
 }
 
@@ -433,8 +505,6 @@ struct Raw {
     bounds: [i32; 4],
     accel: String,
     access: String,
-    pid: i32,
-    hwnd: isize,
     toggle: Option<i32>,
     expand: Option<i32>,
     selected: Option<bool>,
@@ -471,13 +541,17 @@ enum Val {
     Other,
 }
 
-fn request(auto: &IUIAutomation, scope: TreeScope) -> Result<IUIAutomationCacheRequest, String> {
+fn request(
+    auto: &IUIAutomation,
+    scope: TreeScope,
+    props: &[UIA_PROPERTY_ID],
+) -> Result<IUIAutomationCacheRequest, String> {
     // SAFETY: `auto` is a live IUIAutomation of this thread; the request is new and owned here.
     unsafe {
         let r = auto
             .CreateCacheRequest()
             .map_err(|e| format!("UIA cache request: {e}"))?;
-        for p in PROPS {
+        for &p in props {
             r.AddProperty(p)
                 .map_err(|e| format!("UIA cache property {}: {e}", p.0))?;
         }
@@ -506,14 +580,7 @@ fn raw(el: &IUIAutomationElement) -> Raw {
         _ => String::new(),
     };
     // SAFETY: `el` is a live UIA element of this thread whose cache holds these properties.
-    let (rect, hwnd) = unsafe {
-        (
-            el.CachedBoundingRectangle().unwrap_or_default(),
-            el.CachedNativeWindowHandle()
-                .map(|h| h.0 as isize)
-                .unwrap_or(0),
-        )
-    };
+    let rect = unsafe { el.CachedBoundingRectangle() }.unwrap_or_default();
     let has = |p| boolean(p).unwrap_or(false);
     let toggles = has(UIA_IsTogglePatternAvailablePropertyId);
     let expands = has(UIA_IsExpandCollapsePatternAvailablePropertyId);
@@ -537,8 +604,6 @@ fn raw(el: &IUIAutomationElement) -> Raw {
         ],
         accel: text(UIA_AcceleratorKeyPropertyId),
         access: text(UIA_AccessKeyPropertyId),
-        pid: int(UIA_ProcessIdPropertyId).unwrap_or(0),
-        hwnd,
         toggle: toggles
             .then(|| int(UIA_ToggleToggleStatePropertyId))
             .flatten(),
@@ -563,6 +628,45 @@ fn raw(el: &IUIAutomationElement) -> Raw {
         dialog: boolean(UIA_IsDialogPropertyId).unwrap_or(false),
         toggles,
     }
+}
+
+fn shown() -> Vec<Shown> {
+    unsafe extern "system" fn add(hwnd: HWND, list: LPARAM) -> BOOL {
+        // SAFETY: `list` is the `Vec<HWND>` that `shown` lends for the duration of EnumWindows.
+        unsafe { (*(list.0 as *mut Vec<HWND>)).push(hwnd) };
+        BOOL(1)
+    }
+    let mut all: Vec<HWND> = Vec::new();
+    // SAFETY: the callback only pushes to `all`, which outlives the call.
+    let _ = unsafe { EnumWindows(Some(add), LPARAM(&raw mut all as isize)) };
+    all.into_iter()
+        .filter(|&hwnd| {
+            let mut cloaked = 0u32;
+            // SAFETY: the window calls take a handle and write at most the 4 bytes of `cloaked`.
+            unsafe {
+                IsWindowVisible(hwnd).as_bool()
+                    && (DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, (&raw mut cloaked).cast(), 4)
+                        .is_err()
+                        || cloaked == 0)
+            }
+        })
+        .map(|hwnd| {
+            let mut pid = 0u32;
+            // SAFETY: as above; `pid` is a live u32.
+            let owner = unsafe {
+                GetWindowThreadProcessId(hwnd, Some(&raw mut pid));
+                GetWindow(hwnd, GW_OWNER).map_or(0, |o| o.0 as isize)
+            };
+            Shown { hwnd, owner, pid }
+        })
+        .collect()
+}
+
+fn title(hwnd: HWND) -> String {
+    let mut buf = [0u16; TITLE_CHARS];
+    // SAFETY: GetWindowTextW writes at most `buf.len()` UTF-16 units into `buf`.
+    let n = unsafe { GetWindowTextW(hwnd, &mut buf) };
+    String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0)])
 }
 
 fn document_text(el: &IUIAutomationElement, chars: usize) -> Option<String> {
