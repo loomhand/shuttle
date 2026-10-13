@@ -2320,7 +2320,7 @@ mod tests {
             }
         });
         let cua = Cua::new(socket, false);
-        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1);
+        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
         let out = cua
             .act(&browser, "ag", json!({"action": "key", "key": "escape"}))
             .await
@@ -2452,7 +2452,7 @@ mod tests {
         let socket = dir.path().join("cua.sock");
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
-        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1);
+        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
         for plans in [false, true] {
             calls.lock().unwrap().clear();
             let cua = Cua::new(socket.clone(), plans);
@@ -2502,7 +2502,7 @@ mod tests {
         };
         let port = slow_chrome(Duration::ZERO).await;
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), port);
+        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), port, false);
         let launch = |app: &str| json!({"action": "launch_app", "app": app});
         let plans = Cua::new(socket.clone(), true);
         for app in [
@@ -2552,6 +2552,7 @@ mod tests {
             "/nonexistent/chrome".into(),
             dir.path().into(),
             web_chrome(&[("page", "https://shop.test/checkout", "field")]).await,
+            false,
         );
         let act =
             json!({"action": "type_from_file", "path": path, "field": "number", "x": 10, "y": 10});
@@ -2583,6 +2584,7 @@ mod tests {
             "/nonexistent/chrome".into(),
             dir.path().into(),
             web_chrome(&[("page", "https://shop.test/checkout", "")]).await,
+            false,
         );
         let refused = cua.act(&omnibox, "ag", act).await.unwrap();
         assert!(
