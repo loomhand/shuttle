@@ -29,6 +29,10 @@ const SHOWN_ROLES = new Set([...ACTIVE, 'dialog', 'alert'])
 const MARGIN = 0.25
 const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close']
 const CUT = '\n(the outline holds only the start of the web page: use the browser_* tools for page content)'
+const OS = process.platform
+const SHELL_WINDOWS = ({ linux: /^(Desktop|xfce4-panel)$/, win32: /^Program Manager$/ } as Record<string, RegExp>)[OS] ?? /^$/
+const CHOOSER = ({ linux: /File Chooser Widget/, win32: /^\s*- (combobox|textbox) "File name:?"/m, darwin: /^\s*- textbox "Save As:?"/m } as Record<string, RegExp>)[OS] ?? /$^/
+const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const norm = (s: string) => s.toLowerCase().replace(/[_…]|\.\.\.|:$/g, '').replace(/\s+/g, ' ').trim()
 const slug = (s: string) => norm(s).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
@@ -79,9 +83,12 @@ async function outline(w?: Win | null, keys = false) {
 }
 async function seen() {
   const w = await focused()
-  return { window: w?.title ?? null, windows: (await desk.windows()).map((x) => x.title).filter((t) => t && !/^(Desktop|xfce4-panel)$/.test(t)), outline: await outline(w, true) }
+  return { window: w?.title ?? null, windows: (await desk.windows()).map((x) => x.title).filter((t) => t && !SHELL_WINDOWS.test(t)), outline: await outline(w, true) }
 }
-const blocked = (o: string) => /AT-SPI peer \S+ is not responding/.test(o)
+const blocked = (o: string) => /AT-SPI peer \S+ is not responding|no accessibility answer within/.test(o)
+const isChooser = (o: string) => CHOOSER.test(o)
+// the whole text of the focused one-line field
+const selectLine = async () => { if (OS === 'darwin') await press(SELECT_ALL); else { await press('home'); await press('shift+end') } }
 const unanswered = (title: string) => `"${title}" answers no accessibility calls (a dialog opened by an accessibility action blocks its app, and a key would deadlock it): close it with {close: true}, then reopen it by its keyboard shortcut`
 const isAlert = (o: string) => /^- alert/.test(o)
 const isDialog = (o: string) => /^- (alert|dialog|file chooser)/.test(o)
@@ -124,6 +131,7 @@ function gdbus(dest: string, path: string, method: string, ...args: string[]) {
   return execFileSync('gdbus', ['call', '--session', '--dest', dest, '--object-path', path, '--method', method, ...args], { encoding: 'utf8', timeout: 2000 })
 }
 function gtkToggle(pid: number, label: string): boolean | null {
+  if (OS !== 'linux') return null
   const t0 = Date.now()
   try {
     const comm = readFileSync(`/proc/${pid}/comm`, 'utf8').trim().toLowerCase()
@@ -381,11 +389,11 @@ async function run(s: Step, rec: Record<string, unknown>) {
     const dialog = !s.type.includes('\n') && !!w && (await desk.windows()).some((x) => x.title !== w.title && x.pid === w.pid)
     const o = (nl || dialog) && w ? await filled(w) : ''
     if (blocked(o)) throw new Surprise(unanswered(w!.title), await seen())
-    const chooser = o.includes('File Chooser Widget'); const sub = chooser && nl
+    const chooser = isChooser(o); const sub = chooser && nl
     const first = !typed; typed = true
     if (s.blank && found && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field, then replay the flow`, await seen())
     // GTK preselects the name up to its last dot: a bare name keeps the extension, a path or a name with its own extension replaces the whole field
-    if (chooser && /\/|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) { await press('home'); await press('shift+end') }
+    if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine()
     // a line break goes as Return, which GTK text views take where they ignore a Linefeed
     for (const [i, part] of (sub ? s.type.slice(0, -1) : s.type).split(/\r?\n/).entries()) { if (i) await press('Return'); if (part) await desk.typeText(part) }
     tick('act', t0)
@@ -403,7 +411,7 @@ async function run(s: Step, rec: Record<string, unknown>) {
     const w = await focused()
     const o = /^(enter|return)$/i.test(s.key) && w ? await filled(w) : ''
     if (blocked(o)) throw new Surprise(unanswered(w!.title), await seen())
-    if (o.includes('File Chooser Widget')) { rec.submit = true; await submit(w!, true); return }
+    if (isChooser(o)) { rec.submit = true; await submit(w!, true); return }
     const t0 = Date.now(); await press(s.key); tick('act', t0)
     if (w && /\b(ctrl|control|alt)\+|^f\d+$/i.test(s.key)) pressed = { title: w.title, at: Date.now() }
     if (isDialog(o) && await closed(w!.title, w!.pid)) rec.submit = true
@@ -430,7 +438,7 @@ async function run(s: Step, rec: Record<string, unknown>) {
     if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen())
     throw e
   }
-  const nodes = parse(snap); tick('snap', t0)
+  let nodes = parse(snap); tick('snap', t0)
   if (s.expect) {
     const d = await decide({ window_title: w.title, contents: render(nodes, 60, false).slice(0, 4000) }, { ok: desk.yes(s.expect) })
     rec.p = +d.ok.probability.toFixed(2)
@@ -457,7 +465,13 @@ async function run(s: Step, rec: Record<string, unknown>) {
     const soft = async (target: string, role: string | undefined, inside?: number) => { try { return await resolve(nodes, target, role, inside, 0.7) } catch (e) { if (e instanceof Surprise) return null; throw e } }
     hit = byFp(nodes, s.fp)
     if (!hit) {
+      let prev: Hit | null = null
       for (const [k, part] of parts.entries()) {
+        // a Windows menu lists its entries only while it is open
+        if (OS === 'win32' && prev?.n.role === 'menu' && !nodes.some((x) => x.parent === prev!.i)) {
+          await act(prev.n); rec.opened = true; within = undefined
+          for (let t = 0; t < 10; t++) { nodes = parse(await snapOf(w, true)); if (candidates(nodes).some(({ n }) => norm(n.name) === norm(part))) break; await sleep(30) }
+        }
         hit = await soft(part, k < parts.length - 1 ? 'menu' : undefined, within) ?? await soft(part, undefined, within)
         if (!hit) {
           const leaf = await resolve(nodes, parts.at(-1)!, 'menuitem|menu|menuitemcheckbox|menuitemradio')
@@ -466,13 +480,13 @@ async function run(s: Step, rec: Record<string, unknown>) {
           for (let q = leaf.n.parent; q >= 0 && nodes[q].role === 'menu'; q = nodes[q].parent) (rec.path as string[]).unshift(nodes[q].name)
           break
         }
-        within = hit.i; rec.how = hit.how
+        within = hit.i; rec.how = hit.how; prev = hit
       }
     } else rec.how = 'fp'
     rec.fp = fingerprint(nodes, hit!)
     if (hit!.p !== undefined) rec.pick = [hit!.p, hit!.margin]
     const pid = w.pid
-    if (s.on === undefined) { await choose(nodes, hit!.n, rec); await settle(w.title); const now = pid === null ? null : gtkToggle(pid, hit!.n.name); if (now !== null) rec.now = now; return }
+    if (s.on === undefined) { if (rec.opened) rec.via = await act(hit!.n); else await choose(nodes, hit!.n, rec); await settle(w.title); const now = pid === null ? null : gtkToggle(pid, hit!.n.name); if (now !== null) rec.now = now; return }
     const was = pid === null ? null : gtkToggle(pid, hit!.n.name)
     if (was !== null) {
       rec.was = was; rec.state = 'gtk'
@@ -537,13 +551,13 @@ async function run(s: Step, rec: Record<string, unknown>) {
   const lines = ((await desk.read(f.id, { text: true })).value ?? '').includes('\n')
   if (hit.how.startsWith('jev') && lines) throw new Surprise(`"${target}" is closest to a multi-line text (${hit.how}), and set would replace all of it: wait for the window with that field, or name it exactly`, await seen())
   t0 = Date.now()
-  await desk.act(f.id, 'focus'); if (f.role === 'textbox' && !lines) { await press('home'); await press('shift+end') } else await press('ctrl+a'); await desk.typeText(value); if (hit.n.role === 'spinbutton' || hit.n.role === 'slider') { await press('tab'); await press('shift+tab') }
+  await desk.act(f.id, 'focus'); if (f.role === 'textbox' && !lines) await selectLine(); else await press(SELECT_ALL); await desk.typeText(value); if (hit.n.role === 'spinbutton' || hit.n.role === 'slider') { await press('tab'); await press('shift+tab') }
   tick('act', t0)
   t0 = Date.now(); let got: string | undefined
   for (let i = 0; i < 10; i++) { try { got = (await desk.read(f.id)).value ?? '' } catch (e) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); got = undefined }; if (same(got)) break; await sleep(40) }
   tick('verify', t0); rec.value = got
   if (!same(got)) throw new Surprise(`"${target}" reads "${got}" after set`, await seen())
-  if (s.value!.endsWith('\n')) { rec.submit = true; await submit(w, nodes.some((n) => n.name === 'File Chooser Widget')) }
+  if (s.value!.endsWith('\n')) { rec.submit = true; await submit(w, isChooser(render(nodes, 100, false))) }
 }
 
 // {{name}} in any string of a step is a param
@@ -757,7 +771,7 @@ async function perform(p: Params) {
       if ((settled || (!escalate && changes)) && !chain.dirty && chain.steps.some((s) => !s.app)) { saved = store(chain); chain.saved = !!saved }
       const end = await focused()
       chain.window = end?.title ?? null
-      if (end && !/^(Desktop|xfce4-panel)$/.test(end.title)) chain.pid = end.pid
+      if (end && !SHELL_WINDOWS.test(end.title)) chain.pid = end.pid
       try { mkdirSync(FLOWS, { recursive: true }); writeFileSync(PENDING, JSON.stringify(chain)) } catch {}
     } else if (prev) try { writeFileSync(PENDING, JSON.stringify({ ...prev, saved: false, escalated: false })) } catch {}
   }

@@ -30,6 +30,7 @@ const CACHE_TRIES: u32 = 3;
 const CACHE_RETRY: Duration = Duration::from_millis(40);
 const WINDOW: i32 = 50032;
 const MENU: i32 = 50009;
+const LEAF: i32 = 3;
 const PROPS: [UIA_PROPERTY_ID; 22] = [
     UIA_ControlTypePropertyId,
     UIA_NamePropertyId,
@@ -139,6 +140,7 @@ impl Uia {
             toggles: r.toggles,
             selects: r.selected.is_some(),
             dialog: r.dialog || r.modal,
+            submenu: r.expand.is_some_and(|e| e != LEAF),
         };
         let role = uia_roles::role(kind).unwrap_or("generic");
         let [x, y, w, h] = r.bounds;

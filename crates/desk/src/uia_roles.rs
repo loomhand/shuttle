@@ -8,6 +8,7 @@ pub struct Kind {
     pub toggles: bool,
     pub selects: bool,
     pub dialog: bool,
+    pub submenu: bool,
 }
 
 /// The UIA facts that decide an element's states.
@@ -38,6 +39,7 @@ pub fn role(k: Kind) -> Option<&'static str> {
         50008 => "list",
         50009 => "menu",
         50010 => "menubar",
+        50011 if k.submenu => "menu",
         50011 if k.toggles => "menuitemcheckbox",
         50011 if k.selects => "menuitemradio",
         50011 => "menuitem",
