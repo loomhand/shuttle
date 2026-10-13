@@ -31,7 +31,7 @@ const CACHE_RETRY: Duration = Duration::from_millis(40);
 const WINDOW: i32 = 50032;
 const MENU: i32 = 50009;
 const LEAF: i32 = 3;
-const PROPS: [UIA_PROPERTY_ID; 22] = [
+const PROPS: [UIA_PROPERTY_ID; 27] = [
     UIA_ControlTypePropertyId,
     UIA_NamePropertyId,
     UIA_HelpTextPropertyId,
@@ -54,6 +54,11 @@ const PROPS: [UIA_PROPERTY_ID; 22] = [
     UIA_WindowIsModalPropertyId,
     UIA_IsDialogPropertyId,
     UIA_IsTogglePatternAvailablePropertyId,
+    UIA_IsExpandCollapsePatternAvailablePropertyId,
+    UIA_IsSelectionItemPatternAvailablePropertyId,
+    UIA_IsValuePatternAvailablePropertyId,
+    UIA_IsRangeValuePatternAvailablePropertyId,
+    UIA_IsWindowPatternAvailablePropertyId,
 ];
 
 /// The UIA backend of this thread.
@@ -495,6 +500,13 @@ fn raw(el: &IUIAutomationElement) -> Raw {
                 .unwrap_or(0),
         )
     };
+    let has = |p| boolean(p).unwrap_or(false);
+    let toggles = has(UIA_IsTogglePatternAvailablePropertyId);
+    let expands = has(UIA_IsExpandCollapsePatternAvailablePropertyId);
+    let selects = has(UIA_IsSelectionItemPatternAvailablePropertyId);
+    let values = has(UIA_IsValuePatternAvailablePropertyId);
+    let ranges = has(UIA_IsRangeValuePatternAvailablePropertyId);
+    let window = has(UIA_IsWindowPatternAvailablePropertyId);
     Raw {
         control_type: raw_control_type(el),
         name: text(UIA_NamePropertyId),
@@ -513,21 +525,29 @@ fn raw(el: &IUIAutomationElement) -> Raw {
         access: text(UIA_AccessKeyPropertyId),
         pid: int(UIA_ProcessIdPropertyId).unwrap_or(0),
         hwnd,
-        toggle: int(UIA_ToggleToggleStatePropertyId),
-        expand: int(UIA_ExpandCollapseExpandCollapseStatePropertyId),
-        selected: boolean(UIA_SelectionItemIsSelectedPropertyId),
-        value: match value(el, UIA_ValueValuePropertyId) {
-            Val::Text(s) => Some(s),
+        toggle: toggles
+            .then(|| int(UIA_ToggleToggleStatePropertyId))
+            .flatten(),
+        expand: expands
+            .then(|| int(UIA_ExpandCollapseExpandCollapseStatePropertyId))
+            .flatten(),
+        selected: selects
+            .then(|| boolean(UIA_SelectionItemIsSelectedPropertyId))
+            .flatten(),
+        value: match values.then(|| value(el, UIA_ValueValuePropertyId)) {
+            Some(Val::Text(s)) => Some(s),
             _ => None,
         },
-        read_only: boolean(UIA_ValueIsReadOnlyPropertyId),
-        range: match value(el, UIA_RangeValueValuePropertyId) {
-            Val::Real(f) => Some(f),
+        read_only: values
+            .then(|| boolean(UIA_ValueIsReadOnlyPropertyId))
+            .flatten(),
+        range: match ranges.then(|| value(el, UIA_RangeValueValuePropertyId)) {
+            Some(Val::Real(f)) => Some(f),
             _ => None,
         },
-        modal: boolean(UIA_WindowIsModalPropertyId).unwrap_or(false),
+        modal: window && boolean(UIA_WindowIsModalPropertyId).unwrap_or(false),
         dialog: boolean(UIA_IsDialogPropertyId).unwrap_or(false),
-        toggles: boolean(UIA_IsTogglePatternAvailablePropertyId).unwrap_or(false),
+        toggles,
     }
 }
 

@@ -186,11 +186,14 @@ impl Ax {
             shown,
             value: if kind.marked { Some(1) } else { number },
         };
-        let name = if a.title.is_empty() {
-            &a.description
-        } else {
-            &a.title
-        };
+        let static_text = (a.role == "AXStaticText")
+            .then(|| a.value.as_ref().map(|v| text(v, chars)))
+            .flatten()
+            .unwrap_or_default();
+        let name = [&a.title, &a.description, &static_text]
+            .into_iter()
+            .find(|n| !n.is_empty())
+            .map_or("", |n| n.as_str());
         let bounds = match (a.pos, a.size) {
             (Some((x, y)), Some((w, h))) if extras.bounds && shown && is_active(role) => {
                 Some([x, y, w, h].map(|v| (v * self.scale).round() as i32))
@@ -259,11 +262,14 @@ impl Ax {
 
 impl Access for Ax {
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
-        let front = attr(&self.system, "AXFocusedApplication").and_then(|a| pid(&a));
+        let pids = window_pids();
+        let front = attr(&self.system, "AXFocusedApplication")
+            .and_then(|a| pid(&a))
+            .or_else(|| pids.first().copied());
         let mut frames = Vec::new();
-        for p in window_pids() {
+        for p in pids {
             let app = application(p);
-            let focused = attr(&app, "AXFocusedWindow");
+            let focused = attr(&app, "AXFocusedWindow").or_else(|| attr(&app, "AXMainWindow"));
             let Some(windows) = attr(&app, "AXWindows").map(|w| items(&w)) else {
                 continue;
             };
