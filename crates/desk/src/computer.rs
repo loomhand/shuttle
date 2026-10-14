@@ -225,7 +225,8 @@ impl Cua {
         self.act_one(browser, owner, &session, a).await
     }
 
-    /// Runs the actions in order, each settled, stops at the first failure and returns the last screenshot.
+    /// Runs the actions in order, each settled, stops at the first failure and returns the last screenshot;
+    /// every x,y maps by the screenshot returned before the list, the one the caller saw.
     async fn act_list(
         &self,
         browser: &Browser,
@@ -236,8 +237,10 @@ impl Cua {
         let total = list.actions.len();
         let mut lines = Vec::with_capacity(total);
         let mut out = Output::default();
+        let seen = self.scale_of(session);
         for (i, mut a) in list.actions.into_iter().enumerate() {
             a.max_edge = list.max_edge;
+            self.scales().insert(session.to_owned(), seen);
             let action = a.action.clone();
             let step = self
                 .act_one(browser, owner, session, a)
@@ -2704,6 +2707,66 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(launches(), ["launch_app", "bring_to_front"]);
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn every_point_of_an_action_list_maps_by_the_screenshot_taken_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(f64, f64)>::new()));
+        let log = std::sync::Arc::clone(&clicks);
+        let driver = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let args = &req["args"];
+                let reply = match req["name"].as_str().unwrap_or_default() {
+                    "get_desktop_state" => {
+                        let scale = if args["max_image_dimension"].is_u64() {
+                            2.0
+                        } else {
+                            1.0
+                        };
+                        json!({"ok": true, "result": {"structuredContent": {"frame_scale": scale}}})
+                    }
+                    name => {
+                        if name == "click" {
+                            log.lock()
+                                .unwrap()
+                                .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
+                        }
+                        json!({"ok": true, "result": {"structuredContent": {}}})
+                    }
+                };
+                let mut out = serde_json::to_vec(&reply).unwrap();
+                out.push(b'\n');
+                reader.into_inner().write_all(&out).await.unwrap();
+            }
+        });
+        let cua = Cua::new(socket, true);
+        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
+        let click = |x: f64| json!({"action": "click", "x": x, "y": 30.0});
+        cua.state(json!({})).await.unwrap();
+        let first = json!({"actions": [click(100.0), click(110.0), click(120.0)], "max_edge": 640});
+        let out = cua.act(&browser, "ag", first).await.unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        let second = json!({"actions": [click(100.0), click(110.0)], "max_edge": 640});
+        cua.act(&browser, "ag", second).await.unwrap();
+        assert_eq!(
+            *clicks.lock().unwrap(),
+            [
+                (100.0, 30.0),
+                (110.0, 30.0),
+                (120.0, 30.0),
+                (200.0, 60.0),
+                (220.0, 60.0)
+            ]
+        );
         driver.abort();
     }
 
