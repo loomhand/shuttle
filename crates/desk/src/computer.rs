@@ -340,6 +340,10 @@ impl Cua {
         }
         if self.plans {
             driver_keys(&mut a)?;
+            let screen = self.shm(|g| Ok(g.size()));
+            if let Some(e) = screen.and_then(|s| off_screen(&a, s, self.scale_of(session))) {
+                return Err(e);
+            }
         }
         timing::note("action", &a.action);
         if a.action == "wait" {
@@ -1902,6 +1906,30 @@ fn driver_keys(a: &mut ActArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// Why a point of `a` in screenshot pixels, `scale` screen pixels each, lies off a screen of `width` by
+/// `height`: its x,y unless it targets an element, and the end of a drag.
+fn off_screen(a: &ActArgs, (width, height): (usize, usize), scale: f64) -> Option<String> {
+    let (width, height) = (width as f64, height as f64);
+    let drag = a.action == "drag";
+    let start = (drag || a.element.is_none()).then_some((a.x, a.y));
+    let end = drag.then_some((a.to_x, a.to_y));
+    let (x, y) = [start, end].into_iter().flatten().find_map(|p| match p {
+        (Some(x), Some(y))
+            if !(0.0..width).contains(&(x * scale)) || !(0.0..height).contains(&(y * scale)) =>
+        {
+            Some((x, y))
+        }
+        _ => None,
+    })?;
+    let (w, h) = ((width / scale).floor(), (height / scale).floor());
+    Some(format!(
+        "({x},{y}) is off the screen, which is {w}x{h} screenshot pixels (x 0 to {}, y 0 to {}); the {} did not run: take a new screenshot and use a point inside it",
+        w - 1.0,
+        h - 1.0,
+        a.action
+    ))
+}
+
 fn confirms(a: &ActArgs) -> bool {
     let keys = match a.action.as_str() {
         "type" => return a.text.as_deref().is_some_and(|t| t.ends_with(['\n', '\r'])),
@@ -2917,6 +2945,59 @@ mod tests {
         );
         assert!(rewrite("key", None, None).is_err());
         assert!(rewrite("hotkey", None, Some(&["ctrl+"])).is_err());
+    }
+
+    #[test]
+    fn a_point_off_the_screen_is_refused_in_screenshot_pixels() {
+        let act = |action: &str, element: Option<i64>, xy: [Option<f64>; 4]| ActArgs {
+            action: action.to_owned(),
+            element,
+            x: xy[0],
+            y: xy[1],
+            to_x: xy[2],
+            to_y: xy[3],
+            ..ActArgs::default()
+        };
+        let screen = (1280, 800);
+        let at = |x: f64, y: f64| [Some(x), Some(y), None, None];
+        assert_eq!(
+            off_screen(&act("click", None, at(1500.0, 400.0)), screen, 1.0).as_deref(),
+            Some(
+                "(1500,400) is off the screen, which is 1280x800 screenshot pixels (x 0 to 1279, y 0 to 799); the click did not run: take a new screenshot and use a point inside it"
+            )
+        );
+        assert_eq!(
+            off_screen(&act("click", None, at(1279.0, 799.0)), screen, 1.0),
+            None
+        );
+        for (action, x, y) in [
+            ("click", -1.0, 10.0),
+            ("scroll", 640.0, 950.0),
+            ("type", 10.0, 800.0),
+        ] {
+            assert!(
+                off_screen(&act(action, None, at(x, y)), screen, 1.0).is_some(),
+                "{action} {x},{y}"
+            );
+        }
+        assert_eq!(
+            off_screen(&act("click", Some(3), at(1500.0, 400.0)), screen, 1.0),
+            None
+        );
+        assert_eq!(off_screen(&act("key", None, [None; 4]), screen, 1.0), None);
+        let drag = [Some(10.0), Some(10.0), Some(10.0), Some(820.0)];
+        let refused = off_screen(&act("drag", Some(3), drag), screen, 1.0).unwrap_or_default();
+        assert!(
+            refused.starts_with("(10,820) is off the screen"),
+            "{refused}"
+        );
+        let small =
+            off_screen(&act("click", None, at(1000.0, 10.0)), screen, 1.28).unwrap_or_default();
+        assert!(small.contains("1000x625 screenshot pixels"), "{small}");
+        assert_eq!(
+            off_screen(&act("click", None, at(999.0, 624.0)), screen, 1.28),
+            None
+        );
     }
 
     #[test]
