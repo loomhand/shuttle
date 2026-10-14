@@ -58,6 +58,8 @@ const PRESSED: [&str; 2] = ["push button", "menu item"];
 const MENU_POLL: Duration = Duration::from_millis(30);
 const MENU_POLLS: u32 = 10;
 const JPEG_QUALITY: u8 = 80;
+const DEFAULT_EDGE: u32 = 1024;
+const PIXELS_PER_TOKEN: u32 = 750;
 const PHOTO_COLORS: usize = 2500;
 const COLOR_STRIDE: usize = 7;
 const MAX_WAIT_SECS: f64 = 10.0;
@@ -192,6 +194,11 @@ impl Cua {
                     screen,
                 },
             );
+        }
+        if self.plans
+            && let Some(b64) = &image_b64
+        {
+            let _ = write!(text, "\nScreenshot: {}", weigh(b64));
         }
         Ok(Output {
             text,
@@ -394,6 +401,67 @@ impl Cua {
         })
     }
 
+    /// `screenshot`: the whole desktop; with plans also `region`, a part of it at full resolution, and
+    /// the image's size and input tokens in the text.
+    pub async fn look(&self, args: &Value) -> Result<Output, String> {
+        let max_edge = args["max_edge"]
+            .as_u64()
+            .and_then(|e| u32::try_from(e).ok());
+        let session = args["session"].as_str();
+        if self.plans
+            && let Some(region) = args.get("region").filter(|r| !r.is_null())
+        {
+            return self.zoom(session, region, max_edge);
+        }
+        let image_b64 = match session {
+            Some(session) => self.screenshot(session, max_edge).await?,
+            None => self.screenshot_once(max_edge).await?,
+        };
+        let text = match &image_b64 {
+            Some(b64) if self.plans => format!("screenshot of the whole screen: {}", weigh(b64)),
+            Some(_) => "screenshot of the whole screen".to_owned(),
+            None => "no screenshot returned".to_owned(),
+        };
+        Ok(Output {
+            text,
+            is_error: false,
+            image_b64,
+            ..Output::default()
+        })
+    }
+
+    /// `region` {x, y, w, h} in the pixels of `session`'s last screenshot, at full resolution unless `max_edge` is smaller.
+    fn zoom(
+        &self,
+        session: Option<&str>,
+        region: &Value,
+        max_edge: Option<u32>,
+    ) -> Result<Output, String> {
+        let k = session.map_or(1.0, |s| self.scale_of(s));
+        let [Some(x), Some(y), Some(w), Some(h)] = ["x", "y", "w", "h"].map(|f| region[f].as_f64())
+        else {
+            return Err("region needs x, y, w and h".to_owned());
+        };
+        let (rect, rgb) = self.region_rgb([x * k, y * k, w * k, h * k])?;
+        let (rw, rh) = (rect[2].unsigned_abs(), rect[3].unsigned_abs());
+        let (iw, ih, rgb) = match max_edge {
+            Some(edge) if edge > 0 && edge < rw.max(rh) => fit(rw, rh, &rgb, edge),
+            _ => (rw, rh, rgb),
+        };
+        let image = B64.encode(encode(iw, ih, &rgb).ok_or("encode the region")?);
+        let f = f64::from(rw) / f64::from(iw) / k;
+        let (ox, oy) = (f64::from(rect[0]) / k, f64::from(rect[1]) / k);
+        Ok(Output {
+            text: format!(
+                "region of the screen: {}; its pixel px,py is x = {ox:.0} + px*{f:.2}, y = {oy:.0} + py*{f:.2} for computer_act",
+                weigh(&image)
+            ),
+            is_error: false,
+            image_b64: Some(image),
+            ..Output::default()
+        })
+    }
+
     /// Base64 PNG of the whole desktop, scaled so its long edge is at most `max_edge`.
     pub async fn screenshot(
         &self,
@@ -432,6 +500,7 @@ impl Cua {
         session: &str,
         max_edge: Option<u32>,
     ) -> Result<(Option<String>, f64, Option<Screen>), String> {
+        let max_edge = max_edge.or(self.plans.then_some(DEFAULT_EDGE));
         if self.plans
             && let Some((w, h, rgb)) = self
                 .shm(|g| (!g.overlay_shown()?).then(|| g.rgb()).transpose())
@@ -1471,7 +1540,21 @@ impl Cua {
     }
 
     /// The screen rectangle `[x, y, w, h]`, clipped to the screen, as `(width, height, PNG)` over MIT-SHM.
-    pub fn region_png(&self, [x, y, w, h]: [f64; 4]) -> Result<(u32, u32, Vec<u8>), String> {
+    pub fn region_png(&self, rect: [f64; 4]) -> Result<(u32, u32, Vec<u8>), String> {
+        let (rect, rgb) = self.region_rgb(rect)?;
+        let (rw, rh) = (rect[2].unsigned_abs(), rect[3].unsigned_abs());
+        let mut out = Vec::new();
+        let mut enc = png::Encoder::new(&mut out, rw, rh);
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()
+            .and_then(|mut w| w.write_image_data(&rgb))
+            .map_err(|e| format!("encode PNG: {e}"))?;
+        Ok((rw, rh, out))
+    }
+
+    /// The screen rectangle `[x, y, w, h]` clipped to the screen, and its RGB rows over MIT-SHM.
+    fn region_rgb(&self, [x, y, w, h]: [f64; 4]) -> Result<([i32; 4], Vec<u8>), String> {
         self.shm(|g| {
             let (sw, sh) = g.size();
             let screen = Screen {
@@ -1482,16 +1565,7 @@ impl Cua {
             let Some(rect) = clip([x, y, w, h], &screen) else {
                 return Ok(None);
             };
-            let rgb = g.region(rect)?;
-            let (rw, rh) = (rect[2].unsigned_abs(), rect[3].unsigned_abs());
-            let mut out = Vec::new();
-            let mut enc = png::Encoder::new(&mut out, rw, rh);
-            enc.set_color(png::ColorType::Rgb);
-            enc.set_depth(png::BitDepth::Eight);
-            enc.write_header()
-                .and_then(|mut w| w.write_image_data(&rgb))
-                .map_err(|e| format!("encode PNG: {e}"))?;
-            Ok(Some((rw, rh, out)))
+            Ok(Some((rect, g.region(rect)?)))
         })
         .ok_or_else(|| "no screen capture over MIT-SHM".to_owned())?
         .ok_or_else(|| "the rectangle is off the screen".to_owned())
@@ -2094,6 +2168,47 @@ fn shrink(b64: &str) -> Option<String> {
     (out.len() < data.len()).then(|| B64.encode(&out))
 }
 
+/// The format, pixel size, bytes and estimated input tokens of the base64 image `b64`.
+fn weigh(b64: &str) -> String {
+    let data = B64.decode(b64).unwrap_or_default();
+    let kb = data.len().div_ceil(1024);
+    match image_size(&data) {
+        Some((format, w, h)) => format!(
+            "{w}x{h} {format}, {kb} KB, about {} input tokens",
+            (w * h).div_ceil(PIXELS_PER_TOKEN)
+        ),
+        None => format!("{kb} KB"),
+    }
+}
+
+/// The format and pixel size of a PNG, lossless WebP or JPEG image.
+fn image_size(data: &[u8]) -> Option<(&'static str, u32, u32)> {
+    let be = |i: usize| {
+        Some(u32::from(u16::from_be_bytes([
+            *data.get(i)?,
+            *data.get(i + 1)?,
+        ])))
+    };
+    if data.starts_with(b"\x89PNG") {
+        let w = u32::from_be_bytes(data.get(16..20)?.try_into().ok()?);
+        let h = u32::from_be_bytes(data.get(20..24)?.try_into().ok()?);
+        return Some(("png", w, h));
+    }
+    if data.get(8..16) == Some(b"WEBPVP8L") {
+        let bits = u32::from_le_bytes(data.get(21..25)?.try_into().ok()?);
+        return Some(("webp", (bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1));
+    }
+    let mut i = 2;
+    while data.get(i) == Some(&0xff) {
+        let marker = *data.get(i + 1)?;
+        if matches!(marker, 0xc0..=0xc3) {
+            return Some(("jpeg", be(i + 7)?, be(i + 5)?));
+        }
+        i += 2 + usize::try_from(be(i + 2)?).ok()?;
+    }
+    None
+}
+
 /// RGB rows as JPEG when a pixel sample has photo-like colour counts, else as lossless WebP.
 fn encode(width: u32, height: u32, rgb: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::new();
@@ -2657,6 +2772,42 @@ mod tests {
             .decode(shrink(&B64.encode(fast_png(w, h, &noise))).unwrap())
             .unwrap();
         assert!(photo.starts_with(&[0xff, 0xd8]), "{:?}", &photo[..4]);
+    }
+
+    #[test]
+    fn a_screenshot_reports_its_format_size_and_input_tokens() {
+        let (w, h) = (1024u32, 640u32);
+        let flat = vec![200u8; (w * h * 3) as usize];
+        let mut seed = 7u32;
+        let noise: Vec<u8> = (0..w * h * 3)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                (seed >> 24) as u8
+            })
+            .collect();
+        let rgba: Vec<u8> = flat
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect();
+        for (format, image) in [
+            ("webp", encode(w, h, &flat).unwrap()),
+            ("jpeg", encode(w, h, &noise).unwrap()),
+            ("png", fast_png(w, h, &rgba)),
+        ] {
+            assert_eq!(image_size(&image), Some((format, w, h)));
+            let kb = image.len().div_ceil(1024);
+            assert_eq!(
+                weigh(&B64.encode(&image)),
+                format!("1024x640 {format}, {kb} KB, about 874 input tokens")
+            );
+        }
+        assert_eq!(
+            image_size(&encode(1, 3, &[9; 9]).unwrap()),
+            Some(("webp", 1, 3))
+        );
+        assert_eq!(weigh("AAAA"), "1 KB");
     }
 
     #[test]
