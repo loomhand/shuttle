@@ -477,6 +477,14 @@ impl Cua {
         self.shm(Grabber::modals).unwrap_or_default()
     }
 
+    /// With plans, the titles of the desktop's app windows.
+    pub fn window_titles(&self) -> Vec<String> {
+        if !self.plans {
+            return Vec::new();
+        }
+        self.shm(Grabber::client_titles).unwrap_or_default()
+    }
+
     /// Base64 PNG of the whole desktop, scaled so its long edge is at most `max_edge`.
     pub async fn screenshot(
         &self,
