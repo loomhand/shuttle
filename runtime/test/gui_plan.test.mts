@@ -5,7 +5,7 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 
-test('an app step focuses the app\'s open window, by its process or the window list, instead of launching the app', async () => {
+test('an app step focuses the app\'s open window, by its process or the window list, instead of launching the app, and names an app that does not exist', async () => {
   const app = spawn('sleep', ['30'])
   const wins = [
     { id: '1', title: 'Terminal - user@box: ~', role: 'frame', pid: app.pid, active: false },
@@ -49,6 +49,11 @@ test('an app step focuses the app\'s open window, by its process or the window l
     const java = await main({ steps: [{ app: 'GeoGebra' }] })
     assert.equal(java.ok, true, JSON.stringify(java))
     assert.ok(!calls.includes('desk_launch'), calls.join(' '))
+    const started = Date.now()
+    const missing = await main({ steps: [{ app: 'no-such-app-osw' }] })
+    assert.equal(missing.ok, false, JSON.stringify(missing))
+    assert.equal(missing.escalate.reason, 'no app "no-such-app-osw"')
+    assert.ok(Date.now() - started < 2000, `${Date.now() - started} ms`)
   } finally {
     app.kill()
     toolhost.close()

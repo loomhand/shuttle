@@ -384,12 +384,15 @@ async function run(s: Step, rec: Record<string, unknown>) {
     const listed = !w && bare ? await desk.focus(s.app).catch(() => null) : null
     if (listed) { found = true; known.add(listed.title); rec.window = lastSeen = listed.title; return }
     if (!w) {
-      const t0 = Date.now(); launched = true
+      const t0 = Date.now(); launched = true; let missing = false
       try { await desk.launch(s.app) } catch (e) {
         if (!/^[\w.-]+$/.test(s.app)) throw e
-        spawn(s.app, [], { detached: true, stdio: 'ignore' }).unref()
+        spawn(s.app, [], { detached: true, stdio: 'ignore' }).on('error', () => { missing = true }).unref()
       }
-      for (const end = Date.now() + 8000; !(w = await has()); await sleep(50)) if (Date.now() > end) throw new Surprise(`app "${s.app}" has no window`, await seen())
+      for (const end = Date.now() + 8000; !(w = await has()); await sleep(50)) {
+        if (missing) throw new Surprise(`no app "${s.app}"`, await seen())
+        if (Date.now() > end) throw new Surprise(`app "${s.app}" has no window`, await seen())
+      }
       tick('launch', t0)
     }
     found = !launched; if (!w.active) await desk.focus(w.title, w.pid); known.add(w.title); rec.window = lastSeen = w.title; await windowFor(w.title); return
