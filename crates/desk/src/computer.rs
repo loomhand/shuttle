@@ -21,7 +21,7 @@ use super::rpc::Output;
 use super::scope;
 use super::timing;
 use super::volatile::{Block, Shown, Volatile};
-use super::xshm::{self, Grabber, Placement};
+use super::xshm::{self, Grabber, Modal, Placement};
 use super::xtest;
 
 const STATE_ELEMENTS: u64 = 300;
@@ -136,6 +136,9 @@ impl Cua {
                 "- pid={} window_id={} {} \"{}\" at ({},{}) {}x{}",
                 w.pid, w.window_id, w.app, w.title, w.x, w.y, w.w, w.h
             );
+        }
+        for m in self.modals() {
+            text.push_str(&modal_line(&m));
         }
         let target = match a.pid {
             Some(pid) => Some((pid, a.window_id)),
@@ -464,6 +467,14 @@ impl Cua {
             image_b64: Some(image),
             ..Output::default()
         })
+    }
+
+    /// With plans, the modal dialogs that are open where the screen does not show them.
+    pub fn modals(&self) -> Vec<Modal> {
+        if !self.plans {
+            return Vec::new();
+        }
+        self.shm(Grabber::modals).unwrap_or_default()
     }
 
     /// Base64 PNG of the whole desktop, scaled so its long edge is at most `max_edge`.
@@ -1930,6 +1941,20 @@ fn off_screen(a: &ActArgs, (width, height): (usize, usize), scale: f64) -> Optio
     ))
 }
 
+/// One computer_state line on modal dialog `m`, which blocks the window it belongs to.
+fn modal_line(m: &Modal) -> String {
+    let pid = m.pid.map_or_else(String::new, |p| format!(" (pid={p})"));
+    let owner = if m.owner.is_empty() {
+        "its app".to_owned()
+    } else {
+        format!("\"{}\"", m.owner)
+    };
+    format!(
+        "! modal dialog \"{}\"{pid} is open but {}: {owner} takes no input until it closes. Bring it to the front with launch_app of its app, then finish it or press Escape to cancel it.\n",
+        m.title, m.place
+    )
+}
+
 fn confirms(a: &ActArgs) -> bool {
     let keys = match a.action.as_str() {
         "type" => return a.text.as_deref().is_some_and(|t| t.ends_with(['\n', '\r'])),
@@ -2997,6 +3022,25 @@ mod tests {
         assert_eq!(
             off_screen(&act("click", None, at(999.0, 624.0)), screen, 1.28),
             None
+        );
+    }
+
+    #[test]
+    fn a_hidden_modal_dialog_names_the_window_it_blocks() {
+        let modal = |owner: &str, pid: Option<u32>| Modal {
+            title: "Save As".to_owned(),
+            pid,
+            owner: owner.to_owned(),
+            place: "hidden".to_owned(),
+        };
+        assert_eq!(
+            modal_line(&modal("Untitled 1 - Mousepad", Some(833))),
+            "! modal dialog \"Save As\" (pid=833) is open but hidden: \"Untitled 1 - Mousepad\" takes no input until it closes. Bring it to the front with launch_app of its app, then finish it or press Escape to cancel it.\n"
+        );
+        assert!(
+            modal_line(&modal("", None)).starts_with(
+                "! modal dialog \"Save As\" is open but hidden: its app takes no input"
+            )
         );
     }
 
