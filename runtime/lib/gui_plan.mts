@@ -127,6 +127,11 @@ async function checked(n: Node): Promise<boolean | null> {
   const t0 = Date.now()
   try { const r = await desk.read(n.id); return r.states.includes('checked') || r.states.includes('pressed') } catch { return null } finally { tick('state', t0) }
 }
+// a word of the window's process command line starts with the app's command, such as gnome-terminal-server for gnome-terminal
+function ownedBy(pid: number | null, app: string) {
+  if (OS !== 'linux' || !pid) return false
+  try { return readFileSync(`/proc/${pid}/cmdline`, 'utf8').toLowerCase().split(/[\0/\s]+/).some((x) => x.startsWith(app)) } catch { return false }
+}
 // a GtkApplication menu toggle: its label maps to an action in org.gtk.Menus, whose state org.gtk.Actions reports
 function gdbus(dest: string, path: string, method: string, ...args: string[]) {
   return execFileSync('gdbus', ['call', '--session', '--dest', dest, '--object-path', path, '--method', method, ...args], { encoding: 'utf8', timeout: 2000 })
@@ -372,8 +377,12 @@ async function run(s: Step, rec: Record<string, unknown>) {
   if (s.app) {
     const before = new Set((await desk.windows()).map((w) => w.title))
     let launched = false
-    const has = async () => { const ws = await desk.windows(); return ws.find((w) => norm(w.title).includes(norm(s.title ?? s.app!))) ?? (launched ? ws.find((w) => w.title && !before.has(w.title)) : undefined) }
+    const name = norm(s.title ?? s.app); const bare = !s.title && /^[\w.-]+$/.test(s.app)
+    const own = (w: Win) => norm(w.title).includes(name) || (bare && (norm(w.title).includes(name.replace(/-/g, ' ')) || ownedBy(w.pid, name)))
+    const has = async () => { const ws = await desk.windows(); return ws.find(own) ?? (launched ? ws.find((w) => w.title && !before.has(w.title)) : undefined) }
     let w = await has()
+    const listed = !w && bare ? await desk.focus(s.app).catch(() => null) : null
+    if (listed) { found = true; known.add(listed.title); rec.window = lastSeen = listed.title; return }
     if (!w) {
       const t0 = Date.now(); launched = true
       try { await desk.launch(s.app) } catch (e) {
