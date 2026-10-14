@@ -2727,7 +2727,7 @@ mod tests {
                 let args = &req["args"];
                 let reply = match req["name"].as_str().unwrap_or_default() {
                     "get_desktop_state" => {
-                        let scale = if args["max_image_dimension"].is_u64() {
+                        let scale = if args["max_image_dimension"].as_u64().is_some_and(|d| d > 0) {
                             2.0
                         } else {
                             1.0
@@ -2751,7 +2751,7 @@ mod tests {
         let cua = Cua::new(socket, true);
         let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
         let click = |x: f64| json!({"action": "click", "x": x, "y": 30.0});
-        cua.state(json!({})).await.unwrap();
+        cua.state(json!({"max_edge": 0})).await.unwrap();
         let first = json!({"actions": [click(100.0), click(110.0), click(120.0)], "max_edge": 640});
         let out = cua.act(&browser, "ag", first).await.unwrap();
         assert!(!out.is_error, "{}", out.text);
