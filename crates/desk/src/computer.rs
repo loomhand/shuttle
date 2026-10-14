@@ -641,11 +641,7 @@ impl Cua {
             .filter(|_| self.to_dialog(&base))
             .unwrap_or(full);
         timing::mark("resolve");
-        let runs = if self.plans && (a.foreground || base.get("target").is_some()) {
-            vec![text]
-        } else {
-            text_runs(text)
-        };
+        let runs = text_runs(text);
         let mut typed = 0;
         let once = self.once(&base);
         for run in &runs {
@@ -2730,6 +2726,39 @@ mod tests {
             );
             assert_eq!(input[1]["args"]["text"], "hello");
             assert!(input[1]["args"].get("x").is_none(), "{}", input[1]);
+        }
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_foreground_type_of_twenty_distinct_cjk_goes_as_runs_of_at_most_eight() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
+        let text = "一二三四五六七八九十百千万亿甲乙丙丁戊己";
+        for plans in [false, true] {
+            calls.lock().unwrap().clear();
+            let cua = Cua::new(socket.clone(), plans);
+            let out = cua
+                .act(
+                    &browser,
+                    "ag",
+                    json!({"action": "type", "text": text, "foreground": true}),
+                )
+                .await
+                .unwrap();
+            assert!(!out.is_error, "{}", out.text);
+            let calls = calls.lock().unwrap();
+            let runs: Vec<&str> = calls
+                .iter()
+                .filter(|c| c["name"] == "type_text")
+                .map(|c| c["args"]["text"].as_str().unwrap())
+                .collect();
+            assert_eq!(runs.len(), 3, "{plans}: {runs:?}");
+            assert!(runs.iter().all(|r| r.chars().count() <= 8), "{runs:?}");
+            assert_eq!(runs.concat(), text);
         }
         driver.abort();
     }
