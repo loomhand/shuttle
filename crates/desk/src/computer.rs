@@ -132,17 +132,7 @@ impl Cua {
             .await?;
         timing::mark("windows");
         let listed = window_list(&windows);
-        let mut text = String::from("Windows (frontmost first):\n");
-        for w in &listed {
-            let _ = writeln!(
-                text,
-                "- pid={} window_id={} {} \"{}\" at ({},{}) {}x{}",
-                w.pid, w.window_id, w.app, w.title, w.x, w.y, w.w, w.h
-            );
-        }
-        for m in self.modals() {
-            text.push_str(&modal_line(&m));
-        }
+        let mut text = String::new();
         let target = match a.pid {
             Some(pid) => Some((pid, a.window_id)),
             None => listed
@@ -176,6 +166,26 @@ impl Cua {
         }
         // the capture comes last: a later get_window_state replaces the session's pixel-click context
         let (image_b64, scale, mut screen) = self.capture(&session, a.max_edge).await?;
+        let k = if self.plans { scale } else { 1.0 };
+        let mut head = String::from("Windows (frontmost first):\n");
+        for w in &listed {
+            let _ = writeln!(
+                head,
+                "- pid={} window_id={} {} \"{}\" at ({:.0},{:.0}) {:.0}x{:.0}",
+                w.pid,
+                w.window_id,
+                w.app,
+                w.title,
+                w.x as f64 / k,
+                w.y as f64 / k,
+                w.w as f64 / k,
+                w.h as f64 / k
+            );
+        }
+        for m in self.modals() {
+            head.push_str(&modal_line(&m));
+        }
+        text.insert_str(0, &head);
         if let Some((pid, window_id, state)) = elements {
             if screen.is_none() && !self.plans {
                 screen = self.shm(Grabber::rgb).map(|(width, height, rgb)| Screen {
@@ -399,11 +409,16 @@ impl Cua {
         }
         self.end_once(once).await;
         timing::mark("act");
-        let changes = self.settle(before).await;
+        let k = if self.plans {
+            self.scale_of(session)
+        } else {
+            1.0
+        };
+        let changes = self.settle(before, k).await;
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         let (text, is_error) = match result {
-            Ok(v) => (content_text(&v) + &changes, false),
+            Ok(v) => (shot_points(&content_text(&v), k) + &changes, false),
             Err(e) => (e, true),
         };
         Ok(Output {
@@ -662,7 +677,7 @@ impl Cua {
         }
         self.end_once(once).await;
         timing::mark("act");
-        let changes = self.settle(before).await;
+        let changes = self.settle(before, self.scale_of(session)).await;
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         let total = full.chars().count();
@@ -750,7 +765,7 @@ impl Cua {
             }
         };
         timing::mark("act");
-        let changes = self.settle(before).await;
+        let changes = self.settle(before, self.scale_of(session)).await;
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         Ok(Output {
@@ -845,7 +860,7 @@ impl Cua {
     /// in Chrome it is [`COMMIT_STILL_FOR`], at most [`COMMIT_SETTLE`] once the screen changed, so
     /// a page that loads over the network or adds content from timers is in the frame. Returns
     /// lines naming the windows the action opened, closed or brought to the front.
-    async fn settle(&self, before: Option<Before>) -> String {
+    async fn settle(&self, before: Option<Before>, scale: f64) -> String {
         let Some(Before {
             probe,
             frame: first,
@@ -955,7 +970,7 @@ impl Cua {
             return String::new();
         }
         let report = self
-            .shm(|g| Ok(self.window_report(g, &windows, &seen, active, focus)))
+            .shm(|g| Ok(self.window_report(g, &windows, &seen, active, focus, scale)))
             .unwrap_or_default();
         timing::mark("report");
         report
@@ -981,6 +996,7 @@ impl Cua {
         after: &[Placement],
         was_active: Option<u32>,
         active: Option<u32>,
+        scale: f64,
     ) -> String {
         let mut titles = self
             .titles
@@ -1001,8 +1017,11 @@ impl Cua {
                     let title = g.title(p.id);
                     let _ = write!(
                         out,
-                        "\nopened window \"{title}\" {}x{} at ({},{})",
-                        p.width, p.height, p.x, p.y
+                        "\nopened window \"{title}\" {:.0}x{:.0} at ({:.0},{:.0})",
+                        f64::from(p.width) / scale,
+                        f64::from(p.height) / scale,
+                        f64::from(p.x) / scale,
+                        f64::from(p.y) / scale
                     );
                     opened.push(title.clone());
                     titles.insert(p.id, title);
@@ -1011,8 +1030,11 @@ impl Cua {
                     let title = titles.get(&p.id).cloned().unwrap_or_else(|| g.title(p.id));
                     let _ = write!(
                         out,
-                        "\nwindow \"{title}\" is now {}x{} at ({},{})",
-                        p.width, p.height, p.x, p.y
+                        "\nwindow \"{title}\" is now {:.0}x{:.0} at ({:.0},{:.0})",
+                        f64::from(p.width) / scale,
+                        f64::from(p.height) / scale,
+                        f64::from(p.x) / scale,
+                        f64::from(p.y) / scale
                     );
                 }
                 Some(_) => {}
@@ -2204,6 +2226,39 @@ fn fit(width: u32, height: u32, rgb: &[u8], edge: u32) -> (u32, u32, Vec<u8>) {
     (tw, th, out)
 }
 
+/// `text` with each point `(x,y)` or `(x, y)` divided by `scale`, from screen to screenshot pixels.
+fn shot_points(text: &str, scale: f64) -> String {
+    if scale == 1.0 {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('(') {
+        out.push_str(&rest[..open]);
+        rest = &rest[open..];
+        let point = rest.find(')').and_then(|close| {
+            let (x, y) = rest[1..close].split_once(',')?;
+            Some((
+                close,
+                x.trim().parse::<f64>().ok()?,
+                y.trim().parse::<f64>().ok()?,
+            ))
+        });
+        match point {
+            Some((close, x, y)) => {
+                let _ = write!(out, "({:.0},{:.0})", x / scale, y / scale);
+                rest = &rest[close + 1..];
+            }
+            None => {
+                out.push('(');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn content_text(result: &Value) -> String {
     let mut text = String::new();
     for c in result["content"].as_array().into_iter().flatten() {
@@ -2849,6 +2904,89 @@ mod tests {
             [(125.0, 50.0), (100.0, 40.0), (200.0, 80.0), (100.0, 40.0)]
         );
         driver.abort();
+    }
+
+    #[tokio::test]
+    async fn with_plans_window_lines_and_click_replies_are_in_screenshot_pixels() {
+        for (plans, line, reply) in [
+            (
+                true,
+                "\"notes\" at (80,40) 512x384",
+                "click at (100,40) (desktop",
+            ),
+            (
+                false,
+                "\"notes\" at (100,50) 640x480",
+                "click at (125.0,50.0) (desktop",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("cua.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let driver = tokio::spawn(async move {
+                loop {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+                    reader.read_line(&mut line).await.unwrap();
+                    let req: Value = serde_json::from_str(&line).unwrap();
+                    let args = &req["args"];
+                    let reply = match req["name"].as_str().unwrap_or_default() {
+                        "list_windows" => {
+                            json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Mousepad", "title": "notes", "bounds": {"x": 100, "y": 50, "width": 640, "height": 480}, "z_index": 1}]}}})
+                        }
+                        "get_desktop_state" => {
+                            let scale = match args["max_image_dimension"].as_u64() {
+                                Some(edge) if edge > 0 => 1280.0 / edge as f64,
+                                _ => 1.0,
+                            };
+                            json!({"ok": true, "result": {"structuredContent": {"frame_scale": scale}}})
+                        }
+                        "click" => {
+                            let text = format!(
+                                "\u{2705} Sent screen-absolute click at ({},{}) (desktop scope).",
+                                args["x"], args["y"]
+                            );
+                            json!({"ok": true, "result": {"content": [{"type": "text", "text": text}]}})
+                        }
+                        _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+                    };
+                    let mut out = serde_json::to_vec(&reply).unwrap();
+                    out.push(b'\n');
+                    reader.into_inner().write_all(&out).await.unwrap();
+                }
+            });
+            let cua = Cua::new(socket, plans);
+            let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
+            let state = cua.state(json!({})).await.unwrap();
+            assert!(state.text.contains(line), "{plans}: {}", state.text);
+            let x = if plans { 100.0 } else { 125.0 };
+            let act =
+                json!({"action": "click", "x": x, "y": 40.0 * if plans { 1.0 } else { 1.25 }});
+            let out = cua.act(&browser, "ag", act).await.unwrap();
+            assert!(out.text.contains(reply), "{plans}: {}", out.text);
+            driver.abort();
+        }
+    }
+
+    #[test]
+    fn shot_points_divides_each_point_by_the_scale() {
+        assert_eq!(
+            shot_points(
+                "\u{2705} Sent screen-absolute click at (325,296) (desktop scope).",
+                1.25
+            ),
+            "\u{2705} Sent screen-absolute click at (260,237) (desktop scope)."
+        );
+        assert_eq!(
+            shot_points("Clicked at (100.0, 50.0) x 2", 1.25),
+            "Clicked at (80,40) x 2"
+        );
+        assert_eq!(
+            shot_points("at (325,296) (a, b) (", 1.0),
+            "at (325,296) (a, b) ("
+        );
+        assert_eq!(shot_points("(a, b) (8,4", 2.0), "(a, b) (8,4");
     }
 
     #[tokio::test]
