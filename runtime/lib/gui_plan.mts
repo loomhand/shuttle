@@ -84,8 +84,17 @@ async function outline(w?: Win | null, keys = false) {
 }
 async function seen() {
   const w = await focused()
-  return { window: w?.title ?? null, windows: (await desk.windows()).map((x) => x.title).filter((t) => t && !SHELL_WINDOWS.test(t)), outline: await outline(w, true) }
+  const windows = (await desk.windows()).filter((x) => x.title && !SHELL_WINDOWS.test(x.title)).map((x) => x.modal ? `${x.title} (modal dialog, ${x.modal})` : x.title)
+  return { window: w?.title ?? null, windows, outline: await outline(w, true) }
 }
+// a modal dialog of the focused app that the screen does not show takes the app's input: typing lands in it, and clicks do nothing
+async function hiddenModal(ws: Win[], f: Win | null) {
+  const of = (list: Win[]) => f && list.find((x) => x.modal && x.pid === f.pid)
+  if (!of(ws)) return null
+  await sleep(200)
+  return of(await desk.windows()) || null
+}
+const modalBlocks = (m: Win) => `modal dialog "${m.title}" is open but ${m.modal}, and ${m.blocks ? `"${m.blocks}"` : 'its app'} takes no input until it closes: finish it, or close it with {close: true, window: "${m.title}"}`
 const blocked = (o: string) => /AT-SPI peer \S+ is not responding|no accessibility answer within/.test(o)
 const isChooser = (o: string) => CHOOSER.test(o)
 // the whole text of the focused one-line field
@@ -727,7 +736,9 @@ async function perform(p: Params) {
     const s = fill(plan[i], params); T = {}; const rec: Record<string, unknown> = { i, op: OPS.find((k) => k in s) }
     const ts = Date.now()
     try {
-      const f = await focused()
+      const ws = await desk.windows(); const f = desk.front(ws)
+      const m = s.close ? null : await hiddenModal(ws, f)
+      if (m) throw new Surprise(modalBlocks(m), await seen())
       const o = f && (!known.has(f.title) || !f.title.trim()) && !(i === (p.start ?? 0) && startAlert) && !(s.window && norm(f.title).includes(norm(s.window))) ? await outline(f) : ''
       if (blocked(o)) throw new Surprise(unanswered(f!.title), await seen())
       if (isAlert(o)) throw new Surprise(`alert "${f!.title}" is in front`, await seen())

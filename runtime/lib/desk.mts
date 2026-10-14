@@ -4,7 +4,7 @@ import { request } from 'node:http'
 import { createConnection } from 'node:net'
 import { homedir } from 'node:os'
 
-export type Win = { id: string; title: string; role: string; pid: number | null; active: boolean }
+export type Win = { id: string; title: string; role: string; pid: number | null; active: boolean; modal?: string; blocks?: string }
 export type El = {
   ref: number; id: string; parent: number; depth: number; role: string; name: string; states: string[]
   value?: string; keys?: string; shortcut?: string; mnemonic?: string; native_role?: string; description?: string; bounds?: [number, number, number, number]
@@ -46,8 +46,9 @@ export function call(op: string, args: Record<string, unknown> = {}): Promise<an
 }
 
 export const windows = (): Promise<Win[]> => call('windows')
+export const front = (ws: Win[]): Win | null => ws.find((w) => w.active && (w.title !== '' || w.role !== 'window')) ?? null
 export async function focused(): Promise<Win | null> {
-  return (await windows()).find((w) => w.active && (w.title !== '' || w.role !== 'window')) ?? null
+  return front(await windows())
 }
 export const snapshot = (window?: string, o: { pid?: number | null; keys?: boolean; bounds?: boolean } = {}): Promise<Snap> =>
   call('snapshot', { window, pid: o.pid ?? undefined, keys: o.keys, bounds: o.bounds })
