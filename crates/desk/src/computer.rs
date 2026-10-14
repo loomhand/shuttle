@@ -94,6 +94,8 @@ pub struct Cua {
     titles: std::sync::Mutex<HashMap<u32, String>>,
     /// Per session, screen pixels per image pixel of the last screenshot returned with plans.
     scales: std::sync::Mutex<HashMap<String, f64>>,
+    /// With plans, screen pixels per image pixel of the latest screenshot of any session, one-shot included.
+    last_scale: std::sync::Mutex<f64>,
     /// Per session on cbdesk, screen pixels per image pixel of the driver's last capture, which maps its desktop x,y.
     driver_scales: std::sync::Mutex<HashMap<String, f64>>,
     /// With plans, the screen blocks that change while no action runs, which the settle ignores.
@@ -112,6 +114,7 @@ impl Cua {
             grabber: std::sync::Mutex::new(None),
             titles: std::sync::Mutex::new(HashMap::new()),
             scales: std::sync::Mutex::new(HashMap::new()),
+            last_scale: std::sync::Mutex::new(1.0),
             driver_scales: std::sync::Mutex::new(HashMap::new()),
             volatile: plans.then(Volatile::start),
             last_click: std::sync::Mutex::new(None),
@@ -543,7 +546,7 @@ impl Cua {
             if let Some((image, scale)) = image {
                 timing::mark("encode");
                 timing::note("image_bytes", image.len());
-                self.scales().insert(session.to_owned(), scale);
+                self.keep_scale(session, scale);
                 let screen = Screen {
                     width: w,
                     height: h,
@@ -567,7 +570,7 @@ impl Cua {
             if let Some(smaller) = image.as_deref().and_then(shrink) {
                 image = Some(smaller);
             }
-            self.scales().insert(session.to_owned(), scale);
+            self.keep_scale(session, scale);
             // the driver rescales later desktop clicks by its last capture; a full-size one keeps it at 1
             if scale != 1.0 {
                 let _ = self.request(session, "get_desktop_state", json!({})).await;
@@ -1055,9 +1058,21 @@ impl Cua {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Screen pixels per pixel of the last screenshot `session` returned with plans, so its x,y map to the screen.
+    fn last_scale(&self) -> std::sync::MutexGuard<'_, f64> {
+        self.last_scale
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn keep_scale(&self, session: &str, scale: f64) {
+        self.scales().insert(session.to_owned(), scale);
+        *self.last_scale() = scale;
+    }
+
+    /// Screen pixels per pixel of the last screenshot `session`, else any session, returned with plans, so its x,y map to the screen.
     fn scale_of(&self, session: &str) -> f64 {
-        self.scales().get(session).copied().unwrap_or(1.0)
+        let own = self.scales().get(session).copied();
+        own.unwrap_or_else(|| *self.last_scale())
     }
 
     fn driver_scales(&self) -> std::sync::MutexGuard<'_, HashMap<String, f64>> {
@@ -2766,6 +2781,72 @@ mod tests {
                 (200.0, 60.0),
                 (220.0, 60.0)
             ]
+        );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_session_without_its_own_screenshot_maps_by_the_latest_one_of_any_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(f64, f64)>::new()));
+        let log = std::sync::Arc::clone(&clicks);
+        let driver = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let args = &req["args"];
+                let reply = match req["name"].as_str().unwrap_or_default() {
+                    "get_desktop_state" => {
+                        let scale = match args["max_image_dimension"].as_u64() {
+                            Some(edge) if edge > 0 => 1280.0 / edge as f64,
+                            _ => 1.0,
+                        };
+                        json!({"ok": true, "result": {"structuredContent": {"frame_scale": scale}}})
+                    }
+                    name => {
+                        if name == "click" {
+                            log.lock()
+                                .unwrap()
+                                .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
+                        }
+                        json!({"ok": true, "result": {"structuredContent": {}}})
+                    }
+                };
+                let mut out = serde_json::to_vec(&reply).unwrap();
+                out.push(b'\n');
+                reader.into_inner().write_all(&out).await.unwrap();
+            }
+        });
+        let cua = Cua::new(socket, true);
+        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
+        let click =
+            |session: &str| json!({"action": "click", "x": 100.0, "y": 40.0, "session": session});
+        cua.screenshot_once(None).await.unwrap();
+        cua.act(&browser, "ag", click("after-default-shot"))
+            .await
+            .unwrap();
+        cua.screenshot_once(Some(0)).await.unwrap();
+        cua.act(&browser, "ag", click("after-full-shot"))
+            .await
+            .unwrap();
+        cua.state(json!({"session": "ended", "max_edge": 640}))
+            .await
+            .unwrap();
+        cua.end(json!({"session": "ended"})).await.unwrap();
+        cua.act(&browser, "ag", click("rotated")).await.unwrap();
+        cua.state(json!({"session": "own", "max_edge": 1280}))
+            .await
+            .unwrap();
+        cua.screenshot_once(None).await.unwrap();
+        cua.act(&browser, "ag", click("own")).await.unwrap();
+        assert_eq!(
+            *clicks.lock().unwrap(),
+            [(125.0, 50.0), (100.0, 40.0), (200.0, 80.0), (100.0, 40.0)]
         );
         driver.abort();
     }
