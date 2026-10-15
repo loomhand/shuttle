@@ -69,7 +69,11 @@ function parse(snap: desk.Snap): Node[] {
   }))
 }
 
-const focused = () => desk.focused()
+async function focused() {
+  const ws = await desk.windows(); const f = desk.front(ws); if (f) return f
+  const own = ws.filter((x) => x.title.trim() && ws.some((p) => p.active && !p.title.trim() && p.pid === x.pid))
+  return own.find((x) => x.title === lastSeen) ?? own.at(-1) ?? null
+}
 async function current() {
   const k = pressed; pressed = null; const t0 = Date.now()
   while (k && (await focused())?.title === k.title && Date.now() - k.at < 150) await sleep(10)
