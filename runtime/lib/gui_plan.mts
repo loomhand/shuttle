@@ -772,7 +772,7 @@ async function locate(target: string, press: boolean) {
   let hit: Hit | null = null
   try { hit = await resolve(nodes, target, undefined, undefined, 0.7) } catch (e) { if (!(e instanceof Surprise)) throw e; return { found: false, why: e.reason, window: w.title, ms: Date.now() - t0 } }
   if (!hit) return { found: false, why: `no element of "${w.title}" matches`, window: w.title, ms: Date.now() - t0 }
-  const out: Record<string, unknown> = { found: true, how: hit.how, role: hit.n.role, name: hit.n.name, bounds: hit.n.bounds ?? null, window: w.title }
+  const out: Record<string, unknown> = { found: true, how: hit.how, role: hit.n.role, name: hit.n.name, bounds: hit.n.bounds ?? null, window: w.title, pid: w.pid }
   if (press) {
     if (hit.n.role === 'menuitem') await choose(nodes, hit.n, out, true); else out.via = await act(hit.n)
     await settle(w.title)
