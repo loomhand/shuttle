@@ -63,8 +63,11 @@ class Surprise extends Error {
 }
 
 function parse(snap: desk.Snap): Node[] {
+  const kids = new Map<number, number>(); for (const n of snap.nodes) kids.set(n.parent, (kids.get(n.parent) ?? 0) + 1)
+  const wraps = (n: desk.El) => { const out: desk.El[] = []; for (let p = n.parent; p >= 0 && kids.get(p) === 1 && /^(toolbar|group)$/.test(snap.nodes[p].role); p = snap.nodes[p].parent) out.push(snap.nodes[p]); return out }
+  const called = (n: desk.El) => n.name.trim() || !ACTIVE.has(n.role) || FIELDS.split('|').includes(n.role) ? n.name : n.description?.trim() || wraps(n).find((a) => a.name.trim())?.name || wraps(n).find((a) => a.description?.trim())?.description || ''
   return snap.nodes.map((n) => ({
-    ref: n.ref, id: n.id, depth: n.depth, role: n.role, name: n.name.slice(0, 80).trim(), value: n.value ?? '', disabled: n.states.includes('disabled'), parent: n.parent,
+    ref: n.ref, id: n.id, depth: n.depth, role: n.role, name: called(n).slice(0, 80).trim(), value: n.value ?? '', disabled: n.states.includes('disabled'), parent: n.parent,
     shortcut: n.shortcut ?? '', checked: n.states.includes('checked') || n.states.includes('pressed'), shown: n.states.includes('showing'), bounds: n.bounds,
   }))
 }

@@ -400,3 +400,33 @@ test('a click whose target is a name plus role words takes the showing button of
   assert.equal(saveAs.ok, true, JSON.stringify(saveAs))
   assert.deepEqual(pressed, ['1.5/5'])
 })
+
+test('an unnamed control takes its own description, else the name, else the description, of the ancestors that hold only it, so LibreOffice\'s sidebar tab buttons read as their decks', async () => {
+  const sidebar = [
+    { id: '1.1/1', parent: -1, role: 'frame', name: 'Donor_Report.fodt — LibreOffice Writer' },
+    { id: '1.1/2', parent: 0, role: 'button', name: '', description: 'Close Document' },
+    { id: '1.1/3', parent: 0, role: 'group', name: 'Properties' },
+    { id: '1.1/4', parent: 2, role: 'button', name: 'Menu', description: 'Sidebar Settings' },
+    { id: '1.1/5', parent: 2, role: 'toolbar', name: 'Styles', description: 'Styles' },
+    { id: '1.1/6', parent: 4, role: 'group', name: '', description: 'Styles (Alt+2)' },
+    { id: '1.1/7', parent: 5, role: 'button', name: '' },
+    { id: '1.1/8', parent: 2, role: 'toolbar', name: 'Navigator', description: 'Navigator' },
+    { id: '1.1/9', parent: 7, role: 'group', name: '', description: 'Navigator (Alt+4)' },
+    { id: '1.1/10', parent: 8, role: 'button', name: '' },
+    { id: '1.1/11', parent: 0, role: 'toolbar', name: '' },
+    { id: '1.1/12', parent: 10, role: 'group', name: '', description: 'Close Infobar' },
+    { id: '1.1/13', parent: 11, role: 'button', name: '' },
+  ]
+  const named = await plan('Navigator', sidebar, { none: 1 })
+  assert.equal(named.ok, true, JSON.stringify(named))
+  assert.equal(named.trace[0].how, 'ax')
+  assert.deepEqual(pressed, ['1.1/10'])
+  const picked = await plan('the Navigator button in the sidebar', sidebar, { r9: 0.96, r3: 0.03, none: 0.01 })
+  assert.equal(picked.ok, true, JSON.stringify(picked))
+  assert.deepEqual(pressed, ['1.1/10'])
+  for (const [target, id] of [['Close Document', '1.1/2'], ['Close Infobar', '1.1/13']]) {
+    const out = await plan(target, sidebar, { none: 1 })
+    assert.equal(out.ok, true, JSON.stringify(out))
+    assert.deepEqual(pressed, [id])
+  }
+})
