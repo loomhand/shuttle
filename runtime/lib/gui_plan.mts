@@ -293,7 +293,7 @@ function barMenu(nodes: Node[], name: string): Hit | null {
   return tops.length > 1 ? { ...tops[0], how: 'ax' } : null
 }
 
-// jev-1.14's pick on a screenshot, which tells apart elements of the same name by where they are; on any failure jev-1.13's pick on the text
+// jev's pick on a screenshot, which tells apart elements of the same name by where they are; on any failure its pick on the text
 async function pick(target: string, pool: Node[], opts: Record<string, string>) {
   const t0 = Date.now()
   try {
@@ -309,8 +309,8 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>) 
   } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
 
-// a grounded point is taken when jev-1.14 sees the target at it in a 640x400 crop around it; on any failure, when jev-1.13 says the
-// element under the point is the target
+// a grounded point is taken when jev sees the target at it in a 640x400 crop around it; on any failure, when jev says the element
+// under the point is the target
 async function grounded(x: number, y: number, target: string, w: Win, area: { width: number; height: number }) {
   const under = await desk.at(x, y, w.title).catch(() => ({ found: null, path: [] }))
   const what = under.found ? [under.found, ...(under.path ?? []).reverse()].filter((n) => n.name).map((n) => `${n.role} "${n.name}"`).join(' under ') : ''
@@ -321,9 +321,10 @@ async function grounded(x: number, y: number, target: string, w: Win, area: { wi
     const [px, py] = [x - left, y - top]
     const d = await desk.look([`A ${cw}x${ch} crop of the screen. A click is about to land on its pixel (${px}, ${py}).`, desk.image(await desk.shot({ x: left, y: top, w: cw, h: ch }))],
       { on: desk.yes(`Is the pixel at (${px}, ${py}) of the image on ${target}?`) })
-    return { what, ok: d.on.probability >= 0.5 }
-  } catch {
-    return { what, ok: !!what.trim() && (await decide({ element_under_point: what, window_title: w.title }, { is: desk.yes(`Is this element "${target}"?`) })).is.probability >= 0.7 }
+    return { what, ok: d.on.probability >= 0.5, check: 'jev-image' }
+  } catch (e) {
+    const ok = !!what.trim() && (await decide({ element_under_point: what, window_title: w.title }, { is: desk.yes(`Is this element "${target}"?`) })).is.probability >= 0.7
+    return { what, ok, check: `jev (${String((e as Error).message ?? e).slice(0, 80)})` }
   } finally { tick('check', t0) }
 }
 
@@ -610,8 +611,8 @@ async function run(s: Step, rec: Record<string, unknown>) {
     const area = await desk.screen()
     const [x, y] = await desk.ground(await desk.shot(), `${target} in the "${w.title}" window`, area)
     tick('ground', t0)
-    const { what, ok } = await grounded(x, y, target, w, area)
-    rec.ground_hit = what.slice(0, 80)
+    const { what, ok, check } = await grounded(x, y, target, w, area)
+    rec.ground_hit = what.slice(0, 80); rec.checked = check
     if (!ok) throw new Surprise(`no element matches "${target}"${what.trim() ? `; grounding pointed at ${what.slice(0, 80)}` : ''}`, await seen())
     t0 = Date.now(); await desk.click(x, y); tick('act', t0)
     rec.how = 'ground'; rec.unsaved = true; await settle(w.title); return
@@ -819,7 +820,7 @@ async function perform(p: Params) {
   if (gap >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: plan[gap], reason: `no value for {{${unfilled(plan[gap])}}}: pass it in params; nothing ran` } }
   for (let i = p.start ?? 0; i < plan.length; i++) {
     const s = fill(plan[i], params); T = {}; const rec: Record<string, unknown> = { i, op: OPS.find((k) => k in s) }
-    const ts = Date.now()
+    const ts = Date.now(); const calls = desk.served.length
     try {
       const ws = await desk.windows(); const f = desk.front(ws)
       const m = s.close ? null : await hiddenModal(ws, f)
@@ -832,7 +833,8 @@ async function perform(p: Params) {
       const sp = e instanceof Surprise ? e : new Surprise(String((e as Error).message ?? e), await seen())
       escalate = { step: i, plan_step: plan[i], reason: sp.reason, ...sp.seen }; done = i
     }
-    rec.ms = Date.now() - ts; log.push({ ...rec, ...T }); recs[i] = rec
+    rec.ms = Date.now() - ts; if (desk.served.length > calls) rec.served = desk.served.slice(calls)
+    log.push({ ...rec, ...T }); recs[i] = rec
     trace.push({ i, op: rec.op, how: rec.how, ms: rec.ms, ...(rec.was !== undefined ? { was: rec.was ? 'on' : 'off', now: rec.noop || s.verify ? undefined : s.on === false ? 'off' : 'on' } : {}), ...(rec.now !== undefined ? { now: rec.now ? 'on' : 'off' } : {}), ...(rec.noop ? { noop: true } : {}) })
     if (escalate) break
   }

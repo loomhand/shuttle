@@ -16,9 +16,8 @@ export type Usage = Record<string, { calls: number; input_tokens: number; output
 const SOCKETS: Record<string, string> = { win32: '\\\\.\\pipe\\cocoonbox-desk', darwin: `${homedir()}/Library/Caches/cocoonbox/desk.sock` }
 const SOCKET = process.env.TOOLHOST_SOCKET || SOCKETS[process.platform] || '/run/cocoonbox/toolhost.sock'
 const ENV_FILE = '/etc/cocoonbox/desk.env'
-const DECIDE_MODEL = 'typesafe/jev-1.13'
-const LOOK_MODEL = 'typesafe/jev-1.14'
-const LOOK_BUILD = 'typesafe/jev-1.14-20261014'
+const DECIDE_MODEL = 'typesafe/jev-1.14'
+const DECIDE_BUILD = 'typesafe/jev-1.14-20261014'
 const LOOK_TIMEOUT = 5_000
 const ASK_MODEL = 'anthropic/claude-sonnet-5'
 const GROUND_MODEL = 'qwen/qwen3-vl-235b-a22b-instruct'
@@ -26,6 +25,8 @@ const MODEL_TIMEOUT = 60_000
 let screenSize: { width: number; height: number } | null = null
 let gwConfig: { base: string; key: string } | null = null
 export const usage: Usage = {}
+// every decisions call: the model asked, whether its state held an image, and the build and generation id that answered (null when none did)
+export const served: { model: string; image: boolean; build: string | null; id: string | null }[] = []
 
 // one toolhost call: a big-endian u32 length and JSON each way
 export function call(op: string, args: Record<string, unknown> = {}): Promise<any> {
@@ -125,14 +126,18 @@ export const yes = (instructions: string): Question => ({ type: 'noul', instruct
 export const choice = (instructions: string, criteria: Record<string, string>): Question => ({ type: 'choice', instructions, criteria })
 
 // gw's decisions model over text or JSON state: a yes question answers {probability}, a choice {choice, confidence, probabilities}
-export async function decide(state: unknown, questions: Record<string, Question>): Promise<Record<string, any>> {
-  return answers(await post('decisions', { model: DECIDE_MODEL, state, questions }))
-}
+export const decide = (state: unknown, questions: Record<string, Question>) => judge(state, questions, false, MODEL_TIMEOUT)
 
-// the same over a state that holds PNG parts (image), answered by one pinned build of jev-1.14: another build, an error or 5 s throws
-export async function look(state: unknown[], questions: Record<string, Question>): Promise<Record<string, any>> {
-  const r = await post('decisions', { model: LOOK_MODEL, state, questions }, LOOK_TIMEOUT)
-  if (r.model !== LOOK_BUILD) throw new Error(`gw decisions served ${r.model} for ${LOOK_MODEL}`)
+// the same over a state that holds PNG parts (image), within 5 s
+export const look = (state: unknown[], questions: Record<string, Question>) => judge(state, questions, true, LOOK_TIMEOUT)
+
+// one pinned build of jev-1.14 answers: another build, an error or the timeout throws
+async function judge(state: unknown, questions: Record<string, Question>, image: boolean, timeout: number): Promise<Record<string, any>> {
+  const call = { model: DECIDE_MODEL, image, build: null as string | null, id: null as string | null }
+  served.push(call)
+  const r = await post('decisions', { model: DECIDE_MODEL, state, questions }, timeout)
+  call.build = r.model ?? null; call.id = r.id ?? null
+  if (r.model !== DECIDE_BUILD) throw new Error(`gw decisions served ${r.model} for ${DECIDE_MODEL}`)
   return answers(r)
 }
 

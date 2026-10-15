@@ -17,6 +17,7 @@ const asked: { model: string; image: boolean }[] = []
 let pick: Record<string, number> = {}
 let looked: Record<string, number> = {}
 let build: string | null = null
+let text = 'typesafe/jev-1.14-20261014'
 let on = 0
 let under: { role: string; name: string } | null = null
 let yes = 0
@@ -47,8 +48,8 @@ const gw = http((req, res) => {
   req.on('end', () => {
     const { model, state, questions } = JSON.parse(body)
     if (req.url?.endsWith('/chat/completions')) return res.end(JSON.stringify({ choices: [{ message: { content: '{"point_2d": [500, 500]}' } }] }))
-    const image = model === 'typesafe/jev-1.14'
-    asked.push({ model, image: image && JSON.stringify(state).includes('"image_url"') })
+    const image = JSON.stringify(state).includes('"image_url"')
+    asked.push({ model, image })
     if (image && !build) { res.statusCode = 500; return res.end('{}') }
     const answers: Record<string, unknown> = {}
     for (const [k, q] of Object.entries(questions) as [string, { type: string }][]) {
@@ -56,7 +57,7 @@ const gw = http((req, res) => {
       const [choice] = Object.entries(probs).sort((a, b) => b[1] - a[1])[0] ?? ['none']
       answers[k] = q.type === 'noul' ? { type: 'noul', noul: image ? on : yes } : { type: 'choice', choice, confidence: probs[choice], probabilities: probs }
     }
-    res.end(JSON.stringify({ model: image ? build : 'typesafe/jev-1.13-20260917', answers }))
+    res.end(JSON.stringify({ model: image ? build : text, answers }))
   })
 })
 
@@ -180,7 +181,7 @@ test('a jev pick looks at the screenshot first, so of two links of the same name
   build = null
 })
 
-test('a jev-1.14 reply from another build, an error or no reply falls back to the jev-1.13 pick on the text', async () => {
+test('a jev pick on the screenshot that another build answers, that fails or that gets no reply falls back to the pick on the text, which only the pinned build may answer', async () => {
   const tree = [
     { id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' },
     { id: '1.1/2', parent: 0, role: 'button', name: 'Apply' },
@@ -192,12 +193,18 @@ test('a jev-1.14 reply from another build, an error or no reply falls back to th
     const out = await plan('apply the settings to every row', tree, { r1: 0.92, r2: 0.05, none: 0.03 })
     assert.equal(out.ok, true, JSON.stringify(out))
     assert.deepEqual(pressed, ['1.1/2'], String(served))
-    assert.deepEqual(asked.map((a) => a.model), ['typesafe/jev-1.14', 'typesafe/jev-1.13'])
+    assert.deepEqual(asked, [{ model: 'typesafe/jev-1.14', image: true }, { model: 'typesafe/jev-1.14', image: false }])
   }
+  text = 'typesafe/jev-1.14-20991231'
+  const unpinned = await plan('apply the settings to every row', tree, { r1: 0.92, r2: 0.05, none: 0.03 })
+  assert.equal(unpinned.ok, false, JSON.stringify(unpinned))
+  assert.deepEqual(pressed, [])
+  assert.match(unpinned.escalate.reason, /served typesafe\/jev-1.14-20991231 for typesafe\/jev-1.14/)
+  text = 'typesafe/jev-1.14-20261014'
   build = null
 })
 
-test('a grounded click is taken when jev-1.14 sees the target at the point, and without its answer when jev-1.13 says the element under it is the target', async () => {
+test('a grounded click is taken when jev sees the target at the point in a crop, and without that answer when jev says the element under it is the target', async () => {
   const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
   build = 'typesafe/jev-1.14-20261014'
   on = 0.8
@@ -214,7 +221,7 @@ test('a grounded click is taken when jev-1.14 sees the target at the point, and 
   const checked = await plan('the yellow star', tree, {})
   assert.equal(checked.ok, true, JSON.stringify(checked))
   assert.deepEqual(clicked, ['640,400'])
-  assert.deepEqual(asked.map((a) => a.model), ['typesafe/jev-1.14', 'typesafe/jev-1.13'])
+  assert.deepEqual(asked, [{ model: 'typesafe/jev-1.14', image: true }, { model: 'typesafe/jev-1.14', image: false }])
   under = null
 })
 
