@@ -292,3 +292,31 @@ test('computer_act\'s target keeps the jev calls that answered it as served, fou
   assert.equal(named.found, true, JSON.stringify(named))
   assert.equal(named.served, undefined)
 })
+
+test('locate gives a LibreOffice toolbar or tab row element the menu bar height its extents sit above it, until the frame relays out', async () => {
+  const frame = (standard: number, bold: number, tab: number) => [
+    { id: '1.4/1', parent: -1, role: 'window', name: 'Untitled 1 — LibreOffice Writer' },
+    { id: '1.4/2', parent: 0, role: 'group', name: 'Untitled 1 — LibreOffice Writer' },
+    { id: '1.4/3', parent: 1, role: 'group', name: '' },
+    { id: '1.4/4', parent: 2, role: 'menubar', name: '' },
+    { id: '1.4/5', parent: 3, role: 'menu', name: 'File', bounds: [0, 51, 39, 25] },
+    { id: '1.4/6', parent: 1, role: 'toolbar', name: 'Standard' },
+    { id: '1.4/7', parent: 5, role: 'button', name: 'Save', bounds: [92, standard, 44, 35] },
+    { id: '1.4/8', parent: 1, role: 'toolbar', name: 'Formatting' },
+    { id: '1.4/9', parent: 7, role: 'button', name: 'Bold', bounds: [591, bold, 33, 35] },
+    { id: '1.4/10', parent: 1, role: 'tablist', name: '' },
+    { id: '1.4/11', parent: 9, role: 'tab', name: 'Pipeline', bounds: [245, tab, 80, 23] },
+    { id: '1.4/12', parent: 1, role: 'group', name: 'Properties' },
+    { id: '1.4/13', parent: 11, role: 'button', name: 'Menu', bounds: [1234, 158, 36, 34] },
+  ]
+  const shift = async (tree: Spec[], target: string) => {
+    nodes.length = 0
+    for (const [i, n] of tree.entries()) nodes.push({ bounds: [10 * i, 10, 10, 10], states: ['showing'], ...n, ref: i, depth: n.parent < 0 ? 0 : nodes[n.parent].depth + 1 })
+    const { main } = await import('../rootfs/opt/desk/lib/gui_plan.mts')
+    return (await main({ locate: { target } } as never) as { shift?: number | null }).shift
+  }
+  assert.equal(await shift(frame(53, 92, 728), 'Bold'), 25)
+  assert.equal(await shift(frame(53, 92, 728), 'Pipeline'), 25)
+  assert.equal(await shift(frame(53, 92, 728), 'Menu'), 0)
+  assert.equal(await shift(frame(78, 117, 753), 'Bold'), 0)
+})

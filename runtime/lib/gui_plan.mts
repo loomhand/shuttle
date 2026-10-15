@@ -763,6 +763,19 @@ async function find(request: string) {
   return { ok: true, flow: rows[+k.slice(1)].replace(/\(.*$/, ''), p: +p.toFixed(2) }
 }
 
+// how far below its extents a LibreOffice frame draws an element: a toolbar or tab row docked in the frame sits a menu bar's height lower
+// until the frame first relays out, which shows as its toolbar rows starting in the upper half of the menu bar; null when it cannot tell
+function drawnShift(nodes: Node[], i: number): number | null {
+  const docked = (j: number) => nodes[j].depth === 2 && (nodes[j].role === 'toolbar' || nodes[j].role === 'tablist')
+  let top = i; while (nodes[top].depth > 2 && nodes[top].parent >= 0) top = nodes[top].parent
+  if (!docked(top) || !nodes.some((n) => n.role === 'menubar')) return 0
+  const bar = nodes.map((n, j) => n.role === 'menubar' ? nodes.filter((c) => c.parent === j && c.bounds).map((c) => c.bounds!) : []).filter((m) => m.length)
+    .map((m) => ({ y: Math.min(...m.map((b) => b[1])), h: Math.max(...m.map((b) => b[3])) })).sort((a, b) => b.h - a.h)[0]
+  const rows = nodes.flatMap((n, j) => n.role === 'toolbar' && docked(j) ? nodes.filter((c) => c.parent === j && c.bounds && c.shown).map((c) => c.bounds![1]) : [])
+  if (!bar || !rows.length) return null
+  return Math.min(...rows) < bar.y + bar.h / 2 ? bar.h : 0
+}
+
 // computer_act's target: the element of the focused window that `target` resolves to, pressed by action when `press`, with the
 // jev calls that answered it as served
 async function locate(target: string, press: boolean) {
@@ -779,7 +792,7 @@ async function located(target: string, press: boolean) {
   let hit: Hit | null = null
   try { hit = await resolve(nodes, target, undefined, undefined, 0.7) } catch (e) { if (!(e instanceof Surprise)) throw e; return { found: false, why: e.reason, window: w.title, ms: Date.now() - t0 } }
   if (!hit) return { found: false, why: `no element of "${w.title}" matches`, window: w.title, ms: Date.now() - t0 }
-  const out: Record<string, unknown> = { found: true, how: hit.how, role: hit.n.role, name: hit.n.name, bounds: hit.n.bounds ?? null, shown: hit.n.shown, window: w.title, pid: w.pid }
+  const out: Record<string, unknown> = { found: true, how: hit.how, role: hit.n.role, name: hit.n.name, bounds: hit.n.bounds ?? null, shown: hit.n.shown, shift: drawnShift(nodes, hit.i), window: w.title, pid: w.pid }
   if (press) {
     if (hit.n.role === 'menuitem') await choose(nodes, hit.n, out, true); else out.via = await act(hit.n)
     await settle(w.title)
