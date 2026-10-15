@@ -1,7 +1,7 @@
 // gui_plan.mts: run a GUI plan in the box without a model turn per step, save a passing plan as a flow, replay flows.
 // params: {steps, params?, save?, start?} | {save} | {flow, params?, start?} | {find} | {reindex}; result: {ok, done, ms, trace, saved?, escalate?}
 import { execFileSync, spawn } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import * as desk from './desk.mts'
 
@@ -142,6 +142,24 @@ async function checked(n: Node): Promise<boolean | null> {
 function ownedBy(pid: number | null, app: string) {
   if (OS !== 'linux' || !pid) return false
   try { return readFileSync(`/proc/${pid}/cmdline`, 'utf8').toLowerCase().split(/[\0/\s]+/).some((x) => x.startsWith(app)) } catch { return false }
+}
+// the names of the desktop entries a launcher script such as localc (`soffice --calc "$@"`) stands for: entries run with its arguments
+function entryNames(app: string): string[] {
+  if (OS !== 'linux') return []
+  try {
+    const path = (process.env.PATH ?? '').split(':').map((d) => `${d}/${app}`).find((p) => existsSync(p))
+    if (!path || statSync(path).size > 2048) return []
+    const body = readFileSync(path, 'utf8')
+    const args = body.startsWith('#!') ? body.trim().split('\n').at(-1)!.split(/\s+/).slice(1).filter((a) => !a.startsWith('"$')).join(' ') : ''
+    if (!args) return []
+    const dir = '/usr/share/applications'
+    return readdirSync(dir).filter((f) => f.endsWith('.desktop')).flatMap((f) => {
+      const d = readFileSync(`${dir}/${f}`, 'utf8')
+      const exec = /^Exec=(.*)$/m.exec(d)?.[1].split(/\s+/).slice(1).filter((a) => !a.startsWith('%')).join(' ')
+      const name = /^Name=(.*)$/m.exec(d)?.[1]
+      return name && exec === args ? [norm(name)] : []
+    })
+  } catch { return [] }
 }
 // a GtkApplication menu toggle: its label maps to an action in org.gtk.Menus, whose state org.gtk.Actions reports
 function gdbus(dest: string, path: string, method: string, ...args: string[]) {
@@ -302,7 +320,7 @@ async function ready(w: Win) {
   const t0 = Date.now()
   for (;;) {
     let nodes: Node[]; try { nodes = parse(await snapOf(w)) } catch { break }
-    if (!nodes.filter((n) => n.depth === 1 && n.role === 'button').at(-1)?.disabled || Date.now() - t0 >= 400) break
+    if (!nodes.filter((n) => n.depth === 1 && n.role === 'button' && n.shown).at(-1)?.disabled || Date.now() - t0 >= 400) break
     await sleep(20)
   }
   tick('ready', t0)
@@ -397,7 +415,8 @@ async function run(s: Step, rec: Record<string, unknown>) {
     const before = new Set((await desk.windows()).map((w) => w.title))
     let launched = false
     const name = norm(s.title ?? s.app); const bare = !s.title && /^[\w.-]+$/.test(s.app)
-    const own = (w: Win) => norm(w.title).includes(name) || (bare && (norm(w.title).includes(name.replace(/-/g, ' ')) || ownedBy(w.pid, name)))
+    const entries = bare ? entryNames(s.app) : []
+    const own = (w: Win) => norm(w.title).includes(name) || (bare && (norm(w.title).includes(name.replace(/-/g, ' ')) || ownedBy(w.pid, name) || entries.some((e) => norm(w.title).includes(e))))
     const has = async () => { const ws = await desk.windows(); return ws.find(own) ?? (launched ? ws.find((w) => w.title && !before.has(w.title)) : undefined) }
     let w = await has()
     const listed = !w && bare ? await desk.focus(s.app).catch(() => null) : null
