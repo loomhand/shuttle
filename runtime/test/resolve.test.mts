@@ -62,14 +62,18 @@ const gw = http((req, res) => {
 })
 
 async function plan(target: string, tree: Spec[], probabilities: Record<string, number>, step: Record<string, string> = { click: target }) {
+  const { main } = await screen(tree, probabilities)
+  return main({ steps: [step] })
+}
+
+async function screen(tree: Spec[], probabilities: Record<string, number>) {
   nodes.length = 0
   for (const [i, n] of tree.entries()) nodes.push({ bounds: [10 * i, 10, 10, 10], states: ['showing'], ...n, ref: i, depth: n.parent < 0 ? 0 : nodes[n.parent].depth + 1 })
   pressed.length = 0
   clicked.length = 0
   asked.length = 0
   pick = probabilities
-  const { main } = await import('../rootfs/opt/desk/lib/gui_plan.mts')
-  return main({ steps: [step] })
+  return import('../rootfs/opt/desk/lib/gui_plan.mts')
 }
 
 before(async () => {
@@ -266,4 +270,25 @@ test('a jev-1.14 pick on the screenshot needs no word of the target in the eleme
   const text = await plan('the file type dropdown', tree, { r1: 0.97, r2: 0.02, none: 0.01 })
   assert.equal(text.ok, false, JSON.stringify(text))
   assert.deepEqual(pressed, [])
+})
+
+test('computer_act\'s target keeps the jev calls that answered it as served, found or not, and none when the name alone found it', async () => {
+  const tree = [
+    { id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' },
+    { id: '1.1/2', parent: 0, role: 'button', name: 'Apply' },
+    { id: '1.1/3', parent: 0, role: 'button', name: 'Apply to all' },
+  ]
+  const calls = (out: { served?: { image: boolean; build: string | null }[] }) => out.served?.map((c) => `${c.image ? 'image' : 'text'} ${c.build}`)
+  build = 'typesafe/jev-1.14-20261014'
+  looked = { r2: 0.95, r1: 0.03, none: 0.02 }
+  const seen = await (await screen(tree, {})).main({ locate: { target: 'apply the settings to every row' } })
+  assert.equal(seen.found, true, JSON.stringify(seen))
+  assert.deepEqual(calls(seen), ['image typesafe/jev-1.14-20261014'])
+  build = null
+  const none = await (await screen(tree, { none: 0.9, r1: 0.05, r2: 0.05 })).main({ locate: { target: 'apply the settings to every row' } })
+  assert.equal(none.found, false, JSON.stringify(none))
+  assert.deepEqual(calls(none), ['image null', 'text typesafe/jev-1.14-20261014'])
+  const named = await (await screen(tree, {})).main({ locate: { target: 'Apply to all' } })
+  assert.equal(named.found, true, JSON.stringify(named))
+  assert.equal(named.served, undefined)
 })

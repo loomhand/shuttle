@@ -763,8 +763,15 @@ async function find(request: string) {
   return { ok: true, flow: rows[+k.slice(1)].replace(/\(.*$/, ''), p: +p.toFixed(2) }
 }
 
-// computer_act's target: the element of the focused window that `target` resolves to, pressed by action when `press`
+// computer_act's target: the element of the focused window that `target` resolves to, pressed by action when `press`, with the
+// jev calls that answered it as served
 async function locate(target: string, press: boolean) {
+  const calls = desk.served.length
+  const out = await located(target, press)
+  return desk.served.length > calls ? { ...out, served: desk.served.slice(calls) } : out
+}
+
+async function located(target: string, press: boolean) {
   const t0 = Date.now()
   const w = await focused()
   if (!w) return { found: false, why: 'no focused window', ms: Date.now() - t0 }
