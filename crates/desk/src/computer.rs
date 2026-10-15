@@ -1372,12 +1372,17 @@ impl Cua {
     /// app on the first key; with plans it also skips the driver's 270 ms accessibility click. The
     /// element looks as it did in the snapshot, and the top window at its centre is the snapshot's
     /// window while that is active and nothing grabs the pointer, or a popup of the same app around a
-    /// menu or list row. A `menu` to open need not look as it did, since it showed open then.
+    /// menu or list row. A `menu` to open need not look as it did, since it showed open then. With plans,
+    /// a LibreOffice element outside a menu has none, since its toolbar extents can sit a menu bar's height
+    /// above the drawn control.
     async fn element_pixel(&self, session: &str, index: i64, menu: bool) -> Option<(f64, f64)> {
         let last = self.last.lock().await;
         let snap = last.get(session)?;
         let (element, screen) = (snap.elements.get(&index)?, snap.screen.as_ref()?);
         if !self.plans && !menu && (element.web || !PRESSED.contains(&element.role.as_str())) {
+            return None;
+        }
+        if self.plans && !menu && !element.role.starts_with("menu") && libreoffice(snap.pid) {
             return None;
         }
         let [x, y, w, h] = element.frame?;
@@ -2026,6 +2031,12 @@ fn label_key(label: &str) -> String {
 }
 
 /// Whether process `pid` has GTK loaded.
+/// Whether `pid` runs LibreOffice, whose toolbar extents can sit a menu bar's height above the drawn controls.
+pub(super) fn libreoffice(pid: i64) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/comm"))
+        .is_ok_and(|c| c.trim_end() == "soffice.bin")
+}
+
 fn gtk(pid: i64) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/maps")).is_ok_and(|maps| {
         maps.contains("/libgtk-3.so")
@@ -2438,6 +2449,19 @@ fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
 mod tests {
     use super::super::browser::tests::{slow_chrome, web_chrome};
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_a_soffice_bin_process_counts_as_libreoffice() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("soffice.bin");
+        std::fs::copy("/bin/sleep", &bin).unwrap();
+        let mut office = std::process::Command::new(&bin).arg("30").spawn().unwrap();
+        assert!(libreoffice(office.id().into()));
+        assert!(!libreoffice(std::process::id().into()));
+        office.kill().unwrap();
+        office.wait().unwrap();
+    }
 
     #[tokio::test]
     async fn a_request_waits_for_a_driver_that_is_restarting() {
