@@ -29,6 +29,7 @@ const TOGGLES = 'checkbox|switch|togglebutton|menuitemcheckbox'
 const FIELDS = 'textbox|searchbox|spinbutton|slider|combobox'
 const SHOWN_ROLES = new Set([...ACTIVE, 'dialog', 'alert'])
 const MARGIN = 0.25
+const CROP = { w: 640, h: 400 }
 const PICK_MARGIN = 0.6
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
 const FILLER = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'and', 'or', 'by', 'from', 'into', 'this', 'that', 'its', 'it', 'is', 'button', 'link', 'tab', 'field', 'box', 'icon', 'toggle', 'dropdown', 'input', 'control', 'item', 'entry'])
@@ -244,7 +245,7 @@ function candidates(nodes: Node[], role?: string, within?: number) {
 
 // target resolution: the saved fingerprint, exact AX name, contained AX name (only among links or buttons when a target without a
 // role says link or button; outside menus only elements that show, with bounds), then a jev choice whose top answer needs `bar`, a
-// word of the target in its own name, value or label, the word tab in the target when it is a tab, and a margin
+// margin and, when jev chose from the text alone, a word of the target in its own name, value or label and the word tab for a tab
 async function resolve(nodes: Node[], target: string, role?: string, within?: number, bar = 0.5, fp?: Fp): Promise<Hit | null> {
   const t0 = Date.now()
   const pool = candidates(nodes, role, within)
@@ -272,24 +273,58 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   }
   const opts: Record<string, string> = { none: 'none of these elements' }
   for (const { c } of ranked) opts[`r${c.n.ref}`] = label(c)
-  const d = await decide(ranked.map(({ c }) => label(c)).join('\n'), { pick: desk.choice(`Which element is "${target}"?`, opts) })
+  const { d, viewed } = await pick(target, ranked.map(({ c }) => c.n), opts)
   const probs = Object.entries(d.pick.probabilities as Record<string, number>).sort((a, b) => b[1] - a[1])
   const [top, p1] = probs[0] ?? ['none', 0]; const p2 = probs[1]?.[1] ?? 0
   const hit = ranked.find(({ c }) => `r${c.n.ref}` === top)
   if (!hit || p1 < bar) return null
   const own = terms(`${hit.c.n.name} ${hit.c.n.value} ${sibling(nodes, hit.c.i) ?? ''}`)
-  if (!terms(target).some((w) => own.includes(w)) || (hit.c.n.role === 'tab' && !want.split(' ').includes('tab'))) return null
+  if (!viewed && (!terms(target).some((w) => own.includes(w)) || (hit.c.n.role === 'tab' && !want.split(' ').includes('tab')))) return null
   if (p1 - p2 < PICK_MARGIN) {
     const near = probs.slice(0, 3).map(([k, p]) => `${k === 'none' ? 'none' : opts[k]} ${p.toFixed(2)}`).join('; ')
     throw new Surprise(`ambiguous target "${target}": ${near}; name the element more exactly`, await seen())
   }
-  return { ...hit.c, how: `jev(${p1.toFixed(2)})`, p: p1, margin: p1 - p2 }
+  return { ...hit.c, how: `${viewed ? 'jev-image' : 'jev'}(${p1.toFixed(2)})`, p: p1, margin: p1 - p2 }
 }
 
 // a menu bar entry that several menu bars repeat (LibreOffice exposes its menu bar more than once) resolves in the first of them
 function barMenu(nodes: Node[], name: string): Hit | null {
   const tops = nodes.map((n, i) => ({ n, i })).filter(({ n }) => n.role === 'menu' && norm(n.name) === norm(name) && n.parent >= 0 && nodes[n.parent].role === 'menubar')
   return tops.length > 1 ? { ...tops[0], how: 'ax' } : null
+}
+
+// jev-1.14's pick on a screenshot, which tells apart elements of the same name by where they are; on any failure jev-1.13's pick on the text
+async function pick(target: string, pool: Node[], opts: Record<string, string>) {
+  const t0 = Date.now()
+  try {
+    const area = await desk.screen()
+    const at = (n: Node) => n.bounds ? ` at (${((n.bounds[0] + n.bounds[2] / 2) / area.width).toFixed(2)}, ${((n.bounds[1] + n.bounds[3] / 2) / area.height).toFixed(2)})` : ''
+    const placed: Record<string, string> = { none: opts.none }
+    for (const n of pool) placed[`r${n.ref}`] = `${opts[`r${n.ref}`]}${at(n)}`
+    const list = `Elements of the focused window, with their centres as fractions of the screenshot:\n${pool.map((n) => placed[`r${n.ref}`]).join('\n')}`
+    const d = await desk.look([list, desk.image(await desk.shot())], { pick: desk.choice(`Which element is "${target}"? Use the screenshot to tell apart elements with the same name.`, placed) })
+    return { d, viewed: true }
+  } catch {
+    return { d: await desk.decide(pool.map((n) => opts[`r${n.ref}`]).join('\n'), { pick: desk.choice(`Which element is "${target}"?`, opts) }), viewed: false }
+  } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
+}
+
+// a grounded point is taken when jev-1.14 sees the target at it in a 640x400 crop around it; on any failure, when jev-1.13 says the
+// element under the point is the target
+async function grounded(x: number, y: number, target: string, w: Win, area: { width: number; height: number }) {
+  const under = await desk.at(x, y, w.title).catch(() => ({ found: null, path: [] }))
+  const what = under.found ? [under.found, ...(under.path ?? []).reverse()].filter((n) => n.name).map((n) => `${n.role} "${n.name}"`).join(' under ') : ''
+  const t0 = Date.now()
+  try {
+    const cw = Math.min(CROP.w, area.width), ch = Math.min(CROP.h, area.height)
+    const left = Math.max(0, Math.min(area.width - cw, Math.round(x - cw / 2))), top = Math.max(0, Math.min(area.height - ch, Math.round(y - ch / 2)))
+    const [px, py] = [x - left, y - top]
+    const d = await desk.look([`A ${cw}x${ch} crop of the screen. A click is about to land on its pixel (${px}, ${py}).`, desk.image(await desk.shot({ x: left, y: top, w: cw, h: ch }))],
+      { on: desk.yes(`Is the pixel at (${px}, ${py}) of the image on ${target}?`) })
+    return { what, ok: d.on.probability >= 0.5 }
+  } catch {
+    return { what, ok: !!what.trim() && (await decide({ element_under_point: what, window_title: w.title }, { is: desk.yes(`Is this element "${target}"?`) })).is.probability >= 0.7 }
+  } finally { tick('check', t0) }
 }
 
 const press = (combo: string) => desk.key(combo)
@@ -575,11 +610,9 @@ async function run(s: Step, rec: Record<string, unknown>) {
     const area = await desk.screen()
     const [x, y] = await desk.ground(await desk.shot(), `${target} in the "${w.title}" window`, area)
     tick('ground', t0)
-    const under = await desk.at(x, y, w.title).catch(() => ({ found: null, path: [] }))
-    const what = under.found ? [under.found, ...(under.path ?? []).reverse()].filter((n) => n.name).map((n) => `${n.role} "${n.name}"`).join(' under ') : ''
+    const { what, ok } = await grounded(x, y, target, w, area)
     rec.ground_hit = what.slice(0, 80)
-    if (!what.trim() || (await decide({ element_under_point: what, window_title: w.title }, { is: desk.yes(`Is this element "${target}"?`) })).is.probability < 0.7)
-      throw new Surprise(`no element matches "${target}"${what.trim() ? `; grounding pointed at ${what.slice(0, 80)}` : ''}`, await seen())
+    if (!ok) throw new Surprise(`no element matches "${target}"${what.trim() ? `; grounding pointed at ${what.slice(0, 80)}` : ''}`, await seen())
     t0 = Date.now(); await desk.click(x, y); tick('act', t0)
     rec.how = 'ground'; rec.unsaved = true; await settle(w.title); return
   }

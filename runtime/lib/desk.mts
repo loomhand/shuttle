@@ -17,6 +17,9 @@ const SOCKETS: Record<string, string> = { win32: '\\\\.\\pipe\\cocoonbox-desk', 
 const SOCKET = process.env.TOOLHOST_SOCKET || SOCKETS[process.platform] || '/run/cocoonbox/toolhost.sock'
 const ENV_FILE = '/etc/cocoonbox/desk.env'
 const DECIDE_MODEL = 'typesafe/jev-1.13'
+const LOOK_MODEL = 'typesafe/jev-1.14'
+const LOOK_BUILD = 'typesafe/jev-1.14-20261014'
+const LOOK_TIMEOUT = 5_000
 const ASK_MODEL = 'anthropic/claude-sonnet-5'
 const GROUND_MODEL = 'qwen/qwen3-vl-235b-a22b-instruct'
 const MODEL_TIMEOUT = 60_000
@@ -85,7 +88,7 @@ function gw() {
 }
 
 // a plain HTTP proxy request (absolute URL, no CONNECT), so the box's egress proxy can set gw's key
-function post(path: string, body: { model: string } & Record<string, unknown>): Promise<any> {
+function post(path: string, body: { model: string } & Record<string, unknown>, timeout = MODEL_TIMEOUT): Promise<any> {
   const { base, key } = gw()
   const url = new URL(`${base}/${path}`)
   const proxy = process.env.http_proxy || process.env.HTTP_PROXY
@@ -95,7 +98,7 @@ function post(path: string, body: { model: string } & Record<string, unknown>): 
   const headers = { 'content-type': 'application/json', 'content-length': data.length, authorization: `Bearer ${key}`, host: url.host }
   const target = via ? { host: via.hostname, port: via.port || 80, path: url.href } : { host: url.hostname, port: url.port || 80, path: url.pathname + url.search }
   return new Promise((resolve, reject) => {
-    const req = request({ ...target, method: 'POST', headers, timeout: MODEL_TIMEOUT }, (res) => {
+    const req = request({ ...target, method: 'POST', headers, timeout }, (res) => {
       const chunks: Buffer[] = []
       res.on('data', (c) => chunks.push(c))
       res.on('end', () => {
@@ -123,13 +126,23 @@ export const choice = (instructions: string, criteria: Record<string, string>): 
 
 // gw's decisions model over text or JSON state: a yes question answers {probability}, a choice {choice, confidence, probabilities}
 export async function decide(state: unknown, questions: Record<string, Question>): Promise<Record<string, any>> {
-  const r = await post('decisions', { model: DECIDE_MODEL, state, questions })
+  return answers(await post('decisions', { model: DECIDE_MODEL, state, questions }))
+}
+
+// the same over a state that holds PNG parts (image), answered by one pinned build of jev-1.14: another build, an error or 5 s throws
+export async function look(state: unknown[], questions: Record<string, Question>): Promise<Record<string, any>> {
+  const r = await post('decisions', { model: LOOK_MODEL, state, questions }, LOOK_TIMEOUT)
+  if (r.model !== LOOK_BUILD) throw new Error(`gw decisions served ${r.model} for ${LOOK_MODEL}`)
+  return answers(r)
+}
+
+function answers(r: any) {
   const out: Record<string, any> = {}
   for (const [k, a] of Object.entries(r.answers ?? {}) as [string, any][]) out[k] = a.type === 'noul' ? { probability: a.noul } : a
   return out
 }
 
-function image(png: Buffer) {
+export function image(png: Buffer) {
   return { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } }
 }
 
