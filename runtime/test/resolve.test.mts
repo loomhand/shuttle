@@ -382,3 +382,21 @@ test('a grounded click the 640x400 crop refuses is checked on the small element\
   build = null
   on = 0
 })
+
+test('a click whose target is a name plus role words takes the showing button of that name over hidden menu entries, and a hidden menu entry when nothing showing matches', async () => {
+  const tree = [
+    { id: '1.5/1', parent: -1, role: 'window', name: 'Untitled 1 — LibreOffice Writer' },
+    { id: '1.5/2', parent: 0, role: 'menubar', name: '' },
+    { id: '1.5/3', parent: 1, role: 'menu', name: 'Format', bounds: [0, 51, 60, 25] },
+    { id: '1.5/4', parent: 2, role: 'menuitemcheckbox', name: 'Bold', states: [], bounds: undefined },
+    { id: '1.5/5', parent: 2, role: 'menuitem', name: 'Save As...', states: [], bounds: undefined },
+    { id: '1.5/6', parent: 0, role: 'toolbar', name: 'Formatting' },
+    { id: '1.5/7', parent: 5, role: 'button', name: 'Bold', bounds: [591, 92, 33, 35] },
+  ]
+  const bold = await plan('the Bold button', tree, { r6: 0.75, none: 0.25 })
+  assert.equal(bold.ok, true, JSON.stringify(bold))
+  assert.deepEqual(pressed, ['1.5/7'])
+  const saveAs = await plan('Save As', tree, { none: 1 })
+  assert.equal(saveAs.ok, true, JSON.stringify(saveAs))
+  assert.deepEqual(pressed, ['1.5/5'])
+})

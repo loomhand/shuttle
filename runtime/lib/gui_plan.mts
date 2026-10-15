@@ -248,9 +248,10 @@ function candidates(nodes: Node[], role?: string, within?: number) {
   return nodes.map((n, i) => ({ n, i })).filter(({ n, i }) => ACTIVE.has(n.role) && (!role || role.split('|').includes(n.role)) && inside(i))
 }
 
-// target resolution: the saved fingerprint, exact AX name, contained AX name (only among links or buttons when a target without a
-// role says link or button; outside menus only elements that show, with bounds), then a jev choice whose top answer needs `bar`, a
-// margin and, when jev chose from the text alone, a word of the target in its own name, value or label and the word tab for a tab
+// target resolution: the saved fingerprint, exact AX name (also once the target drops its articles and role words), contained AX
+// name (only among links or buttons when a target without a role says link or button; elements that show, with bounds, else hidden
+// menu entries), then a jev choice whose top answer needs `bar`, a margin and, when jev chose from the text alone, a word of the
+// target in its own name, value or label and the word tab for a tab
 async function resolve(nodes: Node[], target: string, role?: string, within?: number, bar = 0.5, fp?: Fp): Promise<Hit | null> {
   const t0 = Date.now()
   const pool = candidates(nodes, role, within)
@@ -263,8 +264,11 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
     return (` ${nm} `.includes(` ${want} `) && b.length * 2 >= a.length) || (a.length >= 2 && ` ${want} `.includes(` ${nm} `))
   }
   const said = role ? undefined : Object.entries(SAID).find(([w]) => want.split(' ').includes(w))?.[1]
-  for (const f of [(n: Node) => norm(n.name) === want, (n: Node) => covers(n) && (!said || said.includes(n.role))]) {
-    const hit = pool.filter(({ n }) => (n.role.startsWith('menu') || (n.shown && !!n.bounds)) && f(n))
+  const bare = want.split(' ').filter((w) => !FILLER.has(w)).join(' ')
+  const named = (n: Node) => norm(n.name) === want || (!!bare && norm(n.name) === bare)
+  for (const f of [named, (n: Node) => covers(n) && (!said || said.includes(n.role))]) {
+    const all = pool.filter(({ n }) => f(n)); const drawn = all.filter(({ n }) => n.shown && !!n.bounds)
+    const hit = drawn.length ? drawn : all.filter(({ n }) => n.role.startsWith('menu'))
     if (hit.length === 1) { tick('ax', t0); return { ...hit[0], how: 'ax' } }
   }
   const shown = pool.filter(({ n }) => n.shown)
