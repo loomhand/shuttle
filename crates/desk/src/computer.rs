@@ -2051,13 +2051,13 @@ fn label_key(label: &str) -> String {
         .to_owned()
 }
 
-/// Whether process `pid` has GTK loaded.
 /// Whether `pid` runs LibreOffice, whose toolbar extents can sit a menu bar's height above the drawn controls.
 pub(super) fn libreoffice(pid: i64) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/comm"))
         .is_ok_and(|c| c.trim_end() == "soffice.bin")
 }
 
+/// Whether process `pid` has GTK loaded.
 fn gtk(pid: i64) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/maps")).is_ok_and(|maps| {
         maps.contains("/libgtk-3.so")
