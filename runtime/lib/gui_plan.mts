@@ -31,12 +31,14 @@ const SHOWN_ROLES = new Set([...ACTIVE, 'dialog', 'alert'])
 const MARGIN = 0.25
 const PICK_MARGIN = 0.6
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
+const FILLER = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'and', 'or', 'by', 'from', 'into', 'this', 'that', 'its', 'it', 'is', 'button', 'link', 'tab', 'field', 'box', 'icon', 'toggle', 'dropdown', 'input', 'control', 'item', 'entry'])
 const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close']
 const CUT = '\n(the outline holds only the start of the web page: use the browser_* tools for page content)'
 const SHELL_WINDOWS = ({ linux: /^(Desktop|xfce4-panel)$/, win32: /^Program Manager$/ } as Record<string, RegExp>)[OS] ?? /^$/
 const CHOOSER = ({ linux: /File Chooser Widget/, win32: /^\s*- (combobox|textbox) "File name:?"/m, darwin: /^\s*- text "Save As:"/m } as Record<string, RegExp>)[OS] ?? /$^/
 const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+const terms = (s: string) => norm(s).split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !FILLER.has(w)).map((w) => w.length > 3 ? w.replace(/s$/, '') : w)
 const norm = (s: string) => s.toLowerCase().replace(/[_…]|\.\.\.|:$/g, '').replace(/\s+/g, ' ').trim()
 const slug = (s: string) => norm(s).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
 let busNames: string[] | null = null
@@ -241,7 +243,8 @@ function candidates(nodes: Node[], role?: string, within?: number) {
 }
 
 // target resolution: the saved fingerprint, exact AX name, contained AX name (only among links or buttons when a target without a
-// role says link or button; outside menus only elements that show, with bounds), then a jev choice whose top answer needs `bar` and a margin
+// role says link or button; outside menus only elements that show, with bounds), then a jev choice whose top answer needs `bar`, a
+// word of the target in its own name, value or label, the word tab in the target when it is a tab, and a margin
 async function resolve(nodes: Node[], target: string, role?: string, within?: number, bar = 0.5, fp?: Fp): Promise<Hit | null> {
   const t0 = Date.now()
   const pool = candidates(nodes, role, within)
@@ -274,6 +277,8 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   const [top, p1] = probs[0] ?? ['none', 0]; const p2 = probs[1]?.[1] ?? 0
   const hit = ranked.find(({ c }) => `r${c.n.ref}` === top)
   if (!hit || p1 < bar) return null
+  const own = terms(`${hit.c.n.name} ${hit.c.n.value} ${sibling(nodes, hit.c.i) ?? ''}`)
+  if (!terms(target).some((w) => own.includes(w)) || (hit.c.n.role === 'tab' && !want.split(' ').includes('tab'))) return null
   if (p1 - p2 < PICK_MARGIN) {
     const near = probs.slice(0, 3).map(([k, p]) => `${k === 'none' ? 'none' : opts[k]} ${p.toFixed(2)}`).join('; ')
     throw new Surprise(`ambiguous target "${target}": ${near}; name the element more exactly`, await seen())

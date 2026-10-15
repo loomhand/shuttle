@@ -70,11 +70,11 @@ test('a click whose jev pick has a close runner-up escalates as ambiguous instea
     { id: '1.1/2', parent: 0, role: 'button', name: 'Apply' },
     { id: '1.1/3', parent: 0, role: 'button', name: 'Apply to all' },
   ]
-  const close = await plan('confirm the settings', tree, { r1: 0.72, r2: 0.25, none: 0.03 })
+  const close = await plan('apply the settings', tree, { r1: 0.72, r2: 0.25, none: 0.03 })
   assert.equal(close.ok, false, JSON.stringify(close))
-  assert.match(close.escalate.reason, /^ambiguous target "confirm the settings"/)
+  assert.match(close.escalate.reason, /^ambiguous target "apply the settings"/)
   assert.deepEqual(pressed, [])
-  const clear = await plan('confirm the settings', tree, { r1: 0.92, r2: 0.05, none: 0.03 })
+  const clear = await plan('apply the settings', tree, { r1: 0.92, r2: 0.05, none: 0.03 })
   assert.equal(clear.ok, true, JSON.stringify(clear))
   assert.deepEqual(pressed, ['1.1/2'])
 })
@@ -119,4 +119,27 @@ test('a menu step takes a menu bar entry that several menu bars repeat from the 
   const out = await plan('', tree, { r2: 0.34, r5: 0.33, r8: 0.33 }, { menu: 'Format > Cells' })
   assert.equal(out.ok, true, JSON.stringify(out))
   assert.deepEqual(pressed, ['1.1/4'])
+})
+
+test('a jev pick whose own words share none with the target, or a tab the target does not call a tab, is not found', async () => {
+  const sidebar = [
+    { id: '1.1/1', parent: -1, role: 'frame', name: 'FY26.fods — LibreOffice Calc' },
+    { id: '1.1/2', parent: 0, role: 'panel', name: 'Navigator' },
+    { id: '1.1/3', parent: 1, role: 'togglebutton', name: 'Menu' },
+    { id: '1.1/4', parent: 0, role: 'button', name: 'Properties' },
+  ]
+  const menu = await plan('the Navigator button in the right sidebar', sidebar, { r2: 0.97, r3: 0.02, none: 0.01 })
+  assert.equal(menu.ok, false, JSON.stringify(menu))
+  assert.deepEqual(pressed, [])
+  const browser = [
+    { id: '1.2/1', parent: -1, role: 'frame', name: 'hit: house @521,277 - Google Chrome' },
+    { id: '1.2/2', parent: 0, role: 'tab', name: 'hit: house @521,277 - Memory usage - 25.2 MB' },
+    { id: '1.2/3', parent: 0, role: 'button', name: 'New Tab' },
+  ]
+  const house = await plan('the house', browser, { r1: 0.77, r2: 0.1, none: 0.13 })
+  assert.equal(house.ok, false, JSON.stringify(house))
+  assert.deepEqual(pressed, [])
+  const plus = await plan('the green plus button at the bottom left', browser, { r2: 0.75, r1: 0.1, none: 0.15 })
+  assert.equal(plus.ok, false, JSON.stringify(plus))
+  assert.deepEqual(pressed, [])
 })
