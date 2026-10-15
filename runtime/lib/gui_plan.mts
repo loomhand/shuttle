@@ -51,7 +51,6 @@ let busNames: string[] | null = null
 const known = new Set<string>()
 let lastSeen = ''
 let recording = false
-let found = false
 let typed = false
 let pressed: { title: string; at: number } | null = null
 let T: Record<string, number> = {}
@@ -541,7 +540,7 @@ async function run(s: Step, rec: Record<string, unknown>) {
     const has = async () => { const ws = await desk.windows(); return ws.find(own) ?? (launched ? ws.find((w) => w.title && !before.has(w.title)) : undefined) }
     let w = await has()
     const listed = !w && bare ? await desk.focus(s.app).catch(() => null) : null
-    if (listed) { found = true; known.add(listed.title); rec.window = lastSeen = listed.title; return }
+    if (listed) { known.add(listed.title); rec.window = lastSeen = listed.title; return }
     if (!w) {
       const t0 = Date.now(); launched = true; let missing = false
       try { await desk.launch(s.app) } catch (e) {
@@ -554,7 +553,7 @@ async function run(s: Step, rec: Record<string, unknown>) {
       }
       tick('launch', t0)
     }
-    found = !launched; if (!w.active) await desk.focus(w.title, w.pid); known.add(w.title); rec.window = lastSeen = w.title; await windowFor(w.title); return
+    if (!w.active) await desk.focus(w.title, w.pid); known.add(w.title); rec.window = lastSeen = w.title; await windowFor(w.title); return
   }
   if (s.type !== undefined) {
     const w = await current(); const t0 = Date.now(); const nl = s.type.endsWith('\n')
@@ -563,7 +562,7 @@ async function run(s: Step, rec: Record<string, unknown>) {
     if (blocked(o)) throw new Surprise(unanswered(w!.title), await seen())
     const chooser = isChooser(o); const sub = chooser && nl
     const first = !typed; typed = true
-    if (s.blank && found && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field, then replay the flow`, await seen())
+    if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field, then replay the flow`, await seen())
     // GTK preselects the name up to its last dot: a bare name keeps the extension, a path or a name with its own extension replaces the whole field
     if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine()
     // a line break goes as Return, which GTK text views take where they ignore a Linefeed
