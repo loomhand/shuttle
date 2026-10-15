@@ -527,6 +527,21 @@ async function setState(s: Step, hit: Hit, rec: Record<string, unknown>) {
   if (now !== on) throw new Surprise(`"${hit.n.name}" is still ${now ? 'on' : 'off'}`, await seen())
 }
 
+async function option(combo: Node, opts: Node[], value: string, target: string, rec: Record<string, unknown>) {
+  const named = opts.filter((n) => norm(n.name) === norm(value)); const near = opts.filter((n) => norm(n.name).includes(norm(value)))
+  const o = named.length === 1 ? named[0] : near.length === 1 ? near[0] : null
+  if (!o) throw new Surprise(`"${target}" has no option "${value}"; its options: ${opts.map((n) => `"${n.name}"`).join(', ')}`, await seen())
+  rec.value = o.name
+  if (norm(combo.name) === norm(o.name)) { rec.noop = true; return }
+  const t0 = Date.now()
+  await act(combo)
+  for (let i = 0; i < 25 && !(await desk.read(o.id)).states.includes('showing'); i++) await sleep(20)
+  await act(o); tick('act', t0)
+  let got = ''
+  for (let i = 0; i < 10; i++) { got = (await desk.read(combo.id)).name; if (norm(got) === norm(o.name)) return; await sleep(40) }
+  throw new Surprise(`"${target}" reads "${got}" after set`, await seen())
+}
+
 async function cropState(n: Node) {
   const b = (await desk.read(n.id)).bounds ?? n.bounds
   if (!b) throw new Error(`"${n.name}" has no screen position`)
@@ -721,6 +736,8 @@ async function run(s: Step, rec: Record<string, unknown>) {
   const value = s.value!.endsWith('\n') ? s.value!.slice(0, -1) : s.value!
   const same = (v: string | undefined) => v === undefined || norm(v) === norm(value) || norm(v).includes(norm(value))
   const f = hit.n.role === 'combobox' ? nodes.find((x) => x.parent === hit.i && x.role === 'textbox') ?? hit.n : hit.n
+  const opts = f === hit.n && hit.n.role === 'combobox' ? candidates(nodes, 'menuitem|option', hit.i) : []
+  if (opts.length) { await option(hit.n, opts.map(({ n }) => n), value, target, rec); return }
   const lines = ((await desk.read(f.id, { text: true })).value ?? '').includes('\n')
   if (hit.how.startsWith('jev') && lines) throw new Surprise(`"${target}" is closest to a multi-line text (${hit.how}), and set would replace all of it: wait for the window with that field, or name it exactly`, await seen())
   t0 = Date.now()
