@@ -29,6 +29,7 @@ const TOGGLES = 'checkbox|switch|togglebutton|menuitemcheckbox'
 const FIELDS = 'textbox|searchbox|spinbutton|slider|combobox'
 const SHOWN_ROLES = new Set([...ACTIVE, 'dialog', 'alert'])
 const MARGIN = 0.25
+const PICK_MARGIN = 0.6
 const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close']
 const CUT = '\n(the outline holds only the start of the web page: use the browser_* tools for page content)'
 const SHELL_WINDOWS = ({ linux: /^(Desktop|xfce4-panel)$/, win32: /^Program Manager$/ } as Record<string, RegExp>)[OS] ?? /^$/
@@ -252,7 +253,7 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   const [top, p1] = probs[0] ?? ['none', 0]; const p2 = probs[1]?.[1] ?? 0
   const hit = ranked.find(({ c }) => `r${c.n.ref}` === top)
   if (!hit || p1 < bar) return null
-  if (p1 - p2 < MARGIN) {
+  if (p1 - p2 < PICK_MARGIN) {
     const near = probs.slice(0, 3).map(([k, p]) => `${k === 'none' ? 'none' : opts[k]} ${p.toFixed(2)}`).join('; ')
     throw new Surprise(`ambiguous target "${target}": ${near}; name the element more exactly`, await seen())
   }
