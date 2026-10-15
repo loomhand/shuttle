@@ -30,6 +30,7 @@ const FIELDS = 'textbox|searchbox|spinbutton|slider|combobox'
 const SHOWN_ROLES = new Set([...ACTIVE, 'dialog', 'alert'])
 const MARGIN = 0.25
 const PICK_MARGIN = 0.6
+const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
 const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close']
 const CUT = '\n(the outline holds only the start of the web page: use the browser_* tools for page content)'
 const SHELL_WINDOWS = ({ linux: /^(Desktop|xfce4-panel)$/, win32: /^Program Manager$/ } as Record<string, RegExp>)[OS] ?? /^$/
@@ -221,7 +222,8 @@ function candidates(nodes: Node[], role?: string, within?: number) {
   return nodes.map((n, i) => ({ n, i })).filter(({ n, i }) => ACTIVE.has(n.role) && (!role || role.split('|').includes(n.role)) && inside(i))
 }
 
-// target resolution: the saved fingerprint, exact AX name, contained AX name, then a jev choice whose top answer needs `bar` and a margin
+// target resolution: the saved fingerprint, exact AX name, contained AX name (only among links or buttons when a target without a
+// role says link or button), then a jev choice whose top answer needs `bar` and a margin
 async function resolve(nodes: Node[], target: string, role?: string, within?: number, bar = 0.5, fp?: Fp): Promise<Hit | null> {
   const t0 = Date.now()
   const pool = candidates(nodes, role, within)
@@ -233,7 +235,8 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
     const a = nm.split(' '), b = want.split(' ')
     return (` ${nm} `.includes(` ${want} `) && b.length * 2 >= a.length) || (a.length >= 2 && ` ${want} `.includes(` ${nm} `))
   }
-  for (const f of [(n: Node) => norm(n.name) === want, covers]) {
+  const said = role ? undefined : Object.entries(SAID).find(([w]) => want.split(' ').includes(w))?.[1]
+  for (const f of [(n: Node) => norm(n.name) === want, (n: Node) => covers(n) && (!said || said.includes(n.role))]) {
     const hit = pool.filter(({ n }) => f(n))
     if (hit.length === 1) { tick('ax', t0); return { ...hit[0], how: 'ax' } }
   }

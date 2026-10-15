@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { createServer as http } from 'node:http'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { test } from 'node:test'
+import { after, before, test } from 'node:test'
 
 type El = { ref: number; id: string; parent: number; depth: number; role: string; name: string; states: string[] }
 
@@ -51,27 +51,42 @@ async function plan(target: string, tree: Omit<El, 'ref' | 'depth' | 'states'>[]
   return main({ steps: [{ click: target }] })
 }
 
-test('a click whose jev pick has a close runner-up escalates as ambiguous instead of pressing the pick', async () => {
+before(async () => {
   const socket = `${mkdtempSync(`${tmpdir()}/gui-plan-`)}/toolhost.sock`
   await new Promise<void>((r) => toolhost.listen(socket, r))
   await new Promise<void>((r) => gw.listen(0, '127.0.0.1', r))
   process.env.TOOLHOST_SOCKET = socket
   process.env.GW_BASE_URL = `http://127.0.0.1:${(gw.address() as { port: number }).port}`
-  try {
-    const tree = [
-      { id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' },
-      { id: '1.1/2', parent: 0, role: 'button', name: 'Apply' },
-      { id: '1.1/3', parent: 0, role: 'button', name: 'Apply to all' },
-    ]
-    const close = await plan('confirm the settings', tree, { r1: 0.72, r2: 0.25, none: 0.03 })
-    assert.equal(close.ok, false, JSON.stringify(close))
-    assert.match(close.escalate.reason, /^ambiguous target "confirm the settings"/)
-    assert.deepEqual(pressed, [])
-    const clear = await plan('confirm the settings', tree, { r1: 0.92, r2: 0.05, none: 0.03 })
-    assert.equal(clear.ok, true, JSON.stringify(clear))
-    assert.deepEqual(pressed, ['1.1/2'])
-  } finally {
-    toolhost.close()
-    gw.close()
-  }
+})
+after(() => {
+  toolhost.close()
+  gw.close()
+})
+
+test('a click whose jev pick has a close runner-up escalates as ambiguous instead of pressing the pick', async () => {
+  const tree = [
+    { id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' },
+    { id: '1.1/2', parent: 0, role: 'button', name: 'Apply' },
+    { id: '1.1/3', parent: 0, role: 'button', name: 'Apply to all' },
+  ]
+  const close = await plan('confirm the settings', tree, { r1: 0.72, r2: 0.25, none: 0.03 })
+  assert.equal(close.ok, false, JSON.stringify(close))
+  assert.match(close.escalate.reason, /^ambiguous target "confirm the settings"/)
+  assert.deepEqual(pressed, [])
+  const clear = await plan('confirm the settings', tree, { r1: 0.92, r2: 0.05, none: 0.03 })
+  assert.equal(clear.ok, true, JSON.stringify(clear))
+  assert.deepEqual(pressed, ['1.1/2'])
+})
+
+test('a click that names a link takes a link, never the row cell whose name the target contains', async () => {
+  const tree = [
+    { id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' },
+    { id: '1.1/2', parent: 0, role: 'treeitem', name: 'Circuit Design Project' },
+    { id: '1.1/3', parent: 1, role: 'link', name: 'View' },
+    { id: '1.1/4', parent: 0, role: 'treeitem', name: 'Homework 5' },
+    { id: '1.1/5', parent: 3, role: 'link', name: 'View' },
+  ]
+  const out = await plan('the View link in the Circuit Design Project row', tree, { r2: 0.9, r4: 0.05, none: 0.05 })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  assert.deepEqual(pressed, ['1.1/3'])
 })
