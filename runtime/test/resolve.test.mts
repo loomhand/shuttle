@@ -5,7 +5,8 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { after, before, test } from 'node:test'
 
-type El = { ref: number; id: string; parent: number; depth: number; role: string; name: string; states: string[] }
+type El = { ref: number; id: string; parent: number; depth: number; role: string; name: string; states: string[]; bounds?: number[] }
+type Spec = Omit<El, 'ref' | 'depth' | 'states'> & { states?: string[] }
 
 const win = { id: '1.1/1', title: 'Portal', role: 'frame', pid: process.pid, active: true }
 const nodes: El[] = []
@@ -42,9 +43,9 @@ const gw = http((req, res) => {
   })
 })
 
-async function plan(target: string, tree: Omit<El, 'ref' | 'depth' | 'states'>[], probabilities: Record<string, number>) {
+async function plan(target: string, tree: Spec[], probabilities: Record<string, number>) {
   nodes.length = 0
-  for (const [i, n] of tree.entries()) nodes.push({ ...n, ref: i, depth: n.parent < 0 ? 0 : nodes[n.parent].depth + 1, states: ['showing'] })
+  for (const [i, n] of tree.entries()) nodes.push({ bounds: [10 * i, 10, 10, 10], states: ['showing'], ...n, ref: i, depth: n.parent < 0 ? 0 : nodes[n.parent].depth + 1 })
   pressed.length = 0
   pick = probabilities
   const { main } = await import('../rootfs/opt/desk/lib/gui_plan.mts')
@@ -87,6 +88,17 @@ test('a click that names a link takes a link, never the row cell whose name the 
     { id: '1.1/5', parent: 3, role: 'link', name: 'View' },
   ]
   const out = await plan('the View link in the Circuit Design Project row', tree, { r2: 0.9, r4: 0.05, none: 0.05 })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  assert.deepEqual(pressed, ['1.1/3'])
+})
+
+test('a click takes no element that does not show, even by its exact name', async () => {
+  const tree = [
+    { id: '1.1/1', parent: -1, role: 'dialog', name: 'Save' },
+    { id: '1.1/2', parent: 0, role: 'button', name: 'File type', states: [], bounds: undefined },
+    { id: '1.1/3', parent: 0, role: 'combobox', name: 'Select the file type' },
+  ]
+  const out = await plan('File type', tree, { none: 1 })
   assert.equal(out.ok, true, JSON.stringify(out))
   assert.deepEqual(pressed, ['1.1/3'])
 })

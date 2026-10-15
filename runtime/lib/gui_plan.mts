@@ -223,7 +223,7 @@ function candidates(nodes: Node[], role?: string, within?: number) {
 }
 
 // target resolution: the saved fingerprint, exact AX name, contained AX name (only among links or buttons when a target without a
-// role says link or button), then a jev choice whose top answer needs `bar` and a margin
+// role says link or button; outside menus only elements that show, with bounds), then a jev choice whose top answer needs `bar` and a margin
 async function resolve(nodes: Node[], target: string, role?: string, within?: number, bar = 0.5, fp?: Fp): Promise<Hit | null> {
   const t0 = Date.now()
   const pool = candidates(nodes, role, within)
@@ -237,7 +237,7 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   }
   const said = role ? undefined : Object.entries(SAID).find(([w]) => want.split(' ').includes(w))?.[1]
   for (const f of [(n: Node) => norm(n.name) === want, (n: Node) => covers(n) && (!said || said.includes(n.role))]) {
-    const hit = pool.filter(({ n }) => f(n))
+    const hit = pool.filter(({ n }) => (n.role.startsWith('menu') || (n.shown && !!n.bounds)) && f(n))
     if (hit.length === 1) { tick('ax', t0); return { ...hit[0], how: 'ax' } }
   }
   const shown = pool.filter(({ n }) => n.shown)
