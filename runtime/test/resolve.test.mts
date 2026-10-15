@@ -43,13 +43,13 @@ const gw = http((req, res) => {
   })
 })
 
-async function plan(target: string, tree: Spec[], probabilities: Record<string, number>) {
+async function plan(target: string, tree: Spec[], probabilities: Record<string, number>, step: Record<string, string> = { click: target }) {
   nodes.length = 0
   for (const [i, n] of tree.entries()) nodes.push({ bounds: [10 * i, 10, 10, 10], states: ['showing'], ...n, ref: i, depth: n.parent < 0 ? 0 : nodes[n.parent].depth + 1 })
   pressed.length = 0
   pick = probabilities
   const { main } = await import('../rootfs/opt/desk/lib/gui_plan.mts')
-  return main({ steps: [{ click: target }] })
+  return main({ steps: [step] })
 }
 
 before(async () => {
@@ -101,4 +101,22 @@ test('a click takes no element that does not show, even by its exact name', asyn
   const out = await plan('File type', tree, { none: 1 })
   assert.equal(out.ok, true, JSON.stringify(out))
   assert.deepEqual(pressed, ['1.1/3'])
+})
+
+test('a menu step takes a menu bar entry that several menu bars repeat from the first of them', async () => {
+  const tree = [
+    { id: '1.1/1', parent: -1, role: 'frame', name: 'Untitled 1 — LibreOffice Calc' },
+    { id: '1.1/2', parent: 0, role: 'menubar', name: '' },
+    { id: '1.1/3', parent: 1, role: 'menu', name: 'Format' },
+    { id: '1.1/4', parent: 2, role: 'menuitem', name: 'Cells...' },
+    { id: '1.1/5', parent: 0, role: 'menubar', name: '' },
+    { id: '1.1/6', parent: 4, role: 'menu', name: 'Format' },
+    { id: '1.1/7', parent: 5, role: 'menuitem', name: 'Cells...' },
+    { id: '1.1/8', parent: 0, role: 'menubar', name: '' },
+    { id: '1.1/9', parent: 7, role: 'menu', name: 'Format' },
+    { id: '1.1/10', parent: 8, role: 'menuitem', name: 'Cells...' },
+  ]
+  const out = await plan('', tree, { r2: 0.34, r5: 0.33, r8: 0.33 }, { menu: 'Format > Cells' })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  assert.deepEqual(pressed, ['1.1/4'])
 })

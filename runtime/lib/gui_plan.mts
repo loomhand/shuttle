@@ -263,6 +263,12 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   return { ...hit.c, how: `jev(${p1.toFixed(2)})`, p: p1, margin: p1 - p2 }
 }
 
+// a menu bar entry that several menu bars repeat (LibreOffice exposes its menu bar more than once) resolves in the first of them
+function barMenu(nodes: Node[], name: string): Hit | null {
+  const tops = nodes.map((n, i) => ({ n, i })).filter(({ n }) => n.role === 'menu' && norm(n.name) === norm(name) && n.parent >= 0 && nodes[n.parent].role === 'menubar')
+  return tops.length > 1 ? { ...tops[0], how: 'ax' } : null
+}
+
 const press = (combo: string) => desk.key(combo)
 
 // a shown control takes a pointer click, since its AT-SPI action runs the handler inside the a11y bridge's dispatch, where a
@@ -498,7 +504,7 @@ async function run(s: Step, rec: Record<string, unknown>) {
           await act(prev.n); rec.opened = ((rec.opened as number) ?? 0) + 1; within = undefined
           for (let t = 0; t < 10; t++) { nodes = parse(await snapOf(w, true)); if (candidates(nodes).some(({ n }) => norm(n.name) === norm(part))) break; await sleep(30) }
         }
-        hit = await soft(part, k < parts.length - 1 ? 'menu' : undefined, within) ?? await soft(part, undefined, within)
+        hit = (k === 0 && k < parts.length - 1 ? barMenu(nodes, part) : null) ?? await soft(part, k < parts.length - 1 ? 'menu' : undefined, within) ?? await soft(part, undefined, within)
         if (!hit) {
           const leaf = await resolve(nodes, parts.at(-1)!, 'menuitem|menu|menuitemcheckbox|menuitemradio')
           if (leaf?.how !== 'ax') throw new Surprise(`menu entry "${part}" not found`, await seen())
