@@ -3,6 +3,7 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { crc32, deflateSync, inflateSync } from 'node:zlib'
 import * as desk from './desk.mts'
 
 type Step = {
@@ -30,6 +31,10 @@ const FIELDS = 'textbox|searchbox|spinbutton|slider|combobox'
 const SHOWN_ROLES = new Set([...ACTIVE, 'dialog', 'alert'])
 const MARGIN = 0.25
 const CROP = { w: 640, h: 400 }
+const SMALL = 5_000
+const ZOOM_BAR = 0.65
+const FULL_BAR = 0.95
+const RING = 14
 const PICK_MARGIN = 0.6
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
 const FILLER = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'and', 'or', 'by', 'from', 'into', 'this', 'that', 'its', 'it', 'is', 'button', 'link', 'tab', 'field', 'box', 'icon', 'toggle', 'dropdown', 'input', 'control', 'item', 'entry'])
@@ -309,23 +314,94 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>) 
   } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
 
-// a grounded point is taken when jev sees the target at it in a 640x400 crop around it; on any failure, when jev says the element
-// under the point is the target
+// a grounded point is taken when jev sees the target at it in a 640x400 crop around it; else, under a small element or none, in
+// that element's crop scaled up to 384x288 (yes ≥ 0.65); else on the screen with a ring at the point (yes ≥ 0.95, off with
+// DESK_FULL_CHECK=off). On any failure of the first crop, when jev says the element under the point is the target
 async function grounded(x: number, y: number, target: string, w: Win, area: { width: number; height: number }) {
   const under = await desk.at(x, y, w.title).catch(() => ({ found: null, path: [] }))
   const what = under.found ? [under.found, ...(under.path ?? []).reverse()].filter((n) => n.name).map((n) => `${n.role} "${n.name}"`).join(' under ') : ''
   const t0 = Date.now()
+  const fit = (cw: number, ch: number) => [Math.max(0, Math.min(area.width - cw, Math.round(x - cw / 2))), Math.max(0, Math.min(area.height - ch, Math.round(y - ch / 2)))]
+  const yes = async (state: unknown[], question: string) => +(await desk.look(state, { on: desk.yes(question) })).on.probability.toFixed(2)
+  const crop = async (cw: number, ch: number, k: number) => {
+    const [left, top] = fit(cw, ch), [px, py] = [(x - left) * k, (y - top) * k]
+    const png = zoom(await desk.shot({ x: left, y: top, w: cw, h: ch }), k)
+    return yes([`A ${cw * k}x${ch * k} crop of the screen. A click is about to land on its pixel (${px}, ${py}).`, desk.image(png)], `Is the pixel at (${px}, ${py}) of the image on ${target}?`)
+  }
   try {
-    const cw = Math.min(CROP.w, area.width), ch = Math.min(CROP.h, area.height)
-    const left = Math.max(0, Math.min(area.width - cw, Math.round(x - cw / 2))), top = Math.max(0, Math.min(area.height - ch, Math.round(y - ch / 2)))
-    const [px, py] = [x - left, y - top]
-    const d = await desk.look([`A ${cw}x${ch} crop of the screen. A click is about to land on its pixel (${px}, ${py}).`, desk.image(await desk.shot({ x: left, y: top, w: cw, h: ch }))],
-      { on: desk.yes(`Is the pixel at (${px}, ${py}) of the image on ${target}?`) })
-    return { what, ok: d.on.probability >= 0.5, check: 'jev-image' }
+    const p = await crop(Math.min(CROP.w, area.width), Math.min(CROP.h, area.height), 1)
+    const out: { what: string; ok: boolean; check: string; p: number; p_zoom?: number | null; p_full?: number | null } = { what, ok: p >= 0.5, check: 'jev-image', p }
+    if (out.ok) return out
+    const b = under.found?.bounds ?? (under.found?.id ? (await desk.read(under.found.id).catch(() => null))?.bounds : undefined)
+    const el = b && b[2] > 0 && b[3] > 0 ? b : null
+    if (!el || el[2] * el[3] < SMALL) {
+      const rw = Math.min(area.width, el ? Math.min(384, Math.max(96, Math.round(1.5 * el[2]), Math.round(5 * el[3] * 4 / 3))) : 192)
+      const rh = Math.min(area.height, el ? Math.round(rw * 3 / 4) : 144)
+      out.check += '+zoom'; out.p_zoom = await crop(rw, rh, Math.max(1, Math.ceil(Math.max(384 / rw, 288 / rh)))).catch(() => null)
+      out.ok = (out.p_zoom ?? 0) >= ZOOM_BAR
+    }
+    if (!out.ok && desk.setting('DESK_FULL_CHECK') !== 'off') {
+      const full = async () => yes([`The screen, ${area.width}x${area.height}. A red ring with four ticks marks the spot a click is about to land on, centred at pixel (${x}, ${y}).`, desk.image(ring(await desk.shot(), x, y, RING))], `Is the spot marked by the red ring on ${target}?`)
+      out.check += '+full'; out.p_full = await full().catch(() => null)
+      out.ok = (out.p_full ?? 0) >= FULL_BAR
+    }
+    return out
   } catch (e) {
-    const ok = !!what.trim() && (await decide({ element_under_point: what, window_title: w.title }, { is: desk.yes(`Is this element "${target}"?`) })).is.probability >= 0.7
-    return { what, ok, check: `jev (${String((e as Error).message ?? e).slice(0, 80)})` }
+    const p = what.trim() ? (await decide({ element_under_point: what, window_title: w.title }, { is: desk.yes(`Is this element "${target}"?`) })).is.probability : 0
+    return { what, ok: p >= 0.7, check: `jev (${String((e as Error).message ?? e).slice(0, 80)})`, p: +p.toFixed(2) }
   } finally { tick('check', t0) }
+}
+
+// 8-bit RGB or RGBA PNGs, as the toolhost writes them
+function unpng(png: Buffer) {
+  const idat: Buffer[] = []; let w = 0, h = 0, type = 0
+  for (let p = 8; p < png.length; p += 12 + png.readUInt32BE(p)) {
+    const kind = png.toString('ascii', p + 4, p + 8), data = png.subarray(p + 8, p + 8 + png.readUInt32BE(p))
+    if (kind === 'IHDR') { w = data.readUInt32BE(0); h = data.readUInt32BE(4); type = data[9]; if (data[8] !== 8 || data[12] !== 0 || (type !== 2 && type !== 6)) throw new Error(`unsupported PNG (depth ${data[8]}, type ${type})`) }
+    if (kind === 'IDAT') idat.push(data)
+  }
+  const bpp = type === 6 ? 4 : 3, stride = w * bpp, raw = inflateSync(Buffer.concat(idat)), px = Buffer.alloc(h * stride)
+  for (let y = 0; y < h; y++) {
+    const f = raw[y * (stride + 1)], row = y * (stride + 1) + 1
+    for (let i = 0; i < stride; i++) {
+      const a = i >= bpp ? px[y * stride + i - bpp] : 0, b = y ? px[(y - 1) * stride + i] : 0, c = y && i >= bpp ? px[(y - 1) * stride + i - bpp] : 0
+      const pa = Math.abs(b - c), pb = Math.abs(a - c), pc = Math.abs(a + b - 2 * c)
+      px[y * stride + i] = raw[row + i] + (f === 1 ? a : f === 2 ? b : f === 3 ? (a + b) >> 1 : f === 4 ? (pa <= pb && pa <= pc ? a : pb <= pc ? b : c) : 0)
+    }
+  }
+  return { w, h, type, bpp, px }
+}
+
+function png(w: number, h: number, type: number, bpp: number, px: Buffer) {
+  const chunk = (kind: string, data: Buffer) => {
+    const head = Buffer.alloc(8), crc = Buffer.alloc(4); head.writeUInt32BE(data.length); head.write(kind, 4, 'ascii')
+    crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data])) >>> 0); return Buffer.concat([head, data, crc])
+  }
+  const stride = w * bpp, raw = Buffer.alloc(h * (stride + 1)), ihdr = Buffer.alloc(13)
+  for (let y = 0; y < h; y++) px.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride)
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = type
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))])
+}
+
+// nearest-neighbour scaling by an integer factor
+function zoom(image: Buffer, k: number) {
+  if (k <= 1) return image
+  const { w, h, type, bpp, px } = unpng(image), out = Buffer.alloc(w * k * h * k * bpp)
+  for (let y = 0; y < h * k; y++) for (let x = 0; x < w * k; x++) px.copy(out, (y * w * k + x) * bpp, (Math.floor(y / k) * w + Math.floor(x / k)) * bpp, (Math.floor(y / k) * w + Math.floor(x / k) + 1) * bpp)
+  return png(w * k, h * k, type, bpp, out)
+}
+
+// a red ring of radius r around (cx, cy) and four ticks outside it, edged in white, which leave the spot itself uncovered
+function ring(image: Buffer, cx: number, cy: number, r: number) {
+  const { w, h, type, bpp, px } = unpng(image), t = Math.max(2, Math.round(r / 7)), tick = r + 3 * t, len = 3 * r
+  for (const [c, pad] of [[[255, 255, 255], 1], [[230, 0, 0], 0]] as [number[], number][]) {
+    for (let y = Math.max(0, Math.floor(cy - tick - len - 2)); y <= Math.min(h - 1, cy + tick + len + 2); y++) for (let x = Math.max(0, Math.floor(cx - tick - len - 2)); x <= Math.min(w - 1, cx + tick + len + 2); x++) {
+      const dx = Math.abs(x - cx), dy = Math.abs(y - cy)
+      const on = Math.abs(Math.hypot(dx, dy) - r) <= t / 2 + pad || (dx <= t / 2 + pad && dy >= tick - pad && dy <= tick + len + pad) || (dy <= t / 2 + pad && dx >= tick - pad && dx <= tick + len + pad)
+      if (on) { const i = (y * w + x) * bpp; px[i] = c[0]; px[i + 1] = c[1]; px[i + 2] = c[2]; if (bpp === 4) px[i + 3] = 255 }
+    }
+  }
+  return png(w, h, type, bpp, px)
 }
 
 const press = (combo: string) => desk.key(combo)
@@ -611,8 +687,8 @@ async function run(s: Step, rec: Record<string, unknown>) {
     const area = await desk.screen()
     const [x, y] = await desk.ground(await desk.shot(), `${target} in the "${w.title}" window`, area)
     tick('ground', t0)
-    const { what, ok, check } = await grounded(x, y, target, w, area)
-    rec.ground_hit = what.slice(0, 80); rec.checked = check
+    const { what, ok, check, p, p_zoom, p_full } = await grounded(x, y, target, w, area)
+    rec.ground_hit = what.slice(0, 80); rec.checked = check; rec.p = p; rec.p_zoom = p_zoom; rec.p_full = p_full
     if (!ok) throw new Surprise(`no element matches "${target}"${what.trim() ? `; grounding pointed at ${what.slice(0, 80)}` : ''}`, await seen())
     t0 = Date.now(); await desk.click(x, y); tick('act', t0)
     rec.how = 'ground'; rec.unsaved = true; await settle(w.title); return

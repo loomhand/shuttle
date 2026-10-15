@@ -25,6 +25,7 @@ const GROUND_MODEL = 'qwen/qwen3-vl-235b-a22b-instruct'
 const MODEL_TIMEOUT = 60_000
 let screenSize: { width: number; height: number } | null = null
 let gwConfig: { base: string; key: string } | null = null
+let envFile: string | null = null
 let warned = false
 export const usage: Usage = {}
 // every decisions call: the model asked, whether its state held an image, and the build and generation id that answered (null when none did)
@@ -79,14 +80,17 @@ export async function shot(r: { x?: number; y?: number; w?: number; h?: number }
   return Buffer.from((await call('shot', r)).png_b64, 'base64')
 }
 
+// a setting from the environment, else from desk.env
+export function setting(k: string): string | undefined {
+  if (envFile === null) { envFile = ''; try { envFile = readFileSync(ENV_FILE, 'utf8') } catch {} }
+  return process.env[k] || [...envFile.matchAll(/^(\w+)=(.*)$/gm)].find((m) => m[1] === k)?.[2]?.trim()
+}
+
 function gw() {
   if (gwConfig) return gwConfig
-  let file = ''
-  try { file = readFileSync(ENV_FILE, 'utf8') } catch {}
-  const get = (k: string) => process.env[k] || [...file.matchAll(/^(\w+)=(.*)$/gm)].find((m) => m[1] === k)?.[2]?.trim()
-  const base = get('GW_BASE_URL')
+  const base = setting('GW_BASE_URL')
   if (!base) throw new Error(`no GW_BASE_URL in the environment or ${ENV_FILE}`)
-  gwConfig = { base: base.replace(/\/+$/, ''), key: get('GW_API_KEY') || 'unprovisioned' }
+  gwConfig = { base: base.replace(/\/+$/, ''), key: setting('GW_API_KEY') || 'unprovisioned' }
   return gwConfig
 }
 

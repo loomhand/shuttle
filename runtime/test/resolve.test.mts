@@ -1,25 +1,26 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { createServer as http } from 'node:http'
 import { createServer } from 'node:net'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { after, before, test } from 'node:test'
+import { crc32, deflateSync, inflateSync } from 'node:zlib'
 
 type El = { ref: number; id: string; parent: number; depth: number; role: string; name: string; states: string[]; bounds?: number[] }
 type Spec = Omit<El, 'ref' | 'depth' | 'states'> & { states?: string[] }
 
 const win = { id: '1.1/1', title: 'Portal', role: 'frame', pid: process.pid, active: true }
-const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg=='
 const nodes: El[] = []
 const pressed: string[] = []
 const clicked: string[] = []
 const asked: { model: string; image: boolean }[] = []
+const looks: string[] = []
 let pick: Record<string, number> = {}
 let looked: Record<string, number> = {}
 let build: string | null = null
 let text = 'typesafe/jev-1.14-20261014'
-let on = 0
-let under: { role: string; name: string } | null = null
+let on: number | number[] = 0
+let under: { role: string; name: string; bounds?: number[] } | null = null
 let yes = 0
 
 const toolhost = createServer((s) => {
@@ -32,7 +33,7 @@ const toolhost = createServer((s) => {
     if (tool === 'desk_windows') text = JSON.stringify([win])
     if (tool === 'desk_snapshot') text = JSON.stringify({ window: win, nodes, truncated: false, text: '- frame "Portal"' })
     if (tool === 'desk_press') { pressed.push(args.id); text = '{"ok":true,"how":"click"}' }
-    if (tool === 'desk_shot') text = JSON.stringify({ png_b64: PNG })
+    if (tool === 'desk_shot') text = JSON.stringify({ png_b64: gray(args.w ?? 1280, args.h ?? 800).toString('base64') })
     if (tool === 'desk_screen') text = '{"width":1280,"height":800}'
     if (tool === 'desk_at') text = JSON.stringify({ found: under, path: [] })
     if (tool === 'desk_click') clicked.push(`${args.x},${args.y}`)
@@ -51,15 +52,35 @@ const gw = http((req, res) => {
     const image = JSON.stringify(state).includes('"image_url"')
     asked.push({ model, image })
     if (image && !build) { res.statusCode = 500; return res.end('{}') }
+    if (image) looks.push(state.filter((p: { image_url?: { url: string } }) => p.image_url).map((p: { image_url: { url: string } }) => size(Buffer.from(p.image_url.url.split(',')[1], 'base64'))).join(' '))
+    const p = Array.isArray(on) ? on.shift() ?? 0 : on
     const answers: Record<string, unknown> = {}
     for (const [k, q] of Object.entries(questions) as [string, { type: string }][]) {
       const probs = image ? looked : pick
       const [choice] = Object.entries(probs).sort((a, b) => b[1] - a[1])[0] ?? ['none']
-      answers[k] = q.type === 'noul' ? { type: 'noul', noul: image ? on : yes } : { type: 'choice', choice, confidence: probs[choice], probabilities: probs }
+      answers[k] = q.type === 'noul' ? { type: 'noul', noul: image ? p : yes } : { type: 'choice', choice, confidence: probs[choice], probabilities: probs }
     }
     res.end(JSON.stringify({ model: image ? build : text, answers }))
   })
 })
+
+// an RGBA PNG of one grey, and the size of a PNG with " ring" when it holds the red of the drawn ring
+function gray(w: number, h: number) {
+  const chunk = (kind: string, data: Buffer) => {
+    const head = Buffer.alloc(8), crc = Buffer.alloc(4); head.writeUInt32BE(data.length); head.write(kind, 4, 'ascii')
+    crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data])) >>> 0); return Buffer.concat([head, data, crc])
+  }
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 6
+  const raw = Buffer.alloc(h * (w * 4 + 1), 128); for (let y = 0; y < h; y++) raw[y * (w * 4 + 1)] = 0
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))])
+}
+function size(png: Buffer) {
+  const [w, h] = [png.readUInt32BE(16), png.readUInt32BE(20)]
+  const raw = inflateSync(png.subarray(41, 41 + png.readUInt32BE(33)))
+  let red = false
+  for (let y = 0; y < h && !red; y++) for (let x = 0; x < w && !red; x++) { const i = y * (w * 4 + 1) + 1 + x * 4; red = raw[i] === 230 && raw[i + 1] === 0 && raw[i + 2] === 0 }
+  return `${w}x${h}${red ? ' ring' : ''}`
+}
 
 async function plan(target: string, tree: Spec[], probabilities: Record<string, number>, step: Record<string, string> = { click: target }) {
   const { main } = await screen(tree, probabilities)
@@ -72,6 +93,7 @@ async function screen(tree: Spec[], probabilities: Record<string, number>) {
   pressed.length = 0
   clicked.length = 0
   asked.length = 0
+  looks.length = 0
   pick = probabilities
   return import('../rootfs/opt/desk/lib/gui_plan.mts')
 }
@@ -233,13 +255,16 @@ test('a jev-1.14 build other than the tested one answers, each call keeps its bu
   text = 'typesafe/jev-1.14-20261014'
 })
 
-test('a grounded click is taken when jev sees the target at the point in a crop, and without that answer when jev says the element under it is the target', async () => {
+test('a grounded click is taken when jev sees the target at the point in a crop, and without that answer when jev says the element under it is the target; the run log keeps the check and its score', async () => {
   const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
   build = 'typesafe/jev-1.14-20261014'
   on = 0.8
   const seen = await plan('the yellow star', tree, {})
   assert.equal(seen.ok, true, JSON.stringify(seen))
   assert.deepEqual(clicked, ['640,400'])
+  const runs = readFileSync(`${process.platform === 'linux' ? '/workspace' : `${homedir()}/workspace`}/flows/.runs.jsonl`, 'utf8').trim().split('\n')
+  const step = JSON.parse(runs.at(-1)!).steps[0]
+  assert.deepEqual([step.checked, step.p, step.served.length], ['jev-image', 0.8, 1], JSON.stringify(step))
   on = 0.2
   const unseen = await plan('the yellow star', tree, {})
   assert.equal(unseen.ok, false, JSON.stringify(unseen))
@@ -319,4 +344,41 @@ test('locate gives a LibreOffice toolbar or tab row element the menu bar height 
   assert.equal(await shift(frame(53, 92, 728), 'Pipeline'), 25)
   assert.equal(await shift(frame(53, 92, 728), 'Menu'), 0)
   assert.equal(await shift(frame(78, 117, 753), 'Bold'), 0)
+})
+
+test('a grounded click the 640x400 crop refuses is checked on the small element\'s crop scaled up, then on the screen with a ring at the point, unless DESK_FULL_CHECK=off; the run log keeps each score and the path', async () => {
+  const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
+  const step = () => JSON.parse(readFileSync(`${process.platform === 'linux' ? '/workspace' : `${homedir()}/workspace`}/flows/.runs.jsonl`, 'utf8').trim().split('\n').at(-1)!).steps[0]
+  build = 'typesafe/jev-1.14-20261014'
+  on = [0.3, 0.7]
+  const zoomed = await plan('the yellow star', tree, {})
+  assert.equal(zoomed.ok, true, JSON.stringify(zoomed))
+  assert.deepEqual(clicked, ['640,400'])
+  assert.deepEqual(looks, ['640x400', '384x288'])
+  assert.deepEqual([step().checked, step().p, step().p_zoom, step().p_full], ['jev-image+zoom', 0.3, 0.7, undefined])
+  on = [0.3, 0.6, 0.96]
+  const full = await plan('the yellow star', tree, {})
+  assert.equal(full.ok, true, JSON.stringify(full))
+  assert.deepEqual(looks, ['640x400', '384x288', '1280x800 ring'])
+  assert.deepEqual([step().checked, step().p, step().p_zoom, step().p_full], ['jev-image+zoom+full', 0.3, 0.6, 0.96])
+  on = [0.3, 0.6, 0.9]
+  const refused = await plan('the yellow star', tree, {})
+  assert.equal(refused.ok, false, JSON.stringify(refused))
+  assert.deepEqual(clicked, [])
+  under = { role: 'drawing area', name: 'Canvas', bounds: [0, 0, 800, 600] }
+  on = [0.3, 0.96]
+  const big = await plan('the yellow star', tree, {})
+  assert.equal(big.ok, true, JSON.stringify(big))
+  assert.deepEqual(looks, ['640x400', '1280x800 ring'])
+  assert.equal(step().checked, 'jev-image+full')
+  under = null
+  process.env.DESK_FULL_CHECK = 'off'
+  on = [0.3, 0.6, 0.96]
+  const off = await plan('the yellow star', tree, {})
+  delete process.env.DESK_FULL_CHECK
+  assert.equal(off.ok, false, JSON.stringify(off))
+  assert.deepEqual(looks, ['640x400', '384x288'])
+  assert.equal(step().checked, 'jev-image+zoom')
+  build = null
+  on = 0
 })
