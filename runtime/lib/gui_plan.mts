@@ -1,5 +1,5 @@
 // gui_plan.mts: run a GUI plan in the box without a model turn per step, save a passing plan as a flow, replay flows.
-// params: {steps, params?, save?, start?} | {save} | {flow, params?, start?} | {find} | {reindex}; result: {ok, done, ms, trace, saved?, escalate?}
+// params: {steps, params?, save?, start?} | {save} | {flow, params?, start?} | {find} | {reindex} | {locate}; result: {ok, done, ms, trace, saved?, escalate?}
 import { execFileSync, spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -15,7 +15,7 @@ type Node = { ref: number; id: string; depth: number; role: string; name: string
 type Hit = { n: Node; i: number; how: string; p?: number; margin?: number }
 type Flow = { name: string; params: Record<string, string>; steps: Step[]; idempotent: boolean; runs: number; saved_at: string; rewrites: number; usage?: desk.Usage }
 type Chain = { at: number; window: string | null; pid: number | null; name?: string; named?: boolean; params: Record<string, string>; steps: Step[]; dirty: boolean; saved?: boolean; escalated?: boolean; usage?: desk.Usage }
-type Params = { steps?: Step[]; flow?: string; params?: Record<string, string>; save?: string; start?: number; find?: string; reindex?: boolean }
+type Params = { steps?: Step[]; flow?: string; params?: Record<string, string>; save?: string; start?: number; find?: string; reindex?: boolean; locate?: { target: string; press?: boolean } }
 type Win = desk.Win
 
 const OS = process.platform
@@ -724,6 +724,23 @@ async function find(request: string) {
   return { ok: true, flow: rows[+k.slice(1)].replace(/\(.*$/, ''), p: +p.toFixed(2) }
 }
 
+// computer_act's target: the element of the focused window that `target` resolves to, pressed by action when `press`
+async function locate(target: string, press: boolean) {
+  const t0 = Date.now()
+  const w = await focused()
+  if (!w) return { found: false, why: 'no focused window', ms: Date.now() - t0 }
+  const nodes = parse(await desk.snapshot(w.title, { pid: w.pid, bounds: true }))
+  let hit: Hit | null = null
+  try { hit = await resolve(nodes, target, undefined, undefined, 0.7) } catch (e) { if (!(e instanceof Surprise)) throw e; return { found: false, why: e.reason, window: w.title, ms: Date.now() - t0 } }
+  if (!hit) return { found: false, why: `no element of "${w.title}" matches`, window: w.title, ms: Date.now() - t0 }
+  const out: Record<string, unknown> = { found: true, how: hit.how, role: hit.n.role, name: hit.n.name, bounds: hit.n.bounds ?? null, window: w.title }
+  if (press) {
+    if (hit.n.role === 'menuitem') await choose(nodes, hit.n, out, true); else out.via = await act(hit.n)
+    await settle(w.title)
+  }
+  return { ...out, ms: Date.now() - t0 }
+}
+
 export async function main(p: Params) {
   return { ...(await perform(p)), usage: desk.usage }
 }
@@ -732,6 +749,7 @@ async function perform(p: Params) {
   const t0 = Date.now()
   if (p.reindex) { repo(); writeIndex(); git('add', '-A'); git('commit', '-q', '-m', 'sync from the flow library'); return { ok: true } }
   if (p.find) return await find(p.find)
+  if (p.locate) return await locate(p.locate.target, p.locate.press ?? false)
   if (p.save && !p.steps?.length && !p.flow) return await promote(p.save)
   let flow: Flow | null = null
   try { if (p.flow) flow = loadFlow(p.flow) } catch (e) { return { ok: false, done: 0, ms: 0, escalate: { reason: (e as Error).message } } }
