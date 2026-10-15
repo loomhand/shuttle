@@ -430,3 +430,25 @@ test('an unnamed control takes its own description, else the name, else the desc
     assert.deepEqual(pressed, [id])
   }
 })
+
+test('a jev pick of an element whose role the target\'s own word rules out, a spin button for "the plus button", is not found; a radio button is still one', async () => {
+  const tree = [
+    { id: '1.1/1', parent: -1, role: 'dialog', name: 'Format Cells' },
+    { id: '1.1/2', parent: 0, role: 'spinbutton', name: 'Decimal places:' },
+    { id: '1.1/3', parent: 0, role: 'spinbutton', name: 'Leading zeroes:' },
+    { id: '1.1/4', parent: 0, role: 'radio', name: 'Percent' },
+    { id: '1.1/5', parent: 0, role: 'button', name: 'OK' },
+  ]
+  build = 'typesafe/jev-1.14-20261014'
+  looked = { r1: 0.86, r2: 0.05, none: 0.09 }
+  on = 0
+  const plus = await plan('the plus button that increases the decimal places', tree, { r1: 0.86, none: 0.14 })
+  assert.equal(plus.ok, false, JSON.stringify(plus))
+  assert.deepEqual(pressed, [])
+  assert.deepEqual(clicked, [])
+  looked = { r3: 0.95, r4: 0.03, none: 0.02 }
+  const radio = await plan('the Percent radio button', tree, { r3: 0.95, none: 0.05 })
+  assert.equal(radio.ok, true, JSON.stringify(radio))
+  assert.deepEqual(pressed, ['1.1/4'])
+  build = null
+})

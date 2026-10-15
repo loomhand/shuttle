@@ -269,7 +269,7 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
     const a = nm.split(' '), b = want.split(' ')
     return (` ${nm} `.includes(` ${want} `) && b.length * 2 >= a.length) || (a.length >= 2 && ` ${want} `.includes(` ${nm} `))
   }
-  const said = role ? undefined : Object.entries(SAID).find(([w]) => want.split(' ').includes(w))?.[1]
+  const said = role || /\b(radio|spin|option|check) button\b/.test(want) ? undefined : Object.entries(SAID).find(([w]) => want.split(' ').includes(w))?.[1]
   const bare = want.split(' ').filter((w) => !FILLER.has(w)).join(' ')
   const named = (n: Node) => norm(n.name) === want || (!!bare && norm(n.name) === bare)
   for (const f of [named, (n: Node) => covers(n) && (!said || said.includes(n.role))]) {
@@ -295,6 +295,7 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   if (!hit || p1 < bar) return null
   const own = terms(`${hit.c.n.name} ${hit.c.n.value} ${sibling(nodes, hit.c.i) ?? ''}`)
   if (!viewed && (!terms(target).some((w) => own.includes(w)) || (hit.c.n.role === 'tab' && !want.split(' ').includes('tab')))) return null
+  if (said && !said.includes(hit.c.n.role)) return null
   if (p1 - p2 < PICK_MARGIN) {
     const near = probs.slice(0, 3).map(([k, p]) => `${k === 'none' ? 'none' : opts[k]} ${p.toFixed(2)}`).join('; ')
     throw new Surprise(`ambiguous target "${target}": ${near}; name the element more exactly`, await seen())
