@@ -18,12 +18,14 @@ const SOCKET = process.env.TOOLHOST_SOCKET || SOCKETS[process.platform] || '/run
 const ENV_FILE = '/etc/cocoonbox/desk.env'
 const DECIDE_MODEL = 'typesafe/jev-1.14'
 const DECIDE_BUILD = 'typesafe/jev-1.14-20261014'
+const DECIDE_BUILDS = /^typesafe\/jev-1\.14-\d{8}$/
 const LOOK_TIMEOUT = 5_000
 const ASK_MODEL = 'anthropic/claude-sonnet-5'
 const GROUND_MODEL = 'qwen/qwen3-vl-235b-a22b-instruct'
 const MODEL_TIMEOUT = 60_000
 let screenSize: { width: number; height: number } | null = null
 let gwConfig: { base: string; key: string } | null = null
+let warned = false
 export const usage: Usage = {}
 // every decisions call: the model asked, whether its state held an image, and the build and generation id that answered (null when none did)
 export const served: { model: string; image: boolean; build: string | null; id: string | null }[] = []
@@ -131,13 +133,15 @@ export const decide = (state: unknown, questions: Record<string, Question>) => j
 // the same over a state that holds PNG parts (image), within 5 s
 export const look = (state: unknown[], questions: Record<string, Question>) => judge(state, questions, true, LOOK_TIMEOUT)
 
-// one pinned build of jev-1.14 answers: another build, an error or the timeout throws
+// a dated build of jev-1.14 answers: another version, an alias, an error or the timeout throws; a build other than the tested one is
+// said once on stderr
 async function judge(state: unknown, questions: Record<string, Question>, image: boolean, timeout: number): Promise<Record<string, any>> {
   const call = { model: DECIDE_MODEL, image, build: null as string | null, id: null as string | null }
   served.push(call)
   const r = await post('decisions', { model: DECIDE_MODEL, state, questions }, timeout)
   call.build = r.model ?? null; call.id = r.id ?? null
-  if (r.model !== DECIDE_BUILD) throw new Error(`gw decisions served ${r.model} for ${DECIDE_MODEL}`)
+  if (!DECIDE_BUILDS.test(r.model ?? '')) throw new Error(`gw decisions served ${r.model} for ${DECIDE_MODEL}`)
+  if (r.model !== DECIDE_BUILD && !warned) { warned = true; process.stderr.write(`desk: jev answers from build ${r.model}, not the tested ${DECIDE_BUILD}\n`) }
   return answers(r)
 }
 

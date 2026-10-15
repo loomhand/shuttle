@@ -181,27 +181,52 @@ test('a jev pick looks at the screenshot first, so of two links of the same name
   build = null
 })
 
-test('a jev pick on the screenshot that another build answers, that fails or that gets no reply falls back to the pick on the text, which only the pinned build may answer', async () => {
+test('a jev pick on the screenshot that another version or an alias answers, that fails or that gets no reply falls back to the pick on the text, which only a jev-1.14 build may answer', async () => {
   const tree = [
     { id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' },
     { id: '1.1/2', parent: 0, role: 'button', name: 'Apply' },
     { id: '1.1/3', parent: 0, role: 'button', name: 'Apply to all' },
   ]
   looked = { r2: 0.95, r1: 0.03, none: 0.02 }
-  for (const served of ['typesafe/jev-1.14-20991231', '~typesafe/jev-latest', null]) {
+  for (const served of ['typesafe/jev-1.13-20260917', '~typesafe/jev-latest', null]) {
     build = served
     const out = await plan('apply the settings to every row', tree, { r1: 0.92, r2: 0.05, none: 0.03 })
     assert.equal(out.ok, true, JSON.stringify(out))
     assert.deepEqual(pressed, ['1.1/2'], String(served))
     assert.deepEqual(asked, [{ model: 'typesafe/jev-1.14', image: true }, { model: 'typesafe/jev-1.14', image: false }])
   }
-  text = 'typesafe/jev-1.14-20991231'
-  const unpinned = await plan('apply the settings to every row', tree, { r1: 0.92, r2: 0.05, none: 0.03 })
-  assert.equal(unpinned.ok, false, JSON.stringify(unpinned))
+  text = 'typesafe/jev-1.13-20260917'
+  const older = await plan('apply the settings to every row', tree, { r1: 0.92, r2: 0.05, none: 0.03 })
+  assert.equal(older.ok, false, JSON.stringify(older))
   assert.deepEqual(pressed, [])
-  assert.match(unpinned.escalate.reason, /served typesafe\/jev-1.14-20991231 for typesafe\/jev-1.14/)
+  assert.match(older.escalate.reason, /served typesafe\/jev-1.13-20260917 for typesafe\/jev-1.14/)
   text = 'typesafe/jev-1.14-20261014'
   build = null
+})
+
+test('a jev-1.14 build other than the tested one answers, each call keeps its build in served, and stderr says so once', async () => {
+  const tree = [
+    { id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' },
+    { id: '1.1/2', parent: 0, role: 'button', name: 'Apply' },
+    { id: '1.1/3', parent: 0, role: 'button', name: 'Apply to all' },
+  ]
+  const desk = await import('../rootfs/opt/desk/lib/desk.mts')
+  const lines: string[] = []
+  const write = process.stderr.write
+  process.stderr.write = ((s: string | Uint8Array) => { lines.push(String(s)); return true }) as typeof process.stderr.write
+  build = text = 'typesafe/jev-1.14-20991231'
+  looked = { r2: 0.95, r1: 0.03, none: 0.02 }
+  try {
+    for (let i = 0; i < 2; i++) {
+      const out = await plan('apply the settings to every row', tree, { r1: 0.92, r2: 0.05, none: 0.03 })
+      assert.equal(out.ok, true, JSON.stringify(out))
+      assert.deepEqual(pressed, ['1.1/3'])
+    }
+  } finally { process.stderr.write = write }
+  assert.deepEqual(desk.served.slice(-2).map((c: { build: string | null }) => c.build), ['typesafe/jev-1.14-20991231', 'typesafe/jev-1.14-20991231'])
+  assert.equal(lines.filter((l) => l.includes('jev answers from build typesafe/jev-1.14-20991231')).length, 1, lines.join(''))
+  build = null
+  text = 'typesafe/jev-1.14-20261014'
 })
 
 test('a grounded click is taken when jev sees the target at the point in a crop, and without that answer when jev says the element under it is the target', async () => {
