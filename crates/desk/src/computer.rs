@@ -1603,6 +1603,27 @@ impl Cua {
         done
     }
 
+    /// The whole screen as `(width, height, RGB)` over MIT-SHM.
+    pub fn screen_rgb(&self) -> Option<(u32, u32, Vec<u8>)> {
+        self.shm(Grabber::rgb)
+    }
+
+    /// Base64 of the screen rectangle `[x, y, w, h]` clipped to the screen, encoded like a screenshot.
+    pub fn crop(&self, rect: [f64; 4]) -> Option<String> {
+        let (rect, rgb) = self.region_rgb(rect).ok()?;
+        encode(rect[2].unsigned_abs(), rect[3].unsigned_abs(), &rgb).map(|i| B64.encode(i))
+    }
+
+    /// Screen pixels per pixel of the last screenshot of the session `args` name, so a screen point maps to it.
+    pub fn screenshot_scale(&self, args: &Value) -> f64 {
+        self.scale_of(&session_of(args))
+    }
+
+    /// The fixed wait after an input that has no frame from before it.
+    pub async fn settled(&self) {
+        self.settle(None, 1.0).await;
+    }
+
     /// The screen rectangle `[x, y, w, h]`, clipped to the screen, as `(width, height, PNG)` over MIT-SHM.
     pub fn region_png(&self, rect: [f64; 4]) -> Result<(u32, u32, Vec<u8>), String> {
         let (rect, rgb) = self.region_rgb(rect)?;
