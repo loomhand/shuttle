@@ -518,7 +518,7 @@ impl Cua {
 
     /// Screenshot in a one-shot driver session that is ended right away.
     pub async fn screenshot_once(&self, max_edge: Option<u32>) -> Result<Option<String>, String> {
-        let session = format!("shot-{}", uuid::Uuid::new_v4().simple());
+        let session = crate::new_id("shot");
         let shot = self.screenshot(&session, max_edge).await;
         self.scales().remove(&session);
         self.driver_scales().remove(&session);
@@ -820,7 +820,7 @@ impl Cua {
                 wait,
             });
         }
-        let probe = format!("still-{}", uuid::Uuid::new_v4().simple());
+        let probe = crate::new_id("still");
         let before = match self.frame(Some(&probe)).await {
             Some(frame) => Some(Before {
                 probe: Some(probe),
@@ -994,10 +994,7 @@ impl Cua {
         active: Option<u32>,
         scale: f64,
     ) -> String {
-        let mut titles = self
-            .titles
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut titles = crate::lock(&self.titles);
         let mut out = String::new();
         let mut opened = Vec::new();
         for p in after {
@@ -1071,15 +1068,11 @@ impl Cua {
     }
 
     fn scales(&self) -> std::sync::MutexGuard<'_, HashMap<String, f64>> {
-        self.scales
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::lock(&self.scales)
     }
 
     fn last_scale(&self) -> std::sync::MutexGuard<'_, f64> {
-        self.last_scale
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::lock(&self.last_scale)
     }
 
     fn keep_scale(&self, session: &str, scale: f64) {
@@ -1094,9 +1087,7 @@ impl Cua {
     }
 
     fn driver_scales(&self) -> std::sync::MutexGuard<'_, HashMap<String, f64>> {
-        self.driver_scales
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::lock(&self.driver_scales)
     }
 
     /// The factor by which the driver maps `session`'s desktop x,y; a screen pixel divided by it lands on itself.
@@ -1106,10 +1097,7 @@ impl Cua {
 
     /// Runs `read` on the MIT-SHM grabber, opening it when needed; `None` when it is unavailable or fails.
     fn shm<T>(&self, read: impl FnOnce(&Grabber) -> Result<T, String>) -> Option<T> {
-        let mut slot = self
-            .grabber
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slot = crate::lock(&self.grabber);
         if slot.is_none() {
             match Grabber::open() {
                 Ok(g) => *slot = Some(g),
@@ -1330,9 +1318,7 @@ impl Cua {
     /// after: the virtual master keyboard the driver makes for it would outlive the call, and while one
     /// exists Chrome drops core keyboard input, from XTest and VNC alike.
     fn once(&self, req: &Value) -> Option<String> {
-        req.get("pid")
-            .is_some()
-            .then(|| format!("input-{}", uuid::Uuid::new_v4().simple()))
+        req.get("pid").is_some().then(|| crate::new_id("input"))
     }
 
     async fn end_once(&self, once: Option<String>) {
@@ -1525,7 +1511,7 @@ impl Cua {
             if self.pixel_click(x, y).await.is_err() {
                 continue;
             }
-            let probe = format!("menu-{}", uuid::Uuid::new_v4().simple());
+            let probe = crate::new_id("menu");
             let state = self.request(&probe, "get_window_state", req.clone()).await;
             let _ = self.request(&probe, "end_session", json!({})).await;
             timing::mark("twin");
@@ -1598,7 +1584,7 @@ impl Cua {
 
     /// The desk tools' other driver calls, each in a driver session of its own.
     pub async fn desk_call(&self, tool: &str, req: Value) -> Result<Value, String> {
-        let once = format!("desk-{}", uuid::Uuid::new_v4().simple());
+        let once = crate::new_id("desk");
         let done = self.request(&once, tool, req).await;
         self.end_once(Some(once)).await;
         done
@@ -1635,14 +1621,7 @@ impl Cua {
     pub fn region_png(&self, rect: [f64; 4]) -> Result<(u32, u32, Vec<u8>), String> {
         let (rect, rgb) = self.region_rgb(rect)?;
         let (rw, rh) = (rect[2].unsigned_abs(), rect[3].unsigned_abs());
-        let mut out = Vec::new();
-        let mut enc = png::Encoder::new(&mut out, rw, rh);
-        enc.set_color(png::ColorType::Rgb);
-        enc.set_depth(png::BitDepth::Eight);
-        enc.write_header()
-            .and_then(|mut w| w.write_image_data(&rgb))
-            .map_err(|e| format!("encode PNG: {e}"))?;
-        Ok((rw, rh, out))
+        Ok((rw, rh, png_rgb(rw, rh, &rgb)?))
     }
 
     /// The screen rectangle `[x, y, w, h]` clipped to the screen, and its RGB rows over MIT-SHM.
@@ -1666,7 +1645,7 @@ impl Cua {
     /// The desktop-addressed input `req` of `tool` in a driver session of its own, whose x,y no capture maps.
     async fn desktop_input(&self, tool: &str, mut req: Value) -> Result<Value, String> {
         req["target"] = json!({"kind": "desktop", "display_id": "primary"});
-        let once = format!("input-{}", uuid::Uuid::new_v4().simple());
+        let once = crate::new_id("input");
         let done = self.request(&once, tool, req).await;
         self.end_once(Some(once)).await;
         done
@@ -1721,9 +1700,7 @@ impl Cua {
     }
 
     fn last_click(&self) -> std::sync::MutexGuard<'_, Option<(Instant, f64, f64)>> {
-        self.last_click
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::lock(&self.last_click)
     }
 
     /// One driver call; a result the driver marks isError comes back as is.
@@ -2395,6 +2372,17 @@ fn encode(width: u32, height: u32, rgb: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Whether every [`COLOR_STRIDE`]th pixel shows more than [`PHOTO_COLORS`] distinct colours.
+pub(super) fn png_rgb(width: u32, height: u32, rgb: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::new(&mut out, width, height);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .and_then(|mut w| w.write_image_data(rgb))
+        .map_err(|e| format!("encode PNG: {e}"))?;
+    Ok(out)
+}
+
 fn photo(rgb: &[u8]) -> bool {
     let mut seen = HashSet::new();
     rgb.as_chunks::<3>()
@@ -2477,6 +2465,17 @@ fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
 mod tests {
     use super::super::browser::tests::{slow_chrome, web_chrome};
     use super::*;
+
+    #[test]
+    fn png_rgb_round_trips_through_decode_png() {
+        let rgb = [1, 2, 3, 4, 5, 6];
+        let (info, data) = decode_png(&png_rgb(2, 1, &rgb).unwrap()).unwrap();
+        assert_eq!(
+            (info.width, info.height, info.color_type),
+            (2, 1, png::ColorType::Rgb)
+        );
+        assert_eq!(&data[..6], &rgb);
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
