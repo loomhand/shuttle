@@ -148,6 +148,7 @@ impl Cua {
                 "pid": pid,
                 "include_screenshot": false,
                 "max_elements": STATE_ELEMENTS,
+                "tree_format": "elements",
             });
             if let Some(id) = window_id {
                 req["window_id"] = id.into();
@@ -1512,8 +1513,7 @@ impl Cua {
         menus: &[i64],
     ) -> Option<(f64, f64)> {
         let owner = u32::try_from(pid).ok()?;
-        let mut req =
-            json!({"pid": pid, "include_screenshot": false, "max_elements": STATE_ELEMENTS});
+        let mut req = json!({"pid": pid, "include_screenshot": false, "max_elements": STATE_ELEMENTS, "tree_format": "elements"});
         if let Some(id) = window_id {
             req["window_id"] = id.into();
         }
@@ -1591,9 +1591,11 @@ impl Cua {
         if xtest::type_mapped(text)? {
             return Ok(());
         }
-        self.desktop_input("type_text", json!({"text": text}))
-            .await
-            .map(|_| ())
+        for run in text_runs(text) {
+            self.desktop_input("type_text", json!({"text": run}))
+                .await?;
+        }
+        Ok(())
     }
 
     /// The desk tools' other driver calls, each in a driver session of its own.
