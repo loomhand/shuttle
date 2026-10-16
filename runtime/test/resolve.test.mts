@@ -11,6 +11,7 @@ type Spec = Omit<El, 'ref' | 'depth' | 'states'> & { states?: string[] }
 
 const win = { id: '1.1/1', title: 'Portal', role: 'frame', pid: process.pid, active: true }
 const nodes: El[] = []
+const shell: { win: { id: string; title: string; role: string; pid: number; active: boolean }; nodes: El[] }[] = []
 const pressed: string[] = []
 const clicked: string[] = []
 const asked: { model: string; image: boolean }[] = []
@@ -30,8 +31,11 @@ const toolhost = createServer((s) => {
     if (buf.length < 4 || buf.length < 4 + buf.readUInt32BE(0)) return
     const { tool, args } = JSON.parse(buf.subarray(4).toString())
     let text = '{"ok":true}'
-    if (tool === 'desk_windows') text = JSON.stringify([win])
-    if (tool === 'desk_snapshot') text = JSON.stringify({ window: win, nodes, truncated: false, text: '- frame "Portal"' })
+    if (tool === 'desk_windows') text = JSON.stringify([win, ...shell.map((x) => x.win)])
+    if (tool === 'desk_snapshot') {
+      const x = shell.find((y) => y.win.id === args.id)
+      text = JSON.stringify(x ? { window: x.win, nodes: x.nodes, truncated: false } : { window: win, nodes, truncated: false, text: '- frame "Portal"' })
+    }
     if (tool === 'desk_press') { pressed.push(args.id); text = '{"ok":true,"how":"click"}' }
     if (tool === 'desk_shot') text = JSON.stringify({ png_b64: gray(args.w ?? 1280, args.h ?? 800).toString('base64') })
     if (tool === 'desk_screen') text = '{"width":1280,"height":800}'
@@ -451,4 +455,30 @@ test('a jev pick of an element whose role the target\'s own word rules out, a sp
   assert.equal(radio.ok, true, JSON.stringify(radio))
   assert.deepEqual(pressed, ['1.1/4'])
   build = null
+})
+
+test('a target the focused window lacks resolves in the panel or desktop window when it names the dock, panel, taskbar or desktop, and only then', { skip: process.platform !== 'linux' }, async () => {
+  const tree = [
+    { id: '1.1/1', parent: -1, role: 'dialog', name: 'LibreOffice 24.2 Document Recovery' },
+    { id: '1.1/2', parent: 0, role: 'button', name: 'Start' },
+  ]
+  shell.push({
+    win: { id: '1.5/2', title: '', role: 'window', pid: 533, active: false },
+    nodes: [
+      { ref: 0, id: '1.5/20', parent: -1, depth: 0, role: 'window', name: '', states: ['showing'], bounds: [0, 752, 1280, 48] },
+      { ref: 1, id: '1.5/21', parent: 0, depth: 1, role: 'button', name: 'File Manager', states: ['showing'], bounds: [592, 752, 48, 48] },
+      { ref: 2, id: '1.5/22', parent: 0, depth: 1, role: 'togglebutton', name: 'Directory Menu', states: ['showing'], bounds: [744, 752, 48, 48] },
+    ],
+  })
+  try {
+    const dock = await (await screen(tree, {})).main({ locate: { target: 'the File Manager launcher in the bottom dock', press: true } })
+    assert.equal(dock.found, true, JSON.stringify(dock))
+    assert.deepEqual([dock.name, dock.window, dock.pid, dock.bounds], ['File Manager', '', 533, [592, 752, 48, 48]])
+    assert.deepEqual(pressed, ['1.5/21'])
+    const unnamed = await (await screen(tree, {})).main({ locate: { target: 'the File Manager launcher', press: true } })
+    assert.equal(unnamed.found, false, JSON.stringify(unnamed))
+    assert.deepEqual(pressed, [])
+  } finally {
+    shell.length = 0
+  }
 })

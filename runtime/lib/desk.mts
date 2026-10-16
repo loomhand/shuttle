@@ -57,8 +57,8 @@ export const front = (ws: Win[]): Win | null => ws.find((w) => w.active && (w.ti
 export async function focused(): Promise<Win | null> {
   return front(await windows())
 }
-export const snapshot = (window?: string, o: { pid?: number | null; keys?: boolean; bounds?: boolean } = {}): Promise<Snap> =>
-  call('snapshot', { window, pid: o.pid ?? undefined, keys: o.keys, bounds: o.bounds })
+export const snapshot = (window?: string, o: { pid?: number | null; id?: string; keys?: boolean; bounds?: boolean } = {}): Promise<Snap> =>
+  call('snapshot', { window, pid: o.pid ?? undefined, id: o.id, keys: o.keys, bounds: o.bounds })
 export const outline = async (window?: string): Promise<string> => (await call('snapshot', { window, text: true })).text
 export const find = (name: string, o: { role?: string; window?: string } = {}): Promise<{ window: Win; found: El[] }> => call('find', { name, ...o })
 export const read = (id: string, o: { text?: boolean } = {}): Promise<El> => call('read', { id, text: o.text })

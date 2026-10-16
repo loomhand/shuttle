@@ -41,6 +41,7 @@ const FILLER = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', '
 const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close']
 const CUT = '\n(the outline holds only the start of the web page: use the browser_* tools for page content)'
 const SHELL_WINDOWS = ({ linux: /^(Desktop|xfce4-panel)$/, win32: /^Program Manager$/ } as Record<string, RegExp>)[OS] ?? /^$/
+const SHELL_TARGET = /\b(dock|panel|taskbar|desktop)\b/i
 const CHOOSER = ({ linux: /File Chooser Widget/, win32: /^\s*- (combobox|textbox) "File name:?"/m, darwin: /^\s*- text "Save As:"/m } as Record<string, RegExp>)[OS] ?? /$^/
 const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -892,11 +893,20 @@ async function located(target: string, press: boolean) {
   const t0 = Date.now()
   const w = await focused()
   if (!w) return { found: false, why: 'no focused window', ms: Date.now() - t0 }
-  const nodes = parse(await desk.snapshot(w.title, { pid: w.pid, bounds: true }))
+  let nodes = parse(await desk.snapshot(w.title, { pid: w.pid, bounds: true }))
   let hit: Hit | null = null
-  try { hit = await resolve(nodes, target, undefined, undefined, 0.7) } catch (e) { if (!(e instanceof Surprise)) throw e; return { found: false, why: e.reason, window: w.title, ms: Date.now() - t0 } }
+  let at = w
+  try {
+    hit = await resolve(nodes, target, undefined, undefined, 0.7)
+    const shell = OS === 'linux' && !hit && SHELL_TARGET.test(target) ? (await desk.windows()).filter((x) => x.id !== w.id && (SHELL_WINDOWS.test(x.title) || (!x.title.trim() && x.role === 'window'))) : []
+    for (const x of shell) {
+      nodes = parse(await desk.snapshot(x.title, { id: x.id, bounds: true }))
+      hit = await resolve(nodes, target, undefined, undefined, 0.7)
+      if (hit) { at = x; break }
+    }
+  } catch (e) { if (!(e instanceof Surprise)) throw e; return { found: false, why: e.reason, window: w.title, ms: Date.now() - t0 } }
   if (!hit) return { found: false, why: `no element of "${w.title}" matches`, window: w.title, ms: Date.now() - t0 }
-  const out: Record<string, unknown> = { found: true, how: hit.how, role: hit.n.role, name: hit.n.name, bounds: hit.n.bounds ?? null, shown: hit.n.shown, shift: drawnShift(nodes, hit.i), window: w.title, pid: w.pid }
+  const out: Record<string, unknown> = { found: true, how: hit.how, role: hit.n.role, name: hit.n.name, bounds: hit.n.bounds ?? null, shown: hit.n.shown, shift: drawnShift(nodes, hit.i), window: at.title, pid: at.pid }
   if (press) {
     if (hit.n.role === 'menuitem') await choose(nodes, hit.n, out, true); else out.via = await act(hit.n)
     await settle(w.title)
