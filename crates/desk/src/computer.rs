@@ -17,7 +17,7 @@ use tokio::time::Instant;
 
 use super::browser::Browser;
 use super::desk::key_names;
-use super::rpc::Output;
+use super::rpc::{self, Output};
 use super::scope;
 use super::timing;
 use super::volatile::{Block, Shown, Volatile};
@@ -124,8 +124,7 @@ impl Cua {
     pub async fn state(&self, args: Value) -> Result<Output, String> {
         self.touch();
         let session = session_of(&args);
-        let a: StateArgs =
-            serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
+        let a: StateArgs = rpc::parse(args)?;
         let windows = self
             .request(&session, "list_windows", json!({"on_screen_only": true}))
             .await?;
@@ -229,12 +228,10 @@ impl Cua {
         self.touch();
         let session = session_of(&args);
         if self.plans && args.get("actions").is_some() {
-            let list: ActList =
-                serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
+            let list: ActList = rpc::parse(args)?;
             return self.act_list(browser, owner, &session, list).await;
         }
-        let a: ActArgs =
-            serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
+        let a: ActArgs = rpc::parse(args)?;
         self.act_one(browser, owner, &session, a).await
     }
 
