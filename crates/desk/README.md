@@ -1,6 +1,6 @@
 # cocoonbox-desk
 
-The desk host of a Windows or macOS box. It serves the Linux toolhost's desk calls (`desk_windows`, `desk_snapshot`, `desk_find`, `desk_read`, `desk_press`, `desk_act`, `desk_at`, `desk_key`, `desk_type`, `desk_click`, `desk_focus`, `desk_close`, `desk_launch`, `desk_shot`, `desk_screen`) with the same framing and JSON, so `desk.mts`, `gui_plan.mts` and the `desk` CLI run unchanged. It imports nothing from `agent/`; the contract is the wire format in `docs/contracts.md`.
+The desk host of a Windows or macOS box. It serves the Linux toolhost's desk calls (`desk_windows`, `desk_snapshot`, `desk_find`, `desk_read`, `desk_press`, `desk_act`, `desk_at`, `desk_key`, `desk_type`, `desk_click`, `desk_focus`, `desk_close`, `desk_launch`, `desk_shot`, `desk_screen`) with the same framing and JSON, so `desk.mts`, `gui_plan.mts` and the `desk` CLI run unchanged. It imports nothing from `agent/`; the contract is the wire format in `docs/contracts.md` (Toolhost wire), and both hosts take it, the desk call arguments and the window and name matching from `desk-core/`.
 
 - `cocoonbox-desk serve [ENDPOINT]` serves one call per connection: a big-endian u32 length and JSON each way. The endpoint is `TOOLHOST_SOCKET`, else `~/Library/Caches/cocoonbox/desk.sock` (mode 0600) on macOS and `\\.\pipe\cocoonbox-desk` (local clients only) on Windows.
 - `cocoonbox-desk VERB [key=value ...|JSON]` sends one call and prints the result, as `desk` does on Linux.

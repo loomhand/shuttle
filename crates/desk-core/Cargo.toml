@@ -1,0 +1,25 @@
+[package]
+name = "cocoonbox-desk-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "The desk wire, call arguments and window matching shared by the toolhost and the desk host"
+license = "AGPL-3.0-only"
+publish = false
+
+[lib]
+name = "desk_core"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["io-util"] }
+zeroize = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "macros", "rt"] }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+undocumented_unsafe_blocks = "deny"
