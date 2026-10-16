@@ -21,14 +21,12 @@ use super::rpc::Output;
 use super::scope;
 use super::timing;
 use super::volatile::{Block, Shown, Volatile};
-use super::xshm::{self, Grabber, Modal, Placement};
+use super::xshm::{self, Grabber, Modal, Placement, SHELL_APPS};
 use super::xtest;
 
 const STATE_ELEMENTS: u64 = 300;
 const TREE_CHARS: usize = 15_000;
 const MIN_WINDOW: i64 = 10;
-pub(super) const PANEL_APP: &str = "Xfce4-panel";
-pub(super) const SHELL_APPS: [&str; 2] = [PANEL_APP, "Xfdesktop"];
 const CHROME_CLASS: &str = "Google-chrome";
 const COMMIT_KEYS: [&str; 6] = ["return", "enter", "kp_enter", "f5", "alt+left", "alt+right"];
 const SETTLE: Duration = Duration::from_millis(600);
