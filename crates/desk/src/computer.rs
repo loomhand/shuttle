@@ -27,7 +27,8 @@ use super::xtest;
 const STATE_ELEMENTS: u64 = 300;
 const TREE_CHARS: usize = 15_000;
 const MIN_WINDOW: i64 = 10;
-pub(super) const SHELL_APPS: [&str; 2] = ["Xfce4-panel", "Xfdesktop"];
+pub(super) const PANEL_APP: &str = "Xfce4-panel";
+pub(super) const SHELL_APPS: [&str; 2] = [PANEL_APP, "Xfdesktop"];
 const CHROME_CLASS: &str = "Google-chrome";
 const COMMIT_KEYS: [&str; 6] = ["return", "enter", "kp_enter", "f5", "alt+left", "alt+right"];
 const SETTLE: Duration = Duration::from_millis(600);
@@ -1606,6 +1607,12 @@ impl Cua {
     /// The whole screen as `(width, height, RGB)` over MIT-SHM.
     pub fn screen_rgb(&self) -> Option<(u32, u32, Vec<u8>)> {
         self.shm(Grabber::rgb)
+    }
+
+    /// Whether the screen point `(x, y)` shows a window title: a desktop panel or a window manager's title bar.
+    pub fn title_at(&self, x: f64, y: f64) -> bool {
+        self.shm(|g| g.title_at(x.round() as i32, y.round() as i32))
+            .unwrap_or(false)
     }
 
     /// Base64 of the screen rectangle `[x, y, w, h]` clipped to the screen, encoded like a screenshot.
