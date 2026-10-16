@@ -6,8 +6,13 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
-use serde::Deserialize;
-use serde::de::DeserializeOwned;
+use desk_core::args::{
+    ActArgs, AtArgs, ClickArgs, FindArgs, IdArgs, KeyArgs, LaunchArgs, ReadArgs, ShotArgs,
+    SnapArgs, TypeArgs, WindowArgs, parse,
+};
+use desk_core::press::{MENU_POLL, MENU_POLLS, SELECTED_ROLES};
+use desk_core::text::{MAX_FOUND, NAME_CHARS, matches, ms, quote};
+use desk_core::window::{self, TITLE_TIERS, app_window, title_matches};
 use serde_json::{Map, Value, json};
 
 use crate::driver::{Input, desktop, text_of};
@@ -18,14 +23,7 @@ use crate::worker::Worker;
 
 const CALL_LIMIT: Duration = Duration::from_secs(3);
 const TREE_LIMIT: Duration = Duration::from_secs(10);
-const NAME_CHARS: usize = 80;
 const READ_CHARS: usize = 64 << 10;
-const MAX_FOUND: usize = 20;
-const MENU_POLL: Duration = Duration::from_millis(30);
-const MENU_POLLS: u32 = 10;
-const SELECTED_ROLES: [&str; 5] = ["tab", "option", "radio", "listitem", "treeitem"];
-const TITLE_TIERS: usize = 3;
-const TITLE_SEPARATORS: [&str; 2] = [" - ", " — "];
 
 /// The desk of one OS: `B` reads and acts on elements, `D` sends input.
 pub struct Desk<B, D> {
@@ -91,7 +89,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let (tree, found) = self
             .access
             .run(TREE_LIMIT, move |b| {
-                let frame = pick(b.frames()?, window.as_deref(), pid)?;
+                let frame = window::pick(b.frames()?, window.as_deref(), pid)?;
                 let found = started.elapsed().as_micros();
                 Ok((b.tree(&frame, extras)?, found))
             })
@@ -130,7 +128,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let tree = self
             .access
             .run(TREE_LIMIT, move |b| {
-                let frame = pick(b.frames()?, window.as_deref(), pid)?;
+                let frame = window::pick(b.frames()?, window.as_deref(), pid)?;
                 b.tree(&frame, extras)
             })
             .await?;
@@ -210,7 +208,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn at(&self, a: AtArgs) -> Result<String, String> {
         self.access
             .run(CALL_LIMIT, move |b| {
-                let frame = pick(b.frames()?, a.window.as_deref(), a.pid)?;
+                let frame = window::pick(b.frames()?, a.window.as_deref(), a.pid)?;
                 let Some(hit) = b.at(&frame.id, a.x, a.y)? else {
                     return Ok(json!({"found": null, "window": frame.json()}).to_string());
                 };
@@ -436,51 +434,6 @@ fn reachable<B: Access>(b: &mut B, id: &str, node: &Node, chain: &[String]) -> O
     reaches.then_some((cx, cy))
 }
 
-/// The window named `want` (by [`title_matches`] tiers), else the focused one;
-/// among equals the active one, else the newest.
-pub fn pick(frames: Vec<Frame>, want: Option<&str>, pid: Option<u32>) -> Result<Frame, String> {
-    let frames: Vec<Frame> = frames
-        .into_iter()
-        .filter(|f| pid.is_none_or(|p| f.pid == Some(p)))
-        .collect();
-    let Some(want) = want else {
-        let active: Vec<&Frame> = frames
-            .iter()
-            .filter(|f| f.active && (f.role != "window" || !f.title.is_empty()))
-            .collect();
-        return best(&active).ok_or_else(|| "no focused window".to_owned());
-    };
-    for tier in 0..TITLE_TIERS {
-        let hits: Vec<&Frame> = frames
-            .iter()
-            .filter(|f| title_matches(tier, &f.title, want))
-            .collect();
-        if let Some(f) = best(&hits) {
-            return Ok(f);
-        }
-    }
-    app_window(&frames, want)
-}
-
-/// The indexes of the nodes named `name`, else of those that contain it, ignoring case and punctuation.
-pub fn matches(nodes: &[Node], name: &str, role: Option<&str>) -> Vec<usize> {
-    let want = norm(name);
-    let pool: Vec<usize> = (0..nodes.len())
-        .filter(|&i| role.is_none_or(|r| r.split('|').any(|r| r == nodes[i].role)))
-        .collect();
-    let exact: Vec<usize> = pool
-        .iter()
-        .copied()
-        .filter(|&i| norm(&nodes[i].name) == want)
-        .collect();
-    if !exact.is_empty() {
-        return exact;
-    }
-    pool.into_iter()
-        .filter(|&i| !want.is_empty() && norm(&nodes[i].name).contains(&want))
-        .collect()
-}
-
 /// One line per node: `- role "name" [disabled] [checked] [shortcut] [id=ID]: "value"`, indented by depth.
 pub fn outline(nodes: &[Node], max_chars: usize) -> String {
     let mut out = String::new();
@@ -552,31 +505,6 @@ pub fn crop_png(
     Ok((cw, ch, out))
 }
 
-/// Lower case without the punctuation that labels add: underscores, ellipses, a trailing colon.
-pub fn norm(s: &str) -> String {
-    let s = s.to_lowercase().replace(['_', '…'], "").replace("...", "");
-    let s = s.trim().trim_end_matches(':');
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// One JSON object, or `key=value` pairs whose values parse as JSON when they can.
-pub fn cli_args(rest: &[String]) -> Result<Value, String> {
-    if let [one] = rest
-        && one.trim_start().starts_with('{')
-    {
-        return serde_json::from_str(one).map_err(|e| format!("arguments: {e}"));
-    }
-    let mut args = Map::new();
-    for pair in rest {
-        let (k, v) = pair
-            .split_once('=')
-            .ok_or_else(|| format!("{pair:?} is not key=value"))?;
-        let v = serde_json::from_str(v).unwrap_or_else(|_| Value::String(v.to_owned()));
-        args.insert(k.to_owned(), v);
-    }
-    Ok(Value::Object(args))
-}
-
 /// The US-layout keys that type `c`, shift first for a shifted character; none for a character Windows types as Unicode.
 fn keystroke(c: char) -> Option<Vec<String>> {
     const SHIFTED: &str = "!@#$%^&*()_+:\"<>?~{}|";
@@ -597,14 +525,6 @@ fn keystroke(c: char) -> Option<Vec<String>> {
     }
 }
 
-fn best(c: &[&Frame]) -> Option<Frame> {
-    c.iter()
-        .rev()
-        .find(|f| f.active)
-        .or_else(|| c.last())
-        .map(|f| (*f).clone())
-}
-
 fn titled(frames: Vec<Frame>, window: &str, pid: Option<u32>) -> Result<Frame, String> {
     let frames: Vec<Frame> = frames
         .into_iter()
@@ -618,160 +538,6 @@ fn titled(frames: Vec<Frame>, window: &str, pid: Option<u32>) -> Result<Frame, S
         Some(f) => Ok(f.clone()),
         None => app_window(&frames, window),
     }
-}
-
-/// Whether window title `title` matches `want` at `tier`: 0 the same, 1 the same ignoring case and outer
-/// spaces, 2 containing it ignoring case.
-fn title_matches(tier: usize, title: &str, want: &str) -> bool {
-    let lower = want.trim().to_lowercase();
-    match tier {
-        0 => title == want,
-        1 => title.trim().to_lowercase() == lower,
-        _ => title.to_lowercase().contains(&lower),
-    }
-}
-
-/// The window whose title ends with the app part of `want`, such as ` - Notepad` of `a.txt - Notepad`:
-/// the only one, else the active one among several; more than one and none active is an error naming them.
-fn app_window(frames: &[Frame], want: &str) -> Result<Frame, String> {
-    let lower = want.trim().to_lowercase();
-    let app = TITLE_SEPARATORS
-        .iter()
-        .filter_map(|s| lower.rfind(s))
-        .max()
-        .map(|i| &lower[i..]);
-    let hits: Vec<&Frame> = frames
-        .iter()
-        .filter(|f| app.is_some_and(|app| f.title.trim_end().to_lowercase().ends_with(app)))
-        .collect();
-    let active: Vec<&Frame> = hits.iter().copied().filter(|f| f.active).collect();
-    match (hits.as_slice(), active.as_slice()) {
-        ([one], _) | (_, [one]) => Ok(Frame::clone(one)),
-        ([], _) => {
-            let titles: Vec<&str> = frames.iter().map(|f| f.title.as_str()).collect();
-            Err(format!("no window {want:?}; windows: {titles:?}"))
-        }
-        _ => {
-            let titles: Vec<&str> = hits.iter().map(|f| f.title.as_str()).collect();
-            Err(format!(
-                "no window {want:?}; windows of its app: {titles:?}"
-            ))
-        }
-    }
-}
-
-fn quote(s: &str, max: usize) -> String {
-    let cut: String = s.chars().take(max).collect();
-    cut.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-}
-
-fn ms(us: u128) -> Value {
-    json!((us as f64 / 100.0).round() / 10.0)
-}
-
-fn parse<T: DeserializeOwned>(args: Value) -> Result<T, String> {
-    serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))
-}
-
-#[derive(Deserialize)]
-struct SnapArgs {
-    #[serde(default)]
-    window: Option<String>,
-    #[serde(default)]
-    pid: Option<u32>,
-    #[serde(default)]
-    text: bool,
-    #[serde(default)]
-    keys: bool,
-    #[serde(default)]
-    bounds: Option<bool>,
-    #[serde(default)]
-    max_chars: Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct FindArgs {
-    name: String,
-    #[serde(default)]
-    role: Option<String>,
-    #[serde(default)]
-    window: Option<String>,
-    #[serde(default)]
-    pid: Option<u32>,
-}
-
-#[derive(Deserialize)]
-struct ReadArgs {
-    id: String,
-    #[serde(default)]
-    text: bool,
-}
-
-#[derive(Deserialize)]
-struct IdArgs {
-    id: String,
-}
-
-#[derive(Deserialize)]
-struct ActArgs {
-    id: String,
-    action: String,
-}
-
-#[derive(Deserialize)]
-struct AtArgs {
-    x: i32,
-    y: i32,
-    #[serde(default)]
-    window: Option<String>,
-    #[serde(default)]
-    pid: Option<u32>,
-}
-
-#[derive(Deserialize)]
-struct KeyArgs {
-    keys: String,
-}
-
-#[derive(Deserialize)]
-struct TypeArgs {
-    text: String,
-}
-
-#[derive(Deserialize)]
-struct ClickArgs {
-    x: f64,
-    y: f64,
-    #[serde(default)]
-    button: Option<String>,
-    #[serde(default)]
-    count: Option<u32>,
-}
-
-#[derive(Deserialize)]
-struct WindowArgs {
-    window: String,
-    #[serde(default)]
-    pid: Option<u32>,
-}
-
-#[derive(Deserialize)]
-struct LaunchArgs {
-    app: String,
-}
-
-#[derive(Deserialize)]
-struct ShotArgs {
-    #[serde(default)]
-    x: Option<f64>,
-    #[serde(default)]
-    y: Option<f64>,
-    #[serde(default)]
-    w: Option<f64>,
-    #[serde(default)]
-    h: Option<f64>,
 }
 
 #[cfg(test)]
@@ -959,18 +725,23 @@ mod tests {
             frame("Save As", true, 7),
             frame("Settings", false, 9),
         ];
-        assert_eq!(pick(frames.clone(), None, None).unwrap().title, "Save As");
         assert_eq!(
-            pick(frames.clone(), Some("settings"), None).unwrap().title,
+            window::pick(frames.clone(), None, None).unwrap().title,
+            "Save As"
+        );
+        assert_eq!(
+            window::pick(frames.clone(), Some("settings"), None)
+                .unwrap()
+                .title,
             "Settings"
         );
         assert_eq!(
-            pick(frames.clone(), Some("notepad"), Some(7))
+            window::pick(frames.clone(), Some("notepad"), Some(7))
                 .unwrap()
                 .title,
             "Untitled - Notepad"
         );
-        assert!(pick(frames, Some("Notepad"), Some(9)).is_err());
+        assert!(window::pick(frames, Some("Notepad"), Some(9)).is_err());
     }
 
     #[test]
@@ -987,7 +758,7 @@ mod tests {
             frame("*b.txt - Notepad", true),
             frame("Save As", false),
         ];
-        let picked = |want: &str| pick(frames.clone(), Some(want), None).map(|f| f.title);
+        let picked = |want: &str| window::pick(frames.clone(), Some(want), None).map(|f| f.title);
         assert_eq!(picked("Untitled - Notepad").unwrap(), "*b.txt - Notepad");
         assert_eq!(picked("a.txt - Notepad").unwrap(), "a.txt - Notepad");
         assert!(picked("Untitled - Paint").is_err());
@@ -1025,7 +796,7 @@ mod tests {
             frame("Save As", true),
         ];
         assert_eq!(
-            pick(none_active, Some("Untitled - Notepad"), None).unwrap_err(),
+            window::pick(none_active, Some("Untitled - Notepad"), None).unwrap_err(),
             "no window \"Untitled - Notepad\"; windows of its app: [\"a.txt - Notepad\", \"b.txt - Notepad\"]"
         );
     }
@@ -1173,17 +944,5 @@ mod tests {
         assert_eq!(k('/').as_deref(), Some("/"));
         assert_eq!(k('\\').as_deref(), Some("\\"));
         assert_eq!(k('é'), None);
-    }
-
-    #[test]
-    fn cli_arguments_are_json_or_pairs_with_json_values() {
-        let pairs =
-            cli_args(&["window=Save As".into(), "text=true".into(), "pid=7".into()]).unwrap();
-        assert_eq!(pairs, json!({"window": "Save As", "text": true, "pid": 7}));
-        assert_eq!(
-            cli_args(&[r#"{"id": "1/2"}"#.into()]).unwrap(),
-            json!({"id": "1/2"})
-        );
-        assert!(cli_args(&["nope".into()]).is_err());
     }
 }

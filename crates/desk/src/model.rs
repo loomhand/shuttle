@@ -1,5 +1,7 @@
 //! The platform-neutral desk model: windows, element trees and the accessibility calls each OS backend serves.
 
+use desk_core::text::Named;
+use desk_core::window::Window;
 use serde_json::{Value, json};
 
 /// The ARIA roles a caller can act on.
@@ -58,6 +60,24 @@ impl Frame {
     }
 }
 
+impl Window for Frame {
+    fn title(&self) -> &str {
+        &self.title
+    }
+
+    fn active(&self) -> bool {
+        self.active
+    }
+
+    fn pid(&self) -> Option<u32> {
+        self.pid
+    }
+
+    fn focusable(&self) -> bool {
+        self.role != "window" || !self.title.is_empty()
+    }
+}
+
 /// One element of a snapshot, in preorder; `parent` indexes the nearest listed ancestor.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Node {
@@ -110,6 +130,16 @@ impl Node {
             v["bounds"] = json!(b);
         }
         v
+    }
+}
+
+impl Named for Node {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn role(&self) -> &str {
+        self.role
     }
 }
 

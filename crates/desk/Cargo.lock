@@ -37,6 +37,7 @@ name = "cocoonbox-desk"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "cocoonbox-desk-core",
  "core-foundation",
  "png",
  "serde",
@@ -44,6 +45,16 @@ dependencies = [
  "tempfile",
  "tokio",
  "windows",
+]
+
+[[package]]
+name = "cocoonbox-desk-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -485,6 +496,12 @@ checksum = "3949bd5b99cafdf1c7ca86b43ca564028dfe27d66958f2470940f73d86d75b37"
 dependencies = [
  "windows-link",
 ]
+
+[[package]]
+name = "zeroize"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
 
 [[package]]
 name = "zlib-rs"

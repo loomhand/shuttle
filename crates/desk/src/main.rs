@@ -1,8 +1,8 @@
 use std::process::ExitCode;
 
-use cocoonbox_desk::desk::cli_args;
 use cocoonbox_desk::rpc::Call;
 use cocoonbox_desk::server;
+use desk_core::text::cli_args;
 
 const USAGE: &str = "usage: cocoonbox-desk serve [ENDPOINT] | cocoonbox-desk VERB [key=value ...|JSON]; verbs: windows, snapshot, find, read, press, act, at, key, type, click, focus, close, launch, shot, screen";
 

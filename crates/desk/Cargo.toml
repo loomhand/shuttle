@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 base64 = "0.23"
+cocoonbox-desk-core = { path = "../desk-core" }
 png = "0.18"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
