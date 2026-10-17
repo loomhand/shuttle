@@ -323,17 +323,16 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn click_at(&self, mut req: Value) -> Result<(), String> {
         if self.os == Os::Mac
             && let (Some(x), Some(y)) = (req["x"].as_f64(), req["y"].as_f64())
-            && let Some((pid, window_id, left, top)) = self.window_at(x, y).await?
+            && let Some(w) = self.window_at(x, y).await?
         {
-            let front = json!({"pid": pid, "window_id": window_id});
+            let front = json!({"pid": w.pid, "window_id": w.id});
             self.driver.call("bring_to_front", front).await?;
-            let window = json!({"session": WINDOW_SESSION, "pid": pid, "window_id": window_id});
-            self.driver.call("get_window_state", window).await?;
+            let (kx, ky) = self.pixels(&w).await?;
             req["session"] = WINDOW_SESSION.into();
-            req["pid"] = pid;
-            req["window_id"] = window_id;
-            req["x"] = (x - left).into();
-            req["y"] = (y - top).into();
+            req["pid"] = w.pid.into();
+            req["window_id"] = w.id.into();
+            req["x"] = ((w.point.0 - w.bounds[0]) * kx).into();
+            req["y"] = ((w.point.1 - w.bounds[1]) * ky).into();
             self.driver.call("click", req).await?;
             return Ok(());
         }
@@ -341,7 +340,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(())
     }
 
-    async fn window_at(&self, x: f64, y: f64) -> Result<Option<(Value, Value, f64, f64)>, String> {
+    async fn window_at(&self, x: f64, y: f64) -> Result<Option<Under>, String> {
         let scale = match self.scale.get() {
             Some(s) => *s,
             None => {
@@ -356,34 +355,47 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .driver
             .call("list_windows", json!({"on_screen_only": true}))
             .await?;
-        let (px, py) = (x / scale, y / scale);
+        let point = (x / scale, y / scale);
+        let bounds = |w: &Value| {
+            let b = &w["bounds"];
+            ["x", "y", "width", "height"].map(|k| b[k].as_f64().unwrap_or(0.0))
+        };
         let top = listed["structuredContent"]["windows"]
             .as_array()
             .into_iter()
             .flatten()
             .filter(|w| w["layer"] == 0)
             .filter(|w| {
-                let b = &w["bounds"];
-                let (bx, by) = (
-                    b["x"].as_f64().unwrap_or(0.0),
-                    b["y"].as_f64().unwrap_or(0.0),
-                );
-                let (bw, bh) = (
-                    b["width"].as_f64().unwrap_or(0.0),
-                    b["height"].as_f64().unwrap_or(0.0),
-                );
-                px >= bx && px < bx + bw && py >= by && py < by + bh
+                let [bx, by, bw, bh] = bounds(w);
+                point.0 >= bx && point.0 < bx + bw && point.1 >= by && point.1 < by + bh
             })
             .max_by_key(|w| w["z_index"].as_i64().unwrap_or(i64::MIN));
-        Ok(top.map(|w| {
-            let b = &w["bounds"];
-            (
-                w["pid"].clone(),
-                w["window_id"].clone(),
-                b["x"].as_f64().unwrap_or(0.0) * scale,
-                b["y"].as_f64().unwrap_or(0.0) * scale,
-            )
+        Ok(top.and_then(|w| {
+            Some(Under {
+                pid: w["pid"].as_i64()?,
+                id: w["window_id"].as_i64()?,
+                bounds: bounds(w),
+                point,
+            })
         }))
+    }
+
+    async fn pixels(&self, w: &Under) -> Result<(f64, f64), String> {
+        let read = json!({"session": WINDOW_SESSION, "pid": w.pid, "window_id": w.id});
+        let v = self.driver.call("get_window_state", read).await?;
+        let c = &v["structuredContent"];
+        let ratio = |px: &str, pt: &str| {
+            c[px]
+                .as_f64()
+                .zip(c["window_bounds"][pt].as_f64())
+                .filter(|&(_, pt)| pt > 0.0)
+                .map(|(px, pt)| px / pt)
+                .ok_or_else(|| format!("get_window_state of window {} has no {px}", w.id))
+        };
+        Ok((
+            ratio("screenshot_width", "width")?,
+            ratio("screenshot_height", "height")?,
+        ))
     }
 
     async fn focus(&self, a: WindowArgs) -> Result<String, String> {
@@ -440,6 +452,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             ..Output::default()
         })
     }
+}
+
+struct Under {
+    pid: i64,
+    id: i64,
+    bounds: [f64; 4],
+    point: (f64, f64),
 }
 
 /// What a press comes to after the backend's part of it.
@@ -1049,7 +1068,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_macos_click_targets_the_top_window_under_the_point_in_the_pixels_of_its_screenshot() {
+    async fn a_macos_click_targets_the_top_window_under_the_point_in_the_pixels_of_its_screenshot()
+    {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(notepad()), Screen(calls.clone()), Os::Mac);
         desk.run("desk_click", json!({"x": 300.0, "y": 200.0}))
