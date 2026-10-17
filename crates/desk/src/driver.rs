@@ -72,28 +72,11 @@ impl Driver {
         result(tool, &reply)
     }
 
-    #[cfg(unix)]
     async fn exchange(&self, line: Vec<u8>) -> Result<String, String> {
-        let stream = tokio::net::UnixStream::connect(&self.endpoint)
+        let stream = crate::server::connect(&self.endpoint)
             .await
             .map_err(|e| format!("connect cua-driver {}: {e}", self.endpoint))?;
         roundtrip(stream, line).await
-    }
-
-    #[cfg(windows)]
-    async fn exchange(&self, line: Vec<u8>) -> Result<String, String> {
-        use tokio::net::windows::named_pipe::ClientOptions;
-        const PIPE_BUSY: i32 = 231;
-        let pipe = loop {
-            match ClientOptions::new().open(&self.endpoint) {
-                Ok(pipe) => break pipe,
-                Err(e) if e.raw_os_error() == Some(PIPE_BUSY) => {
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-                Err(e) => return Err(format!("connect cua-driver {}: {e}", self.endpoint)),
-            }
-        };
-        roundtrip(pipe, line).await
     }
 }
 

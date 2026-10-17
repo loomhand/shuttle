@@ -24,12 +24,23 @@ use crate::worker::Worker;
 const CALL_LIMIT: Duration = Duration::from_secs(3);
 const TREE_LIMIT: Duration = Duration::from_secs(10);
 const READ_CHARS: usize = 64 << 10;
+const ACTIONS: [&str; 8] = [
+    "desk_press",
+    "desk_act",
+    "desk_key",
+    "desk_type",
+    "desk_click",
+    "desk_focus",
+    "desk_close",
+    "desk_launch",
+];
 
 /// The desk of one OS: `B` reads and acts on elements, `D` sends input.
 pub struct Desk<B, D> {
     access: Worker<B>,
     driver: D,
     os: Os,
+    acting: tokio::sync::Mutex<()>,
 }
 
 impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
@@ -39,11 +50,17 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             access: Worker::new(open),
             driver,
             os,
+            acting: tokio::sync::Mutex::new(()),
         }
     }
 
-    /// Runs desk call `tool`, a `desk_<verb>`.
+    /// Runs desk call `tool`, a `desk_<verb>`; actions run one at a time, reads alongside them.
     pub async fn run(&self, tool: &str, args: Value) -> Result<Output, String> {
+        let _turn = if ACTIONS.contains(&tool) {
+            Some(self.acting.lock().await)
+        } else {
+            None
+        };
         let text = match tool {
             "desk_windows" => self.windows().await?,
             "desk_snapshot" => self.snapshot(parse(args)?).await?,
@@ -878,6 +895,33 @@ mod tests {
             self.0.lock().unwrap().push((tool.to_owned(), args));
             Ok(json!({}))
         }
+    }
+
+    struct Slow(Arc<Mutex<Vec<String>>>);
+
+    impl Input for Slow {
+        async fn call(&self, _: &str, args: Value) -> Result<Value, String> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(args["key"].as_str().unwrap_or_default().to_owned());
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            Ok(json!({}))
+        }
+    }
+
+    #[tokio::test]
+    async fn two_typing_calls_at_once_type_one_after_the_other() {
+        let keys = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(notepad()), Slow(keys.clone()), Os::Windows);
+        let (a, b) = tokio::join!(
+            desk.run("desk_type", json!({"text": "aaa"})),
+            desk.run("desk_type", json!({"text": "bbb"}))
+        );
+        a.unwrap();
+        b.unwrap();
+        let got = keys.lock().unwrap().join("");
+        assert!(got == "aaabbb" || got == "bbbaaa", "{got}");
     }
 
     #[tokio::test]

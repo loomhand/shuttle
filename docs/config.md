@@ -14,7 +14,7 @@ shuttle reads one TOML file:
 shuttle calls models through one OpenAI-compatible endpoint with one key. The default is [OpenRouter](https://openrouter.ai), so the quickstart is:
 
 1. Create a key at <https://openrouter.ai/settings/keys>.
-2. `export OPENROUTER_API_KEY=sk-or-...` in the environment the daemon starts from.
+2. `export OPENROUTER_API_KEY=sk-or-...` in the environment the daemon starts from (on macOS, see [Keys](#keys)).
 3. Done: no configuration file is needed.
 
 The desk runtime calls models in four roles, each a model name on that endpoint:
@@ -54,6 +54,7 @@ ask = "anthropic/claude-sonnet-5"
 ## Keys
 
 - The key comes from `api_key` in the file when set, else from the variable `api_key_env` names. Prefer the variable: the file then holds no secret.
+- On macOS the daemon starts from `Cocoon Shuttle.app` through LaunchServices and does not see your shell's environment: there, set the variable with `launchctl setenv OPENROUTER_API_KEY ...` (until logout) or put `api_key` in the file.
 - On macOS and Linux, a file that holds an `api_key` must be readable by its owner only (mode 0600); shuttle refuses it otherwise, as ssh refuses a readable private key. On Windows, `%APPDATA%` is per user; shuttle does not check its ACL.
 - Keys stay in the daemon. Scripts call models through the daemon over the desk wire and never see a key; errors and logs print a key as `***`.
 
