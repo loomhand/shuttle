@@ -51,6 +51,8 @@ const ZOOM_BAR = 0.65
 const FULL_BAR = 0.95
 const RING = 14
 const PICK_MARGIN = 0.6
+const SETTLE = 150
+const OPENING = 1000
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
 const FILLER = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'and', 'or', 'by', 'from', 'into', 'this', 'that', 'its', 'it', 'is', 'button', 'link', 'tab', 'field', 'box', 'icon', 'toggle', 'dropdown', 'input', 'control', 'item', 'entry'])
 const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close']
@@ -232,9 +234,9 @@ async function focused() {
   const own = ws.filter((x) => x.title.trim() && ws.some((p) => p.active && !p.title.trim() && p.pid === x.pid))
   return own.find((x) => x.title === lastSeen) ?? own.at(-1) ?? null
 }
-async function current() {
+async function current(bound = SETTLE) {
   const k = pressed; pressed = null; const t0 = Date.now()
-  while (k && (await focused())?.title === k.title && Date.now() - k.at < 150) await sleep(10)
+  while (k && (await focused())?.title === k.title && Date.now() - k.at < bound) await sleep(10)
   tick('settle', t0); return focused()
 }
 async function titled(title: string, pid: number | null) { return pid !== null && (await desk.windows()).some((x) => x.title === title && x.pid === pid) }
@@ -742,7 +744,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (!w.active) await desk.focus(w.title, w.pid); known.add(w.title); rec.window = lastSeen = w.title; await windowFor(w.title); return
   }
   if (s.type !== undefined) {
-    const w = await current(); const t0 = Date.now(); const nl = s.type.endsWith('\n')
+    const nl = s.type.endsWith('\n'); const w = await current(nl ? OPENING : SETTLE); const t0 = Date.now()
     const dialog = !s.type.includes('\n') && !!w && (await desk.windows()).some((x) => x.title !== w.title && x.pid === w.pid)
     const o = (nl || dialog) && w ? await filled(w, kept) : ''
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
