@@ -25,7 +25,7 @@ Desk calls name `desk_<verb>` tools:
 
 | Verb | Arguments | Result |
 |---|---|---|
-| `windows` | | the top-level windows: `id`, `title`, `role`, `pid`, `active`; cocoonbox's Linux toolhost also gives `modal`/`blocks` for dialogs |
+| `windows` | | the top-level windows: `id`, `title`, `role`, `pid`, `active`, and `app` (the app's name on macOS, the executable on Windows) when the OS says; cocoonbox's Linux toolhost also gives `modal`/`blocks` for dialogs. Optional fields are left out when unknown, so older readers of the wire are unaffected |
 | `snapshot` | `window?`, `pid?`, `keys?`, `bounds?`, `text?`, `max_chars?` (with `text`); `id?` on the Linux toolhost | a window's tree as nodes (`ref`, `id`, `parent`, `depth`, `role`, `name`, `states`, ...), or an outline with `text` |
 | `find` | `name`, `role?`, `window?`, `pid?` | the window and the nodes whose name matches |
 | `read` | `id`, `text?` | one node with its value and text |
