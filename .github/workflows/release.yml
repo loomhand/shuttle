@@ -103,7 +103,7 @@ jobs:
         run: |
           awk -v v="${GITHUB_REF_NAME#v}" '/^## / { on = ($2 == v) } on && !/^## /' CHANGELOG.md > notes.md
           test -s notes.md
-          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "shuttle $GITHUB_REF_NAME" --notes-file notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --prerelease --title "shuttle $GITHUB_REF_NAME" --notes-file notes.md
 
   install:
     needs: publish
@@ -143,3 +143,14 @@ jobs:
           [ "$RUNNER_OS" = Windows ] || export PATH="$HOME/.local/bin:$PATH"
           printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"status","arguments":{}}}' | cocoon-shuttle mcp | tee status.json
           grep -F "\\\"version\\\":\\\"${GITHUB_REF_NAME#v}\\\"" status.json
+
+  promote:
+    needs: install
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Mark the release as the latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --prerelease=false --latest
