@@ -12,10 +12,11 @@ Every platform installs and runs `cocoon-shuttle mcp`. On macOS and Windows, the
 
 ## macOS
 
-- **Permissions.** shuttle needs Accessibility (to read and act on windows) and Screen Recording (for screenshots). macOS grants them to an app, so they go to `Cocoon Shuttle.app`, which the installer puts in `~/Applications`. Grant them in System Settings > Privacy & Security when shuttle first asks.
-- **No code signing yet.** `Cocoon Shuttle.app` carries an ad hoc signature. macOS ties the grants to that signature, which changes with every release, so grant the permissions again after each upgrade.
+- **Permissions.** shuttle needs Accessibility (to read and act on windows) and Screen Recording (for screenshots), and on macOS 26 the screen-capture consent cua-driver asks for. macOS grants them to an app, so they go to `Cocoon Shuttle.app`, which the installer puts in `~/Applications`; the bundled cua-driver runs from the same bundle, so the same grants cover it. Grant them in System Settings > Privacy & Security when shuttle first asks.
+- **cua-driver.** The daemon starts the bundled cua-driver when none answers at its default socket, with the driver's telemetry off (`CUA_DRIVER_RS_TELEMETRY_ENABLED=false`). A cua-driver you start yourself keeps its own setting; `cua-driver telemetry disable` turns it off.
+- **No code signing yet.** `Cocoon Shuttle.app` carries an ad hoc signature. macOS ties the grants to that signature, which changes with every release and every local build, so grant the permissions again after each upgrade: for Accessibility, switch Cocoon Shuttle off and on; for Screen Recording, remove it with − and add it again with +, then restart it.
 - **Gatekeeper.** The installer downloads with `curl`, which sets no quarantine flag. A copy downloaded with a browser is quarantined: run `xattr -dr com.apple.quarantine ~/Applications/"Cocoon Shuttle.app"`, or open it once with Control-click > Open.
-- **Input.** Today a press clicks a menu node's centre, clicks any other element's centre when a hit test there finds it, else runs its AX action, and keys go to the desktop through cua-driver; [safety.md](safety.md#input-on-macos) describes the P1 design.
+- **Input.** Today a press clicks a menu node's centre, clicks any other element's centre when a hit test there finds it, else runs its AX action, and keys go to the desktop through cua-driver. A click goes to the top window under the point, in that window's pixels, without moving the pointer; a point over no window is a desktop click, which cua-driver refuses over another app; [safety.md](safety.md#input-on-macos) describes the P1 design.
 
 ## Windows
 
