@@ -55,12 +55,12 @@ test('a step in a dialog this plan already read reads no tree when its op needs 
   }
 })
 
-test('a plan that ends in a plain window reads no tree to check what it left in front', async () => {
+test('a plan whose last step cannot open anything ends in a plain window without a tree read', async () => {
   const d = desktop()
   const server = await toolhost(d.answer)
   const { main } = await import('../lib/gui_plan.mts')
   try {
-    const r = await main({ steps: [{ key: 'ctrl+a' }] })
+    const r = await main({ steps: [{ wait: 'a.txt' }] })
     assert.equal(r.ok, true, JSON.stringify(r))
     assert.ok(!d.calls.includes('desk_snapshot'), d.calls.join(' '))
   } finally {
@@ -92,6 +92,25 @@ test('a typed line after a shortcut waits for the file chooser the shortcut open
     await main({ steps: [{ key: 'ctrl+shift+s' }, { type: 'b.txt\n' }] })
     const typed = calls.slice(calls.indexOf('key ctrl+shift+s') + 1, calls.indexOf('desk_type'))
     assert.ok(typed.some((c) => c.startsWith('key ')), `no select key before typing into the chooser: ${typed.join(' ')}`)
+  } finally {
+    server.close()
+  }
+})
+
+test('a plan whose last key leaves its app blocked behind a dialog it cannot see escalates instead of passing', async () => {
+  const doc = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
+  let blocked = false
+  const server = await toolhost(({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([doc])
+    if (tool === 'desk_snapshot') return blocked ? { text: 'no accessibility answer within 3000 ms; the app may hang', error: true } : JSON.stringify({ window: doc, truncated: false, nodes: [root('window', doc.title)] })
+    if (tool === 'desk_key' && args.keys === 'ctrl+e') blocked = true
+    return '{"ok":true}'
+  })
+  const { main } = await import('../lib/gui_plan.mts')
+  try {
+    const r = await main({ steps: [{ key: 'ctrl+e' }] })
+    assert.equal(r.ok, false, JSON.stringify(r))
+    assert.match(r.escalate?.reason ?? '', /answers no accessibility calls/)
   } finally {
     server.close()
   }
