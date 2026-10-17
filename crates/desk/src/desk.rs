@@ -322,41 +322,57 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(json!({"ok": true}).to_string())
     }
 
-    async fn click_at(&self, mut req: Value) -> Result<(), String> {
+    async fn click_at(&self, req: Value) -> Result<(), String> {
         if self.os == Os::Mac
             && let (Some(x), Some(y)) = (req["x"].as_f64(), req["y"].as_f64())
-            && let Some(w) = self.window_at(x, y).await?
         {
-            let front = json!({"pid": w.pid, "window_id": w.id});
-            self.driver.call("bring_to_front", front).await?;
-            let cached = self
-                .reads()
-                .filter(|r| (r.pid, r.id, r.bounds) == (w.pid, w.id, w.bounds))
-                .map(|r| r.k);
-            req["session"] = WINDOW_SESSION.into();
-            req["pid"] = w.pid.into();
-            req["window_id"] = w.id.into();
-            let at = |req: &mut Value, (kx, ky): (f64, f64)| {
-                req["x"] = ((w.point.0 - w.bounds[0]) * kx).into();
-                req["y"] = ((w.point.1 - w.bounds[1]) * ky).into();
-            };
-            let k = match cached {
-                Some(k) => k,
-                None => self.pixels(&w).await?,
-            };
-            at(&mut req, k);
-            match self.driver.call("click", req.clone()).await {
-                Err(e) if cached.is_some() && e.contains("window_never_read") => {
-                    at(&mut req, self.pixels(&w).await?);
-                    self.driver.call("click", req).await?;
-                }
-                done => {
-                    done?;
-                }
+            let (px, py) = (x as i32, y as i32);
+            let pressed = self
+                .access
+                .run(CALL_LIMIT, (), move |b| match b.menu_at(px, py)? {
+                    Some(item) => b.act(&item, Act::Action).map(|_| true),
+                    None => Ok(false),
+                })
+                .await?;
+            if pressed {
+                return Ok(());
             }
-            return Ok(());
+            if let Some(w) = self.window_at(x, y).await? {
+                return self.click_window(req, &w).await;
+            }
         }
         self.driver.call("click", desktop(req)).await?;
+        Ok(())
+    }
+
+    async fn click_window(&self, mut req: Value, w: &Under) -> Result<(), String> {
+        let front = json!({"pid": w.pid, "window_id": w.id});
+        self.driver.call("bring_to_front", front).await?;
+        let cached = self
+            .reads()
+            .filter(|r| (r.pid, r.id, r.bounds) == (w.pid, w.id, w.bounds))
+            .map(|r| r.k);
+        req["session"] = WINDOW_SESSION.into();
+        req["pid"] = w.pid.into();
+        req["window_id"] = w.id.into();
+        let at = |req: &mut Value, (kx, ky): (f64, f64)| {
+            req["x"] = ((w.point.0 - w.bounds[0]) * kx).into();
+            req["y"] = ((w.point.1 - w.bounds[1]) * ky).into();
+        };
+        let k = match cached {
+            Some(k) => k,
+            None => self.pixels(w).await?,
+        };
+        at(&mut req, k);
+        match self.driver.call("click", req.clone()).await {
+            Err(e) if cached.is_some() && e.contains("window_never_read") => {
+                at(&mut req, self.pixels(w).await?);
+                self.driver.call("click", req).await?;
+            }
+            done => {
+                done?;
+            }
+        }
         Ok(())
     }
 

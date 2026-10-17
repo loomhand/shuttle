@@ -325,18 +325,19 @@ impl Access for Ax {
     fn at(&mut self, window: &str, x: i32, y: i32) -> Result<Option<String>, String> {
         let w = self.element(window)?;
         let app = application(pid(&w).ok_or("the window has no process")?);
-        let mut hit: CFTypeRef = std::ptr::null();
-        let (px, py) = (f64::from(x) / self.scale, f64::from(y) / self.scale);
-        // SAFETY: `app` is a live AXUIElement and `hit` a valid out pointer for one CF object.
-        let err = unsafe {
-            AXUIElementCopyElementAtPosition(app.as_CFTypeRef(), px as f32, py as f32, &mut hit)
-        };
-        if err != AX_SUCCESS || hit.is_null() {
-            return Ok(None);
-        }
-        // SAFETY: a successful copy returns the element at +1, wrapped once under the create rule.
-        let hit = unsafe { CFType::wrap_under_create_rule(hit) };
-        Ok(Some(self.id_of(&hit)))
+        Ok(hit(&app, x, y, self.scale).map(|h| self.id_of(&h)))
+    }
+
+    fn menu_at(&mut self, x: i32, y: i32) -> Result<Option<String>, String> {
+        // SAFETY: the system-wide element is returned at +1 and wrapped once under the create rule.
+        let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
+        Ok(hit(&system, x, y, self.scale)
+            .filter(|h| {
+                attr(h, "AXRole")
+                    .and_then(|v| v.downcast::<CFString>())
+                    .is_some_and(|r| r == CFString::from_static_string("AXMenuItem"))
+            })
+            .map(|h| self.id_of(&h)))
     }
 
     fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
@@ -505,6 +506,20 @@ fn pair(v: &CFType, kind: u32) -> Option<(f64, f64)> {
     // SAFETY: `v` is a live AXValue and `p` matches the layout of CGPoint and CGSize, two f64 fields.
     let ok = unsafe { AXValueGetValue(v.as_CFTypeRef(), kind, (&raw mut p).cast()) };
     ok.then_some((p.a, p.b))
+}
+
+fn hit(el: &CFType, x: i32, y: i32, scale: f64) -> Option<CFType> {
+    let mut hit: CFTypeRef = std::ptr::null();
+    let (px, py) = (f64::from(x) / scale, f64::from(y) / scale);
+    // SAFETY: `el` is a live AXUIElement and `hit` a valid out pointer for one CF object.
+    let err = unsafe {
+        AXUIElementCopyElementAtPosition(el.as_CFTypeRef(), px as f32, py as f32, &mut hit)
+    };
+    if err != AX_SUCCESS || hit.is_null() {
+        return None;
+    }
+    // SAFETY: a successful copy returns the element at +1, wrapped once under the create rule.
+    Some(unsafe { CFType::wrap_under_create_rule(hit) })
 }
 
 fn attr(el: &CFType, name: &'static str) -> Option<CFType> {
