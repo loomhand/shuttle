@@ -1,0 +1,75 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+          - runner: ubuntu-24.04-arm
+          - runner: macos-26
+          - runner: macos-15-intel
+          - runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Toolchain
+        shell: bash
+        run: |
+          command -v rustup >/dev/null || { curl -fsSL --retry 3 https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none; echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"; export PATH="$HOME/.cargo/bin:$PATH"; }
+          rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal -c rustfmt -c clippy
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked
+
+  runtime:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Node from packaging/pins
+        run: |
+          set -eu
+          read -r sum url <<<"$(awk '$1 == "linux-x64" && $2 == "node" { print $3, $4 }' packaging/pins)"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/node.tar.xz" "$url"
+          echo "$sum  $RUNNER_TEMP/node.tar.xz" | sha256sum -c
+          mkdir "$RUNNER_TEMP/node"
+          tar -xf "$RUNNER_TEMP/node.tar.xz" -C "$RUNNER_TEMP/node" --strip-components 1
+          echo "$RUNNER_TEMP/node/bin" >> "$GITHUB_PATH"
+
+      # the Linux flows directory of gui_plan is /workspace/flows
+      - name: Test
+        run: |
+          sudo install -d -o "$USER" /workspace
+          node --version
+          node --test runtime/test/*.test.mts
+
+  scripts:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Shellcheck
+        run: |
+          shellcheck -s sh packaging/install.sh
+          shellcheck packaging/package.sh
