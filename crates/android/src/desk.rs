@@ -256,33 +256,33 @@ pub(super) fn elements(xml: &str) -> Vec<Node> {
         .collect()
 }
 
-/// The app windows, the front one active; an activity switch lists none for a moment, which this waits out.
+/// The listed windows, the front one active; an activity switch lists none for a moment, which this waits out.
 async fn frames(android: &Android) -> Result<Vec<Frame>, String> {
-    let mut apps = Vec::new();
+    let mut shown = Vec::new();
     for _ in 0..SWITCH_POLLS {
         let list: Vec<WindowInfo> = serde_json::from_str(android.windows().await?.trim())
             .map_err(|e| format!("decode windows: {e}"))?;
-        apps = list
-            .into_iter()
-            .filter(|w| w.kind == APPLICATION && !w.package.is_empty())
-            .collect();
-        if !apps.is_empty() {
+        shown = listed(list);
+        if !shown.is_empty() {
             break;
         }
         tokio::time::sleep(FOCUS_POLL).await;
     }
-    if !apps.iter().any(|w| w.active) {
-        let front = apps
-            .iter()
-            .enumerate()
-            .max_by_key(|(_, w)| (w.focused, w.layer))
-            .map(|(i, _)| i);
-        if let Some(i) = front {
-            apps[i].active = true;
-        }
+    let alone = shown.len() == 1;
+    Ok(shown.into_iter().map(|w| frame(w, alone)).collect())
+}
+
+fn listed(list: Vec<WindowInfo>) -> Vec<WindowInfo> {
+    let mut shown: Vec<WindowInfo> = list
+        .into_iter()
+        .filter(|w| !w.package.is_empty() && (w.kind == APPLICATION || w.active))
+        .collect();
+    if !shown.iter().any(|w| w.active)
+        && let Some(w) = shown.iter_mut().max_by_key(|w| (w.focused, w.layer))
+    {
+        w.active = true;
     }
-    let alone = apps.len() == 1;
-    Ok(apps.into_iter().map(|w| frame(w, alone)).collect())
+    shown
 }
 
 /// A window short of the screen is a dialog over another window; alone it is an activity in a transition.
@@ -646,19 +646,19 @@ async fn node(android: &Android, id: &str) -> Result<(Frame, Node), String> {
     else {
         return Err(format!("bad element id {id}"));
     };
-    let (frame, nodes) = app_tree(android, app).await?;
-    let same = |n: &Node| n.role == role && n.name == name;
-    let at_path = nodes.iter().position(|n| n.path == path && same(n));
-    let named = || {
-        (0..nodes.len())
-            .filter(|&i| same(&nodes[i]))
-            .min_by_key(|&i| !nodes[i].visible)
-    };
-    let i = at_path
-        .or_else(named)
-        .ok_or_else(|| format!("element {id} is gone"))?;
-    let mut nodes = nodes;
+    let (frame, mut nodes) = app_tree(android, app).await?;
+    let i = nodes
+        .iter()
+        .position(|n| n.path == path && n.role == role && n.name == name)
+        .or_else(|| unique(&nodes, role, name))
+        .ok_or_else(|| format!("element {id} is gone or not unique; read the window again"))?;
     Ok((frame, nodes.swap_remove(i)))
+}
+
+fn unique(nodes: &[Node], role: &str, name: &str) -> Option<usize> {
+    let mut hits = (0..nodes.len()).filter(|&i| nodes[i].role == role && nodes[i].name == name);
+    let first = hits.next()?;
+    hits.next().is_none().then_some(first)
 }
 
 async fn read(android: &Android, a: ReadArgs) -> Result<String, String> {
@@ -697,12 +697,11 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
             ])
             .await?;
         tokio::time::sleep(SCROLL_SETTLE).await;
-        let (_, nodes) = app_tree(android, &frame.package).await?;
-        node = nodes
-            .into_iter()
-            .filter(|n| n.role == node.role && n.name == node.name)
-            .min_by_key(|n| !n.visible)
-            .ok_or_else(|| format!("element {id} is gone after a scroll"))?;
+        let (_, mut nodes) = app_tree(android, &frame.package).await?;
+        let i = unique(&nodes, node.role, &node.name).ok_or_else(|| {
+            format!("element {id} is gone or not unique after a scroll; read the window again")
+        })?;
+        node = nodes.swap_remove(i);
     }
     Err(format!("element {id} is off the screen"))
 }
@@ -861,6 +860,42 @@ mod tests {
             layer: 0,
             bounds,
         }
+    }
+
+    #[test]
+    fn an_active_system_window_is_in_front_of_the_apps() {
+        let app = |active| WindowInfo {
+            active,
+            ..window([0, 0, 720, 1280])
+        };
+        let shade = WindowInfo {
+            id: 9,
+            kind: 3,
+            title: "Notification shade".into(),
+            package: "com.android.systemui".into(),
+            ..app(true)
+        };
+        let shown = listed(vec![app(false), shade]);
+        assert_eq!(
+            shown.iter().map(|w| (w.id, w.active)).collect::<Vec<_>>(),
+            [(7, false), (9, true)]
+        );
+        let shown = listed(vec![app(false)]);
+        assert!(
+            shown[0].active,
+            "without an active window the top app is in front"
+        );
+    }
+
+    #[test]
+    fn a_stale_element_matches_only_a_unique_role_and_name() {
+        let nodes = nodes(&settings(), &raws(DUMP));
+        assert_eq!(unique(&nodes, "textbox", "Search…"), Some(3));
+        assert_eq!(unique(&nodes, "text", "Dark theme"), Some(2));
+        assert_eq!(unique(&nodes, "button", "Search…"), None);
+        let mut twice = nodes;
+        twice.extend(super::nodes(&settings(), &raws(DUMP)));
+        assert_eq!(unique(&twice, "text", "Dark theme"), None);
     }
 
     fn settings() -> Frame {
