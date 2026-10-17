@@ -19,6 +19,8 @@ use crate::tools::DESK_VERBS;
 use crate::{NAME, VERSION, mcp};
 
 const DRIVER_TELEMETRY: &str = "CUA_DRIVER_RS_TELEMETRY_ENABLED";
+const DRIVER_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+const DRIVER_POLLS: u32 = 100;
 
 /// Runs the command in `args` (the program name excluded) and returns its exit code.
 pub fn run(args: &[String]) -> ExitCode {
@@ -113,7 +115,8 @@ async fn start_driver(exe: &Path) {
     } else {
         "cua-driver"
     });
-    if !driver.is_file() || server::connect(&Driver::default_endpoint()).await.is_ok() {
+    let endpoint = Driver::default_endpoint();
+    if !driver.is_file() || server::connect(&endpoint).await.is_ok() {
         return;
     }
     let started = std::process::Command::new(&driver)
@@ -125,6 +128,13 @@ async fn start_driver(exe: &Path) {
         .spawn();
     if let Err(e) = started {
         eprintln!("{NAME}: start {}: {e}", driver.display());
+        return;
+    }
+    for _ in 0..DRIVER_POLLS {
+        if server::connect(&endpoint).await.is_ok() {
+            return;
+        }
+        tokio::time::sleep(DRIVER_POLL).await;
     }
 }
 
