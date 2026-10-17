@@ -3,13 +3,16 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, SAFEARRAY,
 };
 use windows::Win32::System::Ole::{
     SafeArrayDestroy, SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound,
+};
+use windows::Win32::System::Threading::{
+    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows::Win32::System::Variant::{VT_BOOL, VT_BSTR, VT_I4, VT_R8, VariantClear};
 use windows::Win32::UI::Accessibility::*;
@@ -20,7 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GW_OWNER, GetForegroundWindow, GetWindow, GetWindowTextW,
     GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_CLOSE,
 };
-use windows::core::BOOL;
+use windows::core::{BOOL, PWSTR};
 
 use crate::keys::{Os, uia_combo};
 use crate::model::{
@@ -228,6 +231,7 @@ impl Uia {
                 pid: s.pid,
                 control_type: r.control_type,
                 dialog: r.dialog || r.modal,
+                app: exe_name(s.pid),
                 el,
             };
             self.tops.insert(key, top);
@@ -249,8 +253,8 @@ impl Uia {
     }
 
     fn frame_of(&mut self, s: &Shown, foreground: HWND) -> Option<Frame> {
-        let (dialog, el) = match self.top_of(s)? {
-            t if t.control_type == WINDOW => (t.dialog, t.el.clone()),
+        let (dialog, app, el) = match self.top_of(s)? {
+            t if t.control_type == WINDOW => (t.dialog, t.app.clone(), t.el.clone()),
             _ => return None,
         };
         Some(Frame {
@@ -259,6 +263,7 @@ impl Uia {
             role: if dialog { "dialog" } else { "window" },
             pid: Some(s.pid),
             active: s.hwnd == foreground,
+            app,
         })
     }
 }
@@ -445,6 +450,7 @@ struct Top {
     pid: u32,
     control_type: i32,
     dialog: bool,
+    app: Option<String>,
     el: IUIAutomationElement,
 }
 
@@ -627,6 +633,27 @@ fn title(hwnd: HWND) -> String {
     // SAFETY: GetWindowTextW writes at most `buf.len()` UTF-16 units into `buf`.
     let n = unsafe { GetWindowTextW(hwnd, &mut buf) };
     String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0)])
+}
+
+fn exe_name(pid: u32) -> Option<String> {
+    // SAFETY: OpenProcess takes a pid; the handle it returns is closed below.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+    let mut buf = [0u16; 1024];
+    let mut len = buf.len() as u32;
+    // SAFETY: `process` is a live handle and `buf` holds `len` UTF-16 units.
+    let named = unsafe {
+        QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        )
+    };
+    // SAFETY: `process` is a handle this function opened.
+    let _ = unsafe { CloseHandle(process) };
+    named.ok()?;
+    let path = String::from_utf16_lossy(&buf[..len as usize]);
+    path.rsplit('\\').next().map(str::to_owned)
 }
 
 fn document_text(el: &IUIAutomationElement, chars: usize) -> Option<String> {

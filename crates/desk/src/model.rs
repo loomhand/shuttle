@@ -53,6 +53,8 @@ pub struct Frame {
     pub role: &'static str,
     pub pid: Option<u32>,
     pub active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 impl Window for Frame {

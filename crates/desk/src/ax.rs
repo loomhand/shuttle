@@ -215,6 +215,9 @@ impl Access for Ax {
         let mut frames = Vec::new();
         for p in window_pids() {
             let app = application(p);
+            let name = attr(&app, "AXTitle")
+                .and_then(|v| v.downcast::<CFString>())
+                .map(|s| s.to_string());
             let front = attr(&app, "AXFrontmost")
                 .and_then(|v| v.downcast::<CFBoolean>())
                 .is_some_and(bool::from);
@@ -245,6 +248,7 @@ impl Access for Ax {
                         role: "dialog",
                         pid: Some(p as u32),
                         active,
+                        app: name.clone(),
                     });
                     active = false;
                 }
@@ -259,6 +263,7 @@ impl Access for Ax {
                     role: ax_roles::role(kind).unwrap_or("window"),
                     pid: Some(p as u32),
                     active,
+                    app: name.clone(),
                 });
             }
         }
