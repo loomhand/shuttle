@@ -11,7 +11,7 @@ cocoon-shuttle mcp ───────── one per agent session; a thin pro
   ▼
 cocoon-shuttle serve ─────── one per user; owns the desktop and the model keys (and, from P1, the safety controls)
   ├── desk verbs ─────────── AX (macOS), UI Automation (Windows), AT-SPI (Linux, P3)
-  ├── cua-driver ─────────── its own daemon at its default socket or pipe: input, window focus, launch, capture
+  ├── cua-driver ─────────── the bundled driver, a child on the daemon's own socket or pipe: input, window focus, launch, capture
   └── node ───────────────── child process per gui_plan / script_run, running runtime/*.mts;
                              desk.mts calls back over the same desk wire
 ```
