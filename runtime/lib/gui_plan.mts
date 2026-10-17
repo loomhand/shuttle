@@ -246,7 +246,7 @@ async function snapOf(w: Win, keys = false): Promise<desk.Snap> {
 }
 // the preamble's snapshot of the front window serves the step's first read of that window, which comes before any action
 function reuse(kept: Kept | undefined, w: Win, keys: boolean) {
-  return kept?.id === w.id && kept.keys === keys ? kept.snap : null
+  return kept?.id === w.id && kept.keys === keys && kept.snap.nodes.length > 1 ? kept.snap : null
 }
 function render(nodes: Node[], max: number, interactive: boolean) {
   const q = (s: string) => s.slice(0, max).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')

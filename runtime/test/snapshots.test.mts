@@ -115,3 +115,27 @@ test('a plan whose last key leaves its app blocked behind a dialog it cannot see
     server.close()
   }
 })
+
+test('a click in a dialog whose controls show after the step read its bare root reads it again and finds the target', async () => {
+  const doc = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
+  const dialog = { id: '2', title: 'Confirm', role: 'dialog', pid: process.pid, active: true }
+  let open = false
+  let reads = 0
+  const server = await toolhost(({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify(open ? [{ ...doc, active: false }, dialog] : [doc])
+    if (tool === 'desk_snapshot') {
+      const ok = { ref: 1, id: '2/2', parent: 0, depth: 1, role: 'button', name: 'OK', states: ['showing'], bounds: [10, 10, 40, 20] }
+      return JSON.stringify({ window: dialog, truncated: false, nodes: ++reads > 1 ? [root('dialog', 'Confirm'), ok] : [root('dialog', 'Confirm')] })
+    }
+    if (tool === 'desk_key' && args.keys === 'f2') open = true
+    if (tool === 'desk_press') { open = false; return '{"ok":true,"how":"click"}' }
+    return '{"ok":true}'
+  })
+  const { main } = await import('../lib/gui_plan.mts')
+  try {
+    const r = await main({ steps: [{ key: 'f2' }, { click: 'OK' }] })
+    assert.equal(r.ok, true, JSON.stringify(r))
+  } finally {
+    server.close()
+  }
+})
