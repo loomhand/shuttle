@@ -47,7 +47,7 @@ const gw = http((req, res) => {
     for (const [k, q] of Object.entries(questions)) {
       const probs = image ? looked : pick
       const [choice] = Object.entries(probs).sort((a, b) => b[1] - a[1])[0] ?? ['none']
-      answers[k] = q.type === 'noul' ? { type: 'noul', noul: image ? p : yes } : { type: 'choice', choice, confidence: probs[choice] ?? 0, probabilities: probs }
+      answers[k] = q.type === 'noul' ? { type: 'noul', noul: image ? p : yes } : { type: 'choice', choice, confidence: probs[choice], probabilities: probs }
     }
     res.end(JSON.stringify({ model: image ? build : text, answers }))
   })
@@ -63,7 +63,7 @@ function answer({ tool, args }: Call): string {
   if (tool === 'desk_shot') return JSON.stringify({ png_b64: gray(Number(args.w ?? 1280), Number(args.h ?? 800)).toString('base64') })
   if (tool === 'desk_screen') return '{"width":1280,"height":800}'
   if (tool === 'desk_at') return JSON.stringify({ found: under, path: [] })
-  if (tool === 'desk_click') clicked.push(`${String(args.x)},${String(args.y)}`)
+  if (tool === 'desk_click') clicked.push(`${args.x},${args.y}`)
   return '{"ok":true}'
 }
 
@@ -96,7 +96,7 @@ function load(tree: Spec[]) {
 
 function lastStep(): RunStep | undefined {
   const runs = readFileSync(`${process.platform === 'linux' ? '/workspace' : `${homedir()}/workspace`}/flows/.runs.jsonl`, 'utf8').trim().split('\n')
-  return (JSON.parse(runs.at(-1) ?? '{"steps":[]}') as { steps: RunStep[] }).steps[0]
+  return (JSON.parse(runs.at(-1) ?? '') as { steps: RunStep[] }).steps[0]
 }
 
 async function screen(tree: Spec[], probabilities: Record<string, number>) {
@@ -362,12 +362,14 @@ test('a grounded click the 640x400 crop refuses is checked on the small element\
   assert.equal(zoomed.ok, true, JSON.stringify(zoomed))
   assert.deepEqual(clicked, ['640,400'])
   assert.deepEqual(looks, ['640x400', '384x288'])
-  assert.deepEqual([lastStep()?.checked, lastStep()?.p, lastStep()?.p_zoom, lastStep()?.p_full], ['jev-image+zoom', 0.3, 0.7, undefined])
+  const zoomStep = lastStep()
+  assert.deepEqual([zoomStep?.checked, zoomStep?.p, zoomStep?.p_zoom, zoomStep?.p_full], ['jev-image+zoom', 0.3, 0.7, undefined])
   on = [0.3, 0.6, 0.96]
   const full = await plan('the yellow star', tree, {})
   assert.equal(full.ok, true, JSON.stringify(full))
   assert.deepEqual(looks, ['640x400', '384x288', '1280x800 ring'])
-  assert.deepEqual([lastStep()?.checked, lastStep()?.p, lastStep()?.p_zoom, lastStep()?.p_full], ['jev-image+zoom+full', 0.3, 0.6, 0.96])
+  const fullStep = lastStep()
+  assert.deepEqual([fullStep?.checked, fullStep?.p, fullStep?.p_zoom, fullStep?.p_full], ['jev-image+zoom+full', 0.3, 0.6, 0.96])
   on = [0.3, 0.6, 0.9]
   const refused = await plan('the yellow star', tree, {})
   assert.equal(refused.ok, false, JSON.stringify(refused))
