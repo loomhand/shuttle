@@ -416,9 +416,11 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   const said = role || /\b(radio|spin|option|check) button\b/.test(want) ? undefined : Object.entries(SAID).find(([w]) => want.split(' ').includes(w))?.[1]
   const bare = want.split(' ').filter((w) => !FILLER.has(w)).join(' ')
   const named = (n: Node) => norm(n.name) === want || (!!bare && norm(n.name) === bare)
+  const inside = (n: Node, i: number) => { for (const [p] of up(nodes, n.parent)) if (p === i) return true; return false }
   for (const f of [named, (n: Node) => covers(n) && (!said || said.includes(n.role))]) {
     const all = pool.filter(({ n }) => f(n)); const drawn = all.filter(({ n }) => n.shown && !!n.bounds)
-    const hit = drawn.length ? drawn : all.filter(({ n }) => n.role.startsWith('menu'))
+    const some = drawn.length ? drawn : all.filter(({ n }) => n.role.startsWith('menu'))
+    const hit = some.filter(({ n, i }) => !some.some((o) => o.i !== i && norm(o.n.name) === norm(n.name) && inside(o.n, i)))
     const [one, two] = hit
     if (one && !two) { tick('ax', t0); return { ...one, how: 'ax' } }
   }
