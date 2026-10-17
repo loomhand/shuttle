@@ -16,7 +16,7 @@ path = "src/main.rs"
 serde_json = "1"
 shuttle-desk = { path = "../desk" }
 shuttle-desk-core = { path = "../desk-core" }
-tokio = { version = "1", features = ["rt-multi-thread", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [lints]
 workspace = true

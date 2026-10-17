@@ -6,16 +6,16 @@ use desk_core::text::cli_args;
 use desk_core::wire::Call;
 use shuttle_desk::server;
 
+use crate::tools::DESK_VERBS;
 use crate::{NAME, VERSION, mcp};
 
 /// Runs the command in `args` (the program name excluded) and returns its exit code.
 pub fn run(args: &[String]) -> ExitCode {
     let Some((cmd, rest)) = args.split_first() else {
-        eprintln!("{}", usage());
-        return ExitCode::from(2);
+        return usage();
     };
     match cmd.as_str() {
-        "--version" | "-V" | "version" => {
+        "--version" | "-V" => {
             println!("{NAME} {VERSION}");
             ExitCode::SUCCESS
         }
@@ -25,18 +25,22 @@ pub fn run(args: &[String]) -> ExitCode {
         },
         "serve" => {
             let endpoint = rest.first().cloned().unwrap_or_else(desk_endpoint);
-            block_on(serve(&endpoint))
+            let served = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("start runtime: {e}"))
+                .and_then(|r| r.block_on(server::serve_native(&endpoint)));
+            match served {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => fail(&e),
+            }
         }
-        "desk" => desk(rest),
-        _ => {
-            eprintln!("{}", usage());
-            ExitCode::from(2)
-        }
+        "desk" => call_desk(rest),
+        _ => usage(),
     }
 }
 
-/// The desk endpoint: `SHUTTLE_SOCKET`, else this OS's default.
-pub fn desk_endpoint() -> String {
+fn desk_endpoint() -> String {
     if let Some(e) = std::env::var("SHUTTLE_SOCKET")
         .ok()
         .filter(|e| !e.is_empty())
@@ -56,10 +60,9 @@ pub fn desk_endpoint() -> String {
     }
 }
 
-fn desk(rest: &[String]) -> ExitCode {
+fn call_desk(rest: &[String]) -> ExitCode {
     let Some((verb, rest)) = rest.split_first() else {
-        eprintln!("{}", usage());
-        return ExitCode::from(2);
+        return usage();
     };
     let call = match cli_args(rest) {
         Ok(args) => Call {
@@ -68,69 +71,34 @@ fn desk(rest: &[String]) -> ExitCode {
             args,
         },
         Err(e) => {
-            eprintln!("{NAME}: {e}\n{}", usage());
-            return ExitCode::from(2);
+            eprintln!("{NAME}: {e}");
+            return usage();
         }
     };
-    let out = match runtime().and_then(|r| r.block_on(server::call(&desk_endpoint(), &call))) {
-        Ok(out) => out,
-        Err(e) => return fail(&format!("desk {verb}: {e}")),
-    };
-    if out.is_error {
-        return fail(&format!("desk {verb}: {}", out.text));
-    }
-    println!("{}", out.text);
-    ExitCode::SUCCESS
-}
-
-fn usage() -> String {
-    format!(
-        "usage: {NAME} mcp | {NAME} serve [ENDPOINT] | {NAME} desk VERB [key=value ...|JSON] | {NAME} --version; desk verbs: windows, snapshot, find, read, press, act, at, key, type, click, focus, close, launch, shot, screen"
-    )
-}
-
-fn block_on(work: impl Future<Output = Result<(), String>>) -> ExitCode {
-    match runtime().and_then(|r| r.block_on(work)) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => fail(&e),
-    }
-}
-
-fn runtime() -> Result<tokio::runtime::Runtime, String> {
-    tokio::runtime::Builder::new_multi_thread()
+    let out = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("start runtime: {e}"))
+        .and_then(|r| r.block_on(server::call(&desk_endpoint(), &call)));
+    match out {
+        Ok(out) if !out.is_error => {
+            println!("{}", out.text);
+            ExitCode::SUCCESS
+        }
+        Ok(out) => fail(&format!("desk {verb}: {}", out.text)),
+        Err(e) => fail(&format!("desk {verb}: {e}")),
+    }
+}
+
+fn usage() -> ExitCode {
+    eprintln!(
+        "usage: {NAME} mcp | {NAME} serve [ENDPOINT] | {NAME} desk VERB [key=value ...|JSON] | {NAME} --version; desk verbs: {}",
+        DESK_VERBS.join(", ")
+    );
+    ExitCode::from(2)
 }
 
 fn fail(e: &str) -> ExitCode {
     eprintln!("{NAME}: {e}");
     ExitCode::FAILURE
-}
-
-#[cfg(target_os = "macos")]
-async fn serve(endpoint: &str) -> Result<(), String> {
-    use shuttle_desk::{ax::Ax, desk::Desk, driver::Driver, keys::Os};
-    let driver = Driver::new(Driver::default_endpoint());
-    server::serve(
-        std::sync::Arc::new(Desk::new(Ax::open, driver, Os::Mac)),
-        endpoint,
-    )
-    .await
-}
-
-#[cfg(windows)]
-async fn serve(endpoint: &str) -> Result<(), String> {
-    use shuttle_desk::{desk::Desk, driver::Driver, keys::Os, uia::Uia};
-    let driver = Driver::new(Driver::default_endpoint());
-    server::serve(
-        std::sync::Arc::new(Desk::new(Uia::open, driver, Os::Windows)),
-        endpoint,
-    )
-    .await
-}
-
-#[cfg(not(any(windows, target_os = "macos")))]
-async fn serve(_: &str) -> Result<(), String> {
-    Err("no desk backend for Linux yet; see docs/platforms.md".to_owned())
 }

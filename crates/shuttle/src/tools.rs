@@ -4,15 +4,16 @@ use serde_json::{Value, json};
 
 use crate::{NAME, VERSION};
 
-const NOT_YET: &str = "this release lists the tool but does not run it yet; see docs/platforms.md for when it lands on this OS";
-const DESK_VERBS: [&str; 15] = [
+pub const DESK_VERBS: [&str; 15] = [
     "windows", "snapshot", "find", "read", "press", "act", "at", "key", "type", "click", "focus",
     "close", "launch", "shot", "screen",
 ];
 
-/// The tool list of `tools/list`.
+const NOT_YET: &str = "this release lists the tool but does not run it yet; see docs/platforms.md for when it lands on this OS";
+
+/// The result of `tools/list`.
 pub fn list() -> Value {
-    json!([
+    json!({"tools": [
         {
             "name": "gui_plan",
             "description": "Run a desktop-app GUI plan in one call: each step runs on the accessibility tree, is checked, and the plan stops at the first surprise. One op per step: {app}, {menu}, {click}, {check, on}, {set, value}, {type}, {key}, {wait}, {verify}, {close: true}. A passing plan can be saved as a flow with save, and replayed with flow and params.",
@@ -72,14 +73,14 @@ pub fn list() -> Value {
             "description": "This host's version, OS and architecture, and which tools this release runs.",
             "inputSchema": {"type": "object", "properties": {}}
         }
-    ])
+    ]})
 }
 
 /// Answers a `tools/call` of `name`: an MCP tool result, or `None` for an unknown tool.
 pub fn call(name: &str) -> Option<Value> {
     match name {
-        "status" => Some(result(&status().to_string(), false)),
-        "gui_plan" | "script_run" | "desk" | "screenshot" => Some(result(NOT_YET, true)),
+        "status" => Some(result(status().to_string(), false)),
+        "gui_plan" | "script_run" | "desk" | "screenshot" => Some(result(NOT_YET.to_owned(), true)),
         _ => None,
     }
 }
@@ -94,6 +95,8 @@ fn status() -> Value {
     })
 }
 
-fn result(text: &str, is_error: bool) -> Value {
-    json!({"content": [{"type": "text", "text": text}], "isError": is_error})
+fn result(text: String, is_error: bool) -> Value {
+    let mut out = json!({"content": [{"type": "text"}], "isError": is_error});
+    out["content"][0]["text"] = text.into();
+    out
 }

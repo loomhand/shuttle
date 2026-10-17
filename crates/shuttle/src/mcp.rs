@@ -51,7 +51,7 @@ fn answer(line: &str) -> Option<Value> {
     let result = match method.as_str() {
         "initialize" => Ok(initialize(&params)),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({"tools": tools::list()})),
+        "tools/list" => Ok(tools::list()),
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or_default();
             tools::call(name).ok_or_else(|| (INVALID_PARAMS, format!("unknown tool {name}")))
