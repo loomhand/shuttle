@@ -219,7 +219,7 @@ mod tests {
         async fn answer(&self, call: Call) -> Output {
             match call.tool.as_str() {
                 "desk_shot" => Output {
-                    text: r#"{"ok":true,"width":2,"height":1,"png_b64":"UE5H"}"#.into(),
+                    text: r#"{"ok":true,"width":2,"height":1}"#.into(),
                     image_b64: Some("UE5H".into()),
                     ..Output::default()
                 },

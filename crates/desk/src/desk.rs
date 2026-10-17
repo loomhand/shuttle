@@ -360,11 +360,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             a.h.unwrap_or(f64::MAX / 4.0),
         ];
         let (w, h, png) = crop_png(&png, rect, factor)?;
-        let image = B64.encode(&png);
-        let out = json!({"ok": true, "width": w, "height": h, "png_b64": image});
         Ok(Output {
-            text: out.to_string(),
-            image_b64: Some(image),
+            text: json!({"ok": true, "width": w, "height": h}).to_string(),
+            image_b64: Some(B64.encode(&png)),
             ..Output::default()
         })
     }

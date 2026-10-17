@@ -8,7 +8,7 @@ import { crc32, deflateSync, inflateSync } from 'node:zlib'
 
 import type { Result } from '../lib/gui_plan.mts'
 import { toolhost } from './toolhost.mts'
-import type { Call } from './toolhost.mts'
+import type { Call, Reply } from './toolhost.mts'
 
 type El = { ref: number; id: string; parent: number; depth: number; role: string; name: string; states: string[]; bounds?: number[] }
 type Spec = Omit<El, 'ref' | 'depth' | 'states'> & { states?: string[] }
@@ -53,14 +53,14 @@ const gw = http((req, res) => {
   })
 })
 
-function answer({ tool, args }: Call): string {
+function answer({ tool, args }: Call): Reply {
   if (tool === 'desk_windows') return JSON.stringify([win, ...shell.map((x) => x.win)])
   if (tool === 'desk_snapshot') {
     const x = shell.find((y) => y.win.id === args.id)
     return JSON.stringify(x ? { window: x.win, nodes: x.nodes, truncated: false } : { window: win, nodes, truncated: false, text: '- frame "Portal"' })
   }
   if (tool === 'desk_press') { pressed.push(String(args.id)); return '{"ok":true,"how":"click"}' }
-  if (tool === 'desk_shot') return JSON.stringify({ png_b64: gray(Number(args.w ?? 1280), Number(args.h ?? 800)).toString('base64') })
+  if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(Number(args.w ?? 1280), Number(args.h ?? 800)).toString('base64') }
   if (tool === 'desk_screen') return '{"width":1280,"height":800}'
   if (tool === 'desk_at') return JSON.stringify({ found: under, path: [] })
   if (tool === 'desk_click') clicked.push(`${args.x},${args.y}`)
