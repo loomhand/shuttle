@@ -179,9 +179,11 @@ mod tests {
     use super::*;
 
     const FAKE: &str = r#"#!/usr/bin/env python3
-import os, socket, sys
+import os, socket, sys, time
 args = dict(zip(sys.argv[2::2], sys.argv[3::2]))
 if sys.argv[1] == "stop":
+    if os.path.exists(args["--socket"] + ".hang"):
+        time.sleep(30)
     pid = int(open(args["--socket"] + ".fake-pid").read())
     if args.get("--expected-pid", str(pid)) != str(pid):
         sys.exit(1)
@@ -193,6 +195,8 @@ if child:
     sys.exit(0)
 open(args["--socket"] + ".fake-pid", "w").write(str(os.getpid()))
 open(args["--pid-file"], "w").write(str(os.getpid()))
+if os.path.exists(args["--socket"] + ".slow"):
+    time.sleep(3)
 if os.path.exists(args["--socket"]):
     os.remove(args["--socket"])
 s = socket.socket(socket.AF_UNIX)
@@ -262,6 +266,45 @@ while True:
         driver.stop().await;
         assert_ne!(second, first, "the driver came back");
         assert!(gone(second).await, "the driver stopped with the daemon");
+    }
+
+    #[tokio::test]
+    async fn a_stop_the_driver_never_answers_still_leaves_no_driver() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake(dir.path(), FAKE).unwrap();
+        let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
+        let driver = Bundled::start(&exe, &endpoint).await.unwrap().unwrap();
+        let server = pid(&endpoint).unwrap();
+        std::fs::write(format!("{endpoint}.hang"), "").unwrap();
+        driver.stop().await;
+        assert!(gone(server).await, "the forked driver outlived the daemon");
+    }
+
+    #[tokio::test]
+    async fn a_stop_while_the_driver_restarts_leaves_no_half_started_driver() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake(dir.path(), FAKE).unwrap();
+        let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
+        let driver = Bundled::start(&exe, &endpoint).await.unwrap().unwrap();
+        let first = pid(&endpoint).unwrap();
+        std::fs::write(format!("{endpoint}.slow"), "").unwrap();
+        std::fs::write(format!("{endpoint}.hang"), "").unwrap();
+        // SAFETY: the pid is the fake driver this test started.
+        unsafe { libc::kill(first, libc::SIGKILL) };
+        let mut second = first;
+        for _ in 0..50 {
+            tokio::time::sleep(POLL).await;
+            second = pid(&endpoint).unwrap_or(first);
+            if second != first {
+                break;
+            }
+        }
+        driver.stop().await;
+        assert_ne!(second, first, "the driver was restarting");
+        assert!(
+            gone(second).await,
+            "the half-started driver outlived the daemon"
+        );
     }
 
     #[tokio::test]
