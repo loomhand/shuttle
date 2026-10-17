@@ -16,4 +16,11 @@ public class AccessibilityNodeInfo {
     public boolean isClickable() { throw new RuntimeException(); }
     public boolean isLongClickable() { throw new RuntimeException(); }
     public boolean isEditable() { throw new RuntimeException(); }
+    public boolean isEnabled() { throw new RuntimeException(); }
+    public boolean isFocused() { throw new RuntimeException(); }
+    public boolean isSelected() { throw new RuntimeException(); }
+    public boolean isScrollable() { throw new RuntimeException(); }
+    public boolean isShowingHintText() { throw new RuntimeException(); }
+    public CharSequence getHintText() { throw new RuntimeException(); }
+    public CharSequence getPackageName() { throw new RuntimeException(); }
 }

@@ -14,7 +14,10 @@ use tokio::net::TcpStream;
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
+use super::android_desk::{self, Node};
 use super::rpc::{self, Output};
+
+pub(super) const SCREEN: (i32, i32) = (720, 1280);
 
 const ADB_TIMEOUT: Duration = Duration::from_secs(30);
 const SETTLE: Duration = Duration::from_millis(500);
@@ -23,7 +26,6 @@ const MAX_ELEMENTS: usize = 200;
 const LONG_PRESS_MS: u32 = 800;
 const SWIPE_MS: u32 = 300;
 const SCROLL_FRACTION: i32 = 3;
-const SCREEN: (i32, i32) = (720, 1280);
 const SCRCPY_JAR: &str = "/usr/local/share/scrcpy/scrcpy-server.jar";
 const SCRCPY_SU: &str = "/usr/local/share/scrcpy/su1000";
 const DEVICE_JAR: &str = "/data/local/tmp/cb-scrcpy.jar";
@@ -39,27 +41,39 @@ const DEVICE_UI_JAR: &str = "/data/local/tmp/cb-ui.jar";
 const UI_CLASSPATH: &str = "CLASSPATH=/system/framework/uiautomator.jar:/data/local/tmp/cb-ui.jar";
 const UI_TIMEOUT: Duration = Duration::from_secs(10);
 const UI_END: &str = "<<end>>";
-const KEYS: [(&str, u32); 14] = [
-    ("back", 4),
-    ("home", 3),
-    ("enter", 66),
+const KEYCODES: [(&str, u32); 26] = [
     ("return", 66),
+    ("enter", 66),
+    ("kp_enter", 66),
     ("tab", 61),
-    ("delete", 67),
-    ("backspace", 67),
     ("escape", 111),
-    ("recents", 187),
-    ("menu", 82),
+    ("backspace", 67),
+    ("delete", 112),
+    ("home", 122),
+    ("end", 123),
+    ("pageup", 92),
+    ("prior", 92),
+    ("pagedown", 93),
+    ("next", 93),
     ("up", 19),
     ("down", 20),
     ("left", 21),
     ("right", 22),
+    ("space", 62),
+    ("menu", 82),
+    ("back", 4),
+    ("home_screen", 3),
+    ("recents", 187),
+    ("ctrl", 113),
+    ("control", 113),
+    ("shift", 59),
+    ("alt", 57),
 ];
 
-/// adb on the box's Android, with the element rects of each session's latest computer_state.
+/// adb on the box's Android, with the element centres of each session's latest computer_state.
 pub struct Android {
     adb: PathBuf,
-    rects: Mutex<HashMap<String, Vec<Rect>>>,
+    points: Mutex<HashMap<String, Vec<(i32, i32)>>>,
     ui: Mutex<Option<UiServer>>,
 }
 
@@ -68,7 +82,7 @@ impl Android {
     pub fn new(adb: PathBuf) -> Self {
         Self {
             adb,
-            rects: Mutex::new(HashMap::new()),
+            points: Mutex::new(HashMap::new()),
             ui: Mutex::new(None),
         }
     }
@@ -86,10 +100,10 @@ impl Android {
     /// The UI elements of the screen, [index] for computer_act, and a screenshot.
     pub async fn state(&self, args: Value) -> Result<Output, String> {
         let args: StateArgs = rpc::parse(args)?;
-        let xml = self.dump().await?;
-        let mut elements = elements(&xml);
+        let (xml, shot) = tokio::join!(self.tree(None), self.look());
+        let mut elements = android_desk::elements(&xml?);
         if let Some(q) = args.query.as_deref().map(str::to_lowercase) {
-            elements.retain(|e| e.label().to_lowercase().contains(&q));
+            elements.retain(|e| e.mentions(&q));
         }
         elements.truncate(MAX_ELEMENTS);
         let text = elements
@@ -98,11 +112,11 @@ impl Android {
             .map(|(i, e)| e.line(i))
             .collect::<Vec<_>>()
             .join("\n");
-        self.rects
+        self.points
             .lock()
             .await
-            .insert(args.session, elements.into_iter().map(|e| e.rect).collect());
-        let mut out = self.look().await?;
+            .insert(args.session, elements.iter().map(Node::center).collect());
+        let mut out = shot?;
         out.text = if text.is_empty() {
             "no UI elements".to_owned()
         } else {
@@ -114,27 +128,27 @@ impl Android {
     /// Performs one input action, then returns a fresh screenshot.
     pub async fn act(&self, args: Value) -> Result<Output, String> {
         let args: ActArgs = rpc::parse(args)?;
-        let point = self.point(&args).await;
+        let point = self.point(&args).await?;
+        let target = || point.ok_or_else(|| format!("{} needs element or x,y", args.action));
         let report = match args.action.as_str() {
             "tap" | "click" => {
-                let (x, y) = point?;
-                self.input(&["tap", &x.to_string(), &y.to_string()]).await?;
+                let (x, y) = target()?;
+                self.tap((x, y)).await?;
                 format!("tapped {x},{y}")
             }
             "double_tap" | "double_click" => {
-                let (x, y) = point?;
-                for _ in 0..2 {
-                    self.input(&["tap", &x.to_string(), &y.to_string()]).await?;
-                }
+                let (x, y) = target()?;
+                self.tap((x, y)).await?;
+                self.tap((x, y)).await?;
                 format!("double-tapped {x},{y}")
             }
             "long_press" => {
-                let (x, y) = point?;
+                let (x, y) = target()?;
                 self.swipe((x, y), (x, y), LONG_PRESS_MS).await?;
                 format!("long-pressed {x},{y}")
             }
             "swipe" | "drag" => {
-                let from = point?;
+                let from = target()?;
                 let to = (
                     args.to_x.ok_or("swipe needs to_x")? as i32,
                     args.to_y.ok_or("swipe needs to_y")? as i32,
@@ -158,37 +172,20 @@ impl Android {
             }
             "type" => {
                 let text = args.text.as_deref().ok_or("type needs text")?;
-                if let Ok((x, y)) = point {
-                    self.input(&["tap", &x.to_string(), &y.to_string()]).await?;
+                if let Some(p) = point {
+                    self.tap(p).await?;
                 }
                 self.paste(text).await?;
                 format!("typed {} characters", text.chars().count())
             }
             "key" => {
                 let key = args.key.as_deref().ok_or("key needs key")?;
-                let code = keycode(key).ok_or_else(|| format!("unknown key {key}"))?;
-                self.input(&["keyevent", &code.to_string()]).await?;
+                self.keys(key).await?;
                 format!("pressed {key}")
             }
             "launch_app" => {
                 let app = args.app.as_deref().ok_or("launch_app needs app")?;
-                let out = self
-                    .adb(&[
-                        "shell",
-                        "cmd",
-                        "package",
-                        "resolve-activity",
-                        "--brief",
-                        "-c",
-                        "android.intent.category.LAUNCHER",
-                        app,
-                    ])
-                    .await?;
-                let component = launcher(&String::from_utf8_lossy(&out), app)
-                    .ok_or_else(|| format!("launch {app}: no launcher activity"))?;
-                self.adb(&["shell", "am", "start", "-W", "-n", &component])
-                    .await?;
-                format!("launched {component}")
+                format!("launched {}", self.launch(app).await?)
             }
             "wait" => {
                 let s = args.seconds.unwrap_or(1.0).clamp(0.0, MAX_WAIT);
@@ -203,123 +200,79 @@ impl Android {
         Ok(out)
     }
 
-    /// Forgets the element rects of a session.
+    /// Forgets the element centres of a session.
     pub async fn end(&self, args: &Value) -> Result<String, String> {
         if let Some(session) = args["session"].as_str() {
-            self.rects.lock().await.remove(session);
+            self.points.lock().await.remove(session);
         }
         Ok("ended".to_owned())
     }
 
-    async fn point(&self, args: &ActArgs) -> Result<(i32, i32), String> {
-        if let Some(i) = args.element {
-            let rects = self.rects.lock().await;
-            let rect = rects
-                .get(&args.session)
-                .and_then(|r| r.get(i))
-                .ok_or_else(|| format!("no element [{i}] in the latest computer_state"))?;
-            return Ok(rect.center());
-        }
-        match (args.x, args.y) {
-            (Some(x), Some(y)) => Ok((x as i32, y as i32)),
-            _ => Err(format!("{} needs element or x,y", args.action)),
-        }
+    /// Starts the launcher activity of package `app`; its component.
+    pub(super) async fn launch(&self, app: &str) -> Result<String, String> {
+        let out = self
+            .adb(&[
+                "shell",
+                "cmd",
+                "package",
+                "resolve-activity",
+                "--brief",
+                "-c",
+                "android.intent.category.LAUNCHER",
+                app,
+            ])
+            .await?;
+        let component = launcher(&String::from_utf8_lossy(&out), app)
+            .ok_or_else(|| format!("launch {app}: no launcher activity"))?;
+        self.adb(&["shell", "am", "start", "-W", "-n", &component])
+            .await?;
+        Ok(component)
     }
 
-    async fn swipe(&self, from: (i32, i32), to: (i32, i32), ms: u32) -> Result<(), String> {
-        let args = [from.0, from.1, to.0, to.1].map(|v| v.to_string());
-        let ms = ms.to_string();
-        self.input(&["swipe", &args[0], &args[1], &args[2], &args[3], &ms])
-            .await
+    pub(super) async fn tap(&self, (x, y): (i32, i32)) -> Result<(), String> {
+        self.input(&["tap", &x.to_string(), &y.to_string()]).await
     }
 
-    async fn input(&self, args: &[&str]) -> Result<(), String> {
+    /// Presses a key or a combination such as `ctrl+a`.
+    pub(super) async fn keys(&self, keys: &str) -> Result<(), String> {
+        let codes: Vec<String> = keycodes(keys)?.iter().map(u32::to_string).collect();
+        let mut argv = vec![if codes.len() == 1 {
+            "keyevent"
+        } else {
+            "keycombination"
+        }];
+        argv.extend(codes.iter().map(String::as_str));
+        self.input(&argv).await
+    }
+
+    pub(super) async fn input(&self, args: &[&str]) -> Result<(), String> {
         let mut argv = vec!["shell", "input"];
         argv.extend_from_slice(args);
         self.adb(&argv).await.map(drop)
     }
 
-    /// The active window's UI tree from the image's UI server, else from `uiautomator dump`.
-    async fn dump(&self) -> Result<String, String> {
-        match self.served().await {
-            Ok(tree) => Ok(tree),
-            Err(e) => {
-                eprintln!("android: UI server: {e}; falling back to uiautomator dump");
-                self.uiautomator().await
-            }
+    /// The UI tree of window `window`, else of the active one, from the image's UI server.
+    pub(super) async fn tree(&self, window: Option<&str>) -> Result<String, String> {
+        match window {
+            Some(w) => self.served(&format!("dump {w}")).await,
+            None => self.served("dump").await,
         }
     }
 
-    /// One dump of the persistent UI server, started on first use; a failed server is dropped.
-    async fn served(&self) -> Result<String, String> {
-        let mut slot = self.ui.lock().await;
-        if slot.is_none() {
-            *slot = Some(self.start_ui().await?);
-        }
-        let server = slot.as_mut().ok_or("UI server missing")?;
-        let tree = tokio::time::timeout(UI_TIMEOUT, server.dump())
-            .await
-            .unwrap_or_else(|_| Err("timed out".to_owned()));
-        if tree.is_err() {
-            *slot = None;
-        }
-        tree
-    }
-
-    async fn start_ui(&self) -> Result<UiServer, String> {
-        self.adb(&["push", UI_JAR, DEVICE_UI_JAR]).await?;
-        let mut cmd = Command::new(&self.adb);
-        cmd.args(["shell", UI_CLASSPATH, "app_process", "/", "cb.Ui"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        crate::sys::unprotect(&mut cmd);
-        let mut child = cmd.spawn().map_err(|e| format!("run UI server: {e}"))?;
-        let stdin = child.stdin.take().ok_or("UI server stdin")?;
-        let mut stdout = BufReader::new(child.stdout.take().ok_or("UI server stdout")?);
-        let mut ready = String::new();
-        tokio::time::timeout(UI_TIMEOUT, stdout.read_line(&mut ready))
-            .await
-            .map_err(|_| "UI server start timed out".to_owned())?
-            .map_err(|e| format!("read UI server: {e}"))?;
-        if ready.trim() != "ready" {
-            return Err(format!("UI server said {:?}", ready.trim()));
-        }
-        Ok(UiServer {
-            _child: child,
-            stdin,
-            stdout,
-        })
-    }
-
-    /// `uiautomator dump` of the screen, retried once while the screen animates.
-    async fn uiautomator(&self) -> Result<String, String> {
-        let mut last = String::new();
-        for _ in 0..2 {
-            let out = self
-                .adb(&["exec-out", "uiautomator", "dump", "/dev/tty"])
-                .await?;
-            let text = String::from_utf8_lossy(&out);
-            if let (Some(start), Some(end)) = (text.find("<hierarchy"), text.rfind("</hierarchy>"))
-            {
-                return Ok(text[start..end].to_owned());
-            }
-            last = text.trim().to_owned();
-        }
-        Err(format!("uiautomator dump: {last}"))
+    /// The interactive windows as the UI server lists them, as JSON.
+    pub(super) async fn windows(&self) -> Result<String, String> {
+        self.served("windows").await
     }
 
     /// Pastes `text` into the focused field through the clipboard, which takes any Unicode, unlike key injection.
-    async fn paste(&self, text: &str) -> Result<(), String> {
+    pub(super) async fn paste(&self, text: &str) -> Result<(), String> {
         self.adb(&["push", SCRCPY_JAR, DEVICE_JAR]).await?;
         self.adb(&["push", SCRCPY_SU, DEVICE_SU]).await?;
         let socket = format!("localabstract:scrcpy_{SCRCPY_SCID}");
         let port = String::from_utf8_lossy(&self.adb(&["forward", "tcp:0", &socket]).await?)
             .trim()
             .to_owned();
-        let server = self.scrcpy_control();
-        let pasted = match server {
+        let pasted = match self.scrcpy_control() {
             Ok(child) => {
                 let pasted = send_clipboard(&port, text).await;
                 drop(child);
@@ -335,6 +288,92 @@ impl Android {
             .await;
         pasted?;
         removed.map(drop)
+    }
+
+    pub(super) async fn adb(&self, args: &[&str]) -> Result<Vec<u8>, String> {
+        let mut cmd = Command::new(&self.adb);
+        cmd.args(args).stdin(Stdio::null()).kill_on_drop(true);
+        crate::sys::unprotect(&mut cmd);
+        let out = tokio::time::timeout(ADB_TIMEOUT, cmd.output())
+            .await
+            .map_err(|_| format!("adb {}: timed out", args.join(" ")))?
+            .map_err(|e| format!("run adb: {e}"))?;
+        if out.status.success() {
+            Ok(out.stdout)
+        } else {
+            Err(format!(
+                "adb {}: {}: {}",
+                args.join(" "),
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))
+        }
+    }
+
+    async fn point(&self, args: &ActArgs) -> Result<Option<(i32, i32)>, String> {
+        let Some(i) = args.element else {
+            return Ok(args.x.zip(args.y).map(|(x, y)| (x as i32, y as i32)));
+        };
+        self.points
+            .lock()
+            .await
+            .get(&args.session)
+            .and_then(|p| p.get(i))
+            .copied()
+            .map(Some)
+            .ok_or_else(|| format!("no element [{i}] in the latest computer_state"))
+    }
+
+    async fn swipe(&self, from: (i32, i32), to: (i32, i32), ms: u32) -> Result<(), String> {
+        let args = [from.0, from.1, to.0, to.1].map(|v| v.to_string());
+        let ms = ms.to_string();
+        self.input(&["swipe", &args[0], &args[1], &args[2], &args[3], &ms])
+            .await
+    }
+
+    /// One answer of the resident UI server, started on first use; a server that fails or is cancelled mid-answer is dropped.
+    async fn served(&self, cmd: &str) -> Result<String, String> {
+        let mut slot = self.ui.lock().await;
+        let mut server = match slot.take() {
+            Some(server) => server,
+            None => self.start_ui().await?,
+        };
+        let answer = tokio::time::timeout(UI_TIMEOUT, server.ask(cmd))
+            .await
+            .map_err(|_| "UI server: timed out".to_owned())??;
+        *slot = Some(server);
+        match answer.trim().strip_prefix("<error>") {
+            Some(e) => Err(format!("UI server: {}", e.trim_end_matches("</error>"))),
+            None => Ok(answer),
+        }
+    }
+
+    async fn start_ui(&self) -> Result<UiServer, String> {
+        self.adb(&["push", UI_JAR, DEVICE_UI_JAR]).await?;
+        let _ = self.adb(&["shell", "pkill", "-f", "cb.Ui"]).await;
+        let mut cmd = Command::new(&self.adb);
+        cmd.args(["shell", UI_CLASSPATH, "app_process", "/", "cb.Ui"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        crate::sys::unprotect(&mut cmd);
+        let mut child = cmd.spawn().map_err(|e| format!("run UI server: {e}"))?;
+        let stdin = child.stdin.take().ok_or("take UI server stdin")?;
+        let mut stdout = BufReader::new(child.stdout.take().ok_or("take UI server stdout")?);
+        let mut ready = String::new();
+        tokio::time::timeout(UI_TIMEOUT, stdout.read_line(&mut ready))
+            .await
+            .map_err(|_| "UI server start timed out".to_owned())?
+            .map_err(|e| format!("read UI server: {e}"))?;
+        if ready.trim() != "ready" {
+            return Err(format!("UI server said {:?}", ready.trim()));
+        }
+        Ok(UiServer {
+            _child: child,
+            stdin,
+            stdout,
+        })
     }
 
     /// A control-only scrcpy server as the system uid, which may set the clipboard; dropping the child stops it.
@@ -366,29 +405,9 @@ impl Android {
         crate::sys::unprotect(&mut cmd);
         cmd.spawn().map_err(|e| format!("run scrcpy control: {e}"))
     }
-
-    async fn adb(&self, args: &[&str]) -> Result<Vec<u8>, String> {
-        let mut cmd = Command::new(&self.adb);
-        cmd.args(args).stdin(Stdio::null()).kill_on_drop(true);
-        crate::sys::unprotect(&mut cmd);
-        let out = tokio::time::timeout(ADB_TIMEOUT, cmd.output())
-            .await
-            .map_err(|_| format!("adb {}: timed out", args.join(" ")))?
-            .map_err(|e| format!("run adb: {e}"))?;
-        if out.status.success() {
-            Ok(out.stdout)
-        } else {
-            Err(format!(
-                "adb {}: {}: {}",
-                args.join(" "),
-                out.status,
-                String::from_utf8_lossy(&out.stderr).trim()
-            ))
-        }
-    }
 }
 
-/// The image's UI server (`image/android/ui`) in Android, one dump per request line; dropping it stops the server.
+/// The image's UI server (`image/android/ui`) in Android, one answer per request line; dropping it stops the server.
 struct UiServer {
     _child: Child,
     stdin: ChildStdin,
@@ -396,14 +415,15 @@ struct UiServer {
 }
 
 impl UiServer {
-    async fn dump(&mut self) -> Result<String, String> {
+    async fn ask(&mut self, cmd: &str) -> Result<String, String> {
         self.stdin
-            .write_all(b"dump\n")
+            .write_all(format!("{cmd}\n").as_bytes())
             .await
             .map_err(|e| format!("ask UI server: {e}"))?;
-        let mut tree = String::new();
+        let mut answer = String::new();
+        let mut line = String::new();
         loop {
-            let mut line = String::new();
+            line.clear();
             let n = self
                 .stdout
                 .read_line(&mut line)
@@ -413,9 +433,9 @@ impl UiServer {
                 return Err("UI server exited".to_owned());
             }
             if line.trim_end() == UI_END {
-                return Ok(tree);
+                return Ok(answer);
             }
-            tree.push_str(&line);
+            answer.push_str(&line);
         }
     }
 }
@@ -457,176 +477,43 @@ struct ActArgs {
     seconds: Option<f64>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Rect {
-    left: i32,
-    top: i32,
-    right: i32,
-    bottom: i32,
-}
-
-impl Rect {
-    fn center(self) -> (i32, i32) {
-        ((self.left + self.right) / 2, (self.top + self.bottom) / 2)
-    }
-}
-
-/// One node of a uiautomator dump that shows text or takes input.
-#[derive(Debug, PartialEq)]
-struct Element {
-    class: String,
-    text: String,
-    desc: String,
-    id: String,
-    clickable: bool,
-    editable: bool,
-    checked: Option<bool>,
-    rect: Rect,
-}
-
-impl Element {
-    fn label(&self) -> &str {
-        if self.text.is_empty() {
-            &self.desc
-        } else {
-            &self.text
-        }
-    }
-
-    fn line(&self, i: usize) -> String {
-        let class = self.class.rsplit('.').next().unwrap_or_default();
-        let (x, y) = self.rect.center();
-        let mut line = format!("[{i}] {class} {:?} at {x},{y}", self.label());
-        if !self.id.is_empty() {
-            line.push_str(&format!(
-                " id={}",
-                self.id.rsplit('/').next().unwrap_or_default()
-            ));
-        }
-        if self.clickable {
-            line.push_str(" clickable");
-        }
-        if self.editable {
-            line.push_str(" editable");
-        }
-        if let Some(checked) = self.checked {
-            line.push_str(if checked { " checked" } else { " unchecked" });
-        }
-        line
-    }
-}
-
-/// The elements of a uiautomator dump in document order: nodes with text, a description, or input.
-fn elements(xml: &str) -> Vec<Element> {
-    xml.split("<node ")
-        .skip(1)
-        .filter_map(|node| {
-            let attr = |key: &str| attribute(node, key).unwrap_or_default();
-            let text = attr("text");
-            let desc = attr("content-desc");
-            let clickable = attr("clickable") == "true" || attr("long-clickable") == "true";
-            let class = attr("class");
-            let editable = attr("editable") == "true" || class.ends_with("EditText");
-            if text.is_empty() && desc.is_empty() && !clickable && !editable {
-                return None;
-            }
-            let rect = bounds(&attr("bounds"))?;
-            (rect.right > rect.left && rect.bottom > rect.top).then(|| Element {
-                text,
-                desc,
-                id: attr("resource-id"),
-                clickable,
-                editable,
-                checked: (attr("checkable") == "true").then(|| attr("checked") == "true"),
-                rect,
-                class,
-            })
+/// The keycodes of `keys` such as `ctrl+a`; desktop names keep their meaning, the phone's keys are back, home_screen, recents.
+fn keycodes(keys: &str) -> Result<Vec<u32>, String> {
+    keys.split('+')
+        .map(|k| {
+            let k = k.trim().to_lowercase();
+            KEYCODES
+                .iter()
+                .find(|(name, _)| *name == k)
+                .map(|(_, code)| *code)
+                .or_else(|| letter(&k))
+                .ok_or_else(|| format!("unknown key {k:?} in {keys:?}"))
         })
         .collect()
 }
 
-/// The unescaped value of `key="..."` in the attributes of one node.
-fn attribute(node: &str, key: &str) -> Option<String> {
-    let head = node.split('>').next()?;
-    let start = head
-        .find(&format!(" {key}=\""))
-        .map(|i| i + key.len() + 3)
-        .or_else(|| {
-            head.strip_prefix(&format!("{key}=\""))
-                .map(|_| key.len() + 2)
-        })?;
-    let len = head[start..].find('"')?;
-    Some(unescape(&head[start..start + len]))
-}
-
-fn unescape(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    let mut rest = value;
-    while let Some(i) = rest.find('&') {
-        out.push_str(&rest[..i]);
-        rest = &rest[i..];
-        let Some(end) = rest.find(';') else { break };
-        let entity = &rest[1..end];
-        let ch = match entity {
-            "amp" => Some('&'),
-            "lt" => Some('<'),
-            "gt" => Some('>'),
-            "quot" => Some('"'),
-            "apos" => Some('\''),
-            _ => entity
-                .strip_prefix("#x")
-                .and_then(|h| u32::from_str_radix(h, 16).ok())
-                .or_else(|| entity.strip_prefix('#').and_then(|d| d.parse().ok()))
-                .and_then(char::from_u32),
-        };
-        match ch {
-            Some(c) => {
-                out.push(c);
-                rest = &rest[end + 1..];
-            }
-            None => {
-                out.push('&');
-                rest = &rest[1..];
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-/// `[l,t][r,b]` of a uiautomator node.
-fn bounds(value: &str) -> Option<Rect> {
-    let nums: Vec<i32> = value
-        .split(|c: char| !c.is_ascii_digit() && c != '-')
-        .filter(|s| !s.is_empty())
-        .map(str::parse)
-        .collect::<Result<_, _>>()
-        .ok()?;
-    match nums[..] {
-        [left, top, right, bottom] => Some(Rect {
-            left,
-            top,
-            right,
-            bottom,
-        }),
+/// The keycode of one letter, digit or function key.
+fn letter(k: &str) -> Option<u32> {
+    let mut chars = k.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c @ 'a'..='z'), None) => Some(29 + (c as u32 - 'a' as u32)),
+        (Some(c @ '0'..='9'), None) => Some(7 + (c as u32 - '0' as u32)),
+        (Some('f'), Some(_)) => k[1..]
+            .parse::<u32>()
+            .ok()
+            .filter(|n| (1..=12).contains(n))
+            .map(|n| 130 + n),
         _ => None,
     }
 }
 
 /// The `package/activity` line of `cmd package resolve-activity --brief` for `app`.
 fn launcher(out: &str, app: &str) -> Option<String> {
+    let prefix = format!("{app}/");
     out.lines()
         .map(str::trim)
-        .find(|l| l.starts_with(&format!("{app}/")))
+        .find(|l| l.starts_with(&prefix))
         .map(str::to_owned)
-}
-
-fn keycode(key: &str) -> Option<u32> {
-    let key = key.to_lowercase();
-    KEYS.iter()
-        .find(|(name, _)| *name == key)
-        .map(|(_, code)| *code)
-        .or_else(|| key.parse().ok())
 }
 
 /// A scrcpy SET_CLIPBOARD message that pastes `text`.
@@ -664,38 +551,15 @@ async fn send_clipboard(port: &str, text: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    const DUMP: &str = r#"<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0"><node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="p" content-desc="" checkable="false" checked="false" clickable="false" long-clickable="false" bounds="[0,0][720,1280]"><node index="0" text="Wi&#8209;Fi &amp; more" resource-id="android:id/title" class="android.widget.TextView" package="p" content-desc="" checkable="false" checked="false" clickable="false" long-clickable="false" bounds="[160,470][490,510]" /><node index="1" text="" resource-id="com.android.settings:id/switch_widget" class="android.widget.Switch" package="p" content-desc="Dark theme" checkable="true" checked="true" clickable="true" long-clickable="false" bounds="[600,500][680,560]" /><node index="2" text="" resource-id="android:id/search_src_text" class="android.widget.EditText" package="p" content-desc="" checkable="false" checked="false" clickable="false" long-clickable="false" bounds="[40,100][680,180]" /><node index="3" text="hidden" resource-id="" class="android.widget.TextView" package="p" content-desc="" checkable="false" checked="false" clickable="false" long-clickable="false" bounds="[0,0][0,0]" /></node></hierarchy>"#;
-
     #[test]
-    fn elements_keep_labelled_and_input_nodes_with_their_centers() {
-        let got = elements(DUMP);
-        let lines: Vec<String> = got.iter().enumerate().map(|(i, e)| e.line(i)).collect();
-        assert_eq!(
-            lines,
-            [
-                "[0] TextView \"Wi\u{2011}Fi & more\" at 325,490 id=title",
-                "[1] Switch \"Dark theme\" at 640,530 id=switch_widget clickable checked",
-                "[2] EditText \"\" at 360,140 id=search_src_text editable",
-            ]
-        );
-    }
-
-    #[test]
-    fn bounds_and_entities_parse() {
-        assert_eq!(
-            bounds("[1,2][3,4]"),
-            Some(Rect {
-                left: 1,
-                top: 2,
-                right: 3,
-                bottom: 4
-            })
-        );
-        assert_eq!(bounds("[1,2]"), None);
-        assert_eq!(
-            unescape("a&lt;b&gt;&quot;&apos;&#20320;&#x597D;&bogus"),
-            "a<b>\"'你好&bogus"
-        );
+    fn desktop_key_names_map_to_android_keycodes() {
+        assert_eq!(keycodes("Return").unwrap(), [66]);
+        assert_eq!(keycodes("shift+end").unwrap(), [59, 123]);
+        assert_eq!(keycodes("ctrl+a").unwrap(), [113, 29]);
+        assert_eq!(keycodes("home").unwrap(), [122]);
+        assert_eq!(keycodes("back").unwrap(), [4]);
+        assert_eq!(keycodes("F5").unwrap(), [135]);
+        assert!(keycodes("hyper").is_err());
     }
 
     #[test]
@@ -706,14 +570,6 @@ mod tests {
             Some("org.fossify.math/.activities.SplashActivity.Green")
         );
         assert_eq!(launcher("No activity found\n", "x.y"), None);
-    }
-
-    #[test]
-    fn keys_map_to_android_keycodes() {
-        assert_eq!(keycode("Back"), Some(4));
-        assert_eq!(keycode("enter"), Some(66));
-        assert_eq!(keycode("82"), Some(82));
-        assert_eq!(keycode("hyper"), None);
     }
 
     #[test]
