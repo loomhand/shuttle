@@ -2,6 +2,7 @@
 
 pub mod cli;
 pub mod daemon;
+pub mod driver;
 pub mod mcp;
 pub mod proxy;
 pub mod runner;

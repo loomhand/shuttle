@@ -19,7 +19,7 @@ shuttle-desk = { path = "../desk" }
 shuttle-desk-core = { path = "../desk-core" }
 shuttle-models = { path = "../models" }
 tempfile = "3"
-tokio = { version = "1", features = ["rt-multi-thread", "fs", "io-std", "io-util", "process", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "fs", "io-std", "io-util", "macros", "process", "signal", "sync", "time"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

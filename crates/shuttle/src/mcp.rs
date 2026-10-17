@@ -227,7 +227,7 @@ mod tests {
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
         let daemon = tokio::spawn({
             let endpoint = endpoint.clone();
-            async move { server::serve(Arc::new(Fake), &endpoint).await }
+            async move { server::serve(Arc::new(Fake), server::bind(&endpoint).await?).await }
         });
         for _ in 0..50 {
             if server::connect(&endpoint).await.is_ok() {
