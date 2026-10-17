@@ -8,7 +8,7 @@ shuttle is part of [loomhand](https://github.com/loomhand). It takes its desk co
 
 ## Status
 
-**v0.0.1, the latest release, is a skeleton**: it installs, answers MCP on stdio and lists its five tools; only `status` runs. **`main`, not yet released,** adds the daemon, desk control on macOS and Windows (`desk`, `screenshot`, `gui_plan`, `script_run`, a developer preview that needs a running cua-driver daemon) and bring-your-own-key models; the safety controls are not built yet. The tools that act on the desktop land per platform:
+**v0.0.1, the latest release, is a skeleton**: it installs, answers MCP on stdio and lists its five tools; only `status` runs. **`main`, not yet released,** adds the daemon, desk control on macOS and Windows (`desk`, `screenshot`, `gui_plan`, `script_run`, a developer preview that runs the bundled cua-driver) and bring-your-own-key models; the safety controls are not built yet. The tools that act on the desktop land per platform:
 
 | Phase | What | State |
 |---|---|---|
