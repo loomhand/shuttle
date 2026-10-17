@@ -64,7 +64,7 @@ fn call_desk(rest: &[String]) -> ExitCode {
             args,
         },
         Err(e) => {
-            eprintln!("{NAME}: {e}");
+            let _ = writeln!(std::io::stderr(), "{NAME}: {e}");
             return usage();
         }
     };
@@ -127,7 +127,7 @@ async fn start_driver(exe: &Path) {
         .stderr(Stdio::null())
         .spawn();
     if let Err(e) = started {
-        eprintln!("{NAME}: start {}: {e}", driver.display());
+        let _ = writeln!(std::io::stderr(), "{NAME}: start {}: {e}", driver.display());
         return;
     }
     for _ in 0..DRIVER_POLLS {
@@ -154,7 +154,8 @@ fn exit(done: Result<(), String>) -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!(
+    let _ = writeln!(
+        std::io::stderr(),
         "usage: {NAME} mcp | {NAME} serve [ENDPOINT] | {NAME} desk VERB [key=value ...|JSON] | {NAME} --version; desk verbs: {}",
         DESK_VERBS.join(", ")
     );
@@ -162,6 +163,6 @@ fn usage() -> ExitCode {
 }
 
 fn fail(e: &str) -> ExitCode {
-    eprintln!("{NAME}: {e}");
+    let _ = writeln!(std::io::stderr(), "{NAME}: {e}");
     ExitCode::FAILURE
 }
