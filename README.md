@@ -4,6 +4,8 @@ shuttle (binary `cocoon-shuttle`, app Cocoon Shuttle) is a computer-use host tha
 
 shuttle is part of [loomhand](https://github.com/loomhand). It takes its desk core and plan executor from [cocoonbox](https://github.com/loomhand/cocoonbox), where they drive cloud desktops, and its input, capture and window layer from [cua-driver](https://github.com/loomhand/cua) (MIT).
 
+**Documentation: [loomhand.github.io/shuttle](https://loomhand.github.io/shuttle/)** (source in [`docs/`](docs/)).
+
 ## Status
 
 **v0.0.1 is a skeleton.** It installs, answers MCP on stdio and lists its five tools; only `status` runs. The tools that act on the desktop land per platform:
