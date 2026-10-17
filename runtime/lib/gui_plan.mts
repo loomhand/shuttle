@@ -119,11 +119,11 @@ async function perform(p: Params): Promise<Result> {
       const m = s.close ? null : await hiddenModal(ws, f)
       if (m) throw new Surprise(modalBlocks(m), await seen())
       const keys = !!(s.menu || s.click)
-      const pre = f && (!known.has(f.title) || !f.title.trim()) && !vetted.has(f.id) && !(i === (p.start ?? 0) && startAlert) && !(s.window && norm(f.title).includes(norm(s.window))) ? await look(f, keys) : null
+      const pre = f && (!known.has(f.title) || !f.title.trim()) && !vetted.has(`${f.id} ${f.pid} ${f.title}`) && !(i === (p.start ?? 0) && startAlert) && !(s.window && norm(f.title).includes(norm(s.window))) ? await look(f, keys) : null
       const o = pre?.text ?? ''
       if (f && blocked(o)) throw new Surprise(unanswered(f.title), await seen())
       if (f && isAlert(o)) throw new Surprise(`alert "${f.title}" is in front`, await seen())
-      if (f && pre) vetted.add(f.id)
+      if (f && pre) vetted.add(`${f.id} ${f.pid} ${f.title}`)
       const kept = f && pre?.snap && f.title !== pressed?.title ? { id: f.id, keys, snap: pre.snap } : undefined
       const prev = plan[i - 1]
       await run(s, rec, kept).catch(async (e: unknown) => {

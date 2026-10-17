@@ -139,3 +139,22 @@ test('a click in a dialog whose controls show after the step read its bare root 
     server.close()
   }
 })
+
+test('a window id the plan vetted names a new window when its title changes, which the step reads again', async () => {
+  const doc = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: false }
+  const front = { id: '2', title: 'Rename', role: 'dialog', pid: process.pid, active: false }
+  const server = await toolhost(({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify(front.active ? [doc, front] : [{ ...doc, active: true }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: front, truncated: false, nodes: [root(front.title === 'Error' ? 'alert' : 'dialog', front.title)] })
+    if (tool === 'desk_key' && args.keys === 'f2') front.active = true
+    if (tool === 'desk_key' && args.keys === 'tab') front.title = 'Error'
+    return '{"ok":true}'
+  })
+  const { main } = await import('../lib/gui_plan.mts')
+  try {
+    const r = await main({ steps: [{ key: 'f2' }, { key: 'tab' }, { key: 'space' }] })
+    assert.match(r.escalate?.reason ?? '', /alert "Error" is in front/, JSON.stringify(r))
+  } finally {
+    server.close()
+  }
+})
