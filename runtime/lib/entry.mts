@@ -18,7 +18,7 @@ try {
 if (main) {
   try {
     const params: unknown = JSON.parse(readFileSync(out('params.json'), 'utf8'))
-    writeFileSync(out('result.json'), JSON.stringify((await main(params)) ?? null) ?? 'null')
+    writeFileSync(out('result.json'), JSON.stringify(await main(params)) ?? 'null')
   } catch (e: unknown) {
     fail('exception', e)
   }

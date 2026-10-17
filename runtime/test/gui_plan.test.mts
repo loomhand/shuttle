@@ -4,7 +4,7 @@ import { test } from 'node:test'
 
 import { toolhost } from './toolhost.mts'
 
-test('an app step focuses the app\'s open window, by its process or the window list, instead of launching the app, and names an app that does not exist', async () => {
+test('an app step focuses the app\'s open window, by its process or the window list, instead of launching the app, and names an app that does not exist', { skip: process.platform !== 'linux' }, async () => {
   const app = spawn('sleep', ['30'])
   const wins = [
     { id: '1', title: 'Terminal - user@box: ~', role: 'frame', pid: app.pid, active: false },
