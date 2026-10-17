@@ -24,6 +24,7 @@ use crate::worker::Worker;
 
 const CALL_LIMIT: Duration = Duration::from_secs(3);
 const TREE_LIMIT: Duration = Duration::from_secs(10);
+const TURN_WAIT: Duration = Duration::from_secs(15);
 const READ_CHARS: usize = 64 << 10;
 const ACTIONS: [&str; 8] = [
     "desk_press",
@@ -44,6 +45,7 @@ pub struct Desk<B, D> {
     driver: D,
     os: Os,
     acting: Arc<tokio::sync::Mutex<()>>,
+    turn_wait: Duration,
 }
 
 impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
@@ -54,13 +56,17 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             driver,
             os,
             acting: Arc::new(tokio::sync::Mutex::new(())),
+            turn_wait: TURN_WAIT,
         }
     }
 
     /// Runs desk call `tool`, a `desk_<verb>`; actions run one at a time, until their backend calls end, reads alongside them.
     pub async fn run(&self, tool: &str, args: Value) -> Result<Output, String> {
         let turn = if ACTIONS.contains(&tool) {
-            Some(Arc::new(self.acting.clone().lock_owned().await))
+            let turn = tokio::time::timeout(self.turn_wait, self.acting.clone().lock_owned())
+                .await
+                .map_err(|_| "desk busy: a previous action is still running".to_owned())?;
+            Some(Arc::new(turn))
         } else {
             None
         };
@@ -923,6 +929,24 @@ mod tests {
         b.unwrap();
         let got = keys.lock().unwrap().join("");
         assert!(got == "aaabbb" || got == "bbbaaa", "{got}");
+    }
+
+    #[tokio::test]
+    async fn an_action_waits_a_bounded_time_for_a_running_one_then_says_the_desk_is_busy() {
+        let keys = Arc::new(Mutex::new(Vec::new()));
+        let mut desk = Desk::new(|| Ok(notepad()), Slow(keys.clone()), Os::Windows);
+        desk.turn_wait = Duration::from_millis(50);
+        let long = "a".repeat(100);
+        let (typed, busy) = tokio::join!(desk.run("desk_type", json!({"text": long})), async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            desk.run("desk_key", json!({"keys": "ctrl+s"})).await
+        });
+        typed.unwrap();
+        assert_eq!(
+            busy.unwrap_err(),
+            "desk busy: a previous action is still running"
+        );
+        assert_eq!(keys.lock().unwrap().join(""), long);
     }
 
     #[tokio::test]
