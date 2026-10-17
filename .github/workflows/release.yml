@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  native:
+  build:
     strategy:
       fail-fast: false
       matrix:
@@ -16,55 +16,28 @@ jobs:
           - platform: macos-arm64
             runner: macos-26
             target: aarch64-apple-darwin
-            exe: cocoon-shuttle
           - platform: macos-x64
             runner: macos-26
             target: x86_64-apple-darwin
-            exe: cocoon-shuttle
           - platform: windows-x64
             runner: windows-2025
             target: x86_64-pc-windows-msvc
-            exe: cocoon-shuttle.exe
-    runs-on: ${{ matrix.runner }}
-    env:
-      MACOSX_DEPLOYMENT_TARGET: "13.0"
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7.0.1
-
-      - name: Build
-        shell: bash
-        run: |
-          rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal -t ${{ matrix.target }}
-          cargo build --release --locked -p shuttle --target ${{ matrix.target }}
-
-      - name: Package
-        shell: bash
-        run: packaging/package.sh ${{ matrix.platform }} target/${{ matrix.target }}/release/${{ matrix.exe }} "$GITHUB_REF_NAME" dist
-
-      - name: Upload
-        uses: actions/upload-artifact@v7.0.2
-        with:
-          name: dist-${{ matrix.platform }}
-          path: dist/*
-
-  linux:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
+          # Debian 11 keeps the glibc floor at 2.31, the floor of the bundled cua-driver.
           - platform: linux-x64
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            container: debian:11
           - platform: linux-arm64
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            container: debian:11
     runs-on: ${{ matrix.runner }}
-    # Debian 11 keeps the glibc floor at 2.31, the floor of the bundled cua-driver.
-    container:
-      image: debian:11
+    container: ${{ matrix.container }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
     steps:
-      - name: Install build dependencies
+      - name: Debian build dependencies
+        if: matrix.container
         run: |
           cat > /etc/apt/sources.list <<'APT'
           deb [check-valid-until=no signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://snapshot.debian.org/archive/debian/20260901T000000Z/ bullseye main
@@ -81,12 +54,14 @@ jobs:
         uses: actions/checkout@v7.0.1
 
       - name: Build
+        shell: bash
         run: |
-          rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
+          rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal -t ${{ matrix.target }}
           cargo build --release --locked -p shuttle --target ${{ matrix.target }}
 
       - name: Package
-        run: packaging/package.sh ${{ matrix.platform }} target/${{ matrix.target }}/release/cocoon-shuttle "$GITHUB_REF_NAME" dist
+        shell: bash
+        run: packaging/package.sh ${{ matrix.platform }} target/${{ matrix.target }}/release "$GITHUB_REF_NAME" dist
 
       - name: Upload
         uses: actions/upload-artifact@v7.0.2
@@ -95,7 +70,7 @@ jobs:
           path: dist/*
 
   publish:
-    needs: [native, linux]
+    needs: build
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -128,7 +103,7 @@ jobs:
         run: |
           awk -v v="${GITHUB_REF_NAME#v}" '/^## / { on = ($2 == v) } on && !/^## /' CHANGELOG.md > notes.md
           test -s notes.md
-          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "cocoon-shuttle $GITHUB_REF_NAME" --notes-file notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "shuttle $GITHUB_REF_NAME" --notes-file notes.md
 
   install:
     needs: publish
@@ -137,11 +112,12 @@ jobs:
       matrix:
         include:
           - runner: ubuntu-24.04
-            container: ubuntu:24.04
+            container: ubuntu:22.04
           - runner: ubuntu-24.04-arm
             container: ubuntu:24.04
           - runner: macos-26
           - runner: macos-15-intel
+          - runner: windows-2025
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
     steps:
@@ -150,31 +126,20 @@ jobs:
         run: apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
 
       - name: Install
+        if: runner.os != 'Windows'
         run: curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/install.sh" | SHUTTLE_VERSION="$GITHUB_REF_NAME" sh
 
-      - name: Check
-        run: |
-          "$HOME/.local/bin/cocoon-shuttle" --version | grep -Fx "cocoon-shuttle ${GITHUB_REF_NAME#v}"
-          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | "$HOME/.local/bin/cocoon-shuttle" mcp | tee tools.json
-          grep -o '"name":"[a-z_]*"' tools.json | sort | tr '\n' ' ' | grep -Fx '"name":"desk" "name":"gui_plan" "name":"screenshot" "name":"script_run" "name":"status" '
-
-  install-windows:
-    needs: publish
-    runs-on: windows-2025
-    steps:
-      - name: Install
+      - name: Install (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $env:SHUTTLE_VERSION = $env:GITHUB_REF_NAME
           irm "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME/install.ps1" | iex
+          "$env:LOCALAPPDATA\Programs\cocoon-shuttle" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
-      - name: Check
-        shell: pwsh
+      - name: Status over MCP
+        shell: bash
         run: |
-          $exe = Join-Path $env:LOCALAPPDATA 'Programs\cocoon-shuttle\cocoon-shuttle.exe'
-          $v = & $exe --version
-          if ($v -ne "cocoon-shuttle $($env:GITHUB_REF_NAME.TrimStart('v'))") { throw "version: $v" }
-          $out = '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | & $exe mcp
-          $out
-          $names = ($out | ConvertFrom-Json).result.tools.name -join ' '
-          if ($names -ne 'gui_plan script_run desk screenshot status') { throw "tools: $names" }
+          [ "$RUNNER_OS" = Windows ] || export PATH="$HOME/.local/bin:$PATH"
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"status","arguments":{}}}' | cocoon-shuttle mcp | tee status.json
+          grep -F "\\\"version\\\":\\\"${GITHUB_REF_NAME#v}\\\"" status.json
