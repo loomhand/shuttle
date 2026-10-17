@@ -60,7 +60,7 @@ ask = "anthropic/claude-sonnet-5"
 
 ## Saved flows
 
-`gui_plan` saves passing plans as flows in a `flows` directory next to `config.toml`, as one JSON file per flow, an `INDEX`, a run log `.runs.jsonl` and a git history of the changes when git is installed. Flows hold the values plans typed, so the directory is readable by its owner only (0700) and its files are created 0600.
+`gui_plan` saves passing plans as flows in a `flows` directory next to `config.toml`, as one JSON file per flow, an `INDEX`, a run log `.runs.jsonl` and a git history of the changes when git is installed (on macOS, when the Command Line Tools are: shuttle never runs the `git` stub that would open their installer). Flows hold the values plans typed, so the directory is readable by its owner only (0700) and its files are created 0600.
 
 ## Safety (P1, not built yet)
 
