@@ -15,7 +15,7 @@ test('a step in a window whose app holds a modal dialog the screen does not show
   const server = await toolhost(({ tool }) => {
     calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify(wins)
-    if (tool === 'desk_snapshot') return JSON.stringify({ window: doc, nodes: [], truncated: false, text: '- window "Untitled 1 - Mousepad"' })
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: doc, nodes: [], truncated: false })
     return '{"ok":true}'
   })
   const { main } = await import('../lib/gui_plan.mts')

@@ -59,7 +59,7 @@ export async function shot(r: { x?: number; y?: number; w?: number; h?: number }
   return Buffer.from(out.image_b64, 'base64')
 }
 
-/** A setting from the environment. */
+/** A setting from the environment; an empty value reads as unset. */
 export function setting(k: string): string | undefined {
   return process.env[k] || undefined
 }
@@ -88,7 +88,6 @@ export async function ground(png: Buffer, target: string, area: { left?: number;
   return [r.x, r.y]
 }
 
-// one toolhost call: a big-endian u32 length and JSON each way
 async function request<T>(tool: string, args: Record<string, unknown>): Promise<T> {
   const out = await exchange(tool, args)
   try { return JSON.parse(out.text) as T } catch { return out.text as T }
@@ -102,13 +101,15 @@ function exchange(tool: string, args: Record<string, unknown>): Promise<Output> 
     const body = Buffer.from(JSON.stringify({ agent_id: process.env.SHUTTLE_AGENT ?? 'desk', tool, args }))
     const head = Buffer.alloc(4)
     head.writeUInt32BE(body.length)
-    let buf = Buffer.alloc(0)
-    s.on('connect', () => s.write(Buffer.concat([head, body])))
-    s.on('data', (d) => {
-      buf = Buffer.concat([buf, d])
-      if (buf.length < 4 || buf.length < 4 + buf.readUInt32BE(0)) return
+    const chunks: Buffer[] = []
+    let got = 0; let want = -1
+    s.on('connect', () => { s.write(head); s.write(body) })
+    s.on('data', (d: Buffer) => {
+      chunks.push(d); got += d.length
+      if (want < 0 && got >= 4) want = 4 + (chunks.length === 1 ? d : Buffer.concat(chunks)).readUInt32BE(0)
+      if (want < 0 || got < want) return
       s.destroy()
-      const out = JSON.parse(buf.subarray(4, 4 + buf.readUInt32BE(0)).toString()) as Output
+      const out = JSON.parse(Buffer.concat(chunks, got).subarray(4, want).toString()) as Output
       if (out.is_error) return reject(new Error(out.text))
       resolve(out)
     })

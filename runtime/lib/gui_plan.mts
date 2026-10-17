@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { crc32, deflateSync, inflateSync } from 'node:zlib'
 import * as desk from './desk.mts'
 import type { Win } from './desk.mts'
@@ -23,15 +24,9 @@ type Rec = {
 }
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
-export type Escalation = Seen & { reason: string; step?: number; plan_step?: Step }
-export type Trace = { i: number; op?: string; how?: string; ms?: number; was?: 'on' | 'off'; now?: 'on' | 'off'; noop?: boolean }
+type Escalation = Seen & { reason: string; step?: number; plan_step?: Step }
+type Trace = { i: number; op?: string; how?: string; ms?: number; was?: 'on' | 'off'; now?: 'on' | 'off'; noop?: boolean }
 export type Result = { ok?: boolean; done?: number; ms?: number; trace?: Trace[]; escalate?: Escalation; served?: desk.Served[]; [key: string]: unknown }
-
-class Surprise extends Error {
-  reason: string
-  seen: Seen
-  constructor(reason: string, seen: Seen = {}) { super(reason); this.reason = reason; this.seen = seen }
-}
 
 const OS = process.platform
 const FLOWS = process.env.SHUTTLE_FLOWS || (OS === 'linux' ? '/workspace/flows' : `${homedir()}/workspace/flows`)
@@ -41,9 +36,11 @@ const PENDING = `${FLOWS}/.pending.json`
 const CHAIN_AGE = 10 * 60 * 1000
 const ACTIVE = new Set(['button', 'checkbox', 'menuitem', 'menu', 'tab', 'textbox', 'spinbutton', 'slider', 'combobox', 'radio', 'link', 'switch', 'option', 'treeitem', 'togglebutton', 'searchbox', 'menuitemcheckbox', 'menuitemradio'])
 const TOGGLES = 'checkbox|switch|togglebutton|menuitemcheckbox'
+const TOGGLE_ROLES = new Set(TOGGLES.split('|'))
 const ITEMS = new Set(['cell', 'listitem'])
 const LISTS = new Set(['treegrid', 'list', 'tree', 'table'])
 const FIELDS = 'textbox|searchbox|spinbutton|slider|combobox'
+const FIELD_ROLES = new Set(FIELDS.split('|'))
 const SHOWN_ROLES = new Set([...ACTIVE, 'dialog', 'alert'])
 const MARGIN = 0.25
 const CROP = { w: 640, h: 400 }
@@ -68,7 +65,7 @@ let typed = false
 let pressed: { title: string; at: number } | null = null
 let T: Record<string, number> = {}
 
-/** Runs {steps, params?, save?, start?}, {flow, params?, start?}, {save}, {find}, {reindex} or {locate}; returns {ok, done, ms, trace, saved?, escalate?}. */
+/** Runs {steps, params?, save?, start?}, {flow, params?, start?}, {save}, {find}, {reindex} or {locate}; returns {ok, done, ms, trace, window | escalate, saved? | flow?, usage}. */
 export async function main(p: Params): Promise<Result> {
   return { ...(await perform(p)), usage: desk.usage }
 }
@@ -87,8 +84,7 @@ async function perform(p: Params): Promise<Result> {
   recording = !flow && !!plan[0]?.app && !p.start
   // a plan sent again only to save it, while the window it left is still in front, would type again: it is saved from the last run instead
   if (p.save && !flow && !p.start && !idempotent(plan)) {
-    let c: Chain | null = null
-    try { c = JSON.parse(readFileSync(PENDING, 'utf8')) as Chain | null } catch {}
+    const c = pending()
     const was = c?.steps.filter((s) => !s.close) ?? []; const now = plan.filter((s) => !s.close)
     if (c && was.length === now.length && was.every((s, i) => bare(s, c.params) === bare(now[i] ?? {}, params))) {
       const r = await promote(p.save, p.params, true)
@@ -162,8 +158,7 @@ async function perform(p: Params): Promise<Result> {
     // a task done over several calls is one chain: it starts at a call whose first step is an app, and later calls extend it from the window it left
     const ran = plan.slice(p.start ?? 0, done).map((s, k) => { const r = recs[(p.start ?? 0) + k]; const o: Step = { ...s }; if (r?.fp) o.fp = r.fp; if (r?.seen && !s.app) o.seen = r.seen; if (r?.blank) o.blank = r.blank; return o })
     const dirty = recs.some((r) => r?.unsaved)
-    let chain: Chain | null = null; let prev: Chain | null = null
-    try { prev = JSON.parse(readFileSync(PENDING, 'utf8')) as Chain | null } catch {}
+    let chain: Chain | null = null; const prev = pending()
     if (plan[0]?.app && !(p.start ?? 0)) chain = { at: Date.now(), window: null, pid: null, params: { ...(p.params ?? {}) }, steps: ran, dirty, usage: plus({}, desk.usage) }
     else if (prev && Date.now() - prev.at < CHAIN_AGE && (prev.window === startWindow || (prev.pid !== null && prev.pid === startPid))) chain = { ...prev, at: Date.now(), params: { ...prev.params, ...(p.params ?? {}) }, steps: [...prev.steps, ...ran], dirty: prev.dirty || dirty, usage: plus(prev.usage, desk.usage) }
     if (chain) {
@@ -187,7 +182,12 @@ async function perform(p: Params): Promise<Result> {
   return out
 }
 
-function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)) }
+class Surprise extends Error {
+  reason: string
+  seen: Seen
+  constructor(reason: string, seen: Seen = {}) { super(reason); this.reason = reason; this.seen = seen }
+}
+
 function terms(s: string) { return norm(s).split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !FILLER.has(w)).map((w) => w.length > 3 ? w.replace(/s$/, '') : w) }
 function norm(s: string) { return s.toLowerCase().replace(/[_…]|\.\.\.|:$/g, '').replace(/\s+/g, ' ').trim() }
 function slug(s: string) { return norm(s).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) }
@@ -205,7 +205,7 @@ function menus(nodes: Node[], from: number): Node[] {
 function parse(snap: desk.Snap): Node[] {
   const kids = new Map<number, number>(); for (const n of snap.nodes) kids.set(n.parent, (kids.get(n.parent) ?? 0) + 1)
   const wraps = (n: desk.El) => { const out: desk.El[] = []; for (const [p, a] of up(snap.nodes, n.parent)) { if (kids.get(p) !== 1 || !/^(toolbar|group)$/.test(a.role)) break; out.push(a) } return out }
-  const called = (n: desk.El) => n.name.trim() || !ACTIVE.has(n.role) || FIELDS.split('|').includes(n.role) ? n.name : n.description?.trim() || wraps(n).find((a) => a.name.trim())?.name || wraps(n).find((a) => a.description?.trim())?.description || ''
+  const called = (n: desk.El) => n.name.trim() || !ACTIVE.has(n.role) || FIELD_ROLES.has(n.role) ? n.name : n.description?.trim() || wraps(n).find((a) => a.name.trim())?.name || wraps(n).find((a) => a.description?.trim())?.description || ''
   return snap.nodes.map((n) => ({
     ref: n.ref, id: n.id, depth: n.depth, role: n.role, name: called(n).slice(0, 80).trim(), value: n.value ?? '', disabled: n.states.includes('disabled'), parent: n.parent,
     shortcut: n.shortcut ?? '', checked: n.states.includes('checked') || n.states.includes('pressed'), shown: n.states.includes('showing'), bounds: n.bounds,
@@ -251,7 +251,7 @@ async function hiddenModal(ws: Win[], f: Win | null) {
 function modalBlocks(m: Win) { return `modal dialog "${m.title}" is open but ${m.modal}, and ${m.blocks ? `"${m.blocks}"` : 'its app'} takes no input until it closes: finish it, or close it with {close: true, window: "${m.title}"}` }
 function blocked(o: string) { return /AT-SPI peer \S+ is not responding|no accessibility answer within/.test(o) }
 function isChooser(o: string) { return CHOOSER.test(o) }
-async function selectLine() { if (OS === 'darwin') await press(SELECT_ALL); else { await press('home'); await press('shift+end') } }
+async function selectLine() { if (OS === 'darwin') await desk.key(SELECT_ALL); else { await desk.key('home'); await desk.key('shift+end') } }
 function unanswered(title: string) { return `"${title}" answers no accessibility calls (a dialog opened by an accessibility action blocks its app, and a key would deadlock it): close it with {close: true}, then reopen it by its keyboard shortcut` }
 function isAlert(o: string) { return /^- alert/.test(o) }
 function isDialog(o: string) { return /^- (alert|dialog|file chooser)/.test(o) }
@@ -311,10 +311,10 @@ function entryNames(app: string): string[] {
     })
   } catch { return [] }
 }
-// a GtkApplication menu toggle: its label maps to an action in org.gtk.Menus, whose state org.gtk.Actions reports
 function gdbus(dest: string, path: string, method: string, ...args: string[]) {
   return execFileSync('gdbus', ['call', '--session', '--dest', dest, '--object-path', path, '--method', method, ...args], { encoding: 'utf8', timeout: 2000 })
 }
+// a GtkApplication menu toggle: its label maps to an action in org.gtk.Menus, whose state org.gtk.Actions reports
 function gtkToggle(pid: number, label: string): boolean | null {
   if (OS !== 'linux') return null
   const t0 = Date.now()
@@ -388,14 +388,15 @@ function byFp(nodes: Node[], fp: Fp | undefined, within?: number): Hit | null {
 function candidates(nodes: Node[], role?: string, within?: number) {
   const inside = (i: number) => { if (within === undefined) return true; for (const [p] of up(nodes, nodes[i]?.parent ?? -1)) if (p === within) return true; return false }
   const item = (n: Node) => ITEMS.has(n.role) && LISTS.has(nodes[n.parent]?.role ?? '')
-  return nodes.map((n, i) => ({ n, i })).filter(({ n, i }) => (ACTIVE.has(n.role) || item(n)) && (!role || role.split('|').includes(n.role)) && inside(i))
+  const roles = role ? new Set(role.split('|')) : null
+  return nodes.map((n, i) => ({ n, i })).filter(({ n, i }) => (ACTIVE.has(n.role) || item(n)) && (!roles || roles.has(n.role)) && inside(i))
 }
 
 async function resolve(nodes: Node[], target: string, role?: string, within?: number, bar = 0.5, fp?: Fp): Promise<Hit | null> {
   const t0 = Date.now()
-  const pool = candidates(nodes, role, within)
   const pinned = byFp(nodes, fp, within)
   if (pinned) { tick('ax', t0); return pinned }
+  const pool = candidates(nodes, role, within)
   const want = norm(target)
   const covers = (n: Node) => {
     const nm = norm(n.name); if (!nm) return false
@@ -415,7 +416,7 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   tick('ax', t0)
   if (!shown.length) return null
   const words = want.split(' ')
-  const ranked = shown.map((c) => ({ c, s: words.filter((x) => norm(`${c.n.role} ${c.n.name} ${c.n.value}`).includes(x)).length })).sort((a, b) => b.s - a.s).slice(0, 40)
+  const ranked = shown.map((c) => { const all = norm(`${c.n.role} ${c.n.name} ${c.n.value}`); return { c, s: words.filter((x) => all.includes(x)).length } }).sort((a, b) => b.s - a.s).slice(0, 40)
   const label = (c: { n: Node; i: number }) => {
     const sib = sibling(nodes, c.i); const par = nodes[c.n.parent]?.name ?? ''
     return `${c.n.role} "${c.n.name}"${c.n.value ? ` value "${c.n.value}"` : ''}${sib ? ` labelled "${sib}"` : ''}${c.n.shortcut ? ` shortcut ${c.n.shortcut}` : ''}${par ? ` in "${par}"` : ''}`
@@ -462,7 +463,7 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>) 
 
 async function grounded(x: number, y: number, target: string, w: Win, area: { width: number; height: number }) {
   const under = await desk.at(x, y, w.title).catch(() => ({ found: null, path: [] }))
-  const what = under.found ? [under.found, ...(under.path ?? []).reverse()].filter((n) => n.name).map((n) => `${n.role} "${n.name}"`).join(' under ') : ''
+  const what = under.found ? [under.found, ...(under.path ?? []).toReversed()].filter((n) => n.name).map((n) => `${n.role} "${n.name}"`).join(' under ') : ''
   const t0 = Date.now()
   const fit = (cw: number, ch: number): [number, number] => [Math.max(0, Math.min(area.width - cw, Math.round(x - cw / 2))), Math.max(0, Math.min(area.height - ch, Math.round(y - ch / 2)))]
   const yes = async (state: unknown[], question: string) => +prob((await desk.look(state, { on: desk.yes(question) })).on).toFixed(2)
@@ -546,8 +547,6 @@ function ring(image: Buffer, cx: number, cy: number, r: number) {
   return png(w, h, type, bpp, px)
 }
 
-function press(combo: string) { return desk.key(combo) }
-
 // a shown control takes a pointer click, since an AT-SPI action runs its handler inside the a11y bridge, where a modal dialog blocks the app
 async function act(n: Node) {
   const t0 = Date.now()
@@ -560,8 +559,8 @@ async function choose(nodes: Node[], n: Node, rec: { via?: string }, open = fals
   try {
     const mods = n.shortcut.split('+').slice(0, -1)
     if (n.shortcut && (mods.some((x) => x !== 'shift') || /^f\d+$/.test(n.shortcut))) {
-      if (open) for (const _ of menus(nodes, n.parent)) await press('Escape')
-      try { await press(n.shortcut); rec.via = 'shortcut'; return } catch {}
+      if (open) for (const _ of menus(nodes, n.parent)) await desk.key('Escape')
+      try { await desk.key(n.shortcut); rec.via = 'shortcut'; return } catch {}
     }
     rec.via = await act(n)
   } finally { tick('act', t0) }
@@ -590,7 +589,7 @@ async function submit(w: Win, chooser = false) {
   const [title, pid] = [w.title, w.pid]
   const open = () => titled(title, pid)
   for (let i = 0; i < 3 && await open(); i++) {
-    await press('Return')
+    await desk.key('Return')
     for (let k = 0; k < 15 && await open(); k++) await sleep(40)
   }
   tick('submit', t0)
@@ -718,7 +717,7 @@ async function run(s: Step, rec: Rec) {
     // GTK preselects the name up to its last dot: a bare name keeps the extension, a path or a name with its own extension replaces the whole field
     if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine()
     // a line break goes as Return, which GTK text views take where they ignore a Linefeed
-    for (const [i, part] of (sub ? s.type.slice(0, -1) : s.type).split(/\r?\n/).entries()) { if (i) await press('Return'); if (part) await desk.typeText(part) }
+    for (const [i, part] of (sub ? s.type.slice(0, -1) : s.type).split(/\r?\n/).entries()) { if (i) await desk.key('Return'); if (part) await desk.typeText(part) }
     tick('act', t0)
     if (recording && first && !chooser && w) rec.blank = await typedInto(w, s.type)
     const v = nl && !sub ? await focused() : null
@@ -735,7 +734,7 @@ async function run(s: Step, rec: Rec) {
     const o = /^(enter|return)$/i.test(s.key) && w ? await filled(w) : ''
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     if (w && isChooser(o)) { rec.submit = true; await submit(w, true); return }
-    const t0 = Date.now(); await press(s.key); tick('act', t0)
+    const t0 = Date.now(); await desk.key(s.key); tick('act', t0)
     if (w && /\b(ctrl|control|alt)\+|^f\d+$/i.test(s.key)) pressed = { title: w.title, at: Date.now() }
     if (w && isDialog(o) && await closed(w.title, w.pid)) rec.submit = true
     return
@@ -751,7 +750,7 @@ async function run(s: Step, rec: Rec) {
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     if (w && !s.window && !isDialog(o)) { let d: Win | null = null; for (const x of others) if (isDialog(await outline(x))) { d = x; break }; w = d }
     if (!w) { rec.noop = true; tick('act', t0); return }
-    const [title, pid] = [w.title, w.pid]; rec.seen = title; if (!w.active) await desk.focus(title, pid); await press('Escape'); await settle(w.title)
+    const [title, pid] = [w.title, w.pid]; rec.seen = title; if (!w.active) await desk.focus(title, pid); await desk.key('Escape'); await settle(w.title)
     if (await titled(title, pid)) await desk.close(title, pid)
     tick('act', t0); await closed(title, pid); return
   }
@@ -801,14 +800,14 @@ async function run(s: Step, rec: Rec) {
     }
     if (hit.n.role === 'menuitemcheckbox' || hit.n.role === 'menuitemradio' || OS === 'darwin') {
       const now = await checked(hit.n); rec.was = now; rec.state = 'atspi'
-      if (now === s.on) { for (let k = 0; k < (rec.opened ?? 0); k++) await press('Escape'); rec.noop = true; return }
+      if (now === s.on) { for (let k = 0; k < (rec.opened ?? 0); k++) await desk.key('Escape'); rec.noop = true; return }
       if (now !== null) { await act(hit.n); await settle(w.title); return }
     }
     const chain = menus(nodes, hit.n.parent).reverse()
     if (!chain.length) throw new Surprise(`"${hit.n.name}" is not inside a menu`, await seen())
     for (const q of chain) { await act(q); await sleep(120) }
     const on = await cropState(hit.n); rec.was = on; rec.state = 'vision'
-    if (on === s.on) { for (const _ of chain) await press('Escape'); rec.noop = true; return }
+    if (on === s.on) { for (const _ of chain) await desk.key('Escape'); rec.noop = true; return }
     await act(hit.n); await settle(w.title); return
   }
   const target = s.click ?? s.check ?? s.set ?? ''
@@ -833,7 +832,7 @@ async function run(s: Step, rec: Rec) {
     tick('enable', t0)
     if (!on) throw new Surprise(`${rec.ref} is disabled`, await seen())
   }
-  if (s.click && hit.how !== 'fp' && norm(hit.n.name) !== norm(target) && TOGGLES.split('|').includes(hit.n.role))
+  if (s.click && hit.how !== 'fp' && norm(hit.n.name) !== norm(target) && TOGGLE_ROLES.has(hit.n.role))
     throw new Surprise(`"${target}" is closest to ${hit.n.role} "${hit.n.name}" (${hit.how}), and a click would flip it; use {check: "${hit.n.name}", on: ...} for it, or name the element you mean exactly`, await seen())
   if (s.click && hit.n.role === 'menuitem') { await choose(nodes, hit.n, rec, true); await settle(w.title); return }
   if (s.click) {
@@ -853,7 +852,7 @@ async function run(s: Step, rec: Rec) {
   const lines = ((await desk.read(f.id, { text: true })).value ?? '').includes('\n')
   if (hit.how.startsWith('jev') && lines) throw new Surprise(`"${target}" is closest to a multi-line text (${hit.how}), and set would replace all of it: wait for the window with that field, or name it exactly`, await seen())
   t0 = Date.now()
-  await desk.act(f.id, 'focus'); if (f.role === 'textbox' && !lines) await selectLine(); else await press(SELECT_ALL); if (value) await desk.typeText(value); else await press('delete'); if (hit.n.role === 'spinbutton' || hit.n.role === 'slider') { await press('tab'); await press('shift+tab') }
+  await desk.act(f.id, 'focus'); if (f.role === 'textbox' && !lines) await selectLine(); else await desk.key(SELECT_ALL); if (value) await desk.typeText(value); else await desk.key('delete'); if (hit.n.role === 'spinbutton' || hit.n.role === 'slider') { await desk.key('tab'); await desk.key('shift+tab') }
   tick('act', t0)
   t0 = Date.now(); let got: string | undefined
   for (let i = 0; i < 10; i++) { try { got = (await desk.read(f.id)).value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); got = undefined }; if (same(got)) break; await sleep(40) }
@@ -876,7 +875,8 @@ async function menuEntry(w: Win, nodes: Node[], menu: string, fp: Fp | undefined
       await act(prev.n); rec.opened = (rec.opened ?? 0) + 1; within = undefined
       for (let t = 0; t < 10; t++) { nodes = parse(await snapOf(w, true)); if (candidates(nodes).some(({ n }) => norm(n.name) === norm(part))) break; await sleep(30) }
     }
-    hit = (k === 0 && k < parts.length - 1 ? barMenu(nodes, part) : null) ?? await soft(part, k < parts.length - 1 ? 'menu' : undefined, within) ?? await soft(part, undefined, within)
+    const role = k < parts.length - 1 ? 'menu' : undefined
+    hit = (k === 0 && role ? barMenu(nodes, part) : null) ?? await soft(part, role, within) ?? (role ? await soft(part, undefined, within) : null)
     if (!hit) {
       const leaf = await resolve(nodes, parts.at(-1) ?? part, 'menuitem|menu|menuitemcheckbox|menuitemradio')
       if (leaf?.how !== 'ax') throw new Surprise(`menu entry "${part}" not found`, await seen())
@@ -962,8 +962,7 @@ function store(chain: Chain) {
 }
 
 async function promote(name: string, params: Record<string, string> = {}, rerun = false) {
-  let c: Chain | null = null
-  try { c = JSON.parse(readFileSync(PENDING, 'utf8')) as Chain | null } catch {}
+  const c = pending()
   if (!c || Date.now() - c.at >= CHAIN_AGE || !(c.saved || c.escalated) || c.dirty || !c.steps.some((s) => !s.app) || !slug(name))
     return { ok: false, reason: 'nothing to save: the last gui_plan run of the last 10 minutes must start at an app step, pass, and click no target found by vision' }
   if (c.escalated || rerun) {
@@ -976,6 +975,10 @@ async function promote(name: string, params: Record<string, string> = {}, rerun 
   store(c); c.saved = true; c.escalated = false
   try { writeFileSync(PENDING, JSON.stringify(c)) } catch {}
   return { ok: true, saved: c.name, params: templated(c.steps, c.params).params, ...(idempotent(c.steps) ? {} : { note: 'a replay of this flow types again' }) }
+}
+
+function pending(): Chain | null {
+  try { return JSON.parse(readFileSync(PENDING, 'utf8')) as Chain | null } catch { return null }
 }
 
 function loadFlow(name: string): Flow {
