@@ -1,7 +1,7 @@
 //! Screenshot, UI elements and input on an Android box through adb, with text pasted by a scrcpy control session.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -272,9 +272,13 @@ impl Android {
         let port = String::from_utf8_lossy(&self.adb(&["forward", "tcp:0", &socket]).await?)
             .trim()
             .to_owned();
+        let forward = Forward {
+            adb: &self.adb,
+            port,
+        };
         let pasted = match self.scrcpy_control() {
             Ok(child) => {
-                let pasted = send_clipboard(&port, text).await;
+                let pasted = send_clipboard(&forward.port, text).await;
                 drop(child);
                 pasted
             }
@@ -283,11 +287,7 @@ impl Android {
         let _ = self
             .adb(&["shell", "pkill", "-f", &format!("scid={SCRCPY_SCID}")])
             .await;
-        let removed = self
-            .adb(&["forward", "--remove", &format!("tcp:{port}")])
-            .await;
-        pasted?;
-        removed.map(drop)
+        pasted
     }
 
     pub(super) async fn adb(&self, args: &[&str]) -> Result<Vec<u8>, String> {
@@ -437,6 +437,23 @@ impl UiServer {
             }
             answer.push_str(&line);
         }
+    }
+}
+
+struct Forward<'a> {
+    adb: &'a Path,
+    port: String,
+}
+
+impl Drop for Forward<'_> {
+    fn drop(&mut self) {
+        let mut cmd = Command::new(self.adb);
+        cmd.args(["forward", "--remove", &format!("tcp:{}", self.port)])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        crate::sys::unprotect(&mut cmd);
+        let _ = cmd.spawn();
     }
 }
 
