@@ -1,4 +1,3 @@
-// desk.mts: the desk API for scripts and gui_plan: the desktop through the toolhost socket, models through gw over HTTP
 import { readFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { createConnection } from 'node:net'
@@ -28,10 +27,10 @@ let gwConfig: { base: string; key: string } | null = null
 let envFile: string | null = null
 let warned = false
 export const usage: Usage = {}
-// every decisions call: the model asked, whether its state held an image, and the build and generation id that answered (null when none did)
+/** Every decisions call: the model asked, whether its state held an image, and the build and generation id that answered (null when none did). */
 export const served: { model: string; image: boolean; build: string | null; id: string | null }[] = []
 
-// one toolhost call: a big-endian u32 length and JSON each way
+/** One toolhost call: a big-endian u32 length and JSON each way. */
 export function call(op: string, args: Record<string, unknown> = {}): Promise<any> {
   return new Promise((resolve, reject) => {
     const s = createConnection(SOCKET)
@@ -75,15 +74,44 @@ export async function screen(): Promise<{ width: number; height: number }> {
   screenSize ??= await call('screen')
   return screenSize!
 }
-// a PNG of a screen rectangle, the whole screen by default
+/** A PNG of a screen rectangle, the whole screen by default. */
 export async function shot(r: { x?: number; y?: number; w?: number; h?: number } = {}): Promise<Buffer> {
   return Buffer.from((await call('shot', r)).png_b64, 'base64')
 }
 
-// a setting from the environment, else from desk.env
+/** A setting from the environment, else from desk.env. */
 export function setting(k: string): string | undefined {
   if (envFile === null) { envFile = ''; try { envFile = readFileSync(ENV_FILE, 'utf8') } catch {} }
   return process.env[k] || [...envFile.matchAll(/^(\w+)=(.*)$/gm)].find((m) => m[1] === k)?.[2]?.trim()
+}
+
+export const yes = (instructions: string): Question => ({ type: 'noul', instructions })
+export const choice = (instructions: string, criteria: Record<string, string>): Question => ({ type: 'choice', instructions, criteria })
+
+/** gw's decisions model over text or JSON state: a yes question answers {probability}, a choice {choice, confidence, probabilities}. */
+export const decide = (state: unknown, questions: Record<string, Question>) => judge(state, questions, false, MODEL_TIMEOUT)
+
+/** The same over a state that holds PNG parts (image), within 5 s. */
+export const look = (state: unknown[], questions: Record<string, Question>) => judge(state, questions, true, LOOK_TIMEOUT)
+
+export function image(png: Buffer) {
+  return { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } }
+}
+
+export async function ask(prompt: string, images: Buffer | Buffer[] = []): Promise<string> {
+  const pngs = Buffer.isBuffer(images) ? [images] : images
+  const r = await post('chat/completions', { model: ASK_MODEL, max_tokens: 400, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...pngs.map(image)] }] })
+  return r.choices?.[0]?.message?.content ?? ''
+}
+
+/** The screen point of a described element in a PNG of the screen at (left, top). */
+export async function ground(png: Buffer, target: string, area: { left?: number; top?: number; width: number; height: number }): Promise<[number, number]> {
+  const prompt = `Locate the ${target} in this screenshot. Answer with one JSON object and nothing else: {"point_2d": [x, y]}, the centre of the element in coordinates from 0 to 1000 across and down the image.`
+  const r = await post('chat/completions', { model: GROUND_MODEL, max_tokens: 100, messages: [{ role: 'user', content: [image(png), { type: 'text', text: prompt }] }] })
+  const text: string = r.choices?.[0]?.message?.content ?? ''
+  const g = /(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/.exec(text)
+  if (!g) throw new Error(`grounding found no point for ${target}: ${text.slice(0, 120)}`)
+  return [Math.round((area.left ?? 0) + (+g[1] / 1000) * area.width), Math.round((area.top ?? 0) + (+g[2] / 1000) * area.height)]
 }
 
 function gw() {
@@ -128,17 +156,7 @@ function post(path: string, body: { model: string } & Record<string, unknown>, t
   })
 }
 
-export const yes = (instructions: string): Question => ({ type: 'noul', instructions })
-export const choice = (instructions: string, criteria: Record<string, string>): Question => ({ type: 'choice', instructions, criteria })
-
-// gw's decisions model over text or JSON state: a yes question answers {probability}, a choice {choice, confidence, probabilities}
-export const decide = (state: unknown, questions: Record<string, Question>) => judge(state, questions, false, MODEL_TIMEOUT)
-
-// the same over a state that holds PNG parts (image), within 5 s
-export const look = (state: unknown[], questions: Record<string, Question>) => judge(state, questions, true, LOOK_TIMEOUT)
-
-// a dated build of jev-1.14 answers: another version, an alias, an error or the timeout throws; a build other than the tested one is
-// said once on stderr
+// a dated build of jev-1.14 answers: another version, an alias, an error or the timeout throws; another build is said once on stderr
 async function judge(state: unknown, questions: Record<string, Question>, image: boolean, timeout: number): Promise<Record<string, any>> {
   const call = { model: DECIDE_MODEL, image, build: null as string | null, id: null as string | null }
   served.push(call)
@@ -153,25 +171,4 @@ function answers(r: any) {
   const out: Record<string, any> = {}
   for (const [k, a] of Object.entries(r.answers ?? {}) as [string, any][]) out[k] = a.type === 'noul' ? { probability: a.noul } : a
   return out
-}
-
-export function image(png: Buffer) {
-  return { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } }
-}
-
-// a vision model's answer about PNG images
-export async function ask(prompt: string, images: Buffer | Buffer[] = []): Promise<string> {
-  const pngs = Buffer.isBuffer(images) ? [images] : images
-  const r = await post('chat/completions', { model: ASK_MODEL, max_tokens: 400, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...pngs.map(image)] }] })
-  return r.choices?.[0]?.message?.content ?? ''
-}
-
-// the screen point of a described element in a PNG of the screen at (left, top)
-export async function ground(png: Buffer, target: string, area: { left?: number; top?: number; width: number; height: number }): Promise<[number, number]> {
-  const prompt = `Locate the ${target} in this screenshot. Answer with one JSON object and nothing else: {"point_2d": [x, y]}, the centre of the element in coordinates from 0 to 1000 across and down the image.`
-  const r = await post('chat/completions', { model: GROUND_MODEL, max_tokens: 100, messages: [{ role: 'user', content: [image(png), { type: 'text', text: prompt }] }] })
-  const text: string = r.choices?.[0]?.message?.content ?? ''
-  const g = /(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/.exec(text)
-  if (!g) throw new Error(`grounding found no point for ${target}: ${text.slice(0, 120)}`)
-  return [Math.round((area.left ?? 0) + (+g[1] / 1000) * area.width), Math.round((area.top ?? 0) + (+g[2] / 1000) * area.height)]
 }
