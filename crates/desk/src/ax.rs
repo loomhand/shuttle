@@ -1,6 +1,6 @@
 //! The macOS desk backend: window trees by a budgeted AX walk with one batched attribute read per element.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -20,7 +20,8 @@ use crate::model::{
 };
 
 const WALK_BUDGET: Duration = Duration::from_secs(4);
-const MESSAGING_TIMEOUT: f32 = 3.0;
+const MESSAGING_TIMEOUT: Duration = Duration::from_millis(500);
+const HUNG_SKIP: Duration = Duration::from_secs(10);
 const AX_SUCCESS: i32 = 0;
 
 const POINT_TYPE: u32 = 1;
@@ -66,6 +67,9 @@ pub struct Ax {
     ids: HashMap<String, CFType>,
     hashes: HashMap<usize, Vec<(CFType, String)>>,
     next: u64,
+    hung: HashMap<i32, Instant>,
+    slow: HashSet<i32>,
+    last: HashMap<i32, Vec<Frame>>,
 }
 
 impl Ax {
@@ -88,7 +92,9 @@ impl Ax {
         // SAFETY: the system-wide element is returned at +1 and wrapped once under the create rule.
         let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
         // SAFETY: `system` is a live AXUIElement for the duration of the call.
-        unsafe { AXUIElementSetMessagingTimeout(system.as_CFTypeRef(), MESSAGING_TIMEOUT) };
+        unsafe {
+            AXUIElementSetMessagingTimeout(system.as_CFTypeRef(), MESSAGING_TIMEOUT.as_secs_f32())
+        };
         Ok(Self {
             names: names(ATTRS),
             app_names: names(APP_ATTRS),
@@ -97,6 +103,9 @@ impl Ax {
             ids: HashMap::new(),
             hashes: HashMap::new(),
             next: 0,
+            hung: HashMap::new(),
+            slow: HashSet::new(),
+            last: HashMap::new(),
         })
     }
 
@@ -225,9 +234,29 @@ impl Ax {
 impl Access for Ax {
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
         let mut frames = Vec::new();
-        for p in window_pids() {
+        self.hung.retain(|_, at| at.elapsed() < HUNG_SKIP);
+        let pids = window_pids();
+        self.last.retain(|p, _| pids.contains(p));
+        for p in pids {
+            if self.hung.contains_key(&p) {
+                continue;
+            }
             let app = application(p);
-            let [name, front, focused, main, windows] = values(&self.app_names, &app);
+            let asked = Instant::now();
+            let read = values(&self.app_names, &app);
+            if read.iter().all(Option::is_none) && asked.elapsed() >= MESSAGING_TIMEOUT * 9 / 10 {
+                if self.slow.insert(p) {
+                    frames.extend(self.last.get(&p).cloned().unwrap_or_default());
+                } else {
+                    self.slow.remove(&p);
+                    self.last.remove(&p);
+                    self.hung.insert(p, Instant::now());
+                }
+                continue;
+            }
+            self.slow.remove(&p);
+            let from = frames.len();
+            let [name, front, focused, main, windows] = read;
             let name = name
                 .and_then(|v| v.downcast::<CFString>())
                 .map(|s| s.to_string());
@@ -278,6 +307,7 @@ impl Access for Ax {
                     app: name.clone(),
                 });
             }
+            self.last.insert(p, frames[from..].to_vec());
         }
         Ok(frames)
     }
@@ -286,6 +316,13 @@ impl Access for Ax {
         let started = Instant::now();
         let deadline = started + WALK_BUDGET;
         let el = self.element(&frame.id)?;
+        if string(attr(&el, "AXRole")).is_empty() {
+            return Err(format!(
+                "no accessibility answer within {} ms from window {:?}: it closed or its app is busy; take a new snapshot",
+                MESSAGING_TIMEOUT.as_millis(),
+                frame.title
+            ));
+        }
         let mut nodes = Vec::new();
         let mut truncated = self.walk(&el, None, 0, extras, deadline, &mut nodes, &mut Vec::new());
         let walked = started.elapsed().as_micros();
@@ -615,7 +652,7 @@ fn application(p: i32) -> CFType {
     // SAFETY: the application element is returned at +1 and wrapped once under the create rule.
     let app = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateApplication(p)) };
     // SAFETY: `app` is a live AXUIElement for the duration of the call.
-    unsafe { AXUIElementSetMessagingTimeout(app.as_CFTypeRef(), MESSAGING_TIMEOUT) };
+    unsafe { AXUIElementSetMessagingTimeout(app.as_CFTypeRef(), MESSAGING_TIMEOUT.as_secs_f32()) };
     app
 }
 

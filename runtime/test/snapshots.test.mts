@@ -296,3 +296,22 @@ test('a click on macOS that names a menu item exactly takes it over a window but
     server.close()
   }
 })
+
+test('a click in a listed window that no longer answers escalates as unanswered and acts on nothing', async () => {
+  const win = { id: '1', title: 'Untitled', role: 'window', pid: process.pid, active: true }
+  const calls: string[] = []
+  const server = await toolhost(({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return { text: 'no accessibility answer within 500 ms from window "Untitled": it closed or its app is busy; take a new snapshot', error: true }
+    return '{"ok":true}'
+  })
+  const { main } = await import('../lib/gui_plan.mts')
+  try {
+    const r = await main({ steps: [{ click: 'Save' }] })
+    assert.match(r.escalate?.reason ?? '', /answers no accessibility calls/, JSON.stringify(r))
+    assert.ok(!calls.some((c) => ['desk_press', 'desk_click', 'desk_key', 'desk_type', 'desk_shot'].includes(c) || c.startsWith('model_')), calls.join(' '))
+  } finally {
+    server.close()
+  }
+})
