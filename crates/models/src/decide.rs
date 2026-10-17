@@ -11,6 +11,23 @@ use crate::{DecideArgs, Decided, Models, Served, Usage};
 const MAX_TOKENS: u32 = 800;
 const INSTRUCTIONS: &str = "You judge the state of a computer screen. Answer each question below and reply with one JSON object and nothing else, keyed by question. A \"noul\" question is a yes/no question: answer {\"noul\": P}, P from 0 to 1 that the answer is yes. A \"choice\" question picks one of its criteria keys: answer {\"choice\": KEY, \"probabilities\": {KEY: P, ...}} over all its keys, summing to 1.";
 
+#[derive(Serialize)]
+struct Ask<'a> {
+    model: &'a str,
+    state: &'a Value,
+    questions: &'a Map<String, Value>,
+}
+
+#[derive(Deserialize)]
+struct Judged {
+    id: Option<String>,
+    model: Option<String>,
+    #[serde(default)]
+    answers: Map<String, Value>,
+    #[serde(default)]
+    usage: Value,
+}
+
 /// Asks the decisions endpoint `model` the questions of `args`.
 pub(crate) async fn decisions(
     m: &Models,
@@ -61,23 +78,6 @@ pub(crate) async fn over_chat(
         },
         usage: reply.usage,
     })
-}
-
-#[derive(Serialize)]
-struct Ask<'a> {
-    model: &'a str,
-    state: &'a Value,
-    questions: &'a Map<String, Value>,
-}
-
-#[derive(Deserialize)]
-struct Judged {
-    id: Option<String>,
-    model: Option<String>,
-    #[serde(default)]
-    answers: Map<String, Value>,
-    #[serde(default)]
-    usage: Value,
 }
 
 fn json_object(model: &str, text: &str) -> Result<Map<String, Value>, String> {

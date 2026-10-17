@@ -378,7 +378,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
 /// What a press comes to after the backend's part of it.
 #[derive(Debug, PartialEq)]
-pub enum Press {
+enum Press {
     Selected,
     Click(i32, i32),
     Acted(bool),
@@ -387,7 +387,7 @@ pub enum Press {
 /// Presses `id` the way a user would: selects a tab or list row, opens the menus above a hidden menu
 /// entry, clicks the element's centre when a hit test there finds it, else runs its action; a Windows
 /// menu entry runs its action, since a click right after its popup opens only hovers it.
-pub fn plan_press<B: Access>(b: &mut B, id: &str, os: Os) -> Result<Press, String> {
+fn plan_press<B: Access>(b: &mut B, id: &str, os: Os) -> Result<Press, String> {
     let mut node = b.node(id, Extras::BOUNDS, 0)?;
     if SELECTED_ROLES.contains(&node.role) && b.act(id, Act::Select).unwrap_or(false) {
         return Ok(Press::Selected);
@@ -453,7 +453,7 @@ fn reachable<B: Access>(b: &mut B, id: &str, node: &Node, chain: &[String]) -> O
 }
 
 /// One line per node: `- role "name" [disabled] [checked] [shortcut] [id=ID]: "value"`, indented by depth.
-pub fn outline(nodes: &[Node], max_chars: usize) -> String {
+fn outline(nodes: &[Node], max_chars: usize) -> String {
     let mut out = String::new();
     for n in nodes {
         let _ = write!(out, "{}- {}", "  ".repeat(n.depth), n.role);
@@ -480,7 +480,7 @@ pub fn outline(nodes: &[Node], max_chars: usize) -> String {
 }
 
 /// A crop of the screen rectangle `[x, y, w, h]` from a screenshot scaled by `factor`, as `(width, height, PNG)`.
-pub fn crop_png(
+fn crop_png(
     png: &[u8],
     [x, y, w, h]: [f64; 4],
     factor: f64,
