@@ -19,7 +19,6 @@ const PIPE_GRACE: Duration = Duration::from_millis(500);
 type Captured = Arc<Mutex<Vec<u8>>>;
 
 /// Runs modules on `node` with the runtime in `runtime`, calling back to `endpoint`, without the `key_vars`.
-#[derive(Debug)]
 pub struct Runner {
     node: PathBuf,
     runtime: PathBuf,

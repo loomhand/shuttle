@@ -191,7 +191,6 @@ impl Uia {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn walk(
         &mut self,
         el: &IUIAutomationElement,
@@ -456,7 +455,6 @@ struct Shown {
 }
 
 /// One element's cached properties; a property it lacks stays empty.
-#[derive(Default)]
 struct Raw {
     control_type: i32,
     name: String,

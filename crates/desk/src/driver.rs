@@ -1,6 +1,5 @@
 //! cua-driver client: one line of JSON each way over its daemon socket, a named pipe on Windows.
 
-use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -59,7 +58,8 @@ impl Driver {
             name: tool,
             args,
         };
-        let mut line = serde_json::to_vec(&request).map_err(|e| format!("encode: {e}"))?;
+        let mut line =
+            serde_json::to_vec(&request).map_err(|e| format!("encode cua-driver {tool}: {e}"))?;
         line.push(b'\n');
         let reply = tokio::time::timeout(REQUEST_TIMEOUT, self.exchange(line))
             .await
