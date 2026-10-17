@@ -561,7 +561,11 @@ function ring(image: Buffer, cx: number, cy: number, r: number) {
 // a shown control takes a pointer click, since an AT-SPI action runs its handler inside the a11y bridge, where a modal dialog blocks the app
 async function act(n: Node) {
   const t0 = Date.now()
-  try { return (await desk.press(n.id)).how } finally { tick('act', t0) }
+  try {
+    const r = await desk.press(n.id)
+    if (!r.ok) throw new Surprise(`"${n.name}" took no ${r.how}`, await seen())
+    return r.how
+  } finally { tick('act', t0) }
 }
 
 // a menu entry with a shortcut takes the shortcut, since an AT-SPI action can open a modal dialog that deadlocks the app on the first key

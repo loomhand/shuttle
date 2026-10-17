@@ -329,7 +329,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let pressed = self
                 .access
                 .run(CALL_LIMIT, (), move |b| match b.menu_at(px, py)? {
-                    Some(item) => b.act(&item, Act::Action).map(|_| true),
+                    Some(item) if b.act(&item, Act::Action)? => Ok(true),
+                    Some(item) => Err(format!("menu item {item} took no action")),
                     None => Ok(false),
                 })
                 .await?;
