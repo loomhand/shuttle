@@ -77,6 +77,32 @@ pub async fn call(endpoint: &str, call: &Call) -> Result<Output, String> {
     read_frame(&mut stream).await
 }
 
+/// Serves this OS's desk, its accessibility tree with input through cua-driver at its default endpoint, at `endpoint`.
+#[cfg(target_os = "macos")]
+pub async fn serve_native(endpoint: &str) -> Result<(), String> {
+    use crate::{ax::Ax, driver::Driver, keys::Os};
+    let driver = Driver::new(Driver::default_endpoint());
+    serve(Arc::new(Desk::new(Ax::open, driver, Os::Mac)), endpoint).await
+}
+
+/// Serves this OS's desk, its accessibility tree with input through cua-driver at its default endpoint, at `endpoint`.
+#[cfg(windows)]
+pub async fn serve_native(endpoint: &str) -> Result<(), String> {
+    use crate::{driver::Driver, keys::Os, uia::Uia};
+    let driver = Driver::new(Driver::default_endpoint());
+    serve(
+        Arc::new(Desk::new(Uia::open, driver, Os::Windows)),
+        endpoint,
+    )
+    .await
+}
+
+/// Fails: this OS has no desk backend yet.
+#[cfg(not(any(windows, target_os = "macos")))]
+pub async fn serve_native(_: &str) -> Result<(), String> {
+    Err("no desk backend for this OS yet".to_owned())
+}
+
 async fn handle<B, D, S>(desk: Arc<Desk<B, D>>, mut stream: S)
 where
     B: Access + 'static,
