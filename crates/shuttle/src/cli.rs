@@ -1,8 +1,7 @@
 //! The command line: `mcp`, `serve`, `desk VERB` and `--version`.
 
 use std::io::Write as _;
-use std::path::Path;
-use std::process::{ExitCode, Stdio};
+use std::process::ExitCode;
 use std::sync::Arc;
 
 use desk_core::text::cli_args;
@@ -14,13 +13,10 @@ use shuttle_models::config::{Config, default_path};
 use tokio::runtime::Builder;
 
 use crate::daemon::Daemon;
+use crate::driver::{self, Bundled};
 use crate::runner::Runner;
 use crate::tools::DESK_VERBS;
 use crate::{NAME, VERSION, mcp};
-
-const DRIVER_TELEMETRY: &str = "CUA_DRIVER_RS_TELEMETRY_ENABLED";
-const DRIVER_POLL: std::time::Duration = std::time::Duration::from_millis(100);
-const DRIVER_POLLS: u32 = 100;
 
 /// Runs the command in `args` (the program name excluded) and returns its exit code.
 pub fn run(args: &[String]) -> ExitCode {
@@ -95,46 +91,57 @@ async fn serve(endpoint: &str) -> Result<(), String> {
     let exe = std::env::current_exe()
         .and_then(std::fs::canonicalize)
         .map_err(|e| format!("locate this program: {e}"))?;
-    start_driver(&exe).await;
+    let listener = server::bind(endpoint).await?;
+    let own = driver::endpoint(endpoint);
+    let bundled = if cfg!(any(target_os = "macos", windows)) {
+        Bundled::start(&exe, &own).await?
+    } else {
+        None
+    };
+    let driver = if bundled.is_some() {
+        own
+    } else {
+        Driver::default_endpoint()
+    };
     let runner = Runner::beside(
         &exe,
         endpoint.to_owned(),
         path.with_file_name("flows"),
         key_vars,
     );
-    server::serve(
-        Arc::new(Daemon::new(server::native(), models, runner)),
-        endpoint,
-    )
-    .await
+    let daemon = Arc::new(Daemon::new(server::native(driver), models, runner));
+    let served = tokio::select! {
+        r = server::serve(daemon, listener) => r,
+        () = shutdown() => Ok(()),
+    };
+    if let Some(b) = bundled {
+        b.stop().await;
+    }
+    served
 }
 
-async fn start_driver(exe: &Path) {
-    let driver = exe.with_file_name(if cfg!(windows) {
-        "cua-driver.exe"
-    } else {
-        "cua-driver"
-    });
-    let endpoint = Driver::default_endpoint();
-    if !driver.is_file() || server::connect(&endpoint).await.is_ok() {
-        return;
+#[cfg(unix)]
+async fn shutdown() {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let (Ok(mut term), Ok(mut int), Ok(mut hup)) = (
+        signal(SignalKind::terminate()),
+        signal(SignalKind::interrupt()),
+        signal(SignalKind::hangup()),
+    ) else {
+        return std::future::pending().await;
+    };
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = int.recv() => {}
+        _ = hup.recv() => {}
     }
-    let started = std::process::Command::new(&driver)
-        .arg("serve")
-        .env(DRIVER_TELEMETRY, "false")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-    if let Err(e) = started {
-        let _ = writeln!(std::io::stderr(), "{NAME}: start {}: {e}", driver.display());
-        return;
-    }
-    for _ in 0..DRIVER_POLLS {
-        if server::connect(&endpoint).await.is_ok() {
-            return;
-        }
-        tokio::time::sleep(DRIVER_POLL).await;
+}
+
+#[cfg(windows)]
+async fn shutdown() {
+    if tokio::signal::ctrl_c().await.is_err() {
+        std::future::pending::<()>().await;
     }
 }
 

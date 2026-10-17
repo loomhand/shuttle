@@ -44,9 +44,20 @@ impl Handler for NoDesk {
     }
 }
 
-/// Serves `handler` at the unix socket `endpoint`, readable by its user only; a lock file beside it keeps a second daemon out.
+/// An endpoint this daemon holds: the unix socket with the lock file beside it that keeps a second daemon out, or the first instance of a Windows pipe.
+pub struct Listener {
+    #[cfg(unix)]
+    socket: tokio::net::UnixListener,
+    #[cfg(unix)]
+    _lock: std::fs::File,
+    #[cfg(windows)]
+    first: tokio::net::windows::named_pipe::NamedPipeServer,
+    endpoint: String,
+}
+
+/// Takes the unix socket `endpoint`, readable by its user only, once no other daemon holds its lock.
 #[cfg(unix)]
-pub async fn serve<H: Handler>(handler: Arc<H>, endpoint: &str) -> Result<(), String> {
+pub async fn bind(endpoint: &str) -> Result<Listener, String> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
     let path = std::path::Path::new(endpoint);
@@ -69,40 +80,64 @@ pub async fn serve<H: Handler>(handler: Arc<H>, endpoint: &str) -> Result<(), St
         Err(std::fs::TryLockError::Error(e)) => return Err(format!("lock {lock_path}: {e}")),
     }
     let _ = std::fs::remove_file(path);
-    let listener =
+    let socket =
         tokio::net::UnixListener::bind(path).map_err(|e| format!("bind {endpoint}: {e}"))?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
         .map_err(|e| format!("chmod {endpoint}: {e}"))?;
+    Ok(Listener {
+        socket,
+        _lock: lock,
+        endpoint: endpoint.to_owned(),
+    })
+}
+
+/// Serves `handler` at `listener`.
+#[cfg(unix)]
+pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<(), String> {
     loop {
         let (stream, _) = listener
+            .socket
             .accept()
             .await
-            .map_err(|e| format!("accept {endpoint}: {e}"))?;
+            .map_err(|e| format!("accept {}: {e}", listener.endpoint))?;
         tokio::spawn(handle(handler.clone(), stream));
     }
 }
 
-/// Serves `handler` at the named pipe `endpoint`, local clients only.
+/// Takes the named pipe `endpoint`, local clients only, once no other daemon holds it.
 #[cfg(windows)]
-pub async fn serve<H: Handler>(handler: Arc<H>, endpoint: &str) -> Result<(), String> {
-    use tokio::net::windows::named_pipe::ServerOptions;
+pub async fn bind(endpoint: &str) -> Result<Listener, String> {
+    Ok(Listener {
+        first: pipe(endpoint, true)?,
+        endpoint: endpoint.to_owned(),
+    })
+}
 
-    let create = |first: bool| {
-        ServerOptions::new()
-            .first_pipe_instance(first)
-            .reject_remote_clients(true)
-            .create(endpoint)
-            .map_err(|e| format!("create pipe {endpoint}: {e}"))
-    };
-    let mut server = create(true)?;
+/// Serves `handler` at `listener`.
+#[cfg(windows)]
+pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<(), String> {
+    let endpoint = listener.endpoint;
+    let mut server = listener.first;
     loop {
         server
             .connect()
             .await
             .map_err(|e| format!("accept {endpoint}: {e}"))?;
-        let client = std::mem::replace(&mut server, create(false)?);
+        let client = std::mem::replace(&mut server, pipe(&endpoint, false)?);
         tokio::spawn(handle(handler.clone(), client));
     }
+}
+
+#[cfg(windows)]
+fn pipe(
+    endpoint: &str,
+    first: bool,
+) -> Result<tokio::net::windows::named_pipe::NamedPipeServer, String> {
+    tokio::net::windows::named_pipe::ServerOptions::new()
+        .first_pipe_instance(first)
+        .reject_remote_clients(true)
+        .create(endpoint)
+        .map_err(|e| format!("create pipe {endpoint}: {e}"))
 }
 
 /// Sends one call to the endpoint and returns its output.
@@ -147,27 +182,23 @@ pub async fn exchange(mut conn: Conn, call: &Call) -> Result<Output, String> {
     read_frame(&mut conn).await
 }
 
-/// This OS's desk: its accessibility tree, with input through cua-driver at its default endpoint.
+/// This OS's desk: its accessibility tree, with input through the cua-driver at `driver`.
 #[cfg(target_os = "macos")]
-pub fn native() -> impl Handler {
+pub fn native(driver: String) -> impl Handler {
     use crate::{ax::Ax, driver::Driver, keys::Os};
-    Desk::new(Ax::open, Driver::new(Driver::default_endpoint()), Os::Mac)
+    Desk::new(Ax::open, Driver::new(driver), Os::Mac)
 }
 
-/// This OS's desk: its accessibility tree, with input through cua-driver at its default endpoint.
+/// This OS's desk: its accessibility tree, with input through the cua-driver at `driver`.
 #[cfg(windows)]
-pub fn native() -> impl Handler {
+pub fn native(driver: String) -> impl Handler {
     use crate::{driver::Driver, keys::Os, uia::Uia};
-    Desk::new(
-        Uia::open,
-        Driver::new(Driver::default_endpoint()),
-        Os::Windows,
-    )
+    Desk::new(Uia::open, Driver::new(driver), Os::Windows)
 }
 
 /// This OS's desk: none yet.
 #[cfg(not(any(windows, target_os = "macos")))]
-pub fn native() -> impl Handler {
+pub fn native(_: String) -> impl Handler {
     NoDesk
 }
 
@@ -234,8 +265,8 @@ mod tests {
         let starting = std::fs::File::create(format!("{endpoint}.lock")).unwrap();
         starting.lock().unwrap();
         assert_eq!(
-            serve(Arc::new(NoDesk), &endpoint).await.unwrap_err(),
-            format!("another daemon serves {endpoint}")
+            bind(&endpoint).await.err(),
+            Some(format!("another daemon serves {endpoint}"))
         );
         assert!(!std::path::Path::new(&endpoint).exists());
     }
@@ -246,7 +277,7 @@ mod tests {
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
         let start = || {
             let endpoint = endpoint.clone();
-            tokio::spawn(async move { serve(Arc::new(NoDesk), &endpoint).await })
+            tokio::spawn(async move { serve(Arc::new(NoDesk), bind(&endpoint).await?).await })
         };
         let (mut a, mut b) = (start(), start());
         let loser = tokio::select! {
@@ -282,7 +313,7 @@ mod tests {
         let desk = Arc::new(Desk::new(|| Ok(Empty), NoDriver, Os::Mac));
         let server = tokio::spawn({
             let endpoint = endpoint.clone();
-            async move { serve(desk, &endpoint).await }
+            async move { serve(desk, bind(&endpoint).await?).await }
         });
         let ask = |tool: &str, args: Value| Call {
             agent_id: "desk".into(),

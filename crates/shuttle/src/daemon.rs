@@ -239,7 +239,9 @@ mod tests {
         let d = std::sync::Arc::new(d);
         tokio::spawn({
             let (d, endpoint) = (std::sync::Arc::clone(&d), endpoint.clone());
-            async move { shuttle_desk::server::serve(d, &endpoint).await }
+            async move {
+                shuttle_desk::server::serve(d, shuttle_desk::server::bind(&endpoint).await?).await
+            }
         });
         for _ in 0..50 {
             if shuttle_desk::server::connect(&endpoint).await.is_ok() {
