@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { crc32, deflateSync, inflateSync } from 'node:zlib'
@@ -34,6 +34,7 @@ const LOG = `${FLOWS}/.runs.jsonl`
 const INDEX = `${FLOWS}/INDEX`
 const PENDING = `${FLOWS}/.pending.json`
 const CHAIN_AGE = 10 * 60 * 1000
+const PRIVATE = { mode: 0o600 }
 const ACTIVE = new Set(['button', 'checkbox', 'menuitem', 'menu', 'tab', 'textbox', 'spinbutton', 'slider', 'combobox', 'radio', 'link', 'switch', 'option', 'treeitem', 'togglebutton', 'searchbox', 'menuitemcheckbox', 'menuitemradio'])
 const TOGGLES = 'checkbox|switch|togglebutton|menuitemcheckbox'
 const TOGGLE_ROLES = new Set(TOGGLES.split('|'))
@@ -144,7 +145,7 @@ async function perform(p: Params): Promise<Result> {
   const jevs = recs.filter((r) => r?.pick).length
   const settled = !escalate && !opened
   if (flow) {
-    try { writeFileSync(PENDING, 'null') } catch {}
+    try { writeFileSync(PENDING, 'null', PRIVATE) } catch {}
     if (settled && recs.every((r) => !r?.unsaved)) {
       const rewrites = recs.filter((r, i) => r?.fp && JSON.stringify(r.fp) !== JSON.stringify(flow.steps[i]?.fp))
       flow.runs += 1
@@ -169,11 +170,11 @@ async function perform(p: Params): Promise<Result> {
       const end = await focused()
       chain.window = end?.title ?? null
       if (end && !SHELL_WINDOWS.test(end.title)) chain.pid = end.pid
-      try { mkdirSync(FLOWS, { recursive: true }); writeFileSync(PENDING, JSON.stringify(chain)) } catch {}
-    } else if (prev) try { writeFileSync(PENDING, JSON.stringify({ ...prev, saved: false, escalated: false })) } catch {}
+      try { flowsDir(); writeFileSync(PENDING, JSON.stringify(chain), PRIVATE) } catch {}
+    } else if (prev) try { writeFileSync(PENDING, JSON.stringify({ ...prev, saved: false, escalated: false }), PRIVATE) } catch {}
   }
   const ms = Date.now() - t0
-  try { mkdirSync(FLOWS, { recursive: true }); appendFileSync(LOG, `${JSON.stringify({ at: new Date().toISOString(), flow: p.flow ?? null, ok: !escalate, ms, jevs, saved: saved ?? null, usage: desk.usage, steps: log })}\n`) } catch {}
+  try { flowsDir(); appendFileSync(LOG, `${JSON.stringify({ at: new Date().toISOString(), flow: p.flow ?? null, ok: !escalate, ms, jevs, saved: saved ?? null, usage: desk.usage, steps: log })}\n`, PRIVATE) } catch {}
   const out: Result = { ok: !escalate, done, ms, trace }
   if (saved) out[flow ? 'flow' : 'saved'] = saved
   if (flow?.usage) out.recorded_usage = flow.usage
@@ -919,12 +920,16 @@ function templated(steps: Step[], params: Record<string, string>) {
   return { steps: out, params: p }
 }
 
+function flowsDir() {
+  mkdirSync(FLOWS, { recursive: true, mode: 0o700 }); chmodSync(FLOWS, 0o700)
+}
+
 function git(...args: string[]) { try { execFileSync('git', ['-C', FLOWS, ...args], { stdio: 'ignore', timeout: 5000 }) } catch {} }
 
 function repo() {
-  mkdirSync(FLOWS, { recursive: true })
+  flowsDir()
   if (!existsSync(`${FLOWS}/.git`)) {
-    git('init', '-q'); writeFileSync(`${FLOWS}/.gitignore`, '.runs.jsonl\n.pending.json\n')
+    git('init', '-q'); writeFileSync(`${FLOWS}/.gitignore`, '.runs.jsonl\n.pending.json\n', PRIVATE)
     git('config', 'user.name', 'gui_plan'); git('config', 'user.email', 'gui_plan@box')
   }
 }
@@ -932,12 +937,12 @@ function repo() {
 function writeIndex() {
   const rows = readdirSync(FLOWS).filter((x) => x.endsWith('.json') && !x.startsWith('.')).map((x) => { try { return JSON.parse(readFileSync(`${FLOWS}/${x}`, 'utf8')) as Flow } catch { return null } })
     .filter((x): x is Flow => !!x?.name).sort((a, b) => b.saved_at.localeCompare(a.saved_at))
-  writeFileSync(INDEX, `${rows.map((x) => `${x.name}(${Object.keys(x.params).join(', ')})${x.idempotent ? '' : ' once'}: ${summary(x.steps)}`).join('\n')}\n`)
+  writeFileSync(INDEX, `${rows.map((x) => `${x.name}(${Object.keys(x.params).join(', ')})${x.idempotent ? '' : ' once'}: ${summary(x.steps)}`).join('\n')}\n`, PRIVATE)
 }
 
 function saveFlow(f: Flow, why: string) {
   repo()
-  writeFileSync(`${FLOWS}/${f.name}.json`, `${JSON.stringify(f, null, 1)}\n`)
+  writeFileSync(`${FLOWS}/${f.name}.json`, `${JSON.stringify(f, null, 1)}\n`, PRIVATE)
   writeIndex()
   git('add', '-A'); git('commit', '-q', '-m', `${f.name}: ${why}`)
 }
@@ -974,7 +979,7 @@ async function promote(name: string, params: Record<string, string> = {}, rerun 
   c.name = slug(name); c.named = true; c.params = { ...c.params, ...params }
   if (old && old !== c.name) rmSync(`${FLOWS}/${old}.json`, { force: true })
   store(c); c.saved = true; c.escalated = false
-  try { writeFileSync(PENDING, JSON.stringify(c)) } catch {}
+  try { writeFileSync(PENDING, JSON.stringify(c), PRIVATE) } catch {}
   return { ok: true, saved: c.name, params: templated(c.steps, c.params).params, ...(idempotent(c.steps) ? {} : { note: 'a replay of this flow types again' }) }
 }
 
