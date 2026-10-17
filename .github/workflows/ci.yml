@@ -41,18 +41,35 @@ jobs:
         run: cargo test --locked
 
   runtime:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x64
+            bin: bin
+          - runner: macos-26
+            platform: macos-arm64
+            bin: bin
+          - runner: windows-2025
+            platform: windows-x64
+            bin: .
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
 
       - name: Shellcheck
+        if: matrix.runner == 'ubuntu-24.04'
         run: |
           shellcheck -s sh packaging/install.sh
           shellcheck packaging/package.sh packaging/fetch.sh
 
       - name: Node from packaging/pins
-        run: echo "$(packaging/fetch.sh linux-x64 node "$RUNNER_TEMP")/bin" >> "$GITHUB_PATH"
+        run: echo "$(packaging/fetch.sh ${{ matrix.platform }} node "$RUNNER_TEMP")/${{ matrix.bin }}" >> "$GITHUB_PATH"
 
       - name: Typecheck
         working-directory: runtime
