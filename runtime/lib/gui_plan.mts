@@ -73,6 +73,7 @@ export async function main(p: Params): Promise<Result> {
 
 async function perform(p: Params): Promise<Result> {
   const t0 = Date.now()
+  try { flowsDir() } catch {}
   if (p.reindex) { repo(); writeIndex(); git('add', '-A'); git('commit', '-q', '-m', 'sync from the flow library'); return { ok: true } }
   if (p.find) return await find(p.find)
   if (p.locate) return await locate(p.locate.target, p.locate.press ?? false)
@@ -170,11 +171,11 @@ async function perform(p: Params): Promise<Result> {
       const end = await focused()
       chain.window = end?.title ?? null
       if (end && !SHELL_WINDOWS.test(end.title)) chain.pid = end.pid
-      try { flowsDir(); writeFileSync(PENDING, JSON.stringify(chain), PRIVATE) } catch {}
+      try { writeFileSync(PENDING, JSON.stringify(chain), PRIVATE) } catch {}
     } else if (prev) try { writeFileSync(PENDING, JSON.stringify({ ...prev, saved: false, escalated: false }), PRIVATE) } catch {}
   }
   const ms = Date.now() - t0
-  try { flowsDir(); appendFileSync(LOG, `${JSON.stringify({ at: new Date().toISOString(), flow: p.flow ?? null, ok: !escalate, ms, jevs, saved: saved ?? null, usage: desk.usage, steps: log })}\n`, PRIVATE) } catch {}
+  try { appendFileSync(LOG, `${JSON.stringify({ at: new Date().toISOString(), flow: p.flow ?? null, ok: !escalate, ms, jevs, saved: saved ?? null, usage: desk.usage, steps: log })}\n`, PRIVATE) } catch {}
   const out: Result = { ok: !escalate, done, ms, trace }
   if (saved) out[flow ? 'flow' : 'saved'] = saved
   if (flow?.usage) out.recorded_usage = flow.usage
@@ -927,7 +928,6 @@ function flowsDir() {
 function git(...args: string[]) { try { execFileSync('git', ['-C', FLOWS, ...args], { stdio: 'ignore', timeout: 5000 }) } catch {} }
 
 function repo() {
-  flowsDir()
   if (!existsSync(`${FLOWS}/.git`)) {
     git('init', '-q'); writeFileSync(`${FLOWS}/.gitignore`, '.runs.jsonl\n.pending.json\n', PRIVATE)
     git('config', 'user.name', 'gui_plan'); git('config', 'user.email', 'gui_plan@box')
