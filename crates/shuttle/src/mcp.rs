@@ -80,7 +80,10 @@ fn reply(id: Value, result: Result<Value, (i64, String)>) -> Value {
     out["id"] = id;
     match result {
         Ok(r) => out["result"] = r,
-        Err((code, message)) => out["error"] = json!({"code": code, "message": message}),
+        Err((code, message)) => {
+            out["error"] = json!({"code": code});
+            out["error"]["message"] = message.into();
+        }
     }
     out
 }
