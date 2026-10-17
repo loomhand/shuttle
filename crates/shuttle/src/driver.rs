@@ -13,6 +13,7 @@ use tokio::task::JoinHandle;
 use crate::NAME;
 
 const TELEMETRY: &str = "CUA_DRIVER_RS_TELEMETRY_ENABLED";
+const GLIDE_MS: &str = "1";
 const LISTEN_WAIT: Duration = Duration::from_secs(10);
 const STOP_WAIT: Duration = Duration::from_secs(3);
 const POLL: Duration = Duration::from_millis(100);
@@ -83,6 +84,7 @@ impl Proc {
         let mut cmd = Command::new(&self.bin);
         cmd.args(["serve", "--socket", &self.endpoint, "--pid-file"])
             .arg(&self.pid_file)
+            .args(["--glide-ms", GLIDE_MS])
             .env(TELEMETRY, "false")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -222,6 +224,7 @@ if child:
     os.waitpid(child, 0)
     sys.exit(0)
 open(args["--socket"] + ".fake-pid", "w").write(str(os.getpid()))
+open(args["--socket"] + ".argv", "w").write(" ".join(sys.argv[1:]))
 open(args["--pid-file"], "w").write(str(os.getpid()))
 if os.path.exists(args["--socket"] + ".slow"):
     time.sleep(3)
@@ -294,6 +297,17 @@ while True:
         driver.stop().await;
         assert_ne!(second, first, "the driver came back");
         assert!(gone(second).await, "the driver stopped with the daemon");
+    }
+
+    #[tokio::test]
+    async fn the_driver_glides_its_cursor_in_one_millisecond() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake(dir.path(), FAKE).unwrap();
+        let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
+        let driver = Bundled::start(&exe, &endpoint).await.unwrap().unwrap();
+        let argv = std::fs::read_to_string(format!("{endpoint}.argv")).unwrap_or_default();
+        driver.stop().await;
+        assert!(argv.contains("--glide-ms 1"), "{argv}");
     }
 
     #[tokio::test]
