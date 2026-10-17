@@ -46,12 +46,22 @@ const ATTRS: [&str; 17] = [
     "AXMenuItemMarkChar",
     "AXModal",
 ];
+const APP_ATTRS: [&str; 5] = [
+    "AXTitle",
+    "AXFrontmost",
+    "AXFocusedWindow",
+    "AXMainWindow",
+    "AXWindows",
+];
+const FRAME_ATTRS: [&str; 4] = ["AXRole", "AXSubrole", "AXTitle", "AXChildren"];
 
 static PROMPTED: AtomicBool = AtomicBool::new(false);
 
 /// The AX backend: element ids are `pid/n`, kept while this backend lives.
 pub struct Ax {
     names: CFArray<CFString>,
+    app_names: CFArray<CFString>,
+    frame_names: CFArray<CFString>,
     scale: f64,
     ids: HashMap<String, CFType>,
     hashes: HashMap<usize, Vec<(CFType, String)>>,
@@ -80,7 +90,9 @@ impl Ax {
         // SAFETY: `system` is a live AXUIElement for the duration of the call.
         unsafe { AXUIElementSetMessagingTimeout(system.as_CFTypeRef(), MESSAGING_TIMEOUT) };
         Ok(Self {
-            names: CFArray::from_CFTypes(&ATTRS.map(CFString::from_static_string)),
+            names: names(ATTRS),
+            app_names: names(APP_ATTRS),
+            frame_names: names(FRAME_ATTRS),
             scale: display_scale(),
             ids: HashMap::new(),
             hashes: HashMap::new(),
@@ -215,28 +227,27 @@ impl Access for Ax {
         let mut frames = Vec::new();
         for p in window_pids() {
             let app = application(p);
-            let name = attr(&app, "AXTitle")
+            let [name, front, focused, main, windows] = values(&self.app_names, &app);
+            let name = name
                 .and_then(|v| v.downcast::<CFString>())
                 .map(|s| s.to_string());
-            let front = attr(&app, "AXFrontmost")
-                .and_then(|v| v.downcast::<CFBoolean>())
-                .is_some_and(bool::from);
-            let focused = attr(&app, "AXFocusedWindow").or_else(|| attr(&app, "AXMainWindow"));
-            let Some(windows) = attr(&app, "AXWindows").map(|w| items(&w)) else {
+            let front = boolean(front).unwrap_or(false);
+            let focused = focused.or(main);
+            let Some(windows) = windows.map(|w| items(&w)) else {
                 continue;
             };
             for w in windows.iter() {
-                let a = attrs(&self.names, w);
-                let sheets: Vec<&CFType> = a
-                    .children
+                let [role, subrole, title, children] = values(&self.frame_names, w);
+                let children = children.map(|c| items(&c)).unwrap_or_default();
+                let sheets: Vec<&CFType> = children
                     .iter()
-                    .filter(|c| attrs(&self.names, c).role == "AXSheet")
+                    .filter(|c| string(attr(c, "AXRole")) == "AXSheet")
                     .collect();
                 let mine = focused
                     .as_ref()
                     .is_some_and(|f| f == w || sheets.contains(&f));
                 let mut active = front && mine;
-                let title = a.title.trim().to_owned();
+                let title = string(title).trim().to_owned();
                 for sheet in sheets {
                     let s = attrs(&self.names, sheet);
                     frames.push(Frame {
@@ -252,9 +263,10 @@ impl Access for Ax {
                     });
                     active = false;
                 }
+                let (role, subrole) = (string(role), string(subrole));
                 let kind = Kind {
-                    role: &a.role,
-                    subrole: &a.subrole,
+                    role: &role,
+                    subrole: &subrole,
                     ..Kind::default()
                 };
                 frames.push(Frame {
@@ -427,6 +439,49 @@ struct Attrs {
 }
 
 fn attrs(names: &CFArray<CFString>, el: &CFType) -> Attrs {
+    let [
+        role,
+        subrole,
+        title,
+        description,
+        help,
+        value,
+        enabled,
+        focused,
+        selected,
+        expanded,
+        pos,
+        size,
+        children,
+        cmd_char,
+        cmd_modifiers,
+        mark,
+        modal,
+    ] = values(names, el);
+    Attrs {
+        role: string(role),
+        subrole: string(subrole),
+        title: string(title),
+        description: string(description),
+        help: string(help),
+        value,
+        enabled: boolean(enabled),
+        focused: boolean(focused).unwrap_or(false),
+        selected: boolean(selected).unwrap_or(false),
+        expanded: boolean(expanded),
+        pos: pos.and_then(|v| pair(&v, POINT_TYPE)),
+        size: size.and_then(|v| pair(&v, SIZE_TYPE)),
+        children: children.map(|v| items(&v)).unwrap_or_default(),
+        cmd_char: string(cmd_char),
+        cmd_modifiers: cmd_modifiers
+            .and_then(|v| v.downcast::<CFNumber>())
+            .and_then(|n| n.to_i64()),
+        mark: string(mark),
+        modal: boolean(modal).unwrap_or(false),
+    }
+}
+
+fn values<const N: usize>(names: &CFArray<CFString>, el: &CFType) -> [Option<CFType>; N] {
     let mut out: CFArrayRef = std::ptr::null();
     // SAFETY: `el` is a live AXUIElement, `names` a live CFArray of CFStrings, `out` a valid out pointer.
     let err = unsafe {
@@ -438,47 +493,25 @@ fn attrs(names: &CFArray<CFString>, el: &CFType) -> Attrs {
         )
     };
     if err != AX_SUCCESS || out.is_null() {
-        return Attrs::default();
+        return std::array::from_fn(|_| None);
     }
     // SAFETY: a successful copy returns the array at +1, wrapped once under the create rule.
-    let values: CFArray<CFType> = unsafe { CFArray::wrap_under_create_rule(out) };
-    let v: Vec<Option<CFType>> = values
-        .iter()
-        .map(|v| Some((*v).clone()).filter(is_value))
-        .collect();
-    let get = |i: usize| v.get(i).cloned().flatten();
-    let string = |i: usize| {
-        get(i)
-            .and_then(|v| v.downcast::<CFString>())
-            .map(|s| s.to_string())
-            .unwrap_or_default()
-    };
-    let boolean = |i: usize| {
-        get(i)
-            .and_then(|v| v.downcast::<CFBoolean>())
-            .map(bool::from)
-    };
-    Attrs {
-        role: string(0),
-        subrole: string(1),
-        title: string(2),
-        description: string(3),
-        help: string(4),
-        value: get(5),
-        enabled: boolean(6),
-        focused: boolean(7).unwrap_or(false),
-        selected: boolean(8).unwrap_or(false),
-        expanded: boolean(9),
-        pos: get(10).and_then(|v| pair(&v, POINT_TYPE)),
-        size: get(11).and_then(|v| pair(&v, SIZE_TYPE)),
-        children: get(12).map(|v| items(&v)).unwrap_or_default(),
-        cmd_char: string(13),
-        cmd_modifiers: get(14)
-            .and_then(|v| v.downcast::<CFNumber>())
-            .and_then(|n| n.to_i64()),
-        mark: string(15),
-        modal: boolean(16).unwrap_or(false),
-    }
+    let got: CFArray<CFType> = unsafe { CFArray::wrap_under_create_rule(out) };
+    std::array::from_fn(|i| got.get(i as isize).map(|v| (*v).clone()).filter(is_value))
+}
+
+fn names<const N: usize>(attrs: [&'static str; N]) -> CFArray<CFString> {
+    CFArray::from_CFTypes(&attrs.map(CFString::from_static_string))
+}
+
+fn string(v: Option<CFType>) -> String {
+    v.and_then(|v| v.downcast::<CFString>())
+        .map(|s| s.to_string())
+        .unwrap_or_default()
+}
+
+fn boolean(v: Option<CFType>) -> Option<bool> {
+    v.and_then(|v| v.downcast::<CFBoolean>()).map(bool::from)
 }
 
 fn items(v: &CFType) -> Vec<CFType> {
