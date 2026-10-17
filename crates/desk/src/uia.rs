@@ -25,13 +25,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::BOOL;
 
 use crate::keys::{Os, uia_combo};
-use crate::model::{Access, Act, Extras, Frame, Node, Tree, is_active, is_field};
+use crate::model::{
+    Access, Act, Extras, Frame, MAX_DEPTH, MAX_IDS, MAX_NODES, Node, Tree, VALUE_CHARS, is_active,
+    lookup, place,
+};
 use crate::uia_roles::{self, Facts, Kind};
 
-const MAX_NODES: usize = 2500;
-const MAX_DEPTH: usize = 64;
-const MAX_IDS: usize = 50_000;
-const VALUE_CHARS: usize = 200;
 const CACHE_TRIES: u32 = 3;
 const CACHE_RETRY: Duration = Duration::from_millis(40);
 const WINDOW: i32 = 50032;
@@ -109,10 +108,7 @@ impl Uia {
     }
 
     fn element(&self, id: &str) -> Result<IUIAutomationElement, String> {
-        self.ids
-            .get(id)
-            .cloned()
-            .ok_or_else(|| format!("unknown element id {id:?}: take a new snapshot"))
+        lookup(&self.ids, id)
     }
 
     fn remember(&mut self, id: &str, el: &IUIAutomationElement) {
@@ -206,18 +202,8 @@ impl Uia {
         if out.len() >= MAX_NODES {
             return Ok(true);
         }
-        let mut node = self.node_of(el, extras, VALUE_CHARS)?;
-        if !is_field(node.role) {
-            node.value = None;
-        }
-        let (parent, depth) = if node.role == "generic" && parent.is_some() {
-            (parent, depth)
-        } else {
-            node.parent = parent;
-            node.depth = depth;
-            out.push(node);
-            (Some(out.len() - 1), depth + 1)
-        };
+        let node = self.node_of(el, extras, VALUE_CHARS)?;
+        let (parent, depth) = place(out, node, parent, depth);
         if depth > MAX_DEPTH {
             return Ok(false);
         }
