@@ -1,5 +1,6 @@
 //! The command line: `mcp`, `serve`, `desk VERB` and `--version`.
 
+use std::io::Write as _;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -22,7 +23,7 @@ pub fn run(args: &[String]) -> ExitCode {
     };
     match cmd.as_str() {
         "--version" | "-V" => {
-            println!("{NAME} {VERSION}");
+            let _ = writeln!(std::io::stdout(), "{NAME} {VERSION}");
             ExitCode::SUCCESS
         }
         "mcp" => {
@@ -67,7 +68,7 @@ fn call_desk(rest: &[String]) -> ExitCode {
     );
     match out {
         Ok(out) if !out.is_error => {
-            println!("{}", out.text);
+            let _ = writeln!(std::io::stdout(), "{}", out.text);
             ExitCode::SUCCESS
         }
         Ok(out) => fail(&format!("desk {verb}: {}", out.text)),
