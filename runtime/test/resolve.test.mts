@@ -99,7 +99,7 @@ async function screen(tree: Spec[], probabilities: Record<string, number>) {
   asked.length = 0
   looks.length = 0
   pick = probabilities
-  return import('../rootfs/opt/desk/lib/gui_plan.mts')
+  return import('../lib/gui_plan.mts')
 }
 
 before(async () => {
@@ -240,7 +240,7 @@ test('a jev-1.14 build other than the tested one answers, each call keeps its bu
     { id: '1.1/2', parent: 0, role: 'button', name: 'Apply' },
     { id: '1.1/3', parent: 0, role: 'button', name: 'Apply to all' },
   ]
-  const desk = await import('../rootfs/opt/desk/lib/desk.mts')
+  const desk = await import('../lib/desk.mts')
   const lines: string[] = []
   const write = process.stderr.write
   process.stderr.write = ((s: string | Uint8Array) => { lines.push(String(s)); return true }) as typeof process.stderr.write
@@ -341,7 +341,7 @@ test('locate gives a LibreOffice toolbar or tab row element the menu bar height 
   const shift = async (tree: Spec[], target: string) => {
     nodes.length = 0
     for (const [i, n] of tree.entries()) nodes.push({ bounds: [10 * i, 10, 10, 10], states: ['showing'], ...n, ref: i, depth: n.parent < 0 ? 0 : nodes[n.parent].depth + 1 })
-    const { main } = await import('../rootfs/opt/desk/lib/gui_plan.mts')
+    const { main } = await import('../lib/gui_plan.mts')
     return (await main({ locate: { target } } as never) as { shift?: number | null }).shift
   }
   assert.equal(await shift(frame(53, 92, 728), 'Bold'), 25)

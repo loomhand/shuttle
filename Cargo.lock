@@ -33,31 +33,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
-name = "cocoonbox-desk"
-version = "0.1.0"
-dependencies = [
- "base64",
- "cocoonbox-desk-core",
- "core-foundation",
- "png",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "windows",
-]
-
-[[package]]
-name = "cocoonbox-desk-core"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tokio",
- "zeroize",
-]
-
-[[package]]
 name = "core-foundation"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -287,6 +262,41 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "shuttle"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+ "shuttle-desk",
+ "shuttle-desk-core",
+ "tokio",
+]
+
+[[package]]
+name = "shuttle-desk"
+version = "0.0.1"
+dependencies = [
+ "base64",
+ "core-foundation",
+ "png",
+ "serde",
+ "serde_json",
+ "shuttle-desk-core",
+ "tempfile",
+ "tokio",
+ "windows",
+]
+
+[[package]]
+name = "shuttle-desk-core"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+ "zeroize",
 ]
 
 [[package]]

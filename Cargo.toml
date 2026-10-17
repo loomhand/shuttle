@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = ["crates/desk-core", "crates/desk", "crates/shuttle"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.98"
+license = "AGPL-3.0-only"
+repository = "https://github.com/loomhand/shuttle"
+publish = false
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

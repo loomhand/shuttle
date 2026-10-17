@@ -41,7 +41,7 @@ test('an app step focuses the app\'s open window, by its process or the window l
   const socket = `${mkdtempSync(`${tmpdir()}/gui-plan-`)}/toolhost.sock`
   await new Promise<void>((r) => toolhost.listen(socket, r))
   process.env.TOOLHOST_SOCKET = socket
-  const { main } = await import('../rootfs/opt/desk/lib/gui_plan.mts')
+  const { main } = await import('../lib/gui_plan.mts')
   try {
     const own = await main({ steps: [{ app: 'sleep' }] })
     assert.equal(own.ok, true, JSON.stringify(own))

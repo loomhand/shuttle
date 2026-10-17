@@ -42,7 +42,7 @@ test('a click that opens a combo box\'s list leaves the next step in the dialog,
   const socket = `${mkdtempSync(`${tmpdir()}/gui-plan-`)}/toolhost.sock`
   await new Promise<void>((r) => toolhost.listen(socket, r))
   process.env.TOOLHOST_SOCKET = socket
-  const { main: plan } = await import('../rootfs/opt/desk/lib/gui_plan.mts')
+  const { main: plan } = await import('../lib/gui_plan.mts')
   try {
     const both = await plan({ steps: [{ click: 'Insert Tabs' }, { click: 'Insert Spaces' }] })
     assert.equal(both.ok, true, JSON.stringify(both))

@@ -17,7 +17,7 @@ test('ask takes one PNG buffer or a list of them', async () => {
   await new Promise<void>((r) => gw.listen(0, '127.0.0.1', r))
   for (const k of ['http_proxy', 'HTTP_PROXY']) delete process.env[k]
   process.env.GW_BASE_URL = `http://127.0.0.1:${(gw.address() as AddressInfo).port}`
-  const desk = await import('../rootfs/opt/desk/lib/desk.mts')
+  const desk = await import('../lib/desk.mts')
   const png = Buffer.from('png')
   try {
     assert.equal(await desk.ask('one', png), 'ok')

@@ -9,21 +9,6 @@ use crate::driver::Input;
 use crate::model::Access;
 use crate::rpc::{Call, Output, read_frame, write_frame};
 
-/// The endpoint: `TOOLHOST_SOCKET`, else this OS's default.
-pub fn default_endpoint() -> String {
-    if let Some(e) = std::env::var("TOOLHOST_SOCKET")
-        .ok()
-        .filter(|e| !e.is_empty())
-    {
-        return e;
-    }
-    if cfg!(windows) {
-        return r"\\.\pipe\cocoonbox-desk".to_owned();
-    }
-    let home = std::env::var("HOME").unwrap_or_default();
-    format!("{home}/Library/Caches/cocoonbox/desk.sock")
-}
-
 /// Serves `desk` at the unix socket `endpoint`, readable by its user only.
 #[cfg(unix)]
 pub async fn serve<B, D>(desk: Arc<Desk<B, D>>, endpoint: &str) -> Result<(), String>

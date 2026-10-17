@@ -1,4 +1,4 @@
-//! The desk host of a Windows or macOS box: the Linux toolhost's desk calls over the same framing.
+//! The desk verbs on macOS and Windows: the toolhost wire's desk calls over each OS's accessibility tree, input through cua-driver.
 
 #[cfg(target_os = "macos")]
 pub mod ax;

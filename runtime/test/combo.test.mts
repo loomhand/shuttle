@@ -45,7 +45,7 @@ test('set on a combo box without a text field picks the option from its list, do
   const socket = `${mkdtempSync(`${tmpdir()}/gui-plan-`)}/toolhost.sock`
   await new Promise<void>((r) => toolhost.listen(socket, r))
   process.env.TOOLHOST_SOCKET = socket
-  const { main } = await import('../rootfs/opt/desk/lib/gui_plan.mts')
+  const { main } = await import('../lib/gui_plan.mts')
   try {
     const set = await main({ steps: [{ set: 'Insert Tabs', value: 'Insert Spaces' }] })
     assert.equal(set.ok, true, JSON.stringify(set))

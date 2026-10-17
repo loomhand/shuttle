@@ -1,0 +1,22 @@
+[package]
+name = "shuttle"
+description = "A local computer-use host: agents drive this desktop over MCP stdio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "shuttle"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+shuttle-desk = { path = "../desk" }
+shuttle-desk-core = { path = "../desk-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "net"] }
+
+[lints]
+workspace = true

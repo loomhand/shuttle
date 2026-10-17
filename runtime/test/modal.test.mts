@@ -30,7 +30,7 @@ test('a step in a window whose app holds a modal dialog the screen does not show
   const socket = `${mkdtempSync(`${tmpdir()}/gui-plan-`)}/toolhost.sock`
   await new Promise<void>((r) => toolhost.listen(socket, r))
   process.env.TOOLHOST_SOCKET = socket
-  const { main } = await import('../rootfs/opt/desk/lib/gui_plan.mts')
+  const { main } = await import('../lib/gui_plan.mts')
   try {
     const blocked = await main({ steps: [{ type: 'hello' }] })
     assert.equal(blocked.ok, false, JSON.stringify(blocked))

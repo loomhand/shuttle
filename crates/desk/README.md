@@ -1,9 +1,6 @@
-# cocoonbox-desk
+# shuttle-desk
 
-The desk host of a Windows or macOS box. It serves the Linux toolhost's desk calls (`desk_windows`, `desk_snapshot`, `desk_find`, `desk_read`, `desk_press`, `desk_act`, `desk_at`, `desk_key`, `desk_type`, `desk_click`, `desk_focus`, `desk_close`, `desk_launch`, `desk_shot`, `desk_screen`) with the same framing and JSON, so `desk.mts`, `gui_plan.mts` and the `desk` CLI run unchanged. It imports nothing from `agent/`; the contract is the wire format in `docs/contracts.md` (Toolhost wire), and both hosts take it, the desk call arguments and the window and name matching from `desk-core/`.
-
-- `cocoonbox-desk serve [ENDPOINT]` serves one call per connection: a big-endian u32 length and JSON each way. The endpoint is `TOOLHOST_SOCKET`, else `~/Library/Caches/cocoonbox/desk.sock` (mode 0600) on macOS and `\\.\pipe\cocoonbox-desk` (local clients only) on Windows.
-- `cocoonbox-desk VERB [key=value ...|JSON]` sends one call and prints the result, as `desk` does on Linux.
+The desk verbs on macOS and Windows: `desk_windows`, `desk_snapshot`, `desk_find`, `desk_read`, `desk_press`, `desk_act`, `desk_at`, `desk_key`, `desk_type`, `desk_click`, `desk_focus`, `desk_close`, `desk_launch`, `desk_shot` and `desk_screen`, answered over each OS's accessibility tree with input, windows, launch and capture through cua-driver. It speaks the toolhost wire of [docs/wire.md](../../docs/wire.md) and takes the wire, the desk call arguments and the window and name matching from [desk-core](../desk-core), so `runtime/lib/desk.mts` and `gui_plan.mts` run unchanged on it. The `shuttle` binary serves it (`shuttle serve`) and calls it (`shuttle desk VERB`).
 
 ## Modules
 
@@ -20,4 +17,4 @@ The desk host of a Windows or macOS box. It serves the Linux toolhost's desk cal
 
 ## Build
 
-`cargo build --release` on macOS; `cargo build --release --target x86_64-pc-windows-gnu` (mingw-w64) for Windows. The unit tests drive fake backends and a fake driver; none reads an accessibility tree or sends input.
+`cargo build` at the workspace root on macOS or Windows; `cargo clippy --target x86_64-pc-windows-gnu` checks the Windows code from another host. The unit tests drive fake backends and a fake driver; none reads an accessibility tree or sends input.

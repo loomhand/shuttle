@@ -38,7 +38,7 @@ test('a step that typed into an empty field stops when its app was launched and 
   const socket = `${mkdtempSync(`${tmpdir()}/gui-plan-blank-`)}/toolhost.sock`
   await new Promise<void>((r) => toolhost.listen(socket, r))
   process.env.TOOLHOST_SOCKET = socket
-  const { main } = await import('../rootfs/opt/desk/lib/gui_plan.mts')
+  const { main } = await import('../lib/gui_plan.mts')
   try {
     const r = await main({ steps: [{ app: 'mousepad' }, { type: 'bob lives in Oslo', blank: { role: 'textbox', name: '', parent: '', nth: 0 } }] })
     assert.equal(r.ok, false, JSON.stringify(r))

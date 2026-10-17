@@ -1,22 +1,19 @@
 [package]
-name = "cocoonbox-desk"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.98"
-description = "Desk host for Windows and macOS boxes: the desk calls over the toolhost framing"
-license = "AGPL-3.0-only"
-publish = false
-
-[[bin]]
-name = "cocoonbox-desk"
-path = "src/main.rs"
+name = "shuttle-desk"
+description = "The desk verbs over the macOS and Windows accessibility trees, with input through cua-driver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
 
 [dependencies]
 base64 = "0.23"
-cocoonbox-desk-core = { path = "../desk-core" }
 png = "0.18"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+shuttle-desk-core = { path = "../desk-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -37,13 +34,5 @@ core-foundation = "0.10"
 [dev-dependencies]
 tempfile = "3"
 
-[lints.clippy]
-unwrap_used = "deny"
-expect_used = "deny"
-undocumented_unsafe_blocks = "deny"
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-strip = true
+[lints]
+workspace = true
