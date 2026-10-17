@@ -9,8 +9,6 @@ $Name = 'cocoon-shuttle'
 $Repo = 'loomhand/shuttle'
 $InstallDir = if ($env:SHUTTLE_HOME) { $env:SHUTTLE_HOME } else { Join-Path $env:LOCALAPPDATA "Programs\$Name" }
 
-if (-not [Environment]::Is64BitOperatingSystem) { throw "$Name needs 64-bit Windows" }
-if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { Write-Host "Windows on Arm runs the x64 build under emulation" }
 
 $Version = $env:SHUTTLE_VERSION
 if (-not $Version) {
@@ -45,7 +43,6 @@ try {
     try { Move-Item (Join-Path $New $Name) $InstallDir } catch { if (Test-Path $Old) { Move-Item $Old $InstallDir }; throw }
     Remove-Item -Recurse -Force $New
     if (Test-Path $Old) { Remove-Item -Recurse -Force $Old }
-    Get-ChildItem -Recurse -File $InstallDir | Unblock-File
 } finally {
     Remove-Item -Recurse -Force $Tmp
 }
@@ -59,4 +56,4 @@ $env:Path = "$env:Path;$InstallDir"
 
 Write-Host "installed $(& (Join-Path $InstallDir "$Name.exe") --version) in $InstallDir"
 Write-Host "register it with an agent, e.g.: claude mcp add shuttle -- `"$(Join-Path $InstallDir "$Name.exe")`" mcp"
-Write-Host 'The binaries are unsigned: SmartScreen may warn about a browser-downloaded copy (More info > Run anyway); this installer clears the download mark.'
+Write-Host 'The binaries are unsigned: SmartScreen may warn about a browser-downloaded copy (More info > Run anyway).'

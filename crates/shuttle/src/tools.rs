@@ -79,8 +79,8 @@ pub fn list() -> Value {
 /// Answers a `tools/call` of `name`: an MCP tool result, or `None` for an unknown tool.
 pub fn call(name: &str) -> Option<Value> {
     match name {
-        "status" => Some(result(status().to_string(), false)),
-        "gui_plan" | "script_run" | "desk" | "screenshot" => Some(result(NOT_YET.to_owned(), true)),
+        "status" => Some(result(&status().to_string(), false)),
+        "gui_plan" | "script_run" | "desk" | "screenshot" => Some(result(NOT_YET, true)),
         _ => None,
     }
 }
@@ -95,8 +95,6 @@ fn status() -> Value {
     })
 }
 
-fn result(text: String, is_error: bool) -> Value {
-    let mut out = json!({"content": [{"type": "text"}], "isError": is_error});
-    out["content"][0]["text"] = text.into();
-    out
+fn result(text: &str, is_error: bool) -> Value {
+    json!({"content": [{"type": "text", "text": text}], "isError": is_error})
 }
