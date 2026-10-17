@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { test } from 'node:test'
 
+import { endpoint } from './toolhost.mts'
+
 test('a reply split over several writes arrives whole, and a connection closed mid-frame rejects', async () => {
   const body = Buffer.from(JSON.stringify({ text: JSON.stringify({ width: 1280, height: 800 }), is_error: false }))
   const head = Buffer.alloc(4)
@@ -18,7 +20,7 @@ test('a reply split over several writes arrives whole, and a connection closed m
       s.end(body.subarray(7))
     })
   })
-  const socket = `${mkdtempSync(`${tmpdir()}/frames-`)}/toolhost.sock`
+  const socket = endpoint(mkdtempSync(`${tmpdir()}/frames-`))
   await new Promise<void>((r) => server.listen(socket, r))
   process.env.TOOLHOST_SOCKET = socket
   const desk = await import('../lib/desk.mts')

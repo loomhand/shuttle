@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os'
 
 const FLOWS = `${mkdtempSync(`${tmpdir()}/flows-`)}/flows`
 
+export const endpoint = (dir: string) => process.platform === 'win32' ? `\\\\.\\pipe\\${dir.replace(/[\\/:]/g, '-')}` : `${dir}/toolhost.sock`
+
 export type Call = { tool: string; args: Record<string, unknown> }
 export type Reply = string | { text: string; error?: boolean; image?: string }
 
@@ -22,8 +24,8 @@ export async function toolhost(answer: (c: Call) => Reply): Promise<Server> {
     })
   })
   const dir = mkdtempSync(`${tmpdir()}/toolhost-`)
-  await new Promise<void>((r) => server.listen(`${dir}/toolhost.sock`, r))
-  Object.assign(process.env, { TOOLHOST_SOCKET: `${dir}/toolhost.sock`, HOME: dir, USERPROFILE: dir })
+  await new Promise<void>((r) => server.listen(endpoint(dir), r))
+  Object.assign(process.env, { TOOLHOST_SOCKET: endpoint(dir), HOME: dir, USERPROFILE: dir })
   process.env.SHUTTLE_FLOWS = FLOWS
   return server
 }
