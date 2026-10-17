@@ -2,7 +2,7 @@
 
 ## Installers
 
-macOS and Linux:
+macOS 13.5 or later (the oldest the bundled Node.js runs on; `install.sh` refuses an older macOS before it changes anything) and Linux:
 
 ```sh
 curl -fsSL https://github.com/loomhand/shuttle/releases/latest/download/install.sh | sh

@@ -32,7 +32,7 @@ While shuttle acts, a menu-bar item (macOS) or tray icon (Windows, Linux) shows 
 
 ## Input on macOS
 
-This is the P1 design. Today a press clicks the element's centre when a hit test there finds it and runs its AX action otherwise, and keys go to the desktop through cua-driver.
+This is the P1 design. Today a press clicks a menu node's centre, clicks any other element's centre when a hit test there finds it, and runs its AX action otherwise; keys go to the desktop through cua-driver.
 
 macOS has one pointer and one keyboard focus, shared by you and shuttle. shuttle uses them as little as it can:
 
