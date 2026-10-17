@@ -1,7 +1,4 @@
-import { readFileSync } from 'node:fs'
-import { request } from 'node:http'
 import { createConnection } from 'node:net'
-import { homedir } from 'node:os'
 
 export type Win = { id: string; title: string; role: string; pid: number | null; active: boolean; modal?: string; blocks?: string }
 export type El = {
@@ -15,36 +12,20 @@ export type Usage = Record<string, { calls: number; input_tokens: number; output
 export type ImagePart = { type: 'image_url'; image_url: { url: string } }
 export type Served = { model: string; image: boolean; build: string | null; id: string | null }
 type Size = { width: number; height: number }
-type Gw = { base: string; key: string }
 type Output = { text: string; is_error: boolean; image_b64?: string }
-type Metered = { model?: string; id?: string; usage?: { prompt_tokens?: number; input_tokens?: number; completion_tokens?: number; output_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } }
-type ChatReply = Metered & { choices?: { message?: { content?: string } }[] }
-type Answer = { type: 'noul'; noul: number } | { type: 'choice'; choice: string; confidence: number; probabilities: Record<string, number> }
-type DecisionsReply = Metered & { answers?: Record<string, Answer> }
+type Metered = { usage: { model: string; input_tokens: number; output_tokens: number; cached_tokens: number } }
+type Decided = Metered & { answers: Record<string, Judgment>; served: Omit<Served, 'image'> }
 
-const SOCKETS: Record<string, string> = { win32: '\\\\.\\pipe\\cocoonbox-desk', darwin: `${homedir()}/Library/Caches/cocoonbox/desk.sock` }
-const SOCKET = process.env.TOOLHOST_SOCKET || SOCKETS[process.platform] || '/run/cocoonbox/toolhost.sock'
-const ENV_FILE = '/etc/cocoonbox/desk.env'
-const DECIDE_MODEL = 'typesafe/jev-1.14'
-const DECIDE_BUILD = 'typesafe/jev-1.14-20261014'
-const DECIDE_BUILDS = /^typesafe\/jev-1\.14-\d{8}$/
 const LOOK_TIMEOUT = 5_000
-const ASK_MODEL = 'anthropic/claude-sonnet-5'
-const GROUND_MODEL = 'qwen/qwen3-vl-235b-a22b-instruct'
-const MODEL_TIMEOUT = 60_000
 
 let screenSize: Size | null = null
-let gwConfig: Gw | null = null
-let envFile: string | null = null
-let warned = false
 export const usage: Usage = {}
-/** Every decisions call: the model asked, whether its state held an image, and the build and generation id that answered (null when none did). */
+/** Every decisions call: the model that answered (its role while it has not), whether its state held an image, and the build and generation id it named. */
 export const served: Served[] = []
 
-/** One toolhost call: a big-endian u32 length and JSON each way. */
-export async function call<T>(op: string, args: Record<string, unknown> = {}): Promise<T> {
-  const out = await exchange(op, args)
-  try { return JSON.parse(out.text) as T } catch { return out.text as T }
+/** One desk call over the toolhost socket that TOOLHOST_SOCKET names. */
+export function call<T>(op: string, args: Record<string, unknown> = {}): Promise<T> {
+  return request<T>(`desk_${op}`, args)
 }
 
 export const windows = (): Promise<Win[]> => call('windows')
@@ -73,22 +54,21 @@ export async function screen(): Promise<Size> {
 
 /** A PNG of a screen rectangle, the whole screen by default. */
 export async function shot(r: { x?: number; y?: number; w?: number; h?: number } = {}): Promise<Buffer> {
-  const out = await exchange('shot', r)
+  const out = await exchange('desk_shot', r)
   if (out.image_b64 === undefined) throw new Error('desk_shot returned no image')
   return Buffer.from(out.image_b64, 'base64')
 }
 
-/** A setting from the environment, else from desk.env. */
+/** A setting from the environment. */
 export function setting(k: string): string | undefined {
-  if (envFile === null) { envFile = ''; try { envFile = readFileSync(ENV_FILE, 'utf8') } catch {} }
-  return process.env[k] || [...envFile.matchAll(/^(\w+)=(.*)$/gm)].find((m) => m[1] === k)?.[2]?.trim()
+  return process.env[k] || undefined
 }
 
 export const yes = (instructions: string): Question => ({ type: 'noul', instructions })
 export const choice = (instructions: string, criteria: Record<string, string>): Question => ({ type: 'choice', instructions, criteria })
 
-/** gw's decisions model over text or JSON state: a yes question answers {probability}, a choice {choice, confidence, probabilities}. */
-export const decide = (state: unknown, questions: Record<string, Question>): Promise<Record<string, Judgment>> => judge(state, questions, false, MODEL_TIMEOUT)
+/** The decide model over text or JSON state: a yes question answers {probability}, a choice {choice, confidence, probabilities}. */
+export const decide = (state: unknown, questions: Record<string, Question>): Promise<Record<string, Judgment>> => judge(state, questions, false)
 
 /** The same over a state that holds PNG parts (image), within 5 s. */
 export const look = (state: unknown[], questions: Record<string, Question>): Promise<Record<string, Judgment>> => judge(state, questions, true, LOOK_TIMEOUT)
@@ -99,24 +79,27 @@ export function image(png: Buffer): ImagePart {
 
 export async function ask(prompt: string, images: Buffer | Buffer[] = []): Promise<string> {
   const pngs = Buffer.isBuffer(images) ? [images] : images
-  const r = await post<ChatReply>('chat/completions', { model: ASK_MODEL, max_tokens: 400, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...pngs.map(image)] }] })
-  return r.choices?.[0]?.message?.content ?? ''
+  return (await model<Metered & { text: string }>('model_ask', { prompt, images: pngs.map((p) => p.toString('base64')) })).text
 }
 
-/** The screen point of a described element in a PNG of the screen at (left, top). */
+/** The point, in desk coordinates, of a described element in a PNG of the desk rectangle `area`. */
 export async function ground(png: Buffer, target: string, area: { left?: number; top?: number; width: number; height: number }): Promise<[number, number]> {
-  const prompt = `Locate the ${target} in this screenshot. Answer with one JSON object and nothing else: {"point_2d": [x, y]}, the centre of the element in coordinates from 0 to 1000 across and down the image.`
-  const r = await post<ChatReply>('chat/completions', { model: GROUND_MODEL, max_tokens: 100, messages: [{ role: 'user', content: [image(png), { type: 'text', text: prompt }] }] })
-  const text = r.choices?.[0]?.message?.content ?? ''
-  const g = /(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/.exec(text)
-  if (!g) throw new Error(`grounding found no point for ${target}: ${text.slice(0, 120)}`)
-  return [Math.round((area.left ?? 0) + (Number(g[1]) / 1000) * area.width), Math.round((area.top ?? 0) + (Number(g[2]) / 1000) * area.height)]
+  const r = await model<Metered & { x: number; y: number }>('model_ground', { png_b64: png.toString('base64'), target, area })
+  return [r.x, r.y]
 }
 
-function exchange(op: string, args: Record<string, unknown>): Promise<Output> {
+// one toolhost call: a big-endian u32 length and JSON each way
+async function request<T>(tool: string, args: Record<string, unknown>): Promise<T> {
+  const out = await exchange(tool, args)
+  try { return JSON.parse(out.text) as T } catch { return out.text as T }
+}
+
+function exchange(tool: string, args: Record<string, unknown>): Promise<Output> {
   return new Promise((resolve, reject) => {
-    const s = createConnection(SOCKET)
-    const body = Buffer.from(JSON.stringify({ agent_id: 'desk', tool: `desk_${op}`, args }))
+    const socket = process.env.TOOLHOST_SOCKET
+    if (!socket) return reject(new Error('TOOLHOST_SOCKET names no toolhost socket'))
+    const s = createConnection(socket)
+    const body = Buffer.from(JSON.stringify({ agent_id: 'desk', tool, args }))
     const head = Buffer.alloc(4)
     head.writeUInt32BE(body.length)
     let buf = Buffer.alloc(0)
@@ -133,61 +116,20 @@ function exchange(op: string, args: Record<string, unknown>): Promise<Output> {
   })
 }
 
-function gw(): Gw {
-  if (gwConfig) return gwConfig
-  const base = setting('GW_BASE_URL')
-  if (!base) throw new Error(`no GW_BASE_URL in the environment or ${ENV_FILE}`)
-  gwConfig = { base: base.replace(/\/+$/, ''), key: setting('GW_API_KEY') || 'unprovisioned' }
-  return gwConfig
+async function model<T extends Metered>(tool: string, args: Record<string, unknown>): Promise<T> {
+  const r = await request<T>(tool, args)
+  const u = usage[r.usage.model] ??= { calls: 0, input_tokens: 0, output_tokens: 0, cached_tokens: 0 }
+  u.calls += 1
+  u.input_tokens += r.usage.input_tokens
+  u.output_tokens += r.usage.output_tokens
+  u.cached_tokens += r.usage.cached_tokens
+  return r
 }
 
-// a plain HTTP proxy request (absolute URL, no CONNECT), so the box's egress proxy can set gw's key
-function post<T extends Metered>(path: string, body: { model: string } & Record<string, unknown>, timeout = MODEL_TIMEOUT): Promise<T> {
-  const { base, key } = gw()
-  const url = new URL(`${base}/${path}`)
-  const proxy = process.env.http_proxy || process.env.HTTP_PROXY
-  const bypass = (process.env.no_proxy || process.env.NO_PROXY || '').split(',').map((h) => h.trim()).filter(Boolean)
-  const via = proxy && url.protocol === 'http:' && !bypass.includes(url.hostname) ? new URL(proxy) : null
-  const data = Buffer.from(JSON.stringify(body))
-  const headers = { 'content-type': 'application/json', 'content-length': data.length, authorization: `Bearer ${key}`, host: url.host }
-  const target = via ? { host: via.hostname, port: via.port || 80, path: url.href } : { host: url.hostname, port: url.port || 80, path: `${url.pathname}${url.search}` }
-  return new Promise((resolve, reject) => {
-    const req = request({ ...target, method: 'POST', headers, timeout }, (res) => {
-      const chunks: Buffer[] = []
-      res.on('data', (c: Buffer) => chunks.push(c))
-      res.on('end', () => {
-        const text = Buffer.concat(chunks).toString()
-        if ((res.statusCode ?? 500) >= 300) return reject(new Error(`gw ${path} returned ${res.statusCode}: ${text.slice(0, 300)}`))
-        try {
-          const r = JSON.parse(text) as T
-          const u = usage[body.model] ??= { calls: 0, input_tokens: 0, output_tokens: 0, cached_tokens: 0 }
-          u.calls += 1
-          u.input_tokens += r.usage?.prompt_tokens ?? r.usage?.input_tokens ?? 0
-          u.output_tokens += r.usage?.completion_tokens ?? r.usage?.output_tokens ?? 0
-          u.cached_tokens += r.usage?.prompt_tokens_details?.cached_tokens ?? 0
-          resolve(r)
-        } catch (e: unknown) { reject(e) }
-      })
-    })
-    req.on('timeout', () => req.destroy(new Error(`gw ${path} timed out`)))
-    req.on('error', reject)
-    req.end(data)
-  })
-}
-
-// only a dated jev-1.14 build answers, since gui_plan's pick and check thresholds were measured on it
-async function judge(state: unknown, questions: Record<string, Question>, image: boolean, timeout: number): Promise<Record<string, Judgment>> {
-  const rec: Served = { model: DECIDE_MODEL, image, build: null, id: null }
+async function judge(state: unknown, questions: Record<string, Question>, image: boolean, timeout_ms?: number): Promise<Record<string, Judgment>> {
+  const rec: Served = { model: image ? 'verify' : 'decide', image, build: null, id: null }
   served.push(rec)
-  const r = await post<DecisionsReply>('decisions', { model: DECIDE_MODEL, state, questions }, timeout)
-  rec.build = r.model ?? null; rec.id = r.id ?? null
-  if (!DECIDE_BUILDS.test(r.model ?? '')) throw new Error(`gw decisions served ${r.model} for ${DECIDE_MODEL}`)
-  if (r.model !== DECIDE_BUILD && !warned) { warned = true; process.stderr.write(`desk: jev answers from build ${r.model}, not the tested ${DECIDE_BUILD}\n`) }
-  return answers(r)
-}
-
-function answers(r: DecisionsReply): Record<string, Judgment> {
-  const out: Record<string, Judgment> = {}
-  for (const [k, a] of Object.entries(r.answers ?? {})) out[k] = a.type === 'noul' ? { probability: a.noul } : a
-  return out
+  const r = await model<Decided>('model_decide', { state, questions, image, timeout_ms })
+  Object.assign(rec, r.served)
+  return r.answers
 }
