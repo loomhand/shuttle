@@ -683,6 +683,8 @@ mod tests {
         opened: bool,
     }
 
+    static ACTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
     impl Fake {
         fn add(
             &mut self,
@@ -746,8 +748,21 @@ mod tests {
             Ok(self.hits.get(&(x, y)).cloned())
         }
 
+        fn menu_at(&mut self, x: i32, y: i32) -> Result<Option<String>, String> {
+            Ok(self
+                .hits
+                .get(&(x, y))
+                .filter(|id| {
+                    self.nodes
+                        .get(*id)
+                        .is_some_and(|(n, _)| n.role == "menuitem")
+                })
+                .cloned())
+        }
+
         fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
             self.acts.push((id.into(), act));
+            ACTED.lock().unwrap().push(id.into());
             if self.nodes.get(id).is_some_and(|(n, _)| n.role == "menu") {
                 self.opened = true;
             }
@@ -1157,6 +1172,24 @@ mod tests {
             ),
             (2, 4)
         );
+    }
+
+    #[tokio::test]
+    async fn a_macos_click_on_an_open_menu_item_runs_the_item_instead_of_clicking_the_window_below()
+    {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let open = || {
+            let mut f = notepad();
+            f.add("wrap", Some("file"), "menuitem", &["showing"], None);
+            f.hits.insert((300, 200), "wrap".into());
+            Ok(f)
+        };
+        let desk = Desk::new(open, Screen(calls.clone()), Os::Mac);
+        desk.run("desk_click", json!({"x": 300.0, "y": 200.0}))
+            .await
+            .unwrap();
+        assert!(ACTED.lock().unwrap().iter().any(|id| id == "wrap"));
+        assert!(!calls.lock().unwrap().iter().any(|(t, _)| t == "click"));
     }
 
     #[tokio::test]
