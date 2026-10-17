@@ -45,6 +45,7 @@ impl<H: Handler> Daemon<H> {
     }
 
     async fn run(&self, tool: &str, args: Value) -> Result<String, String> {
+        self.models.as_ref().map_err(String::clone)?;
         let _turn = tokio::time::timeout(self.wait, self.turn.lock())
             .await
             .map_err(|_| BUSY.to_owned())?;
@@ -170,7 +171,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_broken_config_fails_model_calls_and_leaves_the_desk_working() {
+    async fn a_broken_config_fails_model_calls_and_runs_and_leaves_the_desk_working() {
         let d = Daemon::new(
             Echo,
             Err("config.toml line 3: invalid type".to_owned()),
@@ -181,11 +182,14 @@ mod tests {
             tool: tool.into(),
             args: json!({"prompt": "x"}),
         };
-        let model = d.answer(call("model_ask")).await;
-        assert_eq!(
-            (model.is_error, model.text.as_str()),
-            (true, "config.toml line 3: invalid type")
-        );
+        for tool in ["model_ask", "script_run", "gui_plan"] {
+            let out = d.answer(call(tool)).await;
+            assert_eq!(
+                (out.is_error, out.text.as_str()),
+                (true, "config.toml line 3: invalid type"),
+                "{tool}"
+            );
+        }
         assert!(!d.answer(call("desk_screen")).await.is_error);
     }
 
@@ -230,7 +234,7 @@ mod tests {
             dir.path().join("flows"),
             Vec::new(),
         );
-        let mut d = Daemon::new(keys.clone(), Err("no models".to_owned()), runner);
+        let mut d = Daemon::new(keys.clone(), Ok(Models::new(Config::default())), runner);
         d.wait = wait;
         let d = std::sync::Arc::new(d);
         tokio::spawn({
