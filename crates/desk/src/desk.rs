@@ -13,7 +13,7 @@ use desk_core::args::{
 };
 use desk_core::press::{MENU_POLL, MENU_POLLS, SELECTED_ROLES};
 use desk_core::text::{MAX_FOUND, NAME_CHARS, matches, ms, quote};
-use desk_core::window::{self, TITLE_TIERS, app_window, title_matches};
+use desk_core::window;
 use desk_core::wire::Output;
 use serde_json::{Map, Value, json};
 
@@ -257,7 +257,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn close(&self, a: WindowArgs, turn: Option<Turn>) -> Result<String, String> {
         self.access
             .run(CALL_LIMIT, turn, move |b| {
-                let frame = titled(b.frames()?, &a.window, a.pid)?;
+                let frame = window::pick(b.frames()?, Some(&a.window), a.pid)?;
                 b.close(&frame)?;
                 Ok(json!({"ok": true, "title": frame.title}).to_string())
             })
@@ -541,21 +541,6 @@ fn keystroke(c: char) -> Option<Vec<String>> {
     }
 }
 
-fn titled(frames: Vec<Frame>, window: &str, pid: Option<u32>) -> Result<Frame, String> {
-    let frames: Vec<Frame> = frames
-        .into_iter()
-        .filter(|f| pid.is_none_or(|p| f.pid == Some(p)))
-        .collect();
-    match (0..TITLE_TIERS).find_map(|tier| {
-        frames
-            .iter()
-            .rfind(|f| title_matches(tier, &f.title, window))
-    }) {
-        Some(f) => Ok(f.clone()),
-        None => app_window(&frames, window),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -761,63 +746,6 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_title_finds_the_window_of_its_app_unless_one_matches() {
-        let frame = |title: &str, active: bool| Frame {
-            id: title.into(),
-            title: title.into(),
-            role: "window",
-            pid: Some(7),
-            active,
-        };
-        let frames = vec![
-            frame("a.txt - Notepad", false),
-            frame("*b.txt - Notepad", true),
-            frame("Save As", false),
-        ];
-        let picked = |want: &str| window::pick(frames.clone(), Some(want), None).map(|f| f.title);
-        assert_eq!(picked("Untitled - Notepad").unwrap(), "*b.txt - Notepad");
-        assert_eq!(picked("a.txt - Notepad").unwrap(), "a.txt - Notepad");
-        assert!(picked("Untitled - Paint").is_err());
-        let found = |want: &str| titled(frames.clone(), want, None).map(|f| f.title);
-        assert_eq!(found("Untitled - Notepad").unwrap(), "*b.txt - Notepad");
-        assert_eq!(found("a.txt - Notepad").unwrap(), "a.txt - Notepad");
-        assert!(found("Untitled - Paint").is_err());
-    }
-
-    #[test]
-    fn a_stale_title_takes_its_app_window_only_when_that_is_unambiguous() {
-        let frame = |title: &str, active: bool| Frame {
-            id: title.into(),
-            title: title.into(),
-            role: "window",
-            pid: Some(7),
-            active,
-        };
-        let one = vec![frame("a.txt - Notepad", false), frame("Save As", true)];
-        assert_eq!(
-            titled(one, "Untitled - Notepad", None).unwrap().title,
-            "a.txt - Notepad"
-        );
-        let active = vec![
-            frame("a.txt - Notepad", false),
-            frame("b.txt - Notepad", true),
-        ];
-        assert_eq!(
-            titled(active, "Untitled - Notepad", None).unwrap().title,
-            "b.txt - Notepad"
-        );
-        let none_active = vec![
-            frame("a.txt - Notepad", false),
-            frame("b.txt - Notepad", false),
-            frame("Save As", true),
-        ];
-        assert_eq!(
-            window::pick(none_active, Some("Untitled - Notepad"), None).unwrap_err(),
-            "no window \"Untitled - Notepad\"; windows of its app: [\"a.txt - Notepad\", \"b.txt - Notepad\"]"
-        );
-    }
-
-    #[test]
     fn the_outline_shows_states_shortcuts_ids_and_values() {
         let nodes = vec![
             Node {
@@ -889,6 +817,57 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
             Ok(json!({}))
         }
+    }
+
+    static CLOSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    struct Twins;
+
+    impl Access for Twins {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            let frame = |id: &str, active: bool| Frame {
+                id: id.into(),
+                title: "Untitled - Notepad".into(),
+                role: "window",
+                pid: Some(4),
+                active,
+            };
+            Ok(vec![frame("front", true), frame("back", false)])
+        }
+
+        fn tree(&mut self, _: &Frame, _: Extras) -> Result<Tree, String> {
+            Err("no tree".into())
+        }
+
+        fn node(&mut self, _: &str, _: Extras, _: usize) -> Result<Node, String> {
+            Err("no node".into())
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Ok(false)
+        }
+
+        fn close(&mut self, frame: &Frame) -> Result<(), String> {
+            CLOSED.lock().unwrap().push(frame.id.clone());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn closing_one_of_two_same_titled_windows_closes_the_active_one() {
+        let desk = Desk::new(|| Ok(Twins), Slow(Arc::default()), Os::Mac);
+        desk.run("desk_close", json!({"window": "Untitled - Notepad"}))
+            .await
+            .unwrap();
+        assert_eq!(*CLOSED.lock().unwrap(), ["front"]);
     }
 
     #[tokio::test]
