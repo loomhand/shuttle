@@ -390,6 +390,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 id: w["window_id"].to_string(),
                 title: w["title"].as_str().unwrap_or_default().to_owned(),
                 pid: w["pid"].as_u64().and_then(|p| u32::try_from(p).ok()),
+                app: w["app_name"].as_str().map(str::to_owned),
                 ..Frame::default()
             })
             .collect();
@@ -645,6 +646,7 @@ mod tests {
                 role: "window",
                 pid: Some(4),
                 active: true,
+                app: Some("Notepad".into()),
             }])
         }
 
@@ -779,6 +781,7 @@ mod tests {
             role: "window",
             pid: Some(pid),
             active,
+            app: None,
         };
         let frames = vec![
             frame("Untitled - Notepad", false, 7),
@@ -890,6 +893,7 @@ mod tests {
                 role: "window",
                 pid: Some(4),
                 active,
+                app: None,
             };
             Ok(vec![frame("front", true), frame("back", false)])
         }
@@ -1065,6 +1069,16 @@ mod tests {
             .filter(|(t, _)| t == "get_screen_size")
             .count();
         assert_eq!(sizes, 1);
+    }
+
+    #[tokio::test]
+    async fn a_window_names_its_app_when_the_backend_knows_it() {
+        let desk = Desk::new(|| Ok(notepad()), Screen(Arc::default()), Os::Mac);
+        let out = desk.run("desk_windows", json!({})).await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&out.text).unwrap(),
+            json!([{"id": "w", "title": "Untitled - Notepad", "role": "window", "pid": 4, "active": true, "app": "Notepad"}])
+        );
     }
 
     #[test]

@@ -689,7 +689,8 @@ async function run(s: Step, rec: Rec) {
     let launched = false
     const name = norm(s.title ?? s.app); const bare = !s.title && /^[\w.-]+$/.test(s.app)
     const entries = bare ? entryNames(s.app) : []
-    const own = (w: Win) => norm(w.title).includes(name) || (bare && (norm(w.title).includes(name.replace(/-/g, ' ')) || ownedBy(w.pid, name) || entries.some((e) => norm(w.title).includes(e))))
+    const app = norm(s.app)
+    const own = (w: Win) => norm(w.title).includes(name) || (!s.title && !!w.app && norm(w.app).includes(app)) || (bare && (norm(w.title).includes(name.replace(/-/g, ' ')) || ownedBy(w.pid, name) || entries.some((e) => norm(w.title).includes(e))))
     const has = async () => { const ws = await desk.windows(); return ws.find(own) ?? (launched ? ws.find((w) => w.title && !before.has(w.title)) : undefined) }
     let w = await has()
     const listed = !w && bare ? await desk.focus(s.app).catch(() => null) : null

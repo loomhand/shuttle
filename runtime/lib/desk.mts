@@ -1,6 +1,6 @@
 import { createConnection } from 'node:net'
 
-export type Win = { id: string; title: string; role: string; pid: number | null; active: boolean; modal?: string; blocks?: string }
+export type Win = { id: string; title: string; role: string; pid: number | null; active: boolean; app?: string; modal?: string; blocks?: string }
 export type El = {
   ref: number; id: string; parent: number; depth: number; role: string; name: string; states: string[]
   value?: string; keys?: string; shortcut?: string; mnemonic?: string; native_role?: string; description?: string; bounds?: [number, number, number, number]
