@@ -9,9 +9,9 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tokio::process::{Child, Command};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
 use super::rpc::{self, Output};
@@ -34,6 +34,11 @@ const SET_CLIPBOARD: u8 = 9;
 const CONNECT_TRIES: u32 = 50;
 const CONNECT_PAUSE: Duration = Duration::from_millis(100);
 const PASTE_SETTLE: Duration = Duration::from_millis(300);
+const UI_JAR: &str = "/usr/local/share/cocoonbox/cb-ui.jar";
+const DEVICE_UI_JAR: &str = "/data/local/tmp/cb-ui.jar";
+const UI_CLASSPATH: &str = "CLASSPATH=/system/framework/uiautomator.jar:/data/local/tmp/cb-ui.jar";
+const UI_TIMEOUT: Duration = Duration::from_secs(10);
+const UI_END: &str = "<<end>>";
 const KEYS: [(&str, u32); 14] = [
     ("back", 4),
     ("home", 3),
@@ -55,6 +60,7 @@ const KEYS: [(&str, u32); 14] = [
 pub struct Android {
     adb: PathBuf,
     rects: Mutex<HashMap<String, Vec<Rect>>>,
+    ui: Mutex<Option<UiServer>>,
 }
 
 impl Android {
@@ -63,6 +69,7 @@ impl Android {
         Self {
             adb,
             rects: Mutex::new(HashMap::new()),
+            ui: Mutex::new(None),
         }
     }
 
@@ -232,8 +239,62 @@ impl Android {
         self.adb(&argv).await.map(drop)
     }
 
-    /// `uiautomator dump` of the screen, retried once while the screen animates.
+    /// The active window's UI tree from the image's UI server, else from `uiautomator dump`.
     async fn dump(&self) -> Result<String, String> {
+        match self.served().await {
+            Ok(tree) => Ok(tree),
+            Err(e) => {
+                eprintln!("android: UI server: {e}; falling back to uiautomator dump");
+                self.uiautomator().await
+            }
+        }
+    }
+
+    /// One dump of the persistent UI server, started on first use; a failed server is dropped.
+    async fn served(&self) -> Result<String, String> {
+        let mut slot = self.ui.lock().await;
+        if slot.is_none() {
+            *slot = Some(self.start_ui().await?);
+        }
+        let server = slot.as_mut().ok_or("UI server missing")?;
+        let tree = tokio::time::timeout(UI_TIMEOUT, server.dump())
+            .await
+            .unwrap_or_else(|_| Err("timed out".to_owned()));
+        if tree.is_err() {
+            *slot = None;
+        }
+        tree
+    }
+
+    async fn start_ui(&self) -> Result<UiServer, String> {
+        self.adb(&["push", UI_JAR, DEVICE_UI_JAR]).await?;
+        let mut cmd = Command::new(&self.adb);
+        cmd.args(["shell", UI_CLASSPATH, "app_process", "/", "cb.Ui"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        crate::sys::unprotect(&mut cmd);
+        let mut child = cmd.spawn().map_err(|e| format!("run UI server: {e}"))?;
+        let stdin = child.stdin.take().ok_or("UI server stdin")?;
+        let mut stdout = BufReader::new(child.stdout.take().ok_or("UI server stdout")?);
+        let mut ready = String::new();
+        tokio::time::timeout(UI_TIMEOUT, stdout.read_line(&mut ready))
+            .await
+            .map_err(|_| "UI server start timed out".to_owned())?
+            .map_err(|e| format!("read UI server: {e}"))?;
+        if ready.trim() != "ready" {
+            return Err(format!("UI server said {:?}", ready.trim()));
+        }
+        Ok(UiServer {
+            _child: child,
+            stdin,
+            stdout,
+        })
+    }
+
+    /// `uiautomator dump` of the screen, retried once while the screen animates.
+    async fn uiautomator(&self) -> Result<String, String> {
         let mut last = String::new();
         for _ in 0..2 {
             let out = self
@@ -323,6 +384,38 @@ impl Android {
                 out.status,
                 String::from_utf8_lossy(&out.stderr).trim()
             ))
+        }
+    }
+}
+
+/// The image's UI server (`image/android/ui`) in Android, one dump per request line; dropping it stops the server.
+struct UiServer {
+    _child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl UiServer {
+    async fn dump(&mut self) -> Result<String, String> {
+        self.stdin
+            .write_all(b"dump\n")
+            .await
+            .map_err(|e| format!("ask UI server: {e}"))?;
+        let mut tree = String::new();
+        loop {
+            let mut line = String::new();
+            let n = self
+                .stdout
+                .read_line(&mut line)
+                .await
+                .map_err(|e| format!("read UI server: {e}"))?;
+            if n == 0 {
+                return Err("UI server exited".to_owned());
+            }
+            if line.trim_end() == UI_END {
+                return Ok(tree);
+            }
+            tree.push_str(&line);
         }
     }
 }
@@ -433,7 +526,7 @@ fn elements(xml: &str) -> Vec<Element> {
             let desc = attr("content-desc");
             let clickable = attr("clickable") == "true" || attr("long-clickable") == "true";
             let class = attr("class");
-            let editable = class.ends_with("EditText");
+            let editable = attr("editable") == "true" || class.ends_with("EditText");
             if text.is_empty() && desc.is_empty() && !clickable && !editable {
                 return None;
             }
