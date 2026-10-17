@@ -875,7 +875,8 @@ async function run(s: Step, rec: Rec) {
   const lines = ((await desk.read(f.id, { text: true })).value ?? '').includes('\n')
   if (hit.how.startsWith('jev') && lines) throw new Surprise(`"${target}" is closest to a multi-line text (${hit.how}), and set would replace all of it: wait for the window with that field, or name it exactly`, await seen())
   t0 = Date.now()
-  await desk.act(f.id, 'focus'); if (f.role === 'textbox' && !lines) await selectLine(); else await desk.key(SELECT_ALL); if (value) await desk.typeText(value); else await desk.key('delete'); if (hit.n.role === 'spinbutton' || hit.n.role === 'slider') { await desk.key('tab'); await desk.key('shift+tab') }
+  if (!(await desk.act(f.id, 'focus')).ok) throw new Surprise(`"${target}" takes no focus, and set would type into another field`, await seen())
+  if (f.role === 'textbox' && !lines) await selectLine(); else await desk.key(SELECT_ALL); if (value) await desk.typeText(value); else await desk.key('delete'); if (hit.n.role === 'spinbutton' || hit.n.role === 'slider') { await desk.key('tab'); await desk.key('shift+tab') }
   tick('act', t0)
   t0 = Date.now(); let got: string | undefined
   for (let i = 0; i < 10; i++) { try { got = (await desk.read(f.id)).value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); got = undefined }; if (same(got)) break; await sleep(40) }
