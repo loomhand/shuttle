@@ -49,8 +49,8 @@ impl Runner {
         Self::new(node, runtime, endpoint, key_vars)
     }
 
-    /// `script_run`: one module, `code` or the absolute file `script`; its `main(params)` value comes back as `result`.
-    pub async fn script(&self, args: Value) -> Result<Value, String> {
+    /// `script_run` for `agent`: one module, `code` or the absolute file `script`; its `main(params)` value comes back as `result`.
+    pub async fn script(&self, args: Value, agent: &str) -> Result<Value, String> {
         let a: ScriptArgs =
             serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
         let scratch = scratch()?;
@@ -69,12 +69,12 @@ impl Runner {
             _ => return Err("pass code or script".to_owned()),
         };
         let params = a.params.unwrap_or_else(|| json!({}));
-        self.run(&script, &params, a.timeout_s, scratch.path())
+        self.run(&script, &params, a.timeout_s, scratch.path(), agent)
             .await
     }
 
-    /// `gui_plan`: the plan executor of the runtime with `args`; its result comes back as is.
-    pub async fn plan(&self, args: Value) -> Result<Value, String> {
+    /// `gui_plan` for `agent`: the plan executor of the runtime with `args`; its result comes back as is.
+    pub async fn plan(&self, args: Value, agent: &str) -> Result<Value, String> {
         let timeout_s = args.get("timeout_s").and_then(Value::as_u64);
         let scratch = scratch()?;
         let mut report = self
@@ -83,6 +83,7 @@ impl Runner {
                 &args,
                 timeout_s,
                 scratch.path(),
+                agent,
             )
             .await?;
         match report["error"]["message"].as_str() {
@@ -97,6 +98,7 @@ impl Runner {
         params: &Value,
         timeout_s: Option<u64>,
         scratch: &Path,
+        agent: &str,
     ) -> Result<Value, String> {
         let body = serde_json::to_vec(params).map_err(|e| format!("encode params: {e}"))?;
         write_private(&scratch.join("params.json"), &body)
@@ -111,6 +113,7 @@ impl Runner {
             .env("TOOLHOST_SOCKET", &self.endpoint)
             .env("SHUTTLE_SCRIPT", script)
             .env("SHUTTLE_RUN", scratch)
+            .env("SHUTTLE_AGENT", agent)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -257,14 +260,14 @@ mod tests {
         let r = runner(dir.path());
         let code = "console.log('hi')\nexport function main({ n = 0 }) { return { n: n + 1, desk: globalThis.desk.here } }";
         let report = r
-            .script(json!({"code": code, "params": {"n": 1}}))
+            .script(json!({"code": code, "params": {"n": 1}}), "run-test")
             .await
             .unwrap();
         assert_eq!(report["result"], json!({"n": 2, "desk": true}), "{report}");
         assert_eq!(report["logs"], "hi\n");
         assert_eq!(report["exit_code"], 0);
         assert!(report.get("error").is_none());
-        let defaulted = r.script(json!({"code": code})).await.unwrap();
+        let defaulted = r.script(json!({"code": code}), "run-test").await.unwrap();
         assert_eq!(defaulted["result"]["n"], 1, "{defaulted}");
     }
 
@@ -273,30 +276,35 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let r = runner(dir.path());
         let thrown = r
-            .script(json!({"code": "export function main() { throw new TypeError('nope') }"}))
+            .script(
+                json!({"code": "export function main() { throw new TypeError('nope') }"}),
+                "run-test",
+            )
             .await
             .unwrap();
         assert_eq!(thrown["error"]["kind"], "exception");
         let stack = thrown["error"]["message"].as_str().unwrap();
         assert!(stack.starts_with("TypeError: nope\n    at main"), "{stack}");
         let no_main = r
-            .script(json!({"code": "export const x = 1"}))
+            .script(json!({"code": "export const x = 1"}), "run-test")
             .await
             .unwrap();
         assert_eq!(no_main["error"]["kind"], "no_main", "{no_main}");
         let broken = r
-            .script(json!({"code": "export function main( {"}))
+            .script(json!({"code": "export function main( {"}), "run-test")
             .await
             .unwrap();
         assert_eq!(broken["error"]["kind"], "import", "{broken}");
         assert!(broken["result"].is_null());
-        let slow = r
-            .script(json!({"code": "console.log('started')\nexport async function main() { await new Promise((r) => setTimeout(r, 5000)) }", "timeout_s": 1}))
+        let slow = r.script(json!({"code": "console.log('started')\nexport async function main() { await new Promise((r) => setTimeout(r, 5000)) }", "timeout_s": 1}), "run-test")
             .await
             .unwrap();
         assert_eq!(slow["error"]["kind"], "timeout");
         assert_eq!(slow["logs"], "started\n");
-        let relative = r.script(json!({"script": "x.mts"})).await.unwrap_err();
+        let relative = r
+            .script(json!({"script": "x.mts"}), "run-test")
+            .await
+            .unwrap_err();
         assert_eq!(relative, "script x.mts is not an absolute path");
     }
 
@@ -308,7 +316,7 @@ mod tests {
         let r = runner(dir.path());
         let code = "import { spawn } from 'node:child_process'\nconst same = spawn('sleep', ['30'], { stdio: 'inherit' })\nconst away = spawn('sleep', ['30'], { stdio: 'inherit', detached: true })\nconsole.log(`${same.pid} ${away.pid}`)\nexport async function main() { await new Promise((r) => setTimeout(r, 5000)) }";
         let report = r
-            .script(json!({"code": code, "timeout_s": 1}))
+            .script(json!({"code": code, "timeout_s": 1}), "run-test")
             .await
             .unwrap();
         assert_eq!(report["error"]["kind"], "timeout", "{report}");
@@ -347,7 +355,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let r = runner(dir.path());
         let code = "import { statSync } from 'node:fs'\nexport function main() { const run = process.env.SHUTTLE_RUN; return [statSync(run).mode & 0o777, statSync(`${run}/params.json`).mode & 0o777, statSync(`${run}/script.mts`).mode & 0o777] }";
-        let report = r.script(json!({"code": code})).await.unwrap();
+        let report = r.script(json!({"code": code}), "run-test").await.unwrap();
         let modes: Vec<u32> = serde_json::from_value(report["result"].clone()).unwrap();
         assert_eq!(modes, [0o700, 0o600, 0o600], "{report}");
     }
@@ -358,7 +366,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let r = runner(dir.path());
         let out = r
-            .plan(json!({"steps": [{"app": "TextEdit"}, {"key": "cmd+n"}]}))
+            .plan(
+                json!({"steps": [{"app": "TextEdit"}, {"key": "cmd+n"}]}),
+                "run-test",
+            )
             .await
             .unwrap();
         assert_eq!(

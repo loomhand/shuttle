@@ -99,7 +99,7 @@ function exchange(tool: string, args: Record<string, unknown>): Promise<Output> 
     const socket = process.env.TOOLHOST_SOCKET
     if (!socket) return reject(new Error('TOOLHOST_SOCKET names no toolhost socket'))
     const s = createConnection(socket)
-    const body = Buffer.from(JSON.stringify({ agent_id: 'desk', tool, args }))
+    const body = Buffer.from(JSON.stringify({ agent_id: process.env.SHUTTLE_AGENT ?? 'desk', tool, args }))
     const head = Buffer.alloc(4)
     head.writeUInt32BE(body.length)
     let buf = Buffer.alloc(0)
