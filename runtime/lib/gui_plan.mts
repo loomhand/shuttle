@@ -773,7 +773,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     if (w && isChooser(o)) { rec.submit = true; await submit(w, true); return }
     const t0 = Date.now(); await desk.key(s.key); tick('act', t0)
-    if (w && /\b(ctrl|control|alt)\+|^f\d+$/i.test(s.key)) pressed = { title: w.title, at: Date.now() }
+    pressed = w && /\b(ctrl|control|alt|cmd|command|meta|super)\+|^f\d+$/i.test(s.key) ? { title: w.title, at: Date.now() } : null
     if (w && isDialog(o) && await closed(w.title, w.pid)) rec.submit = true
     return
   }
