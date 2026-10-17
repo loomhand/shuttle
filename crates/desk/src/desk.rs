@@ -881,6 +881,16 @@ mod tests {
     }
 
     #[test]
+    fn a_macos_menu_entry_runs_its_action_without_opening_its_menu() {
+        let mut f = notepad();
+        assert_eq!(
+            plan_press(&mut f, "save", Os::Mac).unwrap(),
+            Press::Acted(true)
+        );
+        assert_eq!(f.acts, [("save".to_owned(), Act::Action)]);
+    }
+
+    #[test]
     fn a_windows_menu_entry_runs_its_action() {
         let mut f = notepad();
         assert_eq!(
