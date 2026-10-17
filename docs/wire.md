@@ -39,6 +39,10 @@ Desk calls name `desk_<verb>` tools:
 | `shot` | `x?`, `y?`, `w?`, `h?` | `width` and `height`, with the PNG of the screen or a rectangle in `image_b64` |
 | `screen` | | `width` and `height` in pixels |
 
+## Runs
+
+`script_run` (`code` or an absolute `script` path, which the MCP server resolves against the agent's working directory; `params`, default `{}`; `timeout_s` up to 110, default 90) runs one module on the bundled Node, with the desk API as the global `desk`, and answers `{result, logs, stderr, exit_code, duration_ms, error?: {kind: exception | timeout, message}}`. `gui_plan` runs the runtime's plan executor with its arguments and answers the plan's result. Both run with `TOOLHOST_SOCKET` naming the daemon's endpoint and without the model key variable (`api_key_env`); logs and stderr keep their first 32 KiB.
+
 ## Model calls
 
 The daemon answers these with the providers of [config.md](config.md) (`crates/models`; the daemon routes them from P1), so a script calls a model without holding a key. Each reply carries `usage`: `{model, input_tokens, output_tokens, cached_tokens}`.

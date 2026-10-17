@@ -1,0 +1,264 @@
+//! Scripts and GUI plans on the bundled Node runtime, each run in its own scratch directory with the desk API at hand.
+
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::{Duration, Instant};
+
+use serde::Deserialize;
+use serde_json::{Value, json};
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::process::Command;
+
+const DEFAULT_TIMEOUT_S: u64 = 90;
+const MAX_TIMEOUT_S: u64 = 110;
+const MAX_OUTPUT: usize = 32 << 10;
+const PIPE_GRACE: Duration = Duration::from_millis(500);
+
+/// Runs modules with `node` and the runtime in `runtime`, desk calls going to the daemon at `endpoint`; the model key
+/// variable `key_var` stays out of the scripts' environment.
+#[derive(Debug)]
+pub struct Runner {
+    node: PathBuf,
+    runtime: PathBuf,
+    endpoint: String,
+    key_var: String,
+}
+
+impl Runner {
+    /// A runner of `node` and the runtime directory `runtime`.
+    pub fn new(node: PathBuf, runtime: PathBuf, endpoint: String, key_var: String) -> Self {
+        Self {
+            node,
+            runtime,
+            endpoint,
+            key_var,
+        }
+    }
+
+    /// The runner of a release install: Node and the runtime next to `exe`, or in the app bundle's Resources.
+    pub fn beside(exe: &Path, endpoint: String, key_var: String) -> Self {
+        let dir = exe.parent().unwrap_or(Path::new("."));
+        let node = dir.join(if cfg!(windows) { "node.exe" } else { "node" });
+        let runtime = [dir.join("runtime"), dir.join("../Resources/runtime")]
+            .into_iter()
+            .find(|p| p.is_dir())
+            .unwrap_or_else(|| dir.join("runtime"));
+        Self::new(node, runtime, endpoint, key_var)
+    }
+
+    /// `script_run`: one module, `code` or the absolute file `script`; its `main(params)` value comes back as `result`.
+    pub async fn script(&self, args: Value) -> Result<Value, String> {
+        let a: ScriptArgs =
+            serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
+        let scratch =
+            tempfile::tempdir().map_err(|e| format!("create a scratch directory: {e}"))?;
+        let script = match (a.code, a.script) {
+            (Some(code), None) => {
+                let path = scratch.path().join("script.mts");
+                tokio::fs::write(&path, code)
+                    .await
+                    .map_err(|e| format!("write the script: {e}"))?;
+                path
+            }
+            (None, Some(path)) if path.is_absolute() => path,
+            (None, Some(path)) => {
+                return Err(format!("script {} is not an absolute path", path.display()));
+            }
+            _ => return Err("pass code or script".to_owned()),
+        };
+        let params = a.params.unwrap_or_else(|| json!({}));
+        self.run(&script, &params, a.timeout_s, scratch.path())
+            .await
+    }
+
+    /// `gui_plan`: the plan executor of the runtime with `args`; its result comes back as is.
+    pub async fn plan(&self, args: Value) -> Result<Value, String> {
+        let timeout_s = args.get("timeout_s").and_then(Value::as_u64);
+        let scratch =
+            tempfile::tempdir().map_err(|e| format!("create a scratch directory: {e}"))?;
+        let mut report = self
+            .run(
+                &self.runtime.join("gui_plan.mts"),
+                &args,
+                timeout_s,
+                scratch.path(),
+            )
+            .await?;
+        match report["error"]["message"].as_str() {
+            Some(e) => Err(format!("gui_plan: {e}")),
+            None => Ok(report["result"].take()),
+        }
+    }
+
+    async fn run(
+        &self,
+        script: &Path,
+        params: &Value,
+        timeout_s: Option<u64>,
+        scratch: &Path,
+    ) -> Result<Value, String> {
+        let body = serde_json::to_vec(params).map_err(|e| format!("encode params: {e}"))?;
+        tokio::fs::write(scratch.join("params.json"), body)
+            .await
+            .map_err(|e| format!("write params: {e}"))?;
+        let timeout =
+            Duration::from_secs(timeout_s.unwrap_or(DEFAULT_TIMEOUT_S).min(MAX_TIMEOUT_S));
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+        let mut cmd = Command::new(&self.node);
+        cmd.arg(self.runtime.join("entry.mts"))
+            .current_dir(home.map_or_else(|| scratch.to_path_buf(), PathBuf::from))
+            .env("TOOLHOST_SOCKET", &self.endpoint)
+            .env("SHUTTLE_SCRIPT", script)
+            .env("SHUTTLE_RUN", scratch)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env_remove(&self.key_var)
+            .kill_on_drop(true);
+        let started = Instant::now();
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("start {}: {e}", self.node.display()))?;
+        let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
+            return Err("the script's pipes are missing".to_owned());
+        };
+        let (logs, stderr) = (tokio::spawn(capture(out)), tokio::spawn(capture(err)));
+        let status = tokio::time::timeout(timeout, child.wait()).await;
+        if status.is_err() {
+            let _ = child.kill().await;
+        }
+        let collect = async {
+            (
+                logs.await.unwrap_or_default(),
+                stderr.await.unwrap_or_default(),
+            )
+        };
+        let (logs, stderr) = tokio::time::timeout(PIPE_GRACE, collect)
+            .await
+            .unwrap_or_default();
+        let mut report = json!({
+            "duration_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "logs": logs,
+            "stderr": stderr,
+        });
+        match status {
+            Err(_) => {
+                report["error"] = json!({"kind": "timeout", "message": format!("the run passed {}s and was stopped", timeout.as_secs())});
+            }
+            Ok(status) => {
+                let status = status.map_err(|e| format!("wait for the script: {e}"))?;
+                report["exit_code"] = status.code().into();
+                if !status.success() {
+                    let thrown = tokio::fs::read_to_string(scratch.join("error.txt")).await;
+                    let message = thrown.unwrap_or_else(|_| format!("node exited with {status}"));
+                    report["error"] = json!({"kind": "exception"});
+                    report["error"]["message"] = message.into();
+                }
+            }
+        }
+        report["result"] = match tokio::fs::read(scratch.join("result.json")).await {
+            Ok(raw) => serde_json::from_slice(&raw)
+                .unwrap_or_else(|_| String::from_utf8_lossy(&raw).into_owned().into()),
+            Err(_) => Value::Null,
+        };
+        Ok(report)
+    }
+}
+
+#[derive(Deserialize)]
+struct ScriptArgs {
+    code: Option<String>,
+    script: Option<PathBuf>,
+    params: Option<Value>,
+    timeout_s: Option<u64>,
+}
+
+async fn capture(mut r: impl AsyncRead + Unpin) -> String {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    while let Ok(n) = r.read(&mut chunk).await {
+        if n == 0 {
+            break;
+        }
+        if buf.len() < MAX_OUTPUT {
+            buf.extend_from_slice(&chunk[..n.min(MAX_OUTPUT - buf.len())]);
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn runner(dir: &Path) -> Runner {
+        let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib/entry.mts");
+        std::fs::copy(lib, dir.join("entry.mts")).unwrap();
+        std::fs::write(dir.join("desk.mts"), "export const here = true\n").unwrap();
+        std::fs::write(
+            dir.join("gui_plan.mts"),
+            "export async function main(p) { return { ok: true, steps: p.steps.length, socket: process.env.TOOLHOST_SOCKET, home: process.env.HOME === undefined } }\n",
+        )
+        .unwrap();
+        Runner::new(
+            "node".into(),
+            dir.to_path_buf(),
+            "/tmp/desk.sock".into(),
+            "HOME".into(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_script_main_returns_its_value_with_the_logs_and_the_desk_api_at_hand() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = runner(dir.path());
+        let code = "console.log('hi')\nexport function main({ n = 0 }) { return { n: n + 1, desk: globalThis.desk.here } }";
+        let report = r
+            .script(json!({"code": code, "params": {"n": 1}}))
+            .await
+            .unwrap();
+        assert_eq!(report["result"], json!({"n": 2, "desk": true}), "{report}");
+        assert_eq!(report["logs"], "hi\n");
+        assert_eq!(report["exit_code"], 0);
+        assert!(report.get("error").is_none());
+        let defaulted = r.script(json!({"code": code})).await.unwrap();
+        assert_eq!(defaulted["result"]["n"], 1, "{defaulted}");
+    }
+
+    #[tokio::test]
+    async fn a_throwing_script_reports_its_error_and_a_slow_one_the_timeout_with_its_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = runner(dir.path());
+        let thrown = r
+            .script(json!({"code": "export function main() { throw new TypeError('nope') }"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            thrown["error"],
+            json!({"kind": "exception", "message": "TypeError: nope"})
+        );
+        let slow = r
+            .script(json!({"code": "console.log('started')\nexport async function main() { await new Promise((r) => setTimeout(r, 5000)) }", "timeout_s": 1}))
+            .await
+            .unwrap();
+        assert_eq!(slow["error"]["kind"], "timeout");
+        assert_eq!(slow["logs"], "started\n");
+        let relative = r.script(json!({"script": "x.mts"})).await.unwrap_err();
+        assert_eq!(relative, "script x.mts is not an absolute path");
+    }
+
+    #[tokio::test]
+    async fn a_plan_runs_the_runtime_plan_executor_with_the_daemon_socket_and_no_hidden_variables()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let r = runner(dir.path());
+        let out = r
+            .plan(json!({"steps": [{"app": "TextEdit"}, {"key": "cmd+n"}]}))
+            .await
+            .unwrap();
+        assert_eq!(
+            out,
+            json!({"ok": true, "steps": 2, "socket": "/tmp/desk.sock", "home": true})
+        );
+    }
+}

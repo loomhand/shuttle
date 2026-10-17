@@ -4,6 +4,7 @@ pub mod cli;
 pub mod daemon;
 pub mod mcp;
 pub mod proxy;
+pub mod runner;
 pub mod tools;
 
 /// The program name in usage lines, endpoints and the MCP server info.

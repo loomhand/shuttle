@@ -1,4 +1,4 @@
-//! The daemon's handler: model calls answered with the configured providers, every other call by this OS's desk.
+//! The daemon's handler: model calls with the configured providers, scripts and plans on the runtime, desk calls by this OS's desk.
 
 use desk_core::args::parse;
 use desk_core::wire::{Call, Output};
@@ -7,16 +7,23 @@ use serde_json::Value;
 use shuttle_desk::server::Handler;
 use shuttle_models::Models;
 
-/// Answers `model_*` calls with `models` and the rest with `desk`.
+use crate::runner::Runner;
+
+/// Answers `model_*` calls with `models`, `gui_plan` and `script_run` with `runner`, and the rest with `desk`.
 pub struct Daemon<H> {
     desk: H,
     models: Result<Models, String>,
+    runner: Runner,
 }
 
 impl<H> Daemon<H> {
     /// A daemon whose model calls fail with the configuration's error while desk calls still work.
-    pub fn new(desk: H, models: Result<Models, String>) -> Self {
-        Self { desk, models }
+    pub fn new(desk: H, models: Result<Models, String>, runner: Runner) -> Self {
+        Self {
+            desk,
+            models,
+            runner,
+        }
     }
 
     async fn model(&self, tool: &str, args: Value) -> Result<String, String> {
@@ -32,12 +39,13 @@ impl<H> Daemon<H> {
 
 impl<H: Handler> Handler for Daemon<H> {
     async fn answer(&self, call: Call) -> Output {
-        if !call.tool.starts_with("model_") {
-            return self.desk.answer(call).await;
-        }
-        self.model(&call.tool, call.args)
-            .await
-            .map_or_else(Output::error, Output::text)
+        let out = match call.tool.as_str() {
+            "gui_plan" => self.runner.plan(call.args).await.and_then(|v| encode(&v)),
+            "script_run" => self.runner.script(call.args).await.and_then(|v| encode(&v)),
+            t if t.starts_with("model_") => self.model(t, call.args).await,
+            _ => return self.desk.answer(call).await,
+        };
+        out.map_or_else(Output::error, Output::text)
     }
 }
 
@@ -60,13 +68,18 @@ mod tests {
         }
     }
 
+    fn runner() -> Runner {
+        let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
+        Runner::new("node".into(), runtime, "unused".into(), "UNUSED_KEY".into())
+    }
+
     #[tokio::test]
     async fn model_calls_go_to_the_providers_and_the_rest_to_the_desk() {
         let closed = Config {
             base_url: "http://127.0.0.1:9/v1".to_owned(),
             ..Config::default()
         };
-        let d = Daemon::new(Echo, Ok(Models::new(closed)));
+        let d = Daemon::new(Echo, Ok(Models::new(closed)), runner());
         let ask = |tool: &str, args: Value| Call {
             agent_id: "desk".into(),
             tool: tool.into(),
@@ -95,7 +108,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_broken_config_fails_model_calls_and_leaves_the_desk_working() {
-        let d = Daemon::new(Echo, Err("config.toml line 3: invalid type".to_owned()));
+        let d = Daemon::new(
+            Echo,
+            Err("config.toml line 3: invalid type".to_owned()),
+            runner(),
+        );
         let call = |tool: &str| Call {
             agent_id: String::new(),
             tool: tool.into(),
@@ -107,5 +124,19 @@ mod tests {
             (true, "config.toml line 3: invalid type")
         );
         assert!(!d.answer(call("desk_screen")).await.is_error);
+    }
+
+    #[tokio::test]
+    async fn script_run_goes_to_the_runner() {
+        let d = Daemon::new(Echo, Ok(Models::new(Config::default())), runner());
+        let out = d
+            .answer(Call {
+                agent_id: String::new(),
+                tool: "script_run".into(),
+                args: json!({"code": "export function main() { return 42 }"}),
+            })
+            .await;
+        let report: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(report["result"], 42, "{report}");
     }
 }

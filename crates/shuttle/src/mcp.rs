@@ -179,18 +179,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_not_run_yet_answer_a_tool_error() {
-        let out = session(
-            &[json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "gui_plan", "arguments": {"steps": []}}})],
-            "unused",
-        )
-        .await;
-        assert_eq!(out[0]["result"]["isError"], true);
-        let text = out[0]["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("does not run it yet"), "{text}");
-    }
-
-    #[tokio::test]
     async fn bad_requests_get_json_rpc_errors() {
         let input = "not json\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"nope\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"rm\"}}\n{\"jsonrpc\":\"2.0\",\"id\":3}\n";
         let out = exchange(input, "unused").await;

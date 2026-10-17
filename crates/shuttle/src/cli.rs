@@ -10,6 +10,7 @@ use shuttle_models::Models;
 use shuttle_models::config::{Config, default_path};
 
 use crate::daemon::Daemon;
+use crate::runner::Runner;
 use crate::tools::DESK_VERBS;
 use crate::{NAME, VERSION, mcp};
 
@@ -103,8 +104,20 @@ fn call_desk(rest: &[String]) -> ExitCode {
 }
 
 async fn serve(endpoint: &str) -> Result<(), String> {
-    let models = Config::load(&default_path(NAME)).map(Models::new);
-    server::serve(Arc::new(Daemon::new(server::native(), models)), endpoint).await
+    let config = Config::load(&default_path(NAME));
+    let key_var = config
+        .as_ref()
+        .map_or_else(|_| Config::default().api_key_env, |c| c.api_key_env.clone());
+    let models = config.map(Models::new);
+    let exe = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .map_err(|e| format!("locate this program: {e}"))?;
+    let runner = Runner::beside(&exe, endpoint.to_owned(), key_var);
+    server::serve(
+        Arc::new(Daemon::new(server::native(), models, runner)),
+        endpoint,
+    )
+    .await
 }
 
 fn usage() -> ExitCode {
