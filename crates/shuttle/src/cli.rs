@@ -1,11 +1,13 @@
 //! The command line: `mcp`, `serve`, `desk VERB` and `--version`.
 
 use std::io::Write as _;
-use std::process::ExitCode;
+use std::path::Path;
+use std::process::{ExitCode, Stdio};
 use std::sync::Arc;
 
 use desk_core::text::cli_args;
 use desk_core::wire::Call;
+use shuttle_desk::driver::Driver;
 use shuttle_desk::server;
 use shuttle_models::Models;
 use shuttle_models::config::{Config, default_path};
@@ -15,6 +17,8 @@ use crate::daemon::Daemon;
 use crate::runner::Runner;
 use crate::tools::DESK_VERBS;
 use crate::{NAME, VERSION, mcp};
+
+const DRIVER_TELEMETRY: &str = "CUA_DRIVER_RS_TELEMETRY_ENABLED";
 
 /// Runs the command in `args` (the program name excluded) and returns its exit code.
 pub fn run(args: &[String]) -> ExitCode {
@@ -89,6 +93,7 @@ async fn serve(endpoint: &str) -> Result<(), String> {
     let exe = std::env::current_exe()
         .and_then(std::fs::canonicalize)
         .map_err(|e| format!("locate this program: {e}"))?;
+    start_driver(&exe).await;
     let runner = Runner::beside(
         &exe,
         endpoint.to_owned(),
@@ -100,6 +105,27 @@ async fn serve(endpoint: &str) -> Result<(), String> {
         endpoint,
     )
     .await
+}
+
+async fn start_driver(exe: &Path) {
+    let driver = exe.with_file_name(if cfg!(windows) {
+        "cua-driver.exe"
+    } else {
+        "cua-driver"
+    });
+    if !driver.is_file() || server::connect(&Driver::default_endpoint()).await.is_ok() {
+        return;
+    }
+    let started = std::process::Command::new(&driver)
+        .arg("serve")
+        .env(DRIVER_TELEMETRY, "false")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    if let Err(e) = started {
+        eprintln!("{NAME}: start {}: {e}", driver.display());
+    }
 }
 
 fn block_on<T>(
