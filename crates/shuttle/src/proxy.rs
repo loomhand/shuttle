@@ -57,7 +57,7 @@ async fn start(endpoint: &str) -> Result<Option<Child>, String> {
     if let Some(app) = app_bundle(&exe) {
         // TCC attributes a daemon LaunchServices starts to its app, not to the terminal or agent that runs `mcp`
         let status = Command::new("open")
-            .args(["-g", "-a"])
+            .args(["-n", "-g", "-a"])
             .arg(app)
             .args(["--args", "serve", endpoint])
             .status()
