@@ -1,10 +1,14 @@
 {
   "compilerOptions": {
     "target": "es2024",
-    "lib": ["es2024"],
+    "lib": [
+      "es2024"
+    ],
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noEmit": true,
@@ -13,5 +17,8 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true
   },
-  "include": ["lib/desk.mts", "test/desk.test.mts"]
+  "include": [
+    "lib",
+    "test/desk.test.mts"
+  ]
 }

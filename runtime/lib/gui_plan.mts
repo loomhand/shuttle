@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statS
 import { homedir } from 'node:os'
 import { crc32, deflateSync, inflateSync } from 'node:zlib'
 import * as desk from './desk.mts'
+import type { Win } from './desk.mts'
 
 type Step = {
   app?: string; title?: string; menu?: string; click?: string; check?: string; on?: boolean; set?: string; value?: string
@@ -15,7 +16,12 @@ type Hit = { n: Node; i: number; how: string; p?: number; margin?: number }
 type Flow = { name: string; params: Record<string, string>; steps: Step[]; idempotent: boolean; runs: number; saved_at: string; rewrites: number; usage?: desk.Usage }
 type Chain = { at: number; window: string | null; pid: number | null; name?: string; named?: boolean; params: Record<string, string>; steps: Step[]; dirty: boolean; saved?: boolean; escalated?: boolean; usage?: desk.Usage }
 type Params = { steps?: Step[]; flow?: string; params?: Record<string, string>; save?: string; start?: number; find?: string; reindex?: boolean; locate?: { target: string; press?: boolean } }
-type Win = desk.Win
+type Rec = {
+  i: number; op?: string; ms?: number; served?: unknown[]; how?: string; via?: string; window?: string; seen?: string; submit?: boolean
+  blank?: Fp; fp?: Fp; was?: boolean | null; now?: boolean; noop?: boolean; state?: string; opened?: number; path?: string[]; pick?: number[]
+  p?: number; p_zoom?: number | null; p_full?: number | null; verdict?: Vision; ground_hit?: string; checked?: string; value?: string; ref?: string; unsaved?: boolean
+}
+type Vision = { on?: boolean; ok?: boolean; why?: string }
 
 const OS = process.platform
 const FLOWS = OS === 'linux' ? '/workspace/flows' : `${homedir()}/workspace/flows`
@@ -59,28 +65,28 @@ class Surprise extends Error {
 }
 
 /** Runs {steps, params?, save?, start?}, {flow, params?, start?}, {save}, {find}, {reindex} or {locate}; returns {ok, done, ms, trace, saved?, escalate?}. */
-export async function main(p: Params) {
+export async function main(p: Params): Promise<Record<string, unknown>> {
   return { ...(await perform(p)), usage: desk.usage }
 }
 
-async function perform(p: Params) {
+async function perform(p: Params): Promise<Record<string, unknown>> {
   const t0 = Date.now()
   if (p.reindex) { repo(); writeIndex(); git('add', '-A'); git('commit', '-q', '-m', 'sync from the flow library'); return { ok: true } }
   if (p.find) return await find(p.find)
   if (p.locate) return await locate(p.locate.target, p.locate.press ?? false)
   if (p.save && !p.steps?.length && !p.flow) return await promote(p.save)
   let flow: Flow | null = null
-  try { if (p.flow) flow = loadFlow(p.flow) } catch (e) { return { ok: false, done: 0, ms: 0, escalate: { reason: (e as Error).message } } }
+  try { if (p.flow) flow = loadFlow(p.flow) } catch (e: unknown) { return { ok: false, done: 0, ms: 0, escalate: { reason: e instanceof Error ? e.message : String(e) } } }
   const params = { ...(flow?.params ?? {}), ...(p.params ?? {}) }
   const plan: Step[] = (flow ? flow.steps : p.steps ?? []).filter((s) => !Object.keys(s).every((k) => ['screenshot', 'timeout_s', 'max_edge'].includes(k)))
   if (!plan.length) return { ok: false, error: 'pass steps, flow or find' }
-  recording = !flow && !!plan[0].app && !p.start
+  recording = !flow && !!plan[0]?.app && !p.start
   // a plan sent again only to save it, while the window it left is still in front, would type again: it is saved from the last run instead
   if (p.save && !flow && !p.start && !idempotent(plan)) {
     let c: Chain | null = null
-    try { c = JSON.parse(readFileSync(PENDING, 'utf8')) } catch {}
+    try { c = JSON.parse(readFileSync(PENDING, 'utf8')) as Chain | null } catch {}
     const was = c?.steps.filter((s) => !s.close) ?? []; const now = plan.filter((s) => !s.close)
-    if (c && was.length === now.length && was.every((s, i) => bare(s, c.params) === bare(now[i], params))) {
+    if (c && was.length === now.length && was.every((s, i) => bare(s, c.params) === bare(now[i] ?? {}, params))) {
       const r = await promote(p.save, p.params, true)
       if (r.ok) return { ...r, ran: false, why: 'these steps passed in the last plan, so they were saved without running them again; call without save to run them' }
     }
@@ -90,34 +96,36 @@ async function perform(p: Params) {
   const startTitles = new Set(known)
   const start = await focused(); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
   const startAlert = !start?.title.trim() && isAlert(await outline(start))
-  const recs: Record<string, unknown>[] = []
+  const recs: Rec[] = []
   let escalate: Record<string, unknown> | null = null; let done = plan.length
   const bad = plan.findIndex((s) => OPS.filter((k) => k in s).length !== 1)
   if (bad >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: bad, plan_step: plan[bad], reason: `step ${bad} needs exactly one op of ${OPS.join(', ')}; nothing ran` } }
-  const unfilled = (s: Step) => Object.values(s).flatMap((v) => typeof v === 'string' ? [...v.matchAll(/\{\{(\w+)(?::base)?\}\}/g)].map((x) => x[1]) : []).find((n) => params[n] === undefined)
+  const unfilled = (s: Step) => Object.values(s).flatMap((v) => typeof v === 'string' ? [...v.matchAll(/\{\{(\w+)(?::base)?\}\}/g)].map((x) => x[1] ?? '') : []).find((n) => params[n] === undefined)
   const gap = plan.findIndex((s, i) => i >= (p.start ?? 0) && unfilled(s))
-  if (gap >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: plan[gap], reason: `no value for {{${unfilled(plan[gap])}}}: pass it in params; nothing ran` } }
-  for (let i = p.start ?? 0; i < plan.length; i++) {
-    const s = fill(plan[i], params); T = {}; const rec: Record<string, unknown> = { i, op: OPS.find((k) => k in s) }
+  const gapStep = plan[gap]
+  if (gapStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: gapStep, reason: `no value for {{${unfilled(gapStep)}}}: pass it in params; nothing ran` } }
+  for (const [i, planned] of plan.entries()) {
+    if (i < (p.start ?? 0)) continue
+    const s = fill(planned, params); T = {}; const rec: Rec = { i, op: OPS.find((k) => k in s) }
     const ts = Date.now(); const calls = desk.served.length
     try {
       const ws = await desk.windows(); const f = desk.front(ws)
       const m = s.close ? null : await hiddenModal(ws, f)
       if (m) throw new Surprise(modalBlocks(m), await seen())
       const o = f && (!known.has(f.title) || !f.title.trim()) && !(i === (p.start ?? 0) && startAlert) && !(s.window && norm(f.title).includes(norm(s.window))) ? await outline(f) : ''
-      if (blocked(o)) throw new Surprise(unanswered(f!.title), await seen())
-      if (isAlert(o)) throw new Surprise(`alert "${f!.title}" is in front`, await seen())
+      if (f && blocked(o)) throw new Surprise(unanswered(f.title), await seen())
+      if (f && isAlert(o)) throw new Surprise(`alert "${f.title}" is in front`, await seen())
       await run(s, rec)
-    } catch (e) {
-      const sp = e instanceof Surprise ? e : new Surprise(String((e as Error).message ?? e), await seen())
-      escalate = { step: i, plan_step: plan[i], reason: sp.reason, ...sp.seen }; done = i
+    } catch (e: unknown) {
+      const sp = e instanceof Surprise ? e : new Surprise(e instanceof Error ? e.message : String(e), await seen())
+      escalate = { step: i, plan_step: planned, reason: sp.reason, ...sp.seen }; done = i
     }
     rec.ms = Date.now() - ts; if (desk.served.length > calls) rec.served = desk.served.slice(calls)
     log.push({ ...rec, ...T }); recs[i] = rec
     trace.push({ i, op: rec.op, how: rec.how, ms: rec.ms, ...(rec.was !== undefined ? { was: rec.was ? 'on' : 'off', now: rec.noop || s.verify ? undefined : s.on === false ? 'off' : 'on' } : {}), ...(rec.now !== undefined ? { now: rec.now ? 'on' : 'off' } : {}), ...(rec.noop ? { noop: true } : {}) })
     if (escalate) break
   }
-  const last = plan.at(-1)!
+  const last = plan.at(-1) ?? {}
   let opened = false
   if (!escalate) {
     const ts = Date.now(); const was = (await focused())?.title
@@ -138,21 +146,21 @@ async function perform(p: Params) {
   if (flow) {
     try { writeFileSync(PENDING, 'null') } catch {}
     if (settled && recs.every((r) => !r?.unsaved)) {
-      const rewrites = recs.filter((r, i) => r?.fp && JSON.stringify(r.fp) !== JSON.stringify(flow.steps[i].fp))
+      const rewrites = recs.filter((r, i) => r?.fp && JSON.stringify(r.fp) !== JSON.stringify(flow.steps[i]?.fp))
       flow.runs += 1
       if (rewrites.length) {
-        recs.forEach((r, i) => { if (r?.fp) flow.steps[i].fp = r.fp as Fp; if (r?.seen) flow.steps[i].seen = r.seen as string })
+        recs.forEach((r, i) => { const st = flow.steps[i]; if (!st) return; if (r?.fp) st.fp = r.fp; if (r?.seen) st.seen = r.seen })
         flow.rewrites += 1; flow.saved_at = new Date().toISOString(); saveFlow(flow, `replay re-resolved ${rewrites.length} step(s)`)
       }
       saved = flow.name
     }
   } else {
     // a task done over several calls is one chain: it starts at a call whose first step is an app, and later calls extend it from the window it left
-    const ran = plan.slice(p.start ?? 0, done).map((s, k) => { const r = recs[(p.start ?? 0) + k]; const o: Step = { ...s }; if (r?.fp) o.fp = r.fp as Fp; if (r?.seen && !s.app) o.seen = r.seen as string; if (r?.blank) o.blank = r.blank as Fp; return o })
+    const ran = plan.slice(p.start ?? 0, done).map((s, k) => { const r = recs[(p.start ?? 0) + k]; const o: Step = { ...s }; if (r?.fp) o.fp = r.fp; if (r?.seen && !s.app) o.seen = r.seen; if (r?.blank) o.blank = r.blank; return o })
     const dirty = recs.some((r) => r?.unsaved)
     let chain: Chain | null = null; let prev: Chain | null = null
-    try { prev = JSON.parse(readFileSync(PENDING, 'utf8')) } catch {}
-    if (plan[0].app && !(p.start ?? 0)) chain = { at: Date.now(), window: null, pid: null, params: { ...(p.params ?? {}) }, steps: ran, dirty, usage: plus({}, desk.usage) }
+    try { prev = JSON.parse(readFileSync(PENDING, 'utf8')) as Chain | null } catch {}
+    if (plan[0]?.app && !(p.start ?? 0)) chain = { at: Date.now(), window: null, pid: null, params: { ...(p.params ?? {}) }, steps: ran, dirty, usage: plus({}, desk.usage) }
     else if (prev && Date.now() - prev.at < CHAIN_AGE && (prev.window === startWindow || (prev.pid !== null && prev.pid === startPid))) chain = { ...prev, at: Date.now(), params: { ...prev.params, ...(p.params ?? {}) }, steps: [...prev.steps, ...ran], dirty: prev.dirty || dirty, usage: plus(prev.usage, desk.usage) }
     if (chain) {
       if (p.save) { chain.name = slug(p.save); chain.named = true }
@@ -166,7 +174,7 @@ async function perform(p: Params) {
     } else if (prev) try { writeFileSync(PENDING, JSON.stringify({ ...prev, saved: false, escalated: false })) } catch {}
   }
   const ms = Date.now() - t0
-  try { mkdirSync(FLOWS, { recursive: true }); appendFileSync(LOG, JSON.stringify({ at: new Date().toISOString(), flow: p.flow ?? null, ok: !escalate, ms, jevs, saved: saved ?? null, usage: desk.usage, steps: log }) + '\n') } catch {}
+  try { mkdirSync(FLOWS, { recursive: true }); appendFileSync(LOG, `${JSON.stringify({ at: new Date().toISOString(), flow: p.flow ?? null, ok: !escalate, ms, jevs, saved: saved ?? null, usage: desk.usage, steps: log })}\n`) } catch {}
   const out: Record<string, unknown> = { ok: !escalate, done, ms, trace }
   if (saved) out[flow ? 'flow' : 'saved'] = saved
   if (flow?.usage) out.recorded_usage = flow.usage
@@ -180,10 +188,14 @@ function terms(s: string) { return norm(s).split(/[^a-z0-9]+/).filter((w) => w.l
 function norm(s: string) { return s.toLowerCase().replace(/[_…]|\.\.\.|:$/g, '').replace(/\s+/g, ' ').trim() }
 function slug(s: string) { return norm(s).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) }
 function tick(k: string, t0: number) { T[k] = (T[k] ?? 0) + Date.now() - t0 }
+function* up<N extends { parent: number }>(nodes: N[], from: number): Generator<[number, N]> {
+  for (let p = from; p >= 0;) { const n = nodes[p]; if (!n) return; yield [p, n]; p = n.parent }
+}
+function prob(j: desk.Judgment | undefined): number { return j?.probability ?? 0 }
 
 function parse(snap: desk.Snap): Node[] {
   const kids = new Map<number, number>(); for (const n of snap.nodes) kids.set(n.parent, (kids.get(n.parent) ?? 0) + 1)
-  const wraps = (n: desk.El) => { const out: desk.El[] = []; for (let p = n.parent; p >= 0 && kids.get(p) === 1 && /^(toolbar|group)$/.test(snap.nodes[p].role); p = snap.nodes[p].parent) out.push(snap.nodes[p]); return out }
+  const wraps = (n: desk.El) => { const out: desk.El[] = []; for (const [p, a] of up(snap.nodes, n.parent)) { if (kids.get(p) !== 1 || !/^(toolbar|group)$/.test(a.role)) break; out.push(a) } return out }
   const called = (n: desk.El) => n.name.trim() || !ACTIVE.has(n.role) || FIELDS.split('|').includes(n.role) ? n.name : n.description?.trim() || wraps(n).find((a) => a.name.trim())?.name || wraps(n).find((a) => a.description?.trim())?.description || ''
   return snap.nodes.map((n) => ({
     ref: n.ref, id: n.id, depth: n.depth, role: n.role, name: called(n).slice(0, 80).trim(), value: n.value ?? '', disabled: n.states.includes('disabled'), parent: n.parent,
@@ -213,7 +225,7 @@ function render(nodes: Node[], max: number, interactive: boolean) {
 async function outline(w?: Win | null, keys = false) {
   if (w === undefined) w = await focused()
   if (!w) return '(no focused window)'
-  try { const s = await snapOf(w, keys); const nodes = parse(s); return render(nodes, 100, nodes.length > 60).slice(0, 1800) + (s.truncated ? CUT : '') } catch (e) { return String(e) }
+  try { const s = await snapOf(w, keys); const nodes = parse(s); return `${render(nodes, 100, nodes.length > 60).slice(0, 1800)}${s.truncated ? CUT : ''}` } catch (e: unknown) { return String(e) }
 }
 async function seen() {
   const w = await focused()
@@ -255,11 +267,11 @@ async function decide(state: unknown, q: Record<string, desk.Question>) {
   try { return await desk.decide(state, q) } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
 
-async function vision(prompt: string, shot: Buffer) {
+async function vision(prompt: string, shot: Buffer): Promise<Vision> {
   const t0 = Date.now()
   try {
     const a = await desk.ask(`${prompt}\nAnswer with one JSON object and nothing else.`, [shot])
-    return JSON.parse(a.slice(a.indexOf('{'), a.lastIndexOf('}') + 1))
+    return JSON.parse(a.slice(a.indexOf('{'), a.lastIndexOf('}') + 1)) as Vision
   } finally { tick('vision', t0) }
 }
 
@@ -279,12 +291,12 @@ function entryNames(app: string): string[] {
     const path = (process.env.PATH ?? '').split(':').map((d) => `${d}/${app}`).find((p) => existsSync(p))
     if (!path || statSync(path).size > 2048) return []
     const body = readFileSync(path, 'utf8')
-    const args = body.startsWith('#!') ? body.trim().split('\n').at(-1)!.split(/\s+/).slice(1).filter((a) => !a.startsWith('"$')).join(' ') : ''
+    const args = body.startsWith('#!') ? (body.trim().split('\n').at(-1) ?? '').split(/\s+/).slice(1).filter((a) => !a.startsWith('"$')).join(' ') : ''
     if (!args) return []
     const dir = '/usr/share/applications'
     return readdirSync(dir).filter((f) => f.endsWith('.desktop')).flatMap((f) => {
       const d = readFileSync(`${dir}/${f}`, 'utf8')
-      const exec = /^Exec=(.*)$/m.exec(d)?.[1].split(/\s+/).slice(1).filter((a) => !a.startsWith('%')).join(' ')
+      const exec = /^Exec=(.*)$/m.exec(d)?.[1]?.split(/\s+/).slice(1).filter((a) => !a.startsWith('%')).join(' ')
       const name = /^Name=(.*)$/m.exec(d)?.[1]
       return name && exec === args ? [norm(name)] : []
     })
@@ -299,14 +311,14 @@ function gtkToggle(pid: number, label: string): boolean | null {
   const t0 = Date.now()
   try {
     const comm = readFileSync(`/proc/${pid}/comm`, 'utf8').trim().toLowerCase()
-    busNames ??= [...gdbus('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus.ListNames').matchAll(/'([\w.-]+)'/g)].map((x) => x[1])
+    busNames ??= [...gdbus('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus.ListNames').matchAll(/'([\w.-]+)'/g)].map((x) => x[1] ?? '')
     for (const bus of busNames.filter((n) => n.toLowerCase().split('.').at(-1) === comm)) {
-      const root = '/' + bus.replace(/\./g, '/')
+      const root = `/${bus.replace(/\./g, '/')}`
       const menus = gdbus(bus, `${root}/menus/menubar`, 'org.gtk.Menus.Start', `[${[...Array(64).keys()].join(',')}]`)
       const actions = [...menus.matchAll(/\{[^{}]*\}/g)].map((x) => x[0]).filter((d) => norm(/'label': <'((?:[^'\\]|\\.)*)'>/.exec(d)?.[1] ?? '') === norm(label))
         .map((d) => /'action': <'([^']+)'>/.exec(d)?.[1]).filter((a): a is string => !!a)
       if (new Set(actions).size !== 1) continue
-      const [scope, ...rest] = actions[0].split('.'); const action = rest.join('.')
+      const [scope, ...rest] = (actions[0] ?? '').split('.'); const action = rest.join('.')
       const paths = scope === 'app' ? [root] : [...gdbus(bus, `${root}/window`, 'org.freedesktop.DBus.Introspectable.Introspect').matchAll(/<node name="(\d+)"/g)].map((x) => `${root}/window/${x[1]}`)
       const states = new Set(paths.map((p) => /\[<(true|false)>\]/.exec(gdbus(bus, p, 'org.gtk.Actions.Describe', action))?.[1]))
       if (states.size === 1 && !states.has(undefined)) return states.has('true')
@@ -315,21 +327,21 @@ function gtkToggle(pid: number, label: string): boolean | null {
   } catch { return null } finally { tick('state', t0) }
 }
 
-async function windowFor(want: string | undefined, ms = 3000, saw?: string) {
+async function windowFor(want: string | undefined, ms = 3000, saw?: string): Promise<Win> {
   const t0 = Date.now()
   let w = want ? await focused() : await current()
   if (!want) {
     // an untitled focused window that is no alert (a completion popup) leaves the step in the window the plan was in
-    if (w && !w.title.trim() && lastSeen && !isAlert(await outline(w))) w = (await desk.windows()).find((x) => x.title === lastSeen && x.pid === w!.pid) ?? w
+    if (w && !w.title.trim() && lastSeen && !isAlert(await outline(w))) { const pid = w.pid; w = (await desk.windows()).find((x) => x.title === lastSeen && x.pid === pid) ?? w }
     tick('wait', t0); if (!w) throw new Surprise('no focused window'); return w
   }
   const end = Date.now() + ms; let asked: string | null = null
   for (;;) {
     w = await focused()
-    if (w && (norm(w.title).includes(norm(want)) || (saw && w.title === saw))) break
+    if (w && (norm(w.title).includes(norm(want)) || (saw && w.title === saw))) return found(w, t0)
     if (w && known.has(w.title) && Date.now() - t0 > 150) {
       const bg = (await desk.windows()).find((x) => norm(x.title).includes(norm(want)))
-      if (bg) { await desk.focus(bg.title, bg.pid); w = bg; break }
+      if (bg) { await desk.focus(bg.title, bg.pid); return found(bg, t0) }
     }
     if (w && !known.has(w.title) && w.title !== asked && Date.now() - t0 > 250) {
       asked = w.title
@@ -337,17 +349,17 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string) {
       if (blocked(o)) { tick('wait', t0); throw new Surprise(unanswered(w.title), await seen()) }
       if (isAlert(o)) { tick('wait', t0); throw new Surprise(`alert "${w.title}" opened instead of "${want}"`, await seen()) }
       const d = await decide({ window_title: w.title, contents: o.slice(0, 800) }, { is: desk.yes(`The plan expects the "${want}" window in front next. Is this window that one, and not a confirmation, error or other unexpected dialog?`) })
-      if (d.is.probability >= 0.7) break
-      if (d.is.probability < 0.3) { tick('wait', t0); throw new Surprise(`window "${w.title}" opened instead of "${want}"`, await seen()) }
+      if (prob(d.is) >= 0.7) return found(w, t0)
+      if (prob(d.is) < 0.3) { tick('wait', t0); throw new Surprise(`window "${w.title}" opened instead of "${want}"`, await seen()) }
     }
     if (Date.now() > end) { tick('wait', t0); throw new Surprise(`expected window "${want}" did not appear`, await seen()) }
     await sleep(30)
   }
-  known.add(w!.title); tick('wait', t0); return w!
 }
+function found(w: Win, t0: number): Win { known.add(w.title); tick('wait', t0); return w }
 
-function named(nodes: Node[], i: number) { for (let p = nodes[i].parent; p >= 0; p = nodes[p].parent) if (nodes[p].name) return nodes[p].name; return '' }
-function sibling(nodes: Node[], i: number) { return nodes.slice(Math.max(0, i - 2), i + 3).filter((x) => x.role === 'text' && x.parent === nodes[i].parent && x.name).map((x) => x.name)[0] }
+function named(nodes: Node[], i: number) { for (const [, a] of up(nodes, nodes[i]?.parent ?? -1)) if (a.name) return a.name; return '' }
+function sibling(nodes: Node[], i: number) { return nodes.slice(Math.max(0, i - 2), i + 3).filter((x) => x.role === 'text' && x.parent === nodes[i]?.parent && x.name).map((x) => x.name)[0] }
 function fingerprint(nodes: Node[], h: { n: Node; i: number }): Fp {
   const fp: Fp = { role: h.n.role, name: h.n.name, parent: named(nodes, h.i), nth: 0 }
   const label = sibling(nodes, h.i); if (label) fp.label = label
@@ -365,8 +377,8 @@ function byFp(nodes: Node[], fp: Fp | undefined, within?: number): Hit | null {
 }
 
 function candidates(nodes: Node[], role?: string, within?: number) {
-  const inside = (i: number) => { if (within === undefined) return true; for (let p = nodes[i].parent; p >= 0; p = nodes[p].parent) if (p === within) return true; return false }
-  const item = (n: Node) => ITEMS.has(n.role) && n.parent >= 0 && LISTS.has(nodes[n.parent].role)
+  const inside = (i: number) => { if (within === undefined) return true; for (const [p] of up(nodes, nodes[i]?.parent ?? -1)) if (p === within) return true; return false }
+  const item = (n: Node) => ITEMS.has(n.role) && LISTS.has(nodes[n.parent]?.role ?? '')
   return nodes.map((n, i) => ({ n, i })).filter(({ n, i }) => (ACTIVE.has(n.role) || item(n)) && (!role || role.split('|').includes(n.role)) && inside(i))
 }
 
@@ -388,7 +400,8 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   for (const f of [named, (n: Node) => covers(n) && (!said || said.includes(n.role))]) {
     const all = pool.filter(({ n }) => f(n)); const drawn = all.filter(({ n }) => n.shown && !!n.bounds)
     const hit = drawn.length ? drawn : all.filter(({ n }) => n.role.startsWith('menu'))
-    if (hit.length === 1) { tick('ax', t0); return { ...hit[0], how: 'ax' } }
+    const [one, two] = hit
+    if (one && !two) { tick('ax', t0); return { ...one, how: 'ax' } }
   }
   const shown = pool.filter(({ n }) => n.shown)
   tick('ax', t0)
@@ -396,13 +409,13 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   const words = want.split(' ')
   const ranked = shown.map((c) => ({ c, s: words.filter((x) => norm(`${c.n.role} ${c.n.name} ${c.n.value}`).includes(x)).length })).sort((a, b) => b.s - a.s).slice(0, 40)
   const label = (c: { n: Node; i: number }) => {
-    const sib = sibling(nodes, c.i); const par = c.n.parent >= 0 ? nodes[c.n.parent].name : ''
+    const sib = sibling(nodes, c.i); const par = nodes[c.n.parent]?.name ?? ''
     return `${c.n.role} "${c.n.name}"${c.n.value ? ` value "${c.n.value}"` : ''}${sib ? ` labelled "${sib}"` : ''}${c.n.shortcut ? ` shortcut ${c.n.shortcut}` : ''}${par ? ` in "${par}"` : ''}`
   }
   const opts: Record<string, string> = { none: 'none of these elements' }
   for (const { c } of ranked) opts[`r${c.n.ref}`] = label(c)
   const { d, viewed } = await pick(target, ranked.map(({ c }) => c.n), opts)
-  const probs = Object.entries(d.pick.probabilities as Record<string, number>).sort((a, b) => b[1] - a[1])
+  const probs = Object.entries(d.pick?.probabilities ?? {}).sort((a, b) => b[1] - a[1])
   const [top, p1] = probs[0] ?? ['none', 0]; const p2 = probs[1]?.[1] ?? 0
   const hit = ranked.find(({ c }) => `r${c.n.ref}` === top)
   if (!hit || p1 < bar) return null
@@ -418,8 +431,9 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
 
 // a menu bar entry that several menu bars repeat (LibreOffice exposes its menu bar more than once) resolves in the first of them
 function barMenu(nodes: Node[], name: string): Hit | null {
-  const tops = nodes.map((n, i) => ({ n, i })).filter(({ n }) => n.role === 'menu' && norm(n.name) === norm(name) && n.parent >= 0 && nodes[n.parent].role === 'menubar')
-  return tops.length > 1 ? { ...tops[0], how: 'ax' } : null
+  const tops = nodes.map((n, i) => ({ n, i })).filter(({ n }) => n.role === 'menu' && norm(n.name) === norm(name) && nodes[n.parent]?.role === 'menubar')
+  const [first, second] = tops
+  return first && second ? { ...first, how: 'ax' } : null
 }
 
 // jev's pick on a screenshot, which tells apart elements of the same name by where they are; on any failure its pick on the text
@@ -428,7 +442,7 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>) 
   try {
     const area = await desk.screen()
     const at = (n: Node) => n.bounds ? ` at (${((n.bounds[0] + n.bounds[2] / 2) / area.width).toFixed(2)}, ${((n.bounds[1] + n.bounds[3] / 2) / area.height).toFixed(2)})` : ''
-    const placed: Record<string, string> = { none: opts.none }
+    const placed: Record<string, string> = { none: opts.none ?? '' }
     for (const n of pool) placed[`r${n.ref}`] = `${opts[`r${n.ref}`]}${at(n)}`
     const list = `Elements of the focused window, with their centres as fractions of the screenshot:\n${pool.map((n) => placed[`r${n.ref}`]).join('\n')}`
     const d = await desk.look([list, desk.image(await desk.shot())], { pick: desk.choice(`Which element is "${target}"? Use the screenshot to tell apart elements with the same name.`, placed) })
@@ -443,8 +457,8 @@ async function grounded(x: number, y: number, target: string, w: Win, area: { wi
   const under = await desk.at(x, y, w.title).catch(() => ({ found: null, path: [] }))
   const what = under.found ? [under.found, ...(under.path ?? []).reverse()].filter((n) => n.name).map((n) => `${n.role} "${n.name}"`).join(' under ') : ''
   const t0 = Date.now()
-  const fit = (cw: number, ch: number) => [Math.max(0, Math.min(area.width - cw, Math.round(x - cw / 2))), Math.max(0, Math.min(area.height - ch, Math.round(y - ch / 2)))]
-  const yes = async (state: unknown[], question: string) => +(await desk.look(state, { on: desk.yes(question) })).on.probability.toFixed(2)
+  const fit = (cw: number, ch: number): [number, number] => [Math.max(0, Math.min(area.width - cw, Math.round(x - cw / 2))), Math.max(0, Math.min(area.height - ch, Math.round(y - ch / 2)))]
+  const yes = async (state: unknown[], question: string) => +prob((await desk.look(state, { on: desk.yes(question) })).on).toFixed(2)
   const crop = async (cw: number, ch: number, k: number) => {
     const [left, top] = fit(cw, ch), [px, py] = [(x - left) * k, (y - top) * k]
     const png = zoom(await desk.shot({ x: left, y: top, w: cw, h: ch }), k)
@@ -468,9 +482,9 @@ async function grounded(x: number, y: number, target: string, w: Win, area: { wi
       out.ok = (out.p_full ?? 0) >= FULL_BAR
     }
     return out
-  } catch (e) {
-    const p = what.trim() ? (await decide({ element_under_point: what, window_title: w.title }, { is: desk.yes(`Is this element "${target}"?`) })).is.probability : 0
-    return { what, ok: p >= 0.7, check: `jev (${String((e as Error).message ?? e).slice(0, 80)})`, p: +p.toFixed(2) }
+  } catch (e: unknown) {
+    const p = what.trim() ? prob((await decide({ element_under_point: what, window_title: w.title }, { is: desk.yes(`Is this element "${target}"?`) })).is) : 0
+    return { what, ok: p >= 0.7, check: `jev (${(e instanceof Error ? e.message : String(e)).slice(0, 80)})`, p: +p.toFixed(2) }
   } finally { tick('check', t0) }
 }
 
@@ -479,16 +493,16 @@ function unpng(png: Buffer) {
   const idat: Buffer[] = []; let w = 0, h = 0, type = 0
   for (let p = 8; p < png.length; p += 12 + png.readUInt32BE(p)) {
     const kind = png.toString('ascii', p + 4, p + 8), data = png.subarray(p + 8, p + 8 + png.readUInt32BE(p))
-    if (kind === 'IHDR') { w = data.readUInt32BE(0); h = data.readUInt32BE(4); type = data[9]; if (data[8] !== 8 || data[12] !== 0 || (type !== 2 && type !== 6)) throw new Error(`unsupported PNG (depth ${data[8]}, type ${type})`) }
+    if (kind === 'IHDR') { w = data.readUInt32BE(0); h = data.readUInt32BE(4); type = data.readUInt8(9); if (data.readUInt8(8) !== 8 || data.readUInt8(12) !== 0 || (type !== 2 && type !== 6)) throw new Error(`unsupported PNG (depth ${data.readUInt8(8)}, type ${type})`) }
     if (kind === 'IDAT') idat.push(data)
   }
   const bpp = type === 6 ? 4 : 3, stride = w * bpp, raw = inflateSync(Buffer.concat(idat)), px = Buffer.alloc(h * stride)
   for (let y = 0; y < h; y++) {
     const f = raw[y * (stride + 1)], row = y * (stride + 1) + 1
     for (let i = 0; i < stride; i++) {
-      const a = i >= bpp ? px[y * stride + i - bpp] : 0, b = y ? px[(y - 1) * stride + i] : 0, c = y && i >= bpp ? px[(y - 1) * stride + i - bpp] : 0
+      const a = i >= bpp ? px[y * stride + i - bpp] ?? 0 : 0, b = y ? px[(y - 1) * stride + i] ?? 0 : 0, c = y && i >= bpp ? px[(y - 1) * stride + i - bpp] ?? 0 : 0
       const pa = Math.abs(b - c), pb = Math.abs(a - c), pc = Math.abs(a + b - 2 * c)
-      px[y * stride + i] = raw[row + i] + (f === 1 ? a : f === 2 ? b : f === 3 ? (a + b) >> 1 : f === 4 ? (pa <= pb && pa <= pc ? a : pb <= pc ? b : c) : 0)
+      px[y * stride + i] = (raw[row + i] ?? 0) + (f === 1 ? a : f === 2 ? b : f === 3 ? (a + b) >> 1 : f === 4 ? (pa <= pb && pa <= pc ? a : pb <= pc ? b : c) : 0)
     }
   }
   return { w, h, type, bpp, px }
@@ -515,7 +529,7 @@ function zoom(image: Buffer, k: number) {
 // a red ring of radius r around (cx, cy) and four ticks outside it, edged in white, which leave the spot itself uncovered
 function ring(image: Buffer, cx: number, cy: number, r: number) {
   const { w, h, type, bpp, px } = unpng(image), t = Math.max(2, Math.round(r / 7)), tick = r + 3 * t, len = 3 * r
-  for (const [c, pad] of [[[255, 255, 255], 1], [[230, 0, 0], 0]] as [number[], number][]) {
+  for (const [c, pad] of [[[255, 255, 255], 1], [[230, 0, 0], 0]] as [[number, number, number], number][]) {
     for (let y = Math.max(0, Math.floor(cy - tick - len - 2)); y <= Math.min(h - 1, cy + tick + len + 2); y++) for (let x = Math.max(0, Math.floor(cx - tick - len - 2)); x <= Math.min(w - 1, cx + tick + len + 2); x++) {
       const dx = Math.abs(x - cx), dy = Math.abs(y - cy)
       const on = Math.abs(Math.hypot(dx, dy) - r) <= t / 2 + pad || (dx <= t / 2 + pad && dy >= tick - pad && dy <= tick + len + pad) || (dy <= t / 2 + pad && dx >= tick - pad && dx <= tick + len + pad)
@@ -534,12 +548,12 @@ async function act(n: Node) {
 }
 
 // a menu entry with a shortcut takes the shortcut, since an AT-SPI action can open a modal dialog that deadlocks the app on the first key
-async function choose(nodes: Node[], n: Node, rec: Record<string, unknown>, open = false) {
+async function choose(nodes: Node[], n: Node, rec: { via?: string }, open = false) {
   const t0 = Date.now()
   try {
     const mods = n.shortcut.split('+').slice(0, -1)
     if (n.shortcut && (mods.some((x) => x !== 'shift') || /^f\d+$/.test(n.shortcut))) {
-      if (open) for (let q = n.parent; q >= 0 && nodes[q].role === 'menu'; q = nodes[q].parent) await press('Escape')
+      if (open) for (const [, q] of up(nodes, n.parent)) { if (q.role !== 'menu') break; await press('Escape') }
       try { await press(n.shortcut); rec.via = 'shortcut'; return } catch {}
     }
     rec.via = await act(n)
@@ -617,7 +631,7 @@ async function documents(w: Win) {
     return async () => (await Promise.all(ids.map(async (id) => { try { return (await desk.read(id, { text: true })).value ?? '' } catch { return '' } }))).join('\n')
   } catch { return null } finally { tick('verify', t0) }
 }
-async function replaced(nodes: Node[], read: () => Promise<string>, before: string) {
+async function replaced(nodes: Node[], read: () => Promise<string>, before: string | undefined) {
   const t0 = Date.now(); let now = await read()
   for (let i = 0; i < 10 && now === before; i++) { await sleep(30); now = await read() }
   const f = nodes.find((n) => n.role === 'textbox'); let find = ''
@@ -626,7 +640,7 @@ async function replaced(nodes: Node[], read: () => Promise<string>, before: stri
   if (now === before && find && now.includes(find)) throw new Surprise(`Replace All replaced nothing: "${find}" is still in the document`, await seen())
 }
 
-async function setState(s: Step, hit: Hit, rec: Record<string, unknown>) {
+async function setState(s: Step, hit: Hit, rec: Rec) {
   const on = s.on ?? true
   let was = await checked(hit.n)
   if (was === null) was = await cropState(hit.n)
@@ -639,7 +653,7 @@ async function setState(s: Step, hit: Hit, rec: Record<string, unknown>) {
   if (now !== on) throw new Surprise(`"${hit.n.name}" is still ${now ? 'on' : 'off'}`, await seen())
 }
 
-async function option(combo: Node, opts: Node[], value: string, target: string, rec: Record<string, unknown>) {
+async function option(combo: Node, opts: Node[], value: string, target: string, rec: Rec) {
   const named = opts.filter((n) => norm(n.name) === norm(value)); const near = opts.filter((n) => norm(n.name).includes(norm(value)))
   const o = named.length === 1 ? named[0] : near.length === 1 ? near[0] : null
   if (!o) throw new Surprise(`"${target}" has no option "${value}"; its options: ${opts.map((n) => `"${n.name}"`).join(', ')}`, await seen())
@@ -661,7 +675,7 @@ async function cropState(n: Node) {
   return (await vision(`This is one control of a desktop app: "${n.name}". Is it switched on (a check mark, tick, filled box or pressed state)? {"on": true or false}`, shot)).on === true
 }
 
-async function run(s: Step, rec: Record<string, unknown>) {
+async function run(s: Step, rec: Rec) {
   if (s.app) {
     const before = new Set((await desk.windows()).map((w) => w.title))
     let launched = false
@@ -674,7 +688,7 @@ async function run(s: Step, rec: Record<string, unknown>) {
     if (listed) { known.add(listed.title); rec.window = lastSeen = listed.title; return }
     if (!w) {
       const t0 = Date.now(); launched = true; let missing = false
-      try { await desk.launch(s.app) } catch (e) {
+      try { await desk.launch(s.app) } catch (e: unknown) {
         if (!/^[\w.-]+$/.test(s.app)) throw e
         spawn(s.app, [], { detached: true, stdio: 'ignore' }).on('error', () => { missing = true }).unref()
       }
@@ -690,7 +704,7 @@ async function run(s: Step, rec: Record<string, unknown>) {
     const w = await current(); const t0 = Date.now(); const nl = s.type.endsWith('\n')
     const dialog = !s.type.includes('\n') && !!w && (await desk.windows()).some((x) => x.title !== w.title && x.pid === w.pid)
     const o = (nl || dialog) && w ? await filled(w) : ''
-    if (blocked(o)) throw new Surprise(unanswered(w!.title), await seen())
+    if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     const chooser = isChooser(o); const sub = chooser && nl
     const first = !typed; typed = true
     if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field, then replay the flow`, await seen())
@@ -701,7 +715,7 @@ async function run(s: Step, rec: Record<string, unknown>) {
     tick('act', t0)
     if (recording && first && !chooser && w) rec.blank = await typedInto(w, s.type)
     const v = nl && !sub ? await focused() : null
-    if (sub) { rec.submit = true; await submit(w!, true) } else if (v && isDialog(v.title === w?.title ? o : await outline(v)) && await closed(v.title, v.pid)) rec.submit = true
+    if (sub && w) { rec.submit = true; await submit(w, true) } else if (v && isDialog(v.title === w?.title ? o : await outline(v)) && await closed(v.title, v.pid)) rec.submit = true
     if (dialog && w) {
       const want = s.type.slice(0, 30).replace(/"/g, '\\"'); let after = ''
       for (let k = 0; k < 5; k++) { after = await outline(w); if (!isDialog(after) || after.split('\n').some((l) => /^\s*- (textbox|searchbox|combobox|spinbutton)\b.*: ".*/.test(l) && l.includes(want))) return; await sleep(40) }
@@ -712,11 +726,11 @@ async function run(s: Step, rec: Record<string, unknown>) {
   if (s.key) {
     const w = await focused()
     const o = /^(enter|return)$/i.test(s.key) && w ? await filled(w) : ''
-    if (blocked(o)) throw new Surprise(unanswered(w!.title), await seen())
-    if (isChooser(o)) { rec.submit = true; await submit(w!, true); return }
+    if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
+    if (w && isChooser(o)) { rec.submit = true; await submit(w, true); return }
     const t0 = Date.now(); await press(s.key); tick('act', t0)
     if (w && /\b(ctrl|control|alt)\+|^f\d+$/i.test(s.key)) pressed = { title: w.title, at: Date.now() }
-    if (isDialog(o) && await closed(w!.title, w!.pid)) rec.submit = true
+    if (w && isDialog(o) && await closed(w.title, w.pid)) rec.submit = true
     return
   }
   if (s.wait) { const w = await windowFor(s.wait, s.timeout_ms ?? 5000, s.seen); rec.seen = lastSeen = w.title; return }
@@ -724,7 +738,8 @@ async function run(s: Step, rec: Record<string, unknown>) {
     // close shuts a dialog: the named window, else the focused dialog, else a dialog of the focused app; never an app's main window unless named
     const t0 = Date.now(); let w: Win | null = s.window ? await windowFor(s.window, 3000, s.seen) : await focused()
     const o = w && !s.window ? await outline(w) : ''
-    const others = w ? (await desk.windows()).filter((x) => x.pid === w!.pid && x.title !== w!.title) : []
+    const self = w
+    const others = self ? (await desk.windows()).filter((x) => x.pid === self.pid && x.title !== self.title) : []
     if (w && blocked(o) && others.length) { rec.seen = w.title; rec.how = 'wm'; await desk.close(w.title, w.pid); await settle(w.title); tick('act', t0); return }
     if (w && !s.window && !isDialog(o)) { let d: Win | null = null; for (const x of others) if (isDialog(await outline(x))) { d = x; break }; w = d }
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
@@ -736,15 +751,15 @@ async function run(s: Step, rec: Record<string, unknown>) {
   const w = await windowFor(s.window, 3000, s.seen)
   rec.seen = w.title; if (w.title.trim()) lastSeen = w.title
   let t0 = Date.now(); let snap: desk.Snap
-  try { snap = await snapOf(w, !!(s.menu || s.click)) } catch (e) {
+  try { snap = await snapOf(w, !!(s.menu || s.click)) } catch (e: unknown) {
     if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen())
     throw e
   }
   let nodes = parse(snap); tick('snap', t0)
   if (s.expect) {
     const d = await decide({ window_title: w.title, contents: render(nodes, 60, false).slice(0, 4000) }, { ok: desk.yes(s.expect) })
-    rec.p = +d.ok.probability.toFixed(2)
-    if (d.ok.probability >= 0.5) return
+    rec.p = +prob(d.ok).toFixed(2)
+    if (prob(d.ok) >= 0.5) return
     const v = await vision(`You check the state of a computer screen.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot()); rec.verdict = v
     if (!v.ok) throw new Surprise(`expectation not met: ${s.expect} (${v.why})`, await seen())
     return
@@ -754,64 +769,41 @@ async function run(s: Step, rec: Record<string, unknown>) {
     if (!hit) { if (s.on === false || s.enabled === false) return; throw new Surprise(`verify: no element matches "${s.verify}"`, await seen()) }
     rec.how = hit.how; rec.fp = fingerprint(nodes, hit)
     const bad: string[] = []
-    if (s.value !== undefined) { let v = ''; try { v = (await desk.read(hit.n.id)).value ?? '' } catch (e) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); v = hit.n.value }; if (!norm(v).includes(norm(s.value))) bad.push(`reads "${v}"`) }
+    if (s.value !== undefined) { let v = ''; try { v = (await desk.read(hit.n.id)).value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); v = hit.n.value }; if (!norm(v).includes(norm(s.value))) bad.push(`reads "${v}"`) }
     if (s.enabled !== undefined && hit.n.disabled === s.enabled) bad.push(hit.n.disabled ? 'is disabled' : 'is enabled')
     if (s.on !== undefined) { const c = (w.pid === null ? null : gtkToggle(w.pid, hit.n.name)) ?? (await checked(hit.n)) ?? await cropState(hit.n); rec.was = c; if (c !== s.on) bad.push(c ? 'is on' : 'is off') }
     if (bad.length) throw new Surprise(`verify: "${hit.n.name || s.verify}" ${bad.join(', ')}`, await seen())
     return
   }
   if (s.menu) {
-    let within: number | undefined
-    let hit: Hit | null = null
-    const parts = s.menu.split('>').map((x) => x.trim())
-    const soft = async (target: string, role: string | undefined, inside?: number) => { try { return await resolve(nodes, target, role, inside, 0.7) } catch (e) { if (e instanceof Surprise) return null; throw e } }
-    hit = byFp(nodes, s.fp)
-    if (!hit) {
-      let prev: Hit | null = null
-      for (const [k, part] of parts.entries()) {
-        // a Windows menu lists its entries only while it is open
-        if (OS === 'win32' && prev?.n.role === 'menu' && !nodes.some((x) => x.parent === prev!.i)) {
-          await act(prev.n); rec.opened = ((rec.opened as number) ?? 0) + 1; within = undefined
-          for (let t = 0; t < 10; t++) { nodes = parse(await snapOf(w, true)); if (candidates(nodes).some(({ n }) => norm(n.name) === norm(part))) break; await sleep(30) }
-        }
-        hit = (k === 0 && k < parts.length - 1 ? barMenu(nodes, part) : null) ?? await soft(part, k < parts.length - 1 ? 'menu' : undefined, within) ?? await soft(part, undefined, within)
-        if (!hit) {
-          const leaf = await resolve(nodes, parts.at(-1)!, 'menuitem|menu|menuitemcheckbox|menuitemradio')
-          if (leaf?.how !== 'ax') throw new Surprise(`menu entry "${part}" not found`, await seen())
-          hit = leaf; rec.how = 'ax-anywhere'; rec.path = [] as string[]
-          for (let q = leaf.n.parent; q >= 0 && nodes[q].role === 'menu'; q = nodes[q].parent) (rec.path as string[]).unshift(nodes[q].name)
-          break
-        }
-        within = hit.i; rec.how = hit.how; prev = hit
-      }
-    } else rec.how = 'fp'
-    rec.fp = fingerprint(nodes, hit!)
-    if (hit!.p !== undefined) rec.pick = [hit!.p, hit!.margin]
+    const entry = await menuEntry(w, nodes, s.menu, s.fp, rec)
+    const hit = entry.hit; nodes = entry.nodes
+    rec.fp = fingerprint(nodes, hit)
+    if (hit.p !== undefined) rec.pick = [hit.p, hit.margin ?? 0]
     const pid = w.pid
-    if (s.on === undefined) { if (rec.opened) rec.via = await act(hit!.n); else await choose(nodes, hit!.n, rec); await settle(w.title); const now = pid === null ? null : gtkToggle(pid, hit!.n.name); if (now !== null) rec.now = now; return }
-    const was = pid === null ? null : gtkToggle(pid, hit!.n.name)
-    if (was !== null) {
+    if (s.on === undefined) { if (rec.opened) rec.via = await act(hit.n); else await choose(nodes, hit.n, rec); await settle(w.title); const now = pid === null ? null : gtkToggle(pid, hit.n.name); if (now !== null) rec.now = now; return }
+    const was = pid === null ? null : gtkToggle(pid, hit.n.name)
+    if (pid !== null && was !== null) {
       rec.was = was; rec.state = 'gtk'
       if (was === s.on) { rec.noop = true; return }
-      await act(hit!.n)
-      let now = gtkToggle(pid!, hit!.n.name)
-      for (let i = 0; i < 5 && now !== s.on; i++) { await sleep(30); now = gtkToggle(pid!, hit!.n.name) }
-      if (now !== s.on) throw new Surprise(`menu toggle "${hit!.n.name}" is still ${now ? 'on' : 'off'}`, await seen())
+      await act(hit.n)
+      let now = gtkToggle(pid, hit.n.name)
+      for (let i = 0; i < 5 && now !== s.on; i++) { await sleep(30); now = gtkToggle(pid, hit.n.name) }
+      if (now !== s.on) throw new Surprise(`menu toggle "${hit.n.name}" is still ${now ? 'on' : 'off'}`, await seen())
       return
     }
-    if (hit!.n.role === 'menuitemcheckbox' || hit!.n.role === 'menuitemradio' || OS === 'darwin') {
-      const now = await checked(hit!.n); rec.was = now; rec.state = 'atspi'
-      if (now === s.on) { for (let k = 0; k < ((rec.opened as number) ?? 0); k++) await press('Escape'); rec.noop = true; return }
-      if (now !== null) { await act(hit!.n); await settle(w.title); return }
+    if (hit.n.role === 'menuitemcheckbox' || hit.n.role === 'menuitemradio' || OS === 'darwin') {
+      const now = await checked(hit.n); rec.was = now; rec.state = 'atspi'
+      if (now === s.on) { for (let k = 0; k < (rec.opened ?? 0); k++) await press('Escape'); rec.noop = true; return }
+      if (now !== null) { await act(hit.n); await settle(w.title); return }
     }
-    const parent = hit!.n.parent >= 0 && nodes[hit!.n.parent].role === 'menu' ? nodes[hit!.n.parent] : null
-    if (!parent) throw new Surprise(`"${hit!.n.name}" is not inside a menu`, await seen())
     const chain: Node[] = []
-    for (let q: Node | null = parent; q; q = q.parent >= 0 && nodes[q.parent].role === 'menu' ? nodes[q.parent] : null) chain.unshift(q)
+    for (const [, q] of up(nodes, hit.n.parent)) { if (q.role !== 'menu') break; chain.unshift(q) }
+    if (!chain.length) throw new Surprise(`"${hit.n.name}" is not inside a menu`, await seen())
     for (const q of chain) { await act(q); await sleep(120) }
-    const on = await cropState(hit!.n); rec.was = on; rec.state = 'vision'
+    const on = await cropState(hit.n); rec.was = on; rec.state = 'vision'
     if (on === s.on) { for (const _ of chain) await press('Escape'); rec.noop = true; return }
-    await act(hit!.n); await settle(w.title); return
+    await act(hit.n); await settle(w.title); return
   }
   const target = s.click ?? s.check ?? s.set!
   const hit = await resolve(nodes, target, s.role ?? (s.check ? TOGGLES : s.set ? FIELDS : undefined), undefined, s.set ? 0.5 : 0.7, s.fp)
@@ -841,11 +833,13 @@ async function run(s: Step, rec: Record<string, unknown>) {
   if (s.click) {
     const read = norm(hit.n.name) === 'replace all' ? await documents(w) : null; const before = await read?.()
     await act(hit.n)
-    if (read) await replaced(nodes, read, before!); else await settle(w.title)
+    if (read) await replaced(nodes, read, before); else await settle(w.title)
     return
   }
   if (s.check) { await setState(s, hit, rec); return }
-  const value = s.value!.endsWith('\n') ? s.value!.slice(0, -1) : s.value!
+  const raw = s.value
+  if (raw === undefined) throw new Surprise(`set "${target}" needs a value`, await seen())
+  const value = raw.endsWith('\n') ? raw.slice(0, -1) : raw
   const same = (v: string | undefined) => v === undefined || norm(v) === norm(value) || norm(v).includes(norm(value))
   const f = hit.n.role === 'combobox' ? nodes.find((x) => x.parent === hit.i && x.role === 'textbox') ?? hit.n : hit.n
   const opts = f === hit.n && hit.n.role === 'combobox' ? candidates(nodes, 'menuitem|option', hit.i) : []
@@ -856,16 +850,43 @@ async function run(s: Step, rec: Record<string, unknown>) {
   await desk.act(f.id, 'focus'); if (f.role === 'textbox' && !lines) await selectLine(); else await press(SELECT_ALL); await desk.typeText(value); if (hit.n.role === 'spinbutton' || hit.n.role === 'slider') { await press('tab'); await press('shift+tab') }
   tick('act', t0)
   t0 = Date.now(); let got: string | undefined
-  for (let i = 0; i < 10; i++) { try { got = (await desk.read(f.id)).value ?? '' } catch (e) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); got = undefined }; if (same(got)) break; await sleep(40) }
+  for (let i = 0; i < 10; i++) { try { got = (await desk.read(f.id)).value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); got = undefined }; if (same(got)) break; await sleep(40) }
   tick('verify', t0); rec.value = got
   if (!same(got)) throw new Surprise(`"${target}" reads "${got}" after set`, await seen())
-  if (s.value!.endsWith('\n')) { rec.submit = true; await submit(w, isChooser(render(nodes, 100, false))) }
+  if (raw.endsWith('\n')) { rec.submit = true; await submit(w, isChooser(render(nodes, 100, false))) }
+}
+
+async function menuEntry(w: Win, nodes: Node[], menu: string, fp: Fp | undefined, rec: Rec): Promise<{ hit: Hit; nodes: Node[] }> {
+  const pinned = byFp(nodes, fp)
+  if (pinned) { rec.how = 'fp'; return { hit: pinned, nodes } }
+  const parts = menu.split('>').map((x) => x.trim())
+  const soft = async (target: string, role: string | undefined, inside?: number) => { try { return await resolve(nodes, target, role, inside, 0.7) } catch (e: unknown) { if (e instanceof Surprise) return null; throw e } }
+  let within: number | undefined
+  let hit: Hit | null = null
+  for (const [k, part] of parts.entries()) {
+    const prev = hit
+    // a Windows menu lists its entries only while it is open
+    if (OS === 'win32' && prev?.n.role === 'menu' && !nodes.some((x) => x.parent === prev.i)) {
+      await act(prev.n); rec.opened = (rec.opened ?? 0) + 1; within = undefined
+      for (let t = 0; t < 10; t++) { nodes = parse(await snapOf(w, true)); if (candidates(nodes).some(({ n }) => norm(n.name) === norm(part))) break; await sleep(30) }
+    }
+    hit = (k === 0 && k < parts.length - 1 ? barMenu(nodes, part) : null) ?? await soft(part, k < parts.length - 1 ? 'menu' : undefined, within) ?? await soft(part, undefined, within)
+    if (!hit) {
+      const leaf = await resolve(nodes, parts.at(-1) ?? part, 'menuitem|menu|menuitemcheckbox|menuitemradio')
+      if (leaf?.how !== 'ax') throw new Surprise(`menu entry "${part}" not found`, await seen())
+      rec.how = 'ax-anywhere'; rec.path = []
+      for (const [, q] of up(nodes, leaf.n.parent)) { if (q.role !== 'menu') break; rec.path.unshift(q.name) }
+      return { hit: leaf, nodes }
+    }
+    within = hit.i; rec.how = hit.how
+    if (k === parts.length - 1) return { hit, nodes }
+  }
+  throw new Surprise(`menu "${menu}" names no entry`, await seen())
 }
 
 function fill(s: Step, p: Record<string, string>): Step {
-  const out: any = {}
-  for (const [k, v] of Object.entries(s)) out[k] = typeof v === 'string' ? v.replace(/\{\{(\w+)(:base)?\}\}/g, (all, n, b) => p[n] === undefined ? all : b ? p[n].split('/').at(-1)! : p[n]) : v
-  return out
+  const sub = (v: string) => v.replace(/\{\{(\w+)(:base)?\}\}/g, (all: string, n: string, b: string | undefined) => { const x = p[n]; return x === undefined ? all : b ? x.split('/').at(-1) ?? x : x })
+  return Object.fromEntries(Object.entries(s).map(([k, v]) => [k, typeof v === 'string' ? sub(v) : v])) as Step
 }
 
 // values a later request would change become params: set values and typed text, unless the plan already templated them
@@ -886,7 +907,7 @@ function templated(steps: Step[], params: Record<string, string>) {
     let v = t[k]; if (!v) continue
     for (const [n, x] of Object.entries(p)) {
       if (x.length > 2 && v.includes(x)) v = v.replace(x, `{{${n}}}`)
-      else if (x.includes('/') && x.split('/').at(-1)!.length > 2 && v.includes(x.split('/').at(-1)!)) v = v.replace(x.split('/').at(-1)!, `{{${n}:base}}`)
+      else if (x.includes('/') && (x.split('/').at(-1) ?? '').length > 2 && v.includes(x.split('/').at(-1) ?? '')) v = v.replace(x.split('/').at(-1) ?? '', `{{${n}:base}}`)
     }
     t[k] = v
   }
@@ -906,12 +927,12 @@ function repo() {
 function writeIndex() {
   const rows = readdirSync(FLOWS).filter((x) => x.endsWith('.json') && !x.startsWith('.')).map((x) => { try { return JSON.parse(readFileSync(`${FLOWS}/${x}`, 'utf8')) as Flow } catch { return null } })
     .filter((x): x is Flow => !!x?.name).sort((a, b) => b.saved_at.localeCompare(a.saved_at))
-  writeFileSync(INDEX, rows.map((x) => `${x.name}(${Object.keys(x.params).join(', ')})${x.idempotent ? '' : ' once'}: ${summary(x.steps)}`).join('\n') + '\n')
+  writeFileSync(INDEX, `${rows.map((x) => `${x.name}(${Object.keys(x.params).join(', ')})${x.idempotent ? '' : ' once'}: ${summary(x.steps)}`).join('\n')}\n`)
 }
 
 function saveFlow(f: Flow, why: string) {
   repo()
-  writeFileSync(`${FLOWS}/${f.name}.json`, JSON.stringify(f, null, 1) + '\n')
+  writeFileSync(`${FLOWS}/${f.name}.json`, `${JSON.stringify(f, null, 1)}\n`)
   writeIndex()
   git('add', '-A'); git('commit', '-q', '-m', `${f.name}: ${why}`)
 }
@@ -928,8 +949,8 @@ function bare(s: Step, p: Record<string, string>) { return JSON.stringify(Object
 function store(chain: Chain) {
   const tpl = templated(chain.steps, chain.params)
   const keys: Record<string, string> = { 'ctrl+n': 'new', 'ctrl+s': 'save', 'ctrl+shift+s': 'save as', 'ctrl+o': 'open' }
-  const targets = chain.steps.filter((s) => s.menu || s.check || s.set || s.click || keys[s.key?.toLowerCase() ?? '']).slice(-2).map((s) => s.key ? keys[s.key.toLowerCase()] : (s.menu ?? s.check ?? s.set ?? s.click)!.split('>').at(-1))
-  const auto = slug([chain.steps[0].app, ...targets].filter(Boolean).map((x) => x!.split(' ').slice(0, 3).join(' ')).join(' ')) || undefined
+  const targets = chain.steps.filter((s) => s.menu || s.check || s.set || s.click || keys[s.key?.toLowerCase() ?? '']).slice(-2).map((s) => s.key ? keys[s.key.toLowerCase()] : (s.menu ?? s.check ?? s.set ?? s.click ?? '').split('>').at(-1))
+  const auto = slug([chain.steps[0]?.app, ...targets].filter((x): x is string => !!x).map((x) => x.split(' ').slice(0, 3).join(' ')).join(' ')) || undefined
   if (!chain.named && auto && chain.name && auto !== chain.name) git('rm', '-q', '--ignore-unmatch', `${chain.name}.json`)
   if (!chain.named) chain.name = auto
   if (chain.name) saveFlow({ name: chain.name, params: tpl.params, steps: tpl.steps, idempotent: idempotent(chain.steps), runs: 1, saved_at: new Date().toISOString(), rewrites: 0, usage: chain.usage ?? {} }, `saved from ${chain.steps.length} passing steps`)
@@ -938,7 +959,7 @@ function store(chain: Chain) {
 
 async function promote(name: string, params: Record<string, string> = {}, rerun = false) {
   let c: Chain | null = null
-  try { c = JSON.parse(readFileSync(PENDING, 'utf8')) } catch {}
+  try { c = JSON.parse(readFileSync(PENDING, 'utf8')) as Chain | null } catch {}
   if (!c || Date.now() - c.at >= CHAIN_AGE || !(c.saved || c.escalated) || c.dirty || !c.steps.some((s) => !s.app) || !slug(name))
     return { ok: false, reason: 'nothing to save: the last gui_plan run of the last 10 minutes must start at an app step, pass, and click no target found by vision' }
   if (c.escalated || rerun) {
@@ -956,7 +977,7 @@ async function promote(name: string, params: Record<string, string> = {}, rerun 
 function loadFlow(name: string): Flow {
   const path = `${FLOWS}/${slug(name)}.json`
   if (!existsSync(path)) throw new Surprise(`no saved flow "${name}"; saved: ${existsSync(INDEX) ? readFileSync(INDEX, 'utf8').trim().split('\n').join(', ') : 'none'}`)
-  return JSON.parse(readFileSync(path, 'utf8'))
+  return JSON.parse(readFileSync(path, 'utf8')) as Flow
 }
 
 async function find(request: string) {
@@ -965,20 +986,20 @@ async function find(request: string) {
   const opts: Record<string, string> = { none: 'none of these flows does it' }
   rows.forEach((r, i) => { opts[`f${i}`] = r })
   const d = await decide({ request }, { pick: desk.choice('Which saved GUI flow does this request?', opts) })
-  const k = d.pick.choice as string; const p = d.pick.probabilities[k] as number
-  const next = Object.values(d.pick.probabilities as Record<string, number>).sort((a, b) => b - a)[1] ?? 0
+  const k = d.pick?.choice ?? 'none'; const p = d.pick?.probabilities?.[k] ?? 0
+  const next = Object.values(d.pick?.probabilities ?? {}).sort((a, b) => b - a)[1] ?? 0
   if (k === 'none' || p < 0.6 || p - next < MARGIN) return { ok: false, flow: null, p: +p.toFixed(2) }
-  return { ok: true, flow: rows[+k.slice(1)].replace(/\(.*$/, ''), p: +p.toFixed(2) }
+  return { ok: true, flow: (rows[Number(k.slice(1))] ?? '').replace(/\(.*$/, ''), p: +p.toFixed(2) }
 }
 
 // a LibreOffice toolbar docked in its frame draws a menu bar's height below its extents until the frame first relays out
 function drawnShift(nodes: Node[], i: number): number | null {
-  const docked = (j: number) => nodes[j].depth === 2 && (nodes[j].role === 'toolbar' || nodes[j].role === 'tablist')
-  let top = i; while (nodes[top].depth > 2 && nodes[top].parent >= 0) top = nodes[top].parent
+  const docked = (j: number) => nodes[j]?.depth === 2 && (nodes[j]?.role === 'toolbar' || nodes[j]?.role === 'tablist')
+  let top = i; for (const [p, n] of up(nodes, i)) { top = p; if (n.depth <= 2 || n.parent < 0) break }
   if (!docked(top) || !nodes.some((n) => n.role === 'menubar')) return 0
-  const bar = nodes.map((n, j) => n.role === 'menubar' ? nodes.filter((c) => c.parent === j && c.bounds).map((c) => c.bounds!) : []).filter((m) => m.length)
+  const bar = nodes.map((n, j) => n.role === 'menubar' ? nodes.flatMap((c) => c.parent === j && c.bounds ? [c.bounds] : []) : []).filter((m) => m.length)
     .map((m) => ({ y: Math.min(...m.map((b) => b[1])), h: Math.max(...m.map((b) => b[3])) })).sort((a, b) => b.h - a.h)[0]
-  const rows = nodes.flatMap((n, j) => n.role === 'toolbar' && docked(j) ? nodes.filter((c) => c.parent === j && c.bounds && c.shown).map((c) => c.bounds![1]) : [])
+  const rows = nodes.flatMap((n, j) => n.role === 'toolbar' && docked(j) ? nodes.flatMap((c) => c.parent === j && c.bounds && c.shown ? [c.bounds[1]] : []) : [])
   if (!bar || !rows.length) return null
   return Math.min(...rows) < bar.y + bar.h / 2 ? bar.h : 0
 }
@@ -1004,7 +1025,7 @@ async function located(target: string, press: boolean) {
       hit = await resolve(nodes, target, undefined, undefined, 0.7)
       if (hit) { at = x; break }
     }
-  } catch (e) { if (!(e instanceof Surprise)) throw e; return { found: false, why: e.reason, window: w.title, ms: Date.now() - t0 } }
+  } catch (e: unknown) { if (!(e instanceof Surprise)) throw e; return { found: false, why: e.reason, window: w.title, ms: Date.now() - t0 } }
   if (!hit) return { found: false, why: `no element of "${w.title}" matches`, window: w.title, ms: Date.now() - t0 }
   const out: Record<string, unknown> = { found: true, how: hit.how, role: hit.n.role, name: hit.n.name, bounds: hit.n.bounds ?? null, shown: hit.n.shown, shift: drawnShift(nodes, hit.i), window: at.title, pid: at.pid }
   if (press) {
