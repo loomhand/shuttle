@@ -7,7 +7,6 @@ pub mod desk;
 pub mod driver;
 pub mod keys;
 pub mod model;
-pub mod rpc;
 pub mod server;
 #[cfg(windows)]
 pub mod uia;

@@ -8,15 +8,6 @@ pub enum Os {
 }
 
 impl Os {
-    /// The OS this binary runs on; Windows when it is neither.
-    pub fn current() -> Self {
-        if cfg!(target_os = "macos") {
-            Self::Mac
-        } else {
-            Self::Windows
-        }
-    }
-
     fn logo(self) -> &'static str {
         match self {
             Self::Windows => "win",

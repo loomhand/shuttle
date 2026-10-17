@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SESSION: &str = "desk";
@@ -35,17 +35,12 @@ impl Driver {
 
     /// The daemon's endpoint: `CUA_DRIVER_SOCKET`, else the driver's default for this OS.
     pub fn default_endpoint() -> String {
-        if let Some(e) = std::env::var("CUA_DRIVER_SOCKET")
-            .ok()
-            .filter(|e| !e.is_empty())
-        {
-            return e;
-        }
-        if cfg!(windows) {
-            return r"\\.\pipe\cua-driver".to_owned();
-        }
-        let home = std::env::var("HOME").unwrap_or_default();
-        format!("{home}/Library/Caches/cua-driver/cua-driver.sock")
+        crate::server::cache_endpoint(
+            "CUA_DRIVER_SOCKET",
+            "cua-driver",
+            "cua-driver",
+            "cua-driver.sock",
+        )
     }
 
     async fn start(&self) -> Result<(), String> {
@@ -76,7 +71,18 @@ impl Driver {
         let stream = crate::server::connect(&self.endpoint)
             .await
             .map_err(|e| format!("connect cua-driver {}: {e}", self.endpoint))?;
-        roundtrip(stream, line).await
+        let mut stream = BufReader::new(stream);
+        stream
+            .get_mut()
+            .write_all(&line)
+            .await
+            .map_err(|e| format!("write cua-driver: {e}"))?;
+        let mut reply = String::new();
+        stream
+            .read_line(&mut reply)
+            .await
+            .map_err(|e| format!("read cua-driver: {e}"))?;
+        Ok(reply)
     }
 }
 
@@ -118,24 +124,6 @@ pub fn text_of(v: &Value) -> String {
         .filter_map(|c| c["text"].as_str())
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-async fn roundtrip<S: AsyncRead + AsyncWrite + Unpin>(
-    stream: S,
-    line: Vec<u8>,
-) -> Result<String, String> {
-    let mut stream = BufReader::new(stream);
-    stream
-        .get_mut()
-        .write_all(&line)
-        .await
-        .map_err(|e| format!("write cua-driver: {e}"))?;
-    let mut reply = String::new();
-    stream
-        .read_line(&mut reply)
-        .await
-        .map_err(|e| format!("read cua-driver: {e}"))?;
-    Ok(reply)
 }
 
 fn result(tool: &str, reply: &str) -> Result<Value, String> {

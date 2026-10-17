@@ -2,6 +2,7 @@
 
 use desk_core::text::Named;
 use desk_core::window::Window;
+use serde::Serialize;
 use serde_json::{Value, json};
 
 /// The ARIA roles a caller can act on.
@@ -38,26 +39,13 @@ pub const FIELD_ROLES: [&str; 6] = [
 ];
 
 /// A top-level window of an app.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Frame {
     pub id: String,
     pub title: String,
     pub role: &'static str,
     pub pid: Option<u32>,
     pub active: bool,
-}
-
-impl Frame {
-    /// The window as desk JSON.
-    pub fn json(&self) -> Value {
-        json!({
-            "id": self.id,
-            "title": self.title,
-            "role": self.role,
-            "pid": self.pid,
-            "active": self.active,
-        })
-    }
 }
 
 impl Window for Frame {
@@ -158,6 +146,14 @@ pub struct Extras {
     pub values: bool,
     pub bounds: bool,
     pub keys: bool,
+}
+
+impl Extras {
+    pub const BOUNDS: Self = Self {
+        values: false,
+        bounds: true,
+        keys: false,
+    };
 }
 
 /// An element action that is no pointer click.
