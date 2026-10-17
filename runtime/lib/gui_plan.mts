@@ -53,9 +53,9 @@ const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'tog
 const FILLER = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'and', 'or', 'by', 'from', 'into', 'this', 'that', 'its', 'it', 'is', 'button', 'link', 'tab', 'field', 'box', 'icon', 'toggle', 'dropdown', 'input', 'control', 'item', 'entry'])
 const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close']
 const CUT = '\n(the outline holds only the start of the web page: use the browser_* tools for page content)'
-const SHELL_WINDOWS = ({ linux: /^(Desktop|xfce4-panel)$/, win32: /^Program Manager$/ } as Record<string, RegExp>)[OS] ?? /$^/
+const SHELL_WINDOWS = ({ linux: /^(Desktop|xfce4-panel)$/, win32: /^Program Manager$/ } as Record<string, RegExp>)[OS] ?? /(?!)/
 const SHELL_TARGET = /\b(dock|panel|taskbar|desktop)\b/i
-const CHOOSER = ({ linux: /File Chooser Widget/, win32: /^\s*- (combobox|textbox) "File name:?"/m, darwin: /^\s*- text "Save As:"/m } as Record<string, RegExp>)[OS] ?? /$^/
+const CHOOSER = ({ linux: /File Chooser Widget/, win32: /^\s*- (combobox|textbox) "File name:?"/m, darwin: /^\s*- text "Save As:"/m } as Record<string, RegExp>)[OS] ?? /(?!)/
 const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
 let busNames: string[] | null = null
 const known = new Set<string>()
