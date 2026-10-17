@@ -1171,6 +1171,45 @@ mod tests {
         }
     }
 
+    struct Sheet(Arc<Mutex<Vec<Value>>>);
+
+    impl Input for Sheet {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            Ok(match tool {
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 7, "window_id": 491, "layer": 0, "z_index": 7, "bounds": {"x": 0.0, "y": 0.0, "width": 390.0, "height": 332.0}}
+                ]}}),
+                "get_window_state" => json!({"structuredContent": {
+                    "screenshot_width": 390, "screenshot_height": 332,
+                    "window_bounds": {"x": 0.0, "y": 0.0, "width": 390.0, "height": 332.0},
+                    "background_input": {"routes": [
+                        {"route": "accessibility", "status": "refused"},
+                        {"route": "window_pointer", "status": "refused"}
+                    ]}
+                }}),
+                "click" => {
+                    self.0.lock().unwrap().push(args);
+                    json!({})
+                }
+                _ => json!({}),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_macos_click_into_a_window_the_driver_refuses_pointer_input_for_goes_to_the_desktop()
+    {
+        let clicks = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(notepad()), Sheet(clicks.clone()), Os::Mac);
+        desk.run("desk_click", json!({"x": 20.0, "y": 30.0}))
+            .await
+            .unwrap();
+        assert_eq!(
+            *clicks.lock().unwrap(),
+            [json!({"x": 20.0, "y": 30.0, "scope": "desktop"})]
+        );
+    }
+
     #[tokio::test]
     async fn macos_clicks_into_one_unmoved_window_read_it_once_and_again_when_the_driver_forgot_it()
     {
