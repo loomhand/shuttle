@@ -8,6 +8,7 @@ use desk_core::wire::Call;
 use shuttle_desk::server;
 use shuttle_models::Models;
 use shuttle_models::config::{Config, default_path};
+use tokio::runtime::Builder;
 
 use crate::daemon::Daemon;
 use crate::runner::Runner;
@@ -26,33 +27,15 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         "mcp" => {
             let endpoint = desk_endpoint();
-            let served = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| format!("start runtime: {e}"))
-                .and_then(|r| {
-                    r.block_on(mcp::serve(
-                        tokio::io::BufReader::new(tokio::io::stdin()),
-                        tokio::io::stdout(),
-                        &endpoint,
-                    ))
-                });
-            match served {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => fail(&e),
-            }
+            let stdin = tokio::io::BufReader::new(tokio::io::stdin());
+            exit(block_on(
+                Builder::new_current_thread(),
+                mcp::serve(stdin, tokio::io::stdout(), &endpoint),
+            ))
         }
         "serve" => {
             let endpoint = rest.first().cloned().unwrap_or_else(desk_endpoint);
-            let served = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| format!("start runtime: {e}"))
-                .and_then(|r| r.block_on(serve(&endpoint)));
-            match served {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => fail(&e),
-            }
+            exit(block_on(Builder::new_multi_thread(), serve(&endpoint)))
         }
         "desk" => call_desk(rest),
         _ => usage(),
@@ -60,17 +43,7 @@ pub fn run(args: &[String]) -> ExitCode {
 }
 
 fn desk_endpoint() -> String {
-    if let Some(e) = std::env::var("SHUTTLE_SOCKET")
-        .ok()
-        .filter(|e| !e.is_empty())
-    {
-        return e;
-    }
-    if cfg!(windows) {
-        return format!(r"\\.\pipe\{NAME}-desk");
-    }
-    let home = std::env::var("HOME").unwrap_or_default();
-    format!("{home}/Library/Caches/{NAME}/desk.sock")
+    server::cache_endpoint("SHUTTLE_SOCKET", &format!("{NAME}-desk"), NAME, "desk.sock")
 }
 
 fn call_desk(rest: &[String]) -> ExitCode {
@@ -88,11 +61,10 @@ fn call_desk(rest: &[String]) -> ExitCode {
             return usage();
         }
     };
-    let out = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("start runtime: {e}"))
-        .and_then(|r| r.block_on(server::call(&desk_endpoint(), &call)));
+    let out = block_on(
+        Builder::new_current_thread(),
+        server::call(&desk_endpoint(), &call),
+    );
     match out {
         Ok(out) if !out.is_error => {
             println!("{}", out.text);
@@ -121,6 +93,21 @@ async fn serve(endpoint: &str) -> Result<(), String> {
         endpoint,
     )
     .await
+}
+
+fn block_on<T>(
+    mut runtime: Builder,
+    f: impl Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    runtime
+        .enable_all()
+        .build()
+        .map_err(|e| format!("start runtime: {e}"))?
+        .block_on(f)
+}
+
+fn exit(done: Result<(), String>) -> ExitCode {
+    done.map_or_else(|e| fail(&e), |()| ExitCode::SUCCESS)
 }
 
 fn usage() -> ExitCode {

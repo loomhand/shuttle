@@ -7,7 +7,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::desk::Desk;
 use crate::driver::Input;
 use crate::model::Access;
-use crate::rpc::{Call, Output, read_frame, write_frame};
+use desk_core::wire::{Call, Output, read_frame, write_frame};
 
 #[cfg(windows)]
 const PIPE_BUSY: i32 = 231;
@@ -29,9 +29,6 @@ pub trait Handler: Send + Sync + 'static {
 
 impl<B: Access + 'static, D: Input + Send + Sync + 'static> Handler for Desk<B, D> {
     async fn answer(&self, call: Call) -> Output {
-        if !call.tool.starts_with("desk_") {
-            return Output::error(format!("unknown tool {}", call.tool));
-        }
         self.run(&call.tool, call.args)
             .await
             .unwrap_or_else(Output::error)
@@ -114,6 +111,17 @@ pub async fn call(endpoint: &str, call: &Call) -> Result<Output, String> {
         .await
         .map_err(|e| format!("connect {endpoint}: {e}"))?;
     exchange(conn, call).await
+}
+
+pub fn cache_endpoint(var: &str, pipe: &str, dir: &str, file: &str) -> String {
+    if let Some(e) = std::env::var(var).ok().filter(|e| !e.is_empty()) {
+        return e;
+    }
+    if cfg!(windows) {
+        return format!(r"\\.\pipe\{pipe}");
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    format!("{home}/Library/Caches/{dir}/{file}")
 }
 
 /// Connects to the endpoint, waiting while a Windows pipe is busy.
@@ -296,7 +304,7 @@ mod tests {
         assert!(missing.is_error);
         assert_eq!(missing.text, "no focused window");
         let other = call(&endpoint, &ask("shell", json!({}))).await.unwrap();
-        assert_eq!(other.text, "unknown tool shell");
+        assert_eq!(other.text, "unknown desk tool shell");
         let key = call(&endpoint, &ask("desk_key", json!({"keys": "cmd+s"})))
             .await
             .unwrap();

@@ -14,12 +14,12 @@ use desk_core::args::{
 use desk_core::press::{MENU_POLL, MENU_POLLS, SELECTED_ROLES};
 use desk_core::text::{MAX_FOUND, NAME_CHARS, matches, ms, quote};
 use desk_core::window::{self, TITLE_TIERS, app_window, title_matches};
+use desk_core::wire::Output;
 use serde_json::{Map, Value, json};
 
 use crate::driver::{Input, desktop, text_of};
 use crate::keys::{Os, key_names};
 use crate::model::{Access, Act, Extras, Frame, Node};
-use crate::rpc::Output;
 use crate::worker::Worker;
 
 pub const TURN_WAIT: Duration = Duration::from_secs(15);
@@ -102,7 +102,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn windows(&self) -> Result<String, String> {
         let mut frames = self.access.run(CALL_LIMIT, (), |a| a.frames()).await?;
         frames.sort_by_key(|f| !f.active);
-        Ok(Value::Array(frames.iter().map(Frame::json).collect()).to_string())
+        serde_json::to_string(&frames).map_err(|e| format!("encode windows: {e}"))
     }
 
     async fn snapshot(&self, a: SnapArgs) -> Result<String, String> {
@@ -127,7 +127,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             phases.insert((*name).into(), ms(*us));
         }
         let mut out = json!({
-            "window": tree.frame.json(),
+            "window": tree.frame,
             "ms": ms(started.elapsed().as_micros()),
             "phases": phases,
             "truncated": tree.truncated,
@@ -164,7 +164,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .take(MAX_FOUND)
             .map(|i| tree.nodes[i].json(i))
             .collect();
-        Ok(json!({"window": tree.frame.json(), "found": found}).to_string())
+        Ok(json!({"window": tree.frame, "found": found}).to_string())
     }
 
     async fn read(&self, a: ReadArgs) -> Result<String, String> {
@@ -205,13 +205,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "select" => Act::Select,
             "focus" => Act::Focus,
             "click" => {
-                let shown = Extras {
-                    bounds: true,
-                    ..Extras::default()
-                };
                 let n = self
                     .access
-                    .run(CALL_LIMIT, turn, move |b| b.node(&a.id, shown, 0))
+                    .run(CALL_LIMIT, turn, move |b| b.node(&a.id, Extras::BOUNDS, 0))
                     .await?;
                 let [x, y, w, h] = n.bounds.ok_or("the element has no screen position")?;
                 self.driver
@@ -237,7 +233,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .run(CALL_LIMIT, (), move |b| {
                 let frame = window::pick(b.frames()?, a.window.as_deref(), a.pid)?;
                 let Some(hit) = b.at(&frame.id, a.x, a.y)? else {
-                    return Ok(json!({"found": null, "window": frame.json()}).to_string());
+                    return Ok(json!({"found": null, "window": frame}).to_string());
                 };
                 let node = b.node(&hit, Extras::default(), 0)?;
                 let path: Vec<Value> = b
@@ -333,7 +329,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 ..Frame::default()
             })
             .collect();
-        let w = titled(windows, &a.window, a.pid)?;
+        let w = window::pick(windows, Some(&a.window), a.pid)?;
         let window_id: Value = serde_json::from_str(&w.id).unwrap_or(Value::Null);
         self.driver
             .call(
@@ -387,11 +383,7 @@ pub enum Press {
 /// entry, clicks the element's centre when a hit test there finds it, else runs its action; a Windows
 /// menu entry runs its action, since a click right after its popup opens only hovers it.
 pub fn plan_press<B: Access>(b: &mut B, id: &str, os: Os) -> Result<Press, String> {
-    let shown = Extras {
-        bounds: true,
-        ..Extras::default()
-    };
-    let mut node = b.node(id, shown, 0)?;
+    let mut node = b.node(id, Extras::BOUNDS, 0)?;
     if SELECTED_ROLES.contains(&node.role) && b.act(id, Act::Select).unwrap_or(false) {
         return Ok(Press::Selected);
     }
@@ -401,7 +393,7 @@ pub fn plan_press<B: Access>(b: &mut B, id: &str, os: Os) -> Result<Press, Strin
     let chain = b.ancestors(id)?;
     if node.role.starts_with("menu") && !node.has("showing") && open_menus(b, &chain) {
         for _ in 0..MENU_POLLS {
-            node = b.node(id, shown, 0)?;
+            node = b.node(id, Extras::BOUNDS, 0)?;
             if node.has("showing") {
                 break;
             }
@@ -438,12 +430,8 @@ fn reachable<B: Access>(b: &mut B, id: &str, node: &Node, chain: &[String]) -> O
     if node.role.starts_with("menu") {
         return Some((cx, cy));
     }
-    let shown = Extras {
-        bounds: true,
-        ..Extras::default()
-    };
     let inside = chain.iter().all(|a| {
-        b.node(a, shown, 0).is_ok_and(|n| {
+        b.node(a, Extras::BOUNDS, 0).is_ok_and(|n| {
             n.role == "tab"
                 || n.bounds.is_none_or(|[bx, by, bw, bh]| {
                     (bx..bx + bw).contains(&cx) && (by..by + bh).contains(&cy)
@@ -824,24 +812,6 @@ mod tests {
             window::pick(none_active, Some("Untitled - Notepad"), None).unwrap_err(),
             "no window \"Untitled - Notepad\"; windows of its app: [\"a.txt - Notepad\", \"b.txt - Notepad\"]"
         );
-    }
-
-    #[test]
-    fn names_match_exactly_before_they_match_contained() {
-        let n = |name: &str, role: &'static str| Node {
-            name: name.into(),
-            role,
-            ..Node::default()
-        };
-        let nodes = vec![
-            n("Save As…", "menuitem"),
-            n("Save", "menuitem"),
-            n("save", "button"),
-        ];
-        assert_eq!(matches(&nodes, "save", None), [1, 2]);
-        assert_eq!(matches(&nodes, "save as", None), [0]);
-        assert_eq!(matches(&nodes, "save", Some("button")), [2]);
-        assert!(matches(&nodes, "", None).is_empty());
     }
 
     #[test]
