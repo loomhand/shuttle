@@ -105,14 +105,17 @@ fn call_desk(rest: &[String]) -> ExitCode {
 
 async fn serve(endpoint: &str) -> Result<(), String> {
     let config = Config::load(&default_path(NAME));
-    let key_var = config
-        .as_ref()
-        .map_or_else(|_| Config::default().api_key_env, |c| c.api_key_env.clone());
+    let mut key_vars = vec![Config::default().api_key_env];
+    if let Ok(c) = &config
+        && !key_vars.contains(&c.api_key_env)
+    {
+        key_vars.push(c.api_key_env.clone());
+    }
     let models = config.map(Models::new);
     let exe = std::env::current_exe()
         .and_then(std::fs::canonicalize)
         .map_err(|e| format!("locate this program: {e}"))?;
-    let runner = Runner::beside(&exe, endpoint.to_owned(), key_var);
+    let runner = Runner::beside(&exe, endpoint.to_owned(), key_vars);
     server::serve(
         Arc::new(Daemon::new(server::native(), models, runner)),
         endpoint,
