@@ -41,7 +41,7 @@ Desk calls name `desk_<verb>` tools:
 
 ## Runs
 
-`script_run` (`code` or an absolute `script` path, which the MCP server resolves against the agent's working directory; `params`, default `{}`; `timeout_s` up to 110, default 90) runs one module on the bundled Node, with the desk API as the global `desk`, and answers `{result, logs, stderr, exit_code, duration_ms, error?: {kind: exception | timeout, message}}`. `gui_plan` runs the runtime's plan executor with its arguments and answers the plan's result. Both run with `TOOLHOST_SOCKET` naming the daemon's endpoint and without the model key variables (`OPENROUTER_API_KEY` and the configured `api_key_env`); logs and stderr keep their first 32 KiB.
+`script_run` (`code` or an absolute `script` path, which the MCP server resolves against the agent's working directory; `params`, default `{}`; `timeout_s` up to 110, default 90) runs one module on the bundled Node, with the desk API as the global `desk`, and answers `{result, logs, stderr, exit_code, duration_ms, error?: {kind, message}}`: `kind` is `import` (the module or the desk API failed to load), `no_main` (the module exports no `main` function), `exception` (`main` threw; `message` is the stack), `timeout` or `exit` (Node exited without saying why). `gui_plan` runs the runtime's plan executor with its arguments and answers the plan's result. Both run with `TOOLHOST_SOCKET` naming the daemon's endpoint and without the model key variables (`OPENROUTER_API_KEY` and the configured `api_key_env`); logs and stderr keep their first 32 KiB.
 
 ## Model calls
 
