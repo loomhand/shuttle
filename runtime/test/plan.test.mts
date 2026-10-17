@@ -110,3 +110,22 @@ test('typing a Windows path into a dialog field finds it in the outline, backsla
     server.close()
   }
 })
+
+test('a press the desk reports as not done fails the step', async () => {
+  const win = { id: '1', title: 'Preferences', role: 'dialog', pid: process.pid, active: true }
+  const button = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'Apply', states: ['showing'], bounds: [10, 10, 60, 20] }
+  const server = await toolhost(({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root('dialog', 'Preferences'), button] })
+    if (tool === 'desk_press') return '{"ok":false,"how":"action"}'
+    return '{"ok":true}'
+  })
+  const { main } = await import('../lib/gui_plan.mts')
+  try {
+    const r = await main({ steps: [{ click: 'Apply' }] })
+    assert.equal(r.ok, false, JSON.stringify(r))
+    assert.match(r.escalate?.reason ?? '', /Apply/)
+  } finally {
+    server.close()
+  }
+})
