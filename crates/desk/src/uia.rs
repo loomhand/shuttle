@@ -278,8 +278,8 @@ impl Access for Uia {
             let Some(top) = self.frame_of(&shown[i], foreground) else {
                 continue;
             };
-            for owned in shown.iter().filter(|o| o.owner == shown[i].hwnd.0 as isize) {
-                frames.extend(self.frame_of(owned, foreground));
+            for o in owned(&shown, i) {
+                frames.extend(self.frame_of(&shown[o], foreground));
             }
             frames.push(top);
         }
@@ -625,6 +625,13 @@ fn shown() -> Vec<Shown> {
             };
             Shown { hwnd, owner, pid }
         })
+        .collect()
+}
+
+fn owned(shown: &[Shown], root: usize) -> Vec<usize> {
+    let owner = shown[root].hwnd.0 as isize;
+    (0..shown.len())
+        .filter(|&i| shown[i].owner == owner)
         .collect()
 }
 
