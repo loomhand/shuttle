@@ -5,6 +5,6 @@ pub mod mcp;
 pub mod tools;
 
 /// The program name in usage lines, endpoints and the MCP server info.
-pub const NAME: &str = "shuttle";
+pub const NAME: &str = "cocoon-shuttle";
 /// The release version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

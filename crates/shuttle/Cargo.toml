@@ -9,7 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "shuttle"
+name = "cocoon-shuttle"
 path = "src/main.rs"
 
 [dependencies]

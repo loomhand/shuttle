@@ -16,15 +16,15 @@ jobs:
           - platform: macos-arm64
             runner: macos-26
             target: aarch64-apple-darwin
-            exe: shuttle
+            exe: cocoon-shuttle
           - platform: macos-x64
             runner: macos-26
             target: x86_64-apple-darwin
-            exe: shuttle
+            exe: cocoon-shuttle
           - platform: windows-x64
             runner: windows-2025
             target: x86_64-pc-windows-msvc
-            exe: shuttle.exe
+            exe: cocoon-shuttle.exe
     runs-on: ${{ matrix.runner }}
     env:
       MACOSX_DEPLOYMENT_TARGET: "13.0"
@@ -86,7 +86,7 @@ jobs:
           cargo build --release --locked -p shuttle --target ${{ matrix.target }}
 
       - name: Package
-        run: packaging/package.sh ${{ matrix.platform }} target/${{ matrix.target }}/release/shuttle "$GITHUB_REF_NAME" dist
+        run: packaging/package.sh ${{ matrix.platform }} target/${{ matrix.target }}/release/cocoon-shuttle "$GITHUB_REF_NAME" dist
 
       - name: Upload
         uses: actions/upload-artifact@v7.0.2
@@ -128,7 +128,7 @@ jobs:
         run: |
           awk -v v="${GITHUB_REF_NAME#v}" '/^## / { on = ($2 == v) } on && !/^## /' CHANGELOG.md > notes.md
           test -s notes.md
-          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "shuttle $GITHUB_REF_NAME" --notes-file notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "cocoon-shuttle $GITHUB_REF_NAME" --notes-file notes.md
 
   install:
     needs: publish
@@ -154,8 +154,8 @@ jobs:
 
       - name: Check
         run: |
-          "$HOME/.local/bin/shuttle" --version | grep -Fx "shuttle ${GITHUB_REF_NAME#v}"
-          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | "$HOME/.local/bin/shuttle" mcp | tee tools.json
+          "$HOME/.local/bin/cocoon-shuttle" --version | grep -Fx "cocoon-shuttle ${GITHUB_REF_NAME#v}"
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | "$HOME/.local/bin/cocoon-shuttle" mcp | tee tools.json
           grep -o '"name":"[a-z_]*"' tools.json | sort | tr '\n' ' ' | grep -Fx '"name":"desk" "name":"gui_plan" "name":"screenshot" "name":"script_run" "name":"status" '
 
   install-windows:
@@ -171,9 +171,9 @@ jobs:
       - name: Check
         shell: pwsh
         run: |
-          $exe = Join-Path $env:LOCALAPPDATA 'Programs\shuttle\shuttle.exe'
+          $exe = Join-Path $env:LOCALAPPDATA 'Programs\cocoon-shuttle\cocoon-shuttle.exe'
           $v = & $exe --version
-          if ($v -ne "shuttle $($env:GITHUB_REF_NAME.TrimStart('v'))") { throw "version: $v" }
+          if ($v -ne "cocoon-shuttle $($env:GITHUB_REF_NAME.TrimStart('v'))") { throw "version: $v" }
           $out = '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | & $exe mcp
           $out
           $names = ($out | ConvertFrom-Json).result.tools.name -join ' '

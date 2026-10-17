@@ -4,7 +4,7 @@ shuttle acts on your own desktop, with your accounts signed in. These controls l
 
 ## Kill switch
 
-A global hotkey stops shuttle at once: it kills the running `gui_plan` and `script_run` processes, cancels the desk calls in flight and halts. Every tool call then fails with `stopped by the user` until you run `shuttle resume` or resume from the indicator.
+A global hotkey stops shuttle at once: it kills the running `gui_plan` and `script_run` processes, cancels the desk calls in flight and halts. Every tool call then fails with `stopped by the user` until you run `cocoon-shuttle resume` or resume from the indicator.
 
 | OS | Default | Registered with |
 |---|---|---|
@@ -12,7 +12,7 @@ A global hotkey stops shuttle at once: it kills the running `gui_plan` and `scri
 | Windows | Ctrl+Alt+Shift+Esc | `RegisterHotKey` |
 | Linux (X11) | Ctrl+Alt+Shift+Esc | `XGrabKey` |
 
-Set `kill_hotkey` in [config.md](config.md) to change it. On Wayland a global hotkey depends on the compositor's GlobalShortcuts portal; where there is none, `shuttle stop` from a terminal is the kill switch.
+Set `kill_hotkey` in [config.md](config.md) to change it. On Wayland a global hotkey depends on the compositor's GlobalShortcuts portal; where there is none, `cocoon-shuttle stop` from a terminal is the kill switch.
 
 ## Indicator
 

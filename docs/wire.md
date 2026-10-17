@@ -1,14 +1,14 @@
 # Desk wire
 
-One wire connects `shuttle mcp` to the daemon, the runtime (`desk.mts`) to the daemon, and the CLI (`shuttle desk VERB`) to the daemon. It is the toolhost wire of cocoonbox, implemented once in `desk_core::wire`, so the runtime runs unchanged in both.
+One wire connects `cocoon-shuttle mcp` to the daemon, the runtime (`desk.mts`) to the daemon, and the CLI (`cocoon-shuttle desk VERB`) to the daemon. It is the toolhost wire of cocoonbox, implemented once in `desk_core::wire`, so the runtime runs unchanged in both.
 
 ## Endpoint
 
 | OS | Default endpoint |
 |---|---|
-| macOS | `~/Library/Caches/shuttle/desk.sock`, mode 0600 |
-| Linux | `$XDG_RUNTIME_DIR/shuttle/desk.sock`, else `~/.cache/shuttle/desk.sock`, mode 0600 |
-| Windows | `\\.\pipe\shuttle-desk`, local clients only |
+| macOS | `~/Library/Caches/cocoon-shuttle/desk.sock`, mode 0600 |
+| Linux | `$XDG_RUNTIME_DIR/cocoon-shuttle/desk.sock`, else `~/.cache/cocoon-shuttle/desk.sock`, mode 0600 |
+| Windows | `\\.\pipe\cocoon-shuttle-desk`, local clients only |
 
 `SHUTTLE_SOCKET` overrides the endpoint for the binary. The daemon hands its endpoint to the runtime in `TOOLHOST_SOCKET`.
 

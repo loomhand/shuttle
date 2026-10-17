@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Builds one release archive from a shuttle binary, the runtime, and cua-driver and Node from packaging/pins.
+# Builds one release archive from a cocoon-shuttle binary, the runtime, and cua-driver and Node from packaging/pins.
 # usage: packaging/package.sh PLATFORM SHUTTLE_BINARY VERSION OUT_DIR; PLATFORM: macos-arm64, macos-x64, linux-x64, linux-arm64, windows-x64
 set -euo pipefail
 
-NAME=shuttle
-APP=Shuttle
-BUNDLE_ID=io.github.loomhand.shuttle
+NAME=cocoon-shuttle
+APP="Cocoon Shuttle"
+BUNDLE_ID=io.github.loomhand.cocoon-shuttle
 
 usage() {
 	echo "usage: $0 PLATFORM SHUTTLE_BINARY VERSION OUT_DIR" >&2
@@ -44,7 +44,7 @@ fetch() {
 	echo "$WORK/$1/$(ls "$WORK/$1")"
 }
 
-# licenses DIR NODE CUA: the license of shuttle and of each bundled component
+# licenses DIR NODE CUA: the license of cocoon-shuttle and of each bundled component
 licenses() {
 	mkdir -p "$1"
 	cp "$ROOT/LICENSE" "$1/LICENSE"

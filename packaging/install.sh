@@ -1,11 +1,11 @@
 #!/bin/sh
-# Installs shuttle on macOS or Linux from a GitHub release, after checking the archive against the release's SHA256SUMS.
+# Installs cocoon-shuttle on macOS or Linux from a GitHub release, after checking the archive against the release's SHA256SUMS.
 # usage: curl -fsSL https://github.com/loomhand/shuttle/releases/latest/download/install.sh | sh
 # env: SHUTTLE_VERSION (a tag, default the latest release), SHUTTLE_PREFIX (default ~/.local), SHUTTLE_APP_DIR (macOS, default ~/Applications)
 set -eu
 
-NAME=shuttle
-APP=Shuttle
+NAME=cocoon-shuttle
+APP="Cocoon Shuttle"
 REPO=loomhand/shuttle
 PREFIX=${SHUTTLE_PREFIX:-$HOME/.local}
 APP_DIR=${SHUTTLE_APP_DIR:-$HOME/Applications}
@@ -76,7 +76,7 @@ case ":$PATH:" in
 *":$PREFIX/bin:"*) ;;
 *) say "add $PREFIX/bin to PATH, e.g. echo 'export PATH=\"$PREFIX/bin:\$PATH\"' >> ~/.profile" ;;
 esac
-say "register it with an agent, e.g.: claude mcp add $NAME -- $PREFIX/bin/$NAME mcp"
+say "register it with an agent, e.g.: claude mcp add shuttle -- $PREFIX/bin/$NAME mcp"
 if [ "$os" = macos ]; then
 	say "macOS: when $APP starts acting on the desktop, grant it Accessibility and Screen Recording in"
 	say "System Settings > Privacy & Security, adding $home; an upgrade replaces the ad hoc signature, so grant it again after each upgrade"

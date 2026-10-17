@@ -1,6 +1,6 @@
 # shuttle
 
-shuttle is a computer-use host that runs on your own machine. Local agents such as Claude Code, Codex and Cursor start it as an MCP server over stdio and drive your desktop through it: whole GUI plans in one call (`gui_plan`), scripts against a desk API (`script_run`), single accessibility-tree calls (`desk`) and screenshots. Model calls for target picking, grounding and checks go to endpoints and keys you configure (bring your own key).
+shuttle (binary `cocoon-shuttle`, app Cocoon Shuttle) is a computer-use host that runs on your own machine. Local agents such as Claude Code, Codex and Cursor start it as an MCP server over stdio and drive your desktop through it: whole GUI plans in one call (`gui_plan`), scripts against a desk API (`script_run`), single accessibility-tree calls (`desk`) and screenshots. Model calls for target picking, grounding and checks go to endpoints and keys you configure (bring your own key).
 
 shuttle is part of [loomhand](https://github.com/loomhand). It takes its desk core and plan executor from [cocoonbox](https://github.com/loomhand/cocoonbox), where they drive cloud desktops, and its input, capture and window layer from [cua-driver](https://github.com/loomhand/cua) (MIT).
 
@@ -11,7 +11,7 @@ shuttle is part of [loomhand](https://github.com/loomhand). It takes its desk co
 | Phase | What | State |
 |---|---|---|
 | P0 | Workspace, CI, release archives, installers, MCP skeleton | done in v0.0.1 |
-| P1 | macOS: daemon in `Shuttle.app`, desk tools, `gui_plan`, `script_run`, BYOK models, safety controls | next |
+| P1 | macOS: daemon in `Cocoon Shuttle.app`, desk tools, `gui_plan`, `script_run`, BYOK models, safety controls | next |
 | P2 | Windows: the same over UI Automation | planned |
 | P3 | Linux: the same over AT-SPI on X11 | planned |
 | P4 | cocoonbox depends on shuttle's crates and runtime | planned |
@@ -37,21 +37,21 @@ The installers check the archive against the release's `SHA256SUMS`. The binarie
 ## Use it from an agent
 
 ```sh
-claude mcp add shuttle -- shuttle mcp
+claude mcp add shuttle -- cocoon-shuttle mcp
 ```
 
 Codex (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.shuttle]
-command = "shuttle"
+command = "cocoon-shuttle"
 args = ["mcp"]
 ```
 
 Cursor (`~/.cursor/mcp.json`):
 
 ```json
-{ "mcpServers": { "shuttle": { "command": "shuttle", "args": ["mcp"] } } }
+{ "mcpServers": { "shuttle": { "command": "cocoon-shuttle", "args": ["mcp"] } } }
 ```
 
 ## Tools
