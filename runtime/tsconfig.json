@@ -13,5 +13,5 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true
   },
-  "include": ["lib", "test/desk.test.mts"]
+  "include": ["lib", "test"]
 }

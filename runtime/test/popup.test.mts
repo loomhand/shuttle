@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
-import { createServer } from 'node:net'
-import { tmpdir } from 'node:os'
 import { test } from 'node:test'
+
+import { toolhost } from './toolhost.mts'
 
 test('a click that opens a combo box\'s list leaves the next step in the dialog, whose tree holds the list\'s entries, also in a new plan', async () => {
   const wm = { id: '1.3/1', title: '', role: 'window', pid: 687, active: true }
@@ -19,29 +18,16 @@ test('a click that opens a combo box\'s list leaves the next step in the dialog,
   ]
   const pressed: string[] = []
   const snapped: string[] = []
-  const toolhost = createServer((s) => {
-    let buf = Buffer.alloc(0)
-    s.on('data', (d) => {
-      buf = Buffer.concat([buf, d])
-      if (buf.length < 4 || buf.length < 4 + buf.readUInt32BE(0)) return
-      const { tool, args } = JSON.parse(buf.subarray(4).toString())
-      let text = '{"ok":true}'
-      if (tool === 'desk_windows') text = JSON.stringify(open ? [wm, list, main, { ...prefs, active: false }] : [wm, main, prefs])
-      if (tool === 'desk_snapshot') {
-        snapped.push(args.window)
-        const shown = nodes.map((n) => ({ ...n, states: n.depth === 3 && open ? ['showing'] : n.states }))
-        text = JSON.stringify({ window: prefs, nodes: args.window === prefs.title ? shown : [], truncated: false })
-      }
-      if (tool === 'desk_press') { pressed.push(args.id); open = args.id === '1.14/400'; text = '{"ok":true,"how":"click"}' }
-      const body = Buffer.from(JSON.stringify({ text, is_error: false }))
-      const head = Buffer.alloc(4)
-      head.writeUInt32BE(body.length)
-      s.end(Buffer.concat([head, body]))
-    })
+  const server = await toolhost(({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify(open ? [wm, list, main, { ...prefs, active: false }] : [wm, main, prefs])
+    if (tool === 'desk_snapshot') {
+      snapped.push(String(args.window))
+      const shown = nodes.map((n) => ({ ...n, states: n.depth === 3 && open ? ['showing'] : n.states }))
+      return JSON.stringify({ window: prefs, nodes: args.window === prefs.title ? shown : [], truncated: false })
+    }
+    if (tool === 'desk_press') { pressed.push(String(args.id)); open = args.id === '1.14/400'; return '{"ok":true,"how":"click"}' }
+    return '{"ok":true}'
   })
-  const socket = `${mkdtempSync(`${tmpdir()}/gui-plan-`)}/toolhost.sock`
-  await new Promise<void>((r) => toolhost.listen(socket, r))
-  process.env.TOOLHOST_SOCKET = socket
   const { main: plan } = await import('../lib/gui_plan.mts')
   try {
     const both = await plan({ steps: [{ click: 'Insert Tabs' }, { click: 'Insert Spaces' }] })
@@ -55,6 +41,6 @@ test('a click that opens a combo box\'s list leaves the next step in the dialog,
     assert.deepEqual(pressed.slice(2), ['1.14/400', '1.14/403'])
     assert.ok(snapped.every((w) => w === 'Mousepad Preferences'), snapped.join(' '))
   } finally {
-    toolhost.close()
+    server.close()
   }
 })
