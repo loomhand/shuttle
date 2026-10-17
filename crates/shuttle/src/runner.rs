@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 const DEFAULT_TIMEOUT_S: u64 = 90;
@@ -50,12 +50,11 @@ impl Runner {
     pub async fn script(&self, args: Value) -> Result<Value, String> {
         let a: ScriptArgs =
             serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
-        let scratch =
-            tempfile::tempdir().map_err(|e| format!("create a scratch directory: {e}"))?;
+        let scratch = scratch()?;
         let script = match (a.code, a.script) {
             (Some(code), None) => {
                 let path = scratch.path().join("script.mts");
-                tokio::fs::write(&path, code)
+                write_private(&path, code.as_bytes())
                     .await
                     .map_err(|e| format!("write the script: {e}"))?;
                 path
@@ -74,8 +73,7 @@ impl Runner {
     /// `gui_plan`: the plan executor of the runtime with `args`; its result comes back as is.
     pub async fn plan(&self, args: Value) -> Result<Value, String> {
         let timeout_s = args.get("timeout_s").and_then(Value::as_u64);
-        let scratch =
-            tempfile::tempdir().map_err(|e| format!("create a scratch directory: {e}"))?;
+        let scratch = scratch()?;
         let mut report = self
             .run(
                 &self.runtime.join("gui_plan.mts"),
@@ -98,7 +96,7 @@ impl Runner {
         scratch: &Path,
     ) -> Result<Value, String> {
         let body = serde_json::to_vec(params).map_err(|e| format!("encode params: {e}"))?;
-        tokio::fs::write(scratch.join("params.json"), body)
+        write_private(&scratch.join("params.json"), &body)
             .await
             .map_err(|e| format!("write params: {e}"))?;
         let timeout =
@@ -173,6 +171,24 @@ struct ScriptArgs {
     timeout_s: Option<u64>,
 }
 
+fn scratch() -> Result<tempfile::TempDir, String> {
+    #[cfg(unix)]
+    let made = tempfile::Builder::new()
+        .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
+        .tempdir();
+    #[cfg(not(unix))]
+    let made = tempfile::tempdir();
+    made.map_err(|e| format!("create a scratch directory: {e}"))
+}
+
+async fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut open = tokio::fs::OpenOptions::new();
+    open.write(true).create_new(true);
+    #[cfg(unix)]
+    open.mode(0o600);
+    open.open(path).await?.write_all(bytes).await
+}
+
 async fn capture(mut r: impl AsyncRead + Unpin) -> String {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
@@ -245,6 +261,17 @@ mod tests {
         assert_eq!(slow["logs"], "started\n");
         let relative = r.script(json!({"script": "x.mts"})).await.unwrap_err();
         assert_eq!(relative, "script x.mts is not an absolute path");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_scratch_directory_and_the_params_are_the_users_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = runner(dir.path());
+        let code = "import { statSync } from 'node:fs'\nexport function main() { const run = process.env.SHUTTLE_RUN; return [statSync(run).mode & 0o777, statSync(`${run}/params.json`).mode & 0o777, statSync(`${run}/script.mts`).mode & 0o777] }";
+        let report = r.script(json!({"code": code})).await.unwrap();
+        let modes: Vec<u32> = serde_json::from_value(report["result"].clone()).unwrap();
+        assert_eq!(modes, [0o700, 0o600, 0o600], "{report}");
     }
 
     #[tokio::test]
