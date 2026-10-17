@@ -48,6 +48,7 @@ pub struct Desk<B, D> {
     acting: Arc<tokio::sync::Mutex<()>>,
     turn_wait: Duration,
     scale: OnceLock<f64>,
+    read: std::sync::Mutex<Option<Read>>,
 }
 
 impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
@@ -60,6 +61,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             acting: Arc::new(tokio::sync::Mutex::new(())),
             turn_wait: TURN_WAIT,
             scale: OnceLock::new(),
+            read: std::sync::Mutex::new(None),
         }
     }
 
@@ -327,13 +329,31 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         {
             let front = json!({"pid": w.pid, "window_id": w.id});
             self.driver.call("bring_to_front", front).await?;
-            let (kx, ky) = self.pixels(&w).await?;
+            let cached = self
+                .reads()
+                .filter(|r| (r.pid, r.id, r.bounds) == (w.pid, w.id, w.bounds))
+                .map(|r| r.k);
             req["session"] = WINDOW_SESSION.into();
             req["pid"] = w.pid.into();
             req["window_id"] = w.id.into();
-            req["x"] = ((w.point.0 - w.bounds[0]) * kx).into();
-            req["y"] = ((w.point.1 - w.bounds[1]) * ky).into();
-            self.driver.call("click", req).await?;
+            let at = |req: &mut Value, (kx, ky): (f64, f64)| {
+                req["x"] = ((w.point.0 - w.bounds[0]) * kx).into();
+                req["y"] = ((w.point.1 - w.bounds[1]) * ky).into();
+            };
+            let k = match cached {
+                Some(k) => k,
+                None => self.pixels(&w).await?,
+            };
+            at(&mut req, k);
+            match self.driver.call("click", req.clone()).await {
+                Err(e) if cached.is_some() && e.contains("window_never_read") => {
+                    at(&mut req, self.pixels(&w).await?);
+                    self.driver.call("click", req).await?;
+                }
+                done => {
+                    done?;
+                }
+            }
             return Ok(());
         }
         self.driver.call("click", desktop(req)).await?;
@@ -392,10 +412,23 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 .map(|(px, pt)| px / pt)
                 .ok_or_else(|| format!("get_window_state of window {} has no {px}", w.id))
         };
-        Ok((
+        let k = (
             ratio("screenshot_width", "width")?,
             ratio("screenshot_height", "height")?,
-        ))
+        );
+        *self.reads() = Some(Read {
+            pid: w.pid,
+            id: w.id,
+            bounds: w.bounds,
+            k,
+        });
+        Ok(k)
+    }
+
+    fn reads(&self) -> std::sync::MutexGuard<'_, Option<Read>> {
+        self.read
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     async fn focus(&self, a: WindowArgs) -> Result<String, String> {
@@ -459,6 +492,14 @@ struct Under {
     id: i64,
     bounds: [f64; 4],
     point: (f64, f64),
+}
+
+#[derive(Clone, Copy)]
+struct Read {
+    pid: i64,
+    id: i64,
+    bounds: [f64; 4],
+    k: (f64, f64),
 }
 
 /// What a press comes to after the backend's part of it.
