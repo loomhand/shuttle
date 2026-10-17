@@ -845,7 +845,8 @@ async function run(s: Step, rec: Rec) {
   const raw = s.value
   if (raw === undefined) throw new Surprise(`set "${target}" needs a value`, await seen())
   const value = raw.endsWith('\n') ? raw.slice(0, -1) : raw
-  const same = (v: string | undefined) => v === undefined || norm(v) === norm(value) || (!!norm(value) && norm(v).startsWith(norm(value)))
+  const plain = hit.n.role === 'textbox' || hit.n.role === 'searchbox'
+  const same = (v: string | undefined) => v !== undefined && (norm(v) === norm(value) || (!plain && !!norm(value) && norm(v).startsWith(norm(value))))
   const f = hit.n.role === 'combobox' ? nodes.find((x) => x.parent === hit.i && x.role === 'textbox') ?? hit.n : hit.n
   const opts = f === hit.n && hit.n.role === 'combobox' ? candidates(nodes, 'menuitem|option', hit.i) : []
   if (opts.length) { await option(hit.n, opts.map(({ n }) => n), value, target, rec); return }
