@@ -43,8 +43,7 @@ pub fn pick<W: Window>(windows: Vec<W>, want: Option<&str>, pid: Option<u32>) ->
     app_window(&windows, want)
 }
 
-/// Whether window title `title` matches `want` at `tier`: 0 the same, 1 the same ignoring case and outer
-/// spaces, 2 containing it ignoring case.
+/// Whether `title` matches `want` at `tier`: 0 equal, 1 equal ignoring case and outer spaces, 2 containing it ignoring case.
 pub fn title_matches(tier: usize, title: &str, want: &str) -> bool {
     let lower = want.trim().to_lowercase();
     match tier {
@@ -54,8 +53,7 @@ pub fn title_matches(tier: usize, title: &str, want: &str) -> bool {
     }
 }
 
-/// The window whose title ends with the app part of `want`, such as ` - Thunar` of `inbox - Thunar`:
-/// the only one, else the active one among several; more than one and none active is an error naming them.
+/// The only, else the active, window titled with the app part of `want` (` - Thunar` of `inbox - Thunar`); else an error naming them.
 pub fn app_window<W: Window>(windows: &[W], want: &str) -> Result<W, String> {
     let lower = want.trim().to_lowercase();
     let app = TITLE_SEPARATORS

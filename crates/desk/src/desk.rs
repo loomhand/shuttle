@@ -384,9 +384,7 @@ enum Press {
     Acted(bool),
 }
 
-/// Presses `id` the way a user would: selects a tab or list row, opens the menus above a hidden menu
-/// entry, clicks the element's centre when a hit test there finds it, else runs its action; a Windows
-/// menu entry runs its action, since a click right after its popup opens only hovers it.
+/// Presses `id` the way a user would; a Windows menu entry runs its action, since a click right after its popup opens only hovers it.
 fn plan_press<B: Access>(b: &mut B, id: &str, os: Os) -> Result<Press, String> {
     let mut node = b.node(id, Extras::BOUNDS, 0)?;
     if SELECTED_ROLES.contains(&node.role) && b.act(id, Act::Select).unwrap_or(false) {

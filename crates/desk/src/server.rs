@@ -124,7 +124,7 @@ pub fn cache_endpoint(var: &str, pipe: &str, dir: &str, file: &str) -> String {
     format!("{home}/Library/Caches/{dir}/{file}")
 }
 
-/// Connects to the endpoint, waiting while a Windows pipe is busy.
+/// Connects to the endpoint.
 #[cfg(unix)]
 pub async fn connect(endpoint: &str) -> std::io::Result<Conn> {
     tokio::net::UnixStream::connect(endpoint).await

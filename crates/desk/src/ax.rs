@@ -1,5 +1,4 @@
-//! The macOS desk backend: window trees by a walk over AX with one batched attribute read per element,
-//! within a node and time budget; the app's menu bar joins its main window's tree.
+//! The macOS desk backend: window trees by a budgeted AX walk with one batched attribute read per element.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
