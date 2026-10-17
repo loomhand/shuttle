@@ -79,12 +79,8 @@ impl Ax {
         let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
         // SAFETY: `system` is a live AXUIElement for the duration of the call.
         unsafe { AXUIElementSetMessagingTimeout(system.as_CFTypeRef(), MESSAGING_TIMEOUT) };
-        let names: Vec<CFString> = ATTRS
-            .iter()
-            .map(|n| CFString::from_static_string(n))
-            .collect();
         Ok(Self {
-            names: CFArray::from_CFTypes(&names),
+            names: CFArray::from_CFTypes(&ATTRS.map(CFString::from_static_string)),
             scale: display_scale(),
             ids: HashMap::new(),
             hashes: HashMap::new(),
