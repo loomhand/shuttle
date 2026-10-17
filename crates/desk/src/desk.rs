@@ -1027,7 +1027,7 @@ mod tests {
 
     impl Input for Screen {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
-            self.0.lock().unwrap().push((tool.to_owned(), args));
+            self.0.lock().unwrap().push((tool.to_owned(), args.clone()));
             Ok(match tool {
                 "get_screen_size" => json!({"structuredContent": {"scale_factor": 2.0}}),
                 "list_windows" => json!({"structuredContent": {"windows": [
@@ -1035,13 +1035,21 @@ mod tests {
                     {"pid": 8, "window_id": 41, "layer": 0, "z_index": 9, "bounds": {"x": 140.0, "y": 60.0, "width": 50.0, "height": 50.0}},
                     {"pid": 9, "window_id": 42, "layer": 25, "z_index": 30, "bounds": {"x": 0.0, "y": 0.0, "width": 2000.0, "height": 30.0}}
                 ]}}),
+                "get_window_state" if args["window_id"] == 40 => json!({"structuredContent": {
+                    "screenshot_width": 450, "screenshot_height": 300,
+                    "window_bounds": {"x": 100.0, "y": 50.0, "width": 300.0, "height": 200.0}
+                }}),
+                "get_window_state" => json!({"structuredContent": {
+                    "screenshot_width": 100, "screenshot_height": 100,
+                    "window_bounds": {"x": 140.0, "y": 60.0, "width": 50.0, "height": 50.0}
+                }}),
                 _ => json!({}),
             })
         }
     }
 
     #[tokio::test]
-    async fn a_macos_click_targets_the_top_window_under_the_point_in_its_own_pixels() {
+    async fn a_macos_click_targets_the_top_window_under_the_point_in_the_pixels_of_its_screenshot() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(notepad()), Screen(calls.clone()), Os::Mac);
         desk.run("desk_click", json!({"x": 300.0, "y": 200.0}))
@@ -1081,7 +1089,7 @@ mod tests {
                 ("get_window_state".to_owned(), window(7, 40)),
                 (
                     "click".to_owned(),
-                    json!({"x": 60.0, "y": 200.0, "count": 2, "session": WINDOW_SESSION, "pid": 7, "window_id": 40})
+                    json!({"x": 45.0, "y": 150.0, "count": 2, "session": WINDOW_SESSION, "pid": 7, "window_id": 40})
                 ),
                 (
                     "click".to_owned(),
