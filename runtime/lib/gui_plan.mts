@@ -118,8 +118,11 @@ async function perform(p: Params): Promise<Result> {
       if (f && blocked(o)) throw new Surprise(unanswered(f.title), await seen())
       if (f && isAlert(o)) throw new Surprise(`alert "${f.title}" is in front`, await seen())
       await run(s, rec).catch(async (e: unknown) => {
-        if (!(e instanceof Surprise) || !/^(no element matches|menu entry )/.test(e.reason) || !(await moved(e.seen.window))) throw e
-        await run(s, rec)
+        const late = (x: unknown) => x instanceof Surprise && x.reason.startsWith('no element matches')
+        if (!late(e) || !(await moved((e as Surprise).seen.window))) throw e
+        for (const end = Date.now() + 3000; ; await sleep(200)) {
+          try { return await run(s, rec) } catch (again: unknown) { if (!late(again) || Date.now() > end) throw again }
+        }
       })
     } catch (e: unknown) {
       const sp = e instanceof Surprise ? e : new Surprise(e instanceof Error ? e.message : String(e), await seen())
