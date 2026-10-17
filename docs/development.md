@@ -27,7 +27,7 @@ CI runs the Rust gates on Linux (x64, arm64), macOS (arm64, x64) and Windows (x6
 2. Set `version` in the workspace `Cargo.toml` and commit.
 3. Tag `vX.Y.Z` and push the tag.
 
-The release workflow builds the five archives, writes `SHA256SUMS`, attests their provenance, publishes the release with the installers, and then installs it with `install.sh` and `install.ps1` on fresh runners and checks `cocoon-shuttle --version` and the MCP tool list.
+The release workflow builds the five archives, writes `SHA256SUMS`, attests their provenance and publishes them with the installers as a prerelease. It then installs that release with `install.sh` and `install.ps1` on fresh runners, asks each installed binary for `status` over MCP, and only then marks the release as the latest. A failed install job leaves it a prerelease: fix the cause and tag the next patch version; a published tag is never moved.
 
 ## Third-party pins
 
