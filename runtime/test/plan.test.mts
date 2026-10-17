@@ -40,6 +40,32 @@ test('a check that does not flip traces the state it found, not the one it wante
   }
 })
 
+test('a check on a tri-state box acts again past the mixed state to the state it wants', async () => {
+  const win = { id: '1', title: 'Properties', role: 'dialog', pid: process.pid, active: true }
+  const cycle = [['checkable'], ['checkable', 'checked'], ['checkable', 'mixed']]
+  let at = 2
+  let presses = 0
+  const box = () => ({ ref: 1, id: '1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Read-only', states: ['showing', ...(cycle[at] ?? [])], bounds: [10, 10, 20, 20] })
+  const server = await toolhost(({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root('dialog', 'Properties'), box()] })
+    if (tool === 'desk_read') return JSON.stringify(box())
+    if (tool === 'desk_press') { presses++; at = (at + 1) % 3; return '{"ok":true,"how":"click"}' }
+    return '{"ok":true}'
+  })
+  const { main } = await import('../lib/gui_plan.mts')
+  try {
+    const on = await main({ steps: [{ check: 'Read-only', on: true }] })
+    assert.equal(on.ok, true, JSON.stringify(on))
+    assert.deepEqual({ at, presses, was: on.trace?.[0]?.was }, { at: 1, presses: 2, was: 'mixed' })
+    const off = await main({ steps: [{ check: 'Read-only', on: false }] })
+    assert.equal(off.ok, true, JSON.stringify(off))
+    assert.deepEqual({ at, presses }, { at: 0, presses: 4 })
+  } finally {
+    server.close()
+  }
+})
+
 test('close on a window that answers no accessibility call escalates even when its app has no other window', async () => {
   const win = { id: '1', title: 'Exporting', role: 'dialog', pid: process.pid, active: true }
   const calls: string[] = []
