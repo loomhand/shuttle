@@ -22,11 +22,15 @@ type Rec = {
   p?: number; p_zoom?: number | null; p_full?: number | null; verdict?: Vision; ground_hit?: string; checked?: string; value?: string; ref?: string; unsaved?: boolean
 }
 type Vision = { on?: boolean; ok?: boolean; why?: string }
+type Seen = { window?: string | null; windows?: string[]; outline?: string }
+export type Escalation = Seen & { reason: string; step?: number; plan_step?: Step }
+export type Trace = { i: number; op?: string; how?: string; ms?: number; was?: 'on' | 'off'; now?: 'on' | 'off'; noop?: boolean }
+export type Result = { ok?: boolean; done?: number; ms?: number; trace?: Trace[]; escalate?: Escalation; served?: desk.Served[]; [key: string]: unknown }
 
 class Surprise extends Error {
   reason: string
-  seen: Record<string, unknown>
-  constructor(reason: string, seen: Record<string, unknown> = {}) { super(reason); this.reason = reason; this.seen = seen }
+  seen: Seen
+  constructor(reason: string, seen: Seen = {}) { super(reason); this.reason = reason; this.seen = seen }
 }
 
 const OS = process.platform
@@ -65,11 +69,11 @@ let pressed: { title: string; at: number } | null = null
 let T: Record<string, number> = {}
 
 /** Runs {steps, params?, save?, start?}, {flow, params?, start?}, {save}, {find}, {reindex} or {locate}; returns {ok, done, ms, trace, saved?, escalate?}. */
-export async function main(p: Params): Promise<Record<string, unknown>> {
+export async function main(p: Params): Promise<Result> {
   return { ...(await perform(p)), usage: desk.usage }
 }
 
-async function perform(p: Params): Promise<Record<string, unknown>> {
+async function perform(p: Params): Promise<Result> {
   const t0 = Date.now()
   if (p.reindex) { repo(); writeIndex(); git('add', '-A'); git('commit', '-q', '-m', 'sync from the flow library'); return { ok: true } }
   if (p.find) return await find(p.find)
@@ -91,13 +95,13 @@ async function perform(p: Params): Promise<Record<string, unknown>> {
       if (r.ok) return { ...r, ran: false, why: 'these steps passed in the last plan, so they were saved without running them again; call without save to run them' }
     }
   }
-  const trace: Record<string, unknown>[] = []; const log: Record<string, unknown>[] = []
+  const trace: Trace[] = []; const log: Record<string, unknown>[] = []
   for (const w of await desk.windows()) known.add(w.title)
   const startTitles = new Set(known)
   const start = await focused(); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
   const startAlert = !start?.title.trim() && isAlert(await outline(start))
   const recs: Rec[] = []
-  let escalate: Record<string, unknown> | null = null; let done = plan.length
+  let escalate: Escalation | null = null; let done = plan.length
   const bad = plan.findIndex((s) => OPS.filter((k) => k in s).length !== 1)
   if (bad >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: bad, plan_step: plan[bad], reason: `step ${bad} needs exactly one op of ${OPS.join(', ')}; nothing ran` } }
   const unfilled = (s: Step) => Object.values(s).flatMap((v) => typeof v === 'string' ? [...v.matchAll(/\{\{(\w+)(?::base)?\}\}/g)].map((x) => x[1] ?? '') : []).find((n) => params[n] === undefined)
@@ -175,7 +179,7 @@ async function perform(p: Params): Promise<Record<string, unknown>> {
   }
   const ms = Date.now() - t0
   try { mkdirSync(FLOWS, { recursive: true }); appendFileSync(LOG, `${JSON.stringify({ at: new Date().toISOString(), flow: p.flow ?? null, ok: !escalate, ms, jevs, saved: saved ?? null, usage: desk.usage, steps: log })}\n`) } catch {}
-  const out: Record<string, unknown> = { ok: !escalate, done, ms, trace }
+  const out: Result = { ok: !escalate, done, ms, trace }
   if (saved) out[flow ? 'flow' : 'saved'] = saved
   if (flow?.usage) out.recorded_usage = flow.usage
   if (escalate) out.escalate = escalate
@@ -232,7 +236,7 @@ async function outline(w?: Win | null, keys = false) {
   if (!w) return '(no focused window)'
   try { const s = await snapOf(w, keys); const nodes = parse(s); return `${render(nodes, 100, nodes.length > 60).slice(0, 1800)}${s.truncated ? CUT : ''}` } catch (e: unknown) { return String(e) }
 }
-async function seen() {
+async function seen(): Promise<Seen> {
   const w = await focused()
   const windows = (await desk.windows()).filter((x) => x.title && !SHELL_WINDOWS.test(x.title)).map((x) => x.modal ? `${x.title} (modal dialog, ${x.modal})` : x.title)
   return { window: w?.title ?? null, windows, outline: await outline(w, true) }
