@@ -188,10 +188,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn press(&self, id: String, turn: Option<Turn>) -> Result<String, String> {
-        let os = self.os;
         match self
             .access
-            .run(TREE_LIMIT, turn, move |b| plan_press(b, &id, os))
+            .run(TREE_LIMIT, turn, move |b| plan_press(b, &id))
             .await?
         {
             Press::Selected => Ok(json!({"ok": true, "how": "select"}).to_string()),
@@ -546,13 +545,13 @@ enum Press {
     Acted(bool),
 }
 
-/// Presses `id` the way a user would; a Windows menu entry runs its action, since a click right after its popup opens only hovers it.
-fn plan_press<B: Access>(b: &mut B, id: &str, os: Os) -> Result<Press, String> {
+/// Presses `id` the way a user would; a menu entry runs its action, since a click right after its popup opens misses it.
+fn plan_press<B: Access>(b: &mut B, id: &str) -> Result<Press, String> {
     let mut node = b.node(id, Extras::BOUNDS, 0)?;
     if SELECTED_ROLES.contains(&node.role) && b.act(id, Act::Select).unwrap_or(false) {
         return Ok(Press::Selected);
     }
-    if os == Os::Windows && node.role.starts_with("menuitem") {
+    if node.role.starts_with("menuitem") {
         return Ok(Press::Acted(b.act(id, Act::Action)?));
     }
     let chain = b.ancestors(id)?;
@@ -844,10 +843,7 @@ mod tests {
     #[test]
     fn a_shown_control_that_a_hit_test_finds_takes_a_click() {
         let mut f = notepad();
-        assert_eq!(
-            plan_press(&mut f, "ok", Os::Mac).unwrap(),
-            Press::Click(140, 110)
-        );
+        assert_eq!(plan_press(&mut f, "ok").unwrap(), Press::Click(140, 110));
         assert!(f.acts.is_empty());
     }
 
@@ -856,47 +852,27 @@ mod tests {
         let mut f = notepad();
         f.hits.insert((340, 110), "elsewhere".into());
         f.add("elsewhere", None, "button", &[], None);
-        assert_eq!(
-            plan_press(&mut f, "hidden", Os::Mac).unwrap(),
-            Press::Acted(true)
-        );
+        assert_eq!(plan_press(&mut f, "hidden").unwrap(), Press::Acted(true));
         assert_eq!(f.acts, [("hidden".to_owned(), Act::Action)]);
     }
 
     #[test]
     fn a_tab_is_selected() {
         let mut f = notepad();
-        assert_eq!(plan_press(&mut f, "tab", Os::Mac).unwrap(), Press::Selected);
-    }
-
-    #[test]
-    fn a_hidden_menu_entry_opens_its_menu_first() {
-        let mut f = notepad();
-        f.nodes.get_mut("save").unwrap().0.bounds = Some([0, 20, 100, 20]);
-        assert_eq!(
-            plan_press(&mut f, "save", Os::Mac).unwrap(),
-            Press::Click(50, 30)
-        );
-        assert_eq!(f.acts, [("file".to_owned(), Act::Action)]);
+        assert_eq!(plan_press(&mut f, "tab").unwrap(), Press::Selected);
     }
 
     #[test]
     fn a_macos_menu_entry_runs_its_action_without_opening_its_menu() {
         let mut f = notepad();
-        assert_eq!(
-            plan_press(&mut f, "save", Os::Mac).unwrap(),
-            Press::Acted(true)
-        );
+        assert_eq!(plan_press(&mut f, "save").unwrap(), Press::Acted(true));
         assert_eq!(f.acts, [("save".to_owned(), Act::Action)]);
     }
 
     #[test]
     fn a_windows_menu_entry_runs_its_action() {
         let mut f = notepad();
-        assert_eq!(
-            plan_press(&mut f, "save", Os::Windows).unwrap(),
-            Press::Acted(true)
-        );
+        assert_eq!(plan_press(&mut f, "save").unwrap(), Press::Acted(true));
         assert_eq!(f.acts, [("save".to_owned(), Act::Action)]);
     }
 
