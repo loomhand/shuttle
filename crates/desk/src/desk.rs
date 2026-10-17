@@ -345,29 +345,41 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(())
     }
 
-    async fn click_window(&self, mut req: Value, w: &Under) -> Result<(), String> {
+    async fn click_window(&self, req: Value, w: &Under) -> Result<(), String> {
         let front = json!({"pid": w.pid, "window_id": w.id});
         self.driver.call("bring_to_front", front).await?;
         let cached = self
             .reads()
             .filter(|r| (r.pid, r.id, r.bounds) == (w.pid, w.id, w.bounds))
             .map(|r| r.k);
-        req["session"] = WINDOW_SESSION.into();
-        req["pid"] = w.pid.into();
-        req["window_id"] = w.id.into();
-        let at = |req: &mut Value, (kx, ky): (f64, f64)| {
-            req["x"] = ((w.point.0 - w.bounds[0]) * kx).into();
-            req["y"] = ((w.point.1 - w.bounds[1]) * ky).into();
-        };
         let k = match cached {
-            Some(k) => k,
+            Some(k) => Some(k),
             None => self.pixels(w).await?,
         };
-        at(&mut req, k);
-        match self.driver.call("click", req.clone()).await {
+        let Some(k) = k else {
+            self.driver.call("click", desktop(req)).await?;
+            return Ok(());
+        };
+        let mut win = req.clone();
+        win["session"] = WINDOW_SESSION.into();
+        win["pid"] = w.pid.into();
+        win["window_id"] = w.id.into();
+        let at = |win: &mut Value, (kx, ky): (f64, f64)| {
+            win["x"] = ((w.point.0 - w.bounds[0]) * kx).into();
+            win["y"] = ((w.point.1 - w.bounds[1]) * ky).into();
+        };
+        at(&mut win, k);
+        match self.driver.call("click", win.clone()).await {
             Err(e) if cached.is_some() && e.contains("window_never_read") => {
-                at(&mut req, self.pixels(w).await?);
-                self.driver.call("click", req).await?;
+                match self.pixels(w).await? {
+                    Some(k) => {
+                        at(&mut win, k);
+                        self.driver.call("click", win).await?;
+                    }
+                    None => {
+                        self.driver.call("click", desktop(req)).await?;
+                    }
+                }
             }
             done => {
                 done?;
@@ -416,10 +428,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }))
     }
 
-    async fn pixels(&self, w: &Under) -> Result<(f64, f64), String> {
+    async fn pixels(&self, w: &Under) -> Result<Option<(f64, f64)>, String> {
         let read = json!({"session": WINDOW_SESSION, "pid": w.pid, "window_id": w.id});
         let v = self.driver.call("get_window_state", read).await?;
         let c = &v["structuredContent"];
+        let refused = c["background_input"]["routes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|r| r["route"] == "window_pointer" && r["status"] == "refused");
+        if refused {
+            return Ok(None);
+        }
         let ratio = |px: &str, pt: &str| {
             c[px]
                 .as_f64()
@@ -438,7 +458,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             bounds: w.bounds,
             k,
         });
-        Ok(k)
+        Ok(Some(k))
     }
 
     fn reads(&self) -> std::sync::MutexGuard<'_, Option<Read>> {
