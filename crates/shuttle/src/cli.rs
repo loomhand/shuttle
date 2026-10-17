@@ -1,11 +1,15 @@
 //! The command line: `mcp`, `serve`, `desk VERB` and `--version`.
 
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use desk_core::text::cli_args;
 use desk_core::wire::Call;
 use shuttle_desk::server;
+use shuttle_models::Models;
+use shuttle_models::config::{Config, default_path};
 
+use crate::daemon::Daemon;
 use crate::tools::DESK_VERBS;
 use crate::{NAME, VERSION, mcp};
 
@@ -19,17 +23,31 @@ pub fn run(args: &[String]) -> ExitCode {
             println!("{NAME} {VERSION}");
             ExitCode::SUCCESS
         }
-        "mcp" => match mcp::serve(std::io::stdin().lock(), std::io::stdout().lock()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => fail(&e),
-        },
+        "mcp" => {
+            let endpoint = desk_endpoint();
+            let served = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("start runtime: {e}"))
+                .and_then(|r| {
+                    r.block_on(mcp::serve(
+                        tokio::io::BufReader::new(tokio::io::stdin()),
+                        tokio::io::stdout(),
+                        &endpoint,
+                    ))
+                });
+            match served {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => fail(&e),
+            }
+        }
         "serve" => {
             let endpoint = rest.first().cloned().unwrap_or_else(desk_endpoint);
             let served = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .map_err(|e| format!("start runtime: {e}"))
-                .and_then(|r| r.block_on(server::serve_native(&endpoint)));
+                .and_then(|r| r.block_on(serve(&endpoint)));
             match served {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => fail(&e),
@@ -82,6 +100,11 @@ fn call_desk(rest: &[String]) -> ExitCode {
         Ok(out) => fail(&format!("desk {verb}: {}", out.text)),
         Err(e) => fail(&format!("desk {verb}: {e}")),
     }
+}
+
+async fn serve(endpoint: &str) -> Result<(), String> {
+    let models = Config::load(&default_path(NAME)).map(Models::new);
+    server::serve(Arc::new(Daemon::new(server::native(), models)), endpoint).await
 }
 
 fn usage() -> ExitCode {

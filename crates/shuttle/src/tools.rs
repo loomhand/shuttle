@@ -1,8 +1,9 @@
-//! The MCP tools: their schemas, and the answers of this release, which lists them before it runs them.
+//! The MCP tools: their schemas, and their answers, the desk tools through the daemon.
 
+use desk_core::wire::{Call, Output};
 use serde_json::{Value, json};
 
-use crate::{NAME, VERSION};
+use crate::{NAME, VERSION, proxy};
 
 pub const DESK_VERBS: [&str; 15] = [
     "windows", "snapshot", "find", "read", "press", "act", "at", "key", "type", "click", "focus",
@@ -76,13 +77,35 @@ pub fn list() -> Value {
     ]})
 }
 
-/// Answers a `tools/call` of `name`: an MCP tool result, or `None` for an unknown tool.
-pub fn call(name: &str) -> Option<Value> {
-    match name {
-        "status" => Some(result(&status().to_string(), false)),
-        "gui_plan" | "script_run" | "desk" | "screenshot" => Some(result(NOT_YET, true)),
-        _ => None,
-    }
+/// Answers a `tools/call` of `name` with `args`: an MCP tool result, or `None` for an unknown tool.
+pub async fn call(name: &str, mut args: Value, endpoint: &str) -> Option<Value> {
+    let (tool, args) = match name {
+        "status" => return Some(result(status().to_string(), false)),
+        "gui_plan" | "script_run" => return Some(result(NOT_YET.to_owned(), true)),
+        "desk" => match args["verb"].as_str().filter(|v| DESK_VERBS.contains(v)) {
+            Some(verb) => (
+                format!("desk_{verb}"),
+                args.get_mut("args").map_or_else(|| json!({}), Value::take),
+            ),
+            None => {
+                return Some(result(
+                    format!("desk needs a verb of {}", DESK_VERBS.join(", ")),
+                    true,
+                ));
+            }
+        },
+        "screenshot" => ("desk_shot".to_owned(), args),
+        _ => return None,
+    };
+    let call = Call {
+        agent_id: NAME.to_owned(),
+        tool,
+        args,
+    };
+    Some(match proxy::call(endpoint, &call).await {
+        Ok(out) => output(out),
+        Err(e) => result(e, true),
+    })
 }
 
 fn status() -> Value {
@@ -91,10 +114,30 @@ fn status() -> Value {
         "version": VERSION,
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
-        "runs": ["status"],
+        "runs": ["status", "desk", "screenshot"],
     })
 }
 
-fn result(text: &str, is_error: bool) -> Value {
-    json!({"content": [{"type": "text", "text": text}], "isError": is_error})
+// the image goes as image content, so the text drops its base64 copy that the runtime reads
+fn output(out: Output) -> Value {
+    let text = match (&out.image_b64, serde_json::from_str::<Value>(&out.text)) {
+        (Some(_), Ok(Value::Object(mut fields))) => {
+            fields.remove("png_b64");
+            Value::Object(fields).to_string()
+        }
+        _ => out.text,
+    };
+    let mut r = result(text, out.is_error);
+    if let (Some(png), Some(content)) = (out.image_b64, r["content"].as_array_mut()) {
+        let mut image = json!({"type": "image", "mimeType": "image/png"});
+        image["data"] = png.into();
+        content.push(image);
+    }
+    r
+}
+
+fn result(text: String, is_error: bool) -> Value {
+    let mut out = json!({"content": [{"type": "text"}], "isError": is_error});
+    out["content"][0]["text"] = text.into();
+    out
 }

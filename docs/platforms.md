@@ -8,7 +8,7 @@
 | MCP tools that act | P1 | P2 | P3 |
 | Kill switch, indicator, allowlist, confirm | P1 | P2 | P3 |
 
-In v0.0.1 every platform installs, runs `cocoon-shuttle mcp` and answers `status`. On macOS and Windows, `cocoon-shuttle serve` and `cocoon-shuttle desk VERB` already serve and call the desk verbs when a cua-driver daemon runs at its default endpoint; that is a developer preview without the safety controls.
+Every platform installs and runs `cocoon-shuttle mcp`. On macOS and Windows, the `desk` and `screenshot` tools reach the desk verbs through the daemon when a cua-driver daemon runs at its default endpoint; that is a developer preview without the safety controls. On Linux they answer that there is no desk backend yet.
 
 ## macOS
 

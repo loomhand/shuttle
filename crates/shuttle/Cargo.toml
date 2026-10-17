@@ -13,10 +13,16 @@ name = "cocoon-shuttle"
 path = "src/main.rs"
 
 [dependencies]
+serde = "1"
 serde_json = "1"
 shuttle-desk = { path = "../desk" }
 shuttle-desk-core = { path = "../desk-core" }
-tokio = { version = "1", features = ["rt-multi-thread"] }
+shuttle-models = { path = "../models" }
+tokio = { version = "1", features = ["rt-multi-thread", "io-std", "io-util", "net", "process", "time"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt"] }
 
 [lints]
 workspace = true

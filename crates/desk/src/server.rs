@@ -1,4 +1,4 @@
-//! The desk endpoint: a unix socket on macOS, a named pipe on Windows, one framed call per connection.
+//! The desk endpoint: a unix socket on macOS and Linux, a named pipe on Windows, one framed call per connection.
 
 use std::sync::Arc;
 
@@ -9,16 +9,53 @@ use crate::driver::Input;
 use crate::model::Access;
 use crate::rpc::{Call, Output, read_frame, write_frame};
 
-/// Serves `desk` at the unix socket `endpoint`, readable by its user only.
+#[cfg(windows)]
+const PIPE_BUSY: i32 = 231;
+#[cfg(windows)]
+const BUSY_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// One client connection to an endpoint.
 #[cfg(unix)]
-pub async fn serve<B, D>(desk: Arc<Desk<B, D>>, endpoint: &str) -> Result<(), String>
-where
-    B: Access + 'static,
-    D: Input + Send + Sync + 'static,
-{
+pub type Conn = tokio::net::UnixStream;
+/// One client connection to an endpoint.
+#[cfg(windows)]
+pub type Conn = tokio::net::windows::named_pipe::NamedPipeClient;
+
+/// What answers the calls of an endpoint.
+pub trait Handler: Send + Sync + 'static {
+    /// Answers `call`; a failure is an error output, never a dropped connection.
+    fn answer(&self, call: Call) -> impl Future<Output = Output> + Send;
+}
+
+impl<B: Access + 'static, D: Input + Send + Sync + 'static> Handler for Desk<B, D> {
+    async fn answer(&self, call: Call) -> Output {
+        if !call.tool.starts_with("desk_") {
+            return Output::error(format!("unknown tool {}", call.tool));
+        }
+        self.run(&call.tool, call.args)
+            .await
+            .unwrap_or_else(Output::error)
+    }
+}
+
+/// The handler of a host without a desk backend.
+pub struct NoDesk;
+
+impl Handler for NoDesk {
+    async fn answer(&self, call: Call) -> Output {
+        Output::error(format!("{}: no desk backend for this OS yet", call.tool))
+    }
+}
+
+/// Serves `handler` at the unix socket `endpoint`, readable by its user only.
+#[cfg(unix)]
+pub async fn serve<H: Handler>(handler: Arc<H>, endpoint: &str) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
     let path = std::path::Path::new(endpoint);
+    if connect(endpoint).await.is_ok() {
+        return Err(format!("another daemon serves {endpoint}"));
+    }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     }
@@ -32,17 +69,13 @@ where
             .accept()
             .await
             .map_err(|e| format!("accept {endpoint}: {e}"))?;
-        tokio::spawn(handle(desk.clone(), stream));
+        tokio::spawn(handle(handler.clone(), stream));
     }
 }
 
-/// Serves `desk` at the named pipe `endpoint`, local clients only.
+/// Serves `handler` at the named pipe `endpoint`, local clients only.
 #[cfg(windows)]
-pub async fn serve<B, D>(desk: Arc<Desk<B, D>>, endpoint: &str) -> Result<(), String>
-where
-    B: Access + 'static,
-    D: Input + Send + Sync + 'static,
-{
+pub async fn serve<H: Handler>(handler: Arc<H>, endpoint: &str) -> Result<(), String> {
     use tokio::net::windows::named_pipe::ServerOptions;
 
     let create = |first: bool| {
@@ -59,62 +92,68 @@ where
             .await
             .map_err(|e| format!("accept {endpoint}: {e}"))?;
         let client = std::mem::replace(&mut server, create(false)?);
-        tokio::spawn(handle(desk.clone(), client));
+        tokio::spawn(handle(handler.clone(), client));
     }
 }
 
-/// Sends one call to the desk at `endpoint` and returns its output.
+/// Sends one call to the endpoint and returns its output.
 pub async fn call(endpoint: &str, call: &Call) -> Result<Output, String> {
-    #[cfg(unix)]
-    let mut stream = tokio::net::UnixStream::connect(endpoint)
+    let conn = connect(endpoint)
         .await
         .map_err(|e| format!("connect {endpoint}: {e}"))?;
-    #[cfg(windows)]
-    let mut stream = tokio::net::windows::named_pipe::ClientOptions::new()
-        .open(endpoint)
-        .map_err(|e| format!("connect {endpoint}: {e}"))?;
-    write_frame(&mut stream, call).await?;
-    read_frame(&mut stream).await
+    exchange(conn, call).await
 }
 
-/// Serves this OS's desk, its accessibility tree with input through cua-driver at its default endpoint, at `endpoint`.
-#[cfg(target_os = "macos")]
-pub async fn serve_native(endpoint: &str) -> Result<(), String> {
-    use crate::{ax::Ax, driver::Driver, keys::Os};
-    let driver = Driver::new(Driver::default_endpoint());
-    serve(Arc::new(Desk::new(Ax::open, driver, Os::Mac)), endpoint).await
+/// Connects to the endpoint, waiting while a Windows pipe is busy.
+#[cfg(unix)]
+pub async fn connect(endpoint: &str) -> std::io::Result<Conn> {
+    tokio::net::UnixStream::connect(endpoint).await
 }
 
-/// Serves this OS's desk, its accessibility tree with input through cua-driver at its default endpoint, at `endpoint`.
+/// Connects to the endpoint, waiting while a Windows pipe is busy.
 #[cfg(windows)]
-pub async fn serve_native(endpoint: &str) -> Result<(), String> {
+pub async fn connect(endpoint: &str) -> std::io::Result<Conn> {
+    loop {
+        match tokio::net::windows::named_pipe::ClientOptions::new().open(endpoint) {
+            Err(e) if e.raw_os_error() == Some(PIPE_BUSY) => tokio::time::sleep(BUSY_POLL).await,
+            done => return done,
+        }
+    }
+}
+
+/// Sends `call` on `conn` and reads its output.
+pub async fn exchange(mut conn: Conn, call: &Call) -> Result<Output, String> {
+    write_frame(&mut conn, call).await?;
+    read_frame(&mut conn).await
+}
+
+/// This OS's desk: its accessibility tree, with input through cua-driver at its default endpoint.
+#[cfg(target_os = "macos")]
+pub fn native() -> impl Handler {
+    use crate::{ax::Ax, driver::Driver, keys::Os};
+    Desk::new(Ax::open, Driver::new(Driver::default_endpoint()), Os::Mac)
+}
+
+/// This OS's desk: its accessibility tree, with input through cua-driver at its default endpoint.
+#[cfg(windows)]
+pub fn native() -> impl Handler {
     use crate::{driver::Driver, keys::Os, uia::Uia};
-    let driver = Driver::new(Driver::default_endpoint());
-    serve(
-        Arc::new(Desk::new(Uia::open, driver, Os::Windows)),
-        endpoint,
+    Desk::new(
+        Uia::open,
+        Driver::new(Driver::default_endpoint()),
+        Os::Windows,
     )
-    .await
 }
 
-/// Fails: this OS has no desk backend yet.
+/// This OS's desk: none yet.
 #[cfg(not(any(windows, target_os = "macos")))]
-pub async fn serve_native(_: &str) -> Result<(), String> {
-    Err("no desk backend for this OS yet".to_owned())
+pub fn native() -> impl Handler {
+    NoDesk
 }
 
-async fn handle<B, D, S>(desk: Arc<Desk<B, D>>, mut stream: S)
-where
-    B: Access + 'static,
-    D: Input + Send + Sync + 'static,
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+async fn handle<H: Handler, S: AsyncRead + AsyncWrite + Unpin>(handler: Arc<H>, mut stream: S) {
     let out = match read_frame::<_, Call>(&mut stream).await {
-        Ok(call) if call.tool.starts_with("desk_") => desk
-            .run(&call.tool, call.args)
-            .await
-            .unwrap_or_else(Output::error),
-        Ok(call) => Output::error(format!("unknown tool {}", call.tool)),
+        Ok(call) => handler.answer(call).await,
         Err(e) => Output::error(e),
     };
     let _ = write_frame(&mut stream, &out).await;

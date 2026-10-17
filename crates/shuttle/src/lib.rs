@@ -1,7 +1,9 @@
 //! shuttle: a local computer-use host that agents call over MCP stdio to drive this desktop.
 
 pub mod cli;
+pub mod daemon;
 pub mod mcp;
+pub mod proxy;
 pub mod tools;
 
 /// The program name in usage lines, endpoints and the MCP server info.
