@@ -19,7 +19,7 @@ sudo install -d -o "$USER" /workspace   # gui_plan's flows directory on Linux
 node --test runtime/test/*.test.mts
 ```
 
-CI runs the Rust gates on Linux (x64, arm64), macOS (arm64, x64) and Windows (x64), and the runtime tests and shellcheck on Linux.
+CI runs the Rust gates on Linux (x64), macOS (arm64, x64) and Windows (x64), and the runtime tests and shellcheck on Linux; Linux arm64 is covered by the release build and install jobs on tags.
 
 ## Release
 
