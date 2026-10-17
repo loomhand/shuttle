@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { crc32, deflateSync, inflateSync } from 'node:zlib'
 import * as desk from './desk.mts'
@@ -56,7 +56,7 @@ const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'tog
 const FILLER = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'and', 'or', 'by', 'from', 'into', 'this', 'that', 'its', 'it', 'is', 'button', 'link', 'tab', 'field', 'box', 'icon', 'toggle', 'dropdown', 'input', 'control', 'item', 'entry'])
 const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close']
 const CUT = '\n(the outline holds only the start of the web page: use the browser_* tools for page content)'
-const SHELL_WINDOWS = ({ linux: /^(Desktop|xfce4-panel)$/, win32: /^Program Manager$/ } as Record<string, RegExp>)[OS] ?? /^$/
+const SHELL_WINDOWS = ({ linux: /^(Desktop|xfce4-panel)$/, win32: /^Program Manager$/ } as Record<string, RegExp>)[OS] ?? /$^/
 const SHELL_TARGET = /\b(dock|panel|taskbar|desktop)\b/i
 const CHOOSER = ({ linux: /File Chooser Widget/, win32: /^\s*- (combobox|textbox) "File name:?"/m, darwin: /^\s*- text "Save As:"/m } as Record<string, RegExp>)[OS] ?? /$^/
 const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
@@ -78,7 +78,7 @@ async function perform(p: Params): Promise<Result> {
   if (p.reindex) { repo(); writeIndex(); git('add', '-A'); git('commit', '-q', '-m', 'sync from the flow library'); return { ok: true } }
   if (p.find) return await find(p.find)
   if (p.locate) return await locate(p.locate.target, p.locate.press ?? false)
-  if (p.save && !p.steps?.length && !p.flow) return await promote(p.save)
+  if (p.save && !p.steps?.length && !p.flow) return await promote(p.save, p.params)
   let flow: Flow | null = null
   try { if (p.flow) flow = loadFlow(p.flow) } catch (e: unknown) { return { ok: false, done: 0, ms: 0, escalate: { reason: e instanceof Error ? e.message : String(e) } } }
   const params = { ...(flow?.params ?? {}), ...(p.params ?? {}) }
@@ -96,18 +96,18 @@ async function perform(p: Params): Promise<Result> {
     }
   }
   const trace: Trace[] = []; const log: Record<string, unknown>[] = []
-  for (const w of await desk.windows()) known.add(w.title)
-  const startTitles = new Set(known)
-  const start = await focused(); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
-  const startAlert = !start?.title.trim() && isAlert(await outline(start))
-  const recs: Rec[] = []
-  let escalate: Escalation | null = null; let done = plan.length
   const bad = plan.findIndex((s) => OPS.filter((k) => k in s).length !== 1)
   if (bad >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: bad, plan_step: plan[bad], reason: `step ${bad} needs exactly one op of ${OPS.join(', ')}; nothing ran` } }
   const unfilled = (s: Step) => Object.values(s).flatMap((v) => typeof v === 'string' ? [...v.matchAll(/\{\{(\w+)(?::base)?\}\}/g)].map((x) => x[1] ?? '') : []).find((n) => params[n] === undefined)
   const gap = plan.findIndex((s, i) => i >= (p.start ?? 0) && unfilled(s))
   const gapStep = plan[gap]
   if (gapStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: gapStep, reason: `no value for {{${unfilled(gapStep)}}}: pass it in params; nothing ran` } }
+  for (const w of await desk.windows()) known.add(w.title)
+  const startTitles = new Set(known)
+  const start = await focused(); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
+  const startAlert = !start?.title.trim() && isAlert(await outline(start))
+  const recs: Rec[] = []
+  let escalate: Escalation | null = null; let done = plan.length
   for (const [i, planned] of plan.entries()) {
     if (i < (p.start ?? 0)) continue
     const s = fill(planned, params); T = {}; const rec: Rec = { i, op: OPS.find((k) => k in s) }
@@ -126,7 +126,7 @@ async function perform(p: Params): Promise<Result> {
     }
     rec.ms = Date.now() - ts; if (desk.served.length > calls) rec.served = desk.served.slice(calls)
     log.push({ ...rec, ...T }); recs[i] = rec
-    trace.push({ i, op: rec.op, how: rec.how, ms: rec.ms, ...(rec.was !== undefined ? { was: rec.was ? 'on' : 'off', now: rec.noop || s.verify ? undefined : s.on === false ? 'off' : 'on' } : {}), ...(rec.now !== undefined ? { now: rec.now ? 'on' : 'off' } : {}), ...(rec.noop ? { noop: true } : {}) })
+    trace.push({ i, op: rec.op, how: rec.how, ms: rec.ms, ...(rec.was !== undefined ? { was: rec.was ? 'on' : 'off', now: rec.noop || s.verify || escalate ? undefined : s.on === false ? 'off' : 'on' } : {}), ...(rec.now !== undefined ? { now: rec.now ? 'on' : 'off' } : {}), ...(rec.noop ? { noop: true } : {}) })
     if (escalate) break
   }
   const last = plan.at(-1) ?? {}
@@ -724,7 +724,7 @@ async function run(s: Step, rec: Rec) {
     const v = nl && !sub ? await focused() : null
     if (sub && w) { rec.submit = true; await submit(w, true) } else if (v && isDialog(v.title === w?.title ? o : await outline(v)) && await closed(v.title, v.pid)) rec.submit = true
     if (dialog && w) {
-      const want = s.type.slice(0, 30).replace(/"/g, '\\"'); let after = ''
+      const want = s.type.slice(0, 30).replace(/\\/g, '\\\\').replace(/"/g, '\\"'); let after = ''
       for (let k = 0; k < 5; k++) { after = await outline(w); if (!isDialog(after) || after.split('\n').some((l) => /^\s*- (textbox|searchbox|combobox|spinbutton)\b.*: ".*/.test(l) && l.includes(want))) return; await sleep(40) }
       throw new Surprise(`"${s.type}" reached no text field of "${w.title}" (Tab can land on a button): fill the field with {set: label, value}`, await seen())
     }
@@ -748,8 +748,8 @@ async function run(s: Step, rec: Rec) {
     const self = w
     const others = self ? (await desk.windows()).filter((x) => x.pid === self.pid && x.title !== self.title) : []
     if (w && blocked(o) && others.length) { rec.seen = w.title; rec.how = 'wm'; await desk.close(w.title, w.pid); await settle(w.title); tick('act', t0); return }
-    if (w && !s.window && !isDialog(o)) { let d: Win | null = null; for (const x of others) if (isDialog(await outline(x))) { d = x; break }; w = d }
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
+    if (w && !s.window && !isDialog(o)) { let d: Win | null = null; for (const x of others) if (isDialog(await outline(x))) { d = x; break }; w = d }
     if (!w) { rec.noop = true; tick('act', t0); return }
     const [title, pid] = [w.title, w.pid]; rec.seen = title; if (!w.active) await desk.focus(title, pid); await press('Escape'); await settle(w.title)
     if (await titled(title, pid)) await desk.close(title, pid)
@@ -846,14 +846,14 @@ async function run(s: Step, rec: Rec) {
   const raw = s.value
   if (raw === undefined) throw new Surprise(`set "${target}" needs a value`, await seen())
   const value = raw.endsWith('\n') ? raw.slice(0, -1) : raw
-  const same = (v: string | undefined) => v === undefined || norm(v) === norm(value) || norm(v).includes(norm(value))
+  const same = (v: string | undefined) => v === undefined || norm(v) === norm(value) || (!!norm(value) && norm(v).startsWith(norm(value)))
   const f = hit.n.role === 'combobox' ? nodes.find((x) => x.parent === hit.i && x.role === 'textbox') ?? hit.n : hit.n
   const opts = f === hit.n && hit.n.role === 'combobox' ? candidates(nodes, 'menuitem|option', hit.i) : []
   if (opts.length) { await option(hit.n, opts.map(({ n }) => n), value, target, rec); return }
   const lines = ((await desk.read(f.id, { text: true })).value ?? '').includes('\n')
   if (hit.how.startsWith('jev') && lines) throw new Surprise(`"${target}" is closest to a multi-line text (${hit.how}), and set would replace all of it: wait for the window with that field, or name it exactly`, await seen())
   t0 = Date.now()
-  await desk.act(f.id, 'focus'); if (f.role === 'textbox' && !lines) await selectLine(); else await press(SELECT_ALL); await desk.typeText(value); if (hit.n.role === 'spinbutton' || hit.n.role === 'slider') { await press('tab'); await press('shift+tab') }
+  await desk.act(f.id, 'focus'); if (f.role === 'textbox' && !lines) await selectLine(); else await press(SELECT_ALL); if (value) await desk.typeText(value); else await press('delete'); if (hit.n.role === 'spinbutton' || hit.n.role === 'slider') { await press('tab'); await press('shift+tab') }
   tick('act', t0)
   t0 = Date.now(); let got: string | undefined
   for (let i = 0; i < 10; i++) { try { got = (await desk.read(f.id)).value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); got = undefined }; if (same(got)) break; await sleep(40) }
@@ -890,7 +890,7 @@ async function menuEntry(w: Win, nodes: Node[], menu: string, fp: Fp | undefined
 }
 
 function fill(s: Step, p: Record<string, string>): Step {
-  const sub = (v: string) => v.replace(/\{\{(\w+)(:base)?\}\}/g, (all: string, n: string, b: string | undefined) => { const x = p[n]; return x === undefined ? all : b ? x.split('/').at(-1) ?? x : x })
+  const sub = (v: string) => v.replace(/\{\{(\w+)(:base)?\}\}/g, (all: string, n: string, b: string | undefined) => { const x = p[n]; return x === undefined ? all : b ? x.split(/[\\/]/).at(-1) ?? x : x })
   return Object.fromEntries(Object.entries(s).map(([k, v]) => [k, typeof v === 'string' ? sub(v) : v])) as Step
 }
 
@@ -911,7 +911,7 @@ function templated(steps: Step[], params: Record<string, string>) {
     let v = t[k]; if (!v) continue
     for (const [n, x] of Object.entries(p)) {
       if (x.length > 2 && v.includes(x)) v = v.replace(x, `{{${n}}}`)
-      else if (x.includes('/') && (x.split('/').at(-1) ?? '').length > 2 && v.includes(x.split('/').at(-1) ?? '')) v = v.replace(x.split('/').at(-1) ?? '', `{{${n}:base}}`)
+      else if (/[\\/]/.test(x) && (x.split(/[\\/]/).at(-1) ?? '').length > 2 && v.includes(x.split(/[\\/]/).at(-1) ?? '')) v = v.replace(x.split(/[\\/]/).at(-1) ?? '', `{{${n}:base}}`)
     }
     t[k] = v
   }
@@ -955,7 +955,7 @@ function store(chain: Chain) {
   const keys: Record<string, string> = { 'ctrl+n': 'new', 'ctrl+s': 'save', 'ctrl+shift+s': 'save as', 'ctrl+o': 'open' }
   const targets = chain.steps.filter((s) => s.menu || s.check || s.set || s.click || keys[s.key?.toLowerCase() ?? '']).slice(-2).map((s) => s.key ? keys[s.key.toLowerCase()] : (s.menu ?? s.check ?? s.set ?? s.click ?? '').split('>').at(-1))
   const auto = slug([chain.steps[0]?.app, ...targets].filter((x): x is string => !!x).map((x) => x.split(' ').slice(0, 3).join(' ')).join(' ')) || undefined
-  if (!chain.named && auto && chain.name && auto !== chain.name) git('rm', '-q', '--ignore-unmatch', `${chain.name}.json`)
+  if (!chain.named && auto && chain.name && auto !== chain.name) rmSync(`${FLOWS}/${chain.name}.json`, { force: true })
   if (!chain.named) chain.name = auto
   if (chain.name) saveFlow({ name: chain.name, params: tpl.params, steps: tpl.steps, idempotent: idempotent(chain.steps), runs: 1, saved_at: new Date().toISOString(), rewrites: 0, usage: chain.usage ?? {} }, `saved from ${chain.steps.length} passing steps`)
   return chain.name
@@ -972,7 +972,7 @@ async function promote(name: string, params: Record<string, string> = {}, rerun 
   }
   const old = c.saved && !c.named ? c.name : undefined
   c.name = slug(name); c.named = true; c.params = { ...c.params, ...params }
-  if (old && old !== c.name) git('rm', '-q', '--ignore-unmatch', `${old}.json`)
+  if (old && old !== c.name) rmSync(`${FLOWS}/${old}.json`, { force: true })
   store(c); c.saved = true; c.escalated = false
   try { writeFileSync(PENDING, JSON.stringify(c)) } catch {}
   return { ok: true, saved: c.name, params: templated(c.steps, c.params).params, ...(idempotent(c.steps) ? {} : { note: 'a replay of this flow types again' }) }
