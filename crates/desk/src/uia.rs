@@ -762,3 +762,23 @@ fn format_number(v: f64) -> String {
         v.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn window(hwnd: isize, owner: isize) -> Shown {
+        Shown {
+            hwnd: HWND(hwnd as *mut std::ffi::c_void),
+            owner,
+            pid: 1,
+        }
+    }
+
+    #[test]
+    fn a_dialog_owned_by_a_dialog_comes_with_its_root_window_innermost_first() {
+        let shown = [window(3, 2), window(2, 1), window(1, 0), window(4, 0)];
+        assert_eq!(owned(&shown, 2), vec![0, 1]);
+        assert!(owned(&shown, 3).is_empty());
+    }
+}
