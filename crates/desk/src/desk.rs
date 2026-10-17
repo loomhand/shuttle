@@ -2,7 +2,7 @@
 //! capture through cua-driver; the same verbs and JSON as the Linux toolhost.
 
 use std::fmt::Write as _;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -47,6 +47,7 @@ pub struct Desk<B, D> {
     os: Os,
     acting: Arc<tokio::sync::Mutex<()>>,
     turn_wait: Duration,
+    scale: OnceLock<f64>,
 }
 
 impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
@@ -58,6 +59,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             os,
             acting: Arc::new(tokio::sync::Mutex::new(())),
             turn_wait: TURN_WAIT,
+            scale: OnceLock::new(),
         }
     }
 
@@ -193,9 +195,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             Press::Selected => Ok(json!({"ok": true, "how": "select"}).to_string()),
             Press::Acted(ok) => Ok(json!({"ok": ok, "how": "action"}).to_string()),
             Press::Click(x, y) => {
-                self.driver
-                    .call("click", desktop(json!({"x": x, "y": y})))
-                    .await?;
+                self.click_at(json!({"x": x, "y": y})).await?;
                 Ok(json!({"ok": true, "how": "click", "x": x, "y": y}).to_string())
             }
         }
@@ -212,8 +212,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     .run(CALL_LIMIT, turn, move |b| b.node(&a.id, Extras::BOUNDS, 0))
                     .await?;
                 let [x, y, w, h] = n.bounds.ok_or("the element has no screen position")?;
-                self.driver
-                    .call("click", desktop(json!({"x": x + w / 2, "y": y + h / 2})))
+                self.click_at(json!({"x": x + w / 2, "y": y + h / 2}))
                     .await?;
                 return Ok(json!({"ok": true}).to_string());
             }
@@ -317,8 +316,68 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if let Some(count) = a.count {
             req["count"] = count.into();
         }
-        self.driver.call("click", desktop(req)).await?;
+        self.click_at(req).await?;
         Ok(json!({"ok": true}).to_string())
+    }
+
+    async fn click_at(&self, mut req: Value) -> Result<(), String> {
+        if self.os == Os::Mac
+            && let (Some(x), Some(y)) = (req["x"].as_f64(), req["y"].as_f64())
+            && let Some((target, left, top)) = self.window_at(x, y).await?
+        {
+            req["x"] = (x - left).into();
+            req["y"] = (y - top).into();
+            req["target"] = target;
+            self.driver.call("click", req).await?;
+            return Ok(());
+        }
+        self.driver.call("click", desktop(req)).await?;
+        Ok(())
+    }
+
+    async fn window_at(&self, x: f64, y: f64) -> Result<Option<(Value, f64, f64)>, String> {
+        let scale = match self.scale.get() {
+            Some(s) => *s,
+            None => {
+                let v = self.driver.call("get_screen_size", json!({})).await?;
+                let s = v["structuredContent"]["scale_factor"]
+                    .as_f64()
+                    .unwrap_or(1.0);
+                *self.scale.get_or_init(|| s)
+            }
+        };
+        let listed = self
+            .driver
+            .call("list_windows", json!({"on_screen_only": true}))
+            .await?;
+        let (px, py) = (x / scale, y / scale);
+        let top = listed["structuredContent"]["windows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|w| w["layer"] == 0)
+            .filter(|w| {
+                let b = &w["bounds"];
+                let (bx, by) = (
+                    b["x"].as_f64().unwrap_or(0.0),
+                    b["y"].as_f64().unwrap_or(0.0),
+                );
+                let (bw, bh) = (
+                    b["width"].as_f64().unwrap_or(0.0),
+                    b["height"].as_f64().unwrap_or(0.0),
+                );
+                px >= bx && px < bx + bw && py >= by && py < by + bh
+            })
+            .max_by_key(|w| w["z_index"].as_i64().unwrap_or(i64::MIN));
+        Ok(top.map(|w| {
+            let target = json!({"kind": "window", "pid": w["pid"], "window_id": w["window_id"]});
+            let b = &w["bounds"];
+            (
+                target,
+                b["x"].as_f64().unwrap_or(0.0) * scale,
+                b["y"].as_f64().unwrap_or(0.0) * scale,
+            )
+        }))
     }
 
     async fn focus(&self, a: WindowArgs) -> Result<String, String> {
@@ -952,6 +1011,60 @@ mod tests {
                 json!({"x": 140, "y": 110, "scope": "desktop"})
             )]
         );
+    }
+
+    struct Screen(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for Screen {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 2.0}}),
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 7, "window_id": 40, "layer": 0, "z_index": 5, "bounds": {"x": 100.0, "y": 50.0, "width": 300.0, "height": 200.0}},
+                    {"pid": 8, "window_id": 41, "layer": 0, "z_index": 9, "bounds": {"x": 140.0, "y": 60.0, "width": 50.0, "height": 50.0}},
+                    {"pid": 9, "window_id": 42, "layer": 25, "z_index": 30, "bounds": {"x": 0.0, "y": 0.0, "width": 2000.0, "height": 30.0}}
+                ]}}),
+                _ => json!({}),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_macos_click_targets_the_top_window_under_the_point_in_its_own_pixels() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(notepad()), Screen(calls.clone()), Os::Mac);
+        desk.run("desk_click", json!({"x": 300.0, "y": 200.0}))
+            .await
+            .unwrap();
+        desk.run("desk_click", json!({"x": 260.0, "y": 300.0, "count": 2}))
+            .await
+            .unwrap();
+        desk.run("desk_click", json!({"x": 5000.0, "y": 5000.0}))
+            .await
+            .unwrap();
+        let clicks: Vec<Value> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(t, _)| t == "click")
+            .map(|(_, a)| a.clone())
+            .collect();
+        assert_eq!(
+            clicks,
+            [
+                json!({"x": 20.0, "y": 80.0, "target": {"kind": "window", "pid": 8, "window_id": 41}}),
+                json!({"x": 60.0, "y": 200.0, "count": 2, "target": {"kind": "window", "pid": 7, "window_id": 40}}),
+                json!({"x": 5000.0, "y": 5000.0, "scope": "desktop"}),
+            ]
+        );
+        let sizes = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(t, _)| t == "get_screen_size")
+            .count();
+        assert_eq!(sizes, 1);
     }
 
     #[test]
