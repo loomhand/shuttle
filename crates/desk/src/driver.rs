@@ -7,6 +7,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+pub const WINDOW_SESSION: &str = "desk-window";
+
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SESSION: &str = "desk";
 const ENDED: &str = "session has ended";
@@ -17,18 +19,18 @@ pub trait Input {
     fn call(&self, tool: &str, args: Value) -> impl Future<Output = Result<Value, String>> + Send;
 }
 
-/// A client of the cua-driver daemon at `endpoint`, in one driver session with desktop capture scope.
+/// A client of the cua-driver daemon at `endpoint`, in a desktop session, or the window session a call names.
 #[derive(Debug)]
 pub struct Driver {
     endpoint: String,
-    started: AtomicBool,
+    started: [AtomicBool; 2],
 }
 
 impl Driver {
     pub fn new(endpoint: String) -> Self {
         Self {
             endpoint,
-            started: AtomicBool::new(false),
+            started: [AtomicBool::new(false), AtomicBool::new(false)],
         }
     }
 
@@ -42,13 +44,18 @@ impl Driver {
         )
     }
 
-    async fn start(&self) -> Result<(), String> {
+    async fn start(&self, window: bool) -> Result<(), String> {
+        let (scope, session) = if window {
+            ("window", WINDOW_SESSION)
+        } else {
+            ("desktop", SESSION)
+        };
         self.send(
             "start_session",
-            &json!({"capture_scope": "desktop", "session": SESSION}),
+            &json!({"capture_scope": scope, "session": session}),
         )
         .await?;
-        self.started.store(true, Ordering::Relaxed);
+        self.started[usize::from(window)].store(true, Ordering::Relaxed);
         Ok(())
     }
 
@@ -88,13 +95,16 @@ impl Driver {
 
 impl Input for Driver {
     async fn call(&self, tool: &str, mut args: Value) -> Result<Value, String> {
-        args["session"] = SESSION.into();
-        if !self.started.load(Ordering::Relaxed) {
-            self.start().await?;
+        let window = args["session"] == WINDOW_SESSION;
+        if !window {
+            args["session"] = SESSION.into();
+        }
+        if !self.started[usize::from(window)].load(Ordering::Relaxed) {
+            self.start(window).await?;
         }
         match self.send(tool, &args).await {
             Err(e) if e.contains(ENDED) => {
-                self.start().await?;
+                self.start(window).await?;
                 self.send(tool, &args).await
             }
             done => done,
