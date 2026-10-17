@@ -15,14 +15,13 @@ use core_foundation::string::{CFString, CFStringRef};
 
 use crate::ax_roles::{self, Facts, Kind};
 use crate::keys::ax_combo;
-use crate::model::{Access, Act, Extras, Frame, Node, Tree, is_active, is_field};
+use crate::model::{
+    Access, Act, Extras, Frame, MAX_DEPTH, MAX_IDS, MAX_NODES, Node, Tree, VALUE_CHARS, is_active,
+    lookup, place,
+};
 
-const MAX_NODES: usize = 2500;
-const MAX_DEPTH: usize = 64;
 const WALK_BUDGET: Duration = Duration::from_secs(4);
 const MESSAGING_TIMEOUT: f32 = 3.0;
-const MAX_IDS: usize = 50_000;
-const VALUE_CHARS: usize = 200;
 const AX_SUCCESS: i32 = 0;
 
 static PROMPTED: AtomicBool = AtomicBool::new(false);
@@ -152,10 +151,7 @@ impl Ax {
     }
 
     fn element(&self, id: &str) -> Result<CFType, String> {
-        self.ids
-            .get(id)
-            .cloned()
-            .ok_or_else(|| format!("unknown element id {id:?}: take a new snapshot"))
+        lookup(&self.ids, id)
     }
 
     fn node_of(&mut self, el: &CFType, a: &Attrs, extras: Extras, chars: usize) -> Node {
@@ -237,18 +233,8 @@ impl Ax {
             return false;
         }
         let a = attrs(el);
-        let mut node = self.node_of(el, &a, extras, VALUE_CHARS);
-        if !is_field(node.role) {
-            node.value = None;
-        }
-        let (parent, depth) = if node.role == "generic" && parent.is_some() {
-            (parent, depth)
-        } else {
-            node.parent = parent;
-            node.depth = depth;
-            out.push(node);
-            (Some(out.len() - 1), depth + 1)
-        };
+        let node = self.node_of(el, &a, extras, VALUE_CHARS);
+        let (parent, depth) = place(out, node, parent, depth);
         path.push(el.clone());
         let mut truncated = false;
         for child in &a.children {

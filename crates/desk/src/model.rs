@@ -1,10 +1,16 @@
 //! The platform-neutral desk model: windows, element trees and the accessibility calls each OS backend serves.
 
+use std::collections::HashMap;
+
 use desk_core::text::Named;
 use desk_core::window::Window;
 use serde::Serialize;
 use serde_json::{Value, json};
 
+pub const MAX_NODES: usize = 2500;
+pub const MAX_DEPTH: usize = 64;
+pub const MAX_IDS: usize = 50_000;
+pub const VALUE_CHARS: usize = 200;
 /// The ARIA roles a caller can act on.
 pub const ACTIVE_ROLES: [&str; 20] = [
     "button",
@@ -191,6 +197,30 @@ pub fn is_active(role: &str) -> bool {
 /// Whether a node of `role` holds a value a caller reads.
 pub fn is_field(role: &str) -> bool {
     FIELD_ROLES.contains(&role)
+}
+
+pub fn place(
+    out: &mut Vec<Node>,
+    mut node: Node,
+    parent: Option<usize>,
+    depth: usize,
+) -> (Option<usize>, usize) {
+    if !is_field(node.role) {
+        node.value = None;
+    }
+    if node.role == "generic" && parent.is_some() {
+        return (parent, depth);
+    }
+    node.parent = parent;
+    node.depth = depth;
+    out.push(node);
+    (Some(out.len() - 1), depth + 1)
+}
+
+pub fn lookup<T: Clone>(ids: &HashMap<String, T>, id: &str) -> Result<T, String> {
+    ids.get(id)
+        .cloned()
+        .ok_or_else(|| format!("unknown element id {id:?}: take a new snapshot"))
 }
 
 #[cfg(test)]
