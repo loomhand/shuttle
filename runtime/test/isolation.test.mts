@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { test } from 'node:test'
 
 import { toolhost } from './toolhost.mts'
 
-test('a plan writes its flows and run log under the test directory only, never in the real home or /workspace', async () => {
-  const real = [`${homedir()}/workspace/flows/.runs.jsonl`, '/workspace/flows/.runs.jsonl']
+test('a plan, a save and a reindex write flows, the index, the pending chain and git only under the test directory', async () => {
+  const names = ['.runs.jsonl', '.pending.json', 'INDEX', 'mousepad.json', 'saved.json', '.git']
+  const real = [`${homedir()}/workspace/flows`, '/workspace/flows'].flatMap((d) => names.map((n) => `${d}/${n}`))
   const stamp = () => real.map((f) => existsSync(f) ? statSync(f).mtimeMs : null)
   const before = stamp()
   const win = { id: '1', title: 'notes.txt - Mousepad', role: 'frame', pid: process.pid, active: true }
@@ -16,10 +18,19 @@ test('a plan writes its flows and run log under the test directory only, never i
     return '{"ok":true}'
   })
   const { main } = await import('../lib/gui_plan.mts')
-  const r = await main({ steps: [{ app: 'Mousepad' }, { key: 'ctrl+s' }] })
-  server.close()
-  assert.equal(r.ok, true, JSON.stringify(r))
-  assert.ok(process.env.SHUTTLE_FLOWS?.startsWith(tmpdir()))
-  assert.ok(existsSync(`${process.env.SHUTTLE_FLOWS}/.runs.jsonl`))
+  try {
+    const ran = await main({ steps: [{ app: 'Mousepad' }, { key: 'ctrl+s' }] })
+    assert.equal(ran.ok, true, JSON.stringify(ran))
+    const saved = await main({ save: 'saved' })
+    assert.equal(saved.ok, true, JSON.stringify(saved))
+    assert.equal((await main({ reindex: true })).ok, true)
+  } finally {
+    server.close()
+  }
+  const flows = process.env.SHUTTLE_FLOWS ?? ''
+  assert.ok(flows.startsWith(tmpdir()), flows)
+  for (const n of ['.runs.jsonl', '.pending.json', 'INDEX', 'saved.json']) assert.ok(existsSync(`${flows}/${n}`), n)
+  assert.ok(!existsSync(`${flows}/mousepad.json`))
+  if (spawnSync('git', ['--version']).status === 0) assert.ok(existsSync(`${flows}/.git`))
   assert.deepEqual(stamp(), before)
 })
