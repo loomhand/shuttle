@@ -539,7 +539,7 @@ fn raw(el: &IUIAutomationElement) -> Raw {
         Val::Text(s) => s,
         _ => String::new(),
     };
-    // SAFETY: `el` is a live UIA element of this thread whose cache holds these properties.
+    // SAFETY: `el` is a live UIA element of this thread; a property its cache lacks is an error read as the default.
     let rect = unsafe { el.CachedBoundingRectangle() }.unwrap_or_default();
     let has = |p| boolean(p).unwrap_or(false);
     let toggles = has(UIA_IsTogglePatternAvailablePropertyId);
