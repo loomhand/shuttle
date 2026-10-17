@@ -39,6 +39,18 @@ Desk calls name `desk_<verb>` tools:
 | `shot` | `x?`, `y?`, `w?`, `h?` | `png_b64` of the screen or a rectangle |
 | `screen` | | `width` and `height` in pixels |
 
-## Model calls (from P1)
+## Model calls
 
-The daemon answers `model_decide`, `model_ask` and `model_ground` with the providers of [config.md](config.md), so a script calls a model without holding a key. Their arguments and results follow the `decide`, `look`, `ask` and `ground` functions of `desk.mts`.
+The daemon answers these with the providers of [config.md](config.md) (`crates/models`; the daemon routes them from P1), so a script calls a model without holding a key. Each reply carries `usage`: `{model, input_tokens, output_tokens, cached_tokens}`.
+
+| Tool | Arguments | Result |
+|---|---|---|
+| `model_decide` | `state` (text, JSON, or a list of text and `{type: "image_url", image_url: {url: "data:image/png;base64,..."}}` parts), `questions` (`{key: {type: "noul" \| "choice", instructions, criteria?}}`), `image` (the state holds a screenshot: the `verify` role answers, else `decide`), `timeout_ms` (caps the configured timeout; the crop check passes 5000) | `answers` (`{key: {probability}}` for a yes question, `{key: {choice, confidence, probabilities}}` for a choice), `served` (`{model, build, id}`: the model name asked, and the build and generation id that answered, null when the endpoint names none) |
+| `model_ask` | `prompt`, `images` (PNGs as base64) | `text` |
+| `model_ground` | `png_b64`, `target`, `area` (`{left?, top?, width, height}`) | `x`, `y`; a point outside 0 to 1000 is an error, and 1000 maps onto the last pixel of `area` |
+
+### Coordinates
+
+Desk coordinates are the space `desk_screen` reports and `desk_click`, `desk_at`, `desk_shot` and element `bounds` use: screen pixels on Windows (the desk host is per-monitor DPI aware) and on Linux, and on macOS the display's pixels (AX points times the backing scale). A screenshot need not have that size: `desk_shot` may return a downscaled image, and a Retina capture can be 2x.
+
+`model_ground` takes `area`, the desk rectangle the PNG shows, and returns `x`, `y` in desk coordinates: the model answers a point from 0 to 1000 across and down the image, and the daemon maps it onto `area`, whatever the PNG's own size. Pass the rectangle the PNG was cropped from, never the PNG's width and height.
