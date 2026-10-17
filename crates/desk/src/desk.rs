@@ -17,7 +17,7 @@ use desk_core::window;
 use desk_core::wire::Output;
 use serde_json::{Map, Value, json};
 
-use crate::driver::{Input, desktop, text_of};
+use crate::driver::{Input, WINDOW_SESSION, desktop, text_of};
 use crate::keys::{Os, key_names};
 use crate::model::{Access, Act, Extras, Frame, Node};
 use crate::worker::Worker;
@@ -323,11 +323,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn click_at(&self, mut req: Value) -> Result<(), String> {
         if self.os == Os::Mac
             && let (Some(x), Some(y)) = (req["x"].as_f64(), req["y"].as_f64())
-            && let Some((target, left, top)) = self.window_at(x, y).await?
+            && let Some((pid, window_id, left, top)) = self.window_at(x, y).await?
         {
+            let window = json!({"session": WINDOW_SESSION, "pid": pid, "window_id": window_id});
+            self.driver.call("get_window_state", window).await?;
+            req["session"] = WINDOW_SESSION.into();
+            req["pid"] = pid;
+            req["window_id"] = window_id;
             req["x"] = (x - left).into();
             req["y"] = (y - top).into();
-            req["target"] = target;
             self.driver.call("click", req).await?;
             return Ok(());
         }
@@ -335,7 +339,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(())
     }
 
-    async fn window_at(&self, x: f64, y: f64) -> Result<Option<(Value, f64, f64)>, String> {
+    async fn window_at(&self, x: f64, y: f64) -> Result<Option<(Value, Value, f64, f64)>, String> {
         let scale = match self.scale.get() {
             Some(s) => *s,
             None => {
@@ -370,10 +374,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             })
             .max_by_key(|w| w["z_index"].as_i64().unwrap_or(i64::MIN));
         Ok(top.map(|w| {
-            let target = json!({"kind": "window", "pid": w["pid"], "window_id": w["window_id"]});
             let b = &w["bounds"];
             (
-                target,
+                w["pid"].clone(),
+                w["window_id"].clone(),
                 b["x"].as_f64().unwrap_or(0.0) * scale,
                 b["y"].as_f64().unwrap_or(0.0) * scale,
             )
@@ -1047,19 +1051,32 @@ mod tests {
         desk.run("desk_click", json!({"x": 5000.0, "y": 5000.0}))
             .await
             .unwrap();
-        let clicks: Vec<Value> = calls
+        let sent: Vec<(String, Value)> = calls
             .lock()
             .unwrap()
             .iter()
-            .filter(|(t, _)| t == "click")
-            .map(|(_, a)| a.clone())
+            .filter(|(t, _)| t == "click" || t == "get_window_state")
+            .cloned()
             .collect();
+        let window =
+            |pid: u32, id: u32| json!({"session": WINDOW_SESSION, "pid": pid, "window_id": id});
         assert_eq!(
-            clicks,
+            sent,
             [
-                json!({"x": 20.0, "y": 80.0, "target": {"kind": "window", "pid": 8, "window_id": 41}}),
-                json!({"x": 60.0, "y": 200.0, "count": 2, "target": {"kind": "window", "pid": 7, "window_id": 40}}),
-                json!({"x": 5000.0, "y": 5000.0, "scope": "desktop"}),
+                ("get_window_state".to_owned(), window(8, 41)),
+                (
+                    "click".to_owned(),
+                    json!({"x": 20.0, "y": 80.0, "session": WINDOW_SESSION, "pid": 8, "window_id": 41})
+                ),
+                ("get_window_state".to_owned(), window(7, 40)),
+                (
+                    "click".to_owned(),
+                    json!({"x": 60.0, "y": 200.0, "count": 2, "session": WINDOW_SESSION, "pid": 7, "window_id": 40})
+                ),
+                (
+                    "click".to_owned(),
+                    json!({"x": 5000.0, "y": 5000.0, "scope": "desktop"})
+                ),
             ]
         );
         let sizes = calls
