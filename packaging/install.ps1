@@ -33,9 +33,14 @@ try {
     Write-Host 'sha256 ok'
 
     Expand-Archive -Path (Join-Path $Tmp $Asset) -DestinationPath $Tmp
-    if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir }
+    $Old = "$InstallDir.old"
+    if (Test-Path $Old) { Remove-Item -Recurse -Force $Old }
+    if (Test-Path $InstallDir) {
+        try { Move-Item $InstallDir $Old } catch { throw "close the running $Name first; nothing was changed" }
+    }
     New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir) | Out-Null
     Move-Item (Join-Path $Tmp $Name) $InstallDir
+    if (Test-Path $Old) { Remove-Item -Recurse -Force $Old }
     Get-ChildItem -Recurse -File $InstallDir | Unblock-File
 } finally {
     Remove-Item -Recurse -Force $Tmp
