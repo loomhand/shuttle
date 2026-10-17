@@ -173,6 +173,14 @@ mod tests {
             r#"{"ok":true,"result":{"isError":true,"content":[{"type":"text","text":"off screen"}]}}"#,
         );
         assert_eq!(failed.unwrap_err(), "click: off screen");
+        let unread = result(
+            "click",
+            r#"{"ok":true,"result":{"isError":true,"content":[{"type":"text","text":"No screenshot of window 491"}],"structuredContent":{"code":"screenshot_context_missing","reason":"window_never_read"}}}"#,
+        );
+        assert_eq!(
+            unread.unwrap_err(),
+            "click: window_never_read: No screenshot of window 491"
+        );
         assert!(result("click", "").is_err());
     }
 
