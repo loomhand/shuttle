@@ -129,9 +129,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let mut out = json!({
             "window": tree.frame,
             "ms": ms(started.elapsed().as_micros()),
-            "phases": phases,
             "truncated": tree.truncated,
         });
+        out["phases"] = Value::Object(phases);
         if a.text {
             out["text"] = outline(&tree.nodes, a.max_chars.unwrap_or(NAME_CHARS)).into();
         } else {
@@ -164,7 +164,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .take(MAX_FOUND)
             .map(|i| tree.nodes[i].json(i))
             .collect();
-        Ok(json!({"window": tree.frame, "found": found}).to_string())
+        let mut out = json!({"window": tree.frame});
+        out["found"] = Value::Array(found);
+        Ok(out.to_string())
     }
 
     async fn read(&self, a: ReadArgs) -> Result<String, String> {
@@ -244,7 +246,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         Some(json!({"id": id, "role": n.role, "name": n.name}))
                     })
                     .collect();
-                Ok(json!({"found": node.json(0), "path": path}).to_string())
+                let mut out = json!({});
+                out["found"] = node.json(0);
+                out["path"] = Value::Array(path);
+                Ok(out.to_string())
             })
             .await
     }

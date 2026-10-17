@@ -44,10 +44,16 @@ pub fn norm(s: &str) -> String {
 
 /// At most `max` characters of `s`, escaped for a double-quoted outline field.
 pub fn quote(s: &str, max: usize) -> String {
-    let cut: String = s.chars().take(max).collect();
-    cut.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
+    let mut out = String::with_capacity(s.len().min(max));
+    for c in s.chars().take(max) {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Microseconds as milliseconds with one decimal.

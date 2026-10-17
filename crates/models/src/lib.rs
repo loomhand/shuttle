@@ -5,6 +5,7 @@ pub mod config;
 mod decide;
 
 use std::borrow::Cow;
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
@@ -276,7 +277,7 @@ fn failed(model: &str, e: reqwest::Error) -> String {
     let mut out = format!("{model}: {e}");
     let mut source = std::error::Error::source(&e);
     while let Some(s) = source {
-        out.push_str(&format!(": {s}"));
+        let _ = write!(out, ": {s}");
         source = s.source();
     }
     out
