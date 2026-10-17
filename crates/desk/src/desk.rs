@@ -798,6 +798,9 @@ mod tests {
         fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
             self.acts.push((id.into(), act));
             ACTED.lock().unwrap().push(id.into());
+            if id == "dead" {
+                return Ok(false);
+            }
             if self.nodes.get(id).is_some_and(|(n, _)| n.role == "menu") {
                 self.opened = true;
             }
@@ -1251,6 +1254,21 @@ mod tests {
             .unwrap();
         assert!(ACTED.lock().unwrap().iter().any(|id| id == "wrap"));
         assert!(!calls.lock().unwrap().iter().any(|(t, _)| t == "click"));
+    }
+
+    #[tokio::test]
+    async fn a_macos_click_on_a_menu_item_that_takes_no_action_fails() {
+        let open = || {
+            let mut f = notepad();
+            f.add("dead", Some("file"), "menuitem", &["showing"], None);
+            f.hits.insert((300, 200), "dead".into());
+            Ok(f)
+        };
+        let desk = Desk::new(open, Screen(Arc::default()), Os::Mac);
+        let out = desk
+            .run("desk_click", json!({"x": 300.0, "y": 200.0}))
+            .await;
+        assert!(out.is_err(), "{out:?}");
     }
 
     #[tokio::test]
