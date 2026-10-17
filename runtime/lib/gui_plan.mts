@@ -1,5 +1,3 @@
-// gui_plan.mts: run a GUI plan in the box without a model turn per step, save a passing plan as a flow, replay flows.
-// params: {steps, params?, save?, start?} | {save} | {flow, params?, start?} | {find} | {reindex} | {locate}; result: {ok, done, ms, trace, saved?, escalate?}
 import { execFileSync, spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -60,6 +58,7 @@ class Surprise extends Error {
   constructor(reason: string, seen: Record<string, unknown> = {}) { super(reason); this.reason = reason; this.seen = seen }
 }
 
+/** Runs {steps, params?, save?, start?}, {flow, params?, start?}, {save}, {find}, {reindex} or {locate}; returns {ok, done, ms, trace, saved?, escalate?}. */
 export async function main(p: Params) {
   return { ...(await perform(p)), usage: desk.usage }
 }
@@ -203,11 +202,9 @@ async function current() {
   tick('settle', t0); return focused()
 }
 async function titled(title: string, pid: number | null) { return pid !== null && (await desk.windows()).some((x) => x.title === title && x.pid === pid) }
-// the accessibility tree of a window; `keys` adds the key bindings of its entries
 async function snapOf(w: Win, keys = false): Promise<desk.Snap> {
   return desk.snapshot(w.title, { pid: w.pid, keys })
 }
-// one line per element, `- role "name" [disabled] [checked] [id=ID]: "value"`; a big tree keeps only what a step can act on
 function render(nodes: Node[], max: number, interactive: boolean) {
   const q = (s: string) => s.slice(0, max).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')
   return nodes.filter((n) => !interactive || n.depth === 0 || SHOWN_ROLES.has(n.role)).map((n) =>
@@ -233,7 +230,6 @@ async function hiddenModal(ws: Win[], f: Win | null) {
 function modalBlocks(m: Win) { return `modal dialog "${m.title}" is open but ${m.modal}, and ${m.blocks ? `"${m.blocks}"` : 'its app'} takes no input until it closes: finish it, or close it with {close: true, window: "${m.title}"}` }
 function blocked(o: string) { return /AT-SPI peer \S+ is not responding|no accessibility answer within/.test(o) }
 function isChooser(o: string) { return CHOOSER.test(o) }
-// the whole text of the focused one-line field
 async function selectLine() { if (OS === 'darwin') await press(SELECT_ALL); else { await press('home'); await press('shift+end') } }
 function unanswered(title: string) { return `"${title}" answers no accessibility calls (a dialog opened by an accessibility action blocks its app, and a key would deadlock it): close it with {close: true}, then reopen it by its keyboard shortcut` }
 function isAlert(o: string) { return /^- alert/.test(o) }
@@ -267,7 +263,6 @@ async function vision(prompt: string, shot: Buffer) {
   } finally { tick('vision', t0) }
 }
 
-// the checked state AT-SPI publishes for check boxes and toggles, read live
 async function checked(n: Node): Promise<boolean | null> {
   const t0 = Date.now()
   try { const r = await desk.read(n.id); return r.states.includes('checked') || r.states.includes('pressed') } catch { return null } finally { tick('state', t0) }
@@ -320,7 +315,6 @@ function gtkToggle(pid: number, label: string): boolean | null {
   } catch { return null } finally { tick('state', t0) }
 }
 
-// the window the step acts in: the focused one, after waiting for one that matches `want` (title text, else a jev yes/no)
 async function windowFor(want: string | undefined, ms = 3000, saw?: string) {
   const t0 = Date.now()
   let w = want ? await focused() : await current()
@@ -376,10 +370,7 @@ function candidates(nodes: Node[], role?: string, within?: number) {
   return nodes.map((n, i) => ({ n, i })).filter(({ n, i }) => (ACTIVE.has(n.role) || item(n)) && (!role || role.split('|').includes(n.role)) && inside(i))
 }
 
-// target resolution: the saved fingerprint, exact AX name (also once the target drops its articles and role words), contained AX
-// name (only among links or buttons when a target without a role says link or button; elements that show, with bounds, else hidden
-// menu entries), then a jev choice whose top answer needs `bar`, a margin and, when jev chose from the text alone, a word of the
-// target in its own name, value or label and the word tab for a tab
+// order: saved fingerprint, exact name, contained name, then a jev pick that must clear `bar`, the margin and, from text alone, share a word
 async function resolve(nodes: Node[], target: string, role?: string, within?: number, bar = 0.5, fp?: Fp): Promise<Hit | null> {
   const t0 = Date.now()
   const pool = candidates(nodes, role, within)
@@ -447,9 +438,7 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>) 
   } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
 
-// a grounded point is taken when jev sees the target at it in a 640x400 crop around it; else, under a small element or none, in
-// that element's crop scaled up to 384x288 (yes ≥ 0.65); else on the screen with a ring at the point (yes ≥ 0.95, off with
-// DESK_FULL_CHECK=off). On any failure of the first crop, when jev says the element under the point is the target
+// a grounded point needs jev's yes on a 640x400 crop, else on a small element's zoomed crop (0.65), else on the ringed screen (0.95)
 async function grounded(x: number, y: number, target: string, w: Win, area: { width: number; height: number }) {
   const under = await desk.at(x, y, w.title).catch(() => ({ found: null, path: [] }))
   const what = under.found ? [under.found, ...(under.path ?? []).reverse()].filter((n) => n.name).map((n) => `${n.role} "${n.name}"`).join(' under ') : ''
@@ -516,7 +505,6 @@ function png(w: number, h: number, type: number, bpp: number, px: Buffer) {
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))])
 }
 
-// nearest-neighbour scaling by an integer factor
 function zoom(image: Buffer, k: number) {
   if (k <= 1) return image
   const { w, h, type, bpp, px } = unpng(image), out = Buffer.alloc(w * k * h * k * bpp)
@@ -539,15 +527,13 @@ function ring(image: Buffer, cx: number, cy: number, r: number) {
 
 function press(combo: string) { return desk.key(combo) }
 
-// a shown control takes a pointer click, since its AT-SPI action runs the handler inside the a11y bridge's dispatch, where a
-// modal dialog it opens blocks the app; a tab, option or radio is selected; a hidden menu entry opens its menus first
+// a shown control takes a pointer click, since an AT-SPI action runs its handler inside the a11y bridge, where a modal dialog blocks the app
 async function act(n: Node) {
   const t0 = Date.now()
   try { return (await desk.press(n.id)).how } finally { tick('act', t0) }
 }
 
-// a menu entry with a shortcut takes the shortcut, since an AT-SPI action on it runs its handler inside the a11y bridge's
-// D-Bus dispatch: a modal dialog it opens answers no AT-SPI call, and the first key deadlocks the app
+// a menu entry with a shortcut takes the shortcut, since an AT-SPI action can open a modal dialog that deadlocks the app on the first key
 async function choose(nodes: Node[], n: Node, rec: Record<string, unknown>, open = false) {
   const t0 = Date.now()
   try {
@@ -599,7 +585,7 @@ async function closed(title: string, pid: number | null) {
   tick('settle', t0); return !(await open())
 }
 
-// the shown field a plan's first typing filled from empty, so a replay can check it is still empty before it types; window and tab names are no part of it
+// a replay checks that the field its first typing filled from empty is still empty
 function shownFields(nodes: Node[], fp: Pick<Fp, 'role' | 'name' | 'label'>) {
   return candidates(nodes, fp.role).filter(({ n, i }) => n.name === fp.name && (sibling(nodes, i) ?? '') === (fp.label ?? '') && n.shown)
 }
@@ -876,7 +862,6 @@ async function run(s: Step, rec: Record<string, unknown>) {
   if (s.value!.endsWith('\n')) { rec.submit = true; await submit(w, isChooser(render(nodes, 100, false))) }
 }
 
-// {{name}} in any string of a step is a param
 function fill(s: Step, p: Record<string, string>): Step {
   const out: any = {}
   for (const [k, v] of Object.entries(s)) out[k] = typeof v === 'string' ? v.replace(/\{\{(\w+)(:base)?\}\}/g, (all, n, b) => p[n] === undefined ? all : b ? p[n].split('/').at(-1)! : p[n]) : v
@@ -931,7 +916,6 @@ function saveFlow(f: Flow, why: string) {
   git('add', '-A'); git('commit', '-q', '-m', `${f.name}: ${why}`)
 }
 
-// what a flow does, in its targets: "Edit > Preferences, Use system monospace font off, Size={{size}}"
 function summary(steps: Step[]) {
   const out = steps.filter((s) => !s.app && !s.wait && !s.close && !s.verify).map((s) => s.menu ?? (s.check ? `${s.check} ${s.on === false ? 'off' : 'on'}` : s.set ? `${s.set}=${s.value}` : s.type !== undefined ? `type ${s.type.replace(/\n$/, '')}` : s.key ? `key ${s.key}` : s.click))
   const text = out.join(', ')
@@ -941,7 +925,6 @@ function summary(steps: Step[]) {
 function idempotent(steps: Step[]) { return steps.every((s) => s.type === undefined && (!s.key || /^(esc|escape|tab|shift\+tab)$/i.test(s.key))) }
 function bare(s: Step, p: Record<string, string>) { return JSON.stringify(Object.entries(fill(s, p)).filter(([k]) => k !== 'fp' && k !== 'seen' && k !== 'blank').sort()) }
 
-// a chain becomes the flow it names, or one named after its app and last targets
 function store(chain: Chain) {
   const tpl = templated(chain.steps, chain.params)
   const keys: Record<string, string> = { 'ctrl+n': 'new', 'ctrl+s': 'save', 'ctrl+shift+s': 'save as', 'ctrl+o': 'open' }
@@ -953,7 +936,6 @@ function store(chain: Chain) {
   return chain.name
 }
 
-// {save} alone saves the last plan without running it again; after an escalation, its passed steps while their window is still in front
 async function promote(name: string, params: Record<string, string> = {}, rerun = false) {
   let c: Chain | null = null
   try { c = JSON.parse(readFileSync(PENDING, 'utf8')) } catch {}
@@ -989,8 +971,7 @@ async function find(request: string) {
   return { ok: true, flow: rows[+k.slice(1)].replace(/\(.*$/, ''), p: +p.toFixed(2) }
 }
 
-// how far below its extents a LibreOffice frame draws an element: a toolbar or tab row docked in the frame sits a menu bar's height lower
-// until the frame first relays out, which shows as its toolbar rows starting in the upper half of the menu bar; null when it cannot tell
+// a LibreOffice toolbar docked in its frame draws a menu bar's height below its extents until the frame first relays out
 function drawnShift(nodes: Node[], i: number): number | null {
   const docked = (j: number) => nodes[j].depth === 2 && (nodes[j].role === 'toolbar' || nodes[j].role === 'tablist')
   let top = i; while (nodes[top].depth > 2 && nodes[top].parent >= 0) top = nodes[top].parent
@@ -1002,8 +983,6 @@ function drawnShift(nodes: Node[], i: number): number | null {
   return Math.min(...rows) < bar.y + bar.h / 2 ? bar.h : 0
 }
 
-// computer_act's target: the element of the focused window that `target` resolves to, pressed by action when `press`, with the
-// jev calls that answered it as served
 async function locate(target: string, press: boolean) {
   const calls = desk.served.length
   const out = await located(target, press)
