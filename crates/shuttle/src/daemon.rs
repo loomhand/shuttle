@@ -120,7 +120,13 @@ mod tests {
 
     fn runner() -> Runner {
         let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
-        Runner::new("node".into(), runtime, "unused".into(), Vec::new())
+        Runner::new(
+            "node".into(),
+            runtime,
+            "unused".into(),
+            std::env::temp_dir().join("shuttle-test-flows"),
+            Vec::new(),
+        )
     }
 
     #[tokio::test]
@@ -217,7 +223,13 @@ mod tests {
         let endpoint = dir.path().join("d.sock").to_string_lossy().into_owned();
         let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
         let keys = Keys::default();
-        let runner = Runner::new("node".into(), runtime, endpoint.clone(), Vec::new());
+        let runner = Runner::new(
+            "node".into(),
+            runtime,
+            endpoint.clone(),
+            dir.path().join("flows"),
+            Vec::new(),
+        );
         let mut d = Daemon::new(keys.clone(), Err("no models".to_owned()), runner);
         d.wait = wait;
         let d = std::sync::Arc::new(d);
