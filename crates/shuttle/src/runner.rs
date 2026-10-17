@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -13,6 +14,8 @@ const DEFAULT_TIMEOUT_S: u64 = 90;
 const MAX_TIMEOUT_S: u64 = 110;
 const MAX_OUTPUT: usize = 32 << 10;
 const PIPE_GRACE: Duration = Duration::from_millis(500);
+
+type Captured = Arc<Mutex<Vec<u8>>>;
 
 /// Runs modules with `node` and the runtime in `runtime`, desk calls going to the daemon at `endpoint`; the model key
 /// variables `key_vars` stay out of the scripts' environment.
@@ -115,6 +118,8 @@ impl Runner {
         for var in &self.key_vars {
             cmd.env_remove(var);
         }
+        #[cfg(unix)]
+        cmd.process_group(0);
         let started = Instant::now();
         let mut child = cmd
             .spawn()
@@ -122,25 +127,33 @@ impl Runner {
         let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
             return Err("the script's pipes are missing".to_owned());
         };
-        let (logs, stderr) = (tokio::spawn(capture(out)), tokio::spawn(capture(err)));
+        let (logs, stderr) = (Captured::default(), Captured::default());
+        let mut pipes = [
+            tokio::spawn(capture(out, Arc::clone(&logs))),
+            tokio::spawn(capture(err, Arc::clone(&stderr))),
+        ];
         let status = tokio::time::timeout(timeout, child.wait()).await;
         if status.is_err() {
+            #[cfg(unix)]
+            if let Some(pid) = child.id() {
+                kill_group(pid);
+            }
             let _ = child.kill().await;
         }
-        let collect = async {
-            (
-                logs.await.unwrap_or_default(),
-                stderr.await.unwrap_or_default(),
-            )
+        let drained = async {
+            for p in &mut pipes {
+                let _ = p.await;
+            }
         };
-        let (logs, stderr) = tokio::time::timeout(PIPE_GRACE, collect)
-            .await
-            .unwrap_or_default();
+        let _ = tokio::time::timeout(PIPE_GRACE, drained).await;
+        for p in &pipes {
+            p.abort();
+        }
         let mut report = json!({
             "duration_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            "logs": logs,
-            "stderr": stderr,
         });
+        report["logs"] = text(&logs).into();
+        report["stderr"] = text(&stderr).into();
         match status {
             Err(_) => {
                 report["error"] = json!({"kind": "timeout", "message": format!("the run passed {}s and was stopped", timeout.as_secs())});
@@ -191,18 +204,29 @@ async fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     open.open(path).await?.write_all(bytes).await
 }
 
-async fn capture(mut r: impl AsyncRead + Unpin) -> String {
-    let mut buf = Vec::new();
+async fn capture(mut r: impl AsyncRead + Unpin, into: Captured) {
     let mut chunk = [0u8; 8192];
     while let Ok(n) = r.read(&mut chunk).await {
         if n == 0 {
             break;
         }
-        if buf.len() < MAX_OUTPUT {
-            buf.extend_from_slice(&chunk[..n.min(MAX_OUTPUT - buf.len())]);
-        }
+        let mut buf = into.lock().unwrap_or_else(PoisonError::into_inner);
+        let room = MAX_OUTPUT.saturating_sub(buf.len());
+        buf.extend_from_slice(&chunk[..n.min(room)]);
     }
-    String::from_utf8_lossy(&buf).into_owned()
+}
+
+fn text(captured: &Captured) -> String {
+    let bytes = std::mem::take(&mut *captured.lock().unwrap_or_else(PoisonError::into_inner));
+    String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
+#[cfg(unix)]
+fn kill_group(pid: u32) {
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        // SAFETY: kill takes no pointers; the negative pid names the process group the child leads.
+        unsafe { libc::kill(-pid, libc::SIGKILL) };
+    }
 }
 
 #[cfg(test)]
@@ -263,6 +287,47 @@ mod tests {
         assert_eq!(slow["logs"], "started\n");
         let relative = r.script(json!({"script": "x.mts"})).await.unwrap_err();
         assert_eq!(relative, "script x.mts is not an absolute path");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_timeout_stops_the_whole_process_group_and_keeps_the_logs_a_stray_pipe_holder_blocks()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let r = runner(dir.path());
+        let code = "import { spawn } from 'node:child_process'\nconst same = spawn('sleep', ['30'], { stdio: 'inherit' })\nconst away = spawn('sleep', ['30'], { stdio: 'inherit', detached: true })\nconsole.log(`${same.pid} ${away.pid}`)\nexport async function main() { await new Promise((r) => setTimeout(r, 5000)) }";
+        let report = r
+            .script(json!({"code": code, "timeout_s": 1}))
+            .await
+            .unwrap();
+        assert_eq!(report["error"]["kind"], "timeout", "{report}");
+        let logs = report["logs"].as_str().unwrap().trim().to_owned();
+        let (same, away) = logs.split_once(' ').unwrap();
+        let alive = |pid: &str| {
+            std::process::Command::new("kill")
+                .args(["-0", pid])
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        };
+        let mut gone = false;
+        for _ in 0..40 {
+            gone = !alive(same);
+            if gone {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let stray = alive(away);
+        let _ = std::process::Command::new("kill")
+            .args(["-9", away])
+            .status();
+        assert!(gone, "{same} outlived the timeout");
+        assert!(
+            stray,
+            "the detached pipe holder is gone, so the test proves nothing"
+        );
     }
 
     #[cfg(unix)]
