@@ -573,7 +573,7 @@ async function choose(nodes: Node[], n: Node, rec: { via?: string }, open = fals
   const t0 = Date.now()
   try {
     const mods = n.shortcut.split('+').slice(0, -1)
-    if (n.shortcut && (mods.some((x) => x !== 'shift') || /^f\d+$/.test(n.shortcut))) {
+    if (OS !== 'darwin' && n.shortcut && (mods.some((x) => x !== 'shift') || /^f\d+$/.test(n.shortcut))) {
       if (open) for (const _ of menus(nodes, n.parent)) await desk.key('Escape')
       try { await desk.key(n.shortcut); rec.via = 'shortcut'; return } catch {}
     }
