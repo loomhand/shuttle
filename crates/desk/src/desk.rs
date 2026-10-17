@@ -1067,6 +1067,57 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct Reads {
+        reads: Mutex<usize>,
+        clicks: Mutex<usize>,
+        forget: Mutex<bool>,
+    }
+
+    impl Input for Arc<Reads> {
+        async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
+            Ok(match tool {
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 7, "window_id": 40, "layer": 0, "z_index": 5, "bounds": {"x": 0.0, "y": 0.0, "width": 300.0, "height": 200.0}}
+                ]}}),
+                "get_window_state" => {
+                    *self.reads.lock().unwrap() += 1;
+                    json!({"structuredContent": {
+                        "screenshot_width": 300, "screenshot_height": 200,
+                        "window_bounds": {"x": 0.0, "y": 0.0, "width": 300.0, "height": 200.0}
+                    }})
+                }
+                "click" => {
+                    *self.clicks.lock().unwrap() += 1;
+                    if std::mem::take(&mut *self.forget.lock().unwrap()) {
+                        return Err("screenshot_context_missing: window_never_read".into());
+                    }
+                    json!({})
+                }
+                _ => json!({}),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn macos_clicks_into_one_unmoved_window_read_it_once_and_again_when_the_driver_forgot_it()
+    {
+        let driver = Arc::new(Reads::default());
+        let desk = Desk::new(|| Ok(notepad()), driver.clone(), Os::Mac);
+        let click = || desk.run("desk_click", json!({"x": 10.0, "y": 10.0}));
+        click().await.unwrap();
+        click().await.unwrap();
+        *driver.forget.lock().unwrap() = true;
+        click().await.unwrap();
+        assert_eq!(
+            (
+                *driver.reads.lock().unwrap(),
+                *driver.clicks.lock().unwrap()
+            ),
+            (2, 4)
+        );
+    }
+
     #[tokio::test]
     async fn a_macos_click_targets_the_top_window_under_the_point_in_the_pixels_of_its_screenshot()
     {
