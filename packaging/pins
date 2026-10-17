@@ -1,0 +1,11 @@
+# PLATFORM COMPONENT SHA256 URL: the third-party archives a release bundles, each checked by sha256 before use.
+macos-arm64 node 6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5 https://nodejs.org/dist/v24.22.0/node-v24.22.0-darwin-arm64.tar.gz
+macos-x64 node 495e3f273c645f3c4677d438304cdfc701729ea5dec5728f5c8e76a2dece4b91 https://nodejs.org/dist/v24.22.0/node-v24.22.0-darwin-x64.tar.gz
+linux-x64 node cc2f601cee82d9a5a233302fe307abc600727035fd7d2c3a3571755989e95008 https://nodejs.org/dist/v24.22.0/node-v24.22.0-linux-x64.tar.xz
+linux-arm64 node fef00bb4d36e1c50104a9775a10359beee98f162b4104dd12472c75065c6a143 https://nodejs.org/dist/v24.22.0/node-v24.22.0-linux-arm64.tar.xz
+windows-x64 node f9683a19877e12a9b167305c8db71040d812876359de21f0d2e97c3f321f80c3 https://nodejs.org/dist/v24.22.0/node-v24.22.0-win-x64.zip
+macos-arm64 cua-driver 386f02f1a1efceabeccdf531fa3bac39f6df94173b3d088bd252f27b26ddf442 https://github.com/loomhand/cua/releases/download/v0.35.4-loomhand.2/cua-driver-v0.35.4-loomhand.2-macos-arm64.tar.gz
+macos-x64 cua-driver 4ba9f65a4d973e3fad5f3e750c1048fd543c451e31ed2d4efab2792453954aa5 https://github.com/loomhand/cua/releases/download/v0.35.4-loomhand.2/cua-driver-v0.35.4-loomhand.2-macos-x86_64.tar.gz
+linux-x64 cua-driver 14029aeb3576c9b350e25a091065054bfb7a5aa0d7e6bbc1184c6c89a80d619b https://github.com/loomhand/cua/releases/download/v0.35.4-loomhand.2/cua-driver-v0.35.4-loomhand.2-linux-x86_64.tar.gz
+linux-arm64 cua-driver 9259d6a4617113b578682c998657dba372f537cf3e6df0c4429894bd6ee4f8d4 https://github.com/loomhand/cua/releases/download/v0.35.4-loomhand.2/cua-driver-v0.35.4-loomhand.2-linux-arm64.tar.gz
+windows-x64 cua-driver 7f8db16922b9b9ef66debe0ac174c5836b15978456c75141dd3f3c9737b2c9c9 https://github.com/loomhand/cua/releases/download/v0.35.4-loomhand.2/cua-driver-v0.35.4-loomhand.2-windows-x86_64.zip

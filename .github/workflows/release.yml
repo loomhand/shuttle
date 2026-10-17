@@ -1,0 +1,180 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-26
+            target: aarch64-apple-darwin
+            exe: shuttle
+          - platform: macos-x64
+            runner: macos-26
+            target: x86_64-apple-darwin
+            exe: shuttle
+          - platform: windows-x64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            exe: shuttle.exe
+    runs-on: ${{ matrix.runner }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Build
+        shell: bash
+        run: |
+          rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal -t ${{ matrix.target }}
+          cargo build --release --locked -p shuttle --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: packaging/package.sh ${{ matrix.platform }} target/${{ matrix.target }}/release/${{ matrix.exe }} "$GITHUB_REF_NAME" dist
+
+      - name: Upload
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: dist-${{ matrix.platform }}
+          path: dist/*
+
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    # Debian 11 keeps the glibc floor at 2.31, the floor of the bundled cua-driver.
+    container:
+      image: debian:11
+    steps:
+      - name: Install build dependencies
+        run: |
+          cat > /etc/apt/sources.list <<'APT'
+          deb [check-valid-until=no signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://snapshot.debian.org/archive/debian/20260901T000000Z/ bullseye main
+          deb [check-valid-until=no signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://snapshot.debian.org/archive/debian/20260901T000000Z/ bullseye-updates main
+          deb [check-valid-until=no signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://snapshot.debian.org/archive/debian-security/20260901T000000Z/ bullseye-security main
+          APT
+          apt-get -o Dir::Etc::sourceparts=- -o Acquire::Retries=5 update
+          apt-get -o Dir::Etc::sourceparts=- -o Acquire::Retries=5 install -y --no-install-recommends \
+            git ca-certificates curl build-essential xz-utils
+          curl -fsSL --retry 3 https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Build
+        run: |
+          rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
+          cargo build --release --locked -p shuttle --target ${{ matrix.target }}
+
+      - name: Package
+        run: packaging/package.sh ${{ matrix.platform }} target/${{ matrix.target }}/release/shuttle "$GITHUB_REF_NAME" dist
+
+      - name: Upload
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: dist-${{ matrix.platform }}
+          path: dist/*
+
+  publish:
+    needs: [native, linux]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Download
+        uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+
+      - name: Installers and checksums
+        run: |
+          cp packaging/install.sh packaging/install.ps1 dist/
+          (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+
+      - name: Provenance
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-path: dist/*
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          awk -v v="${GITHUB_REF_NAME#v}" '/^## / { on = ($2 == v) } on && !/^## /' CHANGELOG.md > notes.md
+          test -s notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "shuttle $GITHUB_REF_NAME" --notes-file notes.md
+
+  install:
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            container: ubuntu:24.04
+          - runner: ubuntu-24.04-arm
+            container: ubuntu:24.04
+          - runner: macos-26
+          - runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    steps:
+      - name: Prerequisites
+        if: matrix.container
+        run: apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
+
+      - name: Install
+        run: curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/install.sh" | SHUTTLE_VERSION="$GITHUB_REF_NAME" sh
+
+      - name: Check
+        run: |
+          "$HOME/.local/bin/shuttle" --version | grep -Fx "shuttle ${GITHUB_REF_NAME#v}"
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | "$HOME/.local/bin/shuttle" mcp | tee tools.json
+          grep -o '"name":"[a-z_]*"' tools.json | sort | tr '\n' ' ' | grep -Fx '"name":"desk" "name":"gui_plan" "name":"screenshot" "name":"script_run" "name":"status" '
+
+  install-windows:
+    needs: publish
+    runs-on: windows-2025
+    steps:
+      - name: Install
+        shell: pwsh
+        run: |
+          $env:SHUTTLE_VERSION = $env:GITHUB_REF_NAME
+          irm "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME/install.ps1" | iex
+
+      - name: Check
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:LOCALAPPDATA 'Programs\shuttle\shuttle.exe'
+          $v = & $exe --version
+          if ($v -ne "shuttle $($env:GITHUB_REF_NAME.TrimStart('v'))") { throw "version: $v" }
+          $out = '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | & $exe mcp
+          $out
+          $names = ($out | ConvertFrom-Json).result.tools.name -join ' '
+          if ($names -ne 'gui_plan script_run desk screenshot status') { throw "tools: $names" }
