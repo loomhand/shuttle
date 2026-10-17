@@ -482,3 +482,26 @@ test('a target the focused window lacks resolves in the panel or desktop window 
     shell.length = 0
   }
 })
+
+test('an item of a list or tree grid is a target: a drawn layout tile wins over the hidden menu entries of the same name', async () => {
+  const tree = [
+    { id: '1.4/1', parent: -1, role: 'window', name: 'Deck — LibreOffice Impress' },
+    { id: '1.4/2', parent: 0, role: 'menu', name: 'Layout', states: [] },
+    { id: '1.4/3', parent: 1, role: 'menuitem', name: 'Title Only', states: [] },
+    { id: '1.4/4', parent: 0, role: 'list', name: 'Layouts' },
+    { id: '1.4/5', parent: 3, role: 'listitem', name: 'Title, Content' },
+    { id: '1.4/6', parent: 3, role: 'listitem', name: 'Title Only' },
+    { id: '1.4/7', parent: 0, role: 'treegrid', name: '' },
+    { id: '1.4/8', parent: 6, role: 'cell', name: 'Percent' },
+    { id: '1.4/9', parent: 0, role: 'cell', name: 'Currency' },
+  ]
+  const bounds = (id: string) => [10 * tree.findIndex((n) => n.id === id), 10, 10, 10]
+  for (const [target, id, how] of [['the Title Only layout', '1.4/6', 'ax'], ['the Title, Content layout in the Layouts panel', '1.4/5', 'ax'], ['Percent in the Category list', '1.4/8', 'jev(0.95)']]) {
+    const { main } = await screen(tree, { r7: 0.95, none: 0.05 })
+    const out = await main({ locate: { target } }) as { found: boolean; how: string; bounds: number[] }
+    assert.deepEqual([out.found, out.how, out.bounds], [true, how, bounds(id)], `${target}: ${JSON.stringify(out)}`)
+  }
+  const { main } = await screen(tree, { r8: 0.95, none: 0.05 })
+  const loose = await main({ locate: { target: 'the Currency entry' } }) as { found: boolean }
+  assert.equal(loose.found, false, JSON.stringify(loose))
+})

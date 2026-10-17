@@ -27,6 +27,8 @@ const PENDING = `${FLOWS}/.pending.json`
 const CHAIN_AGE = 10 * 60 * 1000
 const ACTIVE = new Set(['button', 'checkbox', 'menuitem', 'menu', 'tab', 'textbox', 'spinbutton', 'slider', 'combobox', 'radio', 'link', 'switch', 'option', 'treeitem', 'togglebutton', 'searchbox', 'menuitemcheckbox', 'menuitemradio'])
 const TOGGLES = 'checkbox|switch|togglebutton|menuitemcheckbox'
+const ITEMS = new Set(['cell', 'listitem'])
+const LISTS = new Set(['treegrid', 'list', 'tree', 'table'])
 const FIELDS = 'textbox|searchbox|spinbutton|slider|combobox'
 const SHOWN_ROLES = new Set([...ACTIVE, 'dialog', 'alert'])
 const MARGIN = 0.25
@@ -252,7 +254,8 @@ function byFp(nodes: Node[], fp: Fp | undefined, within?: number): Hit | null {
 
 function candidates(nodes: Node[], role?: string, within?: number) {
   const inside = (i: number) => { if (within === undefined) return true; for (let p = nodes[i].parent; p >= 0; p = nodes[p].parent) if (p === within) return true; return false }
-  return nodes.map((n, i) => ({ n, i })).filter(({ n, i }) => ACTIVE.has(n.role) && (!role || role.split('|').includes(n.role)) && inside(i))
+  const item = (n: Node) => ITEMS.has(n.role) && n.parent >= 0 && LISTS.has(nodes[n.parent].role)
+  return nodes.map((n, i) => ({ n, i })).filter(({ n, i }) => (ACTIVE.has(n.role) || item(n)) && (!role || role.split('|').includes(n.role)) && inside(i))
 }
 
 // target resolution: the saved fingerprint, exact AX name (also once the target drops its articles and role words), contained AX
