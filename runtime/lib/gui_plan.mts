@@ -19,13 +19,13 @@ type Chain = { at: number; window: string | null; pid: number | null; name?: str
 type Params = { steps?: Step[]; flow?: string; params?: Record<string, string>; save?: string; start?: number; find?: string; reindex?: boolean; locate?: { target: string; press?: boolean } }
 type Rec = {
   i: number; op?: string; ms?: number; served?: unknown[]; how?: string; via?: string; window?: string; seen?: string; submit?: boolean
-  blank?: Fp; fp?: Fp; was?: boolean | null; now?: boolean; noop?: boolean; state?: string; opened?: number; path?: string[]; pick?: number[]
+  blank?: Fp; fp?: Fp; was?: boolean | 'mixed' | null; now?: boolean; noop?: boolean; state?: string; opened?: number; path?: string[]; pick?: number[]
   p?: number; p_zoom?: number | null; p_full?: number | null; verdict?: Vision; ground_hit?: string; checked?: string; value?: string; ref?: string; unsaved?: boolean
 }
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
 type Escalation = Seen & { reason: string; step?: number; plan_step?: Step }
-type Trace = { i: number; op?: string; how?: string; ms?: number; was?: 'on' | 'off'; now?: 'on' | 'off'; noop?: boolean }
+type Trace = { i: number; op?: string; how?: string; ms?: number; was?: 'on' | 'off' | 'mixed'; now?: 'on' | 'off'; noop?: boolean }
 export type Result = { ok?: boolean; done?: number; ms?: number; trace?: Trace[]; escalate?: Escalation; served?: desk.Served[]; [key: string]: unknown }
 
 const OS = process.platform
@@ -124,7 +124,7 @@ async function perform(p: Params): Promise<Result> {
     }
     rec.ms = Date.now() - ts; if (desk.served.length > calls) rec.served = desk.served.slice(calls)
     log.push({ ...rec, ...T }); recs[i] = rec
-    trace.push({ i, op: rec.op, how: rec.how, ms: rec.ms, ...(rec.was !== undefined ? { was: rec.was ? 'on' : 'off', now: rec.noop || s.verify || escalate ? undefined : s.on === false ? 'off' : 'on' } : {}), ...(rec.now !== undefined ? { now: rec.now ? 'on' : 'off' } : {}), ...(rec.noop ? { noop: true } : {}) })
+    trace.push({ i, op: rec.op, how: rec.how, ms: rec.ms, ...(rec.was !== undefined ? { was: rec.was === 'mixed' ? 'mixed' : rec.was ? 'on' : 'off', now: rec.noop || s.verify || escalate ? undefined : s.on === false ? 'off' : 'on' } : {}), ...(rec.now !== undefined ? { now: rec.now ? 'on' : 'off' } : {}), ...(rec.noop ? { noop: true } : {}) })
     if (escalate) break
   }
   const last = plan.at(-1) ?? {}
@@ -286,9 +286,9 @@ async function vision(prompt: string, shot: Buffer): Promise<Vision> {
   } finally { tick('vision', t0) }
 }
 
-async function checked(n: Node): Promise<boolean | null> {
+async function checked(n: Node): Promise<boolean | 'mixed' | null> {
   const t0 = Date.now()
-  try { const r = await desk.read(n.id); return r.states.includes('checked') || r.states.includes('pressed') } catch { return null } finally { tick('state', t0) }
+  try { const r = await desk.read(n.id); return r.states.includes('mixed') ? 'mixed' : r.states.includes('checked') || r.states.includes('pressed') } catch { return null } finally { tick('state', t0) }
 }
 // a word of the window's process command line starts with the app's command, such as gnome-terminal-server for gnome-terminal
 function ownedBy(pid: number | null, app: string) {
@@ -654,11 +654,17 @@ async function setState(s: Step, hit: Hit, rec: Rec) {
   if (was === null) was = await cropState(hit.n)
   rec.was = was
   if (was === on) { rec.noop = true; return }
-  await act(hit.n)
-  let now = await checked(hit.n)
-  for (let i = 0; i < 5 && now !== on && now !== null; i++) { await sleep(30); now = await checked(hit.n) }
+  let now = await flip(hit.n, on)
+  if (now !== on && (was === 'mixed' || now === 'mixed')) now = await flip(hit.n, on)
   if (now === null) now = await cropState(hit.n)
-  if (now !== on) throw new Surprise(`"${hit.n.name}" is still ${now ? 'on' : 'off'}`, await seen())
+  if (now !== on) throw new Surprise(`"${hit.n.name}" is still ${now === 'mixed' ? 'mixed' : now ? 'on' : 'off'}`, await seen())
+}
+
+async function flip(n: Node, on: boolean) {
+  await act(n)
+  let now = await checked(n)
+  for (let i = 0; i < 5 && now !== on && now !== null; i++) { await sleep(30); now = await checked(n) }
+  return now
 }
 
 async function option(combo: Node, opts: Node[], value: string, target: string, rec: Rec) {
@@ -780,7 +786,7 @@ async function run(s: Step, rec: Rec) {
     const bad: string[] = []
     if (s.value !== undefined) { let v = ''; try { v = (await desk.read(hit.n.id)).value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); v = hit.n.value }; if (!norm(v).includes(norm(s.value))) bad.push(`reads "${v}"`) }
     if (s.enabled !== undefined && hit.n.disabled === s.enabled) bad.push(hit.n.disabled ? 'is disabled' : 'is enabled')
-    if (s.on !== undefined) { const c = (w.pid === null ? null : gtkToggle(w.pid, hit.n.name)) ?? (await checked(hit.n)) ?? await cropState(hit.n); rec.was = c; if (c !== s.on) bad.push(c ? 'is on' : 'is off') }
+    if (s.on !== undefined) { const c = (w.pid === null ? null : gtkToggle(w.pid, hit.n.name)) ?? (await checked(hit.n)) ?? await cropState(hit.n); rec.was = c; if (c !== s.on) bad.push(c === 'mixed' ? 'is mixed' : c ? 'is on' : 'is off') }
     if (bad.length) throw new Surprise(`verify: "${hit.n.name || s.verify}" ${bad.join(', ')}`, await seen())
     return
   }
