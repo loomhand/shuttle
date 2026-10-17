@@ -75,6 +75,7 @@ const TOP_PROPS: [UIA_PROPERTY_ID; 4] = [
 pub struct Uia {
     auto: IUIAutomation,
     subtree: IUIAutomationCacheRequest,
+    children: IUIAutomationCacheRequest,
     single: IUIAutomationCacheRequest,
     top: IUIAutomationCacheRequest,
     root: IUIAutomationElement,
@@ -93,6 +94,11 @@ impl Uia {
         }
         .map_err(|e| format!("start UI Automation: {e}"))?;
         let subtree = request(&auto, TreeScope_Subtree, &PROPS)?;
+        let children = request(
+            &auto,
+            TreeScope(TreeScope_Element.0 | TreeScope_Children.0),
+            &PROPS,
+        )?;
         let single = request(&auto, TreeScope_Element, &PROPS)?;
         let top = request(&auto, TreeScope_Element, &TOP_PROPS)?;
         // SAFETY: `auto` is a live IUIAutomation on this thread.
@@ -100,6 +106,7 @@ impl Uia {
         Ok(Self {
             auto,
             subtree,
+            children,
             single,
             top,
             root,
@@ -197,6 +204,7 @@ impl Uia {
     fn walk(
         &mut self,
         el: &IUIAutomationElement,
+        kids: &[IUIAutomationElement],
         parent: Option<usize>,
         depth: usize,
         extras: Extras,
@@ -210,11 +218,11 @@ impl Uia {
         if depth > MAX_DEPTH {
             return Ok(false);
         }
-        for child in children(el) {
-            if owned_dialog(&child) {
+        for child in kids {
+            if owned_dialog(child) {
                 continue;
             }
-            if self.walk(&child, parent, depth, extras, out)? {
+            if self.walk(child, &children(child), parent, depth, extras, out)? {
                 return Ok(true);
             }
         }
@@ -289,10 +297,20 @@ impl Access for Uia {
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
         let started = Instant::now();
         let el = self.element(&frame.id)?;
-        let cached = self.cached(&el, &self.subtree)?;
+        // a subtree cache of a window spans the dialogs it owns, which the walk skips
+        let owns = owns_window(&el);
+        let cached = self.cached(&el, if owns { &self.children } else { &self.subtree })?;
+        let mut kids = children(&cached);
+        if owns {
+            kids = kids
+                .iter()
+                .filter(|c| !owned_dialog(c))
+                .map(|c| self.cached(c, &self.subtree))
+                .collect::<Result<_, _>>()?;
+        }
         let fetched = started.elapsed().as_micros();
         let mut nodes = Vec::new();
-        let mut truncated = self.walk(&cached, None, 0, extras, &mut nodes)?;
+        let mut truncated = self.walk(&cached, &kids, None, 0, extras, &mut nodes)?;
         let walked = started.elapsed().as_micros() - fetched;
         let (shown, roots) = self.roots();
         let mut menus = Vec::new();
@@ -307,7 +325,7 @@ impl Access for Uia {
             menus.extend(self.cached(&el, &self.subtree).ok());
         }
         if nodes.iter().any(|n| n.role == "menu" && n.has("expanded")) {
-            menus_in(&cached, &mut menus);
+            menus_in(&kids, &mut menus);
         }
         for menu in menus {
             let listed = runtime_id(&menu).is_ok_and(|id| nodes.iter().any(|n| n.id == id));
@@ -316,6 +334,7 @@ impl Access for Uia {
             }
             truncated = self.walk(
                 &menu,
+                &children(&menu),
                 (!nodes.is_empty()).then_some(0),
                 1,
                 extras,
@@ -680,6 +699,14 @@ fn document_text(el: &IUIAutomationElement, chars: usize) -> Option<String> {
     text.ok().map(|t| t.to_string()).filter(|t| !t.is_empty())
 }
 
+fn owns_window(el: &IUIAutomationElement) -> bool {
+    // SAFETY: `el` is a live UIA element of this thread.
+    let Ok(hwnd) = (unsafe { el.CurrentNativeWindowHandle() }) else {
+        return false;
+    };
+    shown().iter().any(|s| s.owner == hwnd.0 as isize)
+}
+
 fn owned_dialog(el: &IUIAutomationElement) -> bool {
     if raw_control_type(el) != WINDOW {
         return false;
@@ -712,12 +739,12 @@ fn value(el: &IUIAutomationElement, p: UIA_PROPERTY_ID) -> Val {
     }
 }
 
-fn menus_in(el: &IUIAutomationElement, out: &mut Vec<IUIAutomationElement>) {
-    for child in children(el) {
-        if raw_control_type(&child) == MENU {
+fn menus_in(kids: &[IUIAutomationElement], out: &mut Vec<IUIAutomationElement>) {
+    for child in kids {
+        if raw_control_type(child) == MENU {
             out.push(child.clone());
         }
-        menus_in(&child, out);
+        menus_in(&children(child), out);
     }
 }
 
