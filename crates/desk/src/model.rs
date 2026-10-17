@@ -186,6 +186,10 @@ pub trait Access {
     fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String>;
     /// The deepest element of the window `window` under the screen pixel `(x, y)`.
     fn at(&mut self, window: &str, x: i32, y: i32) -> Result<Option<String>, String>;
+    /// The open menu item under the screen pixel `(x, y)`, above every window.
+    fn menu_at(&mut self, _x: i32, _y: i32) -> Result<Option<String>, String> {
+        Ok(None)
+    }
     /// Runs `act` on the element `id`.
     fn act(&mut self, id: &str, act: Act) -> Result<bool, String>;
     /// Asks the window to close as its close button does.
