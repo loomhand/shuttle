@@ -22,11 +22,8 @@ use crate::model::{Access, Act, Extras, Frame, Node};
 use crate::rpc::Output;
 use crate::worker::Worker;
 
-const CALL_LIMIT: Duration = Duration::from_secs(3);
-const TREE_LIMIT: Duration = Duration::from_secs(10);
-const TURN_WAIT: Duration = Duration::from_secs(15);
-const READ_CHARS: usize = 64 << 10;
-const ACTIONS: [&str; 8] = [
+pub const TURN_WAIT: Duration = Duration::from_secs(15);
+pub const ACTIONS: [&str; 8] = [
     "desk_press",
     "desk_act",
     "desk_key",
@@ -36,6 +33,10 @@ const ACTIONS: [&str; 8] = [
     "desk_close",
     "desk_launch",
 ];
+
+const CALL_LIMIT: Duration = Duration::from_secs(3);
+const TREE_LIMIT: Duration = Duration::from_secs(10);
+const READ_CHARS: usize = 64 << 10;
 
 type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
 
