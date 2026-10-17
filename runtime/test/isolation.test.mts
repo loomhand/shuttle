@@ -32,5 +32,9 @@ test('a plan, a save and a reindex write flows, the index, the pending chain and
   for (const n of ['.runs.jsonl', '.pending.json', 'INDEX', 'saved.json']) assert.ok(existsSync(`${flows}/${n}`), n)
   assert.ok(!existsSync(`${flows}/mousepad.json`))
   if (spawnSync('git', ['--version']).status === 0) assert.ok(existsSync(`${flows}/.git`))
+  if (process.platform !== 'win32') {
+    assert.equal(statSync(flows).mode & 0o777, 0o700)
+    for (const n of ['.runs.jsonl', '.pending.json', 'INDEX', 'saved.json']) assert.equal(statSync(`${flows}/${n}`).mode & 0o777, 0o600, n)
+  }
   assert.deepEqual(stamp(), before)
 })
