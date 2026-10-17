@@ -46,10 +46,6 @@ const SHELL_WINDOWS = ({ linux: /^(Desktop|xfce4-panel)$/, win32: /^Program Mana
 const SHELL_TARGET = /\b(dock|panel|taskbar|desktop)\b/i
 const CHOOSER = ({ linux: /File Chooser Widget/, win32: /^\s*- (combobox|textbox) "File name:?"/m, darwin: /^\s*- text "Save As:"/m } as Record<string, RegExp>)[OS] ?? /$^/
 const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-const terms = (s: string) => norm(s).split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !FILLER.has(w)).map((w) => w.length > 3 ? w.replace(/s$/, '') : w)
-const norm = (s: string) => s.toLowerCase().replace(/[_…]|\.\.\.|:$/g, '').replace(/\s+/g, ' ').trim()
-const slug = (s: string) => norm(s).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
 let busNames: string[] | null = null
 const known = new Set<string>()
 let lastSeen = ''
@@ -57,13 +53,134 @@ let recording = false
 let typed = false
 let pressed: { title: string; at: number } | null = null
 let T: Record<string, number> = {}
-const tick = (k: string, t0: number) => { T[k] = (T[k] ?? 0) + Date.now() - t0 }
 
 class Surprise extends Error {
   reason: string
   seen: Record<string, unknown>
   constructor(reason: string, seen: Record<string, unknown> = {}) { super(reason); this.reason = reason; this.seen = seen }
 }
+
+export async function main(p: Params) {
+  return { ...(await perform(p)), usage: desk.usage }
+}
+
+async function perform(p: Params) {
+  const t0 = Date.now()
+  if (p.reindex) { repo(); writeIndex(); git('add', '-A'); git('commit', '-q', '-m', 'sync from the flow library'); return { ok: true } }
+  if (p.find) return await find(p.find)
+  if (p.locate) return await locate(p.locate.target, p.locate.press ?? false)
+  if (p.save && !p.steps?.length && !p.flow) return await promote(p.save)
+  let flow: Flow | null = null
+  try { if (p.flow) flow = loadFlow(p.flow) } catch (e) { return { ok: false, done: 0, ms: 0, escalate: { reason: (e as Error).message } } }
+  const params = { ...(flow?.params ?? {}), ...(p.params ?? {}) }
+  const plan: Step[] = (flow ? flow.steps : p.steps ?? []).filter((s) => !Object.keys(s).every((k) => ['screenshot', 'timeout_s', 'max_edge'].includes(k)))
+  if (!plan.length) return { ok: false, error: 'pass steps, flow or find' }
+  recording = !flow && !!plan[0].app && !p.start
+  // a plan sent again only to save it, while the window it left is still in front, would type again: it is saved from the last run instead
+  if (p.save && !flow && !p.start && !idempotent(plan)) {
+    let c: Chain | null = null
+    try { c = JSON.parse(readFileSync(PENDING, 'utf8')) } catch {}
+    const was = c?.steps.filter((s) => !s.close) ?? []; const now = plan.filter((s) => !s.close)
+    if (c && was.length === now.length && was.every((s, i) => bare(s, c.params) === bare(now[i], params))) {
+      const r = await promote(p.save, p.params, true)
+      if (r.ok) return { ...r, ran: false, why: 'these steps passed in the last plan, so they were saved without running them again; call without save to run them' }
+    }
+  }
+  const trace: Record<string, unknown>[] = []; const log: Record<string, unknown>[] = []
+  for (const w of await desk.windows()) known.add(w.title)
+  const startTitles = new Set(known)
+  const start = await focused(); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
+  const startAlert = !start?.title.trim() && isAlert(await outline(start))
+  const recs: Record<string, unknown>[] = []
+  let escalate: Record<string, unknown> | null = null; let done = plan.length
+  const bad = plan.findIndex((s) => OPS.filter((k) => k in s).length !== 1)
+  if (bad >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: bad, plan_step: plan[bad], reason: `step ${bad} needs exactly one op of ${OPS.join(', ')}; nothing ran` } }
+  const unfilled = (s: Step) => Object.values(s).flatMap((v) => typeof v === 'string' ? [...v.matchAll(/\{\{(\w+)(?::base)?\}\}/g)].map((x) => x[1]) : []).find((n) => params[n] === undefined)
+  const gap = plan.findIndex((s, i) => i >= (p.start ?? 0) && unfilled(s))
+  if (gap >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: plan[gap], reason: `no value for {{${unfilled(plan[gap])}}}: pass it in params; nothing ran` } }
+  for (let i = p.start ?? 0; i < plan.length; i++) {
+    const s = fill(plan[i], params); T = {}; const rec: Record<string, unknown> = { i, op: OPS.find((k) => k in s) }
+    const ts = Date.now(); const calls = desk.served.length
+    try {
+      const ws = await desk.windows(); const f = desk.front(ws)
+      const m = s.close ? null : await hiddenModal(ws, f)
+      if (m) throw new Surprise(modalBlocks(m), await seen())
+      const o = f && (!known.has(f.title) || !f.title.trim()) && !(i === (p.start ?? 0) && startAlert) && !(s.window && norm(f.title).includes(norm(s.window))) ? await outline(f) : ''
+      if (blocked(o)) throw new Surprise(unanswered(f!.title), await seen())
+      if (isAlert(o)) throw new Surprise(`alert "${f!.title}" is in front`, await seen())
+      await run(s, rec)
+    } catch (e) {
+      const sp = e instanceof Surprise ? e : new Surprise(String((e as Error).message ?? e), await seen())
+      escalate = { step: i, plan_step: plan[i], reason: sp.reason, ...sp.seen }; done = i
+    }
+    rec.ms = Date.now() - ts; if (desk.served.length > calls) rec.served = desk.served.slice(calls)
+    log.push({ ...rec, ...T }); recs[i] = rec
+    trace.push({ i, op: rec.op, how: rec.how, ms: rec.ms, ...(rec.was !== undefined ? { was: rec.was ? 'on' : 'off', now: rec.noop || s.verify ? undefined : s.on === false ? 'off' : 'on' } : {}), ...(rec.now !== undefined ? { now: rec.now ? 'on' : 'off' } : {}), ...(rec.noop ? { noop: true } : {}) })
+    if (escalate) break
+  }
+  const last = plan.at(-1)!
+  let opened = false
+  if (!escalate) {
+    const ts = Date.now(); const was = (await focused())?.title
+    if ((last.key || last.type !== undefined || last.click) && !recs.at(-1)?.submit) {
+      for (let i = 0; i < 12 && (await focused())?.title === was; i++) await sleep(40)
+      await sleep(80)
+    }
+    const f = await focused(); const o = f ? await outline(f) : ''
+    log.push({ i: plan.length, op: 'end', ms: Date.now() - ts, window: f?.title ?? null })
+    const left = f && !startTitles.has(f.title) && isDialog(o) && !(last.wait || last.app || (last.window && norm(f.title).includes(norm(last.window))))
+    if (f && blocked(o) && recs.at(-1)?.how !== 'wm') { escalate = { step: plan.length, reason: unanswered(f.title), ...(await seen()) }; done = plan.length }
+    else if (f && (isAlert(o) || left)) { escalate = { step: plan.length, reason: `the plan ended with "${f.title || o.split('\n')[0]}" still in front`, ...(await seen()) }; done = plan.length }
+    opened = !!f && !startTitles.has(f.title) && isDialog(o)
+  }
+  let saved: string | undefined
+  const jevs = recs.filter((r) => r?.pick).length
+  const settled = !escalate && !opened
+  if (flow) {
+    try { writeFileSync(PENDING, 'null') } catch {}
+    if (settled && recs.every((r) => !r?.unsaved)) {
+      const rewrites = recs.filter((r, i) => r?.fp && JSON.stringify(r.fp) !== JSON.stringify(flow.steps[i].fp))
+      flow.runs += 1
+      if (rewrites.length) {
+        recs.forEach((r, i) => { if (r?.fp) flow.steps[i].fp = r.fp as Fp; if (r?.seen) flow.steps[i].seen = r.seen as string })
+        flow.rewrites += 1; flow.saved_at = new Date().toISOString(); saveFlow(flow, `replay re-resolved ${rewrites.length} step(s)`)
+      }
+      saved = flow.name
+    }
+  } else {
+    // a task done over several calls is one chain: it starts at a call whose first step is an app, and later calls extend it from the window it left
+    const ran = plan.slice(p.start ?? 0, done).map((s, k) => { const r = recs[(p.start ?? 0) + k]; const o: Step = { ...s }; if (r?.fp) o.fp = r.fp as Fp; if (r?.seen && !s.app) o.seen = r.seen as string; if (r?.blank) o.blank = r.blank as Fp; return o })
+    const dirty = recs.some((r) => r?.unsaved)
+    let chain: Chain | null = null; let prev: Chain | null = null
+    try { prev = JSON.parse(readFileSync(PENDING, 'utf8')) } catch {}
+    if (plan[0].app && !(p.start ?? 0)) chain = { at: Date.now(), window: null, pid: null, params: { ...(p.params ?? {}) }, steps: ran, dirty, usage: plus({}, desk.usage) }
+    else if (prev && Date.now() - prev.at < CHAIN_AGE && (prev.window === startWindow || (prev.pid !== null && prev.pid === startPid))) chain = { ...prev, at: Date.now(), params: { ...prev.params, ...(p.params ?? {}) }, steps: [...prev.steps, ...ran], dirty: prev.dirty || dirty, usage: plus(prev.usage, desk.usage) }
+    if (chain) {
+      if (p.save) { chain.name = slug(p.save); chain.named = true }
+      const changes = chain.steps.some((s) => s.check || s.set || s.type !== undefined || (s.menu && s.on !== undefined))
+      chain.escalated = !!escalate; chain.saved = false
+      if ((settled || (!escalate && changes)) && !chain.dirty && chain.steps.some((s) => !s.app)) { saved = store(chain); chain.saved = !!saved }
+      const end = await focused()
+      chain.window = end?.title ?? null
+      if (end && !SHELL_WINDOWS.test(end.title)) chain.pid = end.pid
+      try { mkdirSync(FLOWS, { recursive: true }); writeFileSync(PENDING, JSON.stringify(chain)) } catch {}
+    } else if (prev) try { writeFileSync(PENDING, JSON.stringify({ ...prev, saved: false, escalated: false })) } catch {}
+  }
+  const ms = Date.now() - t0
+  try { mkdirSync(FLOWS, { recursive: true }); appendFileSync(LOG, JSON.stringify({ at: new Date().toISOString(), flow: p.flow ?? null, ok: !escalate, ms, jevs, saved: saved ?? null, usage: desk.usage, steps: log }) + '\n') } catch {}
+  const out: Record<string, unknown> = { ok: !escalate, done, ms, trace }
+  if (saved) out[flow ? 'flow' : 'saved'] = saved
+  if (flow?.usage) out.recorded_usage = flow.usage
+  if (escalate) out.escalate = escalate
+  else out.window = (await focused())?.title ?? null
+  return out
+}
+
+function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)) }
+function terms(s: string) { return norm(s).split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !FILLER.has(w)).map((w) => w.length > 3 ? w.replace(/s$/, '') : w) }
+function norm(s: string) { return s.toLowerCase().replace(/[_…]|\.\.\.|:$/g, '').replace(/\s+/g, ' ').trim() }
+function slug(s: string) { return norm(s).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) }
+function tick(k: string, t0: number) { T[k] = (T[k] ?? 0) + Date.now() - t0 }
 
 function parse(snap: desk.Snap): Node[] {
   const kids = new Map<number, number>(); for (const n of snap.nodes) kids.set(n.parent, (kids.get(n.parent) ?? 0) + 1)
@@ -85,7 +202,7 @@ async function current() {
   while (k && (await focused())?.title === k.title && Date.now() - k.at < 150) await sleep(10)
   tick('settle', t0); return focused()
 }
-const titled = async (title: string, pid: number | null) => pid !== null && (await desk.windows()).some((x) => x.title === title && x.pid === pid)
+async function titled(title: string, pid: number | null) { return pid !== null && (await desk.windows()).some((x) => x.title === title && x.pid === pid) }
 // the accessibility tree of a window; `keys` adds the key bindings of its entries
 async function snapOf(w: Win, keys = false): Promise<desk.Snap> {
   return desk.snapshot(w.title, { pid: w.pid, keys })
@@ -113,14 +230,14 @@ async function hiddenModal(ws: Win[], f: Win | null) {
   await sleep(200)
   return of(await desk.windows()) || null
 }
-const modalBlocks = (m: Win) => `modal dialog "${m.title}" is open but ${m.modal}, and ${m.blocks ? `"${m.blocks}"` : 'its app'} takes no input until it closes: finish it, or close it with {close: true, window: "${m.title}"}`
-const blocked = (o: string) => /AT-SPI peer \S+ is not responding|no accessibility answer within/.test(o)
-const isChooser = (o: string) => CHOOSER.test(o)
+function modalBlocks(m: Win) { return `modal dialog "${m.title}" is open but ${m.modal}, and ${m.blocks ? `"${m.blocks}"` : 'its app'} takes no input until it closes: finish it, or close it with {close: true, window: "${m.title}"}` }
+function blocked(o: string) { return /AT-SPI peer \S+ is not responding|no accessibility answer within/.test(o) }
+function isChooser(o: string) { return CHOOSER.test(o) }
 // the whole text of the focused one-line field
-const selectLine = async () => { if (OS === 'darwin') await press(SELECT_ALL); else { await press('home'); await press('shift+end') } }
-const unanswered = (title: string) => `"${title}" answers no accessibility calls (a dialog opened by an accessibility action blocks its app, and a key would deadlock it): close it with {close: true}, then reopen it by its keyboard shortcut`
-const isAlert = (o: string) => /^- alert/.test(o)
-const isDialog = (o: string) => /^- (alert|dialog|file chooser)/.test(o)
+async function selectLine() { if (OS === 'darwin') await press(SELECT_ALL); else { await press('home'); await press('shift+end') } }
+function unanswered(title: string) { return `"${title}" answers no accessibility calls (a dialog opened by an accessibility action blocks its app, and a key would deadlock it): close it with {close: true}, then reopen it by its keyboard shortcut` }
+function isAlert(o: string) { return /^- alert/.test(o) }
+function isDialog(o: string) { return /^- (alert|dialog|file chooser)/.test(o) }
 // a dialog AT-SPI maps before its children answers with its root alone; read it again until the children show
 async function filled(w: Win) {
   let o = await outline(w)
@@ -235,16 +352,17 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string) {
   known.add(w!.title); tick('wait', t0); return w!
 }
 
-const named = (nodes: Node[], i: number) => { for (let p = nodes[i].parent; p >= 0; p = nodes[p].parent) if (nodes[p].name) return nodes[p].name; return '' }
-const sibling = (nodes: Node[], i: number) => nodes.slice(Math.max(0, i - 2), i + 3).filter((x) => x.role === 'text' && x.parent === nodes[i].parent && x.name).map((x) => x.name)[0]
+function named(nodes: Node[], i: number) { for (let p = nodes[i].parent; p >= 0; p = nodes[p].parent) if (nodes[p].name) return nodes[p].name; return '' }
+function sibling(nodes: Node[], i: number) { return nodes.slice(Math.max(0, i - 2), i + 3).filter((x) => x.role === 'text' && x.parent === nodes[i].parent && x.name).map((x) => x.name)[0] }
 function fingerprint(nodes: Node[], h: { n: Node; i: number }): Fp {
   const fp: Fp = { role: h.n.role, name: h.n.name, parent: named(nodes, h.i), nth: 0 }
   const label = sibling(nodes, h.i); if (label) fp.label = label
   fp.nth = matches(nodes, fp).findIndex((x) => x.i === h.i)
   return fp
 }
-const matches = (nodes: Node[], fp: Fp, within?: number) =>
-  candidates(nodes, fp.role, within).filter(({ n, i }) => n.name === fp.name && named(nodes, i) === fp.parent && (sibling(nodes, i) ?? '') === (fp.label ?? ''))
+function matches(nodes: Node[], fp: Fp, within?: number) {
+  return candidates(nodes, fp.role, within).filter(({ n, i }) => n.name === fp.name && named(nodes, i) === fp.parent && (sibling(nodes, i) ?? '') === (fp.label ?? ''))
+}
 function byFp(nodes: Node[], fp: Fp | undefined, within?: number): Hit | null {
   if (!fp) return null
   const same = matches(nodes, fp, within)
@@ -419,7 +537,7 @@ function ring(image: Buffer, cx: number, cy: number, r: number) {
   return png(w, h, type, bpp, px)
 }
 
-const press = (combo: string) => desk.key(combo)
+function press(combo: string) { return desk.key(combo) }
 
 // a shown control takes a pointer click, since its AT-SPI action runs the handler inside the a11y bridge's dispatch, where a
 // modal dialog it opens blocks the app; a tab, option or radio is selected; a hidden menu entry opens its menus first
@@ -820,8 +938,8 @@ function summary(steps: Step[]) {
   return text.length > 100 ? `${text.slice(0, 99)}…` : text
 }
 
-const idempotent = (steps: Step[]) => steps.every((s) => s.type === undefined && (!s.key || /^(esc|escape|tab|shift\+tab)$/i.test(s.key)))
-const bare = (s: Step, p: Record<string, string>) => JSON.stringify(Object.entries(fill(s, p)).filter(([k]) => k !== 'fp' && k !== 'seen' && k !== 'blank').sort())
+function idempotent(steps: Step[]) { return steps.every((s) => s.type === undefined && (!s.key || /^(esc|escape|tab|shift\+tab)$/i.test(s.key))) }
+function bare(s: Step, p: Record<string, string>) { return JSON.stringify(Object.entries(fill(s, p)).filter(([k]) => k !== 'fp' && k !== 'seen' && k !== 'blank').sort()) }
 
 // a chain becomes the flow it names, or one named after its app and last targets
 function store(chain: Chain) {
@@ -915,120 +1033,4 @@ async function located(target: string, press: boolean) {
     await settle(w.title)
   }
   return { ...out, ms: Date.now() - t0 }
-}
-
-export async function main(p: Params) {
-  return { ...(await perform(p)), usage: desk.usage }
-}
-
-async function perform(p: Params) {
-  const t0 = Date.now()
-  if (p.reindex) { repo(); writeIndex(); git('add', '-A'); git('commit', '-q', '-m', 'sync from the flow library'); return { ok: true } }
-  if (p.find) return await find(p.find)
-  if (p.locate) return await locate(p.locate.target, p.locate.press ?? false)
-  if (p.save && !p.steps?.length && !p.flow) return await promote(p.save)
-  let flow: Flow | null = null
-  try { if (p.flow) flow = loadFlow(p.flow) } catch (e) { return { ok: false, done: 0, ms: 0, escalate: { reason: (e as Error).message } } }
-  const params = { ...(flow?.params ?? {}), ...(p.params ?? {}) }
-  const plan: Step[] = (flow ? flow.steps : p.steps ?? []).filter((s) => !Object.keys(s).every((k) => ['screenshot', 'timeout_s', 'max_edge'].includes(k)))
-  if (!plan.length) return { ok: false, error: 'pass steps, flow or find' }
-  recording = !flow && !!plan[0].app && !p.start
-  // a plan sent again only to save it, while the window it left is still in front, would type again: it is saved from the last run instead
-  if (p.save && !flow && !p.start && !idempotent(plan)) {
-    let c: Chain | null = null
-    try { c = JSON.parse(readFileSync(PENDING, 'utf8')) } catch {}
-    const was = c?.steps.filter((s) => !s.close) ?? []; const now = plan.filter((s) => !s.close)
-    if (c && was.length === now.length && was.every((s, i) => bare(s, c.params) === bare(now[i], params))) {
-      const r = await promote(p.save, p.params, true)
-      if (r.ok) return { ...r, ran: false, why: 'these steps passed in the last plan, so they were saved without running them again; call without save to run them' }
-    }
-  }
-  const trace: Record<string, unknown>[] = []; const log: Record<string, unknown>[] = []
-  for (const w of await desk.windows()) known.add(w.title)
-  const startTitles = new Set(known)
-  const start = await focused(); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
-  const startAlert = !start?.title.trim() && isAlert(await outline(start))
-  const recs: Record<string, unknown>[] = []
-  let escalate: Record<string, unknown> | null = null; let done = plan.length
-  const bad = plan.findIndex((s) => OPS.filter((k) => k in s).length !== 1)
-  if (bad >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: bad, plan_step: plan[bad], reason: `step ${bad} needs exactly one op of ${OPS.join(', ')}; nothing ran` } }
-  const unfilled = (s: Step) => Object.values(s).flatMap((v) => typeof v === 'string' ? [...v.matchAll(/\{\{(\w+)(?::base)?\}\}/g)].map((x) => x[1]) : []).find((n) => params[n] === undefined)
-  const gap = plan.findIndex((s, i) => i >= (p.start ?? 0) && unfilled(s))
-  if (gap >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: plan[gap], reason: `no value for {{${unfilled(plan[gap])}}}: pass it in params; nothing ran` } }
-  for (let i = p.start ?? 0; i < plan.length; i++) {
-    const s = fill(plan[i], params); T = {}; const rec: Record<string, unknown> = { i, op: OPS.find((k) => k in s) }
-    const ts = Date.now(); const calls = desk.served.length
-    try {
-      const ws = await desk.windows(); const f = desk.front(ws)
-      const m = s.close ? null : await hiddenModal(ws, f)
-      if (m) throw new Surprise(modalBlocks(m), await seen())
-      const o = f && (!known.has(f.title) || !f.title.trim()) && !(i === (p.start ?? 0) && startAlert) && !(s.window && norm(f.title).includes(norm(s.window))) ? await outline(f) : ''
-      if (blocked(o)) throw new Surprise(unanswered(f!.title), await seen())
-      if (isAlert(o)) throw new Surprise(`alert "${f!.title}" is in front`, await seen())
-      await run(s, rec)
-    } catch (e) {
-      const sp = e instanceof Surprise ? e : new Surprise(String((e as Error).message ?? e), await seen())
-      escalate = { step: i, plan_step: plan[i], reason: sp.reason, ...sp.seen }; done = i
-    }
-    rec.ms = Date.now() - ts; if (desk.served.length > calls) rec.served = desk.served.slice(calls)
-    log.push({ ...rec, ...T }); recs[i] = rec
-    trace.push({ i, op: rec.op, how: rec.how, ms: rec.ms, ...(rec.was !== undefined ? { was: rec.was ? 'on' : 'off', now: rec.noop || s.verify ? undefined : s.on === false ? 'off' : 'on' } : {}), ...(rec.now !== undefined ? { now: rec.now ? 'on' : 'off' } : {}), ...(rec.noop ? { noop: true } : {}) })
-    if (escalate) break
-  }
-  const last = plan.at(-1)!
-  let opened = false
-  if (!escalate) {
-    const ts = Date.now(); const was = (await focused())?.title
-    if ((last.key || last.type !== undefined || last.click) && !recs.at(-1)?.submit) {
-      for (let i = 0; i < 12 && (await focused())?.title === was; i++) await sleep(40)
-      await sleep(80)
-    }
-    const f = await focused(); const o = f ? await outline(f) : ''
-    log.push({ i: plan.length, op: 'end', ms: Date.now() - ts, window: f?.title ?? null })
-    const left = f && !startTitles.has(f.title) && isDialog(o) && !(last.wait || last.app || (last.window && norm(f.title).includes(norm(last.window))))
-    if (f && blocked(o) && recs.at(-1)?.how !== 'wm') { escalate = { step: plan.length, reason: unanswered(f.title), ...(await seen()) }; done = plan.length }
-    else if (f && (isAlert(o) || left)) { escalate = { step: plan.length, reason: `the plan ended with "${f.title || o.split('\n')[0]}" still in front`, ...(await seen()) }; done = plan.length }
-    opened = !!f && !startTitles.has(f.title) && isDialog(o)
-  }
-  let saved: string | undefined
-  const jevs = recs.filter((r) => r?.pick).length
-  const settled = !escalate && !opened
-  if (flow) {
-    try { writeFileSync(PENDING, 'null') } catch {}
-    if (settled && recs.every((r) => !r?.unsaved)) {
-      const rewrites = recs.filter((r, i) => r?.fp && JSON.stringify(r.fp) !== JSON.stringify(flow.steps[i].fp))
-      flow.runs += 1
-      if (rewrites.length) {
-        recs.forEach((r, i) => { if (r?.fp) flow.steps[i].fp = r.fp as Fp; if (r?.seen) flow.steps[i].seen = r.seen as string })
-        flow.rewrites += 1; flow.saved_at = new Date().toISOString(); saveFlow(flow, `replay re-resolved ${rewrites.length} step(s)`)
-      }
-      saved = flow.name
-    }
-  } else {
-    // a task done over several calls is one chain: it starts at a call whose first step is an app, and later calls extend it from the window it left
-    const ran = plan.slice(p.start ?? 0, done).map((s, k) => { const r = recs[(p.start ?? 0) + k]; const o: Step = { ...s }; if (r?.fp) o.fp = r.fp as Fp; if (r?.seen && !s.app) o.seen = r.seen as string; if (r?.blank) o.blank = r.blank as Fp; return o })
-    const dirty = recs.some((r) => r?.unsaved)
-    let chain: Chain | null = null; let prev: Chain | null = null
-    try { prev = JSON.parse(readFileSync(PENDING, 'utf8')) } catch {}
-    if (plan[0].app && !(p.start ?? 0)) chain = { at: Date.now(), window: null, pid: null, params: { ...(p.params ?? {}) }, steps: ran, dirty, usage: plus({}, desk.usage) }
-    else if (prev && Date.now() - prev.at < CHAIN_AGE && (prev.window === startWindow || (prev.pid !== null && prev.pid === startPid))) chain = { ...prev, at: Date.now(), params: { ...prev.params, ...(p.params ?? {}) }, steps: [...prev.steps, ...ran], dirty: prev.dirty || dirty, usage: plus(prev.usage, desk.usage) }
-    if (chain) {
-      if (p.save) { chain.name = slug(p.save); chain.named = true }
-      const changes = chain.steps.some((s) => s.check || s.set || s.type !== undefined || (s.menu && s.on !== undefined))
-      chain.escalated = !!escalate; chain.saved = false
-      if ((settled || (!escalate && changes)) && !chain.dirty && chain.steps.some((s) => !s.app)) { saved = store(chain); chain.saved = !!saved }
-      const end = await focused()
-      chain.window = end?.title ?? null
-      if (end && !SHELL_WINDOWS.test(end.title)) chain.pid = end.pid
-      try { mkdirSync(FLOWS, { recursive: true }); writeFileSync(PENDING, JSON.stringify(chain)) } catch {}
-    } else if (prev) try { writeFileSync(PENDING, JSON.stringify({ ...prev, saved: false, escalated: false })) } catch {}
-  }
-  const ms = Date.now() - t0
-  try { mkdirSync(FLOWS, { recursive: true }); appendFileSync(LOG, JSON.stringify({ at: new Date().toISOString(), flow: p.flow ?? null, ok: !escalate, ms, jevs, saved: saved ?? null, usage: desk.usage, steps: log }) + '\n') } catch {}
-  const out: Record<string, unknown> = { ok: !escalate, done, ms, trace }
-  if (saved) out[flow ? 'flow' : 'saved'] = saved
-  if (flow?.usage) out.recorded_usage = flow.usage
-  if (escalate) out.escalate = escalate
-  else out.window = (await focused())?.title ?? null
-  return out
 }
