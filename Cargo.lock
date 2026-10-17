@@ -951,6 +951,7 @@ dependencies = [
  "shuttle-models",
  "tempfile",
  "tokio",
+ "windows",
 ]
 
 [[package]]
