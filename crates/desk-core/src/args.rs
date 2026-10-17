@@ -2,10 +2,15 @@
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 /// Decodes the arguments of one call.
 pub fn parse<T: DeserializeOwned>(args: Value) -> Result<T, String> {
+    let args = if args.is_null() {
+        Value::Object(Map::new())
+    } else {
+        args
+    };
     serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))
 }
 
@@ -110,4 +115,22 @@ pub struct ShotArgs {
     pub h: Option<f64>,
     #[serde(default)]
     pub path: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn a_call_without_args_takes_every_default() {
+        let snap: SnapArgs = parse(Value::Null).unwrap();
+        assert!(snap.window.is_none() && !snap.text);
+        assert!(parse::<KeyArgs>(Value::Null).is_err());
+        assert_eq!(
+            parse::<KeyArgs>(json!({"keys": "cmd+s"})).unwrap().keys,
+            "cmd+s"
+        );
+    }
 }
