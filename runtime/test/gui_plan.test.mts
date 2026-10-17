@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
-import { createServer } from 'node:net'
-import { tmpdir } from 'node:os'
 import { test } from 'node:test'
+
+import { toolhost } from './toolhost.mts'
 
 test('an app step focuses the app\'s open window, by its process or the window list, instead of launching the app, and names an app that does not exist', async () => {
   const app = spawn('sleep', ['30'])
@@ -13,34 +12,19 @@ test('an app step focuses the app\'s open window, by its process or the window l
   ]
   const listed = ['GeoGebra Classic 5']
   const calls: string[] = []
-  const toolhost = createServer((s) => {
-    let buf = Buffer.alloc(0)
-    s.on('data', (d) => {
-      buf = Buffer.concat([buf, d])
-      if (buf.length < 4 || buf.length < 4 + buf.readUInt32BE(0)) return
-      const { tool, args } = JSON.parse(buf.subarray(4).toString())
-      calls.push(tool)
-      let text = '{"ok":true}'
-      let error = tool === 'desk_launch'
-      if (tool === 'desk_windows') text = JSON.stringify([...wins].sort((a, b) => Number(b.active) - Number(a.active)))
-      if (tool === 'desk_snapshot') text = JSON.stringify({ window: wins.find((w) => w.active), nodes: [], truncated: false })
-      if (tool === 'desk_focus') {
-        const want = String(args.window).toLowerCase()
-        const w = wins.find((x) => x.title.toLowerCase().includes(want))
-        const title = w?.title ?? listed.find((t) => t.toLowerCase().includes(want))
-        for (const x of wins) x.active = x === w
-        text = JSON.stringify({ ok: true, title, pid: 7 })
-        error = !title
-      }
-      const body = Buffer.from(JSON.stringify({ text, is_error: error }))
-      const head = Buffer.alloc(4)
-      head.writeUInt32BE(body.length)
-      s.end(Buffer.concat([head, body]))
-    })
+  const server = await toolhost(({ tool, args }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify([...wins].sort((a, b) => Number(b.active) - Number(a.active)))
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: wins.find((w) => w.active), nodes: [], truncated: false })
+    if (tool === 'desk_focus') {
+      const want = String(args.window).toLowerCase()
+      const w = wins.find((x) => x.title.toLowerCase().includes(want))
+      const title = w?.title ?? listed.find((t) => t.toLowerCase().includes(want))
+      for (const x of wins) x.active = x === w
+      return { text: JSON.stringify({ ok: true, title, pid: 7 }), error: !title }
+    }
+    return { text: '{"ok":true}', error: tool === 'desk_launch' }
   })
-  const socket = `${mkdtempSync(`${tmpdir()}/gui-plan-`)}/toolhost.sock`
-  await new Promise<void>((r) => toolhost.listen(socket, r))
-  process.env.TOOLHOST_SOCKET = socket
   const { main } = await import('../lib/gui_plan.mts')
   try {
     const own = await main({ steps: [{ app: 'sleep' }] })
@@ -52,10 +36,10 @@ test('an app step focuses the app\'s open window, by its process or the window l
     const started = Date.now()
     const missing = await main({ steps: [{ app: 'no-such-app-osw' }] })
     assert.equal(missing.ok, false, JSON.stringify(missing))
-    assert.equal(missing.escalate.reason, 'no app "no-such-app-osw"')
+    assert.equal(missing.escalate?.reason, 'no app "no-such-app-osw"')
     assert.ok(Date.now() - started < 2000, `${Date.now() - started} ms`)
   } finally {
     app.kill()
-    toolhost.close()
+    server.close()
   }
 })
