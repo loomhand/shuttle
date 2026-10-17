@@ -8,7 +8,7 @@
 | MCP tools that act | P1 | P2 | P3 |
 | Kill switch, indicator, allowlist, confirm | P1 | P2 | P3 |
 
-Every platform installs and runs `cocoon-shuttle mcp`. On macOS and Windows, the `desk` and `screenshot` tools reach the desk verbs through the daemon when a cua-driver daemon runs at its default endpoint; that is a developer preview without the safety controls. On Linux they answer that there is no desk backend yet.
+Every platform installs and runs `cocoon-shuttle mcp`. On macOS and Windows, the `desk`, `screenshot`, `gui_plan` and `script_run` tools reach the desk verbs through the daemon when a cua-driver daemon runs at its default endpoint; that is a developer preview without the safety controls. On Linux they answer that there is no desk backend yet.
 
 ## macOS
 

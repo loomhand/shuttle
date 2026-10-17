@@ -10,8 +10,6 @@ pub const DESK_VERBS: [&str; 15] = [
     "close", "launch", "shot", "screen",
 ];
 
-const NOT_YET: &str = "this release lists the tool but does not run it yet; see docs/platforms.md for when it lands on this OS";
-
 /// The result of `tools/list`.
 pub fn list() -> Value {
     json!({"tools": [
@@ -33,7 +31,7 @@ pub fn list() -> Value {
         },
         {
             "name": "script_run",
-            "description": "Run one JavaScript or TypeScript ES module on the bundled Node runtime with the desk API: windows, accessibility snapshots, find and press elements, keys, typing, clicks, screen crops and model calls. A module that exports main(params) is called with params and its return value comes back as result.",
+            "description": "Run one JavaScript or TypeScript ES module on the bundled Node runtime with the desk API as the global `desk`: windows, accessibility snapshots, find and press elements, keys, typing, clicks, screen crops, and decide, look, ground and ask model calls. A module that exports main(params) is called with params and its return value comes back as result, with the logs, stderr and any error.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -81,7 +79,6 @@ pub fn list() -> Value {
 pub async fn call(name: &str, mut args: Value, endpoint: &str) -> Option<Value> {
     let (tool, args) = match name {
         "status" => return Some(result(status().to_string(), false)),
-        "gui_plan" | "script_run" => return Some(result(NOT_YET.to_owned(), true)),
         "desk" => match args["verb"].as_str().filter(|v| DESK_VERBS.contains(v)) {
             Some(verb) => (
                 format!("desk_{verb}"),
@@ -95,6 +92,8 @@ pub async fn call(name: &str, mut args: Value, endpoint: &str) -> Option<Value> 
             }
         },
         "screenshot" => ("desk_shot".to_owned(), args),
+        "script_run" => (name.to_owned(), absolute_script(args)),
+        "gui_plan" => (name.to_owned(), args),
         _ => return None,
     };
     let call = Call {
@@ -108,13 +107,25 @@ pub async fn call(name: &str, mut args: Value, endpoint: &str) -> Option<Value> 
     })
 }
 
+// a relative script path names a file under the agent's working directory, which the daemon does not share
+fn absolute_script(mut args: Value) -> Value {
+    let relative = args["script"]
+        .as_str()
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_relative());
+    if let (Some(path), Ok(cwd)) = (relative, std::env::current_dir()) {
+        args["script"] = cwd.join(path).to_string_lossy().into_owned().into();
+    }
+    args
+}
+
 fn status() -> Value {
     json!({
         "name": NAME,
         "version": VERSION,
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
-        "runs": ["status", "desk", "screenshot"],
+        "runs": ["status", "desk", "screenshot", "gui_plan", "script_run"],
     })
 }
 
