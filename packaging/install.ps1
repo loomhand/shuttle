@@ -9,7 +9,6 @@ $Name = 'cocoon-shuttle'
 $Repo = 'loomhand/shuttle'
 $InstallDir = if ($env:SHUTTLE_HOME) { $env:SHUTTLE_HOME } else { Join-Path $env:LOCALAPPDATA "Programs\$Name" }
 
-
 $Version = $env:SHUTTLE_VERSION
 if (-not $Version) {
     $Version = (Invoke-RestMethod -UseBasicParsing "https://api.github.com/repos/$Repo/releases/latest").tag_name

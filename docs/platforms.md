@@ -2,20 +2,20 @@
 
 | | macOS | Windows | Linux |
 |---|---|---|---|
-| Release archive | arm64, x64 (13.0+) | x64 | x64, arm64 (glibc 2.31+) |
+| Release archive | arm64, x64 (13.5+) | x64 | x64, arm64 (glibc 2.31+) |
 | Accessibility tree | AX: done in `shuttle-desk` | UI Automation: done in `shuttle-desk` | AT-SPI: in cocoonbox's toolhost, moves here in P3 |
 | Input, windows, capture | cua-driver | cua-driver | cua-driver (X11; Wayland best effort) |
-| MCP tools that act | P1 | P2 | P3 |
+| MCP tools that act | developer preview on `main` (P1) | developer preview on `main` (P2) | P3 |
 | Kill switch, indicator, allowlist, confirm | P1 | P2 | P3 |
 
-Every platform installs and runs `cocoon-shuttle mcp`. On macOS and Windows, the `desk`, `screenshot`, `gui_plan` and `script_run` tools reach the desk verbs through the daemon when a cua-driver daemon runs at its default endpoint; that is a developer preview without the safety controls. On Linux they answer that there is no desk backend yet.
+Every platform installs and runs `cocoon-shuttle mcp`. On macOS and Windows, the `desk`, `screenshot`, `gui_plan` and `script_run` tools reach the desk verbs through the daemon when a cua-driver daemon runs at its default endpoint; that is a developer preview without the safety controls. On Linux, `gui_plan` and `script_run` run, but their desk calls answer that there is no desk backend yet.
 
 ## macOS
 
 - **Permissions.** shuttle needs Accessibility (to read and act on windows) and Screen Recording (for screenshots). macOS grants them to an app, so they go to `Cocoon Shuttle.app`, which the installer puts in `~/Applications`. Grant them in System Settings > Privacy & Security when shuttle first asks.
 - **No code signing yet.** `Cocoon Shuttle.app` carries an ad hoc signature. macOS ties the grants to that signature, which changes with every release, so grant the permissions again after each upgrade.
 - **Gatekeeper.** The installer downloads with `curl`, which sets no quarantine flag. A copy downloaded with a browser is quarantined: run `xattr -dr com.apple.quarantine ~/Applications/"Cocoon Shuttle.app"`, or open it once with Control-click > Open.
-- **Input.** See [safety.md](safety.md#input-on-macos): AX actions first, keys to the app's process, coordinate clicks last.
+- **Input.** Today a press clicks the element's centre when a hit test there finds it, else runs its AX action, and keys go to the desktop through cua-driver; [safety.md](safety.md#input-on-macos) describes the P1 design.
 
 ## Windows
 

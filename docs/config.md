@@ -1,6 +1,6 @@
 # Configuration
 
-> The configuration lands with P1. This page is the contract the code follows; v0.0.1 reads no configuration.
+On `main` (unreleased) the daemon reads the model settings below; the released v0.0.1 reads no configuration. The `[safety]` and `[tools]` tables land with the P1 safety work.
 
 shuttle reads one TOML file:
 
@@ -56,9 +56,15 @@ ask = "anthropic/claude-sonnet-5"
 - The key comes from `api_key` in the file when set, else from the variable `api_key_env` names. Prefer the variable: the file then holds no secret.
 - On macOS the daemon starts from `Cocoon Shuttle.app` through LaunchServices and does not see your shell's environment: there, set the variable with `launchctl setenv OPENROUTER_API_KEY ...` (until logout) or put `api_key` in the file.
 - On macOS and Linux, a file that holds an `api_key` must be readable by its owner only (mode 0600); shuttle refuses it otherwise, as ssh refuses a readable private key. On Windows, `%APPDATA%` is per user; shuttle does not check its ACL.
-- Keys stay in the daemon. Scripts call models through the daemon over the desk wire and never see a key; errors and logs print a key as `***`.
+- Keys stay in the daemon: scripts call models through it over the desk wire, run without `OPENROUTER_API_KEY` and the configured `api_key_env` in their environment, and errors and logs print a key as `***`. A script runs with your user's rights, so it can read a key kept in this file; keep the key in the variable.
 
-## Safety
+## Saved flows
+
+`gui_plan` saves passing plans as flows in a `flows` directory next to `config.toml`, as one JSON file per flow, an `INDEX`, a run log `.runs.jsonl` and a git history of the changes when git is installed.
+
+## Safety (P1, not built yet)
+
+Until the safety controls land, a file with these tables does not load, and every model call answers with that error; this is the planned shape:
 
 ```toml
 [safety]
