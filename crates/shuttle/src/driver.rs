@@ -43,9 +43,9 @@ impl Bundled {
         if server::connect(endpoint).await.is_ok() {
             proc.stop_stale().await?;
         }
-        let child = proc.spawn().await?;
+        let running = proc.spawn().await?;
         let (stop, stopped) = oneshot::channel();
-        let task = tokio::spawn(proc.supervise(child, stopped));
+        let task = tokio::spawn(proc.supervise(running, stopped));
         Ok(Some(Self { stop, task }))
     }
 
@@ -62,21 +62,45 @@ struct Proc {
     pid_file: PathBuf,
 }
 
+struct Running {
+    child: Child,
+    #[cfg(unix)]
+    group: Option<u32>,
+}
+
+#[cfg(unix)]
+impl Drop for Running {
+    fn drop(&mut self) {
+        if let Some(pid) = self.group.and_then(|g| libc::pid_t::try_from(g).ok()) {
+            // SAFETY: kill takes no pointers; the negative pid names the process group the driver leads.
+            unsafe { libc::kill(-pid, libc::SIGKILL) };
+        }
+    }
+}
+
 impl Proc {
-    async fn spawn(&self) -> Result<Child, String> {
-        let mut child = Command::new(&self.bin)
-            .args(["serve", "--socket", &self.endpoint, "--pid-file"])
+    async fn spawn(&self) -> Result<Running, String> {
+        let mut cmd = Command::new(&self.bin);
+        cmd.args(["serve", "--socket", &self.endpoint, "--pid-file"])
             .arg(&self.pid_file)
             .env(TELEMETRY, "false")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        cmd.process_group(0);
+        let child = cmd
             .spawn()
             .map_err(|e| format!("start {}: {e}", self.bin.display()))?;
+        let mut running = Running {
+            #[cfg(unix)]
+            group: child.id(),
+            child,
+        };
         let mut waited = Duration::ZERO;
         while server::connect(&self.endpoint).await.is_err() {
-            if let Ok(Some(status)) = child.try_wait() {
+            if let Ok(Some(status)) = running.child.try_wait() {
                 return Err(format!(
                     "cua-driver exited with {status} before it listened at {}",
                     self.endpoint
@@ -91,14 +115,14 @@ impl Proc {
             tokio::time::sleep(POLL).await;
             waited += POLL;
         }
-        Ok(child)
+        Ok(running)
     }
 
-    async fn supervise(self, mut child: Child, mut stopped: oneshot::Receiver<()>) {
+    async fn supervise(self, mut running: Running, mut stopped: oneshot::Receiver<()>) {
         loop {
             tokio::select! {
                 _ = &mut stopped => break,
-                status = child.wait() => log(&format!("cua-driver exited with {status:?}; starting it again")),
+                status = running.child.wait() => log(&format!("cua-driver exited with {status:?}; starting it again")),
             }
             tokio::select! {
                 _ = &mut stopped => {
@@ -109,14 +133,17 @@ impl Proc {
                     tokio::time::sleep(RESTART_DELAY).await;
                     self.spawn().await
                 } => match spawned {
-                    Ok(c) => child = c,
+                    Ok(r) => running = r,
                     Err(e) => log(&e),
                 },
             }
         }
         self.request_stop().await;
-        if tokio::time::timeout(STOP_WAIT, child.wait()).await.is_err() {
-            let _ = child.kill().await;
+        if tokio::time::timeout(STOP_WAIT, running.child.wait())
+            .await
+            .is_err()
+        {
+            let _ = running.child.kill().await;
         }
     }
 
@@ -125,6 +152,7 @@ impl Proc {
             .args(["stop", "--socket", &self.endpoint])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .kill_on_drop(true)
             .status();
         let _ = tokio::time::timeout(STOP_WAIT, stop).await;
     }
