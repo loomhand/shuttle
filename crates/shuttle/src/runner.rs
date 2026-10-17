@@ -162,10 +162,11 @@ impl Runner {
                 let status = status.map_err(|e| format!("wait for the script: {e}"))?;
                 report["exit_code"] = status.code().into();
                 if !status.success() {
-                    let thrown = tokio::fs::read_to_string(scratch.join("error.txt")).await;
-                    let message = thrown.unwrap_or_else(|_| format!("node exited with {status}"));
-                    report["error"] = json!({"kind": "exception"});
-                    report["error"]["message"] = message.into();
+                    let thrown = tokio::fs::read(scratch.join("error.json")).await;
+                    report["error"] = thrown
+                        .ok()
+                        .and_then(|raw| serde_json::from_slice(&raw).ok())
+                        .unwrap_or_else(|| json!({"kind": "exit", "message": format!("node exited with {status}")}));
                 }
             }
         }
@@ -275,10 +276,20 @@ mod tests {
             .script(json!({"code": "export function main() { throw new TypeError('nope') }"}))
             .await
             .unwrap();
-        assert_eq!(
-            thrown["error"],
-            json!({"kind": "exception", "message": "TypeError: nope"})
-        );
+        assert_eq!(thrown["error"]["kind"], "exception");
+        let stack = thrown["error"]["message"].as_str().unwrap();
+        assert!(stack.starts_with("TypeError: nope\n    at main"), "{stack}");
+        let no_main = r
+            .script(json!({"code": "export const x = 1"}))
+            .await
+            .unwrap();
+        assert_eq!(no_main["error"]["kind"], "no_main", "{no_main}");
+        let broken = r
+            .script(json!({"code": "export function main( {"}))
+            .await
+            .unwrap();
+        assert_eq!(broken["error"]["kind"], "import", "{broken}");
+        assert!(broken["result"].is_null());
         let slow = r
             .script(json!({"code": "console.log('started')\nexport async function main() { await new Promise((r) => setTimeout(r, 5000)) }", "timeout_s": 1}))
             .await
