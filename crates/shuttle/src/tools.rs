@@ -118,16 +118,8 @@ fn status() -> Value {
     })
 }
 
-// the image goes as image content, so the text drops its base64 copy that the runtime reads
 fn output(out: Output) -> Value {
-    let text = match (&out.image_b64, serde_json::from_str::<Value>(&out.text)) {
-        (Some(_), Ok(Value::Object(mut fields))) => {
-            fields.remove("png_b64");
-            Value::Object(fields).to_string()
-        }
-        _ => out.text,
-    };
-    let mut r = result(text, out.is_error);
+    let mut r = result(out.text, out.is_error);
     if let (Some(png), Some(content)) = (out.image_b64, r["content"].as_array_mut()) {
         let mut image = json!({"type": "image", "mimeType": "image/png"});
         image["data"] = png.into();

@@ -36,7 +36,7 @@ Desk calls name `desk_<verb>` tools:
 | `click` | `x`, `y`, `button?`, `count?` | clicks a screen point |
 | `focus`, `close` | `window`, `pid?` | focuses or closes a window |
 | `launch` | `app` | starts an app |
-| `shot` | `x?`, `y?`, `w?`, `h?` | `png_b64` of the screen or a rectangle |
+| `shot` | `x?`, `y?`, `w?`, `h?` | `width` and `height`, with the PNG of the screen or a rectangle in `image_b64` |
 | `screen` | | `width` and `height` in pixels |
 
 ## Model calls

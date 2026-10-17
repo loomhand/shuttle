@@ -16,7 +16,7 @@ export type ImagePart = { type: 'image_url'; image_url: { url: string } }
 export type Served = { model: string; image: boolean; build: string | null; id: string | null }
 type Size = { width: number; height: number }
 type Gw = { base: string; key: string }
-type Output = { text: string; is_error: boolean }
+type Output = { text: string; is_error: boolean; image_b64?: string }
 type Metered = { model?: string; id?: string; usage?: { prompt_tokens?: number; input_tokens?: number; completion_tokens?: number; output_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } }
 type ChatReply = Metered & { choices?: { message?: { content?: string } }[] }
 type Answer = { type: 'noul'; noul: number } | { type: 'choice'; choice: string; confidence: number; probabilities: Record<string, number> }
@@ -42,24 +42,9 @@ export const usage: Usage = {}
 export const served: Served[] = []
 
 /** One toolhost call: a big-endian u32 length and JSON each way. */
-export function call<T>(op: string, args: Record<string, unknown> = {}): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const s = createConnection(SOCKET)
-    const body = Buffer.from(JSON.stringify({ agent_id: 'desk', tool: `desk_${op}`, args }))
-    const head = Buffer.alloc(4)
-    head.writeUInt32BE(body.length)
-    let buf = Buffer.alloc(0)
-    s.on('connect', () => s.write(Buffer.concat([head, body])))
-    s.on('data', (d) => {
-      buf = Buffer.concat([buf, d])
-      if (buf.length < 4 || buf.length < 4 + buf.readUInt32BE(0)) return
-      s.destroy()
-      const out = JSON.parse(buf.subarray(4, 4 + buf.readUInt32BE(0)).toString()) as Output
-      if (out.is_error) return reject(new Error(out.text))
-      try { resolve(JSON.parse(out.text) as T) } catch { resolve(out.text as T) }
-    })
-    s.on('error', reject)
-  })
+export async function call<T>(op: string, args: Record<string, unknown> = {}): Promise<T> {
+  const out = await exchange(op, args)
+  try { return JSON.parse(out.text) as T } catch { return out.text as T }
 }
 
 export const windows = (): Promise<Win[]> => call('windows')
@@ -88,7 +73,9 @@ export async function screen(): Promise<Size> {
 
 /** A PNG of a screen rectangle, the whole screen by default. */
 export async function shot(r: { x?: number; y?: number; w?: number; h?: number } = {}): Promise<Buffer> {
-  return Buffer.from((await call<{ png_b64: string }>('shot', r)).png_b64, 'base64')
+  const out = await exchange('shot', r)
+  if (out.image_b64 === undefined) throw new Error('desk_shot returned no image')
+  return Buffer.from(out.image_b64, 'base64')
 }
 
 /** A setting from the environment, else from desk.env. */
@@ -124,6 +111,26 @@ export async function ground(png: Buffer, target: string, area: { left?: number;
   const g = /(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/.exec(text)
   if (!g) throw new Error(`grounding found no point for ${target}: ${text.slice(0, 120)}`)
   return [Math.round((area.left ?? 0) + (Number(g[1]) / 1000) * area.width), Math.round((area.top ?? 0) + (Number(g[2]) / 1000) * area.height)]
+}
+
+function exchange(op: string, args: Record<string, unknown>): Promise<Output> {
+  return new Promise((resolve, reject) => {
+    const s = createConnection(SOCKET)
+    const body = Buffer.from(JSON.stringify({ agent_id: 'desk', tool: `desk_${op}`, args }))
+    const head = Buffer.alloc(4)
+    head.writeUInt32BE(body.length)
+    let buf = Buffer.alloc(0)
+    s.on('connect', () => s.write(Buffer.concat([head, body])))
+    s.on('data', (d) => {
+      buf = Buffer.concat([buf, d])
+      if (buf.length < 4 || buf.length < 4 + buf.readUInt32BE(0)) return
+      s.destroy()
+      const out = JSON.parse(buf.subarray(4, 4 + buf.readUInt32BE(0)).toString()) as Output
+      if (out.is_error) return reject(new Error(out.text))
+      resolve(out)
+    })
+    s.on('error', reject)
+  })
 }
 
 function gw(): Gw {
