@@ -1,6 +1,4 @@
-//! The Windows desk backend: top-level windows from the Win32 window list, window trees from one UIA cache
-//! request over the control view, with the Toggle, ExpandCollapse, SelectionItem, Value and Window properties
-//! cached; ids are UIA runtime ids.
+//! The Windows desk backend: Win32 top-level windows and window trees from one cached UIA request; ids are runtime ids.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -84,7 +82,7 @@ pub struct Uia {
 impl Uia {
     /// The backend on a COM multithreaded apartment, with per-monitor DPI awareness so bounds are pixels.
     pub fn open() -> Result<Self, String> {
-        // SAFETY: COM and DPI setup take no pointers; a repeated call returns S_FALSE or an error that is ignored.
+        // SAFETY: `CUIAutomation` is a static CLSID; a repeated COM or DPI setup returns S_FALSE or an ignored error.
         let auto: IUIAutomation = unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -351,7 +349,7 @@ impl Access for Uia {
                 Ok(p) => p,
                 Err(_) => break,
             };
-            // SAFETY: as above.
+            // SAFETY: `self.auto`, `parent` and `self.root` are live UIA objects of this thread.
             if unsafe { self.auto.CompareElements(&parent, &self.root) }
                 .is_ok_and(|same| same.as_bool())
             {
@@ -497,7 +495,6 @@ impl Raw {
     }
 }
 
-/// A cached property value.
 enum Val {
     Int(i32),
     Bool(bool),
@@ -617,7 +614,7 @@ fn shown() -> Vec<Shown> {
         })
         .map(|hwnd| {
             let mut pid = 0u32;
-            // SAFETY: as above; `pid` is a live u32.
+            // SAFETY: the window calls take a handle; `pid` is a live u32 they write.
             let owner = unsafe {
                 GetWindowThreadProcessId(hwnd, Some(&raw mut pid));
                 GetWindow(hwnd, GW_OWNER).map_or(0, |o| o.0 as isize)

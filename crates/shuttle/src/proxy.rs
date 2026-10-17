@@ -13,8 +13,7 @@ const DETACHED_PROCESS: u32 = 0x0000_0008;
 const START_WAIT: Duration = Duration::from_secs(10);
 const START_POLL: Duration = Duration::from_millis(100);
 
-/// Sends `call` to the daemon at `endpoint`, starting the daemon when nothing listens there; only a failed connect is
-/// retried, never a call that may have reached the daemon.
+/// Sends `call` to the daemon at `endpoint`, starting it when nothing listens; a call that may have reached it is never resent.
 pub async fn call(endpoint: &str, call: &Call) -> Result<Output, String> {
     let conn = match server::connect(endpoint).await {
         Ok(conn) => conn,

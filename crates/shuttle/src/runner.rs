@@ -18,8 +18,7 @@ const PIPE_GRACE: Duration = Duration::from_millis(500);
 
 type Captured = Arc<Mutex<Vec<u8>>>;
 
-/// Runs modules with `node` and the runtime in `runtime`, desk calls going to the daemon at `endpoint`; the model key
-/// variables `key_vars` stay out of the scripts' environment.
+/// Runs modules on `node` with the runtime in `runtime`, calling back to `endpoint`, without the `key_vars`.
 #[derive(Debug)]
 pub struct Runner {
     node: PathBuf,
@@ -29,7 +28,6 @@ pub struct Runner {
 }
 
 impl Runner {
-    /// A runner of `node` and the runtime directory `runtime`.
     pub fn new(node: PathBuf, runtime: PathBuf, endpoint: String, key_vars: Vec<String>) -> Self {
         Self {
             node,

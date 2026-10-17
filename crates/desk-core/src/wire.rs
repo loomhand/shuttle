@@ -19,8 +19,7 @@ pub struct Call {
     pub args: Value,
 }
 
-/// A tool result; `image_b64` carries a screenshot when the tool produced one, and `secrets`
-/// the card fields it typed from a file, as (field, value).
+/// A tool result; `image_b64` is a screenshot, `secrets` the (field, value) card fields a host typed from a file.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Output {
     pub text: String,
