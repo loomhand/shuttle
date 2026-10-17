@@ -1,5 +1,6 @@
 //! The daemon's handler: model calls with the configured providers, scripts and plans on the runtime, desk calls by this OS's desk.
 
+use std::hash::{BuildHasher, RandomState};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -23,6 +24,7 @@ pub struct Daemon<H> {
     runner: Runner,
     turn: tokio::sync::Mutex<()>,
     running: Mutex<Option<String>>,
+    nonce: u64,
     runs: AtomicU64,
     wait: Duration,
 }
@@ -36,6 +38,7 @@ impl<H: Handler> Daemon<H> {
             runner,
             turn: tokio::sync::Mutex::new(()),
             running: Mutex::new(None),
+            nonce: RandomState::new().hash_one(std::process::id()),
             runs: AtomicU64::new(1),
             wait: TURN_WAIT,
         }
@@ -45,7 +48,8 @@ impl<H: Handler> Daemon<H> {
         let _turn = tokio::time::timeout(self.wait, self.turn.lock())
             .await
             .map_err(|_| BUSY.to_owned())?;
-        let agent = format!("run-{}", self.runs.fetch_add(1, Ordering::Relaxed));
+        let n = self.runs.fetch_add(1, Ordering::Relaxed);
+        let agent = format!("run-{:x}-{n}", self.nonce);
         *self.running() = Some(agent.clone());
         let report = if tool == "gui_plan" {
             self.runner.plan(args, &agent).await
@@ -150,6 +154,13 @@ mod tests {
         );
         let unknown = d.answer(ask("model_plan", json!({}))).await;
         assert_eq!(unknown.text, "unknown tool model_plan");
+    }
+
+    #[test]
+    fn each_daemon_names_its_runs_apart_from_any_earlier_daemon() {
+        let a = Daemon::new(Echo, Err(String::new()), runner());
+        let b = Daemon::new(Echo, Err(String::new()), runner());
+        assert_ne!(a.nonce, b.nonce);
     }
 
     #[tokio::test]
