@@ -11,48 +11,51 @@ shuttle reads one TOML file:
 
 ## Models (bring your own key)
 
-The desk runtime calls models in four roles. Each role names one endpoint; any OpenAI-compatible or Anthropic-compatible endpoint works, as does a decisions endpoint for the `decide` and `verify` roles.
+shuttle calls models through one OpenAI-compatible endpoint with one key. The default is [OpenRouter](https://openrouter.ai), so the quickstart is:
 
-| Role | What it does | Used by |
-|---|---|---|
-| `decide` | Picks one element from candidates, or answers a yes/no question, with probabilities, over text or a screenshot | `gui_plan` when a step's target matches more than one element; `desk.decide` and `desk.look` in scripts |
-| `verify` | Checks a crop around a grounded point, within 5 s | `gui_plan` after a grounded click; defaults to `decide` |
-| `ground` | Returns the point of a described element in a screenshot, as `point_2d` from 0 to 1000 | `gui_plan` when the accessibility tree has no match; `desk.ground` |
-| `ask` | Answers a free-form question about screenshots | `desk.ask` |
+1. Create a key at <https://openrouter.ai/settings/keys>.
+2. `export OPENROUTER_API_KEY=sk-or-...` in the environment the daemon starts from.
+3. Done: no configuration file is needed.
+
+The desk runtime calls models in four roles, each a model name on that endpoint:
+
+| Role | Default model | What it does | Used by |
+|---|---|---|---|
+| `decide` | `typesafe/jev-1.14` | Picks one element from candidates, or answers a yes/no question, with probabilities, over text or a screenshot | `gui_plan` when a step's target matches more than one element; `desk.decide` and `desk.look` in scripts |
+| `verify` | the `decide` model | Checks a crop around a grounded point, within 5 s | `gui_plan` after a grounded click |
+| `ground` | `qwen/qwen3-vl-235b-a22b-instruct` | Returns the point of a described element in a screenshot, as `point_2d` from 0 to 1000 | `gui_plan` when the accessibility tree has no match; `desk.ground` |
+| `ask` | `anthropic/claude-sonnet-5` | Answers a free-form question about screenshots | `desk.ask` |
+
+Every field is optional; this file spells out the defaults:
 
 ```toml
-[models.decide]
-api = "openai"                      # openai | anthropic | decisions
-base_url = "https://api.openai.com/v1"
-model = "<a vision chat model>"
-api_key_env = "OPENAI_API_KEY"      # or api_key = "..." in this file (mode 0600 only)
-timeout_ms = 60000
-
-[models.ground]
-api = "openai"
-base_url = "https://openrouter.ai/api/v1"
-model = "<a grounding model that answers point_2d, such as a Qwen3-VL model>"
+base_url = "https://openrouter.ai/api/v1"                 # POST {base_url}/chat/completions
+decisions_url = "https://openrouter.ai/api/alpha/decisions"
 api_key_env = "OPENROUTER_API_KEY"
+timeout_ms = 60000
+decide_api = "decisions"                                 # decisions | chat
 
-[models.ask]
-api = "anthropic"
-base_url = "https://api.anthropic.com"
-model = "<a vision chat model>"
-api_key_env = "ANTHROPIC_API_KEY"
+[models]
+decide = "typesafe/jev-1.14"
+# verify = "..."                                         # defaults to decide
+ground = "qwen/qwen3-vl-235b-a22b-instruct"
+ask = "anthropic/claude-sonnet-5"
 ```
 
-- `api = "openai"` calls `POST {base_url}/chat/completions`; `api = "anthropic"` calls `POST {base_url}/v1/messages`; `api = "decisions"` calls `POST {base_url}/decisions`. Each kind is spoken natively; shuttle never translates one protocol into another.
-- A role without an entry is off: a step that needs it escalates with `no model for <role>` instead of guessing.
+- shuttle makes two calls, both non-streaming: `POST {base_url}/chat/completions` for `ask`, `ground`, and `decide` with `decide_api = "chat"`, and `POST {decisions_url}` with `{model, state, questions}` for `decide` and `verify` with `decide_api = "decisions"`. Chat bodies carry `max_tokens` (100 for `ground`, 400 for `ask`, 800 for `decide` over chat), which OpenRouter accepts for every model.
+- **A local server** (vLLM, llama.cpp, Ollama's OpenAI API): set `base_url` to its `/v1` root, `decide_api = "chat"` and the model names it serves. A server without a key needs none: with no key shuttle sends no `Authorization` header.
+- **Your own gateway**: set `base_url` to its OpenAI-compatible root and `decisions_url` to its decisions route, such as `base_url = "https://gw.example/v1"` and `decisions_url = "https://gw.example/v1/decisions"`.
+- `timeout_ms` bounds each call; a crop check caps it at 5 s. One call is one request: shuttle does not retry it.
 
 ### `decide` without a decisions endpoint
 
-`gui_plan` was tuned against a decisions endpoint, which returns calibrated probabilities per answer. With `api = "openai"` or `"anthropic"`, shuttle asks the chat model for the same JSON and reads the probabilities it writes. Those numbers are self-reported, not calibrated, and the plan executor's thresholds (a 0.7 bar for a pick, a 0.6 runner-up margin, 0.5 for a crop check) were set on calibrated ones. Expect more escalations and more wrong picks than with a decisions endpoint. Keep `api = "decisions"` if you have a key for such a provider.
+`gui_plan` was tuned against a decisions endpoint, which returns calibrated probabilities per answer. With `decide_api = "chat"`, shuttle asks the chat model for the same answers as JSON and reads the probabilities it writes. Those numbers are self-reported, not calibrated, and the plan executor's thresholds (a 0.7 bar for a pick, a 0.6 runner-up margin, 0.5 for a crop check) were set on calibrated ones. Expect more escalations and more wrong picks than with a decisions endpoint.
 
 ## Keys
 
-- Prefer `api_key_env`: the key stays in your environment, and the file holds no secret.
-- A file that holds an `api_key` must be readable by its owner only (mode 0600 on macOS and Linux); shuttle refuses to start otherwise.
-- Keys stay in the daemon. Scripts call models through the daemon over the desk wire and never see a key; no log, error or `status` output contains one.
+- The key comes from `api_key` in the file when set, else from the variable `api_key_env` names. Prefer the variable: the file then holds no secret.
+- On macOS and Linux, a file that holds an `api_key` must be readable by its owner only (mode 0600); shuttle refuses it otherwise, as ssh refuses a readable private key. On Windows, `%APPDATA%` is per user; shuttle does not check its ACL.
+- Keys stay in the daemon. Scripts call models through the daemon over the desk wire and never see a key; errors and logs print a key as `***`.
 
 ## Safety
 

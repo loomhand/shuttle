@@ -1,0 +1,22 @@
+[package]
+name = "shuttle-models"
+description = "The model calls of the desk runtime: chat completions and decisions over one OpenAI-compatible endpoint, a model name per role"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "net", "io-util", "rt"] }
+
+[lints]
+workspace = true

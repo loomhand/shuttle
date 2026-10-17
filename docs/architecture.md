@@ -22,13 +22,18 @@ cocoon-shuttle serve ─────── one per user; owns the desktop, the m
 - **Node** is the official Node.js 24 binary, shipped unmodified and checked by sha256 at build time. A single-file compile (bun `--compile`, Node SEA) does not fit: `script_run` loads arbitrary scripts at run time, and the runtime must match what its tests run on.
 - **Model calls** (`decide`, `ground`, `ask`, `verify`) go through the daemon as `model_*` desk-wire calls, so provider keys live only in the daemon and never reach a script; see [config.md](config.md).
 
+## What shuttle never does
+
+shuttle is thin and embeddable: it sends each model call once, non-streaming, to the one OpenAI-compatible endpoint and the decisions URL it is configured with. It never speaks a vendor's native API, streams, caches, retries or fails over across vendors, routes between models, or bills. Anyone who needs those points `base_url` and `decisions_url` at a gateway that does them; cocoonbox embeds shuttle that way, pointed at its own gateway.
+
 ## Components
 
 | Path | Role |
 |---|---|
 | `crates/desk-core` (`shuttle-desk-core`, lib `desk_core`) | The desk wire, the desk call arguments and the pure window and name matching every desk backend shares |
 | `crates/desk` (`shuttle-desk`) | The desk verbs over the macOS AX and Windows UIA trees and the cua-driver client; the Linux AT-SPI backend joins in P3 |
-| `crates/shuttle` | The `cocoon-shuttle` binary: `mcp`, `serve`, `desk VERB`; later the daemon, the model providers and the safety controls |
+| `crates/models` (`shuttle-models`) | The model calls: chat completions and decisions over one OpenAI-compatible endpoint, a model name per role; usable as a library with a `Config` value |
+| `crates/shuttle` | The `cocoon-shuttle` binary: `mcp`, `serve`, `desk VERB`; later the daemon and the safety controls |
 | `runtime/lib` | `desk.mts` (the desk API for scripts) and `gui_plan.mts` (the plan executor, flows and replays) |
 | `runtime/test` | Node tests that drive the runtime against fake desk sockets and fake model servers |
 | `packaging` | The release archive builder, the third-party pins, the macOS bundle template and the installers |
