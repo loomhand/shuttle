@@ -23,6 +23,12 @@ type Rec = {
 }
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 
+class Surprise extends Error {
+  reason: string
+  seen: Record<string, unknown>
+  constructor(reason: string, seen: Record<string, unknown> = {}) { super(reason); this.reason = reason; this.seen = seen }
+}
+
 const OS = process.platform
 const FLOWS = OS === 'linux' ? '/workspace/flows' : `${homedir()}/workspace/flows`
 const LOG = `${FLOWS}/.runs.jsonl`
@@ -57,12 +63,6 @@ let recording = false
 let typed = false
 let pressed: { title: string; at: number } | null = null
 let T: Record<string, number> = {}
-
-class Surprise extends Error {
-  reason: string
-  seen: Record<string, unknown>
-  constructor(reason: string, seen: Record<string, unknown> = {}) { super(reason); this.reason = reason; this.seen = seen }
-}
 
 /** Runs {steps, params?, save?, start?}, {flow, params?, start?}, {save}, {find}, {reindex} or {locate}; returns {ok, done, ms, trace, saved?, escalate?}. */
 export async function main(p: Params): Promise<Record<string, unknown>> {
@@ -382,7 +382,6 @@ function candidates(nodes: Node[], role?: string, within?: number) {
   return nodes.map((n, i) => ({ n, i })).filter(({ n, i }) => (ACTIVE.has(n.role) || item(n)) && (!role || role.split('|').includes(n.role)) && inside(i))
 }
 
-// order: saved fingerprint, exact name, contained name, then a jev pick that must clear `bar`, the margin and, from text alone, share a word
 async function resolve(nodes: Node[], target: string, role?: string, within?: number, bar = 0.5, fp?: Fp): Promise<Hit | null> {
   const t0 = Date.now()
   const pool = candidates(nodes, role, within)
@@ -452,7 +451,6 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>) 
   } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
 
-// a grounded point needs jev's yes on a 640x400 crop, else on a small element's zoomed crop (0.65), else on the ringed screen (0.95)
 async function grounded(x: number, y: number, target: string, w: Win, area: { width: number; height: number }) {
   const under = await desk.at(x, y, w.title).catch(() => ({ found: null, path: [] }))
   const what = under.found ? [under.found, ...(under.path ?? []).reverse()].filter((n) => n.name).map((n) => `${n.role} "${n.name}"`).join(' under ') : ''
@@ -526,7 +524,6 @@ function zoom(image: Buffer, k: number) {
   return png(w * k, h * k, type, bpp, out)
 }
 
-// a red ring of radius r around (cx, cy) and four ticks outside it, edged in white, which leave the spot itself uncovered
 function ring(image: Buffer, cx: number, cy: number, r: number) {
   const { w, h, type, bpp, px } = unpng(image), t = Math.max(2, Math.round(r / 7)), tick = r + 3 * t, len = 3 * r
   for (const [c, pad] of [[[255, 255, 255], 1], [[230, 0, 0], 0]] as [[number, number, number], number][]) {
@@ -889,7 +886,6 @@ function fill(s: Step, p: Record<string, string>): Step {
   return Object.fromEntries(Object.entries(s).map(([k, v]) => [k, typeof v === 'string' ? sub(v) : v])) as Step
 }
 
-// values a later request would change become params: set values and typed text, unless the plan already templated them
 function templated(steps: Step[], params: Record<string, string>) {
   const p = { ...params }
   const out = steps.map((s) => {
