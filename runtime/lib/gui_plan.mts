@@ -192,6 +192,11 @@ function* up<N extends { parent: number }>(nodes: N[], from: number): Generator<
   for (let p = from; p >= 0;) { const n = nodes[p]; if (!n) return; yield [p, n]; p = n.parent }
 }
 function prob(j: desk.Judgment | undefined): number { return j?.probability ?? 0 }
+function menus(nodes: Node[], from: number): Node[] {
+  const out: Node[] = []
+  for (const [, q] of up(nodes, from)) { if (q.role !== 'menu') break; out.push(q) }
+  return out
+}
 
 function parse(snap: desk.Snap): Node[] {
   const kids = new Map<number, number>(); for (const n of snap.nodes) kids.set(n.parent, (kids.get(n.parent) ?? 0) + 1)
@@ -550,7 +555,7 @@ async function choose(nodes: Node[], n: Node, rec: { via?: string }, open = fals
   try {
     const mods = n.shortcut.split('+').slice(0, -1)
     if (n.shortcut && (mods.some((x) => x !== 'shift') || /^f\d+$/.test(n.shortcut))) {
-      if (open) for (const [, q] of up(nodes, n.parent)) { if (q.role !== 'menu') break; await press('Escape') }
+      if (open) for (const _ of menus(nodes, n.parent)) await press('Escape')
       try { await press(n.shortcut); rec.via = 'shortcut'; return } catch {}
     }
     rec.via = await act(n)
@@ -794,15 +799,14 @@ async function run(s: Step, rec: Rec) {
       if (now === s.on) { for (let k = 0; k < (rec.opened ?? 0); k++) await press('Escape'); rec.noop = true; return }
       if (now !== null) { await act(hit.n); await settle(w.title); return }
     }
-    const chain: Node[] = []
-    for (const [, q] of up(nodes, hit.n.parent)) { if (q.role !== 'menu') break; chain.unshift(q) }
+    const chain = menus(nodes, hit.n.parent).reverse()
     if (!chain.length) throw new Surprise(`"${hit.n.name}" is not inside a menu`, await seen())
     for (const q of chain) { await act(q); await sleep(120) }
     const on = await cropState(hit.n); rec.was = on; rec.state = 'vision'
     if (on === s.on) { for (const _ of chain) await press('Escape'); rec.noop = true; return }
     await act(hit.n); await settle(w.title); return
   }
-  const target = s.click ?? s.check ?? s.set!
+  const target = s.click ?? s.check ?? s.set ?? ''
   const hit = await resolve(nodes, target, s.role ?? (s.check ? TOGGLES : s.set ? FIELDS : undefined), undefined, s.set ? 0.5 : 0.7, s.fp)
   if (!hit) {
     if (!s.click) throw new Surprise(`no element matches "${target}"`, await seen())
@@ -817,7 +821,7 @@ async function run(s: Step, rec: Rec) {
     rec.how = 'ground'; rec.unsaved = true; await settle(w.title); return
   }
   rec.how = hit.how; rec.ref = `${hit.n.role} "${hit.n.name}"`; rec.fp = fingerprint(nodes, hit)
-  if (hit.p !== undefined) rec.pick = [+hit.p.toFixed(2), +hit.margin!.toFixed(2)]
+  if (hit.p !== undefined) rec.pick = [+hit.p.toFixed(2), +(hit.margin ?? 0).toFixed(2)]
   if (hit.n.disabled) {
     t0 = Date.now(); let on = false
     for (let i = 0; i < 15 && !on; i++) { await sleep(40); on = !(await desk.read(hit.n.id)).states.includes('disabled') }
@@ -871,8 +875,7 @@ async function menuEntry(w: Win, nodes: Node[], menu: string, fp: Fp | undefined
     if (!hit) {
       const leaf = await resolve(nodes, parts.at(-1) ?? part, 'menuitem|menu|menuitemcheckbox|menuitemradio')
       if (leaf?.how !== 'ax') throw new Surprise(`menu entry "${part}" not found`, await seen())
-      rec.how = 'ax-anywhere'; rec.path = []
-      for (const [, q] of up(nodes, leaf.n.parent)) { if (q.role !== 'menu') break; rec.path.unshift(q.name) }
+      rec.how = 'ax-anywhere'; rec.path = menus(nodes, leaf.n.parent).map((q) => q.name).reverse()
       return { hit: leaf, nodes }
     }
     within = hit.i; rec.how = hit.how
@@ -982,8 +985,8 @@ async function find(request: string) {
   const opts: Record<string, string> = { none: 'none of these flows does it' }
   rows.forEach((r, i) => { opts[`f${i}`] = r })
   const d = await decide({ request }, { pick: desk.choice('Which saved GUI flow does this request?', opts) })
-  const k = d.pick?.choice ?? 'none'; const p = d.pick?.probabilities?.[k] ?? 0
-  const next = Object.values(d.pick?.probabilities ?? {}).sort((a, b) => b - a)[1] ?? 0
+  const probs = d.pick?.probabilities ?? {}; const k = d.pick?.choice ?? 'none'; const p = probs[k] ?? 0
+  const next = Object.values(probs).sort((a, b) => b - a)[1] ?? 0
   if (k === 'none' || p < 0.6 || p - next < MARGIN) return { ok: false, flow: null, p: +p.toFixed(2) }
   return { ok: true, flow: (rows[Number(k.slice(1))] ?? '').replace(/\(.*$/, ''), p: +p.toFixed(2) }
 }
