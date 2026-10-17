@@ -67,3 +67,32 @@ test('a plan that ends in a plain window reads no tree to check what it left in 
     server.close()
   }
 })
+
+test('a typed line after a shortcut waits for the file chooser the shortcut opens late, and takes it as a chooser', async () => {
+  const doc = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
+  const dialog = { id: '2', title: 'Save As', role: 'dialog', pid: process.pid, active: false }
+  const calls: string[] = []
+  let shown = false
+  const server = await toolhost(({ tool, args }) => {
+    calls.push(tool === 'desk_key' ? `key ${String(args.keys)}` : tool)
+    const wins = shown ? [{ ...doc, active: false }, dialog] : [doc]
+    if (tool === 'desk_windows') return JSON.stringify(wins)
+    if (tool === 'desk_snapshot') {
+      const nodes = shown
+        ? [root('dialog', 'Save As'), { ref: 1, id: '2/2', parent: 0, depth: 1, role: 'text', name: 'Save As:', states: ['showing'] }, { ref: 2, id: '2/3', parent: 0, depth: 1, role: 'textbox', name: 'File name:', states: ['showing', 'focused'] }, { ref: 3, id: '2/4', parent: 0, depth: 1, role: 'filler', name: 'File Chooser Widget', states: ['showing'] }]
+        : [root('window', doc.title)]
+      return JSON.stringify({ window: shown ? dialog : doc, truncated: false, nodes })
+    }
+    if (tool === 'desk_key' && args.keys === 'ctrl+shift+s') setTimeout(() => { shown = true; dialog.active = true }, 200)
+    if (tool === 'desk_key' && /^return$/i.test(String(args.keys))) shown = false
+    return '{"ok":true}'
+  })
+  const { main } = await import('../lib/gui_plan.mts')
+  try {
+    await main({ steps: [{ key: 'ctrl+shift+s' }, { type: 'b.txt\n' }] })
+    const typed = calls.slice(calls.indexOf('key ctrl+shift+s') + 1, calls.indexOf('desk_type'))
+    assert.ok(typed.some((c) => c.startsWith('key ')), `no select key before typing into the chooser: ${typed.join(' ')}`)
+  } finally {
+    server.close()
+  }
+})
