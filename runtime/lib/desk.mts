@@ -10,7 +10,17 @@ export type El = {
 }
 export type Snap = { window: Win; nodes: El[]; truncated: boolean; ms: number }
 export type Question = { type: 'noul'; instructions: string } | { type: 'choice'; instructions: string; criteria: Record<string, string> }
+export type Judgment = { probability?: number; choice?: string; confidence?: number; probabilities?: Record<string, number> }
 export type Usage = Record<string, { calls: number; input_tokens: number; output_tokens: number; cached_tokens: number }>
+export type ImagePart = { type: 'image_url'; image_url: { url: string } }
+type Size = { width: number; height: number }
+type Gw = { base: string; key: string }
+type Served = { model: string; image: boolean; build: string | null; id: string | null }
+type Output = { text: string; is_error: boolean }
+type Metered = { model?: string; id?: string; usage?: { prompt_tokens?: number; input_tokens?: number; completion_tokens?: number; output_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } }
+type ChatReply = Metered & { choices?: { message?: { content?: string } }[] }
+type Answer = { type: 'noul'; noul: number } | { type: 'choice'; choice: string; confidence: number; probabilities: Record<string, number> }
+type DecisionsReply = Metered & { answers?: Record<string, Answer> }
 
 const SOCKETS: Record<string, string> = { win32: '\\\\.\\pipe\\cocoonbox-desk', darwin: `${homedir()}/Library/Caches/cocoonbox/desk.sock` }
 const SOCKET = process.env.TOOLHOST_SOCKET || SOCKETS[process.platform] || '/run/cocoonbox/toolhost.sock'
@@ -22,16 +32,17 @@ const LOOK_TIMEOUT = 5_000
 const ASK_MODEL = 'anthropic/claude-sonnet-5'
 const GROUND_MODEL = 'qwen/qwen3-vl-235b-a22b-instruct'
 const MODEL_TIMEOUT = 60_000
-let screenSize: { width: number; height: number } | null = null
-let gwConfig: { base: string; key: string } | null = null
+
+let screenSize: Size | null = null
+let gwConfig: Gw | null = null
 let envFile: string | null = null
 let warned = false
 export const usage: Usage = {}
 /** Every decisions call: the model asked, whether its state held an image, and the build and generation id that answered (null when none did). */
-export const served: { model: string; image: boolean; build: string | null; id: string | null }[] = []
+export const served: Served[] = []
 
 /** One toolhost call: a big-endian u32 length and JSON each way. */
-export function call(op: string, args: Record<string, unknown> = {}): Promise<any> {
+export function call<T>(op: string, args: Record<string, unknown> = {}): Promise<T> {
   return new Promise((resolve, reject) => {
     const s = createConnection(SOCKET)
     const body = Buffer.from(JSON.stringify({ agent_id: 'desk', tool: `desk_${op}`, args }))
@@ -43,9 +54,9 @@ export function call(op: string, args: Record<string, unknown> = {}): Promise<an
       buf = Buffer.concat([buf, d])
       if (buf.length < 4 || buf.length < 4 + buf.readUInt32BE(0)) return
       s.destroy()
-      const out = JSON.parse(buf.subarray(4, 4 + buf.readUInt32BE(0)).toString())
+      const out = JSON.parse(buf.subarray(4, 4 + buf.readUInt32BE(0)).toString()) as Output
       if (out.is_error) return reject(new Error(out.text))
-      try { resolve(JSON.parse(out.text)) } catch { resolve(out.text) }
+      try { resolve(JSON.parse(out.text) as T) } catch { resolve(out.text as T) }
     })
     s.on('error', reject)
   })
@@ -58,25 +69,26 @@ export async function focused(): Promise<Win | null> {
 }
 export const snapshot = (window?: string, o: { pid?: number | null; id?: string; keys?: boolean; bounds?: boolean } = {}): Promise<Snap> =>
   call('snapshot', { window, pid: o.pid ?? undefined, id: o.id, keys: o.keys, bounds: o.bounds })
-export const outline = async (window?: string): Promise<string> => (await call('snapshot', { window, text: true })).text
+export const outline = async (window?: string): Promise<string> => (await call<{ text: string }>('snapshot', { window, text: true })).text
 export const find = (name: string, o: { role?: string; window?: string } = {}): Promise<{ window: Win; found: El[] }> => call('find', { name, ...o })
 export const read = (id: string, o: { text?: boolean } = {}): Promise<El> => call('read', { id, text: o.text })
 export const press = (id: string): Promise<{ ok: boolean; how: string }> => call('press', { id })
 export const act = (id: string, action: 'click' | 'action' | 'select' | 'focus'): Promise<{ ok: boolean }> => call('act', { id, action })
 export const at = (x: number, y: number, window?: string): Promise<{ found: El | null; path?: { id: string; role: string; name: string }[] }> => call('at', { x, y, window })
-export const key = (keys: string) => call('key', { keys })
-export const typeText = (text: string) => call('type', { text })
-export const click = (x: number, y: number, o: { button?: string; count?: number } = {}) => call('click', { x, y, ...o })
-export const focus = (window: string, pid?: number | null) => call('focus', { window, pid: pid ?? undefined })
-export const close = (window: string, pid?: number | null) => call('close', { window, pid: pid ?? undefined })
-export const launch = (app: string) => call('launch', { app })
-export async function screen(): Promise<{ width: number; height: number }> {
-  screenSize ??= await call('screen')
-  return screenSize!
+export const key = (keys: string): Promise<unknown> => call('key', { keys })
+export const typeText = (text: string): Promise<unknown> => call('type', { text })
+export const click = (x: number, y: number, o: { button?: string; count?: number } = {}): Promise<unknown> => call('click', { x, y, ...o })
+export const focus = (window: string, pid?: number | null): Promise<unknown> => call('focus', { window, pid: pid ?? undefined })
+export const close = (window: string, pid?: number | null): Promise<unknown> => call('close', { window, pid: pid ?? undefined })
+export const launch = (app: string): Promise<unknown> => call('launch', { app })
+export async function screen(): Promise<Size> {
+  screenSize ??= await call<Size>('screen')
+  return screenSize
 }
+
 /** A PNG of a screen rectangle, the whole screen by default. */
 export async function shot(r: { x?: number; y?: number; w?: number; h?: number } = {}): Promise<Buffer> {
-  return Buffer.from((await call('shot', r)).png_b64, 'base64')
+  return Buffer.from((await call<{ png_b64: string }>('shot', r)).png_b64, 'base64')
 }
 
 /** A setting from the environment, else from desk.env. */
@@ -89,32 +101,32 @@ export const yes = (instructions: string): Question => ({ type: 'noul', instruct
 export const choice = (instructions: string, criteria: Record<string, string>): Question => ({ type: 'choice', instructions, criteria })
 
 /** gw's decisions model over text or JSON state: a yes question answers {probability}, a choice {choice, confidence, probabilities}. */
-export const decide = (state: unknown, questions: Record<string, Question>) => judge(state, questions, false, MODEL_TIMEOUT)
+export const decide = (state: unknown, questions: Record<string, Question>): Promise<Record<string, Judgment>> => judge(state, questions, false, MODEL_TIMEOUT)
 
 /** The same over a state that holds PNG parts (image), within 5 s. */
-export const look = (state: unknown[], questions: Record<string, Question>) => judge(state, questions, true, LOOK_TIMEOUT)
+export const look = (state: unknown[], questions: Record<string, Question>): Promise<Record<string, Judgment>> => judge(state, questions, true, LOOK_TIMEOUT)
 
-export function image(png: Buffer) {
+export function image(png: Buffer): ImagePart {
   return { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } }
 }
 
 export async function ask(prompt: string, images: Buffer | Buffer[] = []): Promise<string> {
   const pngs = Buffer.isBuffer(images) ? [images] : images
-  const r = await post('chat/completions', { model: ASK_MODEL, max_tokens: 400, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...pngs.map(image)] }] })
+  const r = await post<ChatReply>('chat/completions', { model: ASK_MODEL, max_tokens: 400, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...pngs.map(image)] }] })
   return r.choices?.[0]?.message?.content ?? ''
 }
 
 /** The screen point of a described element in a PNG of the screen at (left, top). */
 export async function ground(png: Buffer, target: string, area: { left?: number; top?: number; width: number; height: number }): Promise<[number, number]> {
   const prompt = `Locate the ${target} in this screenshot. Answer with one JSON object and nothing else: {"point_2d": [x, y]}, the centre of the element in coordinates from 0 to 1000 across and down the image.`
-  const r = await post('chat/completions', { model: GROUND_MODEL, max_tokens: 100, messages: [{ role: 'user', content: [image(png), { type: 'text', text: prompt }] }] })
-  const text: string = r.choices?.[0]?.message?.content ?? ''
+  const r = await post<ChatReply>('chat/completions', { model: GROUND_MODEL, max_tokens: 100, messages: [{ role: 'user', content: [image(png), { type: 'text', text: prompt }] }] })
+  const text = r.choices?.[0]?.message?.content ?? ''
   const g = /(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/.exec(text)
   if (!g) throw new Error(`grounding found no point for ${target}: ${text.slice(0, 120)}`)
-  return [Math.round((area.left ?? 0) + (+g[1] / 1000) * area.width), Math.round((area.top ?? 0) + (+g[2] / 1000) * area.height)]
+  return [Math.round((area.left ?? 0) + (Number(g[1]) / 1000) * area.width), Math.round((area.top ?? 0) + (Number(g[2]) / 1000) * area.height)]
 }
 
-function gw() {
+function gw(): Gw {
   if (gwConfig) return gwConfig
   const base = setting('GW_BASE_URL')
   if (!base) throw new Error(`no GW_BASE_URL in the environment or ${ENV_FILE}`)
@@ -123,7 +135,7 @@ function gw() {
 }
 
 // a plain HTTP proxy request (absolute URL, no CONNECT), so the box's egress proxy can set gw's key
-function post(path: string, body: { model: string } & Record<string, unknown>, timeout = MODEL_TIMEOUT): Promise<any> {
+function post<T extends Metered>(path: string, body: { model: string } & Record<string, unknown>, timeout = MODEL_TIMEOUT): Promise<T> {
   const { base, key } = gw()
   const url = new URL(`${base}/${path}`)
   const proxy = process.env.http_proxy || process.env.HTTP_PROXY
@@ -131,23 +143,23 @@ function post(path: string, body: { model: string } & Record<string, unknown>, t
   const via = proxy && url.protocol === 'http:' && !bypass.includes(url.hostname) ? new URL(proxy) : null
   const data = Buffer.from(JSON.stringify(body))
   const headers = { 'content-type': 'application/json', 'content-length': data.length, authorization: `Bearer ${key}`, host: url.host }
-  const target = via ? { host: via.hostname, port: via.port || 80, path: url.href } : { host: url.hostname, port: url.port || 80, path: url.pathname + url.search }
+  const target = via ? { host: via.hostname, port: via.port || 80, path: url.href } : { host: url.hostname, port: url.port || 80, path: `${url.pathname}${url.search}` }
   return new Promise((resolve, reject) => {
     const req = request({ ...target, method: 'POST', headers, timeout }, (res) => {
       const chunks: Buffer[] = []
-      res.on('data', (c) => chunks.push(c))
+      res.on('data', (c: Buffer) => chunks.push(c))
       res.on('end', () => {
         const text = Buffer.concat(chunks).toString()
         if ((res.statusCode ?? 500) >= 300) return reject(new Error(`gw ${path} returned ${res.statusCode}: ${text.slice(0, 300)}`))
         try {
-          const r = JSON.parse(text)
+          const r = JSON.parse(text) as T
           const u = usage[body.model] ??= { calls: 0, input_tokens: 0, output_tokens: 0, cached_tokens: 0 }
           u.calls += 1
           u.input_tokens += r.usage?.prompt_tokens ?? r.usage?.input_tokens ?? 0
           u.output_tokens += r.usage?.completion_tokens ?? r.usage?.output_tokens ?? 0
           u.cached_tokens += r.usage?.prompt_tokens_details?.cached_tokens ?? 0
           resolve(r)
-        } catch (e) { reject(e) }
+        } catch (e: unknown) { reject(e) }
       })
     })
     req.on('timeout', () => req.destroy(new Error(`gw ${path} timed out`)))
@@ -156,19 +168,19 @@ function post(path: string, body: { model: string } & Record<string, unknown>, t
   })
 }
 
-// a dated build of jev-1.14 answers: another version, an alias, an error or the timeout throws; another build is said once on stderr
-async function judge(state: unknown, questions: Record<string, Question>, image: boolean, timeout: number): Promise<Record<string, any>> {
-  const call = { model: DECIDE_MODEL, image, build: null as string | null, id: null as string | null }
-  served.push(call)
-  const r = await post('decisions', { model: DECIDE_MODEL, state, questions }, timeout)
-  call.build = r.model ?? null; call.id = r.id ?? null
+// only a dated jev-1.14 build answers, since gui_plan's pick and check thresholds were measured on it
+async function judge(state: unknown, questions: Record<string, Question>, image: boolean, timeout: number): Promise<Record<string, Judgment>> {
+  const rec: Served = { model: DECIDE_MODEL, image, build: null, id: null }
+  served.push(rec)
+  const r = await post<DecisionsReply>('decisions', { model: DECIDE_MODEL, state, questions }, timeout)
+  rec.build = r.model ?? null; rec.id = r.id ?? null
   if (!DECIDE_BUILDS.test(r.model ?? '')) throw new Error(`gw decisions served ${r.model} for ${DECIDE_MODEL}`)
   if (r.model !== DECIDE_BUILD && !warned) { warned = true; process.stderr.write(`desk: jev answers from build ${r.model}, not the tested ${DECIDE_BUILD}\n`) }
   return answers(r)
 }
 
-function answers(r: any) {
-  const out: Record<string, any> = {}
-  for (const [k, a] of Object.entries(r.answers ?? {}) as [string, any][]) out[k] = a.type === 'noul' ? { probability: a.noul } : a
+function answers(r: DecisionsReply): Record<string, Judgment> {
+  const out: Record<string, Judgment> = {}
+  for (const [k, a] of Object.entries(r.answers ?? {})) out[k] = a.type === 'noul' ? { probability: a.noul } : a
   return out
 }
