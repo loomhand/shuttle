@@ -47,17 +47,29 @@ impl Handler for NoDesk {
     }
 }
 
-/// Serves `handler` at the unix socket `endpoint`, readable by its user only.
+/// Serves `handler` at the unix socket `endpoint`, readable by its user only; a lock file beside it keeps a second daemon out.
 #[cfg(unix)]
 pub async fn serve<H: Handler>(handler: Arc<H>, endpoint: &str) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
     let path = std::path::Path::new(endpoint);
-    if connect(endpoint).await.is_ok() {
-        return Err(format!("another daemon serves {endpoint}"));
-    }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    }
+    let lock_path = format!("{endpoint}.lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(&lock_path)
+        .map_err(|e| format!("open {lock_path}: {e}"))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            return Err(format!("another daemon serves {endpoint}"));
+        }
+        Err(std::fs::TryLockError::Error(e)) => return Err(format!("lock {lock_path}: {e}")),
     }
     let _ = std::fs::remove_file(path);
     let listener =
@@ -205,6 +217,54 @@ mod tests {
         async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
             Err(format!("{tool}: no driver"))
         }
+    }
+
+    #[tokio::test]
+    async fn a_daemon_still_starting_keeps_a_second_one_out_before_its_socket_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let starting = std::fs::File::create(format!("{endpoint}.lock")).unwrap();
+        starting.lock().unwrap();
+        assert_eq!(
+            serve(Arc::new(NoDesk), &endpoint).await.unwrap_err(),
+            format!("another daemon serves {endpoint}")
+        );
+        assert!(!std::path::Path::new(&endpoint).exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_daemons_started_at_once_on_one_endpoint_leave_exactly_one_serving() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let start = || {
+            let endpoint = endpoint.clone();
+            tokio::spawn(async move { serve(Arc::new(NoDesk), &endpoint).await })
+        };
+        let (mut a, mut b) = (start(), start());
+        let loser = tokio::select! {
+            r = &mut a => { assert!(!b.is_finished()); r }
+            r = &mut b => { assert!(!a.is_finished()); r }
+        };
+        assert_eq!(
+            loser.unwrap().unwrap_err(),
+            format!("another daemon serves {endpoint}")
+        );
+        let ask = Call {
+            agent_id: "desk".into(),
+            tool: "desk_screen".into(),
+            args: json!({}),
+        };
+        let mut out = Err(String::new());
+        for _ in 0..50 {
+            out = call(&endpoint, &ask).await;
+            if out.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(out.unwrap().text.contains("no desk backend"));
+        a.abort();
+        b.abort();
     }
 
     #[tokio::test]
