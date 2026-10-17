@@ -6,7 +6,7 @@ shuttle reads one TOML file:
 
 | OS | Path |
 |---|---|
-| macOS, Linux | `$XDG_CONFIG_HOME/shuttle/config.toml`, else `~/.config/cocoon-shuttle/config.toml` |
+| macOS, Linux | `$XDG_CONFIG_HOME/cocoon-shuttle/config.toml`, else `~/.config/cocoon-shuttle/config.toml` |
 | Windows | `%APPDATA%\cocoon-shuttle\config.toml` |
 
 ## Models (bring your own key)

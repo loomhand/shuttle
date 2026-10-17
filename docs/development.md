@@ -31,7 +31,7 @@ The release workflow builds the five archives, writes `SHA256SUMS`, attests thei
 
 ## Third-party pins
 
-`packaging/pins` lists the cua-driver and Node.js archive of each platform with its sha256; `packaging/package.sh` refuses an archive whose sha256 differs.
+`packaging/pins` lists the cua-driver and Node.js archive of each platform with its sha256; `packaging/fetch.sh`, which `packaging/package.sh` and CI use, refuses an archive whose sha256 differs.
 
 - **Node.js:** take the archive names and sums from `https://nodejs.org/dist/vX.Y.Z/SHASUMS256.txt`.
 - **cua-driver:** tag `vX.Y.Z-loomhand.N` on [loomhand/cua](https://github.com/loomhand/cua); its `Fork: Release` workflow publishes the five archives with `SHA256SUMS`, and a published release is never overwritten.
