@@ -19,8 +19,8 @@ export async function toolhost(answer: (c: Call) => Reply): Promise<Server> {
       s.end(Buffer.concat([head, body]))
     })
   })
-  const socket = `${mkdtempSync(`${tmpdir()}/toolhost-`)}/toolhost.sock`
-  await new Promise<void>((r) => server.listen(socket, r))
-  process.env.TOOLHOST_SOCKET = socket
+  const dir = mkdtempSync(`${tmpdir()}/toolhost-`)
+  await new Promise<void>((r) => server.listen(`${dir}/toolhost.sock`, r))
+  Object.assign(process.env, { TOOLHOST_SOCKET: `${dir}/toolhost.sock`, SHUTTLE_FLOWS: `${dir}/flows`, HOME: dir, USERPROFILE: dir })
   return server
 }

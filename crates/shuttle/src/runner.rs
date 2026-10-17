@@ -18,33 +18,41 @@ const PIPE_GRACE: Duration = Duration::from_millis(500);
 
 type Captured = Arc<Mutex<Vec<u8>>>;
 
-/// Runs modules on `node` with the runtime in `runtime`, calling back to `endpoint`, without the `key_vars`.
+/// Runs modules on `node` with the runtime in `runtime`, calling back to `endpoint`, saving flows in `flows`, without the `key_vars`.
 pub struct Runner {
     node: PathBuf,
     runtime: PathBuf,
     endpoint: String,
+    flows: PathBuf,
     key_vars: Vec<String>,
 }
 
 impl Runner {
-    pub fn new(node: PathBuf, runtime: PathBuf, endpoint: String, key_vars: Vec<String>) -> Self {
+    pub fn new(
+        node: PathBuf,
+        runtime: PathBuf,
+        endpoint: String,
+        flows: PathBuf,
+        key_vars: Vec<String>,
+    ) -> Self {
         Self {
             node,
             runtime,
             endpoint,
+            flows,
             key_vars,
         }
     }
 
     /// The runner of a release install: Node and the runtime next to `exe`, or in the app bundle's Resources.
-    pub fn beside(exe: &Path, endpoint: String, key_vars: Vec<String>) -> Self {
+    pub fn beside(exe: &Path, endpoint: String, flows: PathBuf, key_vars: Vec<String>) -> Self {
         let dir = exe.parent().unwrap_or(Path::new("."));
         let node = dir.join(if cfg!(windows) { "node.exe" } else { "node" });
         let runtime = [dir.join("runtime"), dir.join("../Resources/runtime")]
             .into_iter()
             .find(|p| p.is_dir())
             .unwrap_or_else(|| dir.join("runtime"));
-        Self::new(node, runtime, endpoint, key_vars)
+        Self::new(node, runtime, endpoint, flows, key_vars)
     }
 
     /// `script_run` for `agent`: one module, `code` or the absolute file `script`; its `main(params)` value comes back as `result`.
@@ -110,6 +118,7 @@ impl Runner {
             .env("TOOLHOST_SOCKET", &self.endpoint)
             .env("SHUTTLE_SCRIPT", script)
             .env("SHUTTLE_RUN", scratch)
+            .env("SHUTTLE_FLOWS", &self.flows)
             .env("SHUTTLE_AGENT", agent)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -247,6 +256,7 @@ mod tests {
             "node".into(),
             dir.to_path_buf(),
             "/tmp/desk.sock".into(),
+            dir.join("flows"),
             vec!["HOME".into(), "CARGO_PKG_NAME".into()],
         )
     }

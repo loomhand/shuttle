@@ -58,9 +58,7 @@ jobs:
         working-directory: runtime
         run: npm ci --no-audit --no-fund && npm run typecheck
 
-      # the Linux flows directory of gui_plan is /workspace/flows
       - name: Test
         run: |
-          sudo install -d -o "$USER" /workspace
           node --version
           node --test runtime/test/*.test.mts

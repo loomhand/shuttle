@@ -34,7 +34,7 @@ class Surprise extends Error {
 }
 
 const OS = process.platform
-const FLOWS = OS === 'linux' ? '/workspace/flows' : `${homedir()}/workspace/flows`
+const FLOWS = process.env.SHUTTLE_FLOWS || (OS === 'linux' ? '/workspace/flows' : `${homedir()}/workspace/flows`)
 const LOG = `${FLOWS}/.runs.jsonl`
 const INDEX = `${FLOWS}/INDEX`
 const PENDING = `${FLOWS}/.pending.json`

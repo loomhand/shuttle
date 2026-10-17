@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import type { Server } from 'node:net'
-import { homedir } from 'node:os'
 import { after, before, test } from 'node:test'
 import { crc32, deflateSync, inflateSync } from 'node:zlib'
 
@@ -43,7 +42,7 @@ function answer({ tool, args }: Call): Reply {
   if (tool === 'desk_windows') return JSON.stringify([win, ...shell.map((x) => x.win)])
   if (tool === 'desk_snapshot') {
     const x = shell.find((y) => y.win.id === args.id)
-    return JSON.stringify(x ? { window: x.win, nodes: x.nodes, truncated: false } : { window: win, nodes, truncated: false, text: '- frame "Portal"' })
+    return JSON.stringify(x ? { window: x.win, nodes: x.nodes, truncated: false } : { window: win, nodes, truncated: false })
   }
   if (tool === 'desk_press') { pressed.push(String(args.id)); return '{"ok":true,"how":"click"}' }
   if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(Number(args.w ?? 1280), Number(args.h ?? 800)).toString('base64') }
@@ -95,7 +94,7 @@ function load(tree: Spec[]) {
 }
 
 function lastStep(): RunStep | undefined {
-  const runs = readFileSync(`${process.platform === 'linux' ? '/workspace' : `${homedir()}/workspace`}/flows/.runs.jsonl`, 'utf8').trim().split('\n')
+  const runs = readFileSync(`${process.env.SHUTTLE_FLOWS}/.runs.jsonl`, 'utf8').trim().split('\n')
   return (JSON.parse(runs.at(-1) ?? '') as { steps: RunStep[] }).steps[0]
 }
 
