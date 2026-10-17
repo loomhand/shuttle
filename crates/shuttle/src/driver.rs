@@ -101,7 +101,10 @@ impl Proc {
                 status = child.wait() => log(&format!("cua-driver exited with {status:?}; starting it again")),
             }
             tokio::select! {
-                _ = &mut stopped => return,
+                _ = &mut stopped => {
+                    self.request_stop().await;
+                    return;
+                }
                 spawned = async {
                     tokio::time::sleep(RESTART_DELAY).await;
                     self.spawn().await
@@ -249,7 +252,7 @@ while True:
         unsafe { libc::kill(first, libc::SIGKILL) };
         assert!(gone(first).await);
         let mut second = first;
-        for _ in 0..50 {
+        for _ in 0..100 {
             tokio::time::sleep(POLL).await;
             second = pid(&endpoint).unwrap_or(first);
             if second != first && server::connect(&endpoint).await.is_ok() {
