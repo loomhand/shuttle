@@ -24,15 +24,17 @@ impl<B: 'static> Worker<B> {
         }
     }
 
-    /// Runs `f` on the backend and waits at most `limit` for its result.
-    pub async fn run<R, F>(&self, limit: Duration, f: F) -> Result<R, String>
+    /// Runs `f` on the backend and waits at most `limit` for its result; `hold` drops when `f` ends, even after the limit.
+    pub async fn run<R, F, H>(&self, limit: Duration, hold: H, f: F) -> Result<R, String>
     where
         R: Send + 'static,
         F: FnOnce(&mut B) -> Result<R, String> + Send + 'static,
+        H: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
         let job: Job<B> = Box::new(move |backend| {
             let _ = tx.send(backend.map_err(str::to_owned).and_then(f));
+            drop(hold);
         });
         if let Err(back) = self.sender().send(job) {
             self.restart();
@@ -87,52 +89,75 @@ fn spawn<B: 'static>(open: fn() -> Result<B, String>) -> Sender<Job<B>> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[tokio::test]
     async fn calls_run_on_one_backend_in_order() {
         let w = Worker::new(|| Ok(Vec::<u32>::new()));
         let limit = Duration::from_secs(1);
-        w.run(limit, |v| {
+        w.run(limit, (), |v| {
             v.push(1);
             Ok(())
         })
         .await
         .unwrap();
-        w.run(limit, |v| {
+        w.run(limit, (), |v| {
             v.push(2);
             Ok(())
         })
         .await
         .unwrap();
-        assert_eq!(w.run(limit, |v| Ok(v.clone())).await.unwrap(), [1, 2]);
+        assert_eq!(w.run(limit, (), |v| Ok(v.clone())).await.unwrap(), [1, 2]);
     }
 
     #[tokio::test]
     async fn a_hung_call_leaves_a_fresh_worker_behind() {
         let w = Worker::new(|| Ok(Vec::<u32>::new()));
-        w.run(Duration::from_secs(1), |v| {
+        w.run(Duration::from_secs(1), (), |v| {
             v.push(1);
             Ok(())
         })
         .await
         .unwrap();
         let err = w
-            .run(Duration::from_millis(50), |_| {
+            .run(Duration::from_millis(50), (), |_| {
                 std::thread::sleep(Duration::from_millis(300));
                 Ok(())
             })
             .await
             .unwrap_err();
         assert!(err.contains("within 50 ms"), "{err}");
-        let fresh = w.run(Duration::from_secs(1), |v| Ok(v.len())).await;
+        let fresh = w.run(Duration::from_secs(1), (), |v| Ok(v.len())).await;
         assert_eq!(fresh.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn what_a_hung_call_holds_stays_held_until_the_call_ends() {
+        let w = Worker::new(|| Ok(()));
+        let turn = Arc::new(tokio::sync::Mutex::new(()));
+        let held = turn.clone().lock_owned().await;
+        let err = w
+            .run(Duration::from_millis(50), held, |_| {
+                std::thread::sleep(Duration::from_millis(300));
+                Ok(())
+            })
+            .await
+            .unwrap_err();
+        assert!(err.contains("within 50 ms"), "{err}");
+        assert!(turn.try_lock().is_err());
+        let freed = tokio::time::timeout(Duration::from_secs(2), turn.lock()).await;
+        assert!(freed.is_ok());
     }
 
     #[tokio::test]
     async fn a_backend_that_fails_to_open_fails_each_call() {
         let w: Worker<u32> = Worker::new(|| Err("no accessibility permission".into()));
-        let err = w.run(Duration::from_secs(1), |_| Ok(())).await.unwrap_err();
+        let err = w
+            .run(Duration::from_secs(1), (), |_| Ok(()))
+            .await
+            .unwrap_err();
         assert_eq!(err, "no accessibility permission");
     }
 }
