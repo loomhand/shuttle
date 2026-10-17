@@ -11,3 +11,6 @@ pub mod tools;
 pub const NAME: &str = "cocoon-shuttle";
 /// The release version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[cfg(windows)]
+const DETACHED_PROCESS: u32 = 0x0000_0008;
