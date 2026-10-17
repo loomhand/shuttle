@@ -32,14 +32,18 @@ try {
     if ($Got -ne $Want) { throw "sha256 mismatch for $Asset" }
     Write-Host 'sha256 ok'
 
-    Expand-Archive -Path (Join-Path $Tmp $Asset) -DestinationPath $Tmp
     $Old = "$InstallDir.old"
+    $New = "$InstallDir.new"
+    New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir) | Out-Null
+    if ((Test-Path $Old) -and -not (Test-Path $InstallDir)) { Move-Item $Old $InstallDir }
+    if (Test-Path $New) { Remove-Item -Recurse -Force $New }
+    Expand-Archive -Path (Join-Path $Tmp $Asset) -DestinationPath $New
     if (Test-Path $Old) { Remove-Item -Recurse -Force $Old }
     if (Test-Path $InstallDir) {
-        try { Move-Item $InstallDir $Old } catch { throw "close the running $Name first; nothing was changed" }
+        try { Move-Item $InstallDir $Old } catch { Remove-Item -Recurse -Force $New; throw "close the running $Name first; nothing was changed" }
     }
-    New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir) | Out-Null
-    Move-Item (Join-Path $Tmp $Name) $InstallDir
+    try { Move-Item (Join-Path $New $Name) $InstallDir } catch { if (Test-Path $Old) { Move-Item $Old $InstallDir }; throw }
+    Remove-Item -Recurse -Force $New
     if (Test-Path $Old) { Remove-Item -Recurse -Force $Old }
     Get-ChildItem -Recurse -File $InstallDir | Unblock-File
 } finally {
