@@ -946,7 +946,16 @@ function flowsDir() {
   mkdirSync(FLOWS, { recursive: true, mode: 0o700 }); chmodSync(FLOWS, 0o700)
 }
 
-function git(...args: string[]) { try { execFileSync('git', ['-C', FLOWS, ...args], { stdio: 'ignore', timeout: 5000 }) } catch {} }
+let gitWorks: boolean | undefined
+function git(...args: string[]) {
+  gitWorks ??= OS !== 'darwin' || developerTools()
+  if (!gitWorks) return
+  try { execFileSync('git', ['-C', FLOWS, ...args], { stdio: 'ignore', timeout: 5000 }) } catch {}
+}
+
+function developerTools() {
+  try { execFileSync('xcode-select', ['-p'], { stdio: 'ignore', timeout: 2000 }); return true } catch { return false }
+}
 
 function repo() {
   if (!existsSync(`${FLOWS}/.git`)) {
