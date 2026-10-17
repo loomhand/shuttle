@@ -500,12 +500,13 @@ function unpng(png: Buffer) {
     if (kind === 'IDAT') idat.push(data)
   }
   const bpp = type === 6 ? 4 : 3, stride = w * bpp, raw = inflateSync(Buffer.concat(idat)), px = Buffer.alloc(h * stride)
+  if (raw.length !== h * (stride + 1)) throw new Error(`PNG data holds ${raw.length} bytes, not ${h * (stride + 1)}`)
   for (let y = 0; y < h; y++) {
     const f = raw[y * (stride + 1)], row = y * (stride + 1) + 1
     for (let i = 0; i < stride; i++) {
-      const a = i >= bpp ? px[y * stride + i - bpp] ?? 0 : 0, b = y ? px[(y - 1) * stride + i] ?? 0 : 0, c = y && i >= bpp ? px[(y - 1) * stride + i - bpp] ?? 0 : 0
+      const a = i >= bpp ? px[y * stride + i - bpp] as number : 0, b = y ? px[(y - 1) * stride + i] as number : 0, c = y && i >= bpp ? px[(y - 1) * stride + i - bpp] as number : 0
       const pa = Math.abs(b - c), pb = Math.abs(a - c), pc = Math.abs(a + b - 2 * c)
-      px[y * stride + i] = (raw[row + i] ?? 0) + (f === 1 ? a : f === 2 ? b : f === 3 ? (a + b) >> 1 : f === 4 ? (pa <= pb && pa <= pc ? a : pb <= pc ? b : c) : 0)
+      px[y * stride + i] = (raw[row + i] as number) + (f === 1 ? a : f === 2 ? b : f === 3 ? (a + b) >> 1 : f === 4 ? (pa <= pb && pa <= pc ? a : pb <= pc ? b : c) : 0)
     }
   }
   return { w, h, type, bpp, px }
