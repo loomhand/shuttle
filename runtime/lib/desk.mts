@@ -113,6 +113,7 @@ function exchange(tool: string, args: Record<string, unknown>): Promise<Output> 
       if (out.is_error) return reject(new Error(out.text))
       resolve(out)
     })
+    s.on('end', () => reject(new Error(`${tool}: the toolhost closed the connection mid-frame`)))
     s.on('error', reject)
   })
 }
