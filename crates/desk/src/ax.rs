@@ -24,7 +24,6 @@ const WALK_BUDGET: Duration = Duration::from_secs(4);
 const MESSAGING_TIMEOUT: f32 = 3.0;
 const AX_SUCCESS: i32 = 0;
 
-static PROMPTED: AtomicBool = AtomicBool::new(false);
 const POINT_TYPE: u32 = 1;
 const SIZE_TYPE: u32 = 2;
 const ON_SCREEN_ONLY: u32 = 1;
@@ -49,45 +48,7 @@ const ATTRS: [&str; 17] = [
     "AXModal",
 ];
 
-#[repr(C)]
-#[derive(Default)]
-struct Pair {
-    a: f64,
-    b: f64,
-}
-
-#[link(name = "ApplicationServices", kind = "framework")]
-unsafe extern "C" {
-    fn AXIsProcessTrustedWithOptions(options: CFTypeRef) -> bool;
-    fn AXUIElementGetTypeID() -> CFTypeID;
-    fn AXValueGetTypeID() -> CFTypeID;
-    fn AXUIElementCreateApplication(pid: i32) -> CFTypeRef;
-    fn AXUIElementCreateSystemWide() -> CFTypeRef;
-    fn AXUIElementCopyAttributeValue(e: CFTypeRef, attr: CFStringRef, out: *mut CFTypeRef) -> i32;
-    fn AXUIElementCopyMultipleAttributeValues(
-        e: CFTypeRef,
-        attrs: CFArrayRef,
-        options: u32,
-        out: *mut CFArrayRef,
-    ) -> i32;
-    fn AXUIElementPerformAction(e: CFTypeRef, action: CFStringRef) -> i32;
-    fn AXUIElementSetAttributeValue(e: CFTypeRef, attr: CFStringRef, value: CFTypeRef) -> i32;
-    fn AXUIElementCopyElementAtPosition(app: CFTypeRef, x: f32, y: f32, out: *mut CFTypeRef)
-    -> i32;
-    fn AXUIElementGetPid(e: CFTypeRef, pid: *mut i32) -> i32;
-    fn AXUIElementSetMessagingTimeout(e: CFTypeRef, seconds: f32) -> i32;
-    fn AXValueGetValue(v: CFTypeRef, kind: u32, out: *mut c_void) -> bool;
-}
-
-#[link(name = "CoreGraphics", kind = "framework")]
-unsafe extern "C" {
-    fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> CFArrayRef;
-    fn CGMainDisplayID() -> u32;
-    fn CGDisplayCopyDisplayMode(display: u32) -> *mut c_void;
-    fn CGDisplayModeGetPixelWidth(mode: *mut c_void) -> usize;
-    fn CGDisplayModeGetWidth(mode: *mut c_void) -> usize;
-    fn CGDisplayModeRelease(mode: *mut c_void);
-}
+static PROMPTED: AtomicBool = AtomicBool::new(false);
 
 /// The AX backend: element ids are `pid/n`, kept while this backend lives.
 pub struct Ax {
@@ -394,6 +355,46 @@ impl Access for Ax {
             Err("the close button did not respond".to_owned())
         }
     }
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct Pair {
+    a: f64,
+    b: f64,
+}
+
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn AXIsProcessTrustedWithOptions(options: CFTypeRef) -> bool;
+    fn AXUIElementGetTypeID() -> CFTypeID;
+    fn AXValueGetTypeID() -> CFTypeID;
+    fn AXUIElementCreateApplication(pid: i32) -> CFTypeRef;
+    fn AXUIElementCreateSystemWide() -> CFTypeRef;
+    fn AXUIElementCopyAttributeValue(e: CFTypeRef, attr: CFStringRef, out: *mut CFTypeRef) -> i32;
+    fn AXUIElementCopyMultipleAttributeValues(
+        e: CFTypeRef,
+        attrs: CFArrayRef,
+        options: u32,
+        out: *mut CFArrayRef,
+    ) -> i32;
+    fn AXUIElementPerformAction(e: CFTypeRef, action: CFStringRef) -> i32;
+    fn AXUIElementSetAttributeValue(e: CFTypeRef, attr: CFStringRef, value: CFTypeRef) -> i32;
+    fn AXUIElementCopyElementAtPosition(app: CFTypeRef, x: f32, y: f32, out: *mut CFTypeRef)
+    -> i32;
+    fn AXUIElementGetPid(e: CFTypeRef, pid: *mut i32) -> i32;
+    fn AXUIElementSetMessagingTimeout(e: CFTypeRef, seconds: f32) -> i32;
+    fn AXValueGetValue(v: CFTypeRef, kind: u32, out: *mut c_void) -> bool;
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> CFArrayRef;
+    fn CGMainDisplayID() -> u32;
+    fn CGDisplayCopyDisplayMode(display: u32) -> *mut c_void;
+    fn CGDisplayModeGetPixelWidth(mode: *mut c_void) -> usize;
+    fn CGDisplayModeGetWidth(mode: *mut c_void) -> usize;
+    fn CGDisplayModeRelease(mode: *mut c_void);
 }
 
 /// One element's attributes from a batched read; an attribute it lacks stays empty.

@@ -12,7 +12,7 @@ pub const MAX_DEPTH: usize = 64;
 pub const MAX_IDS: usize = 50_000;
 pub const VALUE_CHARS: usize = 200;
 /// The ARIA roles a caller can act on.
-pub const ACTIVE_ROLES: [&str; 20] = [
+const ACTIVE_ROLES: [&str; 20] = [
     "button",
     "checkbox",
     "menuitem",
@@ -35,7 +35,7 @@ pub const ACTIVE_ROLES: [&str; 20] = [
     "searchbox",
 ];
 /// The ARIA roles whose value a caller reads.
-pub const FIELD_ROLES: [&str; 6] = [
+const FIELD_ROLES: [&str; 6] = [
     "textbox",
     "searchbox",
     "spinbutton",

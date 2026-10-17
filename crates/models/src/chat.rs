@@ -67,38 +67,6 @@ pub(crate) struct Reply {
     pub usage: Usage,
 }
 
-/// Sends `parts` as one user message to `model` and returns its text; a reply without text is an error.
-pub(crate) async fn complete(
-    m: &Models,
-    model: &str,
-    parts: &[Part<'_>],
-    max_tokens: u32,
-    timeout: Duration,
-) -> Result<Reply, String> {
-    let body = Body {
-        model,
-        max_tokens,
-        messages: [Message {
-            role: "user",
-            content: parts,
-        }],
-    };
-    let c: Completion = m.post(&m.chat_url, model, &body, timeout).await?;
-    let text = c
-        .choices
-        .into_iter()
-        .next()
-        .and_then(|c| c.message.content)
-        .filter(|t| !t.is_empty())
-        .ok_or_else(|| format!("{model}: the reply holds no message text"))?;
-    Ok(Reply {
-        text,
-        build: c.model,
-        id: c.id,
-        usage: Usage::of(model, &c.usage),
-    })
-}
-
 #[derive(Serialize)]
 struct Body<'a> {
     model: &'a str,
@@ -143,6 +111,38 @@ struct Choice {
 #[derive(Deserialize)]
 struct Said {
     content: Option<String>,
+}
+
+/// Sends `parts` as one user message to `model` and returns its text; a reply without text is an error.
+pub(crate) async fn complete(
+    m: &Models,
+    model: &str,
+    parts: &[Part<'_>],
+    max_tokens: u32,
+    timeout: Duration,
+) -> Result<Reply, String> {
+    let body = Body {
+        model,
+        max_tokens,
+        messages: [Message {
+            role: "user",
+            content: parts,
+        }],
+    };
+    let c: Completion = m.post(&m.chat_url, model, &body, timeout).await?;
+    let text = c
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|c| c.message.content)
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| format!("{model}: the reply holds no message text"))?;
+    Ok(Reply {
+        text,
+        build: c.model,
+        id: c.id,
+        usage: Usage::of(model, &c.usage),
+    })
 }
 
 #[cfg(test)]
