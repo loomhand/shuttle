@@ -11,6 +11,7 @@ type Step = {
   type?: string; key?: string; wait?: string; expect?: string; verify?: string; close?: boolean; role?: string; window?: string
   timeout_ms?: number; enabled?: boolean; fp?: Fp; seen?: string; blank?: Fp
 }
+type Kept = { id: string; keys: boolean; snap: desk.Snap }
 type Fp = { role: string; name: string; parent: string; nth: number; label?: string }
 type Node = { ref: number; id: string; depth: number; role: string; name: string; value: string; disabled: boolean; parent: number; shortcut: string; checked: boolean; shown: boolean; bounds?: [number, number, number, number] }
 type Hit = { n: Node; i: number; how: string; p?: number; margin?: number }
@@ -101,6 +102,7 @@ async function perform(p: Params): Promise<Result> {
   const gapStep = plan[gap]
   if (gapStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: gapStep, reason: `no value for {{${unfilled(gapStep)}}}: pass it in params; nothing ran` } }
   for (const w of await desk.windows()) known.add(w.title)
+  const vetted = new Set<string>()
   const startTitles = new Set(known)
   const start = await focused(); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
   const startAlert = !start?.title.trim() && isAlert(await outline(start))
@@ -114,11 +116,15 @@ async function perform(p: Params): Promise<Result> {
       const ws = await desk.windows(); const f = desk.front(ws)
       const m = s.close ? null : await hiddenModal(ws, f)
       if (m) throw new Surprise(modalBlocks(m), await seen())
-      const o = f && (!known.has(f.title) || !f.title.trim()) && !(i === (p.start ?? 0) && startAlert) && !(s.window && norm(f.title).includes(norm(s.window))) ? await outline(f) : ''
+      const keys = !!(s.menu || s.click)
+      const pre = f && (!known.has(f.title) || !f.title.trim()) && !vetted.has(f.id) && !(i === (p.start ?? 0) && startAlert) && !(s.window && norm(f.title).includes(norm(s.window))) ? await look(f, keys) : null
+      const o = pre?.text ?? ''
       if (f && blocked(o)) throw new Surprise(unanswered(f.title), await seen())
       if (f && isAlert(o)) throw new Surprise(`alert "${f.title}" is in front`, await seen())
+      if (f && pre) vetted.add(f.id)
+      const kept = f && pre?.snap && f.title !== pressed?.title ? { id: f.id, keys, snap: pre.snap } : undefined
       const prev = plan[i - 1]
-      await run(s, rec).catch(async (e: unknown) => {
+      await run(s, rec, kept).catch(async (e: unknown) => {
         const late = (x: unknown) => x instanceof Surprise && (x.reason.startsWith('no element matches') || x.reason === 'no focused window')
         if (!late(e) || !(prev?.menu || prev?.click || prev?.key)) throw e
         for (const end = Date.now() + 3000; ; await sleep(200)) {
@@ -142,7 +148,7 @@ async function perform(p: Params): Promise<Result> {
       for (let i = 0; i < 12 && (await focused())?.title === was; i++) await sleep(40)
       await sleep(80)
     }
-    const f = await focused(); const o = f ? await outline(f) : ''
+    const f = await focused(); const o = f && f.role !== 'window' ? await outline(f) : ''
     log.push({ i: plan.length, op: 'end', ms: Date.now() - ts, window: f?.title ?? null })
     const left = f && !startTitles.has(f.title) && isDialog(o) && !(last.wait || last.app || (last.window && norm(f.title).includes(norm(last.window))))
     if (f && blocked(o) && recs.at(-1)?.how !== 'wm') { escalate = { step: plan.length, reason: unanswered(f.title), ...(await seen()) }; done = plan.length }
@@ -235,15 +241,22 @@ async function titled(title: string, pid: number | null) { return pid !== null &
 async function snapOf(w: Win, keys = false): Promise<desk.Snap> {
   return desk.snapshot(w.title, { pid: w.pid, keys })
 }
+// the preamble's snapshot of the front window serves the step's first read of that window, which comes before any action
+function reuse(kept: Kept | undefined, w: Win, keys: boolean) {
+  return kept?.id === w.id && kept.keys === keys ? kept.snap : null
+}
 function render(nodes: Node[], max: number, interactive: boolean) {
   const q = (s: string) => s.slice(0, max).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')
   return nodes.filter((n) => !interactive || n.depth === 0 || SHOWN_ROLES.has(n.role)).map((n) =>
     `${'  '.repeat(n.depth)}- ${n.role}${n.name ? ` "${q(n.name)}"` : ''}${n.disabled ? ' [disabled]' : ''}${n.checked ? ' [checked]' : ''}${n.shortcut ? ` [${n.shortcut}]` : ''}${n.id ? ` [id=${n.id}]` : ''}${n.value ? `: "${q(n.value)}"` : ''}`).join('\n')
 }
-async function outline(w?: Win | null, keys = false) {
+async function outline(w?: Win | null, keys = false, kept?: Kept) {
   if (w === undefined) w = await focused()
   if (!w) return '(no focused window)'
-  try { const s = await snapOf(w, keys); const nodes = parse(s); return `${render(nodes, 100, nodes.length > 60).slice(0, 1800)}${s.truncated ? CUT : ''}` } catch (e: unknown) { return String(e) }
+  return (await look(w, keys, kept)).text
+}
+async function look(w: Win, keys = false, kept?: Kept): Promise<{ text: string; snap?: desk.Snap }> {
+  try { const s = reuse(kept, w, keys) ?? await snapOf(w, keys); const nodes = parse(s); return { text: `${render(nodes, 100, nodes.length > 60).slice(0, 1800)}${s.truncated ? CUT : ''}`, snap: s } } catch (e: unknown) { return { text: String(e) } }
 }
 async function seen(): Promise<Seen> {
   const w = await focused()
@@ -265,8 +278,8 @@ function unanswered(title: string) { return `"${title}" answers no accessibility
 function isAlert(o: string) { return /^- alert/.test(o) }
 function isDialog(o: string) { return /^- (alert|dialog|file chooser)/.test(o) }
 // a dialog AT-SPI maps before its children answers with its root alone; read it again until the children show
-async function filled(w: Win) {
-  let o = await outline(w)
+async function filled(w: Win, kept?: Kept) {
+  let o = await outline(w, false, kept)
   for (let i = 0; i < 20 && isDialog(o) && !o.trim().includes('\n'); i++) { await sleep(50); o = await outline(w) }
   return o
 }
@@ -702,7 +715,7 @@ async function cropState(n: Node) {
   return (await vision(`This is one control of a desktop app: "${n.name}". Is it switched on (a check mark, tick, filled box or pressed state)? {"on": true or false}`, shot)).on === true
 }
 
-async function run(s: Step, rec: Rec) {
+async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.app) {
     const before = new Set((await desk.windows()).map((w) => w.title))
     let launched = false
@@ -731,7 +744,7 @@ async function run(s: Step, rec: Rec) {
   if (s.type !== undefined) {
     const w = await current(); const t0 = Date.now(); const nl = s.type.endsWith('\n')
     const dialog = !s.type.includes('\n') && !!w && (await desk.windows()).some((x) => x.title !== w.title && x.pid === w.pid)
-    const o = (nl || dialog) && w ? await filled(w) : ''
+    const o = (nl || dialog) && w ? await filled(w, kept) : ''
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     const chooser = isChooser(o); const sub = chooser && nl
     const first = !typed; typed = true
@@ -753,7 +766,7 @@ async function run(s: Step, rec: Rec) {
   }
   if (s.key) {
     const w = await focused()
-    const o = /^(enter|return)$/i.test(s.key) && w ? await filled(w) : ''
+    const o = /^(enter|return)$/i.test(s.key) && w ? await filled(w, kept) : ''
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     if (w && isChooser(o)) { rec.submit = true; await submit(w, true); return }
     const t0 = Date.now(); await desk.key(s.key); tick('act', t0)
@@ -765,7 +778,7 @@ async function run(s: Step, rec: Rec) {
   if (s.close) {
     // close shuts a dialog: the named window, else the focused dialog, else a dialog of the focused app; never an app's main window unless named
     const t0 = Date.now(); let w: Win | null = s.window ? await windowFor(s.window, 3000, s.seen) : await focused()
-    const o = w && !s.window ? await outline(w) : ''
+    const o = w && !s.window ? await outline(w, false, kept) : ''
     const self = w
     const others = self ? (await desk.windows()).filter((x) => x.pid === self.pid && x.title !== self.title) : []
     if (w && blocked(o) && others.length) { rec.seen = w.title; rec.how = 'wm'; await desk.close(w.title, w.pid); await settle(w.title); tick('act', t0); return }
@@ -779,7 +792,7 @@ async function run(s: Step, rec: Rec) {
   const w = await windowFor(s.window, 3000, s.seen)
   rec.seen = w.title; if (w.title.trim()) lastSeen = w.title
   let t0 = Date.now(); let snap: desk.Snap
-  try { snap = await snapOf(w, !!(s.menu || s.click)) } catch (e: unknown) {
+  try { snap = reuse(kept, w, !!(s.menu || s.click)) ?? await snapOf(w, !!(s.menu || s.click)) } catch (e: unknown) {
     if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen())
     throw e
   }
