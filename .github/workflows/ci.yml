@@ -54,6 +54,10 @@ jobs:
       - name: Node from packaging/pins
         run: echo "$(packaging/fetch.sh linux-x64 node "$RUNNER_TEMP")/bin" >> "$GITHUB_PATH"
 
+      - name: Typecheck
+        working-directory: runtime
+        run: npm ci --no-audit --no-fund && npm run typecheck
+
       # the Linux flows directory of gui_plan is /workspace/flows
       - name: Test
         run: |
