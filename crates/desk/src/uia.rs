@@ -160,12 +160,15 @@ impl Uia {
         };
         let role = uia_roles::role(kind).unwrap_or("generic");
         let [x, y, w, h] = r.bounds;
-        let value = r
-            .value
-            .clone()
-            .filter(|v| !v.is_empty())
-            .or_else(|| r.range.map(format_number))
-            .map(|v| v.chars().take(chars).collect::<String>());
+        let value = if extras.values {
+            r.value
+                .clone()
+                .filter(|v| !v.is_empty())
+                .or_else(|| r.range.map(format_number))
+                .map(|v| v.chars().take(chars).collect::<String>())
+        } else {
+            None
+        };
         Ok(Node {
             id: self.id_of(el)?,
             role,
@@ -175,7 +178,7 @@ impl Uia {
             name: r.name.trim_end().to_owned(),
             description: r.help.clone(),
             states: uia_roles::states(role, r.facts()),
-            value: value.filter(|_| extras.values),
+            value,
             shortcut: extras
                 .keys
                 .then(|| uia_combo(&r.accel, Os::Windows))
@@ -284,8 +287,7 @@ impl Access for Uia {
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
         let started = Instant::now();
         let el = self.element(&frame.id)?;
-        let subtree = self.subtree.clone();
-        let cached = self.cached(&el, &subtree)?;
+        let cached = self.cached(&el, &self.subtree)?;
         let fetched = started.elapsed().as_micros();
         let mut nodes = Vec::new();
         let mut truncated = self.walk(&cached, None, 0, extras, &mut nodes)?;
@@ -300,7 +302,7 @@ impl Access for Uia {
                 Some(t) if t.control_type == MENU => t.el.clone(),
                 _ => continue,
             };
-            menus.extend(self.cached(&el, &subtree).ok());
+            menus.extend(self.cached(&el, &self.subtree).ok());
         }
         if nodes.iter().any(|n| n.role == "menu" && n.has("expanded")) {
             menus_in(&cached, &mut menus);
@@ -329,8 +331,7 @@ impl Access for Uia {
 
     fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String> {
         let el = self.element(id)?;
-        let single = self.single.clone();
-        let fresh = self.cached(&el, &single)?;
+        let fresh = self.cached(&el, &self.single)?;
         let mut node = self.node_of(&fresh, extras, chars)?;
         if extras.values && node.value.is_none() {
             node.value = document_text(&fresh, chars);

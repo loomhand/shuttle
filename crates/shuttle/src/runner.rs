@@ -5,6 +5,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use desk_core::args::parse;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
@@ -51,8 +52,7 @@ impl Runner {
 
     /// `script_run` for `agent`: one module, `code` or the absolute file `script`; its `main(params)` value comes back as `result`.
     pub async fn script(&self, args: Value, agent: &str) -> Result<Value, String> {
-        let a: ScriptArgs =
-            serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))?;
+        let a: ScriptArgs = parse(args)?;
         let scratch = scratch()?;
         let script = match (a.code, a.script) {
             (Some(code), None) => {
