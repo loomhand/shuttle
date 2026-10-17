@@ -3,6 +3,8 @@ import { createServer } from 'node:net'
 import type { Server } from 'node:net'
 import { tmpdir } from 'node:os'
 
+const FLOWS = `${mkdtempSync(`${tmpdir()}/flows-`)}/flows`
+
 export type Call = { tool: string; args: Record<string, unknown> }
 export type Reply = string | { text: string; error?: boolean; image?: string }
 
@@ -22,6 +24,6 @@ export async function toolhost(answer: (c: Call) => Reply): Promise<Server> {
   const dir = mkdtempSync(`${tmpdir()}/toolhost-`)
   await new Promise<void>((r) => server.listen(`${dir}/toolhost.sock`, r))
   Object.assign(process.env, { TOOLHOST_SOCKET: `${dir}/toolhost.sock`, HOME: dir, USERPROFILE: dir })
-  process.env.SHUTTLE_FLOWS ??= `${dir}/flows`
+  process.env.SHUTTLE_FLOWS = FLOWS
   return server
 }
