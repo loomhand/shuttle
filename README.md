@@ -14,7 +14,7 @@ shuttle is part of [loomhand](https://github.com/loomhand). It takes its desk co
 |---|---|---|
 | P0 | Workspace, CI, release archives, installers, MCP skeleton | done in v0.0.1 |
 | P1 | macOS: daemon in `Cocoon Shuttle.app`, desk tools, `gui_plan`, `script_run`, BYOK models, safety controls | on `main` except the safety controls; unreleased |
-| P2 | Windows: the same over UI Automation | planned |
+| P2 | Windows: the same over UI Automation | desk control on `main` as a developer preview; the safety controls and acceptance planned |
 | P3 | Linux: the same over AT-SPI on X11 | planned |
 | P4 | cocoonbox depends on shuttle's crates and runtime | planned |
 

@@ -15,7 +15,7 @@ Every platform installs and runs `cocoon-shuttle mcp`. On macOS and Windows, the
 - **Permissions.** shuttle needs Accessibility (to read and act on windows) and Screen Recording (for screenshots). macOS grants them to an app, so they go to `Cocoon Shuttle.app`, which the installer puts in `~/Applications`. Grant them in System Settings > Privacy & Security when shuttle first asks.
 - **No code signing yet.** `Cocoon Shuttle.app` carries an ad hoc signature. macOS ties the grants to that signature, which changes with every release, so grant the permissions again after each upgrade.
 - **Gatekeeper.** The installer downloads with `curl`, which sets no quarantine flag. A copy downloaded with a browser is quarantined: run `xattr -dr com.apple.quarantine ~/Applications/"Cocoon Shuttle.app"`, or open it once with Control-click > Open.
-- **Input.** Today a press clicks the element's centre when a hit test there finds it, else runs its AX action, and keys go to the desktop through cua-driver; [safety.md](safety.md#input-on-macos) describes the P1 design.
+- **Input.** Today a press clicks a menu node's centre, clicks any other element's centre when a hit test there finds it, else runs its AX action, and keys go to the desktop through cua-driver; [safety.md](safety.md#input-on-macos) describes the P1 design.
 
 ## Windows
 

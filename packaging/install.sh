@@ -29,6 +29,12 @@ arm64 | aarch64) arch=arm64 ;;
 x86_64 | amd64) arch=x64 ;;
 *) die "unsupported architecture $(uname -m)" ;;
 esac
+if [ "$os" = macos ]; then
+	mac=$(sw_vers -productVersion)
+	major=${mac%%.*}
+	case "$mac" in *.*) rest=${mac#*.} && minor=${rest%%.*} ;; *) minor=0 ;; esac
+	[ "$major" -gt 13 ] || { [ "$major" -eq 13 ] && [ "$minor" -ge 5 ]; } || die "macOS $mac is older than 13.5, the oldest the bundled Node.js runs on; nothing was changed"
+fi
 # a shell under Rosetta reports x86_64 on Apple silicon
 if [ "$os" = macos ] && [ "$arch" = x64 ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
 	arch=arm64

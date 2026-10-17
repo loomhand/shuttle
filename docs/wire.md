@@ -14,7 +14,7 @@ One wire connects `cocoon-shuttle mcp` to the daemon, the runtime (`desk.mts`) t
 
 ## Framing
 
-- **One call per connection.** The client writes one frame and reads one frame; closing the connection cancels the call.
+- **One call per connection.** The client writes one frame and reads one frame. Closing the connection does not cancel a call the daemon has read: it runs to its end, and its reply is dropped.
 - **Frame:** a big-endian u32 length, then that many bytes of JSON. A frame over 64 MiB is refused.
 - **Request:** `{"agent_id": string, "tool": string, "args": object}`; `agent_id` defaults to `""` and `args` to `null`.
 - **Response:** `{"text": string, "is_error": bool, "image_b64"?: string, "secrets"?: [[field, value]]}`. `text` holds the result, JSON for the desk verbs; `image_b64` is a PNG when the call took one; `secrets` carries card fields a host typed from a file (cocoonbox), and shuttle never sends it. A failure is `is_error: true` with the reason in `text`, never a closed connection.
@@ -29,7 +29,7 @@ Desk calls name `desk_<verb>` tools:
 | `snapshot` | `window?`, `pid?`, `keys?`, `bounds?`, `text?`, `max_chars?` (with `text`); `id?` on the Linux toolhost | a window's tree as nodes (`ref`, `id`, `parent`, `depth`, `role`, `name`, `states`, ...), or an outline with `text` |
 | `find` | `name`, `role?`, `window?`, `pid?` | the window and the nodes whose name matches |
 | `read` | `id`, `text?` | one node with its value and text |
-| `press` | `id` | presses a node: select, open menus, click on a hit, else its default action |
+| `press` | `id` | presses a node: select a tab or row, open the menus above a hidden menu entry, click a menu node's centre, click another node's centre when a hit test there finds it, else run its default action; a Windows menu entry runs its action |
 | `act` | `id`, `action` (`click`, `action`, `select`, `focus`) | one action on a node |
 | `at` | `x`, `y`, `window?`, `pid?` | the node at a screen point and its ancestors |
 | `key` | `keys` (`ctrl+s`, `cmd+shift+t`, ...) | sends a key combination |
@@ -42,7 +42,7 @@ Desk calls name `desk_<verb>` tools:
 
 ## Runs
 
-`script_run` (`code` or an absolute `script` path, which the MCP server resolves against the agent's working directory; `params`, default `{}`; `timeout_s` up to 110, default 90) runs one module on the bundled Node, with the desk API as the global `desk`, and answers `{result, logs, stderr, exit_code, duration_ms, error?: {kind, message}}`: `kind` is `import` (the module or the desk API failed to load), `no_main` (the module exports no `main` function), `exception` (`main` threw; `message` is the stack), `timeout` or `exit` (Node exited without saying why). `gui_plan` runs the runtime's plan executor with its arguments and answers the plan's result. Both run with `TOOLHOST_SOCKET` naming the daemon's endpoint, `SHUTTLE_AGENT` naming the run (the runtime sends it as `agent_id`, so the run's own desk actions pass while it owns the desk) and without the model key variables (`OPENROUTER_API_KEY` and the configured `api_key_env`); logs and stderr keep their first 32 KiB.
+`script_run` (`code` or an absolute `script` path, which the MCP server resolves against the agent's working directory; `params`, default `{}`; `timeout_s` up to 110, default 90) runs one module on the bundled Node, with the desk API as the global `desk`, and answers `{result, logs, stderr, exit_code?, duration_ms, error?: {kind, message}}` (no `exit_code` after a timeout): `kind` is `import` (the module or the desk API failed to load), `no_main` (the module exports no `main` function), `exception` (`main` threw; `message` is the stack), `timeout` or `exit` (Node exited without saying why). `gui_plan` runs the runtime's plan executor with its arguments and answers the plan's result. Both run with `TOOLHOST_SOCKET` naming the daemon's endpoint, `SHUTTLE_AGENT` naming the run (the runtime sends it as `agent_id`, so the run's own desk actions pass while it owns the desk) and without the model key variables (`OPENROUTER_API_KEY` and the configured `api_key_env`); logs and stderr keep their first 32 KiB.
 
 ## Model calls
 
