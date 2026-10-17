@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
+use desk_core::wire::{Call, Output, read_frame, write_frame};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::desk::Desk;
 use crate::driver::Input;
 use crate::model::Access;
-use desk_core::wire::{Call, Output, read_frame, write_frame};
 
 #[cfg(windows)]
 const PIPE_BUSY: i32 = 231;
