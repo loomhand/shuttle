@@ -253,13 +253,13 @@ function render(nodes: Node[], max: number, interactive: boolean) {
   return nodes.filter((n) => !interactive || n.depth === 0 || SHOWN_ROLES.has(n.role)).map((n) =>
     `${'  '.repeat(n.depth)}- ${n.role}${n.name ? ` "${q(n.name)}"` : ''}${n.disabled ? ' [disabled]' : ''}${n.checked ? ' [checked]' : ''}${n.shortcut ? ` [${n.shortcut}]` : ''}${n.id ? ` [id=${n.id}]` : ''}${n.value ? `: "${q(n.value)}"` : ''}`).join('\n')
 }
-async function outline(w?: Win | null, keys = false, kept?: Kept) {
+async function outline(w?: Win | null, keys = false, kept?: Kept, max = 1800) {
   if (w === undefined) w = await focused()
   if (!w) return '(no focused window)'
-  return (await look(w, keys, kept)).text
+  return (await look(w, keys, kept, max)).text
 }
-async function look(w: Win, keys = false, kept?: Kept): Promise<{ text: string; snap?: desk.Snap }> {
-  try { const s = reuse(kept, w, keys) ?? await snapOf(w, keys); const nodes = parse(s); return { text: `${render(nodes, 100, nodes.length > 60).slice(0, 1800)}${s.truncated ? CUT : ''}`, snap: s } } catch (e: unknown) { return { text: String(e) } }
+async function look(w: Win, keys = false, kept?: Kept, max = 1800): Promise<{ text: string; snap?: desk.Snap }> {
+  try { const s = reuse(kept, w, keys) ?? await snapOf(w, keys); const nodes = parse(s); return { text: `${render(nodes, 100, nodes.length > 60).slice(0, max)}${s.truncated ? CUT : ''}`, snap: s } } catch (e: unknown) { return { text: String(e) } }
 }
 async function seen(): Promise<Seen> {
   const w = await focused()
@@ -282,8 +282,8 @@ function isAlert(o: string) { return /^- alert/.test(o) }
 function isDialog(o: string) { return /^- (alert|dialog|file chooser)/.test(o) }
 // a dialog AT-SPI maps before its children answers with its root alone; read it again until the children show
 async function filled(w: Win, kept?: Kept) {
-  let o = await outline(w, false, kept)
-  for (let i = 0; i < 20 && isDialog(o) && !o.trim().includes('\n'); i++) { await sleep(50); o = await outline(w) }
+  let o = await outline(w, false, kept, Infinity)
+  for (let i = 0; i < 20 && isDialog(o) && !o.trim().includes('\n'); i++) { await sleep(50); o = await outline(w, false, undefined, Infinity) }
   return o
 }
 
