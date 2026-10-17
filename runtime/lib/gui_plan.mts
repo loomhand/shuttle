@@ -119,7 +119,7 @@ async function perform(p: Params): Promise<Result> {
       if (f && isAlert(o)) throw new Surprise(`alert "${f.title}" is in front`, await seen())
       const prev = plan[i - 1]
       await run(s, rec).catch(async (e: unknown) => {
-        const late = (x: unknown) => x instanceof Surprise && x.reason.startsWith('no element matches')
+        const late = (x: unknown) => x instanceof Surprise && (x.reason.startsWith('no element matches') || x.reason === 'no focused window')
         if (!late(e) || !(prev?.menu || prev?.click || prev?.key)) throw e
         for (const end = Date.now() + 3000; ; await sleep(200)) {
           try { return await run(s, rec) } catch (again: unknown) { if (!late(again) || Date.now() > end) throw again }
