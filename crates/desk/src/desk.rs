@@ -325,6 +325,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             && let (Some(x), Some(y)) = (req["x"].as_f64(), req["y"].as_f64())
             && let Some((pid, window_id, left, top)) = self.window_at(x, y).await?
         {
+            let front = json!({"pid": pid, "window_id": window_id});
+            self.driver.call("bring_to_front", front).await?;
             let window = json!({"session": WINDOW_SESSION, "pid": pid, "window_id": window_id});
             self.driver.call("get_window_state", window).await?;
             req["session"] = WINDOW_SESSION.into();
@@ -1055,7 +1057,7 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(t, _)| t == "click" || t == "get_window_state")
+            .filter(|(t, _)| t == "click" || t == "get_window_state" || t == "bring_to_front")
             .cloned()
             .collect();
         let window =
@@ -1063,10 +1065,18 @@ mod tests {
         assert_eq!(
             sent,
             [
+                (
+                    "bring_to_front".to_owned(),
+                    json!({"pid": 8, "window_id": 41})
+                ),
                 ("get_window_state".to_owned(), window(8, 41)),
                 (
                     "click".to_owned(),
                     json!({"x": 20.0, "y": 80.0, "session": WINDOW_SESSION, "pid": 8, "window_id": 41})
+                ),
+                (
+                    "bring_to_front".to_owned(),
+                    json!({"pid": 7, "window_id": 40})
                 ),
                 ("get_window_state".to_owned(), window(7, 40)),
                 (
