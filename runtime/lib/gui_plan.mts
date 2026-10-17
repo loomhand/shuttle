@@ -150,7 +150,8 @@ async function perform(p: Params): Promise<Result> {
       for (let i = 0; i < 12 && (await focused())?.title === was; i++) await sleep(40)
       await sleep(80)
     }
-    const f = await focused(); const o = f && f.role !== 'window' ? await outline(f) : ''
+    const acted = !!(last.click || last.check || last.set || last.menu || last.key || last.close || last.type !== undefined)
+    const f = await focused(); const o = f && (acted || f.role !== 'window') ? await outline(f) : ''
     log.push({ i: plan.length, op: 'end', ms: Date.now() - ts, window: f?.title ?? null })
     const left = f && !startTitles.has(f.title) && isDialog(o) && !(last.wait || last.app || (last.window && norm(f.title).includes(norm(last.window))))
     if (f && blocked(o) && recs.at(-1)?.how !== 'wm') { escalate = { step: plan.length, reason: unanswered(f.title), ...(await seen()) }; done = plan.length }
