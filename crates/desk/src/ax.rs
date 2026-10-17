@@ -51,6 +51,7 @@ static PROMPTED: AtomicBool = AtomicBool::new(false);
 
 /// The AX backend: element ids are `pid/n`, kept while this backend lives.
 pub struct Ax {
+    names: CFArray<CFString>,
     scale: f64,
     ids: HashMap<String, CFType>,
     hashes: HashMap<usize, Vec<(CFType, String)>>,
@@ -78,7 +79,12 @@ impl Ax {
         let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
         // SAFETY: `system` is a live AXUIElement for the duration of the call.
         unsafe { AXUIElementSetMessagingTimeout(system.as_CFTypeRef(), MESSAGING_TIMEOUT) };
+        let names: Vec<CFString> = ATTRS
+            .iter()
+            .map(|n| CFString::from_static_string(n))
+            .collect();
         Ok(Self {
+            names: CFArray::from_CFTypes(&names),
             scale: display_scale(),
             ids: HashMap::new(),
             hashes: HashMap::new(),
@@ -192,7 +198,7 @@ impl Ax {
         if depth > MAX_DEPTH || path.contains(el) {
             return false;
         }
-        let a = attrs(el);
+        let a = attrs(&self.names, el);
         let node = self.node_of(el, &a, extras, VALUE_CHARS);
         let (parent, depth) = place(out, node, parent, depth);
         path.push(el.clone());
@@ -221,11 +227,11 @@ impl Access for Ax {
                 continue;
             };
             for w in windows.iter() {
-                let a = attrs(w);
+                let a = attrs(&self.names, w);
                 let sheets: Vec<&CFType> = a
                     .children
                     .iter()
-                    .filter(|c| attrs(c).role == "AXSheet")
+                    .filter(|c| attrs(&self.names, c).role == "AXSheet")
                     .collect();
                 let mine = focused
                     .as_ref()
@@ -233,7 +239,7 @@ impl Access for Ax {
                 let mut active = front && mine;
                 let title = a.title.trim().to_owned();
                 for sheet in sheets {
-                    let s = attrs(sheet);
+                    let s = attrs(&self.names, sheet);
                     frames.push(Frame {
                         id: self.id_of(sheet),
                         title: [s.title, s.description]
@@ -291,7 +297,7 @@ impl Access for Ax {
 
     fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String> {
         let el = self.element(id)?;
-        let a = attrs(&el);
+        let a = attrs(&self.names, &el);
         if a.role.is_empty() {
             return Err(format!("element {id} is gone"));
         }
@@ -305,7 +311,7 @@ impl Access for Ax {
             let Some(parent) = attr(&at, "AXParent") else {
                 break;
             };
-            if attrs(&parent).role == "AXApplication" {
+            if attrs(&self.names, &parent).role == "AXApplication" {
                 break;
             }
             chain.push(self.id_of(&parent));
@@ -334,7 +340,7 @@ impl Access for Ax {
 
     fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
         let el = self.element(id)?;
-        let a = attrs(&el);
+        let a = attrs(&self.names, &el);
         Ok(match act {
             Act::Action => {
                 perform(&el, "AXPress") || perform(&el, "AXConfirm") || perform(&el, "AXPick")
@@ -418,12 +424,7 @@ struct Attrs {
     modal: bool,
 }
 
-fn attrs(el: &CFType) -> Attrs {
-    let names: Vec<CFString> = ATTRS
-        .iter()
-        .map(|n| CFString::from_static_string(n))
-        .collect();
-    let names = CFArray::from_CFTypes(&names);
+fn attrs(names: &CFArray<CFString>, el: &CFType) -> Attrs {
     let mut out: CFArrayRef = std::ptr::null();
     // SAFETY: `el` is a live AXUIElement, `names` a live CFArray of CFStrings, `out` a valid out pointer.
     let err = unsafe {
