@@ -4,6 +4,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
@@ -48,16 +49,22 @@ impl Driver {
     }
 
     async fn start(&self) -> Result<(), String> {
-        self.send("start_session", json!({"capture_scope": "desktop"}))
-            .await?;
+        self.send(
+            "start_session",
+            &json!({"capture_scope": "desktop", "session": SESSION}),
+        )
+        .await?;
         self.started.store(true, Ordering::Relaxed);
         Ok(())
     }
 
-    async fn send(&self, tool: &str, mut args: Value) -> Result<Value, String> {
-        args["session"] = SESSION.into();
-        let mut line = serde_json::to_vec(&json!({"method": "call", "name": tool, "args": args}))
-            .map_err(|e| format!("encode: {e}"))?;
+    async fn send(&self, tool: &str, args: &Value) -> Result<Value, String> {
+        let request = Request {
+            method: "call",
+            name: tool,
+            args,
+        };
+        let mut line = serde_json::to_vec(&request).map_err(|e| format!("encode: {e}"))?;
         line.push(b'\n');
         let reply = tokio::time::timeout(REQUEST_TIMEOUT, self.exchange(line))
             .await
@@ -91,18 +98,26 @@ impl Driver {
 }
 
 impl Input for Driver {
-    async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+    async fn call(&self, tool: &str, mut args: Value) -> Result<Value, String> {
+        args["session"] = SESSION.into();
         if !self.started.load(Ordering::Relaxed) {
             self.start().await?;
         }
-        match self.send(tool, args.clone()).await {
+        match self.send(tool, &args).await {
             Err(e) if e.contains(ENDED) => {
                 self.start().await?;
-                self.send(tool, args).await
+                self.send(tool, &args).await
             }
             done => done,
         }
     }
+}
+
+#[derive(Serialize)]
+struct Request<'a> {
+    method: &'static str,
+    name: &'a str,
+    args: &'a Value,
 }
 
 /// `req` addressed to the screen, not to a window.
@@ -199,7 +214,7 @@ mod tests {
                 s.read_line(&mut line).await.unwrap();
                 let reply: &[u8] = if i == 2 { ended } else { ok };
                 s.get_mut().write_all(reply).await.unwrap();
-                lines.push(serde_json::from_str::<Value>(&line).unwrap()["name"].clone());
+                lines.push(serde_json::from_str::<Value>(&line).unwrap());
             }
             lines
         });
@@ -207,8 +222,10 @@ mod tests {
         let got = d.call("get_screen_size", json!({})).await.unwrap();
         assert_eq!(got["structuredContent"]["width"], 1280);
         d.call("press_key", json!({"key": "a"})).await.unwrap();
+        let lines = daemon.await.unwrap();
+        assert!(lines.iter().all(|l| l["args"]["session"] == SESSION));
         assert_eq!(
-            daemon.await.unwrap(),
+            lines.iter().map(|l| &l["name"]).collect::<Vec<_>>(),
             [
                 "start_session",
                 "get_screen_size",
