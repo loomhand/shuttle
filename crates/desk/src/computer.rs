@@ -164,7 +164,8 @@ impl Cua {
             timing::mark("elements");
         }
         // the capture comes last: a later get_window_state replaces the session's pixel-click context
-        let (image_b64, scale, mut screen) = self.capture(&session, a.max_edge).await?;
+        let (image_b64, scale, mut screen) =
+            self.capture(&session, a.max_edge, a.workspace_only).await?;
         let k = if self.plans { scale } else { 1.0 };
         let mut head = String::from("Windows (frontmost first):\n");
         for w in &listed {
@@ -433,13 +434,17 @@ impl Cua {
             .as_u64()
             .and_then(|e| u32::try_from(e).ok());
         let session = args["session"].as_str();
+        let shared = args["workspace_only"] == true;
         if self.plans
             && let Some(region) = args.get("region").filter(|r| !r.is_null())
         {
             return self.zoom(session, region, max_edge);
         }
         let image_b64 = match session {
-            Some(session) => self.screenshot(session, max_edge).await?,
+            Some(session) => {
+                self.touch();
+                self.capture(session, max_edge, shared).await?.0
+            }
             None => self.screenshot_once(max_edge).await?,
         };
         let text = match &image_b64 {
@@ -510,7 +515,7 @@ impl Cua {
         max_edge: Option<u32>,
     ) -> Result<Option<String>, String> {
         self.touch();
-        Ok(self.capture(session, max_edge).await?.0)
+        Ok(self.capture(session, max_edge, false).await?.0)
     }
 
     /// Screenshot in a one-shot driver session that is ended right away.
@@ -540,6 +545,7 @@ impl Cua {
         &self,
         session: &str,
         max_edge: Option<u32>,
+        shared: bool,
     ) -> Result<(Option<String>, f64, Option<Screen>), String> {
         let max_edge = max_edge.or(self.plans.then_some(DEFAULT_EDGE));
         if self.plans
@@ -558,7 +564,7 @@ impl Cua {
             if let Some((image, scale)) = image {
                 timing::mark("encode");
                 timing::note("image_bytes", image.len());
-                self.keep_scale(session, scale);
+                self.keep_scale(session, scale, shared);
                 let screen = Screen {
                     width: w,
                     height: h,
@@ -582,7 +588,7 @@ impl Cua {
             if let Some(smaller) = image.as_deref().and_then(shrink) {
                 image = Some(smaller);
             }
-            self.keep_scale(session, scale);
+            self.keep_scale(session, scale, shared);
             // the driver rescales later desktop clicks by its last capture; a full-size one keeps it at 1
             if scale != 1.0 {
                 let _ = self.request(session, "get_desktop_state", json!({})).await;
@@ -1072,9 +1078,11 @@ impl Cua {
         crate::lock(&self.last_scale)
     }
 
-    fn keep_scale(&self, session: &str, scale: f64) {
+    fn keep_scale(&self, session: &str, scale: f64, shared: bool) {
         self.scales().insert(session.to_owned(), scale);
-        *self.last_scale() = scale;
+        if !shared {
+            *self.last_scale() = scale;
+        }
     }
 
     /// Screen pixels per pixel of the last screenshot `session`, else any session, returned with plans, so its x,y map to the screen.
@@ -1832,6 +1840,8 @@ struct Screen {
 struct StateArgs {
     #[serde(default)]
     pid: Option<i64>,
+    #[serde(default)]
+    workspace_only: bool,
     #[serde(default)]
     window_id: Option<i64>,
     #[serde(default)]
@@ -2920,7 +2930,64 @@ mod tests {
     #[tokio::test]
     async fn a_session_without_its_own_screenshot_maps_by_the_latest_one_of_any_session() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
+        let (socket, clicks, driver) = scaling_driver(dir.path());
+        let cua = Cua::new(socket, true);
+        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
+        let click =
+            |session: &str| json!({"action": "click", "x": 100.0, "y": 40.0, "session": session});
+        cua.screenshot_once(None).await.unwrap();
+        cua.act(&browser, "ag", click("after-default-shot"))
+            .await
+            .unwrap();
+        cua.screenshot_once(Some(0)).await.unwrap();
+        cua.act(&browser, "ag", click("after-full-shot"))
+            .await
+            .unwrap();
+        cua.state(json!({"session": "ended", "max_edge": 640}))
+            .await
+            .unwrap();
+        cua.end(json!({"session": "ended"})).await.unwrap();
+        cua.act(&browser, "ag", click("rotated")).await.unwrap();
+        cua.state(json!({"session": "own", "max_edge": 1280}))
+            .await
+            .unwrap();
+        cua.screenshot_once(None).await.unwrap();
+        cua.act(&browser, "ag", click("own")).await.unwrap();
+        assert_eq!(
+            *clicks.lock().unwrap(),
+            [(125.0, 50.0), (100.0, 40.0), (200.0, 80.0), (100.0, 40.0)]
+        );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_read_share_screenshot_leaves_the_scale_of_other_sessions_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, clicks, driver) = scaling_driver(dir.path());
+        let cua = Cua::new(socket, true);
+        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
+        let click =
+            |session: &str| json!({"action": "click", "x": 100.0, "y": 40.0, "session": session});
+        cua.state(json!({"session": "owner", "max_edge": 640}))
+            .await
+            .unwrap();
+        cua.end(json!({"session": "owner"})).await.unwrap();
+        cua.look(&json!({"session": "guest", "max_edge": 128, "workspace_only": true}))
+            .await
+            .unwrap();
+        cua.state(json!({"session": "guest", "max_edge": 256, "workspace_only": true}))
+            .await
+            .unwrap();
+        cua.act(&browser, "ag", click("rotated")).await.unwrap();
+        cua.act(&browser, "guest", click("guest")).await.unwrap();
+        assert_eq!(*clicks.lock().unwrap(), [(200.0, 80.0), (500.0, 200.0)]);
+        driver.abort();
+    }
+
+    type Clicks = std::sync::Arc<std::sync::Mutex<Vec<(f64, f64)>>>;
+
+    fn scaling_driver(dir: &Path) -> (PathBuf, Clicks, tokio::task::JoinHandle<()>) {
+        let socket = dir.join("cua.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(f64, f64)>::new()));
         let log = std::sync::Arc::clone(&clicks);
@@ -2954,33 +3021,7 @@ mod tests {
                 reader.into_inner().write_all(&out).await.unwrap();
             }
         });
-        let cua = Cua::new(socket, true);
-        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
-        let click =
-            |session: &str| json!({"action": "click", "x": 100.0, "y": 40.0, "session": session});
-        cua.screenshot_once(None).await.unwrap();
-        cua.act(&browser, "ag", click("after-default-shot"))
-            .await
-            .unwrap();
-        cua.screenshot_once(Some(0)).await.unwrap();
-        cua.act(&browser, "ag", click("after-full-shot"))
-            .await
-            .unwrap();
-        cua.state(json!({"session": "ended", "max_edge": 640}))
-            .await
-            .unwrap();
-        cua.end(json!({"session": "ended"})).await.unwrap();
-        cua.act(&browser, "ag", click("rotated")).await.unwrap();
-        cua.state(json!({"session": "own", "max_edge": 1280}))
-            .await
-            .unwrap();
-        cua.screenshot_once(None).await.unwrap();
-        cua.act(&browser, "ag", click("own")).await.unwrap();
-        assert_eq!(
-            *clicks.lock().unwrap(),
-            [(125.0, 50.0), (100.0, 40.0), (200.0, 80.0), (100.0, 40.0)]
-        );
-        driver.abort();
+        (socket, clicks, driver)
     }
 
     #[tokio::test]
