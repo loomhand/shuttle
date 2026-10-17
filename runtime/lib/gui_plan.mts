@@ -117,9 +117,10 @@ async function perform(p: Params): Promise<Result> {
       const o = f && (!known.has(f.title) || !f.title.trim()) && !(i === (p.start ?? 0) && startAlert) && !(s.window && norm(f.title).includes(norm(s.window))) ? await outline(f) : ''
       if (f && blocked(o)) throw new Surprise(unanswered(f.title), await seen())
       if (f && isAlert(o)) throw new Surprise(`alert "${f.title}" is in front`, await seen())
+      const prev = plan[i - 1]
       await run(s, rec).catch(async (e: unknown) => {
         const late = (x: unknown) => x instanceof Surprise && x.reason.startsWith('no element matches')
-        if (!late(e) || !(await moved((e as Surprise).seen.window))) throw e
+        if (!late(e) || !(prev?.menu || prev?.click || prev?.key)) throw e
         for (const end = Date.now() + 3000; ; await sleep(200)) {
           try { return await run(s, rec) } catch (again: unknown) { if (!late(again) || Date.now() > end) throw again }
         }
@@ -229,11 +230,6 @@ async function current() {
   const k = pressed; pressed = null; const t0 = Date.now()
   while (k && (await focused())?.title === k.title && Date.now() - k.at < 150) await sleep(10)
   tick('settle', t0); return focused()
-}
-async function moved(from: string | null | undefined) {
-  const t0 = Date.now()
-  for (let k = 0; k < 30; k++) { const f = await focused(); if (f && f.title !== from) { tick('settle', t0); return true } await sleep(100) }
-  tick('settle', t0); return false
 }
 async function titled(title: string, pid: number | null) { return pid !== null && (await desk.windows()).some((x) => x.title === title && x.pid === pid) }
 async function snapOf(w: Win, keys = false): Promise<desk.Snap> {
