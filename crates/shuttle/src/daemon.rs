@@ -70,7 +70,7 @@ mod tests {
 
     fn runner() -> Runner {
         let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
-        Runner::new("node".into(), runtime, "unused".into(), "UNUSED_KEY".into())
+        Runner::new("node".into(), runtime, "unused".into(), Vec::new())
     }
 
     #[tokio::test]

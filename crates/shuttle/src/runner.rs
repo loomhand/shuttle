@@ -15,35 +15,35 @@ const MAX_OUTPUT: usize = 32 << 10;
 const PIPE_GRACE: Duration = Duration::from_millis(500);
 
 /// Runs modules with `node` and the runtime in `runtime`, desk calls going to the daemon at `endpoint`; the model key
-/// variable `key_var` stays out of the scripts' environment.
+/// variables `key_vars` stay out of the scripts' environment.
 #[derive(Debug)]
 pub struct Runner {
     node: PathBuf,
     runtime: PathBuf,
     endpoint: String,
-    key_var: String,
+    key_vars: Vec<String>,
 }
 
 impl Runner {
     /// A runner of `node` and the runtime directory `runtime`.
-    pub fn new(node: PathBuf, runtime: PathBuf, endpoint: String, key_var: String) -> Self {
+    pub fn new(node: PathBuf, runtime: PathBuf, endpoint: String, key_vars: Vec<String>) -> Self {
         Self {
             node,
             runtime,
             endpoint,
-            key_var,
+            key_vars,
         }
     }
 
     /// The runner of a release install: Node and the runtime next to `exe`, or in the app bundle's Resources.
-    pub fn beside(exe: &Path, endpoint: String, key_var: String) -> Self {
+    pub fn beside(exe: &Path, endpoint: String, key_vars: Vec<String>) -> Self {
         let dir = exe.parent().unwrap_or(Path::new("."));
         let node = dir.join(if cfg!(windows) { "node.exe" } else { "node" });
         let runtime = [dir.join("runtime"), dir.join("../Resources/runtime")]
             .into_iter()
             .find(|p| p.is_dir())
             .unwrap_or_else(|| dir.join("runtime"));
-        Self::new(node, runtime, endpoint, key_var)
+        Self::new(node, runtime, endpoint, key_vars)
     }
 
     /// `script_run`: one module, `code` or the absolute file `script`; its `main(params)` value comes back as `result`.
@@ -111,8 +111,10 @@ impl Runner {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env_remove(&self.key_var)
             .kill_on_drop(true);
+        for var in &self.key_vars {
+            cmd.env_remove(var);
+        }
         let started = Instant::now();
         let mut child = cmd
             .spawn()
@@ -213,14 +215,14 @@ mod tests {
         std::fs::write(dir.join("desk.mts"), "export const here = true\n").unwrap();
         std::fs::write(
             dir.join("gui_plan.mts"),
-            "export async function main(p) { return { ok: true, steps: p.steps.length, socket: process.env.TOOLHOST_SOCKET, home: process.env.HOME === undefined } }\n",
+            "export async function main(p) { return { ok: true, steps: p.steps.length, socket: process.env.TOOLHOST_SOCKET, home: process.env.HOME === undefined && process.env.CARGO_PKG_NAME === undefined } }\n",
         )
         .unwrap();
         Runner::new(
             "node".into(),
             dir.to_path_buf(),
             "/tmp/desk.sock".into(),
-            "HOME".into(),
+            vec!["HOME".into(), "CARGO_PKG_NAME".into()],
         )
     }
 
