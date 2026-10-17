@@ -1,6 +1,6 @@
 # Safety
 
-shuttle acts on your own desktop, with your accounts signed in. These controls land with the desk tools in P1 (macOS), P2 (Windows) and P3 (Linux); v0.0.1 runs no desktop action.
+shuttle acts on your own desktop, with your accounts signed in. These controls land in P1 (macOS), P2 (Windows) and P3 (Linux). The released v0.0.1 runs no desktop action; `main` (unreleased) already acts on the desktop as a developer preview, without any of them.
 
 ## Kill switch
 
@@ -31,6 +31,8 @@ While shuttle acts, a menu-bar item (macOS) or tray icon (Windows, Linux) shows 
 `script_run` runs JavaScript with your user's rights. The allowlist and the confirm mode bound the desk calls a script makes, not the script's own code, which can read files or start programs. If you do not want that, set `script_run = false`; `gui_plan`, `desk` and `screenshot` keep working.
 
 ## Input on macOS
+
+This is the P1 design. Today a press clicks the element's centre when a hit test there finds it and runs its AX action otherwise, and keys go to the desktop through cua-driver.
 
 macOS has one pointer and one keyboard focus, shared by you and shuttle. shuttle uses them as little as it can:
 

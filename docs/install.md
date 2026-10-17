@@ -29,7 +29,7 @@ Both installers download the archive and the release's `SHA256SUMS`, refuse an a
 | | macOS (`Cocoon Shuttle.app`) | Linux and Windows (`cocoon-shuttle/`) |
 |---|---|---|
 | `cocoon-shuttle` | `Contents/MacOS/cocoon-shuttle` | `cocoon-shuttle`, `cocoon-shuttle.exe` |
-| cua-driver | `Contents/MacOS/cua-driver`, `cua-cursor-theme` | `cua-driver`, `cua-cursor-theme` (Linux: and `wayland-helper/`) |
+| cua-driver | `Contents/MacOS/cua-driver`, `cua-cursor-theme` | `cua-driver`, `cua-cursor-theme`, `.exe` on Windows (Linux: and `wayland-helper/`) |
 | Node.js 24 | `Contents/MacOS/node` | `node`, `node.exe` |
 | runtime | `Contents/Resources/runtime/` | `runtime/` |
 | licenses | `Contents/Resources/licenses/` | `licenses/` |
@@ -51,4 +51,4 @@ The attestation shows that the archive was built by this repository's release wo
 - Linux: `rm -rf ~/.local/lib/cocoon-shuttle ~/.local/bin/cocoon-shuttle`
 - Windows: `Remove-Item -Recurse "$env:LOCALAPPDATA\Programs\cocoon-shuttle"`, then remove that directory from your user `PATH`.
 
-Remove `~/.config/cocoon-shuttle` (Windows: `%APPDATA%\cocoon-shuttle`) to drop the configuration too.
+Quit a running daemon first (`pkill -f 'cocoon-shuttle serve'`; Windows: end `cocoon-shuttle.exe` in Task Manager). Remove `~/.config/cocoon-shuttle` (Windows: `%APPDATA%\cocoon-shuttle`) to drop the configuration and the saved flows too, and on macOS `~/Library/Caches/cocoon-shuttle` (the daemon's socket).

@@ -8,6 +8,7 @@ One wire connects `cocoon-shuttle mcp` to the daemon, the runtime (`desk.mts`) t
 |---|---|
 | macOS | `~/Library/Caches/cocoon-shuttle/desk.sock`, mode 0600 |
 | Windows | `\\.\pipe\cocoon-shuttle-desk`, local clients only |
+| Linux | `~/Library/Caches/cocoon-shuttle/desk.sock` (the macOS path, until the P3 backend picks a Linux one), mode 0600 |
 
 `SHUTTLE_SOCKET` overrides the endpoint for the binary. The daemon hands its endpoint to the runtime in `TOOLHOST_SOCKET`.
 
@@ -16,7 +17,7 @@ One wire connects `cocoon-shuttle mcp` to the daemon, the runtime (`desk.mts`) t
 - **One call per connection.** The client writes one frame and reads one frame; closing the connection cancels the call.
 - **Frame:** a big-endian u32 length, then that many bytes of JSON. A frame over 64 MiB is refused.
 - **Request:** `{"agent_id": string, "tool": string, "args": object}`; `agent_id` defaults to `""` and `args` to `null`.
-- **Response:** `{"text": string, "is_error": bool, "image_b64"?: string}`. `text` holds the result, JSON for the desk verbs; `image_b64` is a PNG when the call took one. A failure is `is_error: true` with the reason in `text`, never a closed connection.
+- **Response:** `{"text": string, "is_error": bool, "image_b64"?: string, "secrets"?: [[field, value]]}`. `text` holds the result, JSON for the desk verbs; `image_b64` is a PNG when the call took one; `secrets` carries card fields a host typed from a file (cocoonbox), and shuttle never sends it. A failure is `is_error: true` with the reason in `text`, never a closed connection.
 
 ## Desk calls
 
@@ -24,13 +25,13 @@ Desk calls name `desk_<verb>` tools:
 
 | Verb | Arguments | Result |
 |---|---|---|
-| `windows` | | the top-level windows: `id`, `title`, `role`, `pid`, `active`, and `modal`/`blocks` for dialogs |
-| `snapshot` | `window?`, `pid?`, `id?`, `keys?`, `bounds?`, `text?` | a window's tree as nodes (`ref`, `id`, `parent`, `depth`, `role`, `name`, `states`, ...), or an outline with `text` |
-| `find` | `name`, `role?`, `window?` | the window and the nodes whose name matches |
+| `windows` | | the top-level windows: `id`, `title`, `role`, `pid`, `active`; cocoonbox's Linux toolhost also gives `modal`/`blocks` for dialogs |
+| `snapshot` | `window?`, `pid?`, `keys?`, `bounds?`, `text?`, `max_chars?` (with `text`); `id?` on the Linux toolhost | a window's tree as nodes (`ref`, `id`, `parent`, `depth`, `role`, `name`, `states`, ...), or an outline with `text` |
+| `find` | `name`, `role?`, `window?`, `pid?` | the window and the nodes whose name matches |
 | `read` | `id`, `text?` | one node with its value and text |
 | `press` | `id` | presses a node: select, open menus, click on a hit, else its default action |
 | `act` | `id`, `action` (`click`, `action`, `select`, `focus`) | one action on a node |
-| `at` | `x`, `y`, `window?` | the node at a screen point and its ancestors |
+| `at` | `x`, `y`, `window?`, `pid?` | the node at a screen point and its ancestors |
 | `key` | `keys` (`ctrl+s`, `cmd+shift+t`, ...) | sends a key combination |
 | `type` | `text` | types text |
 | `click` | `x`, `y`, `button?`, `count?` | clicks a screen point |
@@ -45,7 +46,7 @@ Desk calls name `desk_<verb>` tools:
 
 ## Model calls
 
-The daemon answers these with the providers of [config.md](config.md) (`crates/models`; the daemon routes them from P1), so a script calls a model without holding a key. Each reply carries `usage`: `{model, input_tokens, output_tokens, cached_tokens}`.
+The daemon answers these with the models of [config.md](config.md) (`crates/models`), so a script calls a model without holding a key. Each reply carries `usage`: `{model, input_tokens, output_tokens, cached_tokens}`.
 
 | Tool | Arguments | Result |
 |---|---|---|

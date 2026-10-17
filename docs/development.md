@@ -8,7 +8,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-The toolchain is pinned in `rust-toolchain.toml`. The unit tests drive fake accessibility backends, a fake cua-driver and in-memory MCP sessions: none reads a real accessibility tree or sends input, so they are safe on the machine you work on. Anything that drives a real desktop runs in a virtual machine or a CI runner, never on a developer's own session.
+The toolchain is pinned in `rust-toolchain.toml`; the runner and daemon tests also run `node` from `PATH` (Node.js 22.18 or later, for type stripping). The unit tests drive fake accessibility backends, a fake cua-driver and in-memory MCP sessions: none reads a real accessibility tree or sends input, so they are safe on the machine you work on. Anything that drives a real desktop runs in a virtual machine or a CI runner, never on a developer's own session.
 
 The Windows code builds only for Windows; from another host, `cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings` checks it.
 
@@ -23,7 +23,7 @@ CI runs the Rust gates on Linux (x64), macOS (arm64, x64) and Windows (x64), and
 ## Release
 
 1. Add a `## X.Y.Z - date` section to `CHANGELOG.md`; it becomes the release notes.
-2. Set `version` in the workspace `Cargo.toml` and commit.
+2. Set `version` in the workspace `Cargo.toml`, run `cargo check` so `Cargo.lock` follows (CI and the release build with `--locked`), and commit both.
 3. Tag `vX.Y.Z` and push the tag.
 
 The release workflow builds the five archives, writes `SHA256SUMS`, attests their provenance and publishes them with the installers as a prerelease. It then installs that release with `install.sh` and `install.ps1` on fresh runners, asks each installed binary for `status` over MCP, and only then marks the release as the latest. A failed install job leaves it a prerelease: fix the cause and tag the next patch version; a published tag is never moved.

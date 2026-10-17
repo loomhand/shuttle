@@ -1,6 +1,6 @@
 # shuttle
 
-shuttle (binary `cocoon-shuttle`, app Cocoon Shuttle) is a computer-use host that runs on your own machine. Local agents such as Claude Code, Codex and Cursor start it as an MCP server over stdio and drive your desktop through it: whole GUI plans in one call (`gui_plan`), scripts against a desk API (`script_run`), single accessibility-tree calls (`desk`) and screenshots. Model calls for target picking, grounding and checks go to endpoints and keys you configure (bring your own key).
+shuttle (binary `cocoon-shuttle`, app Cocoon Shuttle) is a computer-use host that runs on your own machine. Local agents such as Claude Code, Codex and Cursor start it as an MCP server over stdio and drive your desktop through it: whole GUI plans in one call (`gui_plan`), scripts against a desk API (`script_run`), single accessibility-tree calls (`desk`) and screenshots. Model calls for target picking, grounding and checks go to an OpenAI-compatible endpoint and key you configure, OpenRouter by default (bring your own key).
 
 shuttle is part of [loomhand](https://github.com/loomhand). It takes its desk core and plan executor from [cocoonbox](https://github.com/loomhand/cocoonbox), where they drive cloud desktops, and its input, capture and window layer from [cua-driver](https://github.com/loomhand/cua) (MIT).
 
@@ -8,12 +8,12 @@ shuttle is part of [loomhand](https://github.com/loomhand). It takes its desk co
 
 ## Status
 
-**v0.0.1 is a skeleton.** It installs, answers MCP on stdio and lists its five tools; only `status` runs. The tools that act on the desktop land per platform:
+**v0.0.1, the latest release, is a skeleton**: it installs, answers MCP on stdio and lists its five tools; only `status` runs. **`main`, not yet released,** adds the daemon, desk control on macOS and Windows (`desk`, `screenshot`, `gui_plan`, `script_run`, a developer preview that needs a running cua-driver daemon) and bring-your-own-key models; the safety controls are not built yet. The tools that act on the desktop land per platform:
 
 | Phase | What | State |
 |---|---|---|
 | P0 | Workspace, CI, release archives, installers, MCP skeleton | done in v0.0.1 |
-| P1 | macOS: daemon in `Cocoon Shuttle.app`, desk tools, `gui_plan`, `script_run`, BYOK models, safety controls | next |
+| P1 | macOS: daemon in `Cocoon Shuttle.app`, desk tools, `gui_plan`, `script_run`, BYOK models, safety controls | on `main` except the safety controls; unreleased |
 | P2 | Windows: the same over UI Automation | planned |
 | P3 | Linux: the same over AT-SPI on X11 | planned |
 | P4 | cocoonbox depends on shuttle's crates and runtime | planned |
@@ -60,7 +60,7 @@ Cursor (`~/.cursor/mcp.json`):
 
 | Tool | What it does |
 |---|---|
-| `gui_plan` | Runs a GUI plan in one call: each step (`app`, `menu`, `click`, `check`, `set`, `type`, `key`, `wait`, `verify`, `close`) resolves on the accessibility tree, is checked, and the plan stops at the first surprise; a passing plan can be saved as a flow and replayed |
+| `gui_plan` | Runs a GUI plan in one call: each step (`app`, `menu`, `click`, `check`, `set`, `type`, `key`, `wait`, `expect`, `verify`, `close`) resolves on the accessibility tree, is checked, and the plan stops at the first surprise; a passing plan can be saved as a flow and replayed |
 | `script_run` | Runs one JavaScript or TypeScript module on the bundled Node runtime with the desk API |
 | `desk` | One desk call: windows, snapshot, find, read, press, act, at, key, type, click, focus, close, launch, shot, screen |
 | `screenshot` | A PNG of the screen or a rectangle |
