@@ -91,8 +91,10 @@ fn app_bundle(exe: &Path) -> Option<&Path> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::sync::Arc;
 
+    #[cfg(unix)]
     use desk_core::wire::read_frame;
 
     use super::*;

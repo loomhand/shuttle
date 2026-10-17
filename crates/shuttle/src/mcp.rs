@@ -104,9 +104,12 @@ fn reply(id: Value, result: Result<Value, (i64, String)>) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::sync::Arc;
 
+    #[cfg(unix)]
     use desk_core::wire::{Call, Output};
+    #[cfg(unix)]
     use shuttle_desk::server::{self, Handler};
 
     use super::*;
@@ -208,8 +211,10 @@ mod tests {
         assert_eq!(out[2]["error"]["message"], "unknown tool rm");
     }
 
+    #[cfg(unix)]
     struct Fake;
 
+    #[cfg(unix)]
     impl Handler for Fake {
         async fn answer(&self, call: Call) -> Output {
             match call.tool.as_str() {
