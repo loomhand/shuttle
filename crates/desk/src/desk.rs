@@ -2,6 +2,7 @@
 //! capture through cua-driver; the same verbs and JSON as the Linux toolhost.
 
 use std::fmt::Write as _;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -35,12 +36,14 @@ const ACTIONS: [&str; 8] = [
     "desk_launch",
 ];
 
+type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
+
 /// The desk of one OS: `B` reads and acts on elements, `D` sends input.
 pub struct Desk<B, D> {
     access: Worker<B>,
     driver: D,
     os: Os,
-    acting: tokio::sync::Mutex<()>,
+    acting: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
@@ -50,14 +53,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             access: Worker::new(open),
             driver,
             os,
-            acting: tokio::sync::Mutex::new(()),
+            acting: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
-    /// Runs desk call `tool`, a `desk_<verb>`; actions run one at a time, reads alongside them.
+    /// Runs desk call `tool`, a `desk_<verb>`; actions run one at a time, until their backend calls end, reads alongside them.
     pub async fn run(&self, tool: &str, args: Value) -> Result<Output, String> {
-        let _turn = if ACTIONS.contains(&tool) {
-            Some(self.acting.lock().await)
+        let turn = if ACTIONS.contains(&tool) {
+            Some(Arc::new(self.acting.clone().lock_owned().await))
         } else {
             None
         };
@@ -66,14 +69,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_snapshot" => self.snapshot(parse(args)?).await?,
             "desk_find" => self.find(parse(args)?).await?,
             "desk_read" => self.read(parse(args)?).await?,
-            "desk_press" => self.press(parse::<IdArgs>(args)?.id).await?,
-            "desk_act" => self.act(parse(args)?).await?,
+            "desk_press" => self.press(parse::<IdArgs>(args)?.id, turn.clone()).await?,
+            "desk_act" => self.act(parse(args)?, turn.clone()).await?,
             "desk_at" => self.at(parse(args)?).await?,
             "desk_key" => self.key(&parse::<KeyArgs>(args)?.keys).await?,
             "desk_type" => self.type_text(&parse::<TypeArgs>(args)?.text).await?,
             "desk_click" => self.click(parse(args)?).await?,
             "desk_focus" => self.focus(parse(args)?).await?,
-            "desk_close" => self.close(parse(args)?).await?,
+            "desk_close" => self.close(parse(args)?, turn.clone()).await?,
             "desk_launch" => {
                 let app = parse::<LaunchArgs>(args)?.app;
                 let v = self.driver.call("launch_app", json!({"name": app})).await?;
@@ -90,7 +93,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn windows(&self) -> Result<String, String> {
-        let mut frames = self.access.run(CALL_LIMIT, |a| a.frames()).await?;
+        let mut frames = self.access.run(CALL_LIMIT, (), |a| a.frames()).await?;
         frames.sort_by_key(|f| !f.active);
         Ok(Value::Array(frames.iter().map(Frame::json).collect()).to_string())
     }
@@ -105,7 +108,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let (window, pid) = (a.window, a.pid);
         let (tree, found) = self
             .access
-            .run(TREE_LIMIT, move |b| {
+            .run(TREE_LIMIT, (), move |b| {
                 let frame = window::pick(b.frames()?, window.as_deref(), pid)?;
                 let found = started.elapsed().as_micros();
                 Ok((b.tree(&frame, extras)?, found))
@@ -144,7 +147,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let (window, pid) = (a.window, a.pid);
         let tree = self
             .access
-            .run(TREE_LIMIT, move |b| {
+            .run(TREE_LIMIT, (), move |b| {
                 let frame = window::pick(b.frames()?, window.as_deref(), pid)?;
                 b.tree(&frame, extras)
             })
@@ -166,16 +169,16 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let chars = if a.text { READ_CHARS } else { NAME_CHARS };
         let node = self
             .access
-            .run(CALL_LIMIT, move |b| b.node(&a.id, extras, chars))
+            .run(CALL_LIMIT, (), move |b| b.node(&a.id, extras, chars))
             .await?;
         Ok(node.json(0).to_string())
     }
 
-    async fn press(&self, id: String) -> Result<String, String> {
+    async fn press(&self, id: String, turn: Option<Turn>) -> Result<String, String> {
         let os = self.os;
         match self
             .access
-            .run(TREE_LIMIT, move |b| plan_press(b, &id, os))
+            .run(TREE_LIMIT, turn, move |b| plan_press(b, &id, os))
             .await?
         {
             Press::Selected => Ok(json!({"ok": true, "how": "select"}).to_string()),
@@ -189,7 +192,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
     }
 
-    async fn act(&self, a: ActArgs) -> Result<String, String> {
+    async fn act(&self, a: ActArgs, turn: Option<Turn>) -> Result<String, String> {
         let act = match a.action.as_str() {
             "action" => Act::Action,
             "select" => Act::Select,
@@ -201,7 +204,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 };
                 let n = self
                     .access
-                    .run(CALL_LIMIT, move |b| b.node(&a.id, shown, 0))
+                    .run(CALL_LIMIT, turn, move |b| b.node(&a.id, shown, 0))
                     .await?;
                 let [x, y, w, h] = n.bounds.ok_or("the element has no screen position")?;
                 self.driver
@@ -217,14 +220,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         };
         let ok = self
             .access
-            .run(CALL_LIMIT, move |b| b.act(&a.id, act))
+            .run(CALL_LIMIT, turn, move |b| b.act(&a.id, act))
             .await?;
         Ok(json!({"ok": ok}).to_string())
     }
 
     async fn at(&self, a: AtArgs) -> Result<String, String> {
         self.access
-            .run(CALL_LIMIT, move |b| {
+            .run(CALL_LIMIT, (), move |b| {
                 let frame = window::pick(b.frames()?, a.window.as_deref(), a.pid)?;
                 let Some(hit) = b.at(&frame.id, a.x, a.y)? else {
                     return Ok(json!({"found": null, "window": frame.json()}).to_string());
@@ -243,9 +246,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .await
     }
 
-    async fn close(&self, a: WindowArgs) -> Result<String, String> {
+    async fn close(&self, a: WindowArgs, turn: Option<Turn>) -> Result<String, String> {
         self.access
-            .run(CALL_LIMIT, move |b| {
+            .run(CALL_LIMIT, turn, move |b| {
                 let frame = titled(b.frames()?, &a.window, a.pid)?;
                 b.close(&frame)?;
                 Ok(json!({"ok": true, "title": frame.title}).to_string())
