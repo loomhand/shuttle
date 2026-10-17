@@ -14,12 +14,12 @@ In v0.0.1 every platform installs, runs `cocoon-shuttle mcp` and answers `status
 
 - **Permissions.** shuttle needs Accessibility (to read and act on windows) and Screen Recording (for screenshots). macOS grants them to an app, so they go to `Cocoon Shuttle.app`, which the installer puts in `~/Applications`. Grant them in System Settings > Privacy & Security when shuttle first asks.
 - **No code signing yet.** `Cocoon Shuttle.app` carries an ad hoc signature. macOS ties the grants to that signature, which changes with every release, so grant the permissions again after each upgrade.
-- **Gatekeeper.** The installer downloads with `curl`, which sets no quarantine flag, and clears it anyway. A copy downloaded with a browser is quarantined: run `xattr -dr com.apple.quarantine ~/Applications/"Cocoon Shuttle.app"`, or open it once with Control-click > Open.
+- **Gatekeeper.** The installer downloads with `curl`, which sets no quarantine flag. A copy downloaded with a browser is quarantined: run `xattr -dr com.apple.quarantine ~/Applications/"Cocoon Shuttle.app"`, or open it once with Control-click > Open.
 - **Input.** See [safety.md](safety.md#input-on-macos): AX actions first, keys to the app's process, coordinate clicks last.
 
 ## Windows
 
-- **SmartScreen.** The binaries are unsigned. `install.ps1` downloads without the mark of the web and runs `Unblock-File`; a zip downloaded with a browser may still show "Windows protected your PC" (More info > Run anyway).
+- **SmartScreen.** The binaries are unsigned. `install.ps1` downloads without the mark of the web; a zip downloaded with a browser may still show "Windows protected your PC" (More info > Run anyway).
 - **Elevated windows.** Driving a window that runs as administrator needs a UIAccess helper, which Windows starts only when it is signed and installed under Program Files. shuttle ships without it, so windows of elevated processes are out of reach.
 - **Windows on Arm** runs the x64 build under emulation.
 

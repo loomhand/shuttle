@@ -51,13 +51,7 @@ fn desk_endpoint() -> String {
         return format!(r"\\.\pipe\{NAME}-desk");
     }
     let home = std::env::var("HOME").unwrap_or_default();
-    if cfg!(target_os = "macos") {
-        return format!("{home}/Library/Caches/{NAME}/desk.sock");
-    }
-    match std::env::var("XDG_RUNTIME_DIR") {
-        Ok(dir) if !dir.is_empty() => format!("{dir}/{NAME}/desk.sock"),
-        _ => format!("{home}/.cache/{NAME}/desk.sock"),
-    }
+    format!("{home}/Library/Caches/{NAME}/desk.sock")
 }
 
 fn call_desk(rest: &[String]) -> ExitCode {

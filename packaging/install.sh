@@ -18,7 +18,6 @@ sha256() {
 }
 
 command -v curl >/dev/null 2>&1 || die "curl is required"
-command -v tar >/dev/null 2>&1 || die "tar is required"
 
 case "$(uname -s)" in
 Darwin) os=macos ;;
@@ -60,7 +59,6 @@ if [ "$os" = macos ]; then
 	mkdir -p "$APP_DIR"
 	rm -rf "${APP_DIR:?}/$APP.app"
 	mv "$tmp/$APP.app" "$APP_DIR/$APP.app"
-	xattr -dr com.apple.quarantine "$APP_DIR/$APP.app" 2>/dev/null || true
 	ln -sf "$APP_DIR/$APP.app/Contents/MacOS/$NAME" "$PREFIX/bin/$NAME"
 	home="$APP_DIR/$APP.app"
 else
