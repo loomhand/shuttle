@@ -147,7 +147,10 @@ fn result(tool: &str, reply: &str) -> Result<Value, String> {
     }
     let out = v["result"].take();
     if out["isError"] == true {
-        return Err(format!("{tool}: {}", text_of(&out)));
+        return Err(match out["structuredContent"]["reason"].as_str() {
+            Some(reason) => format!("{tool}: {reason}: {}", text_of(&out)),
+            None => format!("{tool}: {}", text_of(&out)),
+        });
     }
     Ok(out)
 }
