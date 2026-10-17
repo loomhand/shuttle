@@ -8,6 +8,8 @@ use desk_core::wire::{Call, Output};
 use shuttle_desk::server::{self, Conn};
 use tokio::process::{Child, Command};
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const START_WAIT: Duration = Duration::from_secs(10);
 const START_POLL: Duration = Duration::from_millis(100);
 
@@ -73,7 +75,7 @@ async fn start(endpoint: &str) -> Result<Option<Child>, String> {
         .stderr(Stdio::null());
     #[cfg(windows)]
     {
-        cmd.creation_flags(crate::DETACHED_PROCESS);
+        cmd.creation_flags(CREATE_NO_WINDOW);
         disinherit_stdio();
     }
     cmd.spawn()

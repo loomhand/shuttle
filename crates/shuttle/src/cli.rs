@@ -119,15 +119,13 @@ async fn start_driver(exe: &Path) {
     if !driver.is_file() || server::connect(&endpoint).await.is_ok() {
         return;
     }
-    let mut cmd = std::process::Command::new(&driver);
-    cmd.arg("serve")
+    let started = std::process::Command::new(&driver)
+        .arg("serve")
         .env(DRIVER_TELEMETRY, "false")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    std::os::windows::process::CommandExt::creation_flags(&mut cmd, crate::DETACHED_PROCESS);
-    let started = cmd.spawn();
+        .stderr(Stdio::null())
+        .spawn();
     if let Err(e) = started {
         eprintln!("{NAME}: start {}: {e}", driver.display());
         return;
