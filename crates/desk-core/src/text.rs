@@ -16,6 +16,9 @@ pub trait Named {
 /// The indexes of the nodes named `name`, else of those that contain it, ignoring case and punctuation.
 pub fn matches<N: Named>(nodes: &[N], name: &str, role: Option<&str>) -> Vec<usize> {
     let want = norm(name);
+    if want.is_empty() {
+        return Vec::new();
+    }
     let pool: Vec<usize> = (0..nodes.len())
         .filter(|&i| role.is_none_or(|r| r.split('|').any(|r| r == nodes[i].role())))
         .collect();
@@ -28,7 +31,7 @@ pub fn matches<N: Named>(nodes: &[N], name: &str, role: Option<&str>) -> Vec<usi
         return exact;
     }
     pool.into_iter()
-        .filter(|&i| !want.is_empty() && norm(nodes[i].name()).contains(&want))
+        .filter(|&i| norm(nodes[i].name()).contains(&want))
         .collect()
 }
 
@@ -98,12 +101,14 @@ mod tests {
             N("Save As…", "menuitem"),
             N("Save", "menuitem"),
             N("save", "button"),
+            N("", "button"),
         ];
         assert_eq!(matches(&nodes, "save", None), [1, 2]);
         assert_eq!(matches(&nodes, "save as", None), [0]);
         assert_eq!(matches(&nodes, "save", Some("button")), [2]);
         assert_eq!(matches(&nodes, "save", Some("tab|button")), [2]);
         assert!(matches(&nodes, "", None).is_empty());
+        assert!(matches(&nodes, "...", Some("button")).is_empty());
     }
 
     #[test]
