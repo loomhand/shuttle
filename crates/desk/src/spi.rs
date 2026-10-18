@@ -137,10 +137,11 @@ fn node(n: &atspi::Node) -> Node {
     }
 }
 
-/// The executable name of process `pid`, as the allowlist names a Linux app.
+/// The file name of process `pid`'s executable, as the allowlist names a Linux app; none when it cannot be read, which the allowlist refuses.
 fn app(pid: u32) -> Option<String> {
-    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
-    Some(comm.trim_end().to_owned()).filter(|c| !c.is_empty())
+    let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    let name = exe.file_name()?.to_string_lossy();
+    Some(name.trim_end_matches(" (deleted)").to_owned()).filter(|n| !n.is_empty())
 }
 
 fn spi_extras(e: Extras) -> atspi::Extras {
@@ -203,5 +204,6 @@ mod tests {
         assert!(!mine.unlisted && !mine.framed);
         assert_eq!(mine.app, app(own));
         assert!(mine.app.is_some());
+        assert_eq!(app(u32::MAX), None);
     }
 }
