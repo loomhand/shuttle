@@ -86,6 +86,9 @@ mod tests {
         assert!(!Config::load(off.path()).unwrap().driver.overlay);
         let bad = file("[driver]\ncursor = false\n");
         assert!(Config::load(bad.path()).unwrap_err().contains("cursor"));
+        let text = file("[driver]\noverlay = \"off\"\n");
+        let err = Config::load(text.path()).unwrap_err();
+        assert!(err.contains("line 2") && err.contains("bool"), "{err}");
     }
 
     #[test]
