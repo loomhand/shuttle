@@ -1,4 +1,4 @@
-//! The command line: `mcp`, `serve`, `desk VERB` and `--version`.
+//! The command line: `mcp`, `serve`, `stop`, `resume`, `desk VERB` and `--version`.
 
 use std::fmt::Display;
 use std::io::Write as _;

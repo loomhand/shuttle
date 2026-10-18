@@ -15,7 +15,7 @@ pub fn list() -> Value {
     json!({"tools": [
         {
             "name": "gui_plan",
-            "description": "Run a desktop-app GUI plan in one call: each step runs on the accessibility tree, is checked, and the plan stops at the first surprise. One op per step: {app}, {menu}, {click}, {check, on}, {set, value}, {type}, {key}, {wait}, {verify}, {close: true}. A passing plan can be saved as a flow with save, and replayed with flow and params.",
+            "description": "Run a desktop-app GUI plan in one call: each step runs on the accessibility tree, is checked, and the plan stops at the first surprise. One op per step: {app}, {menu}, {click}, {check, on}, {set, value}, {type}, {key}, {wait}, {expect}, {verify}, {close: true}. A passing plan can be saved as a flow with save, and replayed with flow and params.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
