@@ -200,7 +200,7 @@ pub struct AndroidSettings {
     pub serial: Option<String>,
     pub ui_jar: PathBuf,
     pub scrcpy_jar: PathBuf,
-    pub su: PathBuf,
+    pub su: Option<PathBuf>,
 }
 
 /// A key kept out of logs and error messages.

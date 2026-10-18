@@ -12,14 +12,12 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OnceCell};
 
 use desk_core::args::parse;
 use desk_core::wire::Output;
 
 use crate::desk::{self, Node};
-
-pub(crate) const SCREEN: (i32, i32) = (720, 1280);
 
 const ADB_TIMEOUT: Duration = Duration::from_secs(30);
 const SETTLE: Duration = Duration::from_millis(500);
@@ -38,7 +36,7 @@ const CONNECT_PAUSE: Duration = Duration::from_millis(100);
 const ACK_CLIPBOARD: u8 = 1;
 const ACK_TIMEOUT: Duration = Duration::from_secs(2);
 const DEVICE_UI_JAR: &str = "/data/local/tmp/cb-ui.jar";
-const UI_CLASSPATH: &str = "CLASSPATH=/system/framework/uiautomator.jar:/data/local/tmp/cb-ui.jar";
+const UIAUTOMATOR_JAR: &str = "/system/framework/uiautomator.jar";
 const UI_TIMEOUT: Duration = Duration::from_secs(10);
 const UI_END: &str = "<<end>>";
 const KEYCODES: [(&str, u32); 26] = [
@@ -77,8 +75,8 @@ pub struct Device {
     pub serial: Option<String>,
     pub ui_jar: PathBuf,
     pub scrcpy_jar: PathBuf,
-    /// The helper that runs the paste server as the system uid.
-    pub su: PathBuf,
+    /// The helper that runs the paste server as the system uid; none runs it as adb's shell uid.
+    pub su: Option<PathBuf>,
 }
 
 /// adb on an Android device, with the element centres of each session's latest computer_state.
@@ -87,6 +85,7 @@ pub struct Android {
     points: Mutex<HashMap<String, Vec<(i32, i32)>>>,
     ui: Mutex<Option<UiServer>>,
     control: Mutex<Option<Control>>,
+    screen: OnceCell<(i32, i32)>,
 }
 
 impl Android {
@@ -97,14 +96,16 @@ impl Android {
             points: Mutex::new(HashMap::new()),
             ui: Mutex::new(None),
             control: Mutex::new(None),
+            screen: OnceCell::new(),
         }
     }
 
     /// The screen as PNG.
     pub async fn look(&self) -> Result<Output, String> {
         let png = self.adb(&["exec-out", "screencap", "-p"]).await?;
+        let (w, h) = self.screen().await?;
         Ok(Output {
-            text: format!("{}x{} screen", SCREEN.0, SCREEN.1),
+            text: format!("{w}x{h} screen"),
             image_b64: Some(B64.encode(png)),
             ..Output::default()
         })
@@ -170,12 +171,13 @@ impl Android {
                 format!("swiped {},{} to {},{}", from.0, from.1, to.0, to.1)
             }
             "scroll" => {
-                let (x, y) = point.unwrap_or((SCREEN.0 / 2, SCREEN.1 / 2));
+                let (w, h) = self.screen().await?;
+                let (x, y) = point.unwrap_or((w / 2, h / 2));
                 let (dx, dy) = match args.direction.as_deref().unwrap_or("down") {
-                    "up" => (0, SCREEN.1 / SCROLL_FRACTION),
-                    "down" => (0, -SCREEN.1 / SCROLL_FRACTION),
-                    "left" => (SCREEN.0 / SCROLL_FRACTION, 0),
-                    "right" => (-SCREEN.0 / SCROLL_FRACTION, 0),
+                    "up" => (0, h / SCROLL_FRACTION),
+                    "down" => (0, -h / SCROLL_FRACTION),
+                    "left" => (w / SCROLL_FRACTION, 0),
+                    "right" => (-w / SCROLL_FRACTION, 0),
                     other => return Err(format!("unknown direction {other}")),
                 };
                 for _ in 0..args.amount.unwrap_or(1).max(1) {
@@ -292,6 +294,18 @@ impl Android {
         Ok(())
     }
 
+    /// The screen size `wm size` reports, read once per device.
+    pub(crate) async fn screen(&self) -> Result<(i32, i32), String> {
+        self.screen
+            .get_or_try_init(|| async {
+                let out = self.adb(&["shell", "wm", "size"]).await?;
+                let out = String::from_utf8_lossy(&out);
+                wm_size(&out).ok_or_else(|| format!("wm size said {:?}", out.trim()))
+            })
+            .await
+            .copied()
+    }
+
     pub(crate) async fn adb(&self, args: &[&str]) -> Result<Vec<u8>, String> {
         let mut cmd = self.command();
         cmd.args(args).stdin(Stdio::null()).kill_on_drop(true);
@@ -362,11 +376,17 @@ impl Android {
             .await?;
         let _ = self.adb(&["shell", "pkill", "-f", "cb.Ui"]).await;
         let mut cmd = self.command();
-        cmd.args(["shell", UI_CLASSPATH, "app_process", "/", "cb.Ui"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
+        cmd.args([
+            "shell",
+            &format!("CLASSPATH={UIAUTOMATOR_JAR}:{DEVICE_UI_JAR}"),
+            "app_process",
+            "/",
+            "cb.Ui",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| format!("run UI server: {e}"))?;
         let stdin = child.stdin.take().ok_or("take UI server stdin")?;
         let mut stdout = BufReader::new(child.stdout.take().ok_or("take UI server stdout")?);
@@ -376,6 +396,9 @@ impl Android {
             .map_err(|_| "UI server start timed out".to_owned())?
             .map_err(|e| format!("read UI server: {e}"))?;
         if ready.trim() != "ready" {
+            if self.adb(&["shell", "ls", UIAUTOMATOR_JAR]).await.is_err() {
+                return Err(format!("UI server: the device has no {UIAUTOMATOR_JAR}"));
+            }
             return Err(format!("UI server said {:?}", ready.trim()));
         }
         Ok(UiServer {
@@ -395,8 +418,10 @@ impl Android {
             DEVICE_JAR,
         ])
         .await?;
-        self.adb(&["push", &self.device.su.to_string_lossy(), DEVICE_SU])
-            .await?;
+        if let Some(su) = &self.device.su {
+            self.adb(&["push", &su.to_string_lossy(), DEVICE_SU])
+                .await?;
+        }
         let socket = format!("localabstract:scrcpy_{SCRCPY_SCID}");
         let port = String::from_utf8_lossy(&self.adb(&["forward", "tcp:0", &socket]).await?)
             .trim()
@@ -412,13 +437,14 @@ impl Android {
         })
     }
 
-    /// A control-only scrcpy server as the system uid, which may set the clipboard; dropping the child stops it.
+    /// A control-only scrcpy server, as the system uid through `su` when the device has one; dropping the child stops it.
     fn scrcpy_control(&self) -> Result<Child, String> {
         let mut cmd = self.command();
+        cmd.args(["shell", &format!("CLASSPATH={DEVICE_JAR}")]);
+        if self.device.su.is_some() {
+            cmd.arg(DEVICE_SU);
+        }
         cmd.args([
-            "shell",
-            &format!("CLASSPATH={DEVICE_JAR}"),
-            DEVICE_SU,
             "app_process",
             "/",
             "com.genymobile.scrcpy.Server",
@@ -600,6 +626,17 @@ fn launcher(out: &str, app: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The `WxH` of `wm size` output, its override size before its physical size.
+fn wm_size(out: &str) -> Option<(i32, i32)> {
+    let size = |label: &str| {
+        out.lines()
+            .find_map(|l| l.trim().strip_prefix(label))
+            .and_then(|v| v.trim().split_once('x'))
+            .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+    };
+    size("Override size:").or_else(|| size("Physical size:"))
+}
+
 /// A scrcpy SET_CLIPBOARD message that pastes `text` and asks for an acknowledgement of `sequence`.
 fn clipboard_message(text: &str, sequence: u64) -> Vec<u8> {
     let mut msg = Vec::with_capacity(14 + text.len());
@@ -692,5 +729,16 @@ mod tests {
         );
         let mut other: &[u8] = &[0, 0, 0, 0, 2, b'h', b'i'];
         assert!(read_ack(&mut other, 7).await.is_err());
+    }
+
+    #[test]
+    fn the_screen_is_the_override_size_before_the_physical_one() {
+        assert_eq!(wm_size("Physical size: 720x1280\n"), Some((720, 1280)));
+        assert_eq!(
+            wm_size("Physical size: 1080x2400\r\nOverride size: 720x1600\r\n"),
+            Some((720, 1600))
+        );
+        assert_eq!(wm_size("Physical size: ?\n"), None);
+        assert_eq!(wm_size(""), None);
     }
 }
