@@ -55,6 +55,10 @@ const STILL_MAX: Duration = Duration::from_secs(5);
 const STILL_HOLD: Duration = Duration::from_millis(40);
 const STILL_POLL: Duration = Duration::from_millis(10);
 const STILL_EDGE: u32 = 320;
+const RUN_CHARS: usize = 8;
+const TYPE_SETTLE: Duration = Duration::from_millis(100);
+const TYPE_POLL: Duration = Duration::from_millis(10);
+const TYPE_TAIL: usize = 16;
 
 type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
 
@@ -239,12 +243,23 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             keys: a.keys,
             menus: a.menus,
         };
-        let (window, pid) = (a.window, a.pid);
+        let (window, pid, id) = (a.window, a.pid, a.id);
         let allow = self.allow.clone();
         let (tree, found) = self
             .access
             .run(TREE_LIMIT, (), move |b| {
-                let frame = live(allow.pick(frames(b, pid, &allow)?, window.as_deref(), pid)?)?;
+                let listed = frames(b, pid, &allow)?;
+                let frame = live(match id {
+                    Some(id) => {
+                        let f = listed
+                            .into_iter()
+                            .find(|f| f.id == id)
+                            .ok_or_else(|| format!("no window {id}"))?;
+                        allow.check(f.app.as_deref())?;
+                        f
+                    }
+                    None => allow.pick(listed, window.as_deref(), pid)?,
+                })?;
                 let found = started.elapsed().as_micros();
                 Ok((b.tree(&frame, extras)?, found))
             })
@@ -315,9 +330,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn press(&self, id: String, turn: Option<Turn>) -> Result<String, String> {
+        let linux = self.os == Os::Linux;
         match self
             .access
-            .run(TREE_LIMIT, turn, move |b| plan_press(b, &id))
+            .run(TREE_LIMIT, turn, move |b| plan_press(b, &id, linux))
             .await?
         {
             Press::Selected => Ok(json!({"ok": true, "how": "select"}).to_string()),
@@ -413,6 +429,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     .await?;
             }
             let line = line.trim_end_matches('\r');
+            if self.os == Os::Linux {
+                for run in text_runs(line) {
+                    self.driver
+                        .call("type_text", desktop(json!({"text": run})))
+                        .await?;
+                }
+                continue;
+            }
             if self.os == Os::Mac {
                 if !line.is_empty() {
                     self.driver
@@ -429,7 +453,51 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 self.driver.call(tool, desktop(req)).await?;
             }
         }
+        if self.os == Os::Linux {
+            self.typed(text).await;
+        }
         Ok(json!({"ok": true, "chars": text.chars().count()}).to_string())
+    }
+
+    /// Waits at most [`TYPE_SETTLE`] until the focused element of the focused window holds the end of the last line typed, since an app reads typed keys after the input call returns.
+    async fn typed(&self, text: &str) {
+        let Some(tail) = typed_tail(text) else {
+            return;
+        };
+        let allow = self.allow.clone();
+        let _ = tokio::time::timeout(TYPE_SETTLE, async {
+            let focused = self
+                .access
+                .run(CALL_LIMIT, (), move |b| {
+                    let frame = allow.pick(b.frames()?, None, None)?;
+                    let tree = b.tree(&frame, Extras::default())?;
+                    Ok(tree.nodes.into_iter().find(|n| n.has("focused")))
+                })
+                .await?;
+            let Some(node) = focused else {
+                return Ok(());
+            };
+            loop {
+                let (id, tail) = (node.id.clone(), tail.clone());
+                let values = Extras {
+                    values: true,
+                    ..Extras::default()
+                };
+                let holds = self
+                    .access
+                    .run(CALL_LIMIT, (), move |b| {
+                        Ok(b.node(&id, values, READ_CHARS)?
+                            .value
+                            .is_some_and(|v| v.contains(&tail)))
+                    })
+                    .await?;
+                if holds {
+                    return Ok::<(), String>(());
+                }
+                tokio::time::sleep(TYPE_POLL).await;
+            }
+        })
+        .await;
     }
 
     async fn click(&self, a: ClickArgs) -> Result<String, String> {
@@ -515,7 +583,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.check_point(x, y, under.as_ref()).await
     }
 
-    /// Wheel notches at a screen point; without one, scroll keys to the front app window (the driver's topmost, or the one an allowlist picks and checks), or on Windows, whose apps drop posted scroll keys, wheel notches at its center.
+    /// Wheel notches at a screen point; without one, scroll keys to the front app window on macOS (the driver's topmost, or the one an allowlist picks and checks), and elsewhere wheel notches at its center, the window of the focused app on Linux.
     async fn scroll(&self, a: ScrollArgs) -> Result<String, String> {
         let mut req =
             json!({"direction": a.direction, "amount": a.amount.unwrap_or(SCROLL_AMOUNT)});
@@ -523,7 +591,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             (Some(x), Some(y)) => (x, y),
             (None, None) => {
                 let target = self.front_window().await?;
-                if self.os != Os::Windows {
+                if self.os == Os::Mac {
                     req["pid"] = target["pid"].clone();
                     req["window_id"] = target["window_id"].clone();
                     req["session"] = WINDOW_SESSION.into();
@@ -551,7 +619,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn front_window(&self) -> Result<Value, String> {
-        let picked = if self.allow.is_open() {
+        let picked = if self.allow.is_open() && self.os != Os::Linux {
             None
         } else {
             let allow = self.allow.clone();
@@ -564,7 +632,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.on_screen()
             .await?
             .into_iter()
-            .filter(|w| w["layer"] == 0)
+            .filter(|w| layer(w) == 0)
             .filter(|w| {
                 picked.as_ref().is_none_or(|(pid, _)| {
                     pid.is_some_and(|p| w["pid"].as_u64() == Some(u64::from(p)))
@@ -697,7 +765,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let point = (x / scale, y / scale);
         let top = listed
             .iter()
-            .filter(|w| w["layer"] == 0)
+            .filter(|w| layer(w) == 0)
             .filter(|w| {
                 let [bx, by, bw, bh] = bounds(w);
                 point.0 >= bx && point.0 < bx + bw && point.1 >= by && point.1 < by + bh
@@ -887,6 +955,32 @@ fn live(frame: Frame) -> Result<Frame, String> {
     Ok(frame)
 }
 
+/// Runs of `text` with at most [`RUN_CHARS`] distinct non-ASCII characters; the Linux driver binds a spare keycode to each for the call and has fewer than 20 to lend.
+fn text_runs(text: &str) -> Vec<&str> {
+    let (mut runs, mut start, mut seen) = (Vec::new(), 0, Vec::new());
+    for (i, c) in text.char_indices() {
+        if c.is_ascii() || seen.contains(&c) {
+            continue;
+        }
+        if seen.len() == RUN_CHARS {
+            runs.push(&text[start..i]);
+            (start, seen) = (i, Vec::new());
+        }
+        seen.push(c);
+    }
+    if start < text.len() {
+        runs.push(&text[start..]);
+    }
+    runs
+}
+
+/// The last characters of the last line of `text`, which a field holds once it has read the typing.
+fn typed_tail(text: &str) -> Option<String> {
+    let line = text.rsplit('\n').next()?.trim_end_matches('\r');
+    let n = line.chars().count();
+    (n > 0).then(|| line.chars().skip(n.saturating_sub(TYPE_TAIL)).collect())
+}
+
 fn key_request(mut keys: Vec<String>) -> (&'static str, Value) {
     let mut req = json!({});
     if keys.len() == 1
@@ -897,6 +991,11 @@ fn key_request(mut keys: Vec<String>) -> (&'static str, Value) {
     }
     req["keys"] = keys.into();
     ("hotkey", req)
+}
+
+/// A driver window's layer, 0 when the driver gives none, as on Linux.
+fn layer(w: &Value) -> i64 {
+    w["layer"].as_i64().unwrap_or(0)
 }
 
 fn bounds(w: &Value) -> [f64; 4] {
@@ -1223,7 +1322,7 @@ pub(crate) mod tests {
             pid: Some(pid),
             active,
             app: app.map(str::to_owned),
-            stale: false,
+            ..Frame::default()
         }
     }
 
@@ -1698,6 +1797,56 @@ pub(crate) mod tests {
                     json!({"text": "b", "scope": "desktop"})
                 ),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn linux_keys_take_keysym_names_and_text_goes_in_runs_of_eight_new_characters() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(notepad()), Recorder(calls.clone()), Os::Linux);
+        desk.run("desk_key", json!({"keys": "Super_L+ctrl++"}))
+            .await
+            .unwrap();
+        desk.run("desk_type", json!({"text": "一二三四五六七八九十\nok"}))
+            .await
+            .unwrap();
+        let got = calls.lock().unwrap().clone();
+        assert_eq!(
+            got,
+            [
+                (
+                    "hotkey".to_owned(),
+                    json!({"keys": ["super", "ctrl", "plus"], "scope": "desktop"})
+                ),
+                (
+                    "type_text".to_owned(),
+                    json!({"text": "一二三四五六七八", "scope": "desktop"})
+                ),
+                (
+                    "type_text".to_owned(),
+                    json!({"text": "九十", "scope": "desktop"})
+                ),
+                (
+                    "press_key".to_owned(),
+                    json!({"key": "return", "scope": "desktop"})
+                ),
+                (
+                    "type_text".to_owned(),
+                    json!({"text": "ok", "scope": "desktop"})
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_run_repeats_a_character_freely_and_the_typed_tail_is_the_last_line_end() {
+        assert_eq!(text_runs("éé abc é"), ["éé abc é"]);
+        assert_eq!(text_runs(""), Vec::<&str>::new());
+        assert_eq!(typed_tail("x\r\nhello").as_deref(), Some("hello"));
+        assert_eq!(typed_tail("line\n"), None);
+        assert_eq!(
+            typed_tail("abcdefghijklmnopqrstuvwxyz").as_deref(),
+            Some("klmnopqrstuvwxyz")
         );
     }
 

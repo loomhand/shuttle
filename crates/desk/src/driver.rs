@@ -1,7 +1,8 @@
 //! cua-driver client: one line of JSON each way over its daemon socket, a named pipe on Windows.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -12,6 +13,8 @@ pub const WINDOW_SESSION: &str = "desk-window";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SESSION: &str = "desk";
 const ENDED: &str = "session has ended";
+const CLICK_SPACING: Duration = Duration::from_millis(500);
+const CLICK_DISTANCE: f64 = 16.0;
 
 /// The driver calls the desk makes: input, windows, launch and capture.
 pub trait Input {
@@ -19,11 +22,13 @@ pub trait Input {
     fn call(&self, tool: &str, args: Value) -> impl Future<Output = Result<Value, String>> + Send;
 }
 
-/// A client of the cua-driver daemon at `endpoint`, in a desktop session, or the window session a call names.
+/// A client of the cua-driver daemon at `endpoint`, in a desktop session, or the window session a call names; on Linux each call runs in a session of its own.
 #[derive(Debug)]
 pub struct Driver {
     endpoint: String,
     started: [AtomicBool; 2],
+    calls: AtomicU64,
+    last_click: Mutex<Option<(Instant, f64, f64)>>,
 }
 
 impl Driver {
@@ -31,6 +36,8 @@ impl Driver {
         Self {
             endpoint,
             started: [AtomicBool::new(false), AtomicBool::new(false)],
+            calls: AtomicU64::new(0),
+            last_click: Mutex::new(None),
         }
     }
 
@@ -57,6 +64,23 @@ impl Driver {
         .await?;
         self.started[usize::from(window)].store(true, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Waits out [`CLICK_SPACING`] after a click within [`CLICK_DISTANCE`] of this one, so two clicks never make a double click.
+    async fn space_click(&self, (x, y): (f64, f64)) {
+        let wait = self
+            .last_click()
+            .filter(|(_, lx, ly)| (x - lx).hypot(y - ly) <= CLICK_DISTANCE)
+            .map(|(at, _, _)| CLICK_SPACING.saturating_sub(at.elapsed()));
+        if let Some(wait) = wait {
+            tokio::time::sleep(wait).await;
+        }
+    }
+
+    fn last_click(&self) -> std::sync::MutexGuard<'_, Option<(Instant, f64, f64)>> {
+        self.last_click
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     async fn send(&self, tool: &str, args: &Value) -> Result<Value, String> {
@@ -95,6 +119,27 @@ impl Driver {
 
 impl Input for Driver {
     async fn call(&self, tool: &str, mut args: Value) -> Result<Value, String> {
+        if cfg!(target_os = "linux") {
+            // the Linux driver keeps a session's last capture scale and a master keyboard that Chrome's core-keyboard input loses to
+            let once = format!(
+                "desk-{}-{}",
+                std::process::id(),
+                self.calls.fetch_add(1, Ordering::Relaxed)
+            );
+            args["session"] = once.as_str().into();
+            let point = (tool == "click")
+                .then(|| args["x"].as_f64().zip(args["y"].as_f64()))
+                .flatten();
+            if let Some(point) = point {
+                self.space_click(point).await;
+            }
+            let done = self.send(tool, &args).await;
+            if let Some((x, y)) = point {
+                *self.last_click() = Some((Instant::now(), x, y));
+            }
+            let _ = self.send("end_session", &json!({"session": once})).await;
+            return done;
+        }
         let window = args["session"] == WINDOW_SESSION;
         if !window {
             args["session"] = SESSION.into();
@@ -187,7 +232,7 @@ mod tests {
         assert!(result("click", "").is_err());
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn the_first_call_starts_a_desktop_session_and_an_ended_one_starts_again() {
         let dir = tempfile::tempdir().unwrap();
@@ -225,5 +270,52 @@ mod tests {
                 "press_key"
             ]
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn on_linux_each_call_runs_in_a_session_of_its_own_and_ends_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let ok = b"{\"ok\":true,\"result\":{\"structuredContent\":{\"width\":1280}}}\n";
+        let daemon = tokio::spawn(async move {
+            let mut lines = Vec::new();
+            for _ in 0..4 {
+                let (s, _) = listener.accept().await.unwrap();
+                let mut s = BufReader::new(s);
+                let mut line = String::new();
+                s.read_line(&mut line).await.unwrap();
+                s.get_mut().write_all(ok).await.unwrap();
+                lines.push(serde_json::from_str::<Value>(&line).unwrap());
+            }
+            lines
+        });
+        let d = Driver::new(socket.to_string_lossy().into_owned());
+        d.call("get_screen_size", json!({})).await.unwrap();
+        d.call("press_key", json!({"key": "a"})).await.unwrap();
+        let lines = daemon.await.unwrap();
+        let names: Vec<&Value> = lines.iter().map(|l| &l["name"]).collect();
+        assert_eq!(
+            names,
+            ["get_screen_size", "end_session", "press_key", "end_session"]
+        );
+        let sessions: Vec<&Value> = lines.iter().map(|l| &l["args"]["session"]).collect();
+        assert_eq!(sessions[0], sessions[1]);
+        assert_eq!(sessions[2], sessions[3]);
+        assert_ne!(sessions[0], sessions[2]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(start_paused = true)]
+    async fn a_click_near_the_last_one_waits_out_the_spacing() {
+        let d = Driver::new(String::new());
+        *d.last_click() = Some((Instant::now(), 100.0, 100.0));
+        let started = tokio::time::Instant::now();
+        d.space_click((110.0, 100.0)).await;
+        assert_eq!(started.elapsed(), CLICK_SPACING);
+        let started = tokio::time::Instant::now();
+        d.space_click((300.0, 100.0)).await;
+        assert_eq!(started.elapsed(), Duration::ZERO);
     }
 }

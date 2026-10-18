@@ -175,7 +175,7 @@ impl Ax {
                         pid: Some(p as u32),
                         active,
                         app: name.clone(),
-                        stale: false,
+                        ..Frame::default()
                     });
                     active = false;
                 }
@@ -192,7 +192,7 @@ impl Ax {
                     pid: Some(p as u32),
                     active,
                     app: name.clone(),
-                    stale: false,
+                    ..Frame::default()
                 });
             }
             self.last.insert(p, frames[from..].to_vec());

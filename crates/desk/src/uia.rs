@@ -278,7 +278,7 @@ impl Uia {
             pid: Some(s.pid),
             active: s.hwnd == foreground,
             app,
-            stale: false,
+            ..Frame::default()
         })
     }
 }
