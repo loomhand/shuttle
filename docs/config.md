@@ -34,6 +34,7 @@ decisions_url = "https://openrouter.ai/api/alpha/decisions"
 api_key_env = "OPENROUTER_API_KEY"
 timeout_ms = 60000
 decide_api = "decisions"                                 # decisions | chat
+# decide_build = "typesafe/jev-1.14-########"           # only these builds may answer decide and verify
 
 [models]
 decide = "typesafe/jev-1.14"
@@ -45,6 +46,7 @@ ask = "anthropic/claude-sonnet-5"
 - shuttle makes two calls, both non-streaming: `POST {base_url}/chat/completions` for `ask`, `ground`, `decide` and `verify` with `decide_api = "chat"`, and `POST {decisions_url}` with `{model, state, questions}` for `decide` and `verify` with `decide_api = "decisions"`. Chat bodies carry `max_tokens` (100 for `ground`, 400 for `ask`, 800 for `decide` over chat), which OpenRouter accepts for every model.
 - **A local server** (vLLM, llama.cpp, Ollama's OpenAI API): set `base_url` to its `/v1` root, `decide_api = "chat"` and the model names it serves. A server without a key needs none: with no key shuttle sends no `Authorization` header.
 - **Your own gateway**: set `base_url` to its OpenAI-compatible root and `decisions_url` to its decisions route, such as `base_url = "https://gw.example/v1"` and `decisions_url = "https://gw.example/v1/decisions"`.
+- `decide_build` pins the builds a `decide` or `verify` answer may come from: `#` stands for one digit and every other character for itself, so `typesafe/jev-1.14-########` takes any dated jev-1.14 build and refuses an alias or another version. The build is the `model` the endpoint names in its reply; with the key set, an answer that names none, or another, fails the call with that build in the error. Unset, any build answers.
 - `timeout_ms` bounds each call; every screenshot judgment (`desk.look`, the `verify` role) caps it at 5 s. One call is one request: shuttle does not retry it.
 
 ### `decide` without a decisions endpoint

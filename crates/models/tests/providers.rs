@@ -194,6 +194,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn with_a_decide_build_pattern_only_a_matching_build_answers() {
+        let ask = || DecideArgs {
+            state: json!("a window"),
+            questions: questions(json!({"on": {"type": "noul", "instructions": "On?"}})),
+            image: false,
+            timeout_ms: None,
+        };
+        let answer = |model: Option<&str>| {
+            let mut r = json!({"id": "gen-1", "answers": {"on": {"type": "noul", "noul": 0.9}}});
+            if let Some(m) = model {
+                r["model"] = m.into();
+            }
+            r
+        };
+        let pinned = |base: &str| Config {
+            decide_build: Some("typesafe/jev-1.14-########".to_owned()),
+            ..gateway(base)
+        };
+        let (base, _) = fake(answer(Some("typesafe/jev-1.14-20261014"))).await;
+        let out = Models::new(pinned(&base)).decide(ask()).await.unwrap();
+        assert_eq!(
+            out.served.build.as_deref(),
+            Some("typesafe/jev-1.14-20261014")
+        );
+        for served in [
+            Some("typesafe/jev-1.13-20260917"),
+            Some("typesafe/jev-1.14"),
+            None,
+        ] {
+            let (base, _) = fake(answer(served)).await;
+            let err = Models::new(pinned(&base)).decide(ask()).await.unwrap_err();
+            assert!(
+                err.contains(&format!("{:?}", served.unwrap_or_default()))
+                    && err.contains("########"),
+                "{err}"
+            );
+            assert!(Models::new(gateway(&base)).decide(ask()).await.is_ok());
+        }
+    }
+
+    #[tokio::test]
     async fn decide_over_chat_asks_for_the_same_json_without_a_key() {
         let (base, seen) =
             fake(json!({"model": "local-vl", "choices": [{"message": {"content": "{\"on\": {\"noul\": 0.2}}"}}]}))

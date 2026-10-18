@@ -46,10 +46,19 @@ impl Models {
             _ => &roles.decide,
         };
         let timeout = self.timeout(args.timeout_ms);
-        match self.config.decide_api {
+        let decided = match self.config.decide_api {
             DecideApi::Decisions => decide::decisions(self, model, &args, timeout).await,
             DecideApi::Chat => decide::over_chat(self, model, &args, timeout).await,
+        }?;
+        if let Some(pattern) = &self.config.decide_build {
+            let build = decided.served.build.as_deref().unwrap_or_default();
+            if !build_matches(build, pattern) {
+                return Err(format!(
+                    "{model} answered from build {build:?}, not one of {pattern}"
+                ));
+            }
         }
+        Ok(decided)
     }
 
     /// `model_ask`: a vision model's answer about PNG images.
@@ -283,9 +292,39 @@ fn failed(model: &str, e: reqwest::Error) -> String {
     out
 }
 
+/// Whether `build` fits `pattern`, where `#` stands for one ASCII digit and every other character for itself.
+fn build_matches(build: &str, pattern: &str) -> bool {
+    build.len() == pattern.len()
+        && build.bytes().zip(pattern.bytes()).all(|(b, p)| {
+            if p == b'#' {
+                b.is_ascii_digit()
+            } else {
+                b == p
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_build_pattern_takes_any_digits_where_it_says_hash_and_nothing_else() {
+        let p = "typesafe/jev-1.14-########";
+        assert!(build_matches("typesafe/jev-1.14-20261014", p));
+        assert!(build_matches("typesafe/jev-1.14-20270101", p));
+        for other in [
+            "typesafe/jev-1.14",
+            "typesafe/jev-1.13-20260917",
+            "typesafe/jev-1.14-2026101",
+            "typesafe/jev-1.14-202610140",
+            "typesafe/jev-1.14-2026101x",
+            "~typesafe/jev-latest",
+            "",
+        ] {
+            assert!(!build_matches(other, p), "{other}");
+        }
+    }
 
     fn area(left: f64, top: f64, width: f64, height: f64) -> Area {
         Area {
