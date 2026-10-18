@@ -22,7 +22,7 @@ function editor(opens: Record<string, Shown> = {}, start: Shown = { title: 'a.tx
   return { calls, answer }
 }
 
-for (const step of [{ key: 'down' }, { key: 'tab' }, { key: 'shift+a' }, { type: 'abc' }]) {
+for (const step of [{ key: 'down' }, { key: 'shift+a' }, { type: 'abc' }]) {
   test(`a plan that ends with ${JSON.stringify(step)}, which opens no window, skips the end-of-plan wait`, async (t) => {
     const d = editor()
     const server = await toolhost(d.answer)
@@ -30,11 +30,11 @@ for (const step of [{ key: 'down' }, { key: 'tab' }, { key: 'shift+a' }, { type:
     const r = await main({ steps: [step] })
     assert.equal(r.ok, true, JSON.stringify(r))
     const act = d.calls.findLastIndex((c) => c.startsWith('key ') || c === 'desk_type')
-    assert.ok(!d.calls.slice(act).includes('wait'), d.calls.join(' '))
+    assert.equal(d.calls.indexOf('wait', act), -1, d.calls.join(' '))
   })
 }
 
-for (const [step, key, title] of [[{ key: 'ctrl+o' }, 'ctrl+o', 'Open'], [{ key: 'alt+f4' }, 'alt+f4', 'Save changes?'], [{ type: 'a\nb' }, 'Return', 'Confirm']] as const) {
+for (const [step, key, title] of [[{ key: 'ctrl+o' }, 'ctrl+o', 'Open'], [{ key: 'alt+f4' }, 'alt+f4', 'Save changes?'], [{ type: 'a\nb' }, 'Return', 'Confirm'], [{ key: 'tab' }, 'tab', 'Invalid value'], [{ key: 'shift+tab' }, 'shift+tab', 'Invalid value']] as const) {
   test(`a plan that ends with ${JSON.stringify(step)} still waits for the dialog it opens late and reports it`, async (t) => {
     const d = editor({ [key]: { title, role: 'dialog' } })
     const server = await toolhost(d.answer)
