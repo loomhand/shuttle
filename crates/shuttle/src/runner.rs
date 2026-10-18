@@ -387,12 +387,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_packaged_runtime_runs_its_stripped_modules_for_scripts_and_plans() {
+    async fn a_packaged_runtime_runs_its_stripped_modules_and_keeps_the_sources_importable() {
         let dir = tempfile::tempdir().unwrap();
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for e in std::fs::read_dir(root.join("runtime/lib")).unwrap() {
+            let e = e.unwrap();
+            std::fs::copy(e.path(), dir.path().join(e.file_name())).unwrap();
+        }
         let built = std::process::Command::new("node")
             .arg(root.join("packaging/runtime.mjs"))
-            .arg(root.join("runtime/lib"))
+            .arg(dir.path())
             .arg(dir.path())
             .status()
             .unwrap();
@@ -402,7 +406,19 @@ mod tests {
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .collect();
         names.sort();
-        assert_eq!(names, ["desk.mjs", "entry.mjs", "gui_plan.mjs", "png.mjs"]);
+        assert_eq!(
+            names,
+            [
+                "desk.mjs",
+                "desk.mts",
+                "entry.mjs",
+                "entry.mts",
+                "gui_plan.mjs",
+                "gui_plan.mts",
+                "png.mjs",
+                "png.mts"
+            ]
+        );
         let r = Runner::new(
             "node".into(),
             dir.path().to_path_buf(),
@@ -410,12 +426,16 @@ mod tests {
             dir.path().join("flows"),
             Vec::new(),
         );
-        let code = "export function main(p: { n: number }): string { return `${p.n} ${typeof globalThis.desk.windows}` }";
+        let code = "import { basename } from 'node:path'\nimport { pathToFileURL } from 'node:url'\nexport async function main(p: { n: number }): Promise<unknown[]> {\n  const own = await import(pathToFileURL(process.argv[1]!.replace(/entry\\.mjs$/, 'desk.mts')).href)\n  return [p.n, basename(process.argv[1]!), typeof globalThis.desk.windows, typeof own.windows]\n}";
         let report = r
             .script(json!({"code": code, "params": {"n": 1}}), "run-test")
             .await
             .unwrap();
-        assert_eq!(report["result"], "1 function", "{report}");
+        assert_eq!(
+            report["result"],
+            json!([1, "entry.mjs", "function", "function"]),
+            "{report}"
+        );
         let plan = r.plan(json!({"steps": []}), "run-test").await.unwrap();
         assert_eq!(plan["error"], "pass steps, flow or find", "{plan}");
     }

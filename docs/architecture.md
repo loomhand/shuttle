@@ -13,7 +13,7 @@ cocoon-shuttle serve ─────── one per user; owns the desktop, the m
   ├── desk verbs ─────────── AX (macOS), UI Automation (Windows), AT-SPI (Linux, P3)
   ├── cua-driver ─────────── the bundled driver, a child on the daemon's own socket or pipe: input, window focus, launch, capture
   └── node ───────────────── child process per gui_plan / script_run, running the runtime;
-                             desk.mjs calls back over the same desk wire
+                             desk.mts (desk.mjs in the archives) calls back over the same desk wire
 ```
 
 - **`cocoon-shuttle mcp`** speaks MCP to the agent and forwards the `desk` and `screenshot` tools to the daemon, starting it when nothing listens (from an app bundle through `open -n -g -a`, a new instance, since a bundled cua-driver already counts as the running app; else as a detached `serve`). A call that may have reached the daemon is never sent twice. `gui_plan` and `script_run` go there too: the daemon runs them on the bundled Node with `TOOLHOST_SOCKET` naming its endpoint, so the runtime's desk and model calls come back to it.

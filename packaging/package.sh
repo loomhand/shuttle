@@ -30,9 +30,10 @@ licenses() {
 	cp "$3/THIRD_PARTY_NOTICES.md" "$1/cua-driver-THIRD_PARTY_NOTICES.md"
 }
 
-# runtime NODE DIR: the runtime with its types stripped, so no run loads Node's type stripper
+# runtime NODE DIR: the runtime sources and, next to them, their .mjs with the types stripped, which the runner prefers
 runtime() {
-	"$1" --disable-warning=ExperimentalWarning "$ROOT/packaging/runtime.mjs" "$ROOT/runtime/lib" "$2"
+	cp -R "$ROOT/runtime/lib" "$2"
+	"$1" --disable-warning=ExperimentalWarning "$ROOT/packaging/runtime.mjs" "$2" "$2"
 }
 
 node=$("$ROOT/packaging/fetch.sh" "$PLATFORM" node "$WORK")
