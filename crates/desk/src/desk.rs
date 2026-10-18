@@ -2062,6 +2062,40 @@ pub(crate) mod tests {
         }
     }
 
+    struct Renamed(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for Renamed {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Notepad"},
+                    {"pid": 4, "window_id": 3, "layer": 0, "z_index": 3, "title": "Find"},
+                    {"pid": 8, "window_id": 2, "layer": 0, "z_index": 5, "title": "Inbox"}
+                ]}}),
+                _ => json!({}),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_checked_window_the_driver_titles_differently_falls_back_to_its_apps_topmost_window()
+    {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk =
+            Desk::new(|| Ok(Apps), Renamed(calls.clone()), Os::Windows).allow(&["notepad".into()]);
+        desk.run("desk_scroll", json!({"direction": "down"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            calls.lock().unwrap().last().cloned().unwrap(),
+            (
+                "scroll".to_owned(),
+                json!({"direction": "down", "amount": 3, "pid": 4, "window_id": 3})
+            )
+        );
+    }
+
     #[tokio::test]
     async fn a_scroll_wheels_at_its_point_or_keys_the_front_window_and_a_drag_spans_two_points() {
         let calls = Arc::new(Mutex::new(Vec::new()));
