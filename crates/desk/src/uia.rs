@@ -1,6 +1,7 @@
 //! The Windows desk backend: Win32 top-level windows and window trees from one cached UIA request; ids are runtime ids.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
@@ -156,7 +157,7 @@ impl Uia {
         extras: Extras,
         chars: usize,
     ) -> Result<Node, String> {
-        let mut r = raw(el);
+        let mut r = raw(el, extras);
         let kind = Kind {
             control_type: r.control_type,
             named: !r.name.is_empty(),
@@ -168,15 +169,12 @@ impl Uia {
         let mapped = uia_roles::role(kind);
         let role = mapped.unwrap_or("generic");
         let [x, y, w, h] = r.bounds;
-        let value = if extras.values {
-            r.value
-                .take()
-                .filter(|v| !v.is_empty())
-                .or_else(|| r.range.map(format_number))
-                .map(|v| v.chars().take(chars).collect::<String>())
-        } else {
-            None
-        };
+        let value = r
+            .value
+            .take()
+            .filter(|v| !v.is_empty())
+            .or_else(|| r.range.map(format_number))
+            .map(|v| v.chars().take(chars).collect::<String>());
         Ok(Node {
             id: self.id_of(el)?,
             role,
@@ -187,14 +185,8 @@ impl Uia {
             description: r.help.clone(),
             states: uia_roles::states(role, r.facts()),
             value,
-            shortcut: extras
-                .keys
-                .then(|| uia_combo(&r.accel, Os::Windows))
-                .flatten(),
-            mnemonic: extras
-                .keys
-                .then(|| uia_combo(&r.access, Os::Windows))
-                .flatten(),
+            shortcut: uia_combo(&r.accel, Os::Windows),
+            mnemonic: uia_combo(&r.access, Os::Windows),
             bounds: (extras.bounds && !r.offscreen && w > 0 && h > 0 && is_active(role))
                 .then_some([x, y, w, h]),
             ..Node::default()
@@ -234,7 +226,7 @@ impl Uia {
         if self.tops.get(&key).is_none_or(|t| t.pid != s.pid) {
             // SAFETY: `self.auto` and `self.top` are live UIA objects of this thread; a stale handle fails.
             let el = unsafe { self.auto.ElementFromHandleBuildCache(s.hwnd, &self.top) }.ok()?;
-            let r = raw(&el);
+            let r = raw(&el, Extras::default());
             let top = Top {
                 pid: s.pid,
                 control_type: r.control_type,
@@ -592,7 +584,7 @@ fn request(
     }
 }
 
-fn raw(el: &IUIAutomationElement) -> Raw {
+fn raw(el: &IUIAutomationElement, extras: Extras) -> Raw {
     let int = |p| match value(el, p) {
         Val::Int(i) => Some(i),
         _ => None,
@@ -628,8 +620,16 @@ fn raw(el: &IUIAutomationElement) -> Raw {
             rect.right - rect.left,
             rect.bottom - rect.top,
         ],
-        accel: text(UIA_AcceleratorKeyPropertyId),
-        access: text(UIA_AccessKeyPropertyId),
+        accel: if extras.keys {
+            text(UIA_AcceleratorKeyPropertyId)
+        } else {
+            String::new()
+        },
+        access: if extras.keys {
+            text(UIA_AccessKeyPropertyId)
+        } else {
+            String::new()
+        },
         toggle: toggles
             .then(|| int(UIA_ToggleToggleStatePropertyId))
             .flatten(),
@@ -639,14 +639,14 @@ fn raw(el: &IUIAutomationElement) -> Raw {
         selected: selects
             .then(|| boolean(UIA_SelectionItemIsSelectedPropertyId))
             .flatten(),
-        value: match values.then(|| value(el, UIA_ValueValuePropertyId)) {
+        value: match (values && extras.values).then(|| value(el, UIA_ValueValuePropertyId)) {
             Some(Val::Text(s)) => Some(s),
             _ => None,
         },
         read_only: values
             .then(|| boolean(UIA_ValueIsReadOnlyPropertyId))
             .flatten(),
-        range: match ranges.then(|| value(el, UIA_RangeValueValuePropertyId)) {
+        range: match (ranges && extras.values).then(|| value(el, UIA_RangeValueValuePropertyId)) {
             Some(Val::Real(f)) => Some(f),
             _ => None,
         },
@@ -744,8 +744,9 @@ fn owned_dialog(el: &IUIAutomationElement) -> bool {
     if raw_control_type(el) != WINDOW {
         return false;
     }
-    let r = raw(el);
-    r.dialog || r.modal
+    let flag = |p| matches!(value(el, p), Val::Bool(true));
+    flag(UIA_IsDialogPropertyId)
+        || flag(UIA_IsWindowPatternAvailablePropertyId) && flag(UIA_WindowIsModalPropertyId)
 }
 
 fn raw_control_type(el: &IUIAutomationElement) -> i32 {
@@ -809,15 +810,18 @@ fn runtime_id(el: &IUIAutomationElement) -> Result<String, String> {
             SafeArrayGetLBound(ids, 1).unwrap_or(0),
             SafeArrayGetUBound(ids, 1).unwrap_or(-1),
         );
-        let mut parts = Vec::new();
+        let mut id = String::new();
         for i in lo..=hi {
             let mut part = 0i32;
             if SafeArrayGetElement(ids, &i, (&raw mut part).cast()).is_ok() {
-                parts.push(part.to_string());
+                if !id.is_empty() {
+                    id.push('-');
+                }
+                let _ = write!(id, "{part}");
             }
         }
         let _ = SafeArrayDestroy(ids);
-        Ok(parts.join("-"))
+        Ok(id)
     }
 }
 

@@ -201,7 +201,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .run(CALL_LIMIT, (), move |b| match target {
                 Target::Element(id) => {
                     let pid = b.pid_of(&id)?;
-                    allow.check_pid(&b.frames()?, pid)
+                    allow.check_pid(&pid.map_or(Ok(Vec::new()), |p| b.frames_of(p))?, pid)
                 }
                 Target::Focused => allow.pick(b.frames()?, None, None).map(drop),
             })
@@ -436,7 +436,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     };
                     if !allow.is_open() {
                         let pid = b.pid_of(&item)?;
-                        allow.check_pid(&b.frames()?, pid)?;
+                        allow.check_pid(&pid.map_or(Ok(Vec::new()), |p| b.frames_of(p))?, pid)?;
                     }
                     if b.act(&item, Act::Action)? {
                         Ok(true)
@@ -837,13 +837,10 @@ fn plan_press<B: Access>(b: &mut B, id: &str) -> Result<Press, String> {
 }
 
 fn open_menus<B: Access>(b: &mut B, chain: &[String]) -> bool {
-    let roles: Vec<&'static str> = chain
+    let start = chain
         .iter()
         .map(|id| b.node(id, Extras::default(), 0).map_or("", |n| n.role))
-        .collect();
-    let start = roles
-        .iter()
-        .rposition(|r| *r != "menu")
+        .rposition(|r| r != "menu")
         .map_or(0, |i| i + 1);
     for menu in &chain[start..] {
         let _ = b.act(menu, Act::Action);
@@ -881,7 +878,7 @@ fn reachable<B: Access>(b: &mut B, id: &str, node: &Node, chain: &[String]) -> O
 fn outline(nodes: &[Node], max_chars: usize) -> String {
     let mut out = String::new();
     for n in nodes {
-        let _ = write!(out, "{}- {}", "  ".repeat(n.depth), n.role);
+        let _ = write!(out, "{:indent$}- {}", "", n.role, indent = n.depth * 2);
         if !n.name.is_empty() {
             let _ = write!(out, " \"{}\"", quote(&n.name, max_chars));
         }
