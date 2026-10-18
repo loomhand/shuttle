@@ -11,6 +11,7 @@
   - `desk computer_act` is a desk action: `confirm` and the turn apply to it;
   - `launch` takes only package and component names;
   - an `[android]` section with a nonempty `[safety] apps` fails to load, since the device desk enforces no allowlist yet.
+  - the screen size comes from `wm size` in its natural orientation; `su` is optional, and without it the paste runs as adb's shell uid, which takes the upstream scrcpy server; a device without `uiautomator.jar` says so.
 
   Tested on redroid 16; a stock phone is untested.
 
