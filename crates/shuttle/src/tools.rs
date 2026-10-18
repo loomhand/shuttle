@@ -9,9 +9,9 @@ use crate::{NAME, VERSION, proxy};
 /// The built-in MCP tools, whose names no plugin may take.
 pub const NAMES: [&str; 5] = ["gui_plan", "script_run", "desk", "screenshot", "status"];
 
-pub const DESK_VERBS: [&str; 16] = [
+pub const DESK_VERBS: [&str; 19] = [
     "windows", "wait", "snapshot", "find", "read", "press", "act", "at", "key", "type", "click",
-    "focus", "close", "launch", "shot", "screen",
+    "scroll", "drag", "still", "focus", "close", "launch", "shot", "screen",
 ];
 
 /// The result of `tools/list`: the built-in tools, then `plugins` with `script_run`'s arguments.
@@ -61,7 +61,7 @@ fn builtins() -> Value {
         },
         {
             "name": "desk",
-            "description": "One desk call on this desktop: list windows or wait for them to change, snapshot or search a window's accessibility tree, read, press or act on an element, send keys, type, click, focus, close or launch, or crop the screen.",
+            "description": "One desk call on this desktop: list windows or wait for them to change, snapshot or search a window's accessibility tree, read, press or act on an element, send keys, type, click, scroll or drag, wait for the screen to hold still, focus, close or launch, or crop the screen.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
