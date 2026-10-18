@@ -40,7 +40,7 @@ export const find = (name: string, o: { role?: string; window?: string } = {}): 
 export const read = (id: string, o: { text?: boolean } = {}): Promise<El> => call('read', { id, text: o.text })
 export const press = (id: string): Promise<{ ok: boolean; how: string }> => call('press', { id })
 export const act = (id: string, action: 'click' | 'action' | 'select' | 'focus'): Promise<{ ok: boolean }> => call('act', { id, action })
-export const at = (x: number, y: number, window?: string): Promise<{ found: El | null; path?: { id: string; role: string; name: string }[] }> => call('at', { x, y, window })
+export const at = (x: number, y: number, window?: string, pid?: number | null): Promise<{ found: El | null; path?: { id: string; role: string; name: string }[] }> => call('at', { x, y, window, pid: pid ?? undefined })
 export const key = (keys: string): Promise<unknown> => call('key', { keys })
 export const typeText = (text: string): Promise<unknown> => call('type', { text })
 export const click = (x: number, y: number, o: { button?: string; count?: number } = {}): Promise<unknown> => call('click', { x, y, ...o })
