@@ -1,6 +1,6 @@
 # Configuration
 
-On `main` (unreleased) the daemon reads the model settings below; the released v0.0.1 reads no configuration. The `[safety]` and `[tools]` tables land with the P1 safety work.
+The daemon reads this file when it starts. After an edit, quit it (`pkill -f 'cocoon-shuttle serve'`; Windows: end `cocoon-shuttle.exe` in Task Manager) and the next tool call starts it with the new settings.
 
 shuttle reads one TOML file:
 

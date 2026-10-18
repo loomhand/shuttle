@@ -9,7 +9,7 @@ agent (Claude Code, Codex, Cursor)
 cocoon-shuttle mcp ───────── one per agent session; a thin proxy
   │ desk wire (u32 length + JSON) over a 0600 unix socket or a local-only named pipe
   ▼
-cocoon-shuttle serve ─────── one per user; owns the desktop and the model keys (and, from P1, the safety controls)
+cocoon-shuttle serve ─────── one per user; owns the desktop, the model keys and the safety controls
   ├── desk verbs ─────────── AX (macOS), UI Automation (Windows), AT-SPI (Linux, P3)
   ├── cua-driver ─────────── the bundled driver, a child on the daemon's own socket or pipe: input, window focus, launch, capture
   └── node ───────────────── child process per gui_plan / script_run, running runtime/*.mts;
