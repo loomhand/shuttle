@@ -20,6 +20,7 @@ const nodes: El[] = []
 const shell: { win: { id: string; title: string; role: string; pid: number; active: boolean }; nodes: El[] }[] = []
 const pressed: string[] = []
 const clicked: string[] = []
+const atPids: unknown[] = []
 const asked: { image: boolean }[] = []
 const looks: string[] = []
 let pick: Record<string, number> = {}
@@ -47,7 +48,7 @@ function answer({ tool, args }: Call): Reply {
   if (tool === 'desk_press') { pressed.push(String(args.id)); return '{"ok":true,"how":"click"}' }
   if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(Number(args.w ?? 1280), Number(args.h ?? 800)).toString('base64') }
   if (tool === 'desk_screen') return '{"width":1280,"height":800}'
-  if (tool === 'desk_at') return JSON.stringify({ found: under, path: [] })
+  if (tool === 'desk_at') { atPids.push(args.pid); return JSON.stringify({ found: under, path: [] }) }
   if (tool === 'desk_click') clicked.push(`${args.x},${args.y}`)
   return '{"ok":true}'
 }
@@ -246,6 +247,7 @@ test('a grounded click is taken when jev sees the target at the point in a crop,
   assert.equal(checked.ok, true, JSON.stringify(checked))
   assert.deepEqual(clicked, ['640,400'])
   assert.deepEqual(asked, [{ image: true }, { image: false }])
+  assert.ok(atPids.length > 0 && atPids.every((p) => p === win.pid), JSON.stringify(atPids))
   under = null
 })
 

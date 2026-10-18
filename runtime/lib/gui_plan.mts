@@ -498,7 +498,7 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>) 
 }
 
 async function grounded(x: number, y: number, target: string, w: Win, area: { width: number; height: number }) {
-  const under = await desk.at(x, y, w.title).catch(() => ({ found: null, path: [] }))
+  const under = await desk.at(x, y, w.title, w.pid).catch(() => ({ found: null, path: [] }))
   const what = under.found ? [under.found, ...(under.path ?? []).toReversed()].filter((n) => n.name).map((n) => `${n.role} "${n.name}"`).join(' under ') : ''
   const t0 = Date.now()
   const fit = (cw: number, ch: number): [number, number] => [Math.max(0, Math.min(area.width - cw, Math.round(x - cw / 2))), Math.max(0, Math.min(area.height - ch, Math.round(y - ch / 2)))]
