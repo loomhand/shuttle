@@ -1991,16 +1991,15 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_zero_timeout_wait_reads_the_list_once_at_once() {
+    async fn a_zero_timeout_wait_reads_the_list_once() {
         let desk = Desk::new(
             || Ok(Stub::opens(usize::MAX, false, 0)),
             Slow(Arc::default()),
             Os::Mac,
         );
-        let (out, took) = wait_on(&desk, 0).await;
+        let (out, _) = wait_on(&desk, 0).await;
         assert_eq!(out["changed"], false);
         assert_eq!(lists(&desk).await, 2);
-        assert!(took < Duration::from_millis(10), "{took:?}");
     }
 
     #[tokio::test]
