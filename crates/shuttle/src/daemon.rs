@@ -117,7 +117,7 @@ impl<H: Handler> Daemon<H> {
             self.runner.script(args, &agent).await
         };
         *self.running() = None;
-        encode(&report?)
+        Ok(report?.to_string())
     }
 
     async fn act(&self, call: Call) -> Output {

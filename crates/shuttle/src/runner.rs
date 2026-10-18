@@ -112,8 +112,7 @@ impl Runner {
         scratch: &Path,
         agent: &str,
     ) -> Result<Value, String> {
-        let body = serde_json::to_vec(params).map_err(|e| format!("encode params: {e}"))?;
-        write_private(&scratch.join("params.json"), &body)
+        write_private(&scratch.join("params.json"), params.to_string().as_bytes())
             .await
             .map_err(|e| format!("write params: {e}"))?;
         let timeout =
