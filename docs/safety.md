@@ -34,11 +34,16 @@ While shuttle acts, a menu-bar item (macOS) or tray icon (Windows, Linux) shows 
 - a window name picks only among the allowed apps' windows, and an error lists only those; with no name, the focused window must belong to an allowed app;
 - the focused window for `key` and `type`;
 - the process of the element for `read`, `press` and `act`, and of the element `at` finds;
-- the window under the point for every click at a point, from `click`, `press` or `act`; on macOS, an open menu item at the point instead.
+- the window under the point for every click at a point, from `click`, `press` or `act`, and the topmost element there across every window layer, such as the Dock or the taskbar; on macOS, an open menu item at the point instead.
 
 `windows` lists only the allowed apps' windows, and `launch` and a `gui_plan` app step start only an allowed app. A screenshot or crop, also the one a model call gets, is black wherever no allowed app's window is on top: the desktop, the menu bar, the Dock or taskbar, other apps' windows, and on macOS also open menus. An empty list allows every app and costs nothing. A check reads the window list once, which costs a few ms to a few hundred ms on macOS depending on the apps on screen.
 
-The check runs before the action, not at the input event: a window that comes to the front in between can take a key or a click. A process with no window of its own, such as a helper or a renderer, is refused. Without a `config.toml` there is no allowlist.
+The check runs before the action, not at the input event: a window that comes to the front in between can take a key or a click. A screenshot and a click each read the window list on their own, so they can see different windows.
+
+The screenshot mask is per window rectangle, not per pixel:
+- a translucent allowed window shows what is composited behind it;
+- a menu, tooltip or popover of another app, the Dock or the taskbar over an allowed window stays visible inside that window's rectangle;
+- a window that is on screen at the capture but gone when the window list is read stays visible. A process with no window of its own, such as a helper or a renderer, is refused. Without a `config.toml` there is no allowlist.
 
 ## Turning script_run off
 
