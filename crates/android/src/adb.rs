@@ -9,7 +9,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
@@ -35,7 +35,8 @@ const SCRCPY_SCID: &str = "0cb0c11b";
 const SET_CLIPBOARD: u8 = 9;
 const CONNECT_TRIES: u32 = 50;
 const CONNECT_PAUSE: Duration = Duration::from_millis(100);
-const PASTE_SETTLE: Duration = Duration::from_millis(300);
+const ACK_CLIPBOARD: u8 = 1;
+const ACK_TIMEOUT: Duration = Duration::from_secs(2);
 const DEVICE_UI_JAR: &str = "/data/local/tmp/cb-ui.jar";
 const UI_CLASSPATH: &str = "CLASSPATH=/system/framework/uiautomator.jar:/data/local/tmp/cb-ui.jar";
 const UI_TIMEOUT: Duration = Duration::from_secs(10);
@@ -85,6 +86,7 @@ pub struct Android {
     device: Device,
     points: Mutex<HashMap<String, Vec<(i32, i32)>>>,
     ui: Mutex<Option<UiServer>>,
+    control: Mutex<Option<Control>>,
 }
 
 impl Android {
@@ -94,6 +96,7 @@ impl Android {
             device,
             points: Mutex::new(HashMap::new()),
             ui: Mutex::new(None),
+            control: Mutex::new(None),
         }
     }
 
@@ -299,34 +302,17 @@ impl Android {
 
     /// Pastes `text` into the focused field through the clipboard, which takes any Unicode, unlike key injection.
     pub(crate) async fn paste(&self, text: &str) -> Result<(), String> {
-        self.adb(&[
-            "push",
-            &self.device.scrcpy_jar.to_string_lossy(),
-            DEVICE_JAR,
-        ])
-        .await?;
-        self.adb(&["push", &self.device.su.to_string_lossy(), DEVICE_SU])
-            .await?;
-        let socket = format!("localabstract:scrcpy_{SCRCPY_SCID}");
-        let port = String::from_utf8_lossy(&self.adb(&["forward", "tcp:0", &socket]).await?)
-            .trim()
-            .to_owned();
-        let forward = Forward {
-            android: self,
-            port,
-        };
-        let pasted = match self.scrcpy_control() {
-            Ok(child) => {
-                let pasted = send_clipboard(&forward.port, text).await;
-                drop(child);
-                pasted
-            }
-            Err(e) => Err(e),
-        };
-        let _ = self
-            .adb(&["shell", "pkill", "-f", &format!("scid={SCRCPY_SCID}")])
-            .await;
-        pasted
+        let mut slot = self.control.lock().await;
+        if let Some(mut control) = slot.take()
+            && control.paste(text).await.is_ok()
+        {
+            *slot = Some(control);
+            return Ok(());
+        }
+        let mut control = self.open_control().await?;
+        control.paste(text).await?;
+        *slot = Some(control);
+        Ok(())
     }
 
     pub(crate) async fn adb(&self, args: &[&str]) -> Result<Vec<u8>, String> {
@@ -422,6 +408,33 @@ impl Android {
         })
     }
 
+    async fn open_control(&self) -> Result<Control, String> {
+        let _ = self
+            .adb(&["shell", "pkill", "-f", &format!("scid={SCRCPY_SCID}")])
+            .await;
+        self.adb(&[
+            "push",
+            &self.device.scrcpy_jar.to_string_lossy(),
+            DEVICE_JAR,
+        ])
+        .await?;
+        self.adb(&["push", &self.device.su.to_string_lossy(), DEVICE_SU])
+            .await?;
+        let socket = format!("localabstract:scrcpy_{SCRCPY_SCID}");
+        let port = String::from_utf8_lossy(&self.adb(&["forward", "tcp:0", &socket]).await?)
+            .trim()
+            .to_owned();
+        let forward = Forward::new(self, port);
+        let server = self.scrcpy_control()?;
+        let stream = connect_control(&forward.port).await?;
+        Ok(Control {
+            stream,
+            sequence: 0,
+            _server: server,
+            _forward: forward,
+        })
+    }
+
     /// A control-only scrcpy server as the system uid, which may set the clipboard; dropping the child stops it.
     fn scrcpy_control(&self) -> Result<Child, String> {
         let mut cmd = self.command();
@@ -485,19 +498,52 @@ impl UiServer {
     }
 }
 
-struct Forward<'a> {
-    android: &'a Android,
-    port: String,
+/// The resident control-only scrcpy session of the paste: its socket, server and adb forward, which a drop ends.
+struct Control {
+    stream: TcpStream,
+    sequence: u64,
+    _server: Child,
+    _forward: Forward,
 }
 
-impl Drop for Forward<'_> {
-    fn drop(&mut self) {
-        let mut cmd = self.android.command();
-        cmd.args(["forward", "--remove", &format!("tcp:{}", self.port)])
+impl Control {
+    async fn paste(&mut self, text: &str) -> Result<(), String> {
+        self.sequence += 1;
+        self.stream
+            .write_all(&clipboard_message(text, self.sequence))
+            .await
+            .map_err(|e| format!("send clipboard: {e}"))?;
+        tokio::time::timeout(ACK_TIMEOUT, read_ack(&mut self.stream, self.sequence))
+            .await
+            .map_err(|_| "scrcpy control: no clipboard acknowledgement".to_owned())?
+    }
+}
+
+struct Forward {
+    port: String,
+    remove: Option<Command>,
+}
+
+impl Forward {
+    fn new(android: &Android, port: String) -> Self {
+        let mut remove = android.command();
+        remove
+            .args(["forward", "--remove", &format!("tcp:{port}")])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let _ = cmd.spawn();
+        Self {
+            port,
+            remove: Some(remove),
+        }
+    }
+}
+
+impl Drop for Forward {
+    fn drop(&mut self) {
+        if let Some(mut remove) = self.remove.take() {
+            let _ = remove.spawn();
+        }
     }
 }
 
@@ -602,35 +648,46 @@ fn is_component(s: &str) -> bool {
         })
 }
 
-/// A scrcpy SET_CLIPBOARD message that pastes `text`.
-fn clipboard_message(text: &str) -> Vec<u8> {
+/// A scrcpy SET_CLIPBOARD message that pastes `text` and asks for an acknowledgement of `sequence`.
+fn clipboard_message(text: &str, sequence: u64) -> Vec<u8> {
     let mut msg = Vec::with_capacity(14 + text.len());
     msg.push(SET_CLIPBOARD);
-    msg.extend_from_slice(&0u64.to_be_bytes());
+    msg.extend_from_slice(&sequence.to_be_bytes());
     msg.push(1);
     msg.extend_from_slice(&(text.len() as u32).to_be_bytes());
     msg.extend_from_slice(text.as_bytes());
     msg
 }
 
-/// Sends `text` to the scrcpy control socket that adb forwards to `port`, once the server's first byte shows it listens.
-async fn send_clipboard(port: &str, text: &str) -> Result<(), String> {
+/// The scrcpy control socket that adb forwards to `port`, once the server's first byte shows it listens.
+async fn connect_control(port: &str) -> Result<TcpStream, String> {
     let addr = format!("127.0.0.1:{port}");
     for _ in 0..CONNECT_TRIES {
         if let Ok(mut stream) = TcpStream::connect(&addr).await {
             let mut ready = [0u8; 1];
             if matches!(stream.read(&mut ready).await, Ok(1)) {
-                stream
-                    .write_all(&clipboard_message(text))
-                    .await
-                    .map_err(|e| format!("send clipboard: {e}"))?;
-                tokio::time::sleep(PASTE_SETTLE).await;
-                return Ok(());
+                return Ok(stream);
             }
         }
         tokio::time::sleep(CONNECT_PAUSE).await;
     }
     Err("scrcpy control did not start".to_owned())
+}
+
+/// Reads the device message that acknowledges the clipboard of `sequence`, the only one a server without clipboard autosync sends.
+async fn read_ack<R: AsyncRead + Unpin>(r: &mut R, sequence: u64) -> Result<(), String> {
+    let fail = |e: std::io::Error| format!("read scrcpy control: {e}");
+    let kind = r.read_u8().await.map_err(fail)?;
+    if kind != ACK_CLIPBOARD {
+        return Err(format!("scrcpy control sent message type {kind}"));
+    }
+    let acked = r.read_u64().await.map_err(fail)?;
+    if acked != sequence {
+        return Err(format!(
+            "scrcpy control acknowledged clipboard {acked}, not {sequence}"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -741,11 +798,28 @@ mod tests {
 
     #[test]
     fn clipboard_message_is_scrcpy_set_clipboard_with_paste() {
-        let msg = clipboard_message("你好");
+        let msg = clipboard_message("你好", 7);
         assert_eq!(msg[0], 9);
-        assert_eq!(&msg[1..9], &[0; 8]);
+        assert_eq!(&msg[1..9], &7u64.to_be_bytes());
         assert_eq!(msg[9], 1);
         assert_eq!(&msg[10..14], &6u32.to_be_bytes());
         assert_eq!(&msg[14..], "你好".as_bytes());
+    }
+
+    #[tokio::test]
+    async fn the_paste_takes_only_its_own_acknowledgement() {
+        let ack = |sequence: u64| {
+            let mut msg = vec![ACK_CLIPBOARD];
+            msg.extend_from_slice(&sequence.to_be_bytes());
+            msg
+        };
+        assert_eq!(read_ack(&mut ack(7).as_slice(), 7).await, Ok(()));
+        assert!(read_ack(&mut ack(6).as_slice(), 7).await.is_err());
+        assert!(
+            read_ack(&mut &ack(7)[..5], 7).await.is_err(),
+            "ends before the sequence"
+        );
+        let mut other: &[u8] = &[0, 0, 0, 0, 2, b'h', b'i'];
+        assert!(read_ack(&mut other, 7).await.is_err());
     }
 }
