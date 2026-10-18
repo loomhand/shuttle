@@ -1,9 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.1.3 - 2026-10-19
 
+- **Desk verbs.** `scroll` (wheel notches at a point, or scroll keys to the front app window; on Windows a wheel at that window's center), `drag` (from one point to another; both ends pass the app allowlist, and `confirm = "coordinate"` asks first) and `still` (waits until the screen stops changing, ignoring blocks that keep changing, such as a clock or a caret; `timeout_ms` is a polling deadline, at most 5 s).
+- **Plugins.** `*_run` tools from spec files in a plugin directory (`tools.d` beside `config.toml`, or `[tools] plugins`), each run on its own program under the `script_run` contract; `script_run = false` turns them off. The schema is in [docs/wire.md](docs/wire.md#plugins).
+- **Config.**
+  - `kill_hotkey = "off"` registers no global hotkey; `cocoon-shuttle stop` and `resume` still work.
+  - `[driver] overlay = false` starts the bundled cua-driver without its agent cursor, for a desktop nobody watches; it has no effect on macOS.
+  - `decide_build` pins the builds a `decide` or `verify` answer may come from (`#` matches one digit), and an answer from any other build fails with that build named.
+- **Fixes.** On Windows the desk no longer scales window bounds by the display scale factor: above 100% the allowlist's window-at-point check behind every click, scroll and drag at a point, and the screenshot blackout of other apps, used misplaced coordinates.
 - **Bundled:** cua-driver v0.36.0-loomhand.5 (was .4). On Windows a desktop click whose window closes or hides says so in its summary ("the window closed or hid"); the Linux A2 popup-key fix ships with it for P3.
-- **Speed.** The archives carry the runtime's `.mjs` with its types stripped at package time next to the `.mts` sources, and runs use the `.mjs`: about 50 ms less per `gui_plan` call and 6 to 11 ms less per `script_run` call on macOS and Windows.
+- **Speed.** The archives carry the runtime's `.mjs` with its types stripped at package time next to the `.mts` sources, and runs use the `.mjs`: about 50 to 130 ms less per `gui_plan` call and 6 to 20 ms less per `script_run` call on macOS and Windows.
 
 ## 0.1.2 - 2026-10-18
 
