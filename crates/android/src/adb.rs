@@ -218,8 +218,17 @@ impl Android {
         Ok("ended".to_owned())
     }
 
-    /// Starts the launcher activity of package `app`; its component.
+    /// Starts component `app`, or the launcher activity of package `app`; its component.
     pub(crate) async fn launch(&self, app: &str) -> Result<String, String> {
+        if is_component(app) {
+            self.adb(&["shell", "am", "start", "-W", "-n", app]).await?;
+            return Ok(app.to_owned());
+        }
+        if !is_package(app) {
+            return Err(format!(
+                "launch {app:?}: not an Android package or component name"
+            ));
+        }
         let out = self
             .adb(&[
                 "shell",
@@ -233,6 +242,7 @@ impl Android {
             ])
             .await?;
         let component = launcher(&String::from_utf8_lossy(&out), app)
+            .filter(|c| is_component(c))
             .ok_or_else(|| format!("launch {app}: no launcher activity"))?;
         self.adb(&["shell", "am", "start", "-W", "-n", &component])
             .await?;
@@ -554,6 +564,29 @@ fn launcher(out: &str, app: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Whether `s` is an Android package name, such as `com.android.settings`, which a device shell takes as it is.
+pub(crate) fn is_package(s: &str) -> bool {
+    s.split('.').count() >= 2
+        && s.split('.').all(|part| {
+            part.starts_with(|c: char| c.is_ascii_alphabetic())
+                && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+}
+
+/// Whether `s` is an activity component, `<package>/<class>` with the class relative (`.Main`) or full.
+fn is_component(s: &str) -> bool {
+    let Some((package, class)) = s.split_once('/') else {
+        return false;
+    };
+    let class = class.strip_prefix('.').unwrap_or(class);
+    is_package(package)
+        && !class.is_empty()
+        && class.split('.').all(|part| {
+            part.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+}
+
 /// A scrcpy SET_CLIPBOARD message that pastes `text`.
 fn clipboard_message(text: &str) -> Vec<u8> {
     let mut msg = Vec::with_capacity(14 + text.len());
@@ -608,6 +641,58 @@ mod tests {
             Some("org.fossify.math/.activities.SplashActivity.Green")
         );
         assert_eq!(launcher("No activity found\n", "x.y"), None);
+    }
+
+    #[test]
+    fn only_package_and_component_names_reach_the_device_shell() {
+        for ok in ["com.android.settings", "org.fossify.math", "a.b_2"] {
+            assert!(is_package(ok), "{ok}");
+        }
+        for bad in [
+            "Settings",
+            "com..x",
+            "1com.x",
+            "com.x;reboot",
+            "com.x reboot",
+            "com.x\nreboot",
+            "$(id).x",
+            "com.x/.Main",
+            "",
+        ] {
+            assert!(!is_package(bad), "{bad:?}");
+        }
+        for ok in [
+            "org.fossify.math/.activities.SplashActivity.Green",
+            "com.android.settings/com.android.settings.Settings",
+        ] {
+            assert!(is_component(ok), "{ok}");
+        }
+        for bad in [
+            "com.x/",
+            "com.x/.",
+            "com.x/.Main;reboot",
+            "com.x/.Main$Inner",
+            "com.x/.Main other",
+            "x/.Main",
+            "com.x",
+        ] {
+            assert!(!is_component(bad), "{bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_launch_of_a_name_that_is_no_package_runs_no_adb() {
+        let android = Android::new(Device {
+            adb: "/nonexistent/adb".into(),
+            serial: None,
+            ui_jar: "/u.jar".into(),
+            scrcpy_jar: "/s.jar".into(),
+            su: "/su".into(),
+        });
+        let err = android.launch("com.x; reboot").await.unwrap_err();
+        assert!(err.contains("not an Android package"), "{err}");
+        let err = android.launch("com.x").await.unwrap_err();
+        assert!(err.contains("run adb"), "{err}");
     }
 
     #[test]
