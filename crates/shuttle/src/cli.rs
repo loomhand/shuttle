@@ -14,8 +14,12 @@ use tokio::runtime::Builder;
 
 use crate::daemon::{Asker, Controls, Daemon, Guard};
 use crate::driver::{self, Bundled};
+#[cfg(target_os = "macos")]
+use crate::mac as controls;
 use crate::runner::Runner;
 use crate::tools::DESK_VERBS;
+#[cfg(windows)]
+use crate::win as controls;
 use crate::{NAME, VERSION, mcp};
 
 /// Runs the command in `args` (the program name excluded) and returns its exit code.
@@ -38,9 +42,9 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         "serve" => {
             let endpoint = rest.first().cloned().unwrap_or_else(desk_endpoint);
-            #[cfg(target_os = "macos")]
-            return mac_serve(endpoint);
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(any(target_os = "macos", windows))]
+            return controls_serve(endpoint);
+            #[cfg(not(any(target_os = "macos", windows)))]
             exit(block_on(
                 Builder::new_multi_thread(),
                 serve(&endpoint, None, |_, _| Ok(())),
@@ -105,14 +109,14 @@ fn call_desk(rest: &[String]) -> ExitCode {
     }
 }
 
-/// The daemon on a worker thread, and the macOS controls on this, the main, thread.
-#[cfg(target_os = "macos")]
-fn mac_serve(endpoint: String) -> ExitCode {
+/// The daemon on a worker thread, and this OS's controls on this, the main, thread.
+#[cfg(any(target_os = "macos", windows))]
+fn controls_serve(endpoint: String) -> ExitCode {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let ready = move |controls, safety: &Safety| {
             let hotkey = crate::hotkey::parse(&safety.kill_hotkey)?;
-            let _ = tx.send(crate::mac::Ui {
+            let _ = tx.send(controls::Ui {
                 controls,
                 hotkey,
                 hotkey_label: safety.kill_hotkey.clone(),
@@ -122,7 +126,7 @@ fn mac_serve(endpoint: String) -> ExitCode {
         };
         let done = block_on(
             Builder::new_multi_thread(),
-            serve(&endpoint, Some(crate::mac::asker()), ready),
+            serve(&endpoint, Some(controls::asker()), ready),
         );
         if let Err(e) = &done {
             let _ = writeln!(std::io::stderr(), "{NAME}: {e}");
@@ -130,7 +134,7 @@ fn mac_serve(endpoint: String) -> ExitCode {
         std::process::exit(i32::from(done.is_err()));
     });
     match rx.recv() {
-        Ok(ui) => crate::mac::run(ui),
+        Ok(ui) => controls::run(ui),
         Err(_) => loop {
             std::thread::park();
         },
@@ -144,7 +148,7 @@ async fn serve(
 ) -> Result<(), String> {
     let path = default_path(NAME);
     let mut config = Config::load(&path);
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     if let Ok(c) = &config
         && let Err(e) = crate::hotkey::parse(&c.safety.kill_hotkey)
     {
