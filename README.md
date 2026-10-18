@@ -68,7 +68,7 @@ Cursor (`~/.cursor/mcp.json`):
 
 ## Safety
 
-shuttle drives your real machine. On macOS and Windows it has `cocoon-shuttle stop`, a global kill hotkey (macOS ⌃⌥⌘⎋, Windows Ctrl+Alt+Shift+Esc), a menu-bar item or tray icon that shows it acting or stopped, an optional confirm mode that asks before a click at a point or before every action, and an app allowlist that also blacks out other apps in screenshots. These are guard rails for tool use, not a sandbox: `script_run`, which is on by default, runs code with your user's rights, so they hold only with `script_run = false` under `[tools]`. Linux gets them in P3. [docs/safety.md](docs/safety.md) has the detail and the limits, and how input works on macOS, where there is only one pointer.
+shuttle drives your real machine. On macOS and Windows it has `cocoon-shuttle stop`, a global kill hotkey (macOS ⌃⌥⌘⎋, Windows Ctrl+Alt+Shift+Esc), a menu-bar item or tray icon that shows it acting or stopped, an optional confirm mode that asks before a click at a point or before every action, and an app allowlist that also blacks out other apps in screenshots. These are guard rails for tool use, not a sandbox: `script_run`, which is on by default, runs code with your user's rights, so they hold only with `script_run = false` under `[tools]`. Linux has `stop`, `resume` and the `script_run` switch now, and the hotkey, indicator and confirm mode in P3. [docs/safety.md](docs/safety.md) has the detail and the limits, and how input works on macOS, where there is only one pointer.
 
 ## Documentation
 

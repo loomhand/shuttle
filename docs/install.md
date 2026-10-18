@@ -27,7 +27,7 @@ Both installers download the archive and the release's `SHA256SUMS`, refuse an a
 ## First-time setup
 
 1. **Install** with the installer above. `cocoon-shuttle --version` should print the version; on macOS and Linux it lives in `~/.local/bin`, so that directory must be on your `PATH`.
-2. **macOS permissions.** shuttle needs Accessibility and Screen Recording, granted to the app, not to your terminal: in System Settings > Privacy & Security, open Accessibility, click +, choose `~/Applications/Cocoon Shuttle.app` and turn it on; do the same under Screen & System Audio Recording. A desk call made before that fails and names the missing permission. Quit the daemon after granting (`pkill -f 'cocoon-shuttle serve'`) so the next call starts it with the grants. Each upgrade needs the grants again ([platforms.md](platforms.md#macos) explains why).
+2. **macOS permissions.** shuttle needs Accessibility and Screen Recording, granted to the app, not to your terminal: in System Settings > Privacy & Security, open Accessibility, click +, choose `~/Applications/Cocoon Shuttle.app` and turn it on; do the same under Screen & System Audio Recording. Accessibility covers the window list, tree reads and actions: without it every desk call fails and names it. Screen Recording covers screenshots, the allowlist's masked ones included: without it they fail. Quit the daemon after granting (`pkill -f 'cocoon-shuttle serve'`) so the next call starts it with the grants. Each upgrade needs the grants again ([platforms.md](platforms.md#macos) explains why).
 3. **Your model key.** Create a key at <https://openrouter.ai/settings/keys> and put it in the configuration file, which on macOS is simplest since the daemon does not see your shell's environment:
 
    ```sh
