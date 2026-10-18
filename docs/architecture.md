@@ -10,7 +10,7 @@ cocoon-shuttle mcp ───────── one per agent session; a thin pro
   │ desk wire (u32 length + JSON) over a 0600 unix socket or a local-only named pipe
   ▼
 cocoon-shuttle serve ─────── one per user; owns the desktop, the model keys and the safety controls
-  ├── desk verbs ─────────── AX (macOS), UI Automation (Windows), AT-SPI (Linux, P3)
+  ├── desk verbs ─────────── AX (macOS), UI Automation (Windows), AT-SPI (Linux)
   ├── cua-driver ─────────── the bundled driver, a child on the daemon's own socket or pipe: input, window focus, launch, capture
   └── node ───────────────── child process per gui_plan / script_run, running the runtime;
                              desk.mts (desk.mjs in the archives) calls back over the same desk wire
@@ -31,7 +31,7 @@ shuttle is thin and embeddable: it sends each model call once, non-streaming, to
 | Path | Role |
 |---|---|
 | `crates/desk-core` (`shuttle-desk-core`, lib `desk_core`) | The desk wire, the desk call arguments and the pure window and name matching every desk backend shares |
-| `crates/desk` (`shuttle-desk`) | The desk verbs over the macOS AX and Windows UIA trees and the cua-driver client; the Linux AT-SPI backend joins in P3 |
+| `crates/desk` (`shuttle-desk`) | The desk verbs over the macOS AX, Windows UIA and Linux AT-SPI trees, the cua-driver client, and on Linux XTest typing, MIT-SHM capture and launch scopes |
 | `crates/models` (`shuttle-models`) | The model calls: chat completions and decisions over one OpenAI-compatible endpoint, a model name per role; usable as a library with a `Config` value |
 | `crates/shuttle` | The `cocoon-shuttle` binary: the MCP proxy (`mcp`), the daemon and its script runner (`serve`), `desk VERB`, `stop` and `resume`, and the safety controls (kill hotkey, indicator, confirm dialog) |
 | `runtime/lib` | `desk.mts` (the desk API for scripts) and `gui_plan.mts` (the plan executor, flows and replays) |

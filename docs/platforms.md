@@ -8,7 +8,7 @@
 | MCP tools that act | built (P1) | built (P2) | P3 |
 | Kill switch, indicator, allowlist, confirm | built (P1) | built (P2) | `stop`/`resume` and the `script_run` switch built; hotkey, indicator, confirm in P3 |
 
-Every platform installs and runs `cocoon-shuttle mcp`. On macOS and Windows, the `desk`, `screenshot`, `gui_plan` and `script_run` tools reach the desk verbs through the daemon, which runs the bundled cua-driver, with the safety controls of [safety.md](safety.md). On Linux, `gui_plan` and `script_run` run, but their desk calls answer that there is no desk backend yet.
+Every platform installs and runs `cocoon-shuttle mcp`. On macOS and Windows, the `desk`, `screenshot`, `gui_plan` and `script_run` tools reach the desk verbs through the daemon, which runs the bundled cua-driver, with the safety controls of [safety.md](safety.md). On Linux (X11) the same tools reach the desk verbs over AT-SPI, with input through the bundled cua-driver; the daemon needs the desktop session's environment (`DISPLAY`, `XAUTHORITY`, the session D-Bus), which it has when an MCP client in that session starts it.
 
 ## macOS
 
@@ -27,7 +27,8 @@ Every platform installs and runs `cocoon-shuttle mcp`. On macOS and Windows, the
 
 ## Linux
 
-- **X11** is the target for P3: AT-SPI for the tree, XTest through cua-driver for input.
+- **X11:** AT-SPI gives the trees, read in parallel over D-Bus. Typing goes through XTest on the core keyboard when the keyboard map holds every character of a line, on its first group with no Caps or Shift lock; any other text, and every other input, goes through the bundled cua-driver, one driver session per call. Shots read the screen over MIT-SHM, and `windows` reports a modal dialog the screen does not show as `modal` and `blocks`. `close` asks the window manager (`_NET_CLOSE_WINDOW`).
+- **Launched apps** move into a systemd user scope of their own (`app-desk-APP-PID.scope`) when a systemd user manager runs, so a restart of the daemon or its service does not end them; without one they end with the daemon, as its driver's process group does.
 - **Wayland** gives AT-SPI trees but no global input or window positions to a client. cua-driver goes through the desktop portal (with its consent prompts) and, on GNOME, a small shell extension in `wayland-helper/` for window positions. Expect gaps.
 - **AT-SPI** must be on: most desktops start it; on a minimal session, start `at-spi-bus-launcher` and set `GTK_MODULES=gail:atk-bridge` for older GTK apps.
 
