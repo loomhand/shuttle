@@ -239,7 +239,8 @@ impl Ax {
             submenu: a.role == "AXMenuItem" && !a.children.is_empty(),
             marked: !a.mark.is_empty(),
         };
-        let role = ax_roles::role(kind).unwrap_or("generic");
+        let mapped = ax_roles::role(kind);
+        let role = mapped.unwrap_or("generic");
         let shown = a.role != "AXMenuItem" && a.size.is_some_and(|(w, h)| w > 0.0 && h > 0.0);
         let number = a
             .value
@@ -273,7 +274,7 @@ impl Ax {
         Node {
             id: self.id_of(el),
             role,
-            native_role: ax_roles::role(kind).is_none().then(|| a.role.clone()),
+            native_role: mapped.is_none().then(|| a.role.clone()),
             name: name.trim_end().to_owned(),
             description: a.help.clone(),
             states: ax_roles::states(role, facts),
@@ -291,35 +292,25 @@ impl Ax {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn walk(
-        &mut self,
-        el: &CFType,
-        parent: Option<usize>,
-        depth: usize,
-        extras: Extras,
-        deadline: Instant,
-        out: &mut Vec<Node>,
-        path: &mut Vec<CFType>,
-    ) -> bool {
-        if out.len() >= MAX_NODES || Instant::now() >= deadline {
+    fn walk(&mut self, w: &mut Walk, el: &CFType, parent: Option<usize>, depth: usize) -> bool {
+        if w.nodes.len() >= MAX_NODES || Instant::now() >= w.deadline {
             return true;
         }
-        if depth > MAX_DEPTH || path.contains(el) {
+        if depth > MAX_DEPTH || w.path.contains(el) {
             return false;
         }
         let a = attrs(&self.names, el);
-        let node = self.node_of(el, &a, extras, VALUE_CHARS);
-        let (parent, depth) = place(out, node, parent, depth);
-        path.push(el.clone());
+        let node = self.node_of(el, &a, w.extras, VALUE_CHARS);
+        let (parent, depth) = place(&mut w.nodes, node, parent, depth);
+        w.path.push(el.clone());
         let mut truncated = false;
         for child in &a.children {
-            truncated |= self.walk(child, parent, depth, extras, deadline, out, path);
+            truncated |= self.walk(w, child, parent, depth);
             if truncated {
                 break;
             }
         }
-        path.pop();
+        w.path.pop();
         truncated
     }
 }
@@ -347,14 +338,19 @@ impl Access for Ax {
                 frame.title
             ));
         }
-        let mut nodes = Vec::new();
-        let mut truncated = self.walk(&el, None, 0, extras, deadline, &mut nodes, &mut Vec::new());
+        let mut w = Walk {
+            extras,
+            deadline,
+            nodes: Vec::new(),
+            path: Vec::new(),
+        };
+        let mut truncated = self.walk(&mut w, &el, None, 0);
         let walked = started.elapsed().as_micros();
         if frame.role == "window" && !truncated && extras.menus {
             let app = frame.pid.map(|p| application(p as i32));
             if let Some(bar) = app.as_ref().and_then(|a| attr(a, "AXMenuBar")) {
-                let root = (!nodes.is_empty()).then_some(0);
-                truncated = self.walk(&bar, root, 1, extras, deadline, &mut nodes, &mut Vec::new());
+                let root = (!w.nodes.is_empty()).then_some(0);
+                truncated = self.walk(&mut w, &bar, root, 1);
             }
         }
         let phases = vec![
@@ -363,7 +359,7 @@ impl Access for Ax {
         ];
         Ok(Tree {
             frame: frame.clone(),
-            nodes,
+            nodes: w.nodes,
             truncated,
             phases,
         })
@@ -468,6 +464,13 @@ impl Access for Ax {
             Err("the close button did not respond".to_owned())
         }
     }
+}
+
+struct Walk {
+    extras: Extras,
+    deadline: Instant,
+    nodes: Vec<Node>,
+    path: Vec<CFType>,
 }
 
 /// One element's attributes from a batched read; an attribute it lacks stays empty.
