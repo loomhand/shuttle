@@ -58,7 +58,7 @@ mod tests {
             serial: Some("127.0.0.1:5555".to_owned()),
             ui_jar: "/u.jar".into(),
             scrcpy_jar: "/s.jar".into(),
-            su: "/su".into(),
+            su: None,
         };
         assert!(!local_controls(Some(&settings)));
         assert!(local_controls(None));
