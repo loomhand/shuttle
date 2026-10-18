@@ -182,6 +182,14 @@ pub enum Act {
 pub trait Access {
     /// The top-level windows of every app.
     fn frames(&mut self) -> Result<Vec<Frame>, String>;
+    /// The top-level windows of the app with process `pid`.
+    fn frames_of(&mut self, pid: u32) -> Result<Vec<Frame>, String> {
+        Ok(self
+            .frames()?
+            .into_iter()
+            .filter(|f| f.pid == Some(pid))
+            .collect())
+    }
     /// The listed elements of `frame` in preorder.
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String>;
     /// One element read live; a value has at most `chars` characters.
