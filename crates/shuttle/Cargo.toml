@@ -13,6 +13,7 @@ name = "cocoon-shuttle"
 path = "src/main.rs"
 
 [dependencies]
+base64 = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shuttle-android = { path = "../android" }

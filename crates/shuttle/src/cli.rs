@@ -2,9 +2,12 @@
 
 use std::fmt::Display;
 use std::io::Write as _;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use desk_core::text::cli_args;
 use desk_core::wire::Call;
 use shuttle_desk::driver::Driver;
@@ -109,11 +112,36 @@ fn send(call: &Call, what: impl Display) -> ExitCode {
     ) {
         Ok(out) if !out.is_error => {
             let _ = writeln!(std::io::stdout(), "{}", out.text);
+            if let Some(png) = &out.image_b64 {
+                match save_png(png) {
+                    Ok(path) => {
+                        let _ = writeln!(std::io::stdout(), "image: {}", path.display());
+                    }
+                    Err(e) => return fail(format_args!("{what}: {e}")),
+                }
+            }
             ExitCode::SUCCESS
         }
         Ok(out) => fail(format_args!("{what}: {}", out.text)),
         Err(e) => fail(format_args!("{what}: no daemon answers: {e}")),
     }
+}
+
+/// Writes a call's screenshot to a new file in the temporary directory; its path.
+fn save_png(b64: &str) -> Result<PathBuf, String> {
+    let png = B64
+        .decode(b64)
+        .map_err(|e| format!("decode screenshot: {e}"))?;
+    let mut file = tempfile::Builder::new()
+        .prefix("cocoon-shuttle-")
+        .suffix(".png")
+        .tempfile()
+        .map_err(|e| format!("create screenshot file: {e}"))?;
+    file.write_all(&png)
+        .map_err(|e| format!("write screenshot: {e}"))?;
+    file.keep()
+        .map(|(_, path)| path)
+        .map_err(|e| format!("keep screenshot file: {e}"))
 }
 
 /// The daemon on a worker thread, and this OS's controls on this, the main, thread.
@@ -283,4 +311,18 @@ fn usage() -> ExitCode {
 fn fail(e: impl Display) -> ExitCode {
     log(e);
     ExitCode::FAILURE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_screenshot_lands_in_a_png_file() {
+        let path = save_png(&B64.encode(b"\x89PNG")).unwrap();
+        assert_eq!(path.extension().and_then(|e| e.to_str()), Some("png"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"\x89PNG");
+        std::fs::remove_file(path).unwrap();
+        assert!(save_png("not base64!").is_err());
+    }
 }
