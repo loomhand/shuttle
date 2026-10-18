@@ -178,7 +178,7 @@ fn node(n: &atspi::Node) -> Node {
     }
 }
 
-/// Asks the window manager to close the managed window titled `want` of process `pid`, the most recently mapped among equals, as its close button does.
+/// Asks the window manager to close the managed window titled `want` of process `pid`, as its close button does; refuses a title two windows share and a window manager without `_NET_CLOSE_WINDOW`.
 fn close(want: &str, pid: Option<u32>) -> Result<(), String> {
     let (conn, n) = x11rb::connect(None).map_err(|e| format!("connect X: {e}"))?;
     let root = conn.setup().roots[n].root;
@@ -189,20 +189,30 @@ fn close(want: &str, pid: Option<u32>) -> Result<(), String> {
             .map(|r| r.atom)
             .map_err(|e| format!("intern atom: {e}"))
     };
-    let [list, name, utf8, wm_pid, close] = [
-        &b"_NET_CLIENT_LIST"[..],
+    let [supported, list, name, utf8, wm_pid, close] = [
+        &b"_NET_SUPPORTED"[..],
+        b"_NET_CLIENT_LIST",
         b"_NET_WM_NAME",
         b"UTF8_STRING",
         b"_NET_WM_PID",
         b"_NET_CLOSE_WINDOW",
     ]
     .map(atom);
-    let (list, name, utf8, wm_pid, close) = (list?, name?, utf8?, wm_pid?, close?);
+    let (supported, list, name, utf8, wm_pid, close) =
+        (supported?, list?, name?, utf8?, wm_pid?, close?);
     let prop = |w: u32, p: u32, kind: u32| {
         conn.get_property(false, w, p, kind, 0, 1024)
             .ok()
             .and_then(|c| c.reply().ok())
     };
+    let closes = prop(root, supported, AtomEnum::ATOM.into())
+        .and_then(|r| r.value32().map(|mut v| v.any(|a| a == close)))
+        .unwrap_or(false);
+    if !closes {
+        return Err(format!(
+            "close {want:?}: the window manager does not support _NET_CLOSE_WINDOW"
+        ));
+    }
     let clients: Vec<u32> = prop(root, list, AtomEnum::WINDOW.into())
         .and_then(|r| r.value32().map(Iterator::collect))
         .unwrap_or_default();
@@ -222,15 +232,8 @@ fn close(want: &str, pid: Option<u32>) -> Result<(), String> {
             (w, title)
         })
         .collect();
-    let (w, _) = (0..TITLE_TIERS)
-        .find_map(|tier| {
-            windows
-                .iter()
-                .rev()
-                .find(|(_, t)| title_matches(tier, t, want))
-        })
-        .ok_or_else(|| format!("no window {want:?}"))?;
-    let event = ClientMessageEvent::new(32, *w, close, [0, 2, 0, 0, 0]);
+    let w = pick_window(&windows, want)?;
+    let event = ClientMessageEvent::new(32, w, close, [0, 2, 0, 0, 0]);
     conn.send_event(
         false,
         root,
@@ -244,6 +247,26 @@ fn close(want: &str, pid: Option<u32>) -> Result<(), String> {
         .reply()
         .map(drop)
         .map_err(|e| format!("close {want:?}: {e}"))
+}
+
+/// The one window of `windows` whose title matches `want` at the closest tier; two at that tier are refused.
+fn pick_window(windows: &[(u32, String)], want: &str) -> Result<u32, String> {
+    let found = (0..TITLE_TIERS)
+        .map(|tier| {
+            windows
+                .iter()
+                .filter(|(_, t)| title_matches(tier, t, want))
+                .collect::<Vec<_>>()
+        })
+        .find(|m| !m.is_empty())
+        .ok_or_else(|| format!("no window {want:?}"))?;
+    match found[..] {
+        [(w, _)] => Ok(*w),
+        _ => Err(format!(
+            "close {want:?}: {} windows of the process have that title; close one with its close button",
+            found.len()
+        )),
+    }
 }
 
 /// The file name of process `pid`'s executable, as the allowlist names a Linux app; none when it cannot be read, which the allowlist refuses.
@@ -296,6 +319,20 @@ mod tests {
         assert_eq!(m.shortcut.as_deref(), Some("ctrl+s"));
         assert_eq!(m.keys.as_deref(), Some("<Alt>s;;<Control>s"));
         assert_eq!(m.bounds, Some([1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn close_picks_the_one_matching_window_and_refuses_twins() {
+        let windows = vec![
+            (1, "notes.txt - Mousepad".to_owned()),
+            (2, "Save As".to_owned()),
+        ];
+        assert_eq!(pick_window(&windows, "Save As"), Ok(2));
+        assert_eq!(pick_window(&windows, "notes.txt - Mousepad"), Ok(1));
+        assert!(pick_window(&windows, "Print").is_err());
+        let twins = vec![(1, "Save As".to_owned()), (2, "Save As".to_owned())];
+        let err = pick_window(&twins, "Save As").unwrap_err();
+        assert!(err.contains("2 windows"), "{err}");
     }
 
     #[test]
