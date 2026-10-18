@@ -273,3 +273,26 @@ test('a verify on macOS that finds its target only in the menu bar checks it the
     server.close()
   }
 })
+
+test('a click on macOS that names a menu item exactly takes it over a window button whose name only contains it', { skip: process.platform !== 'darwin' }, async () => {
+  const win = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
+  const calls: string[] = []
+  const server = await toolhost(({ tool, args }) => {
+    calls.push(tool === 'desk_key' ? `key ${String(args.keys)}` : tool === 'desk_press' ? `press ${String(args.id)}` : tool)
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') {
+      const button = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'Print Preview', states: ['showing'], bounds: [10, 10, 80, 20] }
+      return JSON.stringify({ window: win, truncated: false, nodes: [root('window', win.title), button, ...(args.menus ? menuBar({ name: 'Print', shortcut: 'cmd+p' }) : [])] })
+    }
+    if (tool === 'desk_press') return '{"ok":true,"how":"click"}'
+    return '{"ok":true}'
+  })
+  const { main } = await import('../lib/gui_plan.mts')
+  try {
+    const r = await main({ steps: [{ click: 'Print' }] })
+    assert.equal(r.ok, true, JSON.stringify(r))
+    assert.ok(calls.includes('press 1/12') && !calls.includes('press 1/2') && !calls.some((c) => c.startsWith('key ')), calls.join(' '))
+  } finally {
+    server.close()
+  }
+})
