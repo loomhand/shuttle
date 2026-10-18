@@ -44,6 +44,6 @@ shuttle owns the desk: `desk-core`, the desk backends and the runtime. cocoonbox
 
 - cocoonbox takes `shuttle-desk-core` and `shuttle-desk` as git dependencies pinned to a shuttle tag, and the runtime files from that tag by sha256 when it cuts an image.
 - Its in-box toolhost answers the `model_*` calls by forwarding them to its gateway, so the same `desk.mts` runs in both.
-- The Linux AT-SPI backend moves from cocoonbox's toolhost into `shuttle-desk` (P3), and cocoonbox's own copies of `desk-core`, `deskhost` and the runtime go away (P4).
+- The Linux AT-SPI backend has moved from cocoonbox's toolhost into `shuttle-desk` (P3), and cocoonbox's own copies of `desk-core`, `deskhost` and the runtime go away (P4).
 
 shuttle stays usable on its own: nothing in it names a cloud service or needs one.
