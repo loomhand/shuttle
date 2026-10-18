@@ -75,12 +75,14 @@ confirm = "off"                       # "coordinate" or "every" asks first
 
 [tools]
 script_run = true                     # false turns script_run off, and the plugin tools with it
-# plugins = "/etc/cocoonbox/tools.d"  # plugin directory; default tools.d next to this file
+# plugins = "/etc/cocoonbox/tools.d"  # plugin directory, relative to this file's; default tools.d
 
 [driver]
 overlay = true                        # false: no agent cursor; no effect on macOS
 ```
 
 The safety controls live in this file, so while it fails to load every tool call except `status` answers with its error, desk calls included; only `cocoon-shuttle stop` and `resume` still work. `kill_hotkey` takes modifiers (`ctrl`, `alt`, `shift`, `cmd`, which is the Windows key on Windows) and one key (a letter, a digit, `f1`–`f12`, `escape`, `space`, `return` or `tab`), or is `off` for no global hotkey; on macOS and Windows a value that does not parse fails the file like any other error. [safety.md](safety.md) describes each control. They are guard rails for the `desk`, `screenshot` and `gui_plan` tools that hold only with `script_run = false`: a `script_run` script is your own user's code and can change or bypass them, as [safety.md](safety.md#what-these-controls-are) explains.
+
+The MCP server reads the plugin directory and `script_run` when the agent starts it: after adding, changing or removing a plugin, or turning `script_run` on or off, restart the MCP client (the agent) for its tool list to follow. The daemon reads them when it starts, and refuses a plugin call while `script_run` is off whatever the list shows.
 
 `[driver] overlay = false` starts the bundled cua-driver with `--no-overlay`, for a desktop nobody watches, such as a cloud box. It has no effect on macOS, since the driver's front-window tracking needs its overlay, and the daemon says so in its log.

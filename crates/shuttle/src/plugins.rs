@@ -58,18 +58,13 @@ impl Plugin {
     }
 }
 
-/// The plugins of the configuration at `path`: from `[tools] plugins`, else `tools.d` next to the file; none while it fails to load.
+/// The plugins of the configuration at `path`: from `[tools] plugins`, relative to the file's directory, else `tools.d` beside it; none while it fails to load.
 pub fn configured(config: &Result<Config, String>, path: &Path, builtins: &[&str]) -> Vec<Plugin> {
-    match config {
-        Ok(c) => load(
-            c.tools
-                .plugins
-                .as_deref()
-                .unwrap_or(&path.with_file_name(DIR)),
-            builtins,
-        ),
-        Err(_) => Vec::new(),
-    }
+    let Ok(c) = config else {
+        return Vec::new();
+    };
+    let dir = path.with_file_name(c.tools.plugins.as_deref().unwrap_or(Path::new(DIR)));
+    load(&dir, builtins)
 }
 
 /// Whether `name` has a plugin tool's form: `^[a-z][a-z0-9_]*_run$`.
@@ -215,6 +210,9 @@ mod tests {
         let mut moved = Config::default();
         moved.tools.plugins = Some(elsewhere);
         assert_eq!(names(&Ok(moved)), ["other_run"]);
+        let mut relative = Config::default();
+        relative.tools.plugins = Some("elsewhere".into());
+        assert_eq!(names(&Ok(relative)), ["other_run"]);
         assert!(names(&Err("broken".into())).is_empty());
     }
 
