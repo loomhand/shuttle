@@ -1120,13 +1120,12 @@ pub(crate) mod tests {
     }
 
     #[derive(Default)]
-    static MENUS: Mutex<Vec<bool>> = Mutex::new(Vec::new());
-
     pub(crate) struct Fake {
         nodes: HashMap<String, (Node, Option<String>)>,
         pub(crate) hits: HashMap<(i32, i32), String>,
         pub(crate) acts: Vec<(String, Act)>,
         opened: bool,
+        menus: Vec<bool>,
     }
 
     impl Fake {
@@ -1162,7 +1161,7 @@ pub(crate) mod tests {
         }
 
         fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
-            MENUS.lock().unwrap().push(extras.menus);
+            self.menus.push(extras.menus);
             Ok(Tree {
                 frame: frame.clone(),
                 ..Tree::default()
@@ -1735,7 +1734,12 @@ pub(crate) mod tests {
         desk.run("desk_find", json!({"name": "Save"}))
             .await
             .unwrap();
-        assert_eq!(*MENUS.lock().unwrap(), [false, true, true]);
+        let menus = desk
+            .access
+            .run(CALL_LIMIT, (), |b| Ok(b.menus.clone()))
+            .await
+            .unwrap();
+        assert_eq!(menus, [false, true, true]);
     }
 
     #[tokio::test]
