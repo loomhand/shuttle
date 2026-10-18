@@ -190,6 +190,10 @@ pub trait Access {
     fn menu_at(&mut self, _x: i32, _y: i32) -> Result<Option<String>, String> {
         Ok(None)
     }
+    /// The process of the element `id`, none when the backend cannot tell.
+    fn pid_of(&mut self, _id: &str) -> Result<Option<u32>, String> {
+        Ok(None)
+    }
     /// Runs `act` on the element `id`.
     fn act(&mut self, id: &str, act: Act) -> Result<bool, String>;
     /// Asks the window to close as its close button does.

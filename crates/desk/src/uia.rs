@@ -399,6 +399,14 @@ impl Access for Uia {
         Ok(chain)
     }
 
+    fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
+        let el = self.element(id)?;
+        // SAFETY: `el` is a live UIA element of this thread.
+        Ok(unsafe { el.CurrentProcessId() }
+            .ok()
+            .and_then(|p| u32::try_from(p).ok()))
+    }
+
     fn at(&mut self, _: &str, x: i32, y: i32) -> Result<Option<String>, String> {
         // SAFETY: `self.auto` is a live IUIAutomation of this thread.
         match unsafe { self.auto.ElementFromPoint(POINT { x, y }) } {

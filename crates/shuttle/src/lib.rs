@@ -12,3 +12,5 @@ pub mod tools;
 pub const NAME: &str = "cocoon-shuttle";
 /// The release version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The answer to every call while the user has stopped shuttle.
+pub const STOPPED: &str = "stopped by the user: run `cocoon-shuttle resume` to go on";

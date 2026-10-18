@@ -49,6 +49,7 @@ pub struct Desk<B, D> {
     turn_wait: Duration,
     scale: OnceLock<f64>,
     read: std::sync::Mutex<Option<Read>>,
+    apps: Vec<String>,
 }
 
 impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
@@ -62,7 +63,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             turn_wait: TURN_WAIT,
             scale: OnceLock::new(),
             read: std::sync::Mutex::new(None),
+            apps: Vec::new(),
         }
+    }
+
+    /// Limits the desk calls to windows of `apps`, matched by app name or executable, case-insensitive; empty allows every app.
+    pub fn allow(mut self, apps: Vec<String>) -> Self {
+        self.apps = apps.iter().map(|a| app_key(a)).collect();
+        self
     }
 
     /// Runs desk call `tool`, a `desk_<verb>`; actions run one at a time, until their backend calls end, reads alongside them.
@@ -75,6 +83,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         } else {
             None
         };
+        if !self.apps.is_empty() {
+            self.admit(tool, &args).await?;
+        }
         let text = match tool {
             "desk_windows" => self.windows().await?,
             "desk_snapshot" => self.snapshot(parse(args)?).await?,
@@ -105,8 +116,71 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn windows(&self) -> Result<String, String> {
         let mut frames = self.access.run(CALL_LIMIT, (), |a| a.frames()).await?;
+        frames.retain(|f| self.admits(f.app.as_deref()));
         frames.sort_by_key(|f| !f.active);
         serde_json::to_string(&frames).map_err(|e| format!("encode windows: {e}"))
+    }
+
+    async fn admit(&self, tool: &str, args: &Value) -> Result<(), String> {
+        let window = args["window"].as_str().map(str::to_owned);
+        let pid = args["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
+        let id = args["id"].as_str().map(str::to_owned);
+        let target = match tool {
+            "desk_windows" | "desk_shot" | "desk_screen" => return Ok(()),
+            "desk_launch" => {
+                let app = args["app"].as_str().unwrap_or_default();
+                return if self.admits(Some(app)) {
+                    Ok(())
+                } else {
+                    Err(refused(app))
+                };
+            }
+            "desk_click" => {
+                let (x, y) = (args["x"].as_f64(), args["y"].as_f64());
+                let (Some(x), Some(y)) = (x, y) else {
+                    return Err("click needs x and y".to_owned());
+                };
+                let under = self.window_at(x, y).await?;
+                let under = under.ok_or(
+                    "no window under the point, and the app allowlist admits only windows",
+                )?;
+                Target::Pid(u32::try_from(under.pid).ok())
+            }
+            "desk_read" | "desk_press" | "desk_act" => {
+                let id = id.ok_or("no element id")?;
+                Target::Pid(
+                    self.access
+                        .run(CALL_LIMIT, (), move |b| b.pid_of(&id))
+                        .await?,
+                )
+            }
+            "desk_key" | "desk_type" => Target::Window(None, None),
+            _ => Target::Window(window, pid),
+        };
+        let app = self
+            .access
+            .run(CALL_LIMIT, (), move |b| {
+                let frames = b.frames()?;
+                Ok(match target {
+                    Target::Pid(pid) => frames
+                        .into_iter()
+                        .find(|f| pid.is_some() && f.pid == pid)
+                        .and_then(|f| f.app),
+                    Target::Window(window, pid) => {
+                        window::pick(frames, window.as_deref(), pid)?.app
+                    }
+                })
+            })
+            .await?;
+        if self.admits(app.as_deref()) {
+            Ok(())
+        } else {
+            Err(refused(app.as_deref().unwrap_or("an unknown app")))
+        }
+    }
+
+    fn admits(&self, app: Option<&str>) -> bool {
+        self.apps.is_empty() || app.is_some_and(|a| self.apps.contains(&app_key(a)))
     }
 
     async fn snapshot(&self, a: SnapArgs) -> Result<String, String> {
@@ -523,6 +597,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 }
 
+enum Target {
+    Pid(Option<u32>),
+    Window(Option<String>, Option<u32>),
+}
+
 struct Under {
     pid: i64,
     id: i64,
@@ -544,6 +623,15 @@ enum Press {
     Selected,
     Click(i32, i32),
     Acted(bool),
+}
+
+fn app_key(app: &str) -> String {
+    let app = app.to_lowercase();
+    app.strip_suffix(".exe").map(str::to_owned).unwrap_or(app)
+}
+
+fn refused(app: &str) -> String {
+    format!("{app} is not in the app allowlist ([safety] apps in config.toml)")
 }
 
 /// Presses `id` the way a user would; a menu entry runs its action, since a click right after its popup opens misses it.
@@ -1270,6 +1358,101 @@ mod tests {
             .run("desk_click", json!({"x": 300.0, "y": 200.0}))
             .await;
         assert!(out.is_err(), "{out:?}");
+    }
+
+    struct Apps;
+
+    impl Access for Apps {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            let frame = |id: &str, title: &str, pid: u32, active: bool, app: &str| Frame {
+                id: id.into(),
+                title: title.into(),
+                role: "window",
+                pid: Some(pid),
+                active,
+                app: Some(app.into()),
+            };
+            Ok(vec![
+                frame("4/1", "Untitled - Notepad", 4, true, "Notepad.exe"),
+                frame("8/1", "Inbox", 8, false, "Mail"),
+            ])
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            Ok(Tree {
+                frame: frame.clone(),
+                nodes: Vec::new(),
+                truncated: false,
+                phases: Vec::new(),
+            })
+        }
+
+        fn node(&mut self, id: &str, _: Extras, _: usize) -> Result<Node, String> {
+            Err(format!("no node {id}"))
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
+            Ok(id.split('/').next().and_then(|p| p.parse().ok()))
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn an_app_allowlist_hides_and_refuses_the_windows_of_other_apps() {
+        let desk = Desk::new(|| Ok(Apps), Screen(Arc::default()), Os::Mac)
+            .allow(vec!["NOTEPAD.EXE".into()]);
+        let refused = |r: Result<Output, String>| {
+            r.err()
+                .is_some_and(|e| e.contains("not in the app allowlist"))
+        };
+        let listed = desk.run("desk_windows", json!({})).await.unwrap().text;
+        assert!(
+            listed.contains("Notepad") && !listed.contains("Inbox"),
+            "{listed}"
+        );
+        assert!(
+            desk.run("desk_snapshot", json!({"window": "Notepad"}))
+                .await
+                .is_ok()
+        );
+        assert!(refused(
+            desk.run("desk_snapshot", json!({"window": "Inbox"})).await
+        ));
+        assert!(refused(desk.run("desk_press", json!({"id": "8/5"})).await));
+        assert!(!refused(desk.run("desk_press", json!({"id": "4/5"})).await));
+        assert!(refused(
+            desk.run("desk_click", json!({"x": 300.0, "y": 200.0}))
+                .await
+        ));
+        assert!(refused(
+            desk.run("desk_launch", json!({"app": "Mail"})).await
+        ));
+        assert!(
+            desk.run("desk_key", json!({"keys": "ctrl+s"}))
+                .await
+                .is_ok()
+        );
+        let mail =
+            Desk::new(|| Ok(Apps), Screen(Arc::default()), Os::Mac).allow(vec!["mail".into()]);
+        assert!(refused(
+            mail.run("desk_key", json!({"keys": "ctrl+s"})).await
+        ));
+        assert!(refused(mail.run("desk_type", json!({"text": "x"})).await));
     }
 
     #[tokio::test]

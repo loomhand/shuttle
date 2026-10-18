@@ -25,6 +25,7 @@ pub struct Runner {
     endpoint: String,
     flows: PathBuf,
     key_vars: Vec<String>,
+    stop: tokio::sync::watch::Sender<bool>,
 }
 
 impl Runner {
@@ -41,7 +42,13 @@ impl Runner {
             endpoint,
             flows,
             key_vars,
+            stop: tokio::sync::watch::Sender::new(false),
         }
+    }
+
+    /// Stops the run in flight and every run after it, until `halt(false)`.
+    pub fn halt(&self, stopped: bool) {
+        self.stop.send_replace(stopped);
     }
 
     /// The runner of a release install: Node and the runtime next to `exe`, or in the app bundle's Resources.
@@ -141,7 +148,11 @@ impl Runner {
             tokio::spawn(capture(out, Arc::clone(&logs))),
             tokio::spawn(capture(err, Arc::clone(&stderr))),
         ];
-        let status = tokio::time::timeout(timeout, child.wait()).await;
+        let mut stopped = self.stop.subscribe();
+        let status = tokio::select! {
+            s = tokio::time::timeout(timeout, child.wait()) => s.map_err(|_| "timeout"),
+            _ = stopped.wait_for(|s| *s) => Err("stopped"),
+        };
         if status.is_err() {
             #[cfg(unix)]
             if let Some(pid) = child.id() {
@@ -164,6 +175,9 @@ impl Runner {
         report["logs"] = text(&logs).into();
         report["stderr"] = text(&stderr).into();
         match status {
+            Err("stopped") => {
+                report["error"] = json!({"kind": "stopped", "message": crate::STOPPED});
+            }
             Err(_) => {
                 report["error"] = json!({"kind": "timeout", "message": format!("the run passed {}s and was stopped", timeout.as_secs())});
             }

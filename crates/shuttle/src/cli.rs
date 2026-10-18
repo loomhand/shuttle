@@ -41,12 +41,33 @@ pub fn run(args: &[String]) -> ExitCode {
             exit(block_on(Builder::new_multi_thread(), serve(&endpoint)))
         }
         "desk" => call_desk(rest),
+        "stop" => safety("safety_stop"),
+        "resume" => safety("safety_resume"),
         _ => usage(),
     }
 }
 
 fn desk_endpoint() -> String {
     server::cache_endpoint("SHUTTLE_SOCKET", &format!("{NAME}-desk"), NAME, "desk.sock")
+}
+
+fn safety(tool: &str) -> ExitCode {
+    let call = Call {
+        agent_id: "user".to_owned(),
+        tool: tool.to_owned(),
+        args: serde_json::json!({}),
+    };
+    match block_on(
+        Builder::new_current_thread(),
+        server::call(&desk_endpoint(), &call),
+    ) {
+        Ok(out) if !out.is_error => {
+            let _ = writeln!(std::io::stdout(), "{}", out.text);
+            ExitCode::SUCCESS
+        }
+        Ok(out) => fail(&out.text),
+        Err(e) => fail(&format!("no daemon answers: {e}")),
+    }
 }
 
 fn call_desk(rest: &[String]) -> ExitCode {
@@ -87,6 +108,9 @@ async fn serve(endpoint: &str) -> Result<(), String> {
     {
         key_vars.push(c.api_key_env.clone());
     }
+    let (apps, script_run) = config.as_ref().map_or((Vec::new(), false), |c| {
+        (c.safety.apps.clone(), c.tools.script_run)
+    });
     let models = config.map(Models::new);
     let exe = std::env::current_exe()
         .and_then(std::fs::canonicalize)
@@ -109,7 +133,12 @@ async fn serve(endpoint: &str) -> Result<(), String> {
         path.with_file_name("flows"),
         key_vars,
     );
-    let daemon = Arc::new(Daemon::new(server::native(driver), models, runner));
+    let daemon = Arc::new(Daemon::new(
+        server::native(driver, apps),
+        models,
+        runner,
+        script_run,
+    ));
     let served = tokio::select! {
         r = server::serve(daemon, listener) => r,
         () = shutdown() => Ok(()),
@@ -163,7 +192,7 @@ fn exit(done: Result<(), String>) -> ExitCode {
 fn usage() -> ExitCode {
     let _ = writeln!(
         std::io::stderr(),
-        "usage: {NAME} mcp | {NAME} serve [ENDPOINT] | {NAME} desk VERB [key=value ...|JSON] | {NAME} --version; desk verbs: {}",
+        "usage: {NAME} mcp | {NAME} serve [ENDPOINT] | {NAME} stop | {NAME} resume | {NAME} desk VERB [key=value ...|JSON] | {NAME} --version; desk verbs: {}",
         DESK_VERBS.join(", ")
     );
     ExitCode::from(2)
