@@ -371,15 +371,19 @@ test('a grounded click the 640x400 crop refuses is checked on the small element\
   on = 0
 })
 
-test('a grounded step checks one fresh capture of the screen, taken after grounding, and cuts its crop, zoom and ring from it', async () => {
+test('a grounded step checks fresh captures taken after grounding: the crop, then one screen capture that the zoom and ring are cut from', async () => {
   const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
   build = 'typesafe/jev-1.14-20261014'
   on = [0.3, 0.6, 0.96]
-  tones = [60, 200]
+  tones = [60, 200, 200]
   const full = await plan('the yellow star', tree, {})
   assert.equal(full.ok, true, JSON.stringify(full))
   assert.deepEqual(looks, ['640x400', '384x288', '1280x800 ring'])
-  assert.deepEqual([shots, shades], [2, [200, 200, 200]])
+  assert.deepEqual([shots, shades], [3, [200, 200, 200]])
+  on = 0.8
+  tones = [60, 200]
+  await plan('the yellow star', tree, {})
+  assert.deepEqual([shots, shades], [2, [200]])
   tones = []
   build = null
   on = 0

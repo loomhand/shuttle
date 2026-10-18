@@ -504,18 +504,23 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
   const [ox, oy] = [area.left ?? 0, area.top ?? 0]
   const fit = (cw: number, ch: number): [number, number] => [Math.max(ox, Math.min(ox + area.width - cw, Math.round(x - cw / 2))), Math.max(oy, Math.min(oy + area.height - ch, Math.round(y - ch / 2)))]
   const yes = async (state: unknown[], question: string) => +prob((await desk.look(state, { on: desk.yes(question) })).on).toFixed(2)
+  const look = async (png: Buffer, at: number[]) => {
+    const [px, py] = at.map(Math.round)
+    return yes([`A ${png.readUInt32BE(16)}x${png.readUInt32BE(20)} crop of the screen. A click is about to land on its pixel (${px}, ${py}).`, desk.image(png)], `Is the pixel at (${px}, ${py}) of the image on ${target}?`)
+  }
   try {
-    const screen = unpng(await desk.shot()), s = screen.w / area.width
-    const crop = async (cw: number, ch: number, k: number) => {
-      const [left, top] = fit(cw, ch), [px, py] = [Math.round((x - left) * s * k), Math.round((y - top) * s * k)]
-      const png = cut(screen, Math.round((left - ox) * s), Math.round((top - oy) * s), Math.round(cw * s), Math.round(ch * s), k)
-      return yes([`A ${png.readUInt32BE(16)}x${png.readUInt32BE(20)} crop of the screen. A click is about to land on its pixel (${px}, ${py}).`, desk.image(png)], `Is the pixel at (${px}, ${py}) of the image on ${target}?`)
-    }
-    const p = await crop(Math.min(CROP.w, area.width), Math.min(CROP.h, area.height), 1)
+    const [cw, ch] = [Math.min(CROP.w, area.width), Math.min(CROP.h, area.height)], [left, top] = fit(cw, ch)
+    const first = await desk.shot({ x: left - ox, y: top - oy, w: cw, h: ch }), k = first.readUInt32BE(16) / cw
+    const p = await look(first, [(x - left) * k, (y - top) * k])
     const out: { what: string; ok: boolean; check: string; p: number; p_zoom?: number | null; p_full?: number | null } = { what, ok: p >= 0.5, check: 'jev-image', p }
     if (out.ok) return out
     const b = under.found?.bounds ?? (under.found?.id ? (await desk.read(under.found.id).catch(() => null))?.bounds : undefined)
     const el = b && b[2] > 0 && b[3] > 0 ? b : null
+    const screen = unpng(await desk.shot()), s = screen.w / area.width
+    const crop = async (cw: number, ch: number, k: number) => {
+      const [left, top] = fit(cw, ch)
+      return look(cut(screen, Math.round((left - ox) * s), Math.round((top - oy) * s), Math.round(cw * s), Math.round(ch * s), k), [(x - left) * s * k, (y - top) * s * k])
+    }
     if (!el || el[2] * el[3] < SMALL) {
       const rw = Math.min(area.width, el ? Math.min(384, Math.max(96, Math.round(1.5 * el[2]), Math.round(5 * el[3] * 4 / 3))) : 192)
       const rh = Math.min(area.height, el ? Math.round(rw * 3 / 4) : 144)

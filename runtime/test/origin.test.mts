@@ -11,11 +11,12 @@ test('a grounded check on a screen whose origin is left of zero crops around the
   const usage = { model: 'decider', input_tokens: 1, output_tokens: 1, cached_tokens: 0 }
   const prompts: string[] = []
   const clicked: string[] = []
+  const shots: Record<string, unknown>[] = []
   const server = await toolhost(({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, nodes: [{ ref: 0, id: '1.1/1', parent: -1, depth: 0, role: 'frame', name: 'Portal', states: ['showing'], bounds: [0, 0, 10, 10] }], truncated: false })
     if (tool === 'desk_screen') return '{"left":-1280,"top":0,"width":2560,"height":800}'
-    if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(2560, 800).toString('base64') }
+    if (tool === 'desk_shot') { shots.push(args); return { text: '{"ok":true}', image: gray(Number(args.w ?? 2560), Number(args.h ?? 800)).toString('base64') } }
     if (tool === 'desk_at') return '{"found":null,"path":[]}'
     if (tool === 'model_ground') return JSON.stringify({ x: 0, y: 400, usage })
     if (tool === 'model_decide') {
@@ -33,6 +34,7 @@ test('a grounded check on a screen whose origin is left of zero crops around the
     assert.equal(r.ok, true, JSON.stringify(r))
     assert.deepEqual(clicked, ['0,400'])
     assert.match(prompts.find((p) => p.includes('crop')) ?? '', /640x400 crop.*pixel \(320, 200\)/)
+    assert.deepEqual(shots.at(-1), { x: 960, y: 200, w: 640, h: 400 })
   } finally {
     server.close()
   }
