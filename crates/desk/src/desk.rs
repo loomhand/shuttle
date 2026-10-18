@@ -783,9 +783,7 @@ pub(crate) mod tests {
     ];
 
     static ACTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    static CLOSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
     static MENUS: Mutex<Vec<bool>> = Mutex::new(Vec::new());
-    static STALE_CLOSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
     #[derive(Default)]
     pub(crate) struct Fake {
@@ -818,15 +816,13 @@ pub(crate) mod tests {
 
     impl Access for Fake {
         fn frames(&mut self) -> Result<Vec<Frame>, String> {
-            Ok(vec![Frame {
-                id: "w".into(),
-                title: "Untitled - Notepad".into(),
-                role: "window",
-                pid: Some(4),
-                active: true,
-                app: Some("Notepad".into()),
-                stale: false,
-            }])
+            Ok(vec![frame(
+                "w",
+                "Untitled - Notepad",
+                4,
+                true,
+                Some("Notepad"),
+            )])
         }
 
         fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
@@ -920,21 +916,152 @@ pub(crate) mod tests {
         f
     }
 
-    #[test]
-    fn a_window_is_picked_by_exact_then_trimmed_then_contained_title() {
-        let frame = |title: &str, active: bool, pid: u32| Frame {
-            id: title.into(),
+    #[derive(Default)]
+    pub(crate) struct Stub {
+        frames: Vec<Frame>,
+        scoped: bool,
+        closed: Vec<String>,
+        opens: Option<Opens>,
+    }
+
+    impl Stub {
+        fn opens(at: usize, hinted: bool, list_ms: u64) -> Self {
+            Self {
+                opens: Some(Opens {
+                    at,
+                    hinted,
+                    list_ms,
+                    ..Opens::default()
+                }),
+                ..Self::default()
+            }
+        }
+    }
+
+    impl Access for Stub {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            if let Some(o) = &mut self.opens {
+                return Ok(o.frames());
+            }
+            if self.scoped {
+                return Err("every app was read".into());
+            }
+            Ok(self.frames.clone())
+        }
+
+        fn frames_of(&mut self, pid: u32) -> Result<Vec<Frame>, String> {
+            let frames = if self.scoped {
+                self.frames.clone()
+            } else {
+                self.frames()?
+            };
+            Ok(frames.into_iter().filter(|f| f.pid == Some(pid)).collect())
+        }
+
+        fn hint(&mut self) -> Option<u64> {
+            self.opens.as_mut().and_then(Opens::hint)
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            Ok(Tree {
+                frame: frame.clone(),
+                ..Tree::default()
+            })
+        }
+
+        fn node(&mut self, _: &str, _: Extras, _: usize) -> Result<Node, String> {
+            Err("no node".into())
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Ok(false)
+        }
+
+        fn close(&mut self, frame: &Frame) -> Result<(), String> {
+            self.closed.push(frame.id.clone());
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct Opens {
+        at: usize,
+        hinted: bool,
+        list_ms: u64,
+        t: usize,
+        lists: usize,
+        seen: Option<usize>,
+    }
+
+    impl Opens {
+        fn frames(&mut self) -> Vec<Frame> {
+            self.lists += 1;
+            std::thread::sleep(Duration::from_millis(self.list_ms));
+            if !self.hinted {
+                self.t += 1;
+            }
+            if self.t >= self.at {
+                self.seen.get_or_insert(self.t);
+            }
+            if self.t >= self.at {
+                vec![
+                    frame("save", "Save", 4, true, None),
+                    frame("main", "Untitled", 4, false, None),
+                ]
+            } else {
+                vec![frame("main", "Untitled", 4, true, None)]
+            }
+        }
+
+        fn hint(&mut self) -> Option<u64> {
+            self.hinted.then(|| {
+                self.t += 1;
+                u64::from(self.t >= self.at)
+            })
+        }
+    }
+
+    fn frame(id: &str, title: &str, pid: u32, active: bool, app: Option<&str>) -> Frame {
+        Frame {
+            id: id.into(),
             title: title.into(),
             role: "window",
             pid: Some(pid),
             active,
-            app: None,
+            app: app.map(str::to_owned),
             stale: false,
-        };
+        }
+    }
+
+    fn one_app() -> Stub {
+        Stub {
+            frames: vec![frame("w", "Untitled - Notepad", 4, true, Some("Notepad"))],
+            scoped: true,
+            ..Stub::default()
+        }
+    }
+
+    async fn closed<D: Input + Sync>(desk: &Desk<Stub, D>) -> Vec<String> {
+        desk.access
+            .run(CALL_LIMIT, (), |b| Ok(b.closed.clone()))
+            .await
+            .unwrap()
+    }
+
+    #[test]
+    fn a_window_is_picked_by_exact_then_trimmed_then_contained_title() {
         let frames = vec![
-            frame("Untitled - Notepad", false, 7),
-            frame("Save As", true, 7),
-            frame("Settings", false, 9),
+            frame("Untitled - Notepad", "Untitled - Notepad", 7, false, None),
+            frame("Save As", "Save As", 7, true, None),
+            frame("Settings", "Settings", 9, false, None),
         ];
         assert_eq!(
             window::pick(frames.clone(), None, None).unwrap().title,
@@ -1012,55 +1139,22 @@ pub(crate) mod tests {
         }
     }
 
-    struct Twins;
-
-    impl Access for Twins {
-        fn frames(&mut self) -> Result<Vec<Frame>, String> {
-            let frame = |id: &str, active: bool| Frame {
-                id: id.into(),
-                title: "Untitled - Notepad".into(),
-                role: "window",
-                pid: Some(4),
-                active,
-                app: None,
-                stale: false,
-            };
-            Ok(vec![frame("front", true), frame("back", false)])
-        }
-
-        fn tree(&mut self, _: &Frame, _: Extras) -> Result<Tree, String> {
-            Err("no tree".into())
-        }
-
-        fn node(&mut self, _: &str, _: Extras, _: usize) -> Result<Node, String> {
-            Err("no node".into())
-        }
-
-        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
-            Ok(Vec::new())
-        }
-
-        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
-            Ok(None)
-        }
-
-        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
-            Ok(false)
-        }
-
-        fn close(&mut self, frame: &Frame) -> Result<(), String> {
-            CLOSED.lock().unwrap().push(frame.id.clone());
-            Ok(())
-        }
-    }
-
     #[tokio::test]
     async fn closing_one_of_two_same_titled_windows_closes_the_active_one() {
-        let desk = Desk::new(|| Ok(Twins), Slow(Arc::default()), Os::Mac);
+        let twins = || {
+            Ok(Stub {
+                frames: vec![
+                    frame("front", "Untitled - Notepad", 4, true, None),
+                    frame("back", "Untitled - Notepad", 4, false, None),
+                ],
+                ..Stub::default()
+            })
+        };
+        let desk = Desk::new(twins, Slow(Arc::default()), Os::Mac);
         desk.run("desk_close", json!({"window": "Untitled - Notepad"}))
             .await
             .unwrap();
-        assert_eq!(*CLOSED.lock().unwrap(), ["front"]);
+        assert_eq!(closed(&desk).await, ["front"]);
     }
 
     #[tokio::test]
@@ -1076,53 +1170,18 @@ pub(crate) mod tests {
         assert_eq!(*MENUS.lock().unwrap(), [false, true, true]);
     }
 
-    struct Busy;
-
-    impl Access for Busy {
-        fn frames(&mut self) -> Result<Vec<Frame>, String> {
-            Ok(vec![Frame {
-                id: "w".into(),
-                title: "Draft".into(),
-                role: "window",
-                pid: Some(4),
-                active: true,
-                app: None,
-                stale: true,
-            }])
-        }
-
-        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
-            Ok(Tree {
-                frame: frame.clone(),
-                ..Tree::default()
-            })
-        }
-
-        fn node(&mut self, _: &str, _: Extras, _: usize) -> Result<Node, String> {
-            Err("no node".into())
-        }
-
-        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
-            Ok(Vec::new())
-        }
-
-        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
-            Ok(None)
-        }
-
-        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
-            Ok(false)
-        }
-
-        fn close(&mut self, frame: &Frame) -> Result<(), String> {
-            STALE_CLOSED.lock().unwrap().push(frame.title.clone());
-            Ok(())
-        }
-    }
-
     #[tokio::test]
     async fn a_window_kept_from_an_earlier_list_is_listed_but_never_acted_on() {
-        let desk = Desk::new(|| Ok(Busy), Slow(Arc::default()), Os::Mac);
+        let busy = || {
+            Ok(Stub {
+                frames: vec![Frame {
+                    stale: true,
+                    ..frame("w", "Draft", 4, true, None)
+                }],
+                ..Stub::default()
+            })
+        };
+        let desk = Desk::new(busy, Slow(Arc::default()), Os::Mac);
         let listed = desk.run("desk_windows", json!({})).await.unwrap();
         assert!(listed.text.contains("Draft"), "{}", listed.text);
         for (tool, args) in [
@@ -1133,68 +1192,12 @@ pub(crate) mod tests {
             let err = desk.run(tool, args).await.unwrap_err();
             assert!(err.contains("stale"), "{tool}: {err}");
         }
-        assert!(STALE_CLOSED.lock().unwrap().is_empty());
-    }
-
-    struct OneApp {
-        scoped: bool,
-    }
-
-    impl Access for OneApp {
-        fn frames(&mut self) -> Result<Vec<Frame>, String> {
-            if self.scoped {
-                return Err("every app was read".into());
-            }
-            self.frames_of(4)
-        }
-
-        fn frames_of(&mut self, pid: u32) -> Result<Vec<Frame>, String> {
-            Ok(vec![Frame {
-                id: "w".into(),
-                title: "Untitled - Notepad".into(),
-                role: "window",
-                pid: Some(pid),
-                active: true,
-                app: Some("Notepad".into()),
-                stale: false,
-            }])
-        }
-
-        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
-            Ok(Tree {
-                frame: frame.clone(),
-                ..Tree::default()
-            })
-        }
-
-        fn node(&mut self, _: &str, _: Extras, _: usize) -> Result<Node, String> {
-            Err("no node".into())
-        }
-
-        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
-            Ok(Vec::new())
-        }
-
-        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
-            Ok(None)
-        }
-
-        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
-            Ok(false)
-        }
-
-        fn close(&mut self, _: &Frame) -> Result<(), String> {
-            Ok(())
-        }
+        assert!(closed(&desk).await.is_empty());
     }
 
     #[tokio::test]
     async fn a_call_that_names_a_process_reads_only_that_app_s_windows() {
-        let desk = Desk::new(
-            || Ok(OneApp { scoped: true }),
-            Slow(Arc::default()),
-            Os::Mac,
-        );
+        let desk = Desk::new(|| Ok(one_app()), Slow(Arc::default()), Os::Mac);
         for (tool, args) in PID_CALLS {
             desk.run(tool, serde_json::from_str(args).unwrap())
                 .await
@@ -1205,12 +1208,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn with_an_allowlist_a_call_that_names_a_process_still_reads_every_window() {
-        let desk = Desk::new(
-            || Ok(OneApp { scoped: true }),
-            Slow(Arc::default()),
-            Os::Mac,
-        )
-        .allow(vec!["Notepad".into()]);
+        let desk = Desk::new(|| Ok(one_app()), Slow(Arc::default()), Os::Mac)
+            .allow(vec!["Notepad".into()]);
         for (tool, args) in PID_CALLS {
             let err = desk
                 .run(tool, serde_json::from_str(args).unwrap())
@@ -1515,18 +1514,9 @@ pub(crate) mod tests {
 
     impl Access for Apps {
         fn frames(&mut self) -> Result<Vec<Frame>, String> {
-            let frame = |id: &str, title: &str, pid: u32, active: bool, app: &str| Frame {
-                id: id.into(),
-                title: title.into(),
-                role: "window",
-                pid: Some(pid),
-                active,
-                app: Some(app.into()),
-                stale: false,
-            };
             Ok(vec![
-                frame("4/1", "Untitled - Notepad", 4, true, "Notepad.exe"),
-                frame("8/1", "Inbox", 8, false, "Mail"),
+                frame("4/1", "Untitled - Notepad", 4, true, Some("Notepad.exe")),
+                frame("8/1", "Inbox", 8, false, Some("Mail")),
             ])
         }
 
@@ -1808,88 +1798,6 @@ pub(crate) mod tests {
         );
     }
 
-    #[derive(Default)]
-    struct Opens {
-        at: usize,
-        hinted: bool,
-        list_ms: u64,
-        t: usize,
-        lists: usize,
-        seen: Option<usize>,
-    }
-
-    impl Opens {
-        fn new(at: usize, hinted: bool, list_ms: u64) -> Self {
-            Self {
-                at,
-                hinted,
-                list_ms,
-                ..Self::default()
-            }
-        }
-    }
-
-    impl Access for Opens {
-        fn frames(&mut self) -> Result<Vec<Frame>, String> {
-            self.lists += 1;
-            std::thread::sleep(Duration::from_millis(self.list_ms));
-            if !self.hinted {
-                self.t += 1;
-            }
-            let frame = |id: &str, title: &str, active: bool| Frame {
-                id: id.into(),
-                title: title.into(),
-                role: "window",
-                pid: Some(4),
-                active,
-                app: None,
-                stale: false,
-            };
-            if self.t >= self.at {
-                self.seen.get_or_insert(self.t);
-            }
-            Ok(if self.t >= self.at {
-                vec![
-                    frame("save", "Save", true),
-                    frame("main", "Untitled", false),
-                ]
-            } else {
-                vec![frame("main", "Untitled", true)]
-            })
-        }
-
-        fn hint(&mut self) -> Option<u64> {
-            self.hinted.then(|| {
-                self.t += 1;
-                u64::from(self.t >= self.at)
-            })
-        }
-
-        fn tree(&mut self, _: &Frame, _: Extras) -> Result<Tree, String> {
-            Err("no tree".into())
-        }
-
-        fn node(&mut self, _: &str, _: Extras, _: usize) -> Result<Node, String> {
-            Err("no node".into())
-        }
-
-        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
-            Ok(Vec::new())
-        }
-
-        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
-            Ok(None)
-        }
-
-        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
-            Ok(false)
-        }
-
-        fn close(&mut self, _: &Frame) -> Result<(), String> {
-            Ok(())
-        }
-    }
-
     async fn wait_on<B: Access + 'static>(
         desk: &Desk<B, Slow>,
         timeout_ms: u64,
@@ -1907,9 +1815,11 @@ pub(crate) mod tests {
         (serde_json::from_str(&out.text).unwrap(), started.elapsed())
     }
 
-    async fn lists(desk: &Desk<Opens, Slow>) -> usize {
+    async fn lists(desk: &Desk<Stub, Slow>) -> usize {
         desk.access
-            .run(CALL_LIMIT, (), |b| Ok(b.lists))
+            .run(CALL_LIMIT, (), |b| {
+                Ok(b.opens.as_ref().map_or(0, |o| o.lists))
+            })
             .await
             .unwrap()
     }
@@ -1917,7 +1827,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_wait_returns_the_new_window_list_once_a_window_opens() {
         let desk = Desk::new(
-            || Ok(Opens::new(3, false, 0)),
+            || Ok(Stub::opens(3, false, 0)),
             Slow(Arc::default()),
             Os::Mac,
         );
@@ -1930,7 +1840,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_wait_without_a_change_returns_the_same_list_at_its_timeout() {
         let desk = Desk::new(
-            || Ok(Opens::new(usize::MAX, false, 0)),
+            || Ok(Stub::opens(usize::MAX, false, 0)),
             Slow(Arc::default()),
             Os::Mac,
         );
@@ -1943,7 +1853,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn slow_window_lists_stretch_a_wait_like_a_poll_loop() {
         let desk = Desk::new(
-            || Ok(Opens::new(usize::MAX, false, 40)),
+            || Ok(Stub::opens(usize::MAX, false, 40)),
             Slow(Arc::default()),
             Os::Mac,
         );
@@ -1959,7 +1869,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_wait_ended_early_frees_the_desk_at_once() {
         let desk = Arc::new(Desk::new(
-            || Ok(Opens::new(usize::MAX, true, 0)),
+            || Ok(Stub::opens(usize::MAX, true, 0)),
             Slow(Arc::default()),
             Os::Mac,
         ));
@@ -1996,7 +1906,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_hint_change_right_after_a_slow_list_reads_the_list_at_once() {
         let desk = Desk::new(
-            || Ok(Opens::new(12, true, 150)),
+            || Ok(Stub::opens(12, true, 150)),
             Slow(Arc::default()),
             Os::Mac,
         );
@@ -2004,7 +1914,9 @@ pub(crate) mod tests {
         assert_eq!(out["changed"], true);
         let seen = desk
             .access
-            .run(CALL_LIMIT, (), |b| Ok(b.seen))
+            .run(CALL_LIMIT, (), |b| {
+                Ok(b.opens.as_ref().and_then(|o| o.seen))
+            })
             .await
             .unwrap();
         assert_eq!(seen, Some(12));
@@ -2030,7 +1942,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_steady_hint_spares_full_window_lists() {
         let desk = Desk::new(
-            || Ok(Opens::new(usize::MAX, true, 0)),
+            || Ok(Stub::opens(usize::MAX, true, 0)),
             Slow(Arc::default()),
             Os::Mac,
         );
@@ -2041,7 +1953,11 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_hint_change_reads_the_window_list_at_once() {
-        let desk = Desk::new(|| Ok(Opens::new(3, true, 0)), Slow(Arc::default()), Os::Mac);
+        let desk = Desk::new(
+            || Ok(Stub::opens(3, true, 0)),
+            Slow(Arc::default()),
+            Os::Mac,
+        );
         let (out, took) = wait_on(&desk, 2000).await;
         assert_eq!(out["changed"], true);
         assert_eq!(lists(&desk).await, 2);

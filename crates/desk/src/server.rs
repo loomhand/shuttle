@@ -215,40 +215,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+    use crate::desk::tests::Stub;
     use crate::keys::Os;
-    use crate::model::{Act, Extras, Frame, Node, Tree};
-
-    struct Empty;
-
-    impl Access for Empty {
-        fn frames(&mut self) -> Result<Vec<Frame>, String> {
-            Ok(Vec::new())
-        }
-
-        fn tree(&mut self, _: &Frame, _: Extras) -> Result<Tree, String> {
-            Err("no tree".into())
-        }
-
-        fn node(&mut self, _: &str, _: Extras, _: usize) -> Result<Node, String> {
-            Err("no node".into())
-        }
-
-        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
-            Ok(Vec::new())
-        }
-
-        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
-            Ok(None)
-        }
-
-        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
-            Ok(false)
-        }
-
-        fn close(&mut self, _: &Frame) -> Result<(), String> {
-            Ok(())
-        }
-    }
 
     struct NoDriver;
 
@@ -256,6 +224,18 @@ mod tests {
         async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
             Err(format!("{tool}: no driver"))
         }
+    }
+
+    async fn answer(endpoint: &str, ask: &Call) -> Result<Output, String> {
+        let mut out = Err(String::new());
+        for _ in 0..50 {
+            out = call(endpoint, ask).await;
+            if out.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        out
     }
 
     #[tokio::test]
@@ -293,15 +273,13 @@ mod tests {
             tool: "desk_screen".into(),
             args: json!({}),
         };
-        let mut out = Err(String::new());
-        for _ in 0..50 {
-            out = call(&endpoint, &ask).await;
-            if out.is_ok() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        assert!(out.unwrap().text.contains("no desk backend"));
+        assert!(
+            answer(&endpoint, &ask)
+                .await
+                .unwrap()
+                .text
+                .contains("no desk backend")
+        );
         a.abort();
         b.abort();
     }
@@ -310,7 +288,7 @@ mod tests {
     async fn the_socket_answers_desk_calls_with_toolhost_frames() {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
-        let desk = Arc::new(Desk::new(|| Ok(Empty), NoDriver, Os::Mac));
+        let desk = Arc::new(Desk::new(|| Ok(Stub::default()), NoDriver, Os::Mac));
         let server = tokio::spawn({
             let endpoint = endpoint.clone();
             async move { serve(desk, bind(&endpoint).await?).await }
@@ -320,15 +298,13 @@ mod tests {
             tool: tool.into(),
             args,
         };
-        let mut out = Err(String::new());
-        for _ in 0..50 {
-            out = call(&endpoint, &ask("desk_windows", json!({}))).await;
-            if out.is_ok() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        assert_eq!(out.unwrap().text, "[]");
+        assert_eq!(
+            answer(&endpoint, &ask("desk_windows", json!({})))
+                .await
+                .unwrap()
+                .text,
+            "[]"
+        );
         let missing = call(&endpoint, &ask("desk_snapshot", json!({})))
             .await
             .unwrap();
