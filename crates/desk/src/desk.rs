@@ -39,6 +39,7 @@ const TREE_LIMIT: Duration = Duration::from_secs(10);
 const READ_CHARS: usize = 64 << 10;
 const NO_WINDOW_UNDER: &str =
     "no window under the point, and the app allowlist admits only windows";
+const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
 
 type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
 
@@ -450,6 +451,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         };
         at(&mut win, k);
         match self.driver.call("click", win.clone()).await {
+            Err(e) if e.contains(NO_WINDOWSERVER_CONNECTION) => {
+                self.driver.call("click", desktop(req)).await?;
+            }
             Err(e) if cached.is_some() && e.contains("window_never_read") => {
                 match self.pixels(w).await? {
                     Some(k) => {
@@ -1603,6 +1607,49 @@ mod tests {
                 _ => json!({}),
             })
         }
+    }
+
+    struct NoConnection(Arc<Mutex<Vec<Value>>>);
+
+    impl Input for NoConnection {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            Ok(match tool {
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 7, "window_id": 40, "layer": 0, "z_index": 5, "bounds": {"x": 0.0, "y": 0.0, "width": 300.0, "height": 200.0}}
+                ]}}),
+                "get_window_state" => json!({"structuredContent": {
+                    "screenshot_width": 300, "screenshot_height": 200,
+                    "window_bounds": {"x": 0.0, "y": 0.0, "width": 300.0, "height": 200.0}
+                }}),
+                "click" if args.get("window_id").is_some() => {
+                    return Err(
+                        "click: Background input is not available for pid 7: the WindowServer \
+                        connection is invalid (SLPSPostEventRecordTo returned 1002). Run the \
+                        app-bundle daemon: `open -n -g -a CuaDriver --args serve`."
+                            .into(),
+                    );
+                }
+                "click" => {
+                    self.0.lock().unwrap().push(args);
+                    json!({})
+                }
+                _ => json!({}),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_macos_window_click_the_driver_refuses_for_an_invalid_windowserver_connection_goes_to_the_desktop()
+     {
+        let clicks = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(notepad()), NoConnection(clicks.clone()), Os::Mac);
+        desk.run("desk_click", json!({"x": 20.0, "y": 30.0}))
+            .await
+            .unwrap();
+        assert_eq!(
+            *clicks.lock().unwrap(),
+            [json!({"x": 20.0, "y": 30.0, "scope": "desktop"})]
+        );
     }
 
     #[tokio::test]
