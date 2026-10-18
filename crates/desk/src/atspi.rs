@@ -2,6 +2,7 @@
 //! where the cache lacks children or their order, plus live reads and actions on one node.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use futures_util::future::join_all;
@@ -28,6 +29,7 @@ const DBUS: &str = "org.freedesktop.DBus";
 const DBUS_PATH: &str = "/org/freedesktop/DBus";
 const CALL_TIMEOUT: Duration = Duration::from_secs(3);
 const HUNG_FOR: Duration = Duration::from_secs(10);
+const APP_FRAMES: Duration = Duration::from_millis(500);
 const MAX_NODES: usize = 2500;
 const MAX_DEPTH: usize = 64;
 const MANAGED_KIDS: i32 = 200;
@@ -375,10 +377,13 @@ type OldItem = (
     Vec<u32>,
 );
 
+/// The apps that stopped answering, by bus name, with when; shared by every client, so a restarted worker keeps skipping them.
+static HUNG: LazyLock<std::sync::Mutex<HashMap<String, Instant>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
 /// A lazily opened connection to the accessibility bus, shared by all calls.
 pub struct Atspi {
     conn: Mutex<Option<Connection>>,
-    hung: std::sync::Mutex<HashMap<String, Instant>>,
 }
 
 impl Default for Atspi {
@@ -391,41 +396,45 @@ impl Atspi {
     pub fn new() -> Self {
         Self {
             conn: Mutex::new(None),
-            hung: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
-    /// The accessible top-level windows of every app, with their pids.
+    /// The accessible top-level windows of every app, with their pids; an app that takes over [`APP_FRAMES`] is left out and skipped for a while.
     pub async fn frames(&self) -> Result<Vec<Frame>, String> {
         let registry = Obj {
             bus: REGISTRY.to_owned(),
             path: ROOT.to_owned(),
         };
         let apps = self.children(&registry).await?;
-        let per_app = join_all(apps.iter().map(|app| async move {
-            let (kids, pid) = tokio::join!(self.children(app), self.pid(&app.bus));
-            let Ok(kids) = kids else {
-                return Vec::new();
-            };
-            let pid = pid.ok();
-            join_all(kids.into_iter().map(|obj| async move {
-                let (role, name, states) =
-                    tokio::join!(self.role(&obj), self.name(&obj), self.state(&obj));
-                Some(Frame {
-                    role: role.ok()?,
-                    name: name.unwrap_or_default(),
-                    states: states.ok()?,
-                    obj,
-                    pid,
-                })
-            }))
-            .await
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-        }))
+        let per_app = join_all(
+            apps.iter()
+                .map(|app| async move { capped(&app.bus, self.app_frames(app)).await }),
+        )
         .await;
         Ok(per_app.into_iter().flatten().collect())
+    }
+
+    async fn app_frames(&self, app: &Obj) -> Vec<Frame> {
+        let (kids, pid) = tokio::join!(self.children(app), self.pid(&app.bus));
+        let Ok(kids) = kids else {
+            return Vec::new();
+        };
+        let pid = pid.ok();
+        join_all(kids.into_iter().map(|obj| async move {
+            let (role, name, states) =
+                tokio::join!(self.role(&obj), self.name(&obj), self.state(&obj));
+            Some(Frame {
+                role: role.ok()?,
+                name: name.unwrap_or_default(),
+                states: states.ok()?,
+                obj,
+                pid,
+            })
+        }))
+        .await
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
     }
 
     /// The tree under `frame`: shown nodes in preorder, with `extras` read live.
@@ -874,18 +883,14 @@ impl Atspi {
             Ok(Ok(reply)) => Ok(reply),
             Ok(Err(e)) => Err(format!("{iface}.{method} on {}: {e}", obj.id())),
             Err(_) => {
-                self.hung
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(obj.bus.clone(), Instant::now());
+                mark_hung(&obj.bus);
                 Err(not_responding(&obj.bus))
             }
         }
     }
 
     fn is_hung(&self, bus: &str) -> bool {
-        let mut hung = self
-            .hung
+        let mut hung = HUNG
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         hung.retain(|_, at| at.elapsed() < HUNG_FOR);
@@ -920,6 +925,23 @@ impl Atspi {
     /// Drops the connection so that the next call opens a new one.
     pub async fn reset(&self) {
         *self.conn.lock().await = None;
+    }
+}
+
+fn mark_hung(bus: &str) {
+    HUNG.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(bus.to_owned(), Instant::now());
+}
+
+/// The frames `read` finds for the app on `bus` within [`APP_FRAMES`], else none, and the app is skipped for a while.
+async fn capped(bus: &str, read: impl Future<Output = Vec<Frame>>) -> Vec<Frame> {
+    match tokio::time::timeout(APP_FRAMES, read).await {
+        Ok(frames) => frames,
+        Err(_) => {
+            mark_hung(bus);
+            Vec::new()
+        }
     }
 }
 
@@ -1204,6 +1226,17 @@ fn not_responding(bus: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn an_app_that_never_answers_is_left_out_and_skipped_by_a_new_client() {
+        let started = tokio::time::Instant::now();
+        let frames = capped(":9.99", std::future::pending()).await;
+        assert!(frames.is_empty());
+        assert_eq!(started.elapsed(), APP_FRAMES);
+        assert!(Atspi::new().is_hung(":9.99"));
+        let answered = capped(":9.98", async { Vec::new() }).await;
+        assert!(answered.is_empty() && !Atspi::new().is_hung(":9.98"));
+    }
 
     #[test]
     fn an_id_round_trips_to_its_object() {
