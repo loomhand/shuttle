@@ -47,8 +47,8 @@ Both installers download the archive and the release's `SHA256SUMS`, refuse an a
    ```
 
    [safety.md](safety.md) describes each control and its limits.
-5. **Add shuttle to your agent:** `claude mcp add shuttle -- cocoon-shuttle mcp` (Codex and Cursor: see the [README](https://github.com/loomhand/shuttle#use-it-from-an-agent)). The first tool call starts the daemon.
-6. **Check it:** ask the agent to call shuttle's `status` tool, then to list your windows with the `desk` tool (verb `windows`). With the allowlist above, only TextEdit's windows show.
+5. **Add shuttle to your agent:** `claude mcp add shuttle -- cocoon-shuttle mcp` (Codex and Cursor: see the [README](https://github.com/loomhand/shuttle#use-it-from-an-agent)). The first tool call other than `status` starts the daemon.
+6. **Check it:** ask the agent to call shuttle's `status` tool, which answers without the daemon, then to list your windows with the `desk` tool (verb `windows`), which starts it. With the allowlist above, only TextEdit's windows show.
 
 ## What an archive holds
 
