@@ -62,8 +62,8 @@ pub fn asker() -> Asker {
 }
 
 fn ask(mtm: MainThreadMarker, question: &str, tx: oneshot::Sender<bool>) {
-    let app = NSApplication::sharedApplication(mtm);
-    app.activate();
+    #[allow(deprecated)]
+    NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
     let alert = NSAlert::new(mtm);
     alert.setMessageText(&NSString::from_str("Cocoon Shuttle"));
     alert.setInformativeText(&NSString::from_str(question));
