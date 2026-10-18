@@ -27,6 +27,8 @@ pub struct Config {
     pub timeout_ms: u64,
     pub decide_api: DecideApi,
     pub models: Roles,
+    pub safety: Safety,
+    pub tools: Tools,
 }
 
 impl Default for Config {
@@ -39,6 +41,8 @@ impl Default for Config {
             timeout_ms: DEFAULT_TIMEOUT_MS,
             decide_api: DecideApi::default(),
             models: Roles::default(),
+            safety: Safety::default(),
+            tools: Tools::default(),
         }
     }
 }
@@ -101,6 +105,26 @@ impl Default for Roles {
             ground: DEFAULT_GROUND.to_owned(),
             ask: DEFAULT_ASK.to_owned(),
         }
+    }
+}
+
+/// The safety controls: `apps` limits the desk calls to windows of those apps, matched by app name or executable; empty allows every app.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Safety {
+    pub apps: Vec<String>,
+}
+
+/// The tools a user can turn off.
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Tools {
+    pub script_run: bool,
+}
+
+impl Default for Tools {
+    fn default() -> Self {
+        Self { script_run: true }
     }
 }
 
