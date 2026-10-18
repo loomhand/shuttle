@@ -30,6 +30,11 @@ licenses() {
 	cp "$3/THIRD_PARTY_NOTICES.md" "$1/cua-driver-THIRD_PARTY_NOTICES.md"
 }
 
+# runtime NODE DIR: the runtime with its types stripped, so no run loads Node's type stripper
+runtime() {
+	"$1" --disable-warning=ExperimentalWarning "$ROOT/packaging/runtime.mjs" "$ROOT/runtime/lib" "$2"
+}
+
 node=$("$ROOT/packaging/fetch.sh" "$PLATFORM" node "$WORK")
 cua=$("$ROOT/packaging/fetch.sh" "$PLATFORM" cua-driver "$WORK")
 stage="$WORK/stage"
@@ -43,7 +48,7 @@ macos-*)
 	install -m 0755 "$cua/cua-driver" "$cua/cua-cursor-theme" "$node/bin/node" "$app/Contents/MacOS/"
 	sed -e "s/@NAME@/$NAME/" -e "s/@APP@/$APP/" -e "s/@BUNDLE_ID@/$BUNDLE_ID/" -e "s/@VERSION@/${VERSION#v}/" \
 		"$ROOT/packaging/macos/Info.plist" >"$app/Contents/Info.plist"
-	cp -R "$ROOT/runtime/lib" "$app/Contents/Resources/runtime"
+	runtime "$node/bin/node" "$app/Contents/Resources/runtime"
 	licenses "$app/Contents/Resources/licenses" "$node" "$cua"
 	# node keeps its own signature; the unsigned x86_64 cua-driver binaries need one inside a signed bundle.
 	codesign --force --sign - "$app/Contents/MacOS/cua-driver" "$app/Contents/MacOS/cua-cursor-theme"
@@ -57,7 +62,7 @@ linux-*)
 	install -m 0755 "$BIN" "$dir/$NAME"
 	install -m 0755 "$cua/cua-driver" "$cua/cua-cursor-theme" "$node/bin/node" "$dir/"
 	cp -R "$cua/wayland-helper" "$dir/wayland-helper"
-	cp -R "$ROOT/runtime/lib" "$dir/runtime"
+	runtime "$node/bin/node" "$dir/runtime"
 	licenses "$dir/licenses" "$node" "$cua"
 	tar -czf "$archive.tar.gz" -C "$stage" "$NAME"
 	;;
@@ -66,7 +71,7 @@ windows-*)
 	mkdir -p "$dir"
 	cp "$BIN.exe" "$dir/$NAME.exe"
 	cp "$cua/cua-driver.exe" "$cua/cua-cursor-theme.exe" "$node/node.exe" "$dir/"
-	cp -R "$ROOT/runtime/lib" "$dir/runtime"
+	runtime "$node/node.exe" "$dir/runtime"
 	licenses "$dir/licenses" "$node" "$cua"
 	(cd "$stage" && 7z a -tzip -bso0 "$archive.zip" "$NAME")
 	;;

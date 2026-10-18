@@ -91,7 +91,7 @@ impl Runner {
         let scratch = scratch()?;
         let mut report = self
             .run(
-                &self.runtime.join("gui_plan.mts"),
+                &self.module("gui_plan"),
                 &args,
                 timeout_s,
                 scratch.path(),
@@ -119,7 +119,7 @@ impl Runner {
             Duration::from_secs(timeout_s.unwrap_or(DEFAULT_TIMEOUT_S).min(MAX_TIMEOUT_S));
         let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
         let mut cmd = Command::new(&self.node);
-        cmd.arg(self.runtime.join("entry.mts"))
+        cmd.arg(self.module("entry"))
             .current_dir(home.map_or_else(|| scratch.to_path_buf(), PathBuf::from))
             .env("TOOLHOST_SOCKET", &self.endpoint)
             .env("SHUTTLE_SCRIPT", script)
@@ -198,6 +198,15 @@ impl Runner {
             Err(_) => Value::Null,
         };
         Ok(report)
+    }
+
+    fn module(&self, name: &str) -> PathBuf {
+        let ext = if self.runtime.join("entry.mjs").is_file() {
+            "mjs"
+        } else {
+            "mts"
+        };
+        self.runtime.join(format!("{name}.{ext}"))
     }
 }
 
@@ -375,6 +384,40 @@ mod tests {
         let report = r.script(json!({"code": code}), "run-test").await.unwrap();
         let modes: Vec<u32> = serde_json::from_value(report["result"].clone()).unwrap();
         assert_eq!(modes, [0o700, 0o600, 0o600], "{report}");
+    }
+
+    #[tokio::test]
+    async fn a_packaged_runtime_runs_its_stripped_modules_for_scripts_and_plans() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let built = std::process::Command::new("node")
+            .arg(root.join("packaging/runtime.mjs"))
+            .arg(root.join("runtime/lib"))
+            .arg(dir.path())
+            .status()
+            .unwrap();
+        assert!(built.success());
+        let mut names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["desk.mjs", "entry.mjs", "gui_plan.mjs", "png.mjs"]);
+        let r = Runner::new(
+            "node".into(),
+            dir.path().to_path_buf(),
+            "unused".into(),
+            dir.path().join("flows"),
+            Vec::new(),
+        );
+        let code = "export function main(p: { n: number }): string { return `${p.n} ${typeof globalThis.desk.windows}` }";
+        let report = r
+            .script(json!({"code": code, "params": {"n": 1}}), "run-test")
+            .await
+            .unwrap();
+        assert_eq!(report["result"], "1 function", "{report}");
+        let plan = r.plan(json!({"steps": []}), "run-test").await.unwrap();
+        assert_eq!(plan["error"], "pass steps, flow or find", "{plan}");
     }
 
     #[tokio::test]

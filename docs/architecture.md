@@ -12,8 +12,8 @@ cocoon-shuttle mcp ───────── one per agent session; a thin pro
 cocoon-shuttle serve ─────── one per user; owns the desktop, the model keys and the safety controls
   ├── desk verbs ─────────── AX (macOS), UI Automation (Windows), AT-SPI (Linux, P3)
   ├── cua-driver ─────────── the bundled driver, a child on the daemon's own socket or pipe: input, window focus, launch, capture
-  └── node ───────────────── child process per gui_plan / script_run, running runtime/*.mts;
-                             desk.mts calls back over the same desk wire
+  └── node ───────────────── child process per gui_plan / script_run, running the runtime;
+                             desk.mjs calls back over the same desk wire
 ```
 
 - **`cocoon-shuttle mcp`** speaks MCP to the agent and forwards the `desk` and `screenshot` tools to the daemon, starting it when nothing listens (from an app bundle through `open -n -g -a`, a new instance, since a bundled cua-driver already counts as the running app; else as a detached `serve`). A call that may have reached the daemon is never sent twice. `gui_plan` and `script_run` go there too: the daemon runs them on the bundled Node with `TOOLHOST_SOCKET` naming its endpoint, so the runtime's desk and model calls come back to it.
@@ -36,7 +36,7 @@ shuttle is thin and embeddable: it sends each model call once, non-streaming, to
 | `crates/shuttle` | The `cocoon-shuttle` binary: the MCP proxy (`mcp`), the daemon and its script runner (`serve`), `desk VERB`, `stop` and `resume`, and the safety controls (kill hotkey, indicator, confirm dialog) |
 | `runtime/lib` | `desk.mts` (the desk API for scripts) and `gui_plan.mts` (the plan executor, flows and replays) |
 | `runtime/test` | Node tests that drive the runtime against fake desk sockets and fake model servers |
-| `packaging` | The release archive builder, the third-party pins, the macOS bundle template and the installers |
+| `packaging` | The release archive builder, the runtime type stripper, the third-party pins, the macOS bundle template and the installers |
 
 ## Dependency plan with cocoonbox
 
