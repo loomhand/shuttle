@@ -4,8 +4,8 @@ macos-x64 node 495e3f273c645f3c4677d438304cdfc701729ea5dec5728f5c8e76a2dece4b91 
 linux-x64 node cc2f601cee82d9a5a233302fe307abc600727035fd7d2c3a3571755989e95008 https://nodejs.org/dist/v24.22.0/node-v24.22.0-linux-x64.tar.xz
 linux-arm64 node fef00bb4d36e1c50104a9775a10359beee98f162b4104dd12472c75065c6a143 https://nodejs.org/dist/v24.22.0/node-v24.22.0-linux-arm64.tar.xz
 windows-x64 node f9683a19877e12a9b167305c8db71040d812876359de21f0d2e97c3f321f80c3 https://nodejs.org/dist/v24.22.0/node-v24.22.0-win-x64.zip
-macos-arm64 cua-driver d38a6a674761d438541961905381fdc57ad47459537685a3d3ff780a97f6ef4d https://github.com/loomhand/cua/releases/download/v0.36.0-loomhand.4/cua-driver-v0.36.0-loomhand.4-macos-arm64.tar.gz
-macos-x64 cua-driver 008d2c68c1ad1c88e23c5b2c3f73c7f89966cc6ce5ca6c972402619dc7f9b687 https://github.com/loomhand/cua/releases/download/v0.36.0-loomhand.4/cua-driver-v0.36.0-loomhand.4-macos-x86_64.tar.gz
-linux-x64 cua-driver a62846d2e8c6ca053d3404cb5879ec72efee286c5aeb7b22e918450ae157e819 https://github.com/loomhand/cua/releases/download/v0.36.0-loomhand.4/cua-driver-v0.36.0-loomhand.4-linux-x86_64.tar.gz
-linux-arm64 cua-driver 5dd6706bc35d561d78dab40dacf77d77f775db2f604de7c1cfeb8776f54741ae https://github.com/loomhand/cua/releases/download/v0.36.0-loomhand.4/cua-driver-v0.36.0-loomhand.4-linux-arm64.tar.gz
-windows-x64 cua-driver 45b5a9dd0ebf3b14d1c3ebc7d42ae60b7c9c6225a0ff2e281d753e97348ed9f1 https://github.com/loomhand/cua/releases/download/v0.36.0-loomhand.4/cua-driver-v0.36.0-loomhand.4-windows-x86_64.zip
+macos-arm64 cua-driver b4a88284515770d5fa7bf47d97ac8a8c8d48632fe7daeb540fb887f389bbb020 https://github.com/loomhand/cua/releases/download/v0.36.0-loomhand.5/cua-driver-v0.36.0-loomhand.5-macos-arm64.tar.gz
+macos-x64 cua-driver 2f585e3847829ef6ddcaeb28aa3e331d3cd2ce16ce0693cb6f074e63fe3c17d3 https://github.com/loomhand/cua/releases/download/v0.36.0-loomhand.5/cua-driver-v0.36.0-loomhand.5-macos-x86_64.tar.gz
+linux-x64 cua-driver cdceee22f672d1ad417d39f0541d1b0c181154ea0bd704d75a26f3c4f951e190 https://github.com/loomhand/cua/releases/download/v0.36.0-loomhand.5/cua-driver-v0.36.0-loomhand.5-linux-x86_64.tar.gz
+linux-arm64 cua-driver 5c4df923fdbfa90c21a296da499cb18f996fdcb42f0fc774adbb3c550a853553 https://github.com/loomhand/cua/releases/download/v0.36.0-loomhand.5/cua-driver-v0.36.0-loomhand.5-linux-arm64.tar.gz
+windows-x64 cua-driver 43cf44509abf6aec95c1e3cba53f2dcc75a7d58b0d86456af5f0fdf634fb41ea https://github.com/loomhand/cua/releases/download/v0.36.0-loomhand.5/cua-driver-v0.36.0-loomhand.5-windows-x86_64.zip

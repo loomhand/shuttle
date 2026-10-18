@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Bundled:** cua-driver v0.36.0-loomhand.5 (was .4). On Windows a desktop click whose window closes or hides says so in its summary ("the window closed or hid"); the Linux A2 popup-key fix ships with it for P3.
 - **Speed.** The archives carry the runtime's `.mjs` with its types stripped at package time next to the `.mts` sources, and runs use the `.mjs`: about 50 ms less per `gui_plan` call and 6 to 11 ms less per `script_run` call on macOS and Windows.
 
 ## 0.1.2 - 2026-10-18
