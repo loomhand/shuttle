@@ -845,10 +845,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 ..Frame::default()
             })
             .collect();
-        if !self.allow.is_open() {
+        if !self.allow.is_open() || self.os == Os::Linux {
             let frames = self.access.run(CALL_LIMIT, (), |b| b.frames()).await?;
             for w in &mut windows {
                 w.app = app_of(&frames, w.pid).map(str::to_owned);
+                w.active = frames
+                    .iter()
+                    .any(|f| f.active && f.pid == w.pid && f.title == w.title);
             }
         }
         let w = self.allow.pick(windows, Some(&a.window), a.pid)?;
@@ -1847,6 +1850,46 @@ pub(crate) mod tests {
         assert_eq!(
             typed_tail("abcdefghijklmnopqrstuvwxyz").as_deref(),
             Some("klmnopqrstuvwxyz")
+        );
+    }
+
+    struct TwoWindows(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for TwoWindows {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"window_id": 1, "title": "Report - Writer", "pid": 4},
+                    {"window_id": 2, "title": "Report - Writer", "pid": 8}
+                ]}}),
+                _ => json!({}),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn linux_focus_takes_the_active_window_among_equal_titles() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let two = || {
+            Ok(Stub {
+                frames: vec![
+                    frame("a", "Report - Writer", 4, true, Some("writer")),
+                    frame("b", "Report - Writer", 8, false, Some("writer")),
+                ],
+                ..Stub::default()
+            })
+        };
+        let desk = Desk::new(two, TwoWindows(calls.clone()), Os::Linux);
+        desk.run("desk_focus", json!({"window": "Report - Writer"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            calls.lock().unwrap().last().cloned().unwrap(),
+            (
+                "bring_to_front".to_owned(),
+                json!({"pid": 4, "window_id": 1})
+            )
         );
     }
 
