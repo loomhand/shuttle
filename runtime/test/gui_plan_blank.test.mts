@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { toolhost } from './toolhost.mts'
+import { main } from '../lib/gui_plan.mts'
 
-test('a step that typed into an empty field stops when its app was launched and reopened its last document', async () => {
+test('a step that typed into an empty field stops when its app was launched and reopened its last document', async (t) => {
   let launched = false
   const typed: string[] = []
   const win = { id: '1', title: 'alice.txt - Mousepad', role: 'frame', pid: process.pid, active: true }
@@ -23,13 +24,9 @@ test('a step that typed into an empty field stops when its app was launched and 
     }
     return '{"ok":true}'
   })
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const r = await main({ steps: [{ app: 'mousepad' }, { type: 'bob lives in Oslo', blank: { role: 'textbox', name: '', parent: '', nth: 0 } }] })
-    assert.equal(r.ok, false, JSON.stringify(r))
-    assert.match(r.escalate?.reason ?? '', /already holds text/)
-    assert.deepEqual(typed, [])
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const r = await main({ steps: [{ app: 'mousepad' }, { type: 'bob lives in Oslo', blank: { role: 'textbox', name: '', parent: '', nth: 0 } }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /already holds text/)
+  assert.deepEqual(typed, [])
 })

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { toolhost } from './toolhost.mts'
+import { main } from '../lib/gui_plan.mts'
 
 function desktop(role: string) {
   const doc = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: false }
@@ -24,44 +25,32 @@ function desktop(role: string) {
   return { calls, answer }
 }
 
-test('a typed path finds the file chooser by its name field even when the field sits past the outline\'s first 1800 characters', async () => {
+test('a typed path finds the file chooser by its name field even when the field sits past the outline\'s first 1800 characters', async (t) => {
   const d = desktop('dialog')
   const server = await toolhost(d.answer)
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const r = await main({ steps: [{ type: 'b.txt\n' }] })
-    assert.equal(r.ok, true, JSON.stringify(r))
-    const before = d.calls.slice(0, d.calls.indexOf('desk_type'))
-    assert.ok(before.some((c) => c.startsWith('key ')), `no select key before typing into the chooser: ${before.join(' ')}`)
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const r = await main({ steps: [{ type: 'b.txt\n' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  const before = d.calls.slice(0, d.calls.indexOf('desk_type'))
+  assert.ok(before.some((c) => c.startsWith('key ')), `no select key before typing into the chooser: ${before.join(' ')}`)
 })
 
-test('Enter in a file chooser whose name field sits past the outline\'s first 1800 characters waits for its button before it submits', async () => {
+test('Enter in a file chooser whose name field sits past the outline\'s first 1800 characters waits for its button before it submits', async (t) => {
   const d = desktop('dialog')
   const server = await toolhost(d.answer)
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const r = await main({ steps: [{ key: 'Return' }] })
-    assert.equal(r.ok, true, JSON.stringify(r))
-    const before = d.calls.slice(0, d.calls.indexOf('key Return'))
-    assert.equal(before.filter((c) => c === 'desk_snapshot').length, 2, before.join(' '))
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const r = await main({ steps: [{ key: 'Return' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  const before = d.calls.slice(0, d.calls.indexOf('key Return'))
+  assert.equal(before.filter((c) => c === 'desk_snapshot').length, 2, before.join(' '))
 })
 
-test('a typed line into a large window that is no dialog but holds a File name field goes in as plain typing with one Return', async () => {
+test('a typed line into a large window that is no dialog but holds a File name field goes in as plain typing with one Return', async (t) => {
   const d = desktop('window')
   const server = await toolhost(d.answer)
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    await main({ steps: [{ type: 'b.txt\n' }] })
-    const before = d.calls.slice(0, d.calls.indexOf('desk_type'))
-    assert.ok(!before.some((c) => c.startsWith('key ')), `a select key before plain typing: ${before.join(' ')}`)
-    assert.equal(d.calls.filter((c) => /^key return$/i.test(c)).length, 1, d.calls.join(' '))
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  await main({ steps: [{ type: 'b.txt\n' }] })
+  const before = d.calls.slice(0, d.calls.indexOf('desk_type'))
+  assert.ok(!before.some((c) => c.startsWith('key ')), `a select key before plain typing: ${before.join(' ')}`)
+  assert.equal(d.calls.filter((c) => /^key return$/i.test(c)).length, 1, d.calls.join(' '))
 })
