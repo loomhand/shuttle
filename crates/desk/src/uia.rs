@@ -305,8 +305,8 @@ impl Access for Uia {
             kids = kids
                 .iter()
                 .filter(|c| !owned_dialog(c))
-                .map(|c| self.cached(c, &self.subtree))
-                .collect::<Result<_, _>>()?;
+                .filter_map(|c| self.cached(c, &self.subtree).ok())
+                .collect();
         }
         let fetched = started.elapsed().as_micros();
         let mut nodes = Vec::new();
