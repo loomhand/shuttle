@@ -53,6 +53,8 @@ if (-not (($UserPath -split ';') -contains $InstallDir)) {
 }
 $env:Path = "$env:Path;$InstallDir"
 
-Write-Host "installed $(& (Join-Path $InstallDir "$Name.exe") --version) in $InstallDir"
+$Installed = & (Join-Path $InstallDir "$Name.exe") --version
+if ($LASTEXITCODE -ne 0) { throw "$Name --version failed with exit code $LASTEXITCODE; the files are in $InstallDir but the program does not start" }
+Write-Host "installed $Installed in $InstallDir"
 Write-Host "register it with an agent, e.g.: claude mcp add shuttle -- `"$(Join-Path $InstallDir "$Name.exe")`" mcp"
 Write-Host 'The binaries are unsigned: SmartScreen may warn about a browser-downloaded copy (More info > Run anyway).'
