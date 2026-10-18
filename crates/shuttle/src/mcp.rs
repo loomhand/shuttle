@@ -56,13 +56,12 @@ async fn answer(line: &str, endpoint: &str) -> Option<Value> {
     let Some(Value::String(method)) = msg.remove("method") else {
         return Some(reply(id, Err((INVALID_REQUEST, "no method".to_owned()))));
     };
-    let params = msg.remove("params").unwrap_or(Value::Null);
+    let mut params = msg.remove("params").unwrap_or(Value::Null);
     let result = match method.as_str() {
         "initialize" => Ok(initialize(&params)),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(tools::list()),
         "tools/call" => {
-            let mut params = params;
             let args = params
                 .get_mut("arguments")
                 .map_or_else(|| json!({}), Value::take);

@@ -509,7 +509,7 @@ mod tests {
         let slow = json!({"code": "export async function main() { await new Promise((r) => setTimeout(r, 20000)) }"});
         let run = tokio::spawn({
             let d = d.clone();
-            let call = call("script_run", slow.clone());
+            let call = call("script_run", slow);
             async move { d.answer(call).await }
         });
         tokio::time::sleep(Duration::from_millis(500)).await;
