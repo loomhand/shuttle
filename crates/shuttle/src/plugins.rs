@@ -121,7 +121,8 @@ mod tests {
     const BUILTINS: [&str; 2] = ["script_run", "gui_plan"];
 
     fn write(dir: &Path, file: &str, body: &str) {
-        std::fs::write(dir.join(file), body).unwrap();
+        let root = if cfg!(windows) { "\"C:\\\\" } else { "\"/" };
+        std::fs::write(dir.join(file), body.replace("\"/", root)).unwrap();
     }
 
     #[test]
