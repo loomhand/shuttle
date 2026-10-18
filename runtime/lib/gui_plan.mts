@@ -237,7 +237,7 @@ async function focused() {
 }
 async function current(bound = SETTLE) {
   const k = pressed; pressed = null; const t0 = Date.now()
-  while (k && (await focused())?.title === k.title && Date.now() - k.at < bound) await sleep(10)
+  while (k && Date.now() - k.at < bound) { const f = await focused(); if (f && f.title !== k.title) break; await sleep(10) }
   tick('settle', t0); return focused()
 }
 async function titled(title: string, pid: number | null) { return pid !== null && (await desk.windows()).some((x) => x.title === title && x.pid === pid) }
