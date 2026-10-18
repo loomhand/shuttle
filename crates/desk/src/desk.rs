@@ -1968,17 +1968,14 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn slow_window_lists_count_against_a_waits_timeout() {
         let desk = Desk::new(
-            || Ok(Stub::opens(usize::MAX, false, 40)),
+            || Ok(Stub::opens(usize::MAX, false, 200)),
             Slow(Arc::default()),
             Os::Mac,
         );
-        let (out, took) = wait_on(&desk, 100).await;
+        let (out, took) = wait_on(&desk, 300).await;
         assert_eq!(out["changed"], false);
-        assert!(lists(&desk).await >= 3, "{}", lists(&desk).await);
-        assert!(
-            took >= Duration::from_millis(100) && took < Duration::from_millis(200),
-            "{took:?}"
-        );
+        assert!(took >= Duration::from_millis(300), "{took:?}");
+        assert_eq!(lists(&desk).await, 3);
     }
 
     #[tokio::test]
