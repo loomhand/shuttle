@@ -112,13 +112,6 @@ impl Input for Driver {
     }
 }
 
-#[derive(Serialize)]
-struct Request<'a> {
-    method: &'static str,
-    name: &'a str,
-    args: &'a Value,
-}
-
 /// `req` addressed to the screen, not to a window.
 pub fn desktop(mut req: Value) -> Value {
     req["scope"] = "desktop".into();
@@ -134,6 +127,13 @@ pub fn text_of(v: &Value) -> String {
         .filter_map(|c| c["text"].as_str())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[derive(Serialize)]
+struct Request<'a> {
+    method: &'static str,
+    name: &'a str,
+    args: &'a Value,
 }
 
 fn result(tool: &str, reply: &str) -> Result<Value, String> {
@@ -190,7 +190,6 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn the_first_call_starts_a_desktop_session_and_an_ended_one_starts_again() {
-        use tokio::io::AsyncBufReadExt;
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("cua.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();

@@ -43,6 +43,8 @@ const WAIT_CHECK: Duration = Duration::from_millis(100);
 const NO_WINDOW_UNDER: &str =
     "no window under the point, and the app allowlist admits only windows";
 const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
+const SHIFTED: &str = "!@#$%^&*()_+:\"<>?~{}|";
+const BASE: &str = "1234567890-=;',./`[]\\";
 
 type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
 
@@ -398,11 +400,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 }
                 continue;
             }
-            for (i, c) in line.char_indices() {
+            for (at, c) in line.char_indices() {
                 let req = match keystroke(c) {
                     Some(keys) if keys.len() == 1 => ("press_key", json!({"key": keys[0]})),
                     Some(keys) => ("hotkey", json!({"keys": keys})),
-                    None => ("type_text", json!({"text": &line[i..i + c.len_utf8()]})),
+                    None => ("type_text", json!({"text": &line[at..at + c.len_utf8()]})),
                 };
                 self.driver.call(req.0, desktop(req.1)).await?;
             }
@@ -456,7 +458,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
             _ => None,
         };
-        if let (false, Some((x, y))) = (self.allow.is_open(), point) {
+        if !self.allow.is_open()
+            && let Some((x, y)) = point
+        {
             let pid = u32::try_from(under.as_ref().ok_or(NO_WINDOW_UNDER)?.pid).ok();
             let allow = self.allow.clone();
             self.access
@@ -751,6 +755,14 @@ struct Read {
     k: (f64, f64),
 }
 
+/// What a press comes to after the backend's part of it.
+#[derive(Debug, PartialEq)]
+enum Press {
+    Selected,
+    Click(i32, i32),
+    Acted(bool),
+}
+
 /// The windows a call picks from: the app of `pid` alone, unless the allowlist needs every window to judge the call.
 fn frames<B: Access>(b: &mut B, pid: Option<u32>, allow: &Allow) -> Result<Vec<Frame>, String> {
     match pid {
@@ -767,14 +779,6 @@ fn live(frame: Frame) -> Result<Frame, String> {
         ));
     }
     Ok(frame)
-}
-
-/// What a press comes to after the backend's part of it.
-#[derive(Debug, PartialEq)]
-enum Press {
-    Selected,
-    Click(i32, i32),
-    Acted(bool),
 }
 
 fn app_key(app: &str) -> String {
@@ -965,8 +969,6 @@ fn keep_map(mask: &[([f64; 4], bool)], [left, top, right, bottom]: [u32; 4]) -> 
 
 /// The US-layout keys that type `c`, shift first for a shifted character; none for a character Windows types as Unicode.
 fn keystroke(c: char) -> Option<Vec<String>> {
-    const SHIFTED: &str = "!@#$%^&*()_+:\"<>?~{}|";
-    const BASE: &str = "1234567890-=;',./`[]\\";
     match c {
         'a'..='z' | '0'..='9' => Some(vec![c.to_string()]),
         ' ' => Some(vec!["space".to_owned()]),
@@ -986,10 +988,22 @@ fn keystroke(c: char) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
 
     use super::*;
     use crate::model::Tree;
+
+    const PID_CALLS: [(&str, &str); 4] = [
+        ("desk_snapshot", r#"{"pid": 4}"#),
+        ("desk_find", r#"{"name": "Save", "pid": 4}"#),
+        ("desk_at", r#"{"x": 1, "y": 1, "pid": 4}"#),
+        ("desk_close", r#"{"window": "Notepad", "pid": 4}"#),
+    ];
+
+    static ACTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static CLOSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static MENUS: Mutex<Vec<bool>> = Mutex::new(Vec::new());
+    static STALE_CLOSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
     #[derive(Default)]
     struct Fake {
@@ -998,8 +1012,6 @@ mod tests {
         acts: Vec<(String, Act)>,
         opened: bool,
     }
-
-    static ACTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
     impl Fake {
         fn add(
@@ -1272,9 +1284,6 @@ mod tests {
         }
     }
 
-    static CLOSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    static MENUS: Mutex<Vec<bool>> = Mutex::new(Vec::new());
-
     struct Twins;
 
     impl Access for Twins {
@@ -1338,8 +1347,6 @@ mod tests {
             .unwrap();
         assert_eq!(*MENUS.lock().unwrap(), [false, true, true]);
     }
-
-    static STALE_CLOSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
     struct Busy;
 
@@ -1452,13 +1459,6 @@ mod tests {
             Ok(())
         }
     }
-
-    const PID_CALLS: [(&str, &str); 4] = [
-        ("desk_snapshot", r#"{"pid": 4}"#),
-        ("desk_find", r#"{"name": "Save", "pid": 4}"#),
-        ("desk_at", r#"{"x": 1, "y": 1, "pid": 4}"#),
-        ("desk_close", r#"{"window": "Notepad", "pid": 4}"#),
-    ];
 
     #[tokio::test]
     async fn a_call_that_names_a_process_reads_only_that_app_s_windows() {
