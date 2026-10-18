@@ -28,6 +28,16 @@ const DECLINED: &str = "declined by the user";
 const NO_ASK: &str = "confirm needs the menu-bar controls, which this OS does not have yet: set confirm = \"off\" under [safety] in config.toml";
 const CONFIRM_OPEN: &str = "a confirm dialog is open: answer it first";
 const QUESTION_CHARS: usize = 200;
+const COMPUTER_ACT: &str = "desk_computer_act";
+const POINTER_ACTIONS: [&str; 7] = [
+    "tap",
+    "click",
+    "double_tap",
+    "double_click",
+    "long_press",
+    "swipe",
+    "drag",
+];
 
 /// Shows the user a question about one action and answers whether it may run.
 pub type Asker = Arc<dyn Fn(String) -> oneshot::Receiver<bool> + Send + Sync>;
@@ -162,6 +172,9 @@ impl<H: Handler> Daemon<H> {
             Confirm::Coordinate => match call.tool.as_str() {
                 "desk_click" | "desk_press" | "desk_drag" => true,
                 "desk_act" => call.args["action"] == "click",
+                COMPUTER_ACT => call.args["action"]
+                    .as_str()
+                    .is_some_and(|a| POINTER_ACTIONS.contains(&a)),
                 _ => false,
             },
             Confirm::Every => true,
@@ -236,7 +249,7 @@ impl<H: Handler> Handler for Daemon<H> {
                     .model(t, call.args)
                     .await
                     .map_or_else(Output::error, Output::text),
-                t if ACTIONS.contains(&t) => self.act(call).await,
+                t if ACTIONS.contains(&t) || t == COMPUTER_ACT => self.act(call).await,
                 _ => self.desk.answer(call).await,
             }
         };
@@ -296,6 +309,13 @@ fn question(call: &Call) -> String {
             "type {} characters",
             call.args["text"].as_str().map_or(0, |t| t.chars().count())
         ),
+        "computer_act" => {
+            let action = call.args["action"].as_str().unwrap_or("act");
+            match call.args.get("element") {
+                Some(element) => format!("{action} element [{element}]"),
+                None => format!("{action} at ({}, {})", call.args["x"], call.args["y"]),
+            }
+        }
         _ => format!("{verb} {}", call.args),
     };
     let what: String = what.chars().take(QUESTION_CHARS).collect();
@@ -466,6 +486,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_computer_act_is_an_action_that_holds_the_turn() {
+        let mut d = daemon(Slow, Guard::default());
+        d.wait = Duration::from_millis(100);
+        let d = Arc::new(d);
+        let act = tokio::spawn({
+            let d = d.clone();
+            let call = call(
+                "desk_computer_act",
+                json!({"action": "tap", "x": 1, "y": 2}),
+            );
+            async move { d.answer(call).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(d.acting());
+        let out = d.answer(call("desk_click", json!({}))).await;
+        assert_eq!((out.is_error, out.text.as_str()), (true, BUSY));
+        act.abort();
+    }
+
+    #[tokio::test]
     async fn a_desk_action_a_stop_ends_is_not_acting_after_resume() {
         let d = Arc::new(daemon(Slow, Guard::default()));
         let action = tokio::spawn({
@@ -612,13 +652,35 @@ mod tests {
         assert_eq!(no.answer(drag).await.text, DECLINED);
         let scroll = call("desk_scroll", json!({"direction": "down", "x": 1, "y": 2}));
         assert!(!no.answer(scroll).await.is_error);
+        let computer = |args: Value| call("desk_computer_act", args);
+        assert_eq!(
+            no.answer(computer(json!({"action": "tap", "x": 5, "y": 6})))
+                .await
+                .text,
+            DECLINED
+        );
+        assert_eq!(
+            no.answer(computer(
+                json!({"action": "swipe", "element": 3, "to_x": 1, "to_y": 2})
+            ))
+            .await
+            .text,
+            DECLINED
+        );
+        assert!(
+            !no.answer(computer(json!({"action": "key", "key": "back"})))
+                .await
+                .is_error
+        );
         assert_eq!(
             *asked.lock().unwrap(),
             [
                 "Allow shuttle to click at (10, 20)?",
                 "Allow shuttle to press element \"4/5\"?",
                 "Allow shuttle to click element \"4/5\"?",
-                "Allow shuttle to drag from (1, 2) to (30, 40)?"
+                "Allow shuttle to drag from (1, 2) to (30, 40)?",
+                "Allow shuttle to tap at (5, 6)?",
+                "Allow shuttle to swipe element [3]?"
             ]
         );
         let yes = guarded(Confirm::Every, Some(asker(true, asked.clone())));
