@@ -80,8 +80,8 @@ pub fn parse(spec: &str) -> Result<Hotkey, String> {
 
 fn parse_for(spec: &str, windows: bool) -> Result<Hotkey, String> {
     let lower = spec.to_lowercase();
-    let mut parts: Vec<&str> = lower.split('+').map(str::trim).collect();
-    let key = parts.pop().unwrap_or_default();
+    let mut parts = lower.split('+').map(str::trim);
+    let key = parts.next_back().unwrap_or_default();
     let mut modifiers = 0;
     for m in parts {
         let (mac, win) = match m {

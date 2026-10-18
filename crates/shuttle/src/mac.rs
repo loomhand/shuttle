@@ -27,7 +27,6 @@ const SIGNATURE: u32 = u32::from_be_bytes(*b"cshl");
 /// Runs the controls on this, the main, thread until the process exits.
 pub fn run(ui: Ui) -> ! {
     #[allow(clippy::expect_used)]
-    // the controls run from main(), which is the main thread
     let mtm = MainThreadMarker::new().expect("the macOS controls run on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);

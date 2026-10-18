@@ -120,7 +120,7 @@ fn route(name: &str, mut args: Value) -> Option<Result<(String, Value), String>>
 fn absolute_script(mut args: Value) -> Value {
     let relative = args["script"]
         .as_str()
-        .map(std::path::PathBuf::from)
+        .map(std::path::Path::new)
         .filter(|p| p.is_relative());
     if let (Some(path), Ok(cwd)) = (relative, std::env::current_dir()) {
         args["script"] = cwd.join(path).to_string_lossy().into_owned().into();

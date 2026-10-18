@@ -361,7 +361,7 @@ mod tests {
             if gone {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(50));
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
         let stray = alive(away);
         let _ = std::process::Command::new("kill")
