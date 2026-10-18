@@ -51,3 +51,17 @@ test('Enter in a file chooser whose name field sits past the outline\'s first 18
     server.close()
   }
 })
+
+test('a typed line into a large window that is no dialog but holds a File name field goes in as plain typing with one Return', async () => {
+  const d = desktop('window')
+  const server = await toolhost(d.answer)
+  const { main } = await import('../lib/gui_plan.mts')
+  try {
+    await main({ steps: [{ type: 'b.txt\n' }] })
+    const before = d.calls.slice(0, d.calls.indexOf('desk_type'))
+    assert.ok(!before.some((c) => c.startsWith('key ')), `a select key before plain typing: ${before.join(' ')}`)
+    assert.equal(d.calls.filter((c) => /^key return$/i.test(c)).length, 1, d.calls.join(' '))
+  } finally {
+    server.close()
+  }
+})

@@ -275,7 +275,7 @@ async function hiddenModal(ws: Win[], f: Win | null) {
 }
 function modalBlocks(m: Win) { return `modal dialog "${m.title}" is open but ${m.modal}, and ${m.blocks ? `"${m.blocks}"` : 'its app'} takes no input until it closes: finish it, or close it with {close: true, window: "${m.title}"}` }
 function blocked(o: string) { return /AT-SPI peer \S+ is not responding|no accessibility answer within/.test(o) }
-function isChooser(o: string) { return CHOOSER.test(o) }
+function isChooser(o: string) { return isDialog(o) && CHOOSER.test(o) }
 async function selectLine() { if (OS === 'darwin') await desk.key(SELECT_ALL); else { await desk.key('home'); await desk.key('shift+end') } }
 function unanswered(title: string) { return `"${title}" answers no accessibility calls (a dialog opened by an accessibility action blocks its app, and a key would deadlock it): close it with {close: true}, then reopen it by its keyboard shortcut` }
 function isAlert(o: string) { return /^- alert/.test(o) }
