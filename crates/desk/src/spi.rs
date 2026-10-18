@@ -5,6 +5,9 @@ use tokio::runtime::{Builder, Runtime};
 use crate::atspi::{self, Atspi, Obj};
 use crate::model::{Access, Act, Extras, Frame, Node, Tree};
 
+const FRAME_ROLES: [u32; 5] = [2, 16, 19, 23, WINDOW_ROLE];
+const WINDOW_ROLE: u32 = 69;
+
 /// The AT-SPI client and the single-thread runtime its calls run on.
 pub struct Spi {
     rt: Runtime,
@@ -108,8 +111,10 @@ fn frame(f: &atspi::Frame) -> Frame {
         role: atspi::role_name(f.role, true),
         pid: f.pid,
         active: f.active(),
-        app: None,
+        app: f.pid.and_then(app),
         stale: false,
+        unlisted: !FRAME_ROLES.contains(&f.role),
+        framed: f.role != WINDOW_ROLE,
     }
 }
 
@@ -130,6 +135,12 @@ fn node(n: &atspi::Node) -> Node {
         keys: n.keys.clone(),
         bounds: n.bounds,
     }
+}
+
+/// The executable name of process `pid`, as the allowlist names a Linux app.
+fn app(pid: u32) -> Option<String> {
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    Some(comm.trim_end().to_owned()).filter(|c| !c.is_empty())
 }
 
 fn spi_extras(e: Extras) -> atspi::Extras {
@@ -182,5 +193,15 @@ mod tests {
             (m.id.as_str(), m.title.as_str(), m.role, m.pid, m.active),
             ("1.17/5", "Untitled - Mousepad", "window", Some(42), true)
         );
+        assert!(!m.unlisted && m.framed);
+        let own = std::process::id();
+        let mine = frame(&atspi::Frame {
+            role: 69,
+            pid: Some(own),
+            ..f
+        });
+        assert!(!mine.unlisted && !mine.framed);
+        assert_eq!(mine.app, app(own));
+        assert!(mine.app.is_some());
     }
 }

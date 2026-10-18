@@ -226,7 +226,7 @@ async fn serve(
         .map_err(|e| format!("locate this program: {e}"))?;
     let listener = server::bind(endpoint).await?;
     let own = driver::endpoint(endpoint);
-    let bundled = if local && cfg!(any(target_os = "macos", windows)) {
+    let bundled = if local {
         Bundled::start(&exe, &own, overlay).await?
     } else {
         None

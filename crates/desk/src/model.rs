@@ -55,6 +55,12 @@ pub struct Frame {
     pub app: Option<String>,
     #[serde(skip)]
     pub stale: bool,
+    /// A Linux top-level object that is no frame, dialog or alert, which no call picks.
+    #[serde(skip)]
+    pub unlisted: bool,
+    /// A Linux frame, which stands for the focused window even untitled, unlike a plain window.
+    #[serde(skip)]
+    pub framed: bool,
 }
 
 impl Window for Frame {
@@ -70,8 +76,12 @@ impl Window for Frame {
         self.pid
     }
 
+    fn listed(&self) -> bool {
+        !self.unlisted
+    }
+
     fn focusable(&self) -> bool {
-        self.role != "window" || !self.title.is_empty()
+        self.framed || self.role != "window" || !self.title.is_empty()
     }
 }
 

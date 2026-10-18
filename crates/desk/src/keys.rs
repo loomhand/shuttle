@@ -2,12 +2,62 @@
 
 const SHIFTED: &str = "!@#$%^&*()_+:\"<>?~{}|";
 const BASE: &str = "1234567890-=;',./`[]\\";
+const LINUX_ALIASES: [(&str, &str); 47] = [
+    ("control", "ctrl"),
+    ("primary", "ctrl"),
+    ("ctl", "ctrl"),
+    ("control_l", "ctrl"),
+    ("control_r", "ctrl"),
+    ("ctrlleft", "ctrl"),
+    ("ctrlright", "ctrl"),
+    ("shift_l", "shift"),
+    ("shift_r", "shift"),
+    ("shiftleft", "shift"),
+    ("shiftright", "shift"),
+    ("alt_l", "alt"),
+    ("alt_r", "alt"),
+    ("altleft", "alt"),
+    ("altright", "alt"),
+    ("option", "alt"),
+    ("mod1", "alt"),
+    ("cmd", "super"),
+    ("command", "super"),
+    ("meta", "super"),
+    ("win", "super"),
+    ("windows", "super"),
+    ("winleft", "super"),
+    ("winright", "super"),
+    ("super_l", "super"),
+    ("super_r", "super"),
+    ("mod4", "super"),
+    ("enter", "return"),
+    ("kp_enter", "return"),
+    ("esc", "escape"),
+    ("del", "delete"),
+    ("ins", "insert"),
+    ("prior", "pageup"),
+    ("page_up", "pageup"),
+    ("pgup", "pageup"),
+    ("next", "pagedown"),
+    ("page_down", "pagedown"),
+    ("pgdn", "pagedown"),
+    ("arrowup", "up"),
+    ("arrowdown", "down"),
+    ("arrowleft", "left"),
+    ("arrowright", "right"),
+    ("spacebar", "space"),
+    ("caps_lock", "capslock"),
+    ("num_lock", "numlock"),
+    ("back_space", "backspace"),
+    ("bksp", "backspace"),
+];
 
 /// The OS whose key names a combination uses.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Os {
     Windows,
     Mac,
+    Linux,
 }
 
 impl Os {
@@ -15,13 +65,19 @@ impl Os {
         match self {
             Self::Windows => "win",
             Self::Mac => "cmd",
+            Self::Linux => "super",
         }
     }
 }
 
 /// The driver's key names of `combo`: `Ctrl+Shift+S` is `["ctrl", "shift", "s"]`.
 pub fn key_names(combo: &str, os: Os) -> Result<Vec<String>, String> {
-    let keys: Vec<String> = combo.split('+').map(|k| key_name(k, os)).collect();
+    let mut parts: Vec<&str> = combo.split('+').collect();
+    if os == Os::Linux && parts.ends_with(&["", ""]) {
+        parts.truncate(parts.len() - 2);
+        parts.push("plus");
+    }
+    let keys: Vec<String> = parts.iter().map(|k| key_name(k, os)).collect();
     if keys.iter().any(String::is_empty) {
         return Err(format!("bad key combination {combo:?}"));
     }
@@ -77,6 +133,12 @@ pub fn keystroke(c: char) -> Option<Vec<String>> {
 
 fn key_name(key: &str, os: Os) -> String {
     let k = key.trim().to_lowercase();
+    if os == Os::Linux {
+        return LINUX_ALIASES
+            .iter()
+            .find(|(alias, _)| *alias == k)
+            .map_or(k, |(_, name)| (*name).to_owned());
+    }
     match k.as_str() {
         "control" | "primary" | "ctl" => "ctrl".to_owned(),
         "enter" => "return".to_owned(),
@@ -104,6 +166,17 @@ mod tests {
         assert_eq!(key_names("super+l", Os::Mac).unwrap(), ["cmd", "l"]);
         assert_eq!(key_names("option+esc", Os::Mac).unwrap(), ["alt", "escape"]);
         assert!(key_names("ctrl+", Os::Mac).is_err());
+    }
+
+    #[test]
+    fn linux_combinations_take_the_keysym_aliases_and_a_plus_key() {
+        assert_eq!(key_names("Super_L+l", Os::Linux).unwrap(), ["super", "l"]);
+        assert_eq!(key_names("cmd+q", Os::Linux).unwrap(), ["super", "q"]);
+        assert_eq!(key_names("ctrl++", Os::Linux).unwrap(), ["ctrl", "plus"]);
+        assert_eq!(key_names("+", Os::Linux).unwrap(), ["plus"]);
+        assert_eq!(key_names("menu", Os::Linux).unwrap(), ["menu"]);
+        assert_eq!(key_names("KP_Enter", Os::Linux).unwrap(), ["return"]);
+        assert!(key_names("ctrl+", Os::Linux).is_err());
     }
 
     #[test]

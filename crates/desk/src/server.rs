@@ -144,6 +144,13 @@ pub fn cache_endpoint(var: &str, pipe: &str, dir: &str, file: &str) -> String {
         return format!(r"\\.\pipe\{pipe}");
     }
     let home = std::env::var("HOME").unwrap_or_default();
+    if cfg!(target_os = "linux") {
+        let cache = std::env::var("XDG_CACHE_HOME")
+            .ok()
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| format!("{home}/.cache"));
+        return format!("{cache}/{dir}/{file}");
+    }
     format!("{home}/Library/Caches/{dir}/{file}")
 }
 
@@ -184,8 +191,15 @@ pub fn native(driver: String, apps: &[String]) -> impl Handler {
     Desk::new(Uia::open, Driver::new(driver), Os::Windows).allow(apps)
 }
 
+/// This OS's desk: its accessibility tree, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
+#[cfg(target_os = "linux")]
+pub fn native(driver: String, apps: &[String]) -> impl Handler {
+    use crate::{driver::Driver, keys::Os, spi::Spi};
+    Desk::new(Spi::open, Driver::new(driver), Os::Linux).allow(apps)
+}
+
 /// This OS's desk: none yet.
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn native(_: String, _: &[String]) -> impl Handler {
     NoDesk
 }
