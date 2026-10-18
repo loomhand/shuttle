@@ -411,11 +411,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
             _ => None,
         };
-        if !self.allow.is_open() {
+        if let (false, Some((x, y))) = (self.allow.is_open(), point) {
             let pid = u32::try_from(under.as_ref().ok_or(NO_WINDOW_UNDER)?.pid).ok();
             let allow = self.allow.clone();
             self.access
-                .run(CALL_LIMIT, (), move |b| allow.check_pid(&b.frames()?, pid))
+                .run(CALL_LIMIT, (), move |b| {
+                    let frames = b.frames()?;
+                    allow.check_pid(&frames, pid)?;
+                    match b.pid_at(x as i32, y as i32)? {
+                        Some(top) => allow.check_pid(&frames, Some(top)),
+                        None => Ok(()),
+                    }
+                })
                 .await?;
         }
         if self.os == Os::Mac
@@ -1559,6 +1566,10 @@ mod tests {
             Ok(((x, y) == (100, 800)).then(|| "8/9".into()))
         }
 
+        fn pid_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
+            Ok(Some(if (x, y) == (50, 600) { 12 } else { 4 }))
+        }
+
         fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
             Ok(id.split('/').next().and_then(|p| p.parse().ok()))
         }
@@ -1690,6 +1701,11 @@ mod tests {
         assert!(refused(
             windows
                 .run("desk_click", json!({"x": 50.0, "y": 950.0}))
+                .await
+        ));
+        assert!(refused(
+            windows
+                .run("desk_click", json!({"x": 50.0, "y": 600.0}))
                 .await
         ));
         assert!(calls.lock().unwrap().iter().any(|t| t == "click"));

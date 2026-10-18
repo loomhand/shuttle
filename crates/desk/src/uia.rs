@@ -407,6 +407,14 @@ impl Access for Uia {
             .and_then(|p| u32::try_from(p).ok()))
     }
 
+    fn pid_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
+        // SAFETY: `self.auto` is a live IUIAutomation of this thread; the hit is a live element of it.
+        Ok(unsafe { self.auto.ElementFromPoint(POINT { x, y }) }
+            .ok()
+            .and_then(|hit| unsafe { hit.CurrentProcessId() }.ok())
+            .and_then(|p| u32::try_from(p).ok()))
+    }
+
     fn at(&mut self, _: &str, x: i32, y: i32) -> Result<Option<String>, String> {
         // SAFETY: `self.auto` is a live IUIAutomation of this thread.
         match unsafe { self.auto.ElementFromPoint(POINT { x, y }) } {
