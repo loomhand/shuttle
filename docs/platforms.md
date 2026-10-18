@@ -30,3 +30,9 @@ Every platform installs and runs `cocoon-shuttle mcp`. On macOS and Windows, the
 - **X11** is the target for P3: AT-SPI for the tree, XTest through cua-driver for input.
 - **Wayland** gives AT-SPI trees but no global input or window positions to a client. cua-driver goes through the desktop portal (with its consent prompts) and, on GNOME, a small shell extension in `wayland-helper/` for window positions. Expect gaps.
 - **AT-SPI** must be on: most desktops start it; on a minimal session, start `at-spi-bus-launcher` and set `GTK_MODULES=gail:atk-bridge` for older GTK apps.
+
+## Android over adb
+
+- **adb mode.** The daemon drives one Android device that adb reaches, from a Linux or macOS host, when the configuration has an `[android]` section ([config.md](config.md#android-over-adb)): the device's UiAutomation tree through a UI server it pushes and runs under `app_process`, input through `adb shell input`, screenshots through `screencap`, and text through a scrcpy clipboard paste. The `shuttle-android` crate holds it.
+- **Tested** on redroid 16 in a cocoonbox Android box, at 720x1280. A stock phone is untested: the screen size is fixed at 720x1280, and the paste runs as the system uid through `su`, which needs adb root.
+- **One accessibility client.** Android lets one UiAutomation client run at a time, so `uiautomator dump` or a second shuttle on the same device stops the UI server; the next desk call starts it again.

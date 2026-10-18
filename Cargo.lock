@@ -1022,12 +1022,25 @@ dependencies = [
  "objc2-foundation",
  "serde",
  "serde_json",
+ "shuttle-android",
  "shuttle-desk",
  "shuttle-desk-core",
  "shuttle-models",
  "tempfile",
  "tokio",
  "windows",
+]
+
+[[package]]
+name = "shuttle-android"
+version = "0.1.3"
+dependencies = [
+ "base64 0.23.1",
+ "png",
+ "serde",
+ "serde_json",
+ "shuttle-desk-core",
+ "tokio",
 ]
 
 [[package]]

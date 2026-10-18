@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+shuttle-android = { path = "../android" }
 shuttle-desk = { path = "../desk" }
 shuttle-desk-core = { path = "../desk-core" }
 shuttle-models = { path = "../models" }

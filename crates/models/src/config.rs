@@ -38,6 +38,8 @@ pub struct Config {
     pub safety: Safety,
     pub tools: Tools,
     pub driver: DriverSettings,
+    /// An Android device whose desk this daemon serves over adb, in place of this desktop's own.
+    pub android: Option<AndroidSettings>,
 }
 
 impl Default for Config {
@@ -54,6 +56,7 @@ impl Default for Config {
             safety: Safety::default(),
             tools: Tools::default(),
             driver: DriverSettings::default(),
+            android: None,
         }
     }
 }
@@ -188,6 +191,18 @@ impl Default for DriverSettings {
     }
 }
 
+/// The adb program, the device's serial, and the host files the UI server and the paste push to the device.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AndroidSettings {
+    #[serde(default = "adb")]
+    pub adb: PathBuf,
+    pub serial: Option<String>,
+    pub ui_jar: PathBuf,
+    pub scrcpy_jar: PathBuf,
+    pub su: PathBuf,
+}
+
 /// A key kept out of logs and error messages.
 #[derive(Clone, Deserialize)]
 #[serde(transparent)]
@@ -246,4 +261,8 @@ fn owner_only(path: &Path) -> Result<(), String> {
 #[cfg(not(unix))]
 fn owner_only(_: &Path) -> Result<(), String> {
     Ok(())
+}
+
+fn adb() -> PathBuf {
+    PathBuf::from("adb")
 }

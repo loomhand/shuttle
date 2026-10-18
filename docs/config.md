@@ -86,3 +86,16 @@ The safety controls live in this file, so while it fails to load every tool call
 The MCP server reads the plugin directory and `script_run` when the agent starts it: after adding, changing or removing a plugin, or turning `script_run` on or off, restart the MCP client (the agent) for its tool list to follow. The daemon reads them when it starts, and refuses a plugin call while `script_run` is off whatever the list shows.
 
 `[driver] overlay = false` starts the bundled cua-driver with `--no-overlay`, for a desktop nobody watches, such as a cloud box. It has no effect on macOS, since the driver's front-window tracking needs its overlay, and the daemon says so in its log.
+
+## Android over adb
+
+```toml
+[android]
+adb = "adb"                                       # the adb program; default adb on PATH
+serial = "127.0.0.1:5555"                         # the device; unset takes adb's own choice, such as ANDROID_SERIAL
+ui_jar = "/usr/local/share/cocoonbox/cb-ui.jar"   # the UI server, built from android/ui
+scrcpy_jar = "/usr/local/share/scrcpy/scrcpy-server.jar"
+su = "/usr/local/share/scrcpy/su1000"             # runs the paste server as the system uid; needs adb root
+```
+
+With an `[android]` section the daemon's desk is that device instead of this desktop: every desk call answers from the device's UiAutomation tree, `adb shell input`, `screencap` and a scrcpy clipboard paste. The daemon then starts no cua-driver, no indicator and no stop hotkey, since none of them reaches a phone. `cocoon-shuttle desk computer_state`, `desk computer_act` and `desk look` answer the device's screen tools from the command line only. The paste needs `su` and adb root, which an emulated device such as redroid has and a stock phone does not.

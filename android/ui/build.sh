@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds the UI server's dex jar to <out>: javac against the stubs of the Android classes it calls, then r8's D8; needs a JDK and curl.
-# usage: image/android/ui/build.sh <out.jar>
+# usage: android/ui/build.sh <out.jar>
 set -euo pipefail
 OUT=${1:?usage: build.sh <out.jar>}
 R8_URL=https://dl.google.com/android/maven2/com/android/tools/r8/9.5.26/r8-9.5.26.jar

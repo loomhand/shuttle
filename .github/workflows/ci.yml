@@ -54,6 +54,18 @@ jobs:
           path: target/release/cocoon-shuttle.exe
           retention-days: 7
 
+  android-ui:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Build the UI server jar
+        run: |
+          shellcheck android/ui/build.sh
+          bash android/ui/build.sh "$RUNNER_TEMP/cb-ui.jar"
+          unzip -l "$RUNNER_TEMP/cb-ui.jar" | grep -q classes.dex
+
   runtime:
     strategy:
       fail-fast: false
