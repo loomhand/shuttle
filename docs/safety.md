@@ -18,7 +18,7 @@ A global hotkey does the same stop, and the indicator's menu has Stop and Resume
 | Windows | Ctrl+Alt+Shift+Esc | `RegisterHotKey` |
 | Linux (X11) | Ctrl+Alt+Shift+Esc | `XGrabKey` |
 
-Set `kill_hotkey` in [config.md](config.md) to change it. On Wayland a global hotkey depends on the compositor's GlobalShortcuts portal; where there is none, `cocoon-shuttle stop` from a terminal is the kill switch.
+Set `kill_hotkey` in [config.md](config.md) to change it. On macOS a system permission prompt in front holds the hotkey until the prompt closes; `cocoon-shuttle stop` works regardless. On Wayland a global hotkey depends on the compositor's GlobalShortcuts portal; where there is none, `cocoon-shuttle stop` from a terminal is the kill switch.
 
 ## Indicator
 
@@ -26,7 +26,7 @@ On macOS a menu-bar item shows `Shuttle`, `● Shuttle` while a desk action or a
 
 ## Confirm mode
 
-`confirm = "coordinate"` asks before every click at a screen point, the least predictable action. `confirm = "every"` asks before every desk action: `press`, `act`, `key`, `type`, `click`, `focus`, `close` and `launch`. On macOS the question is a dialog with Allow and Decline; a step you decline fails with `declined by the user`. Windows and Linux get the dialog in P2 and P3; until then a step that would ask fails and names `confirm = "off"`.
+`confirm = "coordinate"` asks before every click at a screen point, the least predictable action. `confirm = "every"` asks before every desk action: `press`, `act`, `key`, `type`, `click`, `focus`, `close` and `launch`. On macOS the question is a dialog with Allow and Decline; a step you decline fails with `declined by the user`, and a stop closes an open dialog. Windows and Linux get the dialog in P2 and P3; until then a step that would ask fails and names `confirm = "off"`.
 
 ## App allowlist
 
