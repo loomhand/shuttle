@@ -1,6 +1,5 @@
 //! The Windows controls on their own message-loop thread: the kill hotkey, the tray icon with Stop and Resume, and the confirm dialog.
 
-use std::io::Write as _;
 use std::os::windows::io::AsRawHandle;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -31,8 +30,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, HSTRING, w};
 
-use crate::NAME;
 use crate::daemon::{Asker, Controls, Ui};
+use crate::log;
 
 const POLL: Duration = Duration::from_millis(250);
 const TRAY_MESSAGE: u32 = WM_APP + 1;
@@ -79,7 +78,7 @@ pub fn run(ui: Ui) -> ! {
     let window = match window {
         Ok(w) => w,
         Err(e) => {
-            log(&format!(
+            log(format_args!(
                 "the Windows controls did not start: {e}; cocoon-shuttle stop still works"
             ));
             loop {
@@ -90,7 +89,7 @@ pub fn run(ui: Ui) -> ! {
     let modifiers = HOT_KEY_MODIFIERS(ui.hotkey.modifiers) | MOD_NOREPEAT;
     // SAFETY: `window` is this thread's window; the hotkey id is unique to it.
     if let Err(e) = unsafe { RegisterHotKey(Some(window), 1, modifiers, ui.hotkey.code) } {
-        log(&format!(
+        log(format_args!(
             "the kill hotkey did not register: {e}; cocoon-shuttle stop still works"
         ));
     }
@@ -273,8 +272,4 @@ impl Shown {
             _ => {}
         }
     }
-}
-
-fn log(line: &str) {
-    let _ = writeln!(std::io::stderr(), "{NAME}: {line}");
 }

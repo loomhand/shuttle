@@ -1,6 +1,5 @@
 //! The bundled cua-driver: the daemon starts it on its own socket once it holds its endpoint, restarts it when it exits, and stops it when the daemon exits.
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -10,7 +9,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::NAME;
+use crate::{NAME, log};
 
 const TELEMETRY: &str = "CUA_DRIVER_RS_TELEMETRY_ENABLED";
 const GLIDE_MS: &str = "1";
@@ -123,7 +122,7 @@ impl Proc {
         loop {
             tokio::select! {
                 _ = &mut stopped => break,
-                status = running.child.wait() => log(&format!("cua-driver exited with {status:?}; starting it again")),
+                status = running.child.wait() => log(format_args!("cua-driver exited with {status:?}; starting it again")),
             }
             tokio::select! {
                 _ = &mut stopped => {
@@ -135,7 +134,7 @@ impl Proc {
                     self.spawn().await
                 } => match spawned {
                     Ok(r) => running = r,
-                    Err(e) => log(&e),
+                    Err(e) => log(e),
                 },
             }
         }
@@ -195,10 +194,6 @@ fn pid_file(endpoint: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let pipe = endpoint.rsplit('\\').next().unwrap_or(endpoint);
     Ok(dir.join(format!("{pipe}.pid")))
-}
-
-fn log(line: &str) {
-    let _ = writeln!(std::io::stderr(), "{NAME}: {line}");
 }
 
 #[cfg(all(test, unix))]
