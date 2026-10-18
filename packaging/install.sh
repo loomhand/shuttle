@@ -59,6 +59,8 @@ want=$(awk -v a="$asset" '$2 == a { print $1 }' "$tmp/SHA256SUMS")
 [ "$(sha256 "$tmp/$asset")" = "$want" ] || die "sha256 mismatch for $asset"
 say "sha256 ok"
 tar -xzf "$tmp/$asset" -C "$tmp"
+if [ "$os" = macos ]; then new="$tmp/$APP.app/Contents/MacOS/$NAME"; else new="$tmp/$NAME/$NAME"; fi
+installed=$("$new" --version) || die "the new $NAME does not start on this system; nothing was changed"
 
 mkdir -p "$PREFIX/bin"
 if [ "$os" = macos ]; then
@@ -75,7 +77,7 @@ else
 	home="$PREFIX/lib/$NAME"
 fi
 
-say "installed $("$PREFIX/bin/$NAME" --version) in $home"
+say "installed $installed in $home"
 case ":$PATH:" in
 *":$PREFIX/bin:"*) ;;
 *) say "add $PREFIX/bin to PATH, e.g. echo 'export PATH=\"$PREFIX/bin:\$PATH\"' >> ~/.profile" ;;
