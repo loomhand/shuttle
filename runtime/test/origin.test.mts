@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
-import { deflateSync, crc32 } from 'node:zlib'
 import { test } from 'node:test'
+import { crc32, deflateSync } from 'node:zlib'
 
 import { toolhost } from './toolhost.mts'
 

@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { setTimeout as sleep } from 'node:timers/promises'
 import { test } from 'node:test'
+import { setTimeout as sleep } from 'node:timers/promises'
 
 import { endpoint } from './toolhost.mts'
 

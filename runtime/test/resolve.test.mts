@@ -5,8 +5,7 @@ import { after, before, test } from 'node:test'
 import { crc32, deflateSync, inflateSync } from 'node:zlib'
 
 import type { Result } from '../lib/gui_plan.mts'
-import { toolhost } from './toolhost.mts'
-import type { Call, Reply } from './toolhost.mts'
+import { toolhost, type Call, type Reply } from './toolhost.mts'
 
 type El = { ref: number; id: string; parent: number; depth: number; role: string; name: string; states: string[]; bounds?: number[] }
 type Spec = Omit<El, 'ref' | 'depth' | 'states'> & { states?: string[] }
@@ -23,20 +22,20 @@ const clicked: string[] = []
 const atPids: unknown[] = []
 const asked: { image: boolean }[] = []
 const looks: string[] = []
+const shades: number[] = []
+const prompts: string[] = []
+const text = 'typesafe/jev-1.14-20261014'
+const usage = { model: 'decider', input_tokens: 1, output_tokens: 1, cached_tokens: 0 }
 let shots = 0
 let tones: number[] = []
 let scale = 1
-const shades: number[] = []
-const prompts: string[] = []
 let pick: Record<string, number> = {}
 let looked: Record<string, number> = {}
 let build: string | null = null
-const text = 'typesafe/jev-1.14-20261014'
 let on: number | number[] = 0
 let under: { role: string; name: string; bounds?: number[] } | null = null
 let yes = 0
 let server: Server | undefined
-const usage = { model: 'decider', input_tokens: 1, output_tokens: 1, cached_tokens: 0 }
 
 function answer({ tool, args }: Call): Reply {
   if (tool === 'model_decide') return decide(args as Decide)
