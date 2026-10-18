@@ -193,3 +193,33 @@ test('a typed line after a shortcut keeps waiting while no window is in front, a
     server.close()
   }
 })
+
+test('a menu step asks for the menu bar and a click step does not', async () => {
+  const win = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
+  const asked: unknown[] = []
+  const nodes = [
+    root('window', win.title),
+    { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'OK', states: ['showing'], bounds: [10, 10, 40, 20] },
+    { ref: 2, id: '1/3', parent: 0, depth: 1, role: 'menubar', name: '', states: ['showing'] },
+    { ref: 3, id: '1/4', parent: 2, depth: 2, role: 'menu', name: 'File', states: ['showing'], bounds: [0, 0, 30, 20] },
+    { ref: 4, id: '1/5', parent: 3, depth: 3, role: 'menuitem', name: 'Save', states: [], shortcut: 'ctrl+s' },
+  ]
+  const server = await toolhost(({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') { asked.push(args.menus ?? false); return JSON.stringify({ window: win, truncated: false, nodes }) }
+    if (tool === 'desk_press') return '{"ok":true,"how":"click"}'
+    return '{"ok":true}'
+  })
+  const { main } = await import('../lib/gui_plan.mts')
+  try {
+    const click = await main({ steps: [{ click: 'OK' }] })
+    assert.equal(click.ok, true, JSON.stringify(click))
+    assert.ok(!asked.includes(true), JSON.stringify(asked))
+    asked.length = 0
+    const menu = await main({ steps: [{ menu: 'File > Save' }] })
+    assert.equal(menu.ok, true, JSON.stringify(menu))
+    assert.equal(asked[0], true, JSON.stringify(asked))
+  } finally {
+    server.close()
+  }
+})

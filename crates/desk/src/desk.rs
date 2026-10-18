@@ -115,6 +115,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             values: true,
             bounds: a.bounds.unwrap_or(true),
             keys: a.keys,
+            menus: a.menus,
         };
         let (window, pid) = (a.window, a.pid);
         let (tree, found) = self
@@ -154,6 +155,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             values: true,
             bounds: true,
             keys: false,
+            menus: true,
         };
         let (window, pid) = (a.window, a.pid);
         let tree = self
@@ -178,6 +180,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             values: true,
             bounds: true,
             keys: true,
+            menus: false,
         };
         let chars = if a.text { READ_CHARS } else { NAME_CHARS };
         let node = self
@@ -754,7 +757,8 @@ mod tests {
             }])
         }
 
-        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+        fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
+            MENUS.lock().unwrap().push(extras.menus);
             Ok(Tree {
                 frame: frame.clone(),
                 ..Tree::default()
@@ -989,6 +993,7 @@ mod tests {
     }
 
     static CLOSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static MENUS: Mutex<Vec<bool>> = Mutex::new(Vec::new());
 
     struct Twins;
 
@@ -1038,6 +1043,19 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(*CLOSED.lock().unwrap(), ["front"]);
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_takes_the_menu_bar_only_when_asked_and_find_always_searches_it() {
+        let desk = Desk::new(|| Ok(notepad()), Slow(Arc::default()), Os::Mac);
+        desk.run("desk_snapshot", json!({})).await.unwrap();
+        desk.run("desk_snapshot", json!({"menus": true}))
+            .await
+            .unwrap();
+        desk.run("desk_find", json!({"name": "Save"}))
+            .await
+            .unwrap();
+        assert_eq!(*MENUS.lock().unwrap(), [false, true, true]);
     }
 
     #[tokio::test]

@@ -155,6 +155,7 @@ pub struct Extras {
     pub values: bool,
     pub bounds: bool,
     pub keys: bool,
+    pub menus: bool,
 }
 
 impl Extras {
@@ -162,6 +163,7 @@ impl Extras {
         values: false,
         bounds: true,
         keys: false,
+        menus: false,
     };
 }
 
