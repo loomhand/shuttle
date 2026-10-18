@@ -66,10 +66,13 @@ ask = "anthropic/claude-sonnet-5"
 
 ```toml
 [safety]
-apps = []          # app allowlist; empty allows every app
+apps = []                             # app allowlist; empty allows every app
+kill_hotkey = "ctrl+alt+cmd+escape"   # ctrl+alt+shift+escape off macOS
+indicator = true                      # menu-bar item and agent cursor
+confirm = "off"                       # "coordinate" or "every" asks first
 
 [tools]
-script_run = true  # false turns script_run off
+script_run = true                     # false turns script_run off
 ```
 
-The safety controls live in this file, so while it fails to load every tool call answers with its error, desk calls included; only `cocoon-shuttle stop` and `resume` still work. `kill_hotkey`, `indicator` and `confirm` come with the macOS controls; until then a file that sets them does not load. [safety.md](safety.md) describes each control. They are guard rails for the `desk`, `screenshot` and `gui_plan` tools that hold only with `script_run = false`: a `script_run` script is your own user's code and can change or bypass them, as [safety.md](safety.md#what-these-controls-are) explains.
+The safety controls live in this file, so while it fails to load every tool call answers with its error, desk calls included; only `cocoon-shuttle stop` and `resume` still work. `kill_hotkey` takes modifiers (`ctrl`, `alt`, `shift`, `cmd`) and one key (a letter, a digit, `f1`–`f12`, `escape`, `space`, `return` or `tab`); on macOS a value that does not parse fails the file like any other error. [safety.md](safety.md) describes each control. They are guard rails for the `desk`, `screenshot` and `gui_plan` tools that hold only with `script_run = false`: a `script_run` script is your own user's code and can change or bypass them, as [safety.md](safety.md#what-these-controls-are) explains.

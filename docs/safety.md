@@ -10,7 +10,7 @@ The kill switch, the app allowlist and the confirm mode are guard rails for an a
 
 `cocoon-shuttle stop` stops shuttle at once: it kills the running `gui_plan` or `script_run` process with its process group, ends the desk and model calls in flight, and halts. Every tool call then fails with `stopped by the user` until you run `cocoon-shuttle resume`. The stop lives in the running daemon; a daemon that starts again starts running. Only the command line stops and resumes: no MCP tool and no `gui_plan` step reaches them. A desk action that the driver or the accessibility API has already started ends on its own, so at most one action in flight completes after the stop.
 
-A global hotkey for the same stop, and Resume from the indicator, come with the macOS controls below (not built yet):
+A global hotkey does the same stop, and the indicator's menu has Stop and Resume. The hotkey is built on macOS; Windows and Linux get theirs in P2 and P3:
 
 | OS | Default | Registered with |
 |---|---|---|
@@ -20,13 +20,13 @@ A global hotkey for the same stop, and Resume from the indicator, come with the 
 
 Set `kill_hotkey` in [config.md](config.md) to change it. On Wayland a global hotkey depends on the compositor's GlobalShortcuts portal; where there is none, `cocoon-shuttle stop` from a terminal is the kill switch.
 
-## Indicator (not built yet)
+## Indicator
 
-While shuttle acts, a menu-bar item (macOS) or tray icon (Windows, Linux) shows it, and cua-driver draws its agent cursor where shuttle points. `indicator = false` turns both off.
+On macOS a menu-bar item shows `Shuttle`, `● Shuttle` while a desk action or a run is in progress, and `■ Shuttle stopped` after a stop; its menu has Stop and Resume. cua-driver draws its agent cursor where shuttle points. `indicator = false` turns both off. The Windows and Linux tray icon comes in P2 and P3; there `indicator = false` turns the agent cursor off.
 
-## Confirm mode (not built yet)
+## Confirm mode
 
-`confirm = "coordinate"` asks before every click at a screen point, the least predictable action. `confirm = "every"` asks before every step that changes something. The question is a native dialog on your screen; a step you decline fails with `declined by the user`.
+`confirm = "coordinate"` asks before every click at a screen point, the least predictable action. `confirm = "every"` asks before every desk action: `press`, `act`, `key`, `type`, `click`, `focus`, `close` and `launch`. On macOS the question is a dialog with Allow and Decline; a step you decline fails with `declined by the user`. Windows and Linux get the dialog in P2 and P3; until then a step that would ask fails and names `confirm = "off"`.
 
 ## App allowlist
 
