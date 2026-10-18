@@ -14,7 +14,7 @@ type Step = {
   timeout_ms?: number; enabled?: boolean; fp?: Fp; seen?: string; blank?: Fp
 }
 type Reads = { keys?: boolean; menus?: boolean }
-type Kept = Reads & { id: string; snap: desk.Snap }
+type Kept = Reads & { id: string; snap: desk.Snap; nodes: Node[] }
 type Fp = { role: string; name: string; parent: string; nth: number; label?: string }
 type Node = { ref: number; id: string; depth: number; role: string; name: string; value: string; disabled: boolean; parent: number; shortcut: string; checked: boolean; shown: boolean; bounds?: [number, number, number, number] }
 type Hit = { n: Node; i: number; how: string; p?: number; margin?: number }
@@ -107,10 +107,10 @@ async function perform(p: Params): Promise<Result> {
   const gap = plan.findIndex((s, i) => i >= (p.start ?? 0) && unfilled(s))
   const gapStep = plan[gap]
   if (gapStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: gapStep, reason: `no value for {{${unfilled(gapStep)}}}: pass it in params; nothing ran` } }
-  for (const w of await desk.windows()) known.add(w.title)
+  const ws0 = await desk.windows(); for (const w of ws0) known.add(w.title)
   const vetted = new Set<string>()
   const startTitles = new Set(known)
-  const start = await focused(); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
+  const start = focusedIn(ws0); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
   const startAlert = !start?.title.trim() && isAlert(await outline(start))
   const recs: Rec[] = []
   let escalate: Escalation | null = null; let done = plan.length
@@ -128,7 +128,7 @@ async function perform(p: Params): Promise<Result> {
       if (f && blocked(o)) throw new Surprise(unanswered(f.title), await seen())
       if (f && isAlert(o)) throw new Surprise(`alert "${f.title}" is in front`, await seen())
       if (f && pre) vetted.add(`${f.id} ${f.pid} ${f.title}`)
-      const kept = f && pre?.snap && f.title !== pressed?.title ? { ...r, id: f.id, snap: pre.snap } : undefined
+      const kept = f && pre?.snap && pre.nodes && f.title !== pressed?.title ? { ...r, id: f.id, snap: pre.snap, nodes: pre.nodes } : undefined
       const prev = plan[i - 1]
       await run(s, rec, kept).catch(async (e: unknown) => {
         const late = (x: unknown) => x instanceof Surprise && x.late
@@ -148,14 +148,15 @@ async function perform(p: Params): Promise<Result> {
   }
   const last = plan.at(-1) ?? {}
   let opened = false
+  let end: Win | null = null
   if (!escalate) {
-    const ts = Date.now(); const ws = await desk.windows(); const was = focusedIn(ws)?.title
+    const ts = Date.now(); let ws = await desk.windows(); const was = focusedIn(ws)?.title
     if ((last.key || last.type !== undefined || last.click) && !recs.at(-1)?.submit) {
       await until((ws) => focusedIn(ws)?.title !== was, 480, ws)
-      await sleep(80)
+      await sleep(80); ws = await desk.windows()
     }
     const acted = !!(last.click || last.check || last.set || last.menu || last.key || last.close || last.type !== undefined)
-    const f = await focused(); const o = f && (acted || f.role !== 'window') ? await outline(f) : ''
+    const f = focusedIn(ws); end = f; const o = f && (acted || f.role !== 'window') ? await outline(f) : ''
     log.push({ i: plan.length, op: 'end', ms: Date.now() - ts, window: f?.title ?? null })
     const left = f && !startTitles.has(f.title) && isDialog(o) && !(last.wait || last.app || (last.window && norm(f.title).includes(norm(last.window))))
     if (f && blocked(o) && recs.at(-1)?.how !== 'wm') { escalate = { step: plan.length, reason: unanswered(f.title), ...(await seen()) }; done = plan.length }
@@ -188,9 +189,9 @@ async function perform(p: Params): Promise<Result> {
       const changes = chain.steps.some((s) => s.check || s.set || s.type !== undefined || (s.menu && s.on !== undefined))
       chain.escalated = !!escalate; chain.saved = false
       if ((settled || (!escalate && changes)) && !chain.dirty && chain.steps.some((s) => !s.app)) { saved = store(chain); chain.saved = !!saved }
-      const end = await focused()
-      chain.window = end?.title ?? null
-      if (end && !SHELL_WINDOWS.test(end.title)) chain.pid = end.pid
+      const front = escalate ? await focused() : end
+      chain.window = front?.title ?? null
+      if (front && !SHELL_WINDOWS.test(front.title)) chain.pid = front.pid
       putPending(chain)
     } else if (prev) putPending({ ...prev, saved: false, escalated: false })
   }
@@ -200,7 +201,7 @@ async function perform(p: Params): Promise<Result> {
   if (saved) out[flow ? 'flow' : 'saved'] = saved
   if (flow?.usage) out.recorded_usage = flow.usage
   if (escalate) out.escalate = escalate
-  else out.window = (await focused())?.title ?? null
+  else out.window = end?.title ?? null
   return out
 }
 
@@ -228,7 +229,11 @@ function menus(nodes: Node[], from: number): Node[] {
 function parse(snap: desk.Snap): Node[] {
   const kids = new Map<number, number>(); for (const n of snap.nodes) kids.set(n.parent, (kids.get(n.parent) ?? 0) + 1)
   const wraps = (n: desk.El) => { const out: desk.El[] = []; for (const [p, a] of up(snap.nodes, n.parent)) { if (kids.get(p) !== 1 || !/^(toolbar|group)$/.test(a.role)) break; out.push(a) } return out }
-  const called = (n: desk.El) => n.name.trim() || !ACTIVE.has(n.role) || FIELD_ROLES.has(n.role) ? n.name : n.description?.trim() || wraps(n).find((a) => a.name.trim())?.name || wraps(n).find((a) => a.description?.trim())?.description || ''
+  const called = (n: desk.El) => {
+    if (n.name.trim() || !ACTIVE.has(n.role) || FIELD_ROLES.has(n.role)) return n.name
+    const d = n.description?.trim(); if (d) return d
+    const w = wraps(n); return w.find((a) => a.name.trim())?.name || w.find((a) => a.description?.trim())?.description || ''
+  }
   return snap.nodes.map((n) => ({
     ref: n.ref, id: n.id, depth: n.depth, role: n.role, name: called(n).slice(0, 80).trim(), value: n.value ?? '', disabled: n.states.includes('disabled'), parent: n.parent,
     shortcut: n.shortcut ?? '', checked: n.states.includes('checked') || n.states.includes('pressed'), shown: n.states.includes('showing'), bounds: n.bounds,
@@ -265,24 +270,30 @@ function reads(s: Step): Reads {
 }
 // the preamble's snapshot of the front window serves the step's first read of that window, which comes before any action
 function reuse(kept: Kept | undefined, w: Win, r: Reads) {
-  return kept?.id === w.id && !!kept.keys === !!r.keys && !!kept.menus === !!r.menus && kept.snap.nodes.length > 1 ? kept.snap : null
+  return kept?.id === w.id && !!kept.keys === !!r.keys && !!kept.menus === !!r.menus && kept.nodes.length > 1 ? kept : null
 }
-function render(nodes: Node[], max: number, interactive: boolean) {
+function render(nodes: Node[], max: number, interactive: boolean, limit = Infinity) {
   const q = (s: string) => s.slice(0, max).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')
-  return nodes.filter((n) => !interactive || n.depth === 0 || SHOWN_ROLES.has(n.role)).map((n) =>
-    `${'  '.repeat(n.depth)}- ${n.role}${n.name ? ` "${q(n.name)}"` : ''}${n.disabled ? ' [disabled]' : ''}${n.checked ? ' [checked]' : ''}${n.shortcut ? ` [${n.shortcut}]` : ''}${n.id ? ` [id=${n.id}]` : ''}${n.value ? `: "${q(n.value)}"` : ''}`).join('\n')
+  const lines: string[] = []; let size = -1
+  for (const n of nodes) {
+    if (size >= limit) break
+    if (interactive && n.depth !== 0 && !SHOWN_ROLES.has(n.role)) continue
+    const line = `${'  '.repeat(n.depth)}- ${n.role}${n.name ? ` "${q(n.name)}"` : ''}${n.disabled ? ' [disabled]' : ''}${n.checked ? ' [checked]' : ''}${n.shortcut ? ` [${n.shortcut}]` : ''}${n.id ? ` [id=${n.id}]` : ''}${n.value ? `: "${q(n.value)}"` : ''}`
+    lines.push(line); size += line.length + 1
+  }
+  return lines.join('\n').slice(0, limit)
 }
 async function outline(w?: Win | null, r: Reads = {}, kept?: Kept, max = 1800) {
   if (w === undefined) w = await focused()
   if (!w) return '(no focused window)'
   return (await look(w, r, kept, max)).text
 }
-async function look(w: Win, r: Reads = {}, kept?: Kept, max = 1800): Promise<{ text: string; snap?: desk.Snap }> {
-  try { const s = reuse(kept, w, r) ?? await snapOf(w, r); const nodes = parse(s); return { text: `${render(nodes, 100, nodes.length > 60).slice(0, max)}${s.truncated ? CUT : ''}`, snap: s } } catch (e: unknown) { return { text: String(e) } }
+async function look(w: Win, r: Reads = {}, kept?: Kept, max = 1800): Promise<{ text: string; snap?: desk.Snap; nodes?: Node[] }> {
+  try { const k = reuse(kept, w, r); const s = k?.snap ?? await snapOf(w, r); const nodes = k?.nodes ?? parse(s); return { text: `${render(nodes, 100, nodes.length > 60, max)}${s.truncated ? CUT : ''}`, snap: s, nodes } } catch (e: unknown) { return { text: String(e) } }
 }
 async function seen(): Promise<Seen> {
-  const w = await focused()
-  const windows = (await desk.windows()).filter((x) => x.title && !SHELL_WINDOWS.test(x.title)).map((x) => x.modal ? `${x.title} (modal dialog, ${x.modal})` : x.title)
+  const ws = await desk.windows(); const w = focusedIn(ws)
+  const windows = ws.filter((x) => x.title && !SHELL_WINDOWS.test(x.title)).map((x) => x.modal ? `${x.title} (modal dialog, ${x.modal})` : x.title)
   return { window: w?.title ?? null, windows, outline: await outline(w, { keys: true }) }
 }
 // a modal dialog of the focused app that the screen does not show takes the app's input: typing lands in it, and clicks do nothing
@@ -508,8 +519,6 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>) 
 }
 
 async function grounded(x: number, y: number, target: string, w: Win, area: desk.Size) {
-  const under = await desk.at(x, y, w.title, w.pid).catch(() => ({ found: null, path: [] }))
-  const what = under.found ? [under.found, ...(under.path ?? []).toReversed()].filter((n) => n.name).map((n) => `${n.role} "${n.name}"`).join(' under ') : ''
   const t0 = Date.now()
   const [ox, oy] = [area.left ?? 0, area.top ?? 0]
   const fit = (cw: number, ch: number): [number, number] => [Math.max(ox, Math.min(ox + area.width - cw, Math.round(x - cw / 2))), Math.max(oy, Math.min(oy + area.height - ch, Math.round(y - ch / 2)))]
@@ -518,9 +527,12 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
     const [px, py] = at.map(Math.round)
     return yes([`A ${png.readUInt32BE(16)}x${png.readUInt32BE(20)} crop of the screen. A click is about to land on its pixel (${px}, ${py}).`, desk.image(png)], `Is the pixel at (${px}, ${py}) of the image on ${target}?`)
   }
+  const [cw, ch] = [Math.min(CROP.w, area.width), Math.min(CROP.h, area.height)], [left, top] = fit(cw, ch)
+  const [under, first] = await Promise.all([desk.at(x, y, w.title, w.pid).catch(() => ({ found: null, path: [] })), desk.shot({ x: left - ox, y: top - oy, w: cw, h: ch }).catch((e: unknown) => e)])
+  const what = under.found ? [under.found, ...(under.path ?? []).toReversed()].filter((n) => n.name).map((n) => `${n.role} "${n.name}"`).join(' under ') : ''
   try {
-    const [cw, ch] = [Math.min(CROP.w, area.width), Math.min(CROP.h, area.height)], [left, top] = fit(cw, ch)
-    const first = await desk.shot({ x: left - ox, y: top - oy, w: cw, h: ch }), k = first.readUInt32BE(16) / cw
+    if (!Buffer.isBuffer(first)) throw first
+    const k = first.readUInt32BE(16) / cw
     const p = await look(first, [(x - left) * k, (y - top) * k])
     const out: { what: string; ok: boolean; check: string; p: number; p_zoom?: number | null; p_full?: number | null } = { what, ok: p >= 0.5, check: 'jev-image', p }
     if (out.ok) return out
@@ -590,8 +602,8 @@ function cut({ w, h, type, bpp, px }: ReturnType<typeof unpng>, left: number, to
   return png(rw * k, rh * k, type, bpp, out)
 }
 
-function ring({ w, h, type, bpp, px: from }: ReturnType<typeof unpng>, cx: number, cy: number, r: number) {
-  const px = Buffer.from(from), t = Math.max(2, Math.round(r / 7)), tick = r + 3 * t, len = 3 * r
+function ring({ w, h, type, bpp, px }: ReturnType<typeof unpng>, cx: number, cy: number, r: number) {
+  const t = Math.max(2, Math.round(r / 7)), tick = r + 3 * t, len = 3 * r
   for (const [c, pad] of [[[255, 255, 255], 1], [[230, 0, 0], 0]] as [[number, number, number], number][]) {
     for (let y = Math.max(0, Math.floor(cy - tick - len - 2)); y <= Math.min(h - 1, cy + tick + len + 2); y++) for (let x = Math.max(0, Math.floor(cx - tick - len - 2)); x <= Math.min(w - 1, cx + tick + len + 2); x++) {
       const dx = Math.abs(x - cx), dy = Math.abs(y - cy)
@@ -816,20 +828,20 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   }
   const w = await windowFor(s.window, 3000, s.seen)
   rec.seen = w.title; if (w.title.trim()) lastSeen = w.title
-  let t0 = Date.now(); let snap: desk.Snap
+  let t0 = Date.now(); let nodes: Node[]
   const r = reads(s)
-  try { snap = reuse(kept, w, r) ?? await snapOf(w, r) } catch (e: unknown) {
+  try { nodes = reuse(kept, w, r)?.nodes ?? parse(await snapOf(w, r)) } catch (e: unknown) {
     if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen())
     throw e
   }
-  let nodes = parse(snap); tick('snap', t0)
+  tick('snap', t0)
   const aim = s.verify ?? s.click ?? s.check
   if (OS === 'darwin' && !r.menus && aim !== undefined) {
     const near = await resolve(nodes, aim, targetRole(s), undefined, 0.7, s.fp, false)
     if (!near || (near.how !== 'fp' && norm(near.n.name) !== norm(aim))) nodes = parse(await snapOf(w, { ...r, menus: true }))
   }
   if (s.expect) {
-    const d = await decide({ window_title: w.title, contents: render(nodes, 60, false).slice(0, 4000) }, { ok: desk.yes(s.expect) })
+    const d = await decide({ window_title: w.title, contents: render(nodes, 60, false, 4000) }, { ok: desk.yes(s.expect) })
     rec.p = +prob(d.ok).toFixed(2)
     if (prob(d.ok) >= 0.5) return
     const v = await vision(`You check the state of a computer screen.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot()); rec.verdict = v
