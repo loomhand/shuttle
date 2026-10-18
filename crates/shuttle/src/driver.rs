@@ -3,6 +3,8 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use shuttle_desk::server;
@@ -23,6 +25,7 @@ const RESTART_DELAY: Duration = Duration::from_secs(1);
 pub struct Bundled {
     stop: oneshot::Sender<()>,
     task: JoinHandle<()>,
+    pid: Arc<AtomicU32>,
 }
 
 impl Bundled {
@@ -40,14 +43,20 @@ impl Bundled {
             bin,
             endpoint: endpoint.to_owned(),
             pid_file: pid_file(endpoint)?,
+            pid: Arc::default(),
         };
         if server::connect(endpoint).await.is_ok() {
             proc.stop_stale().await?;
         }
         let running = proc.spawn().await?;
+        let pid = Arc::clone(&proc.pid);
         let (stop, stopped) = oneshot::channel();
         let task = tokio::spawn(proc.supervise(running, stopped));
-        Ok(Some(Self { stop, task }))
+        Ok(Some(Self { stop, task, pid }))
+    }
+
+    pub fn pid(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.pid)
     }
 
     /// Asks the driver to exit and waits for it, killing it when it does not.
@@ -61,6 +70,7 @@ struct Proc {
     bin: PathBuf,
     endpoint: String,
     pid_file: PathBuf,
+    pid: Arc<AtomicU32>,
 }
 
 struct Running {
@@ -117,6 +127,10 @@ impl Proc {
             tokio::time::sleep(POLL).await;
             waited += POLL;
         }
+        let pid = std::fs::read_to_string(&self.pid_file)
+            .ok()
+            .and_then(|p| p.trim().parse().ok());
+        self.pid.store(pid.unwrap_or_default(), Ordering::Relaxed);
         Ok(running)
     }
 
@@ -283,6 +297,8 @@ while True:
         let driver = Bundled::start(&exe, &endpoint).await.unwrap().unwrap();
         assert!(server::connect(&endpoint).await.is_ok());
         let first = pid(&endpoint).unwrap();
+        let own = driver.pid();
+        assert_eq!(i32::try_from(own.load(Ordering::Relaxed)).ok(), Some(first));
         // SAFETY: the pid is the fake driver this test started.
         unsafe { libc::kill(first, libc::SIGKILL) };
         assert!(gone(first).await);
@@ -294,7 +310,15 @@ while True:
                 break;
             }
         }
+        for _ in 0..20 {
+            if i32::try_from(own.load(Ordering::Relaxed)).ok() == Some(second) {
+                break;
+            }
+            tokio::time::sleep(POLL).await;
+        }
+        let known = i32::try_from(own.load(Ordering::Relaxed)).ok();
         driver.stop().await;
+        assert_eq!(known, Some(second), "the restarted driver's pid");
         assert_ne!(second, first, "the driver came back");
         assert!(gone(second).await, "the driver stopped with the daemon");
     }
