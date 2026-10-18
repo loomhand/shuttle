@@ -624,7 +624,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
         }
         let w = self.allow.pick(windows, Some(&a.window), a.pid)?;
-        let window_id: Value = serde_json::from_str(&w.id).unwrap_or(Value::Null);
+        let window_id: i64 =
+            w.id.parse()
+                .map_err(|_| format!("window id {:?} is not a number", w.id))?;
         self.driver
             .call(
                 "bring_to_front",
