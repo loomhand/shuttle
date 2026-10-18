@@ -125,9 +125,8 @@ impl<H: Handler> Daemon<H> {
             }
         }
         self.actions.fetch_add(1, Ordering::Relaxed);
-        let out = self.locked(call).await;
-        self.actions.fetch_sub(1, Ordering::Relaxed);
-        out
+        let _acting = Acting(&self.actions);
+        self.locked(call).await
     }
 
     fn asks(&self, call: &Call) -> bool {
@@ -243,6 +242,14 @@ impl Drop for Asking<'_> {
     }
 }
 
+struct Acting<'a>(&'a AtomicUsize);
+
+impl Drop for Acting<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 fn question(call: &Call) -> String {
     let verb = call.tool.trim_start_matches("desk_");
     let what = match verb {
@@ -319,6 +326,32 @@ mod tests {
             assert_eq!((out.is_error, out.text.as_str()), (true, crate::STOPPED));
         }
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn a_desk_action_a_stop_ends_is_not_acting_after_resume() {
+        let d = Arc::new(Daemon::new(
+            Slow,
+            Ok(Models::new(Config::default())),
+            runner(),
+            Guard::default(),
+        ));
+        let call = |tool: &str| Call {
+            agent_id: String::new(),
+            tool: tool.into(),
+            args: json!({}),
+        };
+        let action = tokio::spawn({
+            let d = d.clone();
+            let call = call("desk_click");
+            async move { d.answer(call).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(d.acting());
+        d.answer(call("safety_stop")).await;
+        action.await.unwrap();
+        d.answer(call("safety_resume")).await;
+        assert!(!d.acting());
     }
 
     fn runner() -> Runner {
