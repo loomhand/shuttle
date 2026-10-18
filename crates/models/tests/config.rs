@@ -2,7 +2,7 @@
 mod tests {
     use std::io::Write as _;
 
-    use shuttle_models::config::{Config, DecideApi, default_path};
+    use shuttle_models::config::{Config, Confirm, DecideApi, default_path};
 
     fn file(text: &str) -> tempfile::NamedTempFile {
         let mut f = tempfile::NamedTempFile::new().unwrap();
@@ -48,18 +48,28 @@ mod tests {
     fn the_safety_and_tools_tables_load_and_default_to_every_app_and_script_run_on() {
         let dir = tempfile::tempdir().unwrap();
         let c = Config::load(&dir.path().join("config.toml")).unwrap();
-        assert!(c.safety.apps.is_empty() && c.tools.script_run);
+        assert!(c.safety.apps.is_empty() && c.tools.script_run && c.safety.indicator);
+        assert_eq!(c.safety.confirm, Confirm::Off);
         let f = file(
             "[safety]\napps = [\"TextEdit\", \"notepad.exe\"]\n\n[tools]\nscript_run = false\n",
         );
         let c = Config::load(f.path()).unwrap();
         assert_eq!(c.safety.apps, ["TextEdit", "notepad.exe"]);
         assert!(!c.tools.script_run);
-        let later = file("[safety]\nkill_hotkey = \"ctrl+alt+cmd+escape\"\n");
+        let ui = file(
+            "[safety]\nkill_hotkey = \"ctrl+shift+k\"\nindicator = false\nconfirm = \"coordinate\"\n",
+        );
+        let c = Config::load(ui.path()).unwrap();
+        assert_eq!(
+            (c.safety.kill_hotkey.as_str(), c.safety.indicator),
+            ("ctrl+shift+k", false)
+        );
+        assert_eq!(c.safety.confirm, Confirm::Coordinate);
+        let dropped = file("[safety]\nuser_idle_ms = 1500\n");
         assert!(
-            Config::load(later.path())
+            Config::load(dropped.path())
                 .unwrap_err()
-                .contains("kill_hotkey")
+                .contains("user_idle_ms")
         );
     }
 
