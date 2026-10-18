@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::os::unix::ffi::OsStrExt;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -30,6 +32,7 @@ const POINT_TYPE: u32 = 1;
 const SIZE_TYPE: u32 = 2;
 const ON_SCREEN_ONLY: u32 = 1;
 const EXCLUDE_DESKTOP: u32 = 1 << 4;
+const PATH_MAX: usize = 4096;
 const ATTRS: [&str; 17] = [
     "AXRole",
     "AXSubrole",
@@ -72,6 +75,8 @@ pub struct Ax {
     hung: HashMap<i32, Instant>,
     slow: HashMap<i32, Instant>,
     last: HashMap<i32, Vec<Frame>>,
+    driver: Option<PathBuf>,
+    drivers: HashMap<i32, bool>,
 }
 
 impl Ax {
@@ -97,6 +102,11 @@ impl Ax {
             hung: HashMap::new(),
             slow: HashMap::new(),
             last: HashMap::new(),
+            driver: std::env::current_exe()
+                .and_then(std::fs::canonicalize)
+                .ok()
+                .map(|e| e.with_file_name("cua-driver")),
+            drivers: HashMap::new(),
         })
     }
 
@@ -105,7 +115,18 @@ impl Ax {
         self.hung.retain(|_, at| at.elapsed() < HUNG_SKIP);
         self.last.retain(|p, _| pids.contains(p));
         self.slow.retain(|p, _| pids.contains(p));
-        pids
+        self.drivers.retain(|p, _| pids.contains(p));
+        pids.into_iter().filter(|&p| !self.is_driver(p)).collect()
+    }
+
+    fn is_driver(&mut self, pid: i32) -> bool {
+        let Some(driver) = &self.driver else {
+            return false;
+        };
+        *self
+            .drivers
+            .entry(pid)
+            .or_insert_with(|| exe_path(pid).as_ref() == Some(driver))
     }
 
     fn app_frames(&mut self, pids: impl IntoIterator<Item = i32>) -> Vec<Frame> {
@@ -507,6 +528,10 @@ unsafe extern "C" {
     fn AXValueGetValue(v: CFTypeRef, kind: u32, out: *mut c_void) -> bool;
 }
 
+unsafe extern "C" {
+    fn proc_pidpath(pid: i32, buffer: *mut c_void, size: u32) -> i32;
+}
+
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> CFArrayRef;
@@ -710,6 +735,14 @@ fn hash_of(el: &CFType) -> usize {
     unsafe { CFHash(el.as_CFTypeRef()) }
 }
 
+fn exe_path(pid: i32) -> Option<PathBuf> {
+    let mut buf = [0u8; PATH_MAX];
+    // SAFETY: proc_pidpath writes at most `buf.len()` bytes into `buf` and returns the count written.
+    let n = unsafe { proc_pidpath(pid, buf.as_mut_ptr().cast(), PATH_MAX as u32) };
+    let n = usize::try_from(n).ok().filter(|&n| n > 0)?;
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..n])))
+}
+
 fn window_pids() -> Vec<i32> {
     let mut pids = Vec::new();
     let owner = CFString::from_static_string("kCGWindowOwnerPID");
@@ -770,4 +803,19 @@ fn text(v: &CFType, chars: usize) -> String {
         .and_then(|n| n.to_f64())
         .map(format_number)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_process_path_is_its_canonical_executable_as_the_daemon_finds_its_driver_beside() {
+        let own = i32::try_from(std::process::id()).unwrap();
+        assert_eq!(
+            exe_path(own),
+            std::env::current_exe().and_then(std::fs::canonicalize).ok()
+        );
+        assert_eq!(exe_path(-1), None);
+    }
 }
