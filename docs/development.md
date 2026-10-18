@@ -12,7 +12,7 @@ The toolchain is pinned in `rust-toolchain.toml`; the runner and daemon tests al
 
 The Windows code builds only for Windows; from another host, `cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings` checks it.
 
-The runtime is TypeScript; the archives carry the `.mts` sources and, next to them, `.mjs` files with the types stripped by `packaging/runtime.mjs`. The runner takes the `.mjs` when the runtime has `entry.mjs`, so a run does not load Node's type stripper unless the user's script is TypeScript; scripts may still import the `.mts` sources. `npm ci && npm run typecheck` in `runtime/` checks it and its tests with `strict` and `noUncheckedIndexedAccess`. The runtime tests run on Linux, macOS and Windows with the Node.js release the archives bundle; each test points `HOME` and `SHUTTLE_FLOWS` at its own temporary directory:
+The runtime is TypeScript; the archives carry the `.mts` sources and, next to them, `.mjs` files with the types stripped by `packaging/runtime.mjs`. The runner takes the `.mjs` when the runtime has `entry.mjs`, so a `gui_plan` run does not load Node's type stripper. `script_run` always writes `code` as a `.mts` file, so `code` loads it; a JavaScript file given as `script` skips it only when its own imports are `.mjs` or `.js` too. Scripts may still import the `.mts` sources. `npm ci && npm run typecheck` in `runtime/` checks it and its tests with `strict` and `noUncheckedIndexedAccess`. The runtime tests run on Linux, macOS and Windows with the Node.js release the archives bundle; each test points `HOME` and `SHUTTLE_FLOWS` at its own temporary directory:
 
 ```sh
 node --test runtime/test/*.test.mts
