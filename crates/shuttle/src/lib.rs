@@ -3,7 +3,7 @@
 pub mod cli;
 pub mod daemon;
 pub mod driver;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 pub mod hotkey;
 #[cfg(target_os = "macos")]
 pub mod mac;
@@ -11,6 +11,8 @@ pub mod mcp;
 pub mod proxy;
 pub mod runner;
 pub mod tools;
+#[cfg(windows)]
+pub mod win;
 
 /// The program name in usage lines, endpoints and the MCP server info.
 pub const NAME: &str = "cocoon-shuttle";
