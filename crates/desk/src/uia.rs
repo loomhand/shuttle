@@ -80,7 +80,8 @@ pub struct Uia {
     root: IUIAutomationElement,
     ids: HashMap<String, IUIAutomationElement>,
     tops: HashMap<isize, Top>,
-    windows: Vec<isize>,
+    walked: isize,
+    shown: Vec<Shown>,
 }
 
 impl Uia {
@@ -112,7 +113,8 @@ impl Uia {
             root,
             ids: HashMap::new(),
             tops: HashMap::new(),
-            windows: Vec::new(),
+            walked: 0,
+            shown: Vec::new(),
         })
     }
 
@@ -212,7 +214,7 @@ impl Uia {
             return Ok(false);
         }
         for child in kids {
-            if listed_dialog(child, &self.windows) {
+            if listed_dialog(child, self.walked, &self.shown) {
                 continue;
             }
             if self.walk(child, &children(child), parent, depth, extras, out)? {
@@ -253,15 +255,9 @@ impl Uia {
         (shown, roots)
     }
 
-    fn owns_dialog(&mut self, el: &IUIAutomationElement, shown: &[Shown]) -> bool {
-        // SAFETY: `el` is a live UIA element of this thread.
-        let Ok(hwnd) = (unsafe { el.CurrentNativeWindowHandle() }) else {
-            return false;
-        };
-        shown
-            .iter()
-            .filter(|s| s.owner == hwnd.0 as isize)
-            .any(|s| {
+    fn owns_dialog(&mut self, hwnd: isize, shown: &[Shown]) -> bool {
+        hwnd != 0
+            && shown.iter().filter(|s| s.owner == hwnd).any(|s| {
                 self.top_of(s)
                     .is_some_and(|t| t.control_type == UIA_WindowControlTypeId.0 && t.dialog)
             })
@@ -317,14 +313,16 @@ impl Access for Uia {
         let el = self.element(&frame.id)?;
         // a subtree cache of a window spans the dialogs it owns, which the walk skips
         let shown = shown();
-        self.windows = shown.iter().map(|s| s.hwnd.0 as isize).collect();
-        let owns = self.owns_dialog(&el, &shown);
+        // SAFETY: `el` is a live UIA element of this thread.
+        let hwnd = unsafe { el.CurrentNativeWindowHandle() }.map_or(0, |h| h.0 as isize);
+        let owns = self.owns_dialog(hwnd, &shown);
+        (self.walked, self.shown) = (hwnd, shown);
         let cached = self.cached(&el, if owns { &self.children } else { &self.subtree })?;
         let mut kids = children(&cached);
         if owns {
             kids = kids
                 .iter()
-                .filter(|c| !listed_dialog(c, &self.windows))
+                .filter(|c| !listed_dialog(c, self.walked, &self.shown))
                 .filter_map(|c| self.cached(c, &self.subtree).ok())
                 .collect();
         }
@@ -751,7 +749,7 @@ fn document_text(el: &IUIAutomationElement, chars: usize) -> Option<String> {
     text.ok().map(|t| t.to_string()).filter(|t| !t.is_empty())
 }
 
-fn listed_dialog(el: &IUIAutomationElement, listed: &[isize]) -> bool {
+fn listed_dialog(el: &IUIAutomationElement, walked: isize, shown: &[Shown]) -> bool {
     if raw_control_type(el) != UIA_WindowControlTypeId.0 {
         return false;
     }
@@ -760,11 +758,12 @@ fn listed_dialog(el: &IUIAutomationElement, listed: &[isize]) -> bool {
         || flag(UIA_IsWindowPatternAvailablePropertyId) && flag(UIA_WindowIsModalPropertyId);
     // SAFETY: `el` is a live UIA element of this thread.
     dialog
-        && unsafe { el.CurrentNativeWindowHandle() }.is_ok_and(|h| own_frame(h.0 as isize, listed))
+        && unsafe { el.CurrentNativeWindowHandle() }
+            .is_ok_and(|h| own_frame(h.0 as isize, walked, shown))
 }
 
-fn own_frame(hwnd: isize, listed: &[isize]) -> bool {
-    hwnd != 0 && listed.contains(&hwnd)
+fn own_frame(hwnd: isize, walked: isize, shown: &[Shown]) -> bool {
+    hwnd != 0 && hwnd != walked && shown.iter().any(|s| s.hwnd.0 as isize == hwnd)
 }
 
 fn raw_control_type(el: &IUIAutomationElement) -> i32 {
@@ -857,10 +856,11 @@ mod tests {
 
     #[test]
     fn only_a_dialog_with_a_listed_window_of_its_own_leaves_the_tree() {
-        let listed = [7, 9];
-        assert!(own_frame(9, &listed));
-        assert!(!own_frame(0, &listed));
-        assert!(!own_frame(8, &listed));
+        let shown = [window(7, 0), window(9, 7)];
+        assert!(own_frame(9, 7, &shown));
+        assert!(!own_frame(0, 7, &shown));
+        assert!(!own_frame(7, 7, &shown));
+        assert!(!own_frame(8, 7, &shown));
     }
 
     #[test]
