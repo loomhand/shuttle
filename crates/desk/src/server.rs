@@ -1,7 +1,6 @@
 //! The desk endpoint: a unix socket on macOS and Linux, a named pipe on Windows, one framed call per connection.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicU32;
 
 use desk_core::wire::{Call, Output, read_frame, write_frame};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -185,25 +184,21 @@ pub async fn exchange(mut conn: Conn, call: &Call) -> Result<Output, String> {
 
 /// This OS's desk: its accessibility tree, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
 #[cfg(target_os = "macos")]
-pub fn native(driver: String, apps: Vec<String>, driver_pid: Arc<AtomicU32>) -> impl Handler {
+pub fn native(driver: String, apps: Vec<String>) -> impl Handler {
     use crate::{ax::Ax, driver::Driver, keys::Os};
-    Desk::new(Ax::open, Driver::new(driver), Os::Mac)
-        .allow(apps)
-        .driver_pid(driver_pid)
+    Desk::new(Ax::open, Driver::new(driver), Os::Mac).allow(apps)
 }
 
 /// This OS's desk: its accessibility tree, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
 #[cfg(windows)]
-pub fn native(driver: String, apps: Vec<String>, driver_pid: Arc<AtomicU32>) -> impl Handler {
+pub fn native(driver: String, apps: Vec<String>) -> impl Handler {
     use crate::{driver::Driver, keys::Os, uia::Uia};
-    Desk::new(Uia::open, Driver::new(driver), Os::Windows)
-        .allow(apps)
-        .driver_pid(driver_pid)
+    Desk::new(Uia::open, Driver::new(driver), Os::Windows).allow(apps)
 }
 
 /// This OS's desk: none yet.
 #[cfg(not(any(windows, target_os = "macos")))]
-pub fn native(_: String, _: Vec<String>, _: Arc<AtomicU32>) -> impl Handler {
+pub fn native(_: String, _: Vec<String>) -> impl Handler {
     NoDesk
 }
 
