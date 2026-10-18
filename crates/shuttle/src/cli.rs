@@ -131,6 +131,8 @@ fn controls_serve(endpoint: String) -> ExitCode {
         if let Err(e) = &done {
             let _ = writeln!(std::io::stderr(), "{NAME}: {e}");
         }
+        #[cfg(windows)]
+        controls::shutdown();
         std::process::exit(i32::from(done.is_err()));
     });
     match rx.recv() {
