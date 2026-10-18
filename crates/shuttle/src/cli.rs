@@ -177,7 +177,6 @@ async fn serve(
     } else {
         None
     };
-    let driver_pid = bundled.as_ref().map(Bundled::pid).unwrap_or_default();
     let driver = if bundled.is_some() {
         own
     } else {
@@ -190,7 +189,7 @@ async fn serve(
         key_vars,
     );
     let daemon = Arc::new(Daemon::new(
-        server::native(driver, apps, driver_pid),
+        server::native(driver, apps),
         models,
         runner,
         guard,

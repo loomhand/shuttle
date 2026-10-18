@@ -2,7 +2,6 @@
 //! capture through cua-driver; the same verbs and JSON as the Linux toolhost.
 
 use std::fmt::Write as _;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -38,7 +37,6 @@ pub const ACTIONS: [&str; 8] = [
 const CALL_LIMIT: Duration = Duration::from_secs(3);
 const TREE_LIMIT: Duration = Duration::from_secs(10);
 const READ_CHARS: usize = 64 << 10;
-const OVERLAY_TITLE: &str = "Cua.AgentCursorOverlay";
 const NO_WINDOW_UNDER: &str =
     "no window under the point, and the app allowlist admits only windows";
 
@@ -54,7 +52,6 @@ pub struct Desk<B, D> {
     scale: OnceLock<f64>,
     read: std::sync::Mutex<Option<Read>>,
     allow: Allow,
-    driver_pid: Arc<AtomicU32>,
 }
 
 impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
@@ -69,18 +66,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             scale: OnceLock::new(),
             read: std::sync::Mutex::new(None),
             allow: Allow::default(),
-            driver_pid: Arc::default(),
         }
     }
 
     /// Limits the desk calls to windows of `apps`, matched by app name or executable, case-insensitive; empty allows every app.
     pub fn allow(mut self, apps: Vec<String>) -> Self {
         self.allow = Allow(apps.iter().map(|a| app_key(a)).collect());
-        self
-    }
-
-    pub fn driver_pid(mut self, pid: Arc<AtomicU32>) -> Self {
-        self.driver_pid = pid;
         self
     }
 
@@ -515,17 +506,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .driver
             .call("list_windows", json!({"on_screen_only": true}))
             .await?;
-        let Value::Array(mut windows) = listed["structuredContent"]["windows"].take() else {
+        let Value::Array(windows) = listed["structuredContent"]["windows"].take() else {
             return Ok(Vec::new());
         };
-        let own = u64::from(self.driver_pid.load(Ordering::Relaxed));
-        windows.retain(|w| {
-            own == 0
-                || w["pid"].as_u64() != Some(own)
-                || !w["title"]
-                    .as_str()
-                    .is_some_and(|t| t.starts_with(OVERLAY_TITLE))
-        });
         Ok(windows)
     }
 
@@ -1812,7 +1795,6 @@ mod tests {
                 "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
                 "list_windows" => json!({"structuredContent": {"windows": [
                     {"pid": 98, "window_id": 4, "layer": 0, "z_index": 4, "title": "Cua.AgentCursorOverlay.default", "bounds": {"x": 0.0, "y": 900.0, "width": 100.0, "height": 100.0}},
-                    {"pid": 99, "window_id": 3, "layer": 0, "z_index": 3, "title": "Cua.AgentCursorOverlay.default", "bounds": {"x": 0.0, "y": 0.0, "width": 1000.0, "height": 1000.0}},
                     {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "bounds": {"x": 0.0, "y": 0.0, "width": 1000.0, "height": 1000.0}},
                     {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "bounds": {"x": 500.0, "y": 0.0, "width": 500.0, "height": 500.0}}
                 ]}}),
@@ -1849,9 +1831,8 @@ mod tests {
     #[tokio::test]
     async fn an_app_allowlist_gates_every_point_and_element_a_call_reaches() {
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let desk = Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Mac)
-            .allow(vec!["notepad".into()])
-            .driver_pid(Arc::new(AtomicU32::new(99)));
+        let desk =
+            Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Mac).allow(vec!["notepad".into()]);
         let refused = |r: Result<Output, String>| {
             r.err()
                 .is_some_and(|e| e.contains("not in the app allowlist"))
@@ -1867,8 +1848,7 @@ mod tests {
         ));
         assert!(!calls.lock().unwrap().iter().any(|t| t == "click"));
         let windows = Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Windows)
-            .allow(vec!["notepad".into()])
-            .driver_pid(Arc::new(AtomicU32::new(99)));
+            .allow(vec!["notepad".into()]);
         windows
             .run("desk_click", json!({"x": 100.0, "y": 800.0}))
             .await
@@ -1903,8 +1883,7 @@ mod tests {
         assert!(all.iter().all(|p| *p == [255; 3]));
         assert_eq!(*calls.lock().unwrap(), ["get_desktop_state"]);
         let masked = Desk::new(|| Ok(Apps), Desktop(Arc::default()), Os::Windows)
-            .allow(vec!["notepad".into()])
-            .driver_pid(Arc::new(AtomicU32::new(99)));
+            .allow(vec!["notepad".into()]);
         let shot = pixels(&masked.run("desk_shot", json!({})).await.unwrap());
         assert_eq!(
             (shot[2], shot[7], shot[97], shot[90]),
