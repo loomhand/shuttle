@@ -23,7 +23,8 @@ test('an app step focuses the app\'s open window, by its process or the window l
       for (const x of wins) x.active = x === w
       return { text: JSON.stringify({ ok: true, title, pid: 7 }), error: !title }
     }
-    return { text: '{"ok":true}', error: tool === 'desk_launch' }
+    if (tool === 'desk_launch') return { text: `no app named "${String(args.app)}"`, error: true }
+    return '{"ok":true}'
   })
   const { main } = await import('../lib/gui_plan.mts')
   try {
@@ -36,7 +37,7 @@ test('an app step focuses the app\'s open window, by its process or the window l
     const started = Date.now()
     const missing = await main({ steps: [{ app: 'no-such-app-osw' }] })
     assert.equal(missing.ok, false, JSON.stringify(missing))
-    assert.equal(missing.escalate?.reason, 'no app "no-such-app-osw"')
+    assert.equal(missing.escalate?.reason, 'no app named "no-such-app-osw"')
     assert.ok(Date.now() - started < 2000, `${Date.now() - started} ms`)
   } finally {
     app.kill()
