@@ -1,17 +1,19 @@
-//! The Linux desk backend: the AT-SPI client's async calls, run on the worker thread by a runtime of its own so their fan-out stays concurrent.
+//! The Linux desk backend: the AT-SPI client's async calls, run on the worker thread by a runtime of its own so their fan-out stays concurrent, and screen reads over MIT-SHM.
 
 use tokio::runtime::{Builder, Runtime};
 
 use crate::atspi::{self, Atspi, Obj};
-use crate::model::{Access, Act, Extras, Frame, Node, Tree};
+use crate::model::{Access, Act, Capture, Extras, Frame, Modal, Node, Tree};
+use crate::xshm::Grabber;
 
 const FRAME_ROLES: [u32; 5] = [2, 16, 19, 23, WINDOW_ROLE];
 const WINDOW_ROLE: u32 = 69;
 
-/// The AT-SPI client and the single-thread runtime its calls run on.
+/// The AT-SPI client, the single-thread runtime its calls run on, and the MIT-SHM grabber once opened.
 pub struct Spi {
     rt: Runtime,
     atspi: Atspi,
+    grabber: Option<Grabber>,
 }
 
 impl Spi {
@@ -23,7 +25,19 @@ impl Spi {
         Ok(Self {
             rt,
             atspi: Atspi::new(),
+            grabber: None,
         })
+    }
+
+    /// `read` on the grabber, opened on first use and dropped after a failure so the next read opens it again.
+    fn shm<T>(&mut self, read: impl FnOnce(&Grabber) -> Result<T, String>) -> Result<T, String> {
+        let g = match self.grabber.take() {
+            Some(g) => g,
+            None => Grabber::open()?,
+        };
+        let out = read(&g)?;
+        self.grabber = Some(g);
+        Ok(out)
     }
 
     fn listed(&self) -> Result<Vec<atspi::Frame>, String> {
@@ -96,6 +110,28 @@ impl Access for Spi {
         })
     }
 
+    fn capture(&mut self, rect: [f64; 4]) -> Result<Option<Capture>, String> {
+        self.shm(|g| {
+            let (sw, sh) = g.size();
+            let clipped = clip(rect, (sw, sh)).ok_or("the rectangle is off the screen")?;
+            let rgb = g.region(clipped.map(|v| i32::try_from(v).unwrap_or(i32::MAX)))?;
+            Ok(Some(Capture { rect: clipped, rgb }))
+        })
+    }
+
+    fn modals(&mut self) -> Vec<Modal> {
+        self.shm(Grabber::modals)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| Modal {
+                title: m.title,
+                pid: m.pid,
+                owner: m.owner,
+                place: m.place,
+            })
+            .collect()
+    }
+
     fn close(&mut self, frame: &Frame) -> Result<(), String> {
         Err(format!(
             "closing \"{}\" by its window manager is not in the Linux desk yet",
@@ -112,6 +148,8 @@ fn frame(f: &atspi::Frame) -> Frame {
         pid: f.pid,
         active: f.active(),
         app: f.pid.and_then(app),
+        modal: None,
+        blocks: None,
         stale: false,
         unlisted: !FRAME_ROLES.contains(&f.role),
         framed: f.role != WINDOW_ROLE,
@@ -142,6 +180,15 @@ fn app(pid: u32) -> Option<String> {
     let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
     let name = exe.file_name()?.to_string_lossy();
     Some(name.trim_end_matches(" (deleted)").to_owned()).filter(|n| !n.is_empty())
+}
+
+/// The screen rectangle `[x, y, w, h]` clipped to a `width` by `height` screen in whole pixels, left and top down, right and bottom up; none when nothing is left.
+fn clip([x, y, w, h]: [f64; 4], (width, height): (usize, usize)) -> Option<[u32; 4]> {
+    let (width, height) = (width as f64, height as f64);
+    let (left, top) = (x.max(0.0).floor(), y.max(0.0).floor());
+    let (right, bottom) = ((x + w).min(width).ceil(), (y + h).min(height).ceil());
+    (right > left && bottom > top)
+        .then(|| [left, top, right - left, bottom - top].map(|v| v as u32))
 }
 
 fn spi_extras(e: Extras) -> atspi::Extras {
@@ -178,6 +225,19 @@ mod tests {
         assert_eq!(m.shortcut.as_deref(), Some("ctrl+s"));
         assert_eq!(m.keys.as_deref(), Some("<Alt>s;;<Control>s"));
         assert_eq!(m.bounds, Some([1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn a_capture_rectangle_clips_to_the_screen_in_whole_pixels() {
+        assert_eq!(
+            clip([10.5, 20.2, 30.1, 40.0], (1280, 800)),
+            Some([10, 20, 31, 41])
+        );
+        assert_eq!(
+            clip([0.0, 0.0, f64::MAX / 4.0, f64::MAX / 4.0], (1280, 800)),
+            Some([0, 0, 1280, 800])
+        );
+        assert_eq!(clip([1300.0, 0.0, 10.0, 10.0], (1280, 800)), None);
     }
 
     #[test]

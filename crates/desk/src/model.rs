@@ -53,6 +53,12 @@ pub struct Frame {
     pub active: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+    /// Where a Linux modal dialog is that the screen does not show: `hidden`, `off the screen` or `behind "TITLE"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modal: Option<String>,
+    /// The title of the window such a dialog blocks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocks: Option<String>,
     #[serde(skip)]
     pub stale: bool,
     /// A Linux top-level object that is no frame, dialog or alert, which no call picks.
@@ -197,6 +203,22 @@ impl Extras {
     };
 }
 
+/// A screen rectangle `[x, y, w, h]` in whole pixels and its RGB rows.
+#[derive(Debug, Default)]
+pub struct Capture {
+    pub rect: [u32; 4],
+    pub rgb: Vec<u8>,
+}
+
+/// A modal dialog the screen does not show, and the window it blocks.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Modal {
+    pub title: String,
+    pub pid: Option<u32>,
+    pub owner: String,
+    pub place: String,
+}
+
 /// An element action that is no pointer click.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Act {
@@ -245,6 +267,14 @@ pub trait Access {
     fn act(&mut self, id: &str, act: Act) -> Result<bool, String>;
     /// Asks the window to close as its close button does.
     fn close(&mut self, frame: &Frame) -> Result<(), String>;
+    /// The screen rectangle `[x, y, w, h]` clipped to the screen, read by the backend itself; none when the driver captures.
+    fn capture(&mut self, _rect: [f64; 4]) -> Result<Option<Capture>, String> {
+        Ok(None)
+    }
+    /// The modal dialogs the screen does not show.
+    fn modals(&mut self) -> Vec<Modal> {
+        Vec::new()
+    }
 }
 
 /// Whether a caller can act on a node of `role`.

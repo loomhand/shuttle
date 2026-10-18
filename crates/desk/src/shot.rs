@@ -41,14 +41,35 @@ pub(crate) fn crop_png(
             }
         }
     }
+    Ok((cw, ch, encode(cw, ch, &rgb)?))
+}
+
+/// The RGB rows of the screen rectangle `[x, y, w, h]` as a PNG, with the windows outside `mask`'s admitted ones painted black.
+pub(crate) fn rgb_png(
+    mut rgb: Vec<u8>,
+    [x, y, w, h]: [u32; 4],
+    mask: Option<&[([f64; 4], bool)]>,
+) -> Result<Vec<u8>, String> {
+    if let Some(m) = mask {
+        let keep = keep_map(m, [x, y, x + w, y + h]);
+        for (px, kept) in rgb.chunks_mut(3).zip(keep) {
+            if !kept {
+                px.fill(0);
+            }
+        }
+    }
+    encode(w, h, &rgb)
+}
+
+fn encode(w: u32, h: u32, rgb: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
-    let mut enc = png::Encoder::new(&mut out, cw, ch);
+    let mut enc = png::Encoder::new(&mut out, w, h);
     enc.set_color(png::ColorType::Rgb);
     enc.set_depth(png::BitDepth::Eight);
     enc.write_header()
-        .and_then(|mut w| w.write_image_data(&rgb))
+        .and_then(|mut wr| wr.write_image_data(rgb))
         .map_err(|e| format!("encode PNG: {e}"))?;
-    Ok((cw, ch, out))
+    Ok(out)
 }
 
 fn keep_map(mask: &[([f64; 4], bool)], [left, top, right, bottom]: [u32; 4]) -> Vec<bool> {
@@ -92,5 +113,19 @@ mod tests {
             crop_png(&png, [0.0, 0.0, f64::MAX / 4.0, f64::MAX / 4.0], 1.0, None).unwrap();
         assert_eq!((w, h), (4, 2));
         assert!(crop_png(&png, [100.0, 0.0, 4.0, 4.0], 1.0, None).is_err());
+    }
+
+    #[test]
+    fn a_backend_capture_paints_the_unadmitted_windows_black() {
+        let rgb = vec![200; 4 * 2 * 3];
+        let mask = [([0.0, 0.0, 4.0, 2.0], false), ([2.0, 0.0, 2.0, 2.0], true)];
+        let png = rgb_png(rgb, [0, 0, 4, 2], Some(&mask)).unwrap();
+        let mut dec = png::Decoder::new(std::io::Cursor::new(png))
+            .read_info()
+            .unwrap();
+        let mut buf = vec![0; dec.output_buffer_size().unwrap()];
+        dec.next_frame(&mut buf).unwrap();
+        assert_eq!(&buf[..6], &[0; 6]);
+        assert_eq!(&buf[6..12], &[200; 6]);
     }
 }

@@ -19,9 +19,9 @@ use serde_json::{Map, Value, json};
 use crate::allow::{Allow, app_key, app_of};
 use crate::driver::{Input, WINDOW_SESSION, desktop, text_of};
 use crate::keys::{Os, key_names, keystroke};
-use crate::model::{Access, Act, Extras, Frame, Node};
+use crate::model::{Access, Act, Capture, Extras, Frame, Node};
 use crate::press::{Press, plan_press};
-use crate::shot::crop_png;
+use crate::shot::{crop_png, rgb_png};
 use crate::still::{Frame as StillFrame, Watch};
 use crate::worker::Worker;
 
@@ -172,6 +172,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 let mut frames = b.frames()?;
                 frames.retain(|f| allow.admits(f.app.as_deref()));
                 frames.sort_by_key(|f| !f.active);
+                let modals = b.modals();
+                for f in &mut frames {
+                    if let Some(m) = modals.iter().find(|m| m.title == f.title && m.pid == f.pid) {
+                        f.modal = Some(m.place.clone());
+                        f.blocks = Some(m.owner.clone());
+                    }
+                }
                 Ok(frames)
             })
             .await
@@ -908,6 +915,19 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn shot(&self, a: ShotArgs) -> Result<Output, String> {
+        let rect = [
+            a.x.unwrap_or(0.0),
+            a.y.unwrap_or(0.0),
+            a.w.unwrap_or(f64::MAX / 4.0),
+            a.h.unwrap_or(f64::MAX / 4.0),
+        ];
+        if let Some(c) = self
+            .access
+            .run(CALL_LIMIT, (), move |b| b.capture(rect))
+            .await?
+        {
+            return self.captured(c, a.path).await;
+        }
         let v = self.driver.call("get_desktop_state", json!({})).await?;
         let png = v["content"]
             .as_array()
@@ -923,12 +943,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let shot_w = s["screenshot_width"].as_f64().unwrap_or(0.0);
         let full_w = s["screenshot_original_width"].as_f64().unwrap_or(shot_w);
         let factor = if full_w > 0.0 { shot_w / full_w } else { 1.0 };
-        let rect = [
-            a.x.unwrap_or(0.0),
-            a.y.unwrap_or(0.0),
-            a.w.unwrap_or(f64::MAX / 4.0),
-            a.h.unwrap_or(f64::MAX / 4.0),
-        ];
         let mask = if self.allow.is_open() {
             None
         } else {
@@ -938,6 +952,33 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(Output {
             text: json!({"ok": true, "width": w, "height": h}).to_string(),
             image_b64: Some(B64.encode(&png)),
+            ..Output::default()
+        })
+    }
+
+    /// A capture the backend read itself, as the PNG of the image and, on the wire, `png_b64` or the file at `path` it is written to.
+    async fn captured(&self, c: Capture, path: Option<String>) -> Result<Output, String> {
+        let rect = c.rect;
+        let mask = if self.allow.is_open() {
+            None
+        } else {
+            Some(self.mask(1.0).await?)
+        };
+        let png = rgb_png(c.rgb, rect, mask.as_deref())?;
+        let image = B64.encode(&png);
+        let mut out = json!({"ok": true, "width": rect[2], "height": rect[3]});
+        match path {
+            Some(path) => {
+                tokio::fs::write(&path, &png)
+                    .await
+                    .map_err(|e| format!("write {path}: {e}"))?;
+                out["path"] = path.into();
+            }
+            None => out["png_b64"] = image.clone().into(),
+        }
+        Ok(Output {
+            text: out.to_string(),
+            image_b64: Some(image),
             ..Output::default()
         })
     }
