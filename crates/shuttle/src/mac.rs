@@ -67,7 +67,7 @@ fn ask(mtm: MainThreadMarker, question: &str, tx: oneshot::Sender<bool>) {
     let alert = NSAlert::new(mtm);
     alert.setMessageText(&NSString::from_str("Cocoon Shuttle"));
     alert.setInformativeText(&NSString::from_str(question));
-    alert.addButtonWithTitle(&NSString::from_str("Decline"));
+    alert.addButtonWithTitle(&NSString::from_str("Cancel"));
     alert.addButtonWithTitle(&NSString::from_str("Allow"));
     let watch = Watch::new(mtm, tx);
     // SAFETY: `watch` is a `Watch`, whose `watch:` method takes the timer, and there is no user info; the timer joins this thread's run loop in the common modes, which include the dialog's modal mode.
