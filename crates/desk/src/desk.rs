@@ -503,52 +503,61 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.check_point(x, y, under.as_ref()).await
     }
 
-    /// Wheel notches at a screen point, or, without one, scroll keys to the front app window: the driver's topmost, or with an allowlist the window it picks and checks.
+    /// Wheel notches at a screen point; without one, scroll keys to the front app window (the driver's topmost, or the one an allowlist picks and checks), or on Windows, whose apps drop posted scroll keys, wheel notches at its center.
     async fn scroll(&self, a: ScrollArgs) -> Result<String, String> {
         let mut req =
             json!({"direction": a.direction, "amount": a.amount.unwrap_or(SCROLL_AMOUNT)});
-        match (a.x, a.y) {
-            (Some(x), Some(y)) => {
-                self.admit_point(x, y).await?;
-                req["x"] = x.into();
-                req["y"] = y.into();
-                self.driver.call("scroll", desktop(req)).await?;
-            }
+        let (x, y) = match (a.x, a.y) {
+            (Some(x), Some(y)) => (x, y),
             (None, None) => {
-                let picked = if self.allow.is_open() {
-                    None
-                } else {
-                    let allow = self.allow.clone();
-                    let frame = self
-                        .access
-                        .run(CALL_LIMIT, (), move |b| allow.pick(b.frames()?, None, None))
-                        .await?;
-                    Some((frame.pid, frame.title))
-                };
-                let windows = self.on_screen().await?;
-                let target = windows
-                    .iter()
-                    .filter(|w| w["layer"] == 0)
-                    .filter(|w| {
-                        picked.as_ref().is_none_or(|(pid, _)| {
-                            pid.is_some_and(|p| w["pid"].as_u64() == Some(u64::from(p)))
-                        })
-                    })
-                    .max_by_key(|w| {
-                        let titled = picked
-                            .as_ref()
-                            .is_some_and(|(_, t)| w["title"] == t.as_str());
-                        (titled, w["z_index"].as_i64().unwrap_or(i64::MIN))
-                    })
-                    .ok_or("no app window is in front to scroll")?;
-                req["pid"] = target["pid"].clone();
-                req["window_id"] = target["window_id"].clone();
-                req["session"] = WINDOW_SESSION.into();
-                self.driver.call("scroll", req).await?;
+                let target = self.front_window().await?;
+                if self.os != Os::Windows {
+                    req["pid"] = target["pid"].clone();
+                    req["window_id"] = target["window_id"].clone();
+                    req["session"] = WINDOW_SESSION.into();
+                    self.driver.call("scroll", req).await?;
+                    return Ok(OK.to_owned());
+                }
+                let scale = self.scale().await?;
+                let [bx, by, bw, bh] = bounds(&target);
+                ((bx + bw / 2.0) * scale, (by + bh / 2.0) * scale)
             }
             _ => return Err("scroll needs both x and y, or neither".to_owned()),
-        }
+        };
+        self.admit_point(x, y).await?;
+        req["x"] = x.into();
+        req["y"] = y.into();
+        self.driver.call("scroll", desktop(req)).await?;
         Ok(OK.to_owned())
+    }
+
+    async fn front_window(&self) -> Result<Value, String> {
+        let picked = if self.allow.is_open() {
+            None
+        } else {
+            let allow = self.allow.clone();
+            let frame = self
+                .access
+                .run(CALL_LIMIT, (), move |b| allow.pick(b.frames()?, None, None))
+                .await?;
+            Some((frame.pid, frame.title))
+        };
+        self.on_screen()
+            .await?
+            .into_iter()
+            .filter(|w| w["layer"] == 0)
+            .filter(|w| {
+                picked.as_ref().is_none_or(|(pid, _)| {
+                    pid.is_some_and(|p| w["pid"].as_u64() == Some(u64::from(p)))
+                })
+            })
+            .max_by_key(|w| {
+                let titled = picked
+                    .as_ref()
+                    .is_some_and(|(_, t)| w["title"] == t.as_str());
+                (titled, w["z_index"].as_i64().unwrap_or(i64::MIN))
+            })
+            .ok_or_else(|| "no app window is in front to scroll".to_owned())
     }
 
     /// A press-drag-release from (x, y) to (to_x, to_y) in desk coordinates.
@@ -2052,10 +2061,11 @@ pub(crate) mod tests {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
             self.0.lock().unwrap().push((tool.to_owned(), args));
             Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 2.0}}),
                 "list_windows" => json!({"structuredContent": {"windows": [
-                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad"},
-                    {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "title": "Inbox"},
-                    {"pid": 4, "window_id": 3, "layer": 0, "z_index": 3, "title": "Find"},
+                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "bounds": {"x": 0.0, "y": 0.0, "width": 400.0, "height": 300.0}},
+                    {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "title": "Inbox", "bounds": {"x": 500.0, "y": 0.0, "width": 300.0, "height": 300.0}},
+                    {"pid": 4, "window_id": 3, "layer": 0, "z_index": 3, "title": "Find", "bounds": {"x": 100.0, "y": 400.0, "width": 200.0, "height": 100.0}},
                     {"pid": 98, "window_id": 9, "layer": 25, "z_index": 9, "title": "Menu"}
                 ]}}),
                 _ => json!({}),
@@ -2069,10 +2079,11 @@ pub(crate) mod tests {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
             self.0.lock().unwrap().push((tool.to_owned(), args));
             Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 2.0}}),
                 "list_windows" => json!({"structuredContent": {"windows": [
-                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Notepad"},
-                    {"pid": 4, "window_id": 3, "layer": 0, "z_index": 3, "title": "Find"},
-                    {"pid": 8, "window_id": 2, "layer": 0, "z_index": 5, "title": "Inbox"}
+                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Notepad", "bounds": {"x": 0.0, "y": 0.0, "width": 400.0, "height": 300.0}},
+                    {"pid": 4, "window_id": 3, "layer": 0, "z_index": 3, "title": "Find", "bounds": {"x": 100.0, "y": 400.0, "width": 200.0, "height": 100.0}},
+                    {"pid": 8, "window_id": 2, "layer": 0, "z_index": 5, "title": "Inbox", "bounds": {"x": 500.0, "y": 0.0, "width": 300.0, "height": 300.0}}
                 ]}}),
                 _ => json!({}),
             })
@@ -2092,13 +2103,13 @@ pub(crate) mod tests {
             calls.lock().unwrap().last().cloned().unwrap(),
             (
                 "scroll".to_owned(),
-                json!({"direction": "down", "amount": 3, "pid": 4, "window_id": 3, "session": WINDOW_SESSION})
+                json!({"direction": "down", "amount": 3, "x": 400.0, "y": 900.0, "scope": "desktop"})
             )
         );
     }
 
     #[tokio::test]
-    async fn a_scroll_wheels_at_its_point_or_keys_the_front_window_and_a_drag_spans_two_points() {
+    async fn a_scroll_wheels_at_its_point_or_at_the_front_window_and_a_drag_spans_two_points() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(
             || Err::<Fake, _>("no accessibility".to_owned()),
@@ -2126,6 +2137,21 @@ pub(crate) mod tests {
             last(),
             (
                 "scroll".to_owned(),
+                json!({"direction": "up", "amount": 5, "x": 400.0, "y": 900.0, "scope": "desktop"})
+            )
+        );
+        Desk::new(
+            || Err::<Fake, _>("no accessibility".to_owned()),
+            Wheel(calls.clone()),
+            Os::Mac,
+        )
+        .run("desk_scroll", json!({"direction": "up", "amount": 5}))
+        .await
+        .unwrap();
+        assert_eq!(
+            last(),
+            (
+                "scroll".to_owned(),
                 json!({"direction": "up", "amount": 5, "pid": 4, "window_id": 3, "session": WINDOW_SESSION})
             )
         );
@@ -2139,7 +2165,7 @@ pub(crate) mod tests {
             last(),
             (
                 "scroll".to_owned(),
-                json!({"direction": "down", "amount": 3, "pid": 4, "window_id": 1, "session": WINDOW_SESSION})
+                json!({"direction": "down", "amount": 3, "x": 400.0, "y": 300.0, "scope": "desktop"})
             )
         );
         let half = desk
