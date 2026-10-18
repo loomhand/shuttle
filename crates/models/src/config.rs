@@ -81,6 +81,12 @@ impl Config {
                 path.display()
             ));
         }
+        if config.android.is_some() && !config.safety.apps.is_empty() {
+            return Err(format!(
+                "{}: [safety] apps is not enforced on an [android] device, whose screenshots it does not mask either; remove apps or the [android] section",
+                path.display()
+            ));
+        }
         if config.api_key.is_some() {
             owner_only(path)?;
         }
