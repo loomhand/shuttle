@@ -2,7 +2,6 @@
 
 use std::cell::RefCell;
 use std::ffi::c_void;
-use std::io::Write as _;
 use std::sync::Arc;
 
 use dispatch2::DispatchQueue;
@@ -16,9 +15,9 @@ use objc2_app_kit::{
 use objc2_foundation::{NSObject, NSRunLoop, NSRunLoopCommonModes, NSString, NSTimer};
 use tokio::sync::oneshot;
 
-use crate::NAME;
 use crate::daemon::{Asker, Controls, Ui};
 use crate::hotkey::Hotkey;
+use crate::log;
 
 const POLL_S: f64 = 0.25;
 const KEYBOARD_CLASS: u32 = u32::from_be_bytes(*b"keyb");
@@ -285,9 +284,8 @@ fn register(hotkey: Hotkey, controls: Arc<dyn Controls>) {
         )
     };
     if installed != 0 || registered != 0 {
-        let _ = writeln!(
-            std::io::stderr(),
-            "{NAME}: the kill hotkey did not register (handler {installed}, hotkey {registered}); cocoon-shuttle stop still works"
-        );
+        log(format_args!(
+            "the kill hotkey did not register (handler {installed}, hotkey {registered}); cocoon-shuttle stop still works"
+        ));
     }
 }

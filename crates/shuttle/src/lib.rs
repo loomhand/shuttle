@@ -14,9 +14,16 @@ pub mod tools;
 #[cfg(windows)]
 pub mod win;
 
+use std::fmt::Display;
+use std::io::Write as _;
+
 /// The program name in usage lines, endpoints and the MCP server info.
 pub const NAME: &str = "cocoon-shuttle";
 /// The release version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The answer to every call while the user has stopped shuttle.
 pub const STOPPED: &str = "stopped by the user: run `cocoon-shuttle resume` to go on";
+
+pub(crate) fn log(line: impl Display) {
+    let _ = writeln!(std::io::stderr(), "{NAME}: {line}");
+}

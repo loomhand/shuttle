@@ -1,5 +1,6 @@
 //! The command line: `mcp`, `serve`, `desk VERB` and `--version`.
 
+use std::fmt::Display;
 use std::io::Write as _;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -22,7 +23,7 @@ use crate::runner::Runner;
 use crate::tools::DESK_VERBS;
 #[cfg(windows)]
 use crate::win as controls;
-use crate::{NAME, VERSION, mcp};
+use crate::{NAME, VERSION, log, mcp};
 
 /// Runs the command in `args` (the program name excluded) and returns its exit code.
 pub fn run(args: &[String]) -> ExitCode {
@@ -77,8 +78,8 @@ fn safety(tool: &str) -> ExitCode {
             let _ = writeln!(std::io::stdout(), "{}", out.text);
             ExitCode::SUCCESS
         }
-        Ok(out) => fail(&out.text),
-        Err(e) => fail(&format!("no daemon answers: {e}")),
+        Ok(out) => fail(out.text),
+        Err(e) => fail(format_args!("no daemon answers: {e}")),
     }
 }
 
@@ -93,7 +94,7 @@ fn call_desk(rest: &[String]) -> ExitCode {
             args,
         },
         Err(e) => {
-            let _ = writeln!(std::io::stderr(), "{NAME}: {e}");
+            log(e);
             return usage();
         }
     };
@@ -106,8 +107,8 @@ fn call_desk(rest: &[String]) -> ExitCode {
             let _ = writeln!(std::io::stdout(), "{}", out.text);
             ExitCode::SUCCESS
         }
-        Ok(out) => fail(&format!("desk {verb}: {}", out.text)),
-        Err(e) => fail(&format!("desk {verb}: {e}")),
+        Ok(out) => fail(format_args!("desk {verb}: {}", out.text)),
+        Err(e) => fail(format_args!("desk {verb}: {e}")),
     }
 }
 
@@ -131,7 +132,7 @@ fn controls_serve(endpoint: String) -> ExitCode {
             serve(&endpoint, Some(controls::asker()), ready),
         );
         if let Err(e) = &done {
-            let _ = writeln!(std::io::stderr(), "{NAME}: {e}");
+            log(e);
         }
         #[cfg(windows)]
         controls::shutdown();
@@ -255,7 +256,7 @@ fn block_on<T>(
 }
 
 fn exit(done: Result<(), String>) -> ExitCode {
-    done.map_or_else(|e| fail(&e), |()| ExitCode::SUCCESS)
+    done.map_or_else(fail, |()| ExitCode::SUCCESS)
 }
 
 fn usage() -> ExitCode {
@@ -267,7 +268,7 @@ fn usage() -> ExitCode {
     ExitCode::from(2)
 }
 
-fn fail(e: &str) -> ExitCode {
-    let _ = writeln!(std::io::stderr(), "{NAME}: {e}");
+fn fail(e: impl Display) -> ExitCode {
+    log(e);
     ExitCode::FAILURE
 }
