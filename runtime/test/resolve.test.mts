@@ -23,6 +23,7 @@ const clicked: string[] = []
 const atPids: unknown[] = []
 const asked: { image: boolean }[] = []
 const looks: string[] = []
+let shots = 0
 let pick: Record<string, number> = {}
 let looked: Record<string, number> = {}
 let build: string | null = null
@@ -46,6 +47,7 @@ function answer({ tool, args }: Call): Reply {
     return JSON.stringify(x ? { window: x.win, nodes: x.nodes, truncated: false } : { window: win, nodes, truncated: false })
   }
   if (tool === 'desk_press') { pressed.push(String(args.id)); return '{"ok":true,"how":"click"}' }
+  if (tool === 'desk_shot') shots += 1
   if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(Number(args.w ?? 1280), Number(args.h ?? 800)).toString('base64') }
   if (tool === 'desk_screen') return '{"width":1280,"height":800}'
   if (tool === 'desk_at') { atPids.push(args.pid); return JSON.stringify({ found: under, path: [] }) }
@@ -105,6 +107,7 @@ async function screen(tree: Spec[], probabilities: Record<string, number>) {
   clicked.length = 0
   asked.length = 0
   looks.length = 0
+  shots = 0
   pick = probabilities
   return import('../lib/gui_plan.mts')
 }
@@ -351,6 +354,18 @@ test('a grounded click the 640x400 crop refuses is checked on the small element\
   assert.equal(off.ok, false, JSON.stringify(off))
   assert.deepEqual(looks, ['640x400', '384x288'])
   assert.equal(lastStep()?.checked, 'jev-image+zoom')
+  build = null
+  on = 0
+})
+
+test('a grounded step captures the screen once, and its crop, zoom and ring checks cut that capture', async () => {
+  const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
+  build = 'typesafe/jev-1.14-20261014'
+  on = [0.3, 0.6, 0.96]
+  const full = await plan('the yellow star', tree, {})
+  assert.equal(full.ok, true, JSON.stringify(full))
+  assert.deepEqual(looks, ['640x400', '384x288', '1280x800 ring'])
+  assert.equal(shots, 1)
   build = null
   on = 0
 })

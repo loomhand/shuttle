@@ -497,7 +497,7 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>) 
   } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
 
-async function grounded(x: number, y: number, target: string, w: Win, area: { width: number; height: number }) {
+async function grounded(x: number, y: number, target: string, w: Win, area: { width: number; height: number }, screen: Buffer) {
   const under = await desk.at(x, y, w.title, w.pid).catch(() => ({ found: null, path: [] }))
   const what = under.found ? [under.found, ...(under.path ?? []).toReversed()].filter((n) => n.name).map((n) => `${n.role} "${n.name}"`).join(' under ') : ''
   const t0 = Date.now()
@@ -505,7 +505,7 @@ async function grounded(x: number, y: number, target: string, w: Win, area: { wi
   const yes = async (state: unknown[], question: string) => +prob((await desk.look(state, { on: desk.yes(question) })).on).toFixed(2)
   const crop = async (cw: number, ch: number, k: number) => {
     const [left, top] = fit(cw, ch), [px, py] = [(x - left) * k, (y - top) * k]
-    const png = zoom(await desk.shot({ x: left, y: top, w: cw, h: ch }), k)
+    const png = zoom(cut(screen, area.width, left, top, cw, ch), k)
     return yes([`A ${cw * k}x${ch * k} crop of the screen. A click is about to land on its pixel (${px}, ${py}).`, desk.image(png)], `Is the pixel at (${px}, ${py}) of the image on ${target}?`)
   }
   try {
@@ -521,7 +521,7 @@ async function grounded(x: number, y: number, target: string, w: Win, area: { wi
       out.ok = (out.p_zoom ?? 0) >= ZOOM_BAR
     }
     if (!out.ok && desk.setting('DESK_FULL_CHECK') !== 'off') {
-      const full = async () => yes([`The screen, ${area.width}x${area.height}. A red ring with four ticks marks the spot a click is about to land on, centred at pixel (${x}, ${y}).`, desk.image(ring(await desk.shot(), x, y, RING))], `Is the spot marked by the red ring on ${target}?`)
+      const full = async () => yes([`The screen, ${area.width}x${area.height}. A red ring with four ticks marks the spot a click is about to land on, centred at pixel (${x}, ${y}).`, desk.image(ring(screen, x, y, RING))], `Is the spot marked by the red ring on ${target}?`)
       out.check += '+full'; out.p_full = await full().catch(() => null)
       out.ok = (out.p_full ?? 0) >= FULL_BAR
     }
@@ -562,6 +562,15 @@ function png(w: number, h: number, type: number, bpp: number, px: Buffer) {
   for (let y = 0; y < h; y++) px.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride)
   ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = type
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))])
+}
+
+function cut(image: Buffer, width: number, left: number, top: number, cw: number, ch: number) {
+  const { w, h, type, bpp, px } = unpng(image), k = w / width
+  const [l, t] = [Math.min(w - 1, Math.floor(left * k)), Math.min(h - 1, Math.floor(top * k))]
+  const [cwp, chp] = [Math.max(1, Math.min(w - l, Math.floor(cw * k))), Math.max(1, Math.min(h - t, Math.floor(ch * k)))]
+  const out = Buffer.alloc(cwp * chp * bpp)
+  for (let y = 0; y < chp; y++) px.copy(out, y * cwp * bpp, ((t + y) * w + l) * bpp, ((t + y) * w + l + cwp) * bpp)
+  return png(cwp, chp, type, bpp, out)
 }
 
 function zoom(image: Buffer, k: number) {
@@ -870,9 +879,10 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (!s.click) throw new Surprise(`no element matches "${target}"`, await seen())
     t0 = Date.now()
     const area = await desk.screen()
-    const [x, y] = await desk.ground(await desk.shot(), `${target} in the "${w.title}" window`, area)
+    const screen = await desk.shot()
+    const [x, y] = await desk.ground(screen, `${target} in the "${w.title}" window`, area)
     tick('ground', t0)
-    const { what, ok, check, p, p_zoom, p_full } = await grounded(x, y, target, w, area)
+    const { what, ok, check, p, p_zoom, p_full } = await grounded(x, y, target, w, area, screen)
     rec.ground_hit = what.slice(0, 80); rec.checked = check; rec.p = p; rec.p_zoom = p_zoom; rec.p_full = p_full
     if (!ok) throw new Surprise(`no element matches "${target}"${what.trim() ? `; grounding pointed at ${what.slice(0, 80)}` : ''}`, await seen())
     t0 = Date.now(); await desk.click(x, y); tick('act', t0)
