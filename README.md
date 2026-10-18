@@ -8,13 +8,13 @@ shuttle is part of [loomhand](https://github.com/loomhand). It takes its desk co
 
 ## Status
 
-**v0.1.0 is the first usable release.** On macOS and Windows the daemon drives the desktop through the bundled cua-driver (`desk`, `screenshot`, `gui_plan`, `script_run`), calls models with your own key, and has its safety controls: kill switch and hotkey, indicator, confirm mode and app allowlist. On Linux shuttle installs and answers MCP; its desk backend comes in P3.
+**v0.1.1 is the current release.** On macOS and Windows the daemon drives the desktop through the bundled cua-driver (`desk`, `screenshot`, `gui_plan`, `script_run`), calls models with your own key, and has its safety controls: kill switch and hotkey, indicator, confirm mode and app allowlist. On Linux shuttle installs and answers MCP; its desk backend comes in P3. v0.1.0's Windows build needs the Visual C++ Redistributable; v0.1.1 does not.
 
 | Phase | What | State |
 |---|---|---|
 | P0 | Workspace, CI, release archives, installers, MCP skeleton | done in v0.0.1 |
 | P1 | macOS: daemon in `Cocoon Shuttle.app`, desk tools, `gui_plan`, `script_run`, BYOK models, safety controls | done in v0.1.0 |
-| P2 | Windows: the same over UI Automation, with its safety controls | done in v0.1.0 |
+| P2 | Windows: the same over UI Automation, with its safety controls | done in v0.1.0; starts without the Visual C++ Redistributable from v0.1.1 |
 | P3 | Linux: the same over AT-SPI on X11 | planned |
 | P4 | cocoonbox depends on shuttle's crates and runtime | next |
 
