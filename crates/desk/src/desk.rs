@@ -188,7 +188,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let windows =
                 serde_json::to_value(&frames).map_err(|e| format!("encode windows: {e}"))?;
             let same = since.as_ref() == Some(&windows);
-            if !same || over {
+            if !same || started.elapsed() >= limit {
                 let mut out = json!({"changed": !same});
                 out["windows"] = windows;
                 return Ok(out.to_string());
@@ -1976,6 +1976,18 @@ pub(crate) mod tests {
         assert_eq!(out["changed"], false);
         assert!(took >= Duration::from_millis(300), "{took:?}");
         assert_eq!(lists(&desk).await, 3);
+    }
+
+    #[tokio::test]
+    async fn a_read_that_ends_past_the_deadline_ends_the_wait() {
+        let desk = Desk::new(
+            || Ok(Stub::opens(usize::MAX, false, 300)),
+            Slow(Arc::default()),
+            Os::Mac,
+        );
+        let (out, _) = wait_on(&desk, 150).await;
+        assert_eq!(out["changed"], false);
+        assert_eq!(lists(&desk).await, 2);
     }
 
     #[tokio::test]
