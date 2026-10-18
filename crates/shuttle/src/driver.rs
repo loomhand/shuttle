@@ -1,4 +1,4 @@
-//! The bundled cua-driver: the daemon starts it on its own socket once it holds its endpoint, restarts it when it exits, and stops it when the daemon exits.
+//! The bundled cua-driver: the daemon starts it on its own socket once it holds its endpoint, restarts it when it exits, and stops it when the daemon exits; the apps a Linux driver launches share its process group and outlive it.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -103,7 +103,7 @@ impl Proc {
             .map_err(|e| format!("start {}: {e}", self.bin.display()))?;
         let mut running = Running {
             #[cfg(unix)]
-            group: child.id(),
+            group: child.id().filter(|_| !cfg!(target_os = "linux")),
             child,
         };
         let mut waited = Duration::ZERO;

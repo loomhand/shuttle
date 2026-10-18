@@ -148,6 +148,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_launch" => {
                 let app = parse::<LaunchArgs>(args)?.app;
                 let v = self.driver.call("launch_app", json!({"name": app})).await?;
+                if self.os == Os::Linux {
+                    adopt(&v).await;
+                }
                 json!({"ok": true, "launched": text_of(&v)}).to_string()
             }
             "desk_shot" => return self.shot(parse(args)?).await,
@@ -1046,6 +1049,17 @@ async fn delivered(png: Vec<u8>, w: u32, h: u32, path: Option<String>) -> Result
         ..Output::default()
     })
 }
+
+/// Moves a Linux launch into a systemd scope of its own; a desktop without a systemd user manager keeps it where it is.
+#[cfg(target_os = "linux")]
+async fn adopt(launched: &Value) {
+    if let Err(e) = crate::scope::adopt(launched).await {
+        eprintln!("desk: scope the launch: {e}");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn adopt(_: &Value) {}
 
 /// Sets its flag when dropped, as when a stop drops the call that holds it.
 struct Cancel(Arc<AtomicBool>);

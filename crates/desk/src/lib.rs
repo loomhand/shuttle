@@ -9,6 +9,8 @@ pub mod desk;
 pub mod driver;
 pub mod keys;
 pub mod model;
+#[cfg(target_os = "linux")]
+pub mod scope;
 pub mod server;
 #[cfg(target_os = "linux")]
 pub mod spi;

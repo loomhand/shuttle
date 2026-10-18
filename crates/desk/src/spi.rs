@@ -1,6 +1,9 @@
 //! The Linux desk backend: the AT-SPI client's async calls, run on the worker thread by a runtime of its own so their fan-out stays concurrent, and screen reads over MIT-SHM.
 
+use desk_core::window::{TITLE_TIERS, title_matches};
 use tokio::runtime::{Builder, Runtime};
+use x11rb::connection::Connection as _;
+use x11rb::protocol::xproto::{AtomEnum, ClientMessageEvent, ConnectionExt as _, EventMask};
 
 use crate::atspi::{self, Atspi, Obj};
 use crate::model::{Access, Act, Capture, Extras, Frame, Modal, Node, Tree};
@@ -136,10 +139,7 @@ impl Access for Spi {
     }
 
     fn close(&mut self, frame: &Frame) -> Result<(), String> {
-        Err(format!(
-            "closing \"{}\" by its window manager is not in the Linux desk yet",
-            frame.title
-        ))
+        close(&frame.title, frame.pid)
     }
 }
 
@@ -176,6 +176,74 @@ fn node(n: &atspi::Node) -> Node {
         keys: n.keys.clone(),
         bounds: n.bounds,
     }
+}
+
+/// Asks the window manager to close the managed window titled `want` of process `pid`, the most recently mapped among equals, as its close button does.
+fn close(want: &str, pid: Option<u32>) -> Result<(), String> {
+    let (conn, n) = x11rb::connect(None).map_err(|e| format!("connect X: {e}"))?;
+    let root = conn.setup().roots[n].root;
+    let atom = |name: &[u8]| -> Result<u32, String> {
+        conn.intern_atom(false, name)
+            .map_err(|e| format!("intern atom: {e}"))?
+            .reply()
+            .map(|r| r.atom)
+            .map_err(|e| format!("intern atom: {e}"))
+    };
+    let [list, name, utf8, wm_pid, close] = [
+        &b"_NET_CLIENT_LIST"[..],
+        b"_NET_WM_NAME",
+        b"UTF8_STRING",
+        b"_NET_WM_PID",
+        b"_NET_CLOSE_WINDOW",
+    ]
+    .map(atom);
+    let (list, name, utf8, wm_pid, close) = (list?, name?, utf8?, wm_pid?, close?);
+    let prop = |w: u32, p: u32, kind: u32| {
+        conn.get_property(false, w, p, kind, 0, 1024)
+            .ok()
+            .and_then(|c| c.reply().ok())
+    };
+    let clients: Vec<u32> = prop(root, list, AtomEnum::WINDOW.into())
+        .and_then(|r| r.value32().map(Iterator::collect))
+        .unwrap_or_default();
+    let windows: Vec<(u32, String)> = clients
+        .into_iter()
+        .filter(|&w| {
+            pid.is_none_or(|p| {
+                prop(w, wm_pid, AtomEnum::CARDINAL.into())
+                    .and_then(|r| r.value32().and_then(|mut v| v.next()))
+                    == Some(p)
+            })
+        })
+        .map(|w| {
+            let title = prop(w, name, utf8)
+                .map(|r| String::from_utf8_lossy(&r.value).into_owned())
+                .unwrap_or_default();
+            (w, title)
+        })
+        .collect();
+    let (w, _) = (0..TITLE_TIERS)
+        .find_map(|tier| {
+            windows
+                .iter()
+                .rev()
+                .find(|(_, t)| title_matches(tier, t, want))
+        })
+        .ok_or_else(|| format!("no window {want:?}"))?;
+    let event = ClientMessageEvent::new(32, *w, close, [0, 2, 0, 0, 0]);
+    conn.send_event(
+        false,
+        root,
+        EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+        event,
+    )
+    .map_err(|e| format!("close {want:?}: {e}"))?;
+    // a round trip, not a flush: a connection that ends right after a flush can lose the event
+    conn.get_input_focus()
+        .map_err(|e| format!("close {want:?}: {e}"))?
+        .reply()
+        .map(drop)
+        .map_err(|e| format!("close {want:?}: {e}"))
 }
 
 /// The file name of process `pid`'s executable, as the allowlist names a Linux app; none when it cannot be read, which the allowlist refuses.
