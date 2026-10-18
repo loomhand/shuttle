@@ -8,7 +8,7 @@ One wire connects `cocoon-shuttle mcp` to the daemon, the runtime (`desk.mts`) t
 |---|---|
 | macOS | `~/Library/Caches/cocoon-shuttle/desk.sock`, mode 0600 |
 | Windows | `\\.\pipe\cocoon-shuttle-desk`, local clients only |
-| Linux | `~/Library/Caches/cocoon-shuttle/desk.sock` (the macOS path, until the P3 backend picks a Linux one), mode 0600 |
+| Linux | `$XDG_CACHE_HOME/cocoon-shuttle/desk.sock`, else `~/.cache/cocoon-shuttle/desk.sock`, mode 0600 |
 
 `SHUTTLE_SOCKET` overrides the endpoint for the binary. The daemon hands its endpoint to the runtime in `TOOLHOST_SOCKET`.
 
