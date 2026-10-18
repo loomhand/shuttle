@@ -148,10 +148,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_launch" => {
                 let app = parse::<LaunchArgs>(args)?.app;
                 let v = self.driver.call("launch_app", json!({"name": app})).await?;
+                let mut out = json!({"ok": true, "launched": text_of(&v)});
                 if self.os == Os::Linux {
-                    adopt(&v).await;
+                    out["scoped"] = adopt(v).await.into();
                 }
-                json!({"ok": true, "launched": text_of(&v)}).to_string()
+                out.to_string()
             }
             "desk_shot" => return self.shot(parse(args)?).await,
             "desk_screen" => {
@@ -1050,16 +1051,23 @@ async fn delivered(png: Vec<u8>, w: u32, h: u32, path: Option<String>) -> Result
     })
 }
 
-/// Moves a Linux launch into a systemd scope of its own; a desktop without a systemd user manager keeps it where it is.
+/// Moves a Linux launch into a systemd scope of its own on a task that finishes when the call is dropped; false when the launch stays in the daemon's cgroup.
 #[cfg(target_os = "linux")]
-async fn adopt(launched: &Value) {
-    if let Err(e) = crate::scope::adopt(launched).await {
-        eprintln!("desk: scope the launch: {e}");
-    }
+async fn adopt(launched: Value) -> bool {
+    tokio::spawn(async move {
+        crate::scope::adopt(&launched).await.unwrap_or_else(|e| {
+            eprintln!("desk: scope the launch: {e}");
+            false
+        })
+    })
+    .await
+    .unwrap_or(false)
 }
 
 #[cfg(not(target_os = "linux"))]
-async fn adopt(_: &Value) {}
+async fn adopt(_: Value) -> bool {
+    false
+}
 
 /// Sets its flag when dropped, as when a stop drops the call that holds it.
 struct Cancel(Arc<AtomicBool>);

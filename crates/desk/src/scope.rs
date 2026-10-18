@@ -10,18 +10,18 @@ const SYSTEMD: &str = "org.freedesktop.systemd1";
 const SYSTEMD_PATH: &str = "/org/freedesktop/systemd1";
 const MANAGER: &str = "org.freedesktop.systemd1.Manager";
 
-/// Moves the processes of a `launch_app` result that share this process's cgroup into a scope named after the app.
-pub async fn adopt(launched: &Value) -> Result<(), String> {
+/// Moves the processes of a `launch_app` result that share this process's cgroup into a scope named after the app; true when none of them is left in this cgroup.
+pub async fn adopt(launched: &Value) -> Result<bool, String> {
     let s = &launched["structuredContent"];
     let roots = roots(s);
     let Some(&pid) = roots.last() else {
-        return Ok(());
+        return Ok(false);
     };
     let pids = tokio::task::spawn_blocking(move || own_tree(&roots))
         .await
         .map_err(|e| format!("walk the launch: {e}"))?;
     if pids.is_empty() {
-        return Ok(());
+        return Ok(true);
     }
     let unit = unit_name(s["name"].as_str().unwrap_or("app"), pid);
     let conn = Connection::session()
@@ -41,7 +41,7 @@ pub async fn adopt(launched: &Value) -> Result<(), String> {
     )
     .await
     .map_err(|e| format!("StartTransientUnit {unit}: {e}"))?;
-    Ok(())
+    Ok(true)
 }
 
 fn roots(s: &Value) -> Vec<u32> {
