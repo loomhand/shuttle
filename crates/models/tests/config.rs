@@ -168,6 +168,13 @@ mod tests {
         assert_eq!(a.adb, std::path::PathBuf::from("adb"));
         assert_eq!(a.serial.as_deref(), Some("127.0.0.1:5555"));
         assert_eq!(a.ui_jar, std::path::PathBuf::from("/u.jar"));
+        assert_eq!(a.su, Some(std::path::PathBuf::from("/su")));
+        let phone =
+            Config::load(file("[android]\nui_jar = \"/u.jar\"\nscrcpy_jar = \"/s.jar\"\n").path())
+                .unwrap()
+                .android
+                .unwrap();
+        assert!(phone.su.is_none(), "a phone has no su");
         let bad = file(
             "[android]\nui_jar = \"/u.jar\"\nscrcpy_jar = \"/s.jar\"\nsu = \"/su\"\nport = 5\n",
         );

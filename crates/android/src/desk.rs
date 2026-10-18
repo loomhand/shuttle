@@ -15,7 +15,7 @@ use desk_core::wire::Output;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::adb::{Android, SCREEN, is_package};
+use crate::adb::{Android, is_package};
 
 const APPLICATION: i64 = 1;
 const PID_BASE: u32 = 1 << 22;
@@ -125,6 +125,7 @@ struct Frame {
     active: bool,
     bounds: [i32; 4],
     covers: Vec<[i32; 4]>,
+    screen: (i32, i32),
 }
 
 impl Frame {
@@ -139,10 +140,10 @@ impl Frame {
     }
 
     fn span(&self, x: i32, top: i32, bottom: i32) -> Option<(i32, i32)> {
-        if !(0..SCREEN.0).contains(&x) {
+        if !(0..self.screen.0).contains(&x) {
             return None;
         }
-        let mut open = vec![(top.max(0), bottom.min(SCREEN.1))];
+        let mut open = vec![(top.max(0), bottom.min(self.screen.1))];
         for &[cx, cy, cw, ch] in &self.covers {
             if (cx..cx + cw).contains(&x) {
                 open = open
@@ -286,7 +287,10 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
             let app = parse::<LaunchArgs>(args)?.app;
             json!({"ok": true, "launched": android.launch(&app).await?}).to_string()
         }
-        "desk_screen" => json!({"width": SCREEN.0, "height": SCREEN.1}).to_string(),
+        "desk_screen" => {
+            let (width, height) = android.screen().await?;
+            json!({"width": width, "height": height}).to_string()
+        }
         "desk_shot" => return shot(android, parse(args)?).await,
         other => return Err(format!("unknown desk tool {other}")),
     };
@@ -304,11 +308,12 @@ pub(crate) fn elements(xml: &str) -> Vec<Node> {
 
 /// The listed windows, the front one active; an activity switch lists none for a moment, which this waits out.
 async fn frames(android: &Android) -> Result<Vec<Frame>, String> {
+    let screen = android.screen().await?;
     let mut shown = Vec::new();
     for _ in 0..SWITCH_POLLS {
         let list: Vec<WindowInfo> = serde_json::from_str(android.windows().await?.trim())
             .map_err(|e| format!("decode windows: {e}"))?;
-        shown = frames_of(list);
+        shown = frames_of(list, screen);
         if !shown.is_empty() {
             break;
         }
@@ -317,7 +322,7 @@ async fn frames(android: &Android) -> Result<Vec<Frame>, String> {
     Ok(shown)
 }
 
-fn frames_of(list: Vec<WindowInfo>) -> Vec<Frame> {
+fn frames_of(list: Vec<WindowInfo>, screen: (i32, i32)) -> Vec<Frame> {
     let system: Vec<(i64, [i32; 4])> = list
         .iter()
         .filter(|w| w.kind != APPLICATION)
@@ -335,7 +340,7 @@ fn frames_of(list: Vec<WindowInfo>) -> Vec<Frame> {
                 .collect();
             Frame {
                 covers,
-                ..frame(w, alone)
+                ..frame(w, alone, screen)
             }
         })
         .collect()
@@ -355,9 +360,9 @@ fn listed(list: Vec<WindowInfo>) -> Vec<WindowInfo> {
 }
 
 /// A window short of the screen is a dialog over another window; alone it is an activity in a transition.
-fn frame(w: WindowInfo, alone: bool) -> Frame {
+fn frame(w: WindowInfo, alone: bool, screen: (i32, i32)) -> Frame {
     let [l, t, r, b] = w.bounds;
-    let full = alone || (r - l >= SCREEN.0 && b - t >= SCREEN.1 * 9 / 10);
+    let full = alone || (r - l >= screen.0 && b - t >= screen.1 * 9 / 10);
     let title = if w.title.trim().is_empty() || w.title == w.package {
         w.package.clone()
     } else {
@@ -372,6 +377,7 @@ fn frame(w: WindowInfo, alone: bool) -> Frame {
         active: w.active,
         bounds: [l, t, r - l, b - t],
         covers: Vec::new(),
+        screen,
     }
 }
 
@@ -854,11 +860,12 @@ async fn focus(android: &Android, a: WindowArgs) -> Result<String, String> {
 /// A PNG of a screen rectangle, the whole screen by default.
 async fn shot(android: &Android, a: ShotArgs) -> Result<Output, String> {
     let png = android.adb(&["exec-out", "screencap", "-p"]).await?;
+    let (w, h) = android.screen().await?;
     let rect = [
         a.x.unwrap_or(0.0),
         a.y.unwrap_or(0.0),
-        a.w.unwrap_or(f64::from(SCREEN.0)),
-        a.h.unwrap_or(f64::from(SCREEN.1)),
+        a.w.unwrap_or(f64::from(w)),
+        a.h.unwrap_or(f64::from(h)),
     ];
     let (w, h, png) = crop(&png, rect)?;
     let image = B64.encode(&png);
@@ -954,6 +961,7 @@ async fn write_bytes(path: &std::path::Path, data: &[u8]) -> Result<(), String> 
 mod tests {
     use super::*;
 
+    const REDROID: (i32, i32) = (720, 1280);
     const DUMP: &str = r#"<hierarchy><node text="" resource-id="" class="android.widget.FrameLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" depth="0" path="0" bounds="[0,0][720,1280]" /><node text="" resource-id="" class="android.widget.LinearLayout" content-desc="" hint="" showing-hint="false" checkable="true" checked="true" clickable="true" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" depth="1" path="0.0" bounds="[0,300][720,400]" /><node text="Dark theme" resource-id="android:id/title" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" depth="2" path="0.0.0" bounds="[40,320][400,380]" /><node text="" resource-id="android:id/switch_widget" class="android.widget.Switch" content-desc="" hint="" showing-hint="false" checkable="true" checked="true" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" depth="2" path="0.0.1" bounds="[600,320][680,380]" /><node text="Search…" resource-id="android:id/search" class="android.widget.EditText" content-desc="" hint="Search…" showing-hint="true" checkable="false" checked="false" clickable="true" long-clickable="false" editable="true" enabled="false" focused="true" selected="false" scrollable="false" visible="true" depth="1" path="0.1" bounds="[40,100][680,180]" /><node text="gone" resource-id="" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="false" depth="1" path="0.2" bounds="[0,0][0,0]" /></hierarchy>"#;
 
     fn window(bounds: [i32; 4]) -> WindowInfo {
@@ -1006,11 +1014,14 @@ mod tests {
             layer,
             bounds,
         };
-        let frames = frames_of(vec![
-            bar(5, 2, [0, 1184, 720, 1280]),
-            bar(1, 1, [0, 0, 720, 48]),
-            window([0, 0, 720, 1280]),
-        ]);
+        let frames = frames_of(
+            vec![
+                bar(5, 2, [0, 1184, 720, 1280]),
+                bar(1, 1, [0, 0, 720, 48]),
+                window([0, 0, 720, 1280]),
+            ],
+            REDROID,
+        );
         assert_eq!(frames.len(), 1);
         let settings = &frames[0];
         assert_eq!(settings.covers, [[0, 1184, 720, 96], [0, 0, 720, 48]]);
@@ -1041,20 +1052,23 @@ mod tests {
             kind: 2,
             ..bar(9, 3, [0, 700, 720, 1184])
         };
-        let typing = frames_of(vec![
-            ime,
-            bar(5, 2, [0, 1184, 720, 1280]),
-            window([0, 0, 720, 1280]),
-        ]);
+        let typing = frames_of(
+            vec![
+                ime,
+                bar(5, 2, [0, 1184, 720, 1280]),
+                window([0, 0, 720, 1280]),
+            ],
+            REDROID,
+        );
         assert_eq!(
             typing[0].span(360, 760, 820),
             None,
             "the keyboard covers the field"
         );
-        let closed = frames_of(vec![
-            bar(5, 2, [0, 1184, 720, 1280]),
-            window([0, 0, 720, 1280]),
-        ]);
+        let closed = frames_of(
+            vec![bar(5, 2, [0, 1184, 720, 1280]), window([0, 0, 720, 1280])],
+            REDROID,
+        );
         assert_eq!(
             closed[0].span(360, 760, 820),
             Some((760, 820)),
@@ -1074,10 +1088,13 @@ mod tests {
             layer,
             bounds,
         };
-        let phone = frames_of(vec![
-            bar(5, 3, 2, [0, 1184, 720, 1280]),
-            window([0, 0, 720, 1280]),
-        ]);
+        let phone = frames_of(
+            vec![
+                bar(5, 3, 2, [0, 1184, 720, 1280]),
+                window([0, 0, 720, 1280]),
+            ],
+            REDROID,
+        );
         assert_eq!(
             phone[0].swipe([0, 600, 720, 680], 1224),
             Some((360, 1038, 746))
@@ -1086,11 +1103,14 @@ mod tests {
             phone[0].swipe([0, 600, 720, 680], 610),
             Some((360, 746, 1038))
         );
-        let typing = frames_of(vec![
-            bar(9, 2, 3, [0, 0, 720, 1000]),
-            bar(5, 3, 2, [0, 1008, 720, 1280]),
-            window([0, 0, 720, 1280]),
-        ]);
+        let typing = frames_of(
+            vec![
+                bar(9, 2, 3, [0, 0, 720, 1000]),
+                bar(5, 3, 2, [0, 1008, 720, 1280]),
+                window([0, 0, 720, 1280]),
+            ],
+            REDROID,
+        );
         assert_eq!(typing[0].span(360, 600, 1280), Some((1000, 1008)));
         assert_eq!(
             typing[0].swipe([0, 600, 720, 680], 1224),
@@ -1111,7 +1131,7 @@ mod tests {
     }
 
     fn settings() -> Frame {
-        frame(window([0, 0, 720, 1280]), false)
+        frame(window([0, 0, 720, 1280]), false, REDROID)
     }
 
     #[test]
@@ -1121,8 +1141,8 @@ mod tests {
         assert!(!f.dialog);
         assert!(f.pid >= PID_BASE);
         assert_eq!(f.pid, package_pid("com.android.settings"));
-        assert!(frame(window([40, 400, 680, 900]), false).dialog);
-        assert!(!frame(window([40, 400, 680, 900]), true).dialog);
+        assert!(frame(window([40, 400, 680, 900]), false, REDROID).dialog);
+        assert!(!frame(window([40, 400, 680, 900]), true, REDROID).dialog);
     }
 
     #[test]
