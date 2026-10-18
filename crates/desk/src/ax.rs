@@ -1,6 +1,6 @@
 //! The macOS desk backend: window trees by a budgeted AX walk with one batched attribute read per element.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -22,6 +22,7 @@ use crate::model::{
 const WALK_BUDGET: Duration = Duration::from_secs(4);
 const MESSAGING_TIMEOUT: Duration = Duration::from_millis(500);
 const HUNG_SKIP: Duration = Duration::from_secs(10);
+const HUNG_AFTER: Duration = Duration::from_secs(2);
 const AX_SUCCESS: i32 = 0;
 
 const POINT_TYPE: u32 = 1;
@@ -68,7 +69,7 @@ pub struct Ax {
     hashes: HashMap<usize, Vec<(CFType, String)>>,
     next: u64,
     hung: HashMap<i32, Instant>,
-    slow: HashSet<i32>,
+    slow: HashMap<i32, Instant>,
     last: HashMap<i32, Vec<Frame>>,
 }
 
@@ -104,7 +105,7 @@ impl Ax {
             hashes: HashMap::new(),
             next: 0,
             hung: HashMap::new(),
-            slow: HashSet::new(),
+            slow: HashMap::new(),
             last: HashMap::new(),
         })
     }
@@ -245,7 +246,7 @@ impl Access for Ax {
             let asked = Instant::now();
             let read = values(&self.app_names, &app);
             if read.iter().all(Option::is_none) && asked.elapsed() >= MESSAGING_TIMEOUT * 9 / 10 {
-                if self.slow.insert(p) {
+                if self.slow.entry(p).or_insert(asked).elapsed() < HUNG_AFTER {
                     let kept = self.last.get(&p).into_iter().flatten();
                     frames.extend(kept.map(|f| Frame {
                         stale: true,
