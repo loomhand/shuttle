@@ -32,6 +32,8 @@ pub struct Config {
     pub api_key: Option<Secret>,
     pub timeout_ms: u64,
     pub decide_api: DecideApi,
+    /// The builds a judgment may come from, such as `typesafe/jev-1.14-########` (`#` is one digit); unset takes any.
+    pub decide_build: Option<String>,
     pub models: Roles,
     pub safety: Safety,
     pub tools: Tools,
@@ -47,6 +49,7 @@ impl Default for Config {
             api_key: None,
             timeout_ms: DEFAULT_TIMEOUT_MS,
             decide_api: DecideApi::default(),
+            decide_build: None,
             models: Roles::default(),
             safety: Safety::default(),
             tools: Tools::default(),

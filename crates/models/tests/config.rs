@@ -21,6 +21,12 @@ mod tests {
         assert_eq!(c.models.decide, "typesafe/jev-1.14");
         assert_eq!(c.models.verify, None);
         assert_eq!(c.timeout_ms, 60_000);
+        assert_eq!(c.decide_build, None);
+        let pinned = file("decide_build = \"typesafe/jev-1.14-########\"\n");
+        assert_eq!(
+            Config::load(pinned.path()).unwrap().decide_build.as_deref(),
+            Some("typesafe/jev-1.14-########")
+        );
     }
 
     #[test]
