@@ -16,5 +16,8 @@ serde_json = "1"
 shuttle-desk-core = { path = "../desk-core" }
 tokio = { version = "1", features = ["fs", "io-util", "net", "process", "sync", "time"] }
 
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+
 [lints]
 workspace = true
