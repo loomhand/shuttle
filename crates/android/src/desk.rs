@@ -122,6 +122,7 @@ struct Frame {
     pid: u32,
     active: bool,
     bounds: [i32; 4],
+    covers: Vec<[i32; 4]>,
 }
 
 impl Frame {
@@ -133,6 +134,15 @@ impl Frame {
             "pid": self.pid,
             "active": self.active,
         })
+    }
+
+    fn clear(&self, x: i32, y: i32) -> bool {
+        (0..SCREEN.0).contains(&x)
+            && (0..SCREEN.1).contains(&y)
+            && !self
+                .covers
+                .iter()
+                .any(|&[cx, cy, cw, ch]| (cx..cx + cw).contains(&x) && (cy..cy + ch).contains(&y))
     }
 }
 
@@ -273,14 +283,37 @@ async fn frames(android: &Android) -> Result<Vec<Frame>, String> {
     for _ in 0..SWITCH_POLLS {
         let list: Vec<WindowInfo> = serde_json::from_str(android.windows().await?.trim())
             .map_err(|e| format!("decode windows: {e}"))?;
-        shown = listed(list);
+        shown = frames_of(list);
         if !shown.is_empty() {
             break;
         }
         tokio::time::sleep(FOCUS_POLL).await;
     }
+    Ok(shown)
+}
+
+fn frames_of(list: Vec<WindowInfo>) -> Vec<Frame> {
+    let system: Vec<(i64, [i32; 4])> = list
+        .iter()
+        .filter(|w| w.kind != APPLICATION)
+        .map(|w| (w.layer, w.bounds))
+        .collect();
+    let shown = listed(list);
     let alone = shown.len() == 1;
-    Ok(shown.into_iter().map(|w| frame(w, alone)).collect())
+    shown
+        .into_iter()
+        .map(|w| {
+            let covers = system
+                .iter()
+                .filter(|(layer, _)| *layer > w.layer)
+                .map(|&(_, [l, t, r, b])| [l, t, r - l, b - t])
+                .collect();
+            Frame {
+                covers,
+                ..frame(w, alone)
+            }
+        })
+        .collect()
 }
 
 fn listed(list: Vec<WindowInfo>) -> Vec<WindowInfo> {
@@ -313,6 +346,7 @@ fn frame(w: WindowInfo, alone: bool) -> Frame {
         dialog: !full,
         active: w.active,
         bounds: [l, t, r - l, b - t],
+        covers: Vec::new(),
     }
 }
 
@@ -684,7 +718,7 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
     for _ in 0..SCROLL_TRIES {
         let (x, y) = node.center();
         let [_, _, w, h] = node.bounds;
-        if node.visible && w > 0 && h > 0 && on_screen(x, y) {
+        if node.visible && w > 0 && h > 0 && frame.clear(x, y) {
             android.tap((x, y)).await?;
             return Ok(json!({"ok": true, "how": "click", "x": x, "y": y}).to_string());
         }
@@ -715,10 +749,6 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
         node = nodes.swap_remove(i);
     }
     Err(format!("element {id} is off the screen"))
-}
-
-fn on_screen(x: i32, y: i32) -> bool {
-    (0..SCREEN.0).contains(&x) && (0..SCREEN.1).contains(&y)
 }
 
 /// The innermost element at a screen point, with its ancestors.
@@ -896,6 +926,35 @@ mod tests {
             shown[0].active,
             "without an active window the top app is in front"
         );
+    }
+
+    #[test]
+    fn a_tap_under_the_navigation_or_status_bar_does_not_reach_the_app() {
+        let bar = |id, layer, bounds| WindowInfo {
+            id,
+            kind: 3,
+            title: String::new(),
+            package: "com.android.systemui".into(),
+            active: false,
+            focused: false,
+            layer,
+            bounds,
+        };
+        let frames = frames_of(vec![
+            bar(5, 2, [0, 1184, 720, 1280]),
+            bar(1, 1, [0, 0, 720, 48]),
+            window([0, 0, 720, 1280]),
+        ]);
+        assert_eq!(frames.len(), 1);
+        let settings = &frames[0];
+        assert_eq!(settings.covers, [[0, 1184, 720, 96], [0, 0, 720, 48]]);
+        assert!(settings.clear(360, 763));
+        assert!(
+            !settings.clear(360, 1236),
+            "the navigation bar takes the tap"
+        );
+        assert!(!settings.clear(360, 20), "the status bar takes the tap");
+        assert!(!settings.clear(360, 1300));
     }
 
     #[test]
