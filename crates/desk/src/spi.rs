@@ -29,15 +29,15 @@ impl Spi {
         })
     }
 
-    /// `read` on the grabber, opened on first use and dropped after a failure so the next read opens it again.
-    fn shm<T>(&mut self, read: impl FnOnce(&Grabber) -> Result<T, String>) -> Result<T, String> {
+    /// `read` on the grabber, opened on first use and again once the screen size changed, and dropped after a failure so the next read opens it again; none when MIT-SHM is out of reach.
+    fn shm<T>(&mut self, read: impl FnOnce(&Grabber) -> Result<T, String>) -> Option<T> {
         let g = match self.grabber.take() {
-            Some(g) => g,
-            None => Grabber::open()?,
+            Some(g) if g.current().unwrap_or(false) => g,
+            _ => Grabber::open().ok()?,
         };
-        let out = read(&g)?;
+        let out = read(&g).ok()?;
         self.grabber = Some(g);
-        Ok(out)
+        Some(out)
     }
 
     fn listed(&self) -> Result<Vec<atspi::Frame>, String> {
@@ -111,12 +111,15 @@ impl Access for Spi {
     }
 
     fn capture(&mut self, rect: [f64; 4]) -> Result<Option<Capture>, String> {
-        self.shm(|g| {
-            let (sw, sh) = g.size();
-            let clipped = clip(rect, (sw, sh)).ok_or("the rectangle is off the screen")?;
-            let rgb = g.region(clipped.map(|v| i32::try_from(v).unwrap_or(i32::MAX)))?;
-            Ok(Some(Capture { rect: clipped, rgb }))
-        })
+        let Some((size, overlay)) = self.shm(|g| Ok((g.size(), g.overlay_shown()?))) else {
+            return Ok(None);
+        };
+        if overlay {
+            return Ok(None);
+        }
+        let clipped = clip(rect, size).ok_or("the rectangle is off the screen")?;
+        let rgb = self.shm(|g| g.region(clipped.map(|v| i32::try_from(v).unwrap_or(i32::MAX))));
+        Ok(rgb.map(|rgb| Capture { rect: clipped, rgb }))
     }
 
     fn modals(&mut self) -> Vec<Modal> {

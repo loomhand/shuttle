@@ -294,6 +294,17 @@ impl Grabber {
         self.image([0, 0, self.width.into(), self.height.into()])
     }
 
+    /// Whether the root window still has the size the segment was made for; a RandR change makes it stale.
+    pub fn current(&self) -> Result<bool, String> {
+        let g = self
+            .conn
+            .get_geometry(self.root)
+            .map_err(|e| format!("root geometry: {e}"))?
+            .reply()
+            .map_err(|e| format!("root geometry: {e}"))?;
+        Ok((g.width, g.height) == (self.width, self.height))
+    }
+
     /// The root window's width and height.
     pub fn size(&self) -> (usize, usize) {
         (usize::from(self.width), usize::from(self.height))
