@@ -1,5 +1,8 @@
 //! The desk key vocabulary per OS: combinations such as `ctrl+shift+s` in the names cua-driver takes.
 
+const SHIFTED: &str = "!@#$%^&*()_+:\"<>?~{}|";
+const BASE: &str = "1234567890-=;',./`[]\\";
+
 /// The OS whose key names a combination uses.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Os {
@@ -54,6 +57,24 @@ pub fn ax_combo(cmd_char: &str, modifiers: i64) -> Option<String> {
     Some(combo.join("+"))
 }
 
+/// The US-layout keys that type `c`, shift first for a shifted character; none for a character Windows types as Unicode.
+pub fn keystroke(c: char) -> Option<Vec<String>> {
+    match c {
+        'a'..='z' | '0'..='9' => Some(vec![c.to_string()]),
+        ' ' => Some(vec!["space".to_owned()]),
+        'A'..='Z' => Some(vec!["shift".to_owned(), c.to_ascii_lowercase().to_string()]),
+        _ => {
+            if let Some(i) = SHIFTED.find(c) {
+                return BASE[i..]
+                    .chars()
+                    .next()
+                    .map(|k| vec!["shift".to_owned(), k.to_string()]);
+            }
+            BASE.contains(c).then(|| vec![c.to_string()])
+        }
+    }
+}
+
 fn key_name(key: &str, os: Os) -> String {
     let k = key.trim().to_lowercase();
     match k.as_str() {
@@ -105,5 +126,19 @@ mod tests {
         assert_eq!(ax_combo("q", 8).as_deref(), Some("q"));
         assert_eq!(ax_combo("", 0), None);
         assert_eq!(ax_combo("\u{f704}", 0), None);
+    }
+
+    #[test]
+    fn windows_characters_map_to_us_layout_keys() {
+        let k = |c| keystroke(c).map(|v| v.join("+"));
+        assert_eq!(k('a').as_deref(), Some("a"));
+        assert_eq!(k('Q').as_deref(), Some("shift+q"));
+        assert_eq!(k(' ').as_deref(), Some("space"));
+        assert_eq!(k('!').as_deref(), Some("shift+1"));
+        assert_eq!(k(':').as_deref(), Some("shift+;"));
+        assert_eq!(k('|').as_deref(), Some("shift+\\"));
+        assert_eq!(k('/').as_deref(), Some("/"));
+        assert_eq!(k('\\').as_deref(), Some("\\"));
+        assert_eq!(k('é'), None);
     }
 }
