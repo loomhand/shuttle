@@ -1,8 +1,8 @@
 //! The daemon's handler: model calls with the configured providers, scripts and plans on the runtime, desk calls by this OS's desk.
 
 use std::hash::{BuildHasher, RandomState};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use desk_core::args::parse;
@@ -12,6 +12,8 @@ use serde_json::Value;
 use shuttle_desk::desk::{ACTIONS, TURN_WAIT};
 use shuttle_desk::server::Handler;
 use shuttle_models::Models;
+use shuttle_models::config::Confirm;
+use tokio::sync::oneshot;
 
 use crate::STOPPED;
 use crate::runner::Runner;
@@ -19,14 +21,47 @@ use crate::runner::Runner;
 const BUSY: &str = "desk busy: another run or action is still going";
 const SCRIPT_RUN_OFF: &str =
     "script_run is turned off: set script_run = true under [tools] in config.toml";
+const DECLINED: &str = "declined by the user";
+const NO_ASK: &str = "confirm needs the menu-bar controls, which this OS does not have yet: set confirm = \"off\" under [safety] in config.toml";
+const QUESTION_CHARS: usize = 200;
+
+/// Shows the user a question about one action and answers whether it may run.
+pub type Asker = Arc<dyn Fn(String) -> oneshot::Receiver<bool> + Send + Sync>;
+
+/// What the daemon guards beyond the stop: the script_run switch and the confirm mode with its asker.
+pub struct Guard {
+    pub script_run: bool,
+    pub confirm: Confirm,
+    pub asker: Option<Asker>,
+}
+
+impl Default for Guard {
+    fn default() -> Self {
+        Self {
+            script_run: true,
+            confirm: Confirm::Off,
+            asker: None,
+        }
+    }
+}
+
+/// What the menu-bar controls read and drive.
+pub trait Controls: Send + Sync {
+    /// Stops every call, or lets them run again.
+    fn halt(&self, stopped: bool);
+    fn halted(&self) -> bool;
+    /// Whether a run or a desk action is in flight.
+    fn acting(&self) -> bool;
+}
 
 /// Answers `model_*` calls with `models`, `gui_plan` and `script_run` with `runner`, and the rest with `desk`; `safety_stop` halts every call until `safety_resume`.
 pub struct Daemon<H> {
     desk: H,
     models: Result<Models, String>,
     runner: Runner,
-    script_run: bool,
+    guard: Guard,
     halted: tokio::sync::watch::Sender<bool>,
+    actions: AtomicUsize,
     turn: tokio::sync::Mutex<()>,
     running: Mutex<Option<String>>,
     nonce: u64,
@@ -36,13 +71,14 @@ pub struct Daemon<H> {
 
 impl<H: Handler> Daemon<H> {
     /// A daemon whose every call fails with the configuration's error when it does not load, since the safety controls are in it.
-    pub fn new(desk: H, models: Result<Models, String>, runner: Runner, script_run: bool) -> Self {
+    pub fn new(desk: H, models: Result<Models, String>, runner: Runner, guard: Guard) -> Self {
         Self {
             desk,
             models,
             runner,
-            script_run,
+            guard,
             halted: tokio::sync::watch::Sender::new(false),
+            actions: AtomicUsize::new(0),
             turn: tokio::sync::Mutex::new(()),
             running: Mutex::new(None),
             nonce: RandomState::new().hash_one(std::process::id()),
@@ -52,7 +88,7 @@ impl<H: Handler> Daemon<H> {
     }
 
     async fn run(&self, tool: &str, args: Value) -> Result<String, String> {
-        if tool == "script_run" && !self.script_run {
+        if tool == "script_run" && !self.guard.script_run {
             return Err(SCRIPT_RUN_OFF.to_owned());
         }
         let _turn = tokio::time::timeout(self.wait, self.turn.lock())
@@ -71,6 +107,29 @@ impl<H: Handler> Daemon<H> {
     }
 
     async fn act(&self, call: Call) -> Output {
+        if self.asks(&call.tool) {
+            let Some(ask) = &self.guard.asker else {
+                return Output::error(NO_ASK);
+            };
+            if !ask(question(&call)).await.unwrap_or(false) {
+                return Output::error(DECLINED);
+            }
+        }
+        self.actions.fetch_add(1, Ordering::Relaxed);
+        let out = self.locked(call).await;
+        self.actions.fetch_sub(1, Ordering::Relaxed);
+        out
+    }
+
+    fn asks(&self, tool: &str) -> bool {
+        match self.guard.confirm {
+            Confirm::Off => false,
+            Confirm::Coordinate => tool == "desk_click",
+            Confirm::Every => true,
+        }
+    }
+
+    async fn locked(&self, call: Call) -> Output {
         if self.running().as_deref() == Some(call.agent_id.as_str()) {
             return self.desk.answer(call).await;
         }
@@ -80,9 +139,8 @@ impl<H: Handler> Daemon<H> {
         }
     }
 
-    fn halt(&self, stopped: bool) -> Output {
-        self.halted.send_replace(stopped);
-        self.runner.halt(stopped);
+    fn stop(&self, stopped: bool) -> Output {
+        self.halt(stopped);
         Output::text(serde_json::json!({"ok": true, "stopped": stopped}).to_string())
     }
 
@@ -106,8 +164,8 @@ impl<H: Handler> Daemon<H> {
 impl<H: Handler> Handler for Daemon<H> {
     async fn answer(&self, call: Call) -> Output {
         match call.tool.as_str() {
-            "safety_stop" => return self.halt(true),
-            "safety_resume" => return self.halt(false),
+            "safety_stop" => return self.stop(true),
+            "safety_resume" => return self.stop(false),
             _ => {}
         }
         if *self.halted.borrow() {
@@ -138,6 +196,35 @@ impl<H: Handler> Handler for Daemon<H> {
             _ = halted.wait_for(|h| *h) => Output::error(STOPPED),
         }
     }
+}
+
+impl<H: Handler> Controls for Daemon<H> {
+    fn halt(&self, stopped: bool) {
+        self.halted.send_replace(stopped);
+        self.runner.halt(stopped);
+    }
+
+    fn halted(&self) -> bool {
+        *self.halted.borrow()
+    }
+
+    fn acting(&self) -> bool {
+        self.actions.load(Ordering::Relaxed) > 0 || self.running().is_some()
+    }
+}
+
+fn question(call: &Call) -> String {
+    let verb = call.tool.trim_start_matches("desk_");
+    let what = match verb {
+        "click" => format!("click at ({}, {})", call.args["x"], call.args["y"]),
+        "type" => format!(
+            "type {} characters",
+            call.args["text"].as_str().map_or(0, |t| t.chars().count())
+        ),
+        _ => format!("{verb} {}", call.args),
+    };
+    let what: String = what.chars().take(QUESTION_CHARS).collect();
+    format!("Allow shuttle to {what}?")
 }
 
 fn encode<T: Serialize>(v: &T) -> Result<String, String> {
@@ -174,7 +261,7 @@ mod tests {
             Slow,
             Ok(Models::new(Config::default())),
             runner(),
-            true,
+            Guard::default(),
         ));
         let call = |tool: &str| Call {
             agent_id: String::new(),
@@ -211,7 +298,7 @@ mod tests {
             base_url: "http://127.0.0.1:9/v1".to_owned(),
             ..Config::default()
         };
-        let d = Daemon::new(Echo, Ok(Models::new(closed)), runner(), true);
+        let d = Daemon::new(Echo, Ok(Models::new(closed)), runner(), Guard::default());
         let ask = |tool: &str, args: Value| Call {
             agent_id: "desk".into(),
             tool: tool.into(),
@@ -240,8 +327,8 @@ mod tests {
 
     #[test]
     fn each_daemon_names_its_runs_apart_from_any_earlier_daemon() {
-        let a = Daemon::new(Echo, Err(String::new()), runner(), true);
-        let b = Daemon::new(Echo, Err(String::new()), runner(), true);
+        let a = Daemon::new(Echo, Err(String::new()), runner(), Guard::default());
+        let b = Daemon::new(Echo, Err(String::new()), runner(), Guard::default());
         assert_ne!(a.nonce, b.nonce);
     }
 
@@ -251,7 +338,7 @@ mod tests {
             Echo,
             Err("config.toml line 3: invalid type".to_owned()),
             runner(),
-            true,
+            Guard::default(),
         );
         let call = |tool: &str| Call {
             agent_id: String::new(),
@@ -275,7 +362,7 @@ mod tests {
             Echo,
             Ok(Models::new(Config::default())),
             runner(),
-            true,
+            Guard::default(),
         ));
         let call = |tool: &str, args: Value| Call {
             agent_id: String::new(),
@@ -311,8 +398,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn confirm_asks_before_the_actions_its_mode_names_and_a_no_declines() {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let asker = |yes: bool, asked: Arc<Mutex<Vec<String>>>| -> Asker {
+            Arc::new(move |q| {
+                asked.lock().unwrap().push(q);
+                let (tx, rx) = oneshot::channel();
+                let _ = tx.send(yes);
+                rx
+            })
+        };
+        let daemon = |confirm, asker: Option<Asker>| {
+            Daemon::new(
+                Echo,
+                Ok(Models::new(Config::default())),
+                runner(),
+                Guard {
+                    confirm,
+                    asker,
+                    ..Guard::default()
+                },
+            )
+        };
+        let call = |tool: &str, args: Value| Call {
+            agent_id: String::new(),
+            tool: tool.into(),
+            args,
+        };
+        let click = || call("desk_click", json!({"x": 10, "y": 20}));
+        let key = || call("desk_key", json!({"keys": "ctrl+s"}));
+        let no = daemon(Confirm::Coordinate, Some(asker(false, asked.clone())));
+        assert_eq!(no.answer(click()).await.text, DECLINED);
+        assert!(!no.answer(key()).await.is_error);
+        assert!(!no.answer(call("desk_windows", json!({}))).await.is_error);
+        assert_eq!(
+            *asked.lock().unwrap(),
+            ["Allow shuttle to click at (10, 20)?"]
+        );
+        let yes = daemon(Confirm::Every, Some(asker(true, asked.clone())));
+        assert!(!yes.answer(key()).await.is_error);
+        assert!(asked.lock().unwrap().last().unwrap().contains("ctrl+s"));
+        let none = daemon(Confirm::Coordinate, None);
+        assert_eq!(none.answer(click()).await.text, NO_ASK);
+        assert!(!none.acting() && !none.halted());
+    }
+
+    #[tokio::test]
     async fn script_run_turned_off_answers_how_to_turn_it_on() {
-        let d = Daemon::new(Echo, Ok(Models::new(Config::default())), runner(), false);
+        let d = Daemon::new(
+            Echo,
+            Ok(Models::new(Config::default())),
+            runner(),
+            Guard {
+                script_run: false,
+                ..Guard::default()
+            },
+        );
         let out = d
             .answer(Call {
                 agent_id: String::new(),
@@ -325,7 +466,12 @@ mod tests {
 
     #[tokio::test]
     async fn script_run_goes_to_the_runner() {
-        let d = Daemon::new(Echo, Ok(Models::new(Config::default())), runner(), true);
+        let d = Daemon::new(
+            Echo,
+            Ok(Models::new(Config::default())),
+            runner(),
+            Guard::default(),
+        );
         let out = d
             .answer(Call {
                 agent_id: String::new(),
@@ -368,7 +514,7 @@ mod tests {
             keys.clone(),
             Ok(Models::new(Config::default())),
             runner,
-            true,
+            Guard::default(),
         );
         d.wait = wait;
         let d = std::sync::Arc::new(d);

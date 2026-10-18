@@ -9,10 +9,10 @@ use desk_core::wire::Call;
 use shuttle_desk::driver::Driver;
 use shuttle_desk::server;
 use shuttle_models::Models;
-use shuttle_models::config::{Config, default_path};
+use shuttle_models::config::{Config, Safety, default_path};
 use tokio::runtime::Builder;
 
-use crate::daemon::Daemon;
+use crate::daemon::{Asker, Controls, Daemon, Guard};
 use crate::driver::{self, Bundled};
 use crate::runner::Runner;
 use crate::tools::DESK_VERBS;
@@ -38,7 +38,13 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         "serve" => {
             let endpoint = rest.first().cloned().unwrap_or_else(desk_endpoint);
-            exit(block_on(Builder::new_multi_thread(), serve(&endpoint)))
+            #[cfg(target_os = "macos")]
+            return mac_serve(endpoint);
+            #[cfg(not(target_os = "macos"))]
+            exit(block_on(
+                Builder::new_multi_thread(),
+                serve(&endpoint, None, |_, _| Ok(())),
+            ))
         }
         "desk" => call_desk(rest),
         "stop" => safety("safety_stop"),
@@ -99,18 +105,67 @@ fn call_desk(rest: &[String]) -> ExitCode {
     }
 }
 
-async fn serve(endpoint: &str) -> Result<(), String> {
+/// The daemon on a worker thread, and the macOS controls on this, the main, thread.
+#[cfg(target_os = "macos")]
+fn mac_serve(endpoint: String) -> ExitCode {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let ready = move |controls, safety: &Safety| {
+            let hotkey = crate::hotkey::parse(&safety.kill_hotkey)?;
+            let _ = tx.send(crate::mac::Ui {
+                controls,
+                hotkey,
+                hotkey_label: safety.kill_hotkey.clone(),
+                indicator: safety.indicator,
+            });
+            Ok(())
+        };
+        let done = block_on(
+            Builder::new_multi_thread(),
+            serve(&endpoint, Some(crate::mac::asker()), ready),
+        );
+        if let Err(e) = &done {
+            let _ = writeln!(std::io::stderr(), "{NAME}: {e}");
+        }
+        std::process::exit(i32::from(done.is_err()));
+    });
+    match rx.recv() {
+        Ok(ui) => crate::mac::run(ui),
+        Err(_) => loop {
+            std::thread::park();
+        },
+    }
+}
+
+async fn serve(
+    endpoint: &str,
+    asker: Option<Asker>,
+    ready: impl FnOnce(Arc<dyn Controls>, &Safety) -> Result<(), String>,
+) -> Result<(), String> {
     let path = default_path(NAME);
-    let config = Config::load(&path);
+    let mut config = Config::load(&path);
+    #[cfg(target_os = "macos")]
+    if let Ok(c) = &config
+        && let Err(e) = crate::hotkey::parse(&c.safety.kill_hotkey)
+    {
+        config = Err(format!("{}: {e}", path.display()));
+    }
     let mut key_vars = vec![Config::default().api_key_env];
     if let Ok(c) = &config
         && !key_vars.contains(&c.api_key_env)
     {
         key_vars.push(c.api_key_env.clone());
     }
-    let (apps, script_run) = config.as_ref().map_or((Vec::new(), false), |c| {
-        (c.safety.apps.clone(), c.tools.script_run)
-    });
+    let mut safety = config
+        .as_mut()
+        .map(|c| std::mem::take(&mut c.safety))
+        .unwrap_or_default();
+    let apps = std::mem::take(&mut safety.apps);
+    let guard = Guard {
+        script_run: config.as_ref().is_ok_and(|c| c.tools.script_run),
+        confirm: safety.confirm,
+        asker,
+    };
     let models = config.map(Models::new);
     let exe = std::env::current_exe()
         .and_then(std::fs::canonicalize)
@@ -118,7 +173,7 @@ async fn serve(endpoint: &str) -> Result<(), String> {
     let listener = server::bind(endpoint).await?;
     let own = driver::endpoint(endpoint);
     let bundled = if cfg!(any(target_os = "macos", windows)) {
-        Bundled::start(&exe, &own).await?
+        Bundled::start(&exe, &own, safety.indicator).await?
     } else {
         None
     };
@@ -138,8 +193,14 @@ async fn serve(endpoint: &str) -> Result<(), String> {
         server::native(driver, apps, driver_pid),
         models,
         runner,
-        script_run,
+        guard,
     ));
+    if let Err(e) = ready(daemon.clone(), &safety) {
+        if let Some(b) = bundled {
+            b.stop().await;
+        }
+        return Err(e);
+    }
     let served = tokio::select! {
         r = server::serve(daemon, listener) => r,
         () = shutdown() => Ok(()),

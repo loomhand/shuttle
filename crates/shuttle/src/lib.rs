@@ -3,6 +3,10 @@
 pub mod cli;
 pub mod daemon;
 pub mod driver;
+#[cfg(any(target_os = "macos", test))]
+pub mod hotkey;
+#[cfg(target_os = "macos")]
+pub mod mac;
 pub mod mcp;
 pub mod proxy;
 pub mod runner;
