@@ -62,8 +62,9 @@ const SHELL_WINDOWS = ({ linux: /^(Desktop|xfce4-panel)$/, win32: /^Program Mana
 const SHELL_TARGET = /\b(dock|panel|taskbar|desktop)\b/i
 const CHOOSER = ({ linux: /File Chooser Widget/, win32: /^\s*- (combobox|textbox) "File name:?"/m, darwin: /^\s*- text "Save As:"/m } as Record<string, RegExp>)[OS] ?? /(?!)/
 const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
-let busNames: string[] | null = null
 const known = new Set<string>()
+let busNames: string[] | null = null
+let gitWorks: boolean | undefined
 let lastSeen = ''
 let recording = false
 let typed = false
@@ -247,7 +248,7 @@ async function current(bound = SETTLE) {
   const ws = k ? await until((ws) => { const f = focusedIn(ws); return !!f && f.title !== k.title }, bound - (t0 - k.at)) : await desk.windows()
   tick('settle', t0); return focusedIn(ws)
 }
-const titledIn = (ws: Win[], title: string, pid: number | null) => pid !== null && ws.some((x) => x.title === title && x.pid === pid)
+function titledIn(ws: Win[], title: string, pid: number | null) { return pid !== null && ws.some((x) => x.title === title && x.pid === pid) }
 async function titled(title: string, pid: number | null) { return titledIn(await desk.windows(), title, pid) }
 async function snapOf(w: Win, r: Reads = {}): Promise<desk.Snap> {
   return desk.snapshot(w.title, { pid: w.pid, ...r })
@@ -988,7 +989,6 @@ function flowsDir() {
   mkdirSync(FLOWS, { recursive: true, mode: 0o700 }); chmodSync(FLOWS, 0o700)
 }
 
-let gitWorks: boolean | undefined
 function git(...args: string[]) {
   gitWorks ??= OS !== 'darwin' || developerTools()
   if (!gitWorks) return
