@@ -27,6 +27,9 @@ mod tests {
             Config::load(pinned.path()).unwrap().decide_build.as_deref(),
             Some("typesafe/jev-1.14-########")
         );
+        let empty = file("decide_build = \"\"\n");
+        let err = Config::load(empty.path()).unwrap_err();
+        assert!(err.contains("decide_build is empty"), "{err}");
     }
 
     #[test]
