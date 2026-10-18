@@ -35,6 +35,7 @@ export type Result = { ok?: boolean; done?: number; ms?: number; trace?: Trace[]
 const OS = process.platform
 const FLOWS = process.env.SHUTTLE_FLOWS || (OS === 'linux' ? '/workspace/flows' : `${homedir()}/workspace/flows`)
 const LOG = `${FLOWS}/.runs.jsonl`
+const LOG_MAX = 1024 * 1024
 const INDEX = `${FLOWS}/INDEX`
 const PENDING = `${FLOWS}/.pending.json`
 const CHAIN_AGE = 10 * 60 * 1000
@@ -199,6 +200,7 @@ async function perform(p: Params): Promise<Result> {
     } else if (prev) putPending({ ...prev, saved: false, escalated: false })
   }
   const ms = Date.now() - t0
+  try { if (statSync(LOG).size > LOG_MAX) rmSync(LOG) } catch {}
   try { appendFileSync(LOG, `${JSON.stringify({ at: new Date().toISOString(), flow: p.flow ?? null, ok: !escalate, ms, jevs, saved: saved ?? null, usage: desk.usage, steps: log })}\n`, PRIVATE) } catch {}
   const out: Result = { ok: !escalate, done, ms, trace }
   if (saved) out[flow ? 'flow' : 'saved'] = saved
