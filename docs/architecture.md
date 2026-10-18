@@ -33,7 +33,7 @@ shuttle is thin and embeddable: it sends each model call once, non-streaming, to
 | `crates/desk-core` (`shuttle-desk-core`, lib `desk_core`) | The desk wire, the desk call arguments and the pure window and name matching every desk backend shares |
 | `crates/desk` (`shuttle-desk`) | The desk verbs over the macOS AX and Windows UIA trees and the cua-driver client; the Linux AT-SPI backend joins in P3 |
 | `crates/models` (`shuttle-models`) | The model calls: chat completions and decisions over one OpenAI-compatible endpoint, a model name per role; usable as a library with a `Config` value |
-| `crates/shuttle` | The `cocoon-shuttle` binary: the MCP proxy (`mcp`), the daemon and its script runner (`serve`) and `desk VERB`; later the safety controls |
+| `crates/shuttle` | The `cocoon-shuttle` binary: the MCP proxy (`mcp`), the daemon and its script runner (`serve`), `desk VERB`, `stop` and `resume`, and the safety controls (kill hotkey, indicator, confirm dialog) |
 | `runtime/lib` | `desk.mts` (the desk API for scripts) and `gui_plan.mts` (the plan executor, flows and replays) |
 | `runtime/test` | Node tests that drive the runtime against fake desk sockets and fake model servers |
 | `packaging` | The release archive builder, the third-party pins, the macOS bundle template and the installers |

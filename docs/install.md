@@ -77,4 +77,4 @@ The attestation shows that the archive was built by this repository's release wo
 - Linux: `rm -rf ~/.local/lib/cocoon-shuttle ~/.local/bin/cocoon-shuttle`
 - Windows: `Remove-Item -Recurse "$env:LOCALAPPDATA\Programs\cocoon-shuttle"`, then remove that directory from your user `PATH`.
 
-Quit a running daemon first (`pkill -f 'cocoon-shuttle serve'`; Windows: end `cocoon-shuttle.exe` in Task Manager). Remove `~/.config/cocoon-shuttle` (Windows: `%APPDATA%\cocoon-shuttle`) to drop the configuration and the saved flows too, and on macOS `~/Library/Caches/cocoon-shuttle` (the daemon's socket).
+Quit a running daemon first (`pkill -f 'cocoon-shuttle serve'`; Windows: end `cocoon-shuttle.exe` and `cua-driver.exe` in Task Manager, since ending the daemon there leaves its driver running from the install directory). Remove `~/.config/cocoon-shuttle` (Windows: `%APPDATA%\cocoon-shuttle`) to drop the configuration and the saved flows too, and `~/Library/Caches/cocoon-shuttle` on macOS and Linux (the daemon's socket) or `%LOCALAPPDATA%\cocoon-shuttle` on Windows (the driver's pid file).
