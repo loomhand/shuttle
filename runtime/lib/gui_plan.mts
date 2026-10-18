@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -755,14 +755,9 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const listed = !w && bare ? await desk.focus(s.app).catch(() => null) : null
     if (listed) { known.add(listed.title); rec.window = lastSeen = listed.title; return }
     if (!w) {
-      const t0 = Date.now(); launched = true; let missing = false
-      try { await desk.launch(s.app) } catch (e: unknown) {
-        if (e instanceof Error && e.message.includes('app allowlist')) throw new Surprise(e.message, await seen())
-        if (!/^[\w.-]+$/.test(s.app)) throw e
-        spawn(s.app, [], { detached: true, stdio: 'ignore' }).on('error', () => { missing = true }).unref()
-      }
+      const t0 = Date.now(); launched = true
+      await desk.launch(s.app)
       for (const end = Date.now() + 8000; !(w = await has()); await sleep(50)) {
-        if (missing) throw new Surprise(`no app "${s.app}"`, await seen())
         if (Date.now() > end) throw new Surprise(`app "${s.app}" has no window`, await seen())
       }
       tick('launch', t0)
