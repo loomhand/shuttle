@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Speed.** The archives carry the runtime as `.mjs` with its types stripped at package time: about 50 ms less per `gui_plan` call and 6 to 11 ms less per `script_run` call on macOS and Windows.
+
 ## 0.1.2 - 2026-10-18
 
 - **Fixes.**

@@ -8,7 +8,7 @@ const out = (name: string): string => `${env.SHUTTLE_RUN}/${name}`
 
 let main: Main | undefined
 try {
-  Object.assign(globalThis, { desk: await import(pathToFileURL(`${import.meta.dirname}/desk.mts`).href) })
+  Object.assign(globalThis, { desk: await import('./desk.mts') })
   const mod = await import(pathToFileURL(env.SHUTTLE_SCRIPT ?? '').href) as { main?: unknown }
   if (typeof mod.main === 'function') main = mod.main as Main
   else fail('no_main', `${env.SHUTTLE_SCRIPT} exports no main function`)
