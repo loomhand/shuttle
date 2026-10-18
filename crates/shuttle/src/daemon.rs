@@ -107,7 +107,7 @@ impl<H: Handler> Daemon<H> {
     }
 
     async fn act(&self, call: Call) -> Output {
-        if self.asks(&call.tool) {
+        if self.asks(&call) {
             let Some(ask) = &self.guard.asker else {
                 return Output::error(NO_ASK);
             };
@@ -121,10 +121,14 @@ impl<H: Handler> Daemon<H> {
         out
     }
 
-    fn asks(&self, tool: &str) -> bool {
+    fn asks(&self, call: &Call) -> bool {
         match self.guard.confirm {
             Confirm::Off => false,
-            Confirm::Coordinate => tool == "desk_click",
+            Confirm::Coordinate => match call.tool.as_str() {
+                "desk_click" | "desk_press" => true,
+                "desk_act" => call.args["action"] == "click",
+                _ => false,
+            },
             Confirm::Every => true,
         }
     }
@@ -217,6 +221,12 @@ fn question(call: &Call) -> String {
     let verb = call.tool.trim_start_matches("desk_");
     let what = match verb {
         "click" => format!("click at ({}, {})", call.args["x"], call.args["y"]),
+        "press" => format!("press element {}", call.args["id"]),
+        "act" => format!(
+            "{} element {}",
+            call.args["action"].as_str().unwrap_or("act on"),
+            call.args["id"]
+        ),
         "type" => format!(
             "type {} characters",
             call.args["text"].as_str().map_or(0, |t| t.chars().count())
@@ -431,9 +441,22 @@ mod tests {
         assert_eq!(no.answer(click()).await.text, DECLINED);
         assert!(!no.answer(key()).await.is_error);
         assert!(!no.answer(call("desk_windows", json!({}))).await.is_error);
+        let act = |action: &str| call("desk_act", json!({"id": "4/5", "action": action}));
+        assert_eq!(
+            no.answer(call("desk_press", json!({"id": "4/5"})))
+                .await
+                .text,
+            DECLINED
+        );
+        assert_eq!(no.answer(act("click")).await.text, DECLINED);
+        assert!(!no.answer(act("action")).await.is_error);
         assert_eq!(
             *asked.lock().unwrap(),
-            ["Allow shuttle to click at (10, 20)?"]
+            [
+                "Allow shuttle to click at (10, 20)?",
+                "Allow shuttle to press element \"4/5\"?",
+                "Allow shuttle to click element \"4/5\"?"
+            ]
         );
         let yes = daemon(Confirm::Every, Some(asker(true, asked.clone())));
         assert!(!yes.answer(key()).await.is_error);
