@@ -155,7 +155,7 @@ impl Runner {
         if status.is_err() {
             #[cfg(unix)]
             if let Some(pid) = child.id() {
-                kill_group(pid);
+                crate::kill_group(pid);
             }
             let _ = child.kill().await;
         }
@@ -212,14 +212,6 @@ struct ScriptArgs {
 enum Ended {
     Timeout,
     Stopped,
-}
-
-#[cfg(unix)]
-pub(crate) fn kill_group(pid: u32) {
-    if let Ok(pid) = libc::pid_t::try_from(pid) {
-        // SAFETY: kill takes no pointers; the negative pid names the process group the child leads.
-        unsafe { libc::kill(-pid, libc::SIGKILL) };
-    }
 }
 
 fn scratch() -> Result<tempfile::TempDir, String> {

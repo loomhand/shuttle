@@ -29,11 +29,7 @@ async fn started(endpoint: &str) -> Result<Conn, String> {
         if let Ok(conn) = server::connect(endpoint).await {
             return Ok(conn);
         }
-        if let Some(Ok(status)) = child
-            .as_mut()
-            .map(Child::try_wait)
-            .and_then(Result::transpose)
-        {
+        if let Some(Ok(Some(status))) = child.as_mut().map(Child::try_wait) {
             return Err(format!(
                 "the daemon exited with {status}; run `{} serve` to see why",
                 crate::NAME
