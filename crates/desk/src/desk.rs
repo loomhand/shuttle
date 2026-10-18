@@ -543,6 +543,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     .ok_or("no app window is in front to scroll")?;
                 req["pid"] = target["pid"].clone();
                 req["window_id"] = target["window_id"].clone();
+                req["session"] = WINDOW_SESSION.into();
                 self.driver.call("scroll", req).await?;
             }
             _ => return Err("scroll needs both x and y, or neither".to_owned()),
@@ -2091,7 +2092,7 @@ pub(crate) mod tests {
             calls.lock().unwrap().last().cloned().unwrap(),
             (
                 "scroll".to_owned(),
-                json!({"direction": "down", "amount": 3, "pid": 4, "window_id": 3})
+                json!({"direction": "down", "amount": 3, "pid": 4, "window_id": 3, "session": WINDOW_SESSION})
             )
         );
     }
@@ -2125,7 +2126,7 @@ pub(crate) mod tests {
             last(),
             (
                 "scroll".to_owned(),
-                json!({"direction": "up", "amount": 5, "pid": 4, "window_id": 3})
+                json!({"direction": "up", "amount": 5, "pid": 4, "window_id": 3, "session": WINDOW_SESSION})
             )
         );
         let allowed =
@@ -2138,7 +2139,7 @@ pub(crate) mod tests {
             last(),
             (
                 "scroll".to_owned(),
-                json!({"direction": "down", "amount": 3, "pid": 4, "window_id": 1})
+                json!({"direction": "down", "amount": 3, "pid": 4, "window_id": 1, "session": WINDOW_SESSION})
             )
         );
         let half = desk
