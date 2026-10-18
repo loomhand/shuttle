@@ -3,6 +3,7 @@
 
 use std::fmt::Write as _;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -59,8 +60,14 @@ const RUN_CHARS: usize = 8;
 const TYPE_SETTLE: Duration = Duration::from_millis(100);
 const TYPE_POLL: Duration = Duration::from_millis(10);
 const TYPE_TAIL: usize = 16;
+#[cfg(target_os = "linux")]
+const TYPER: Typer = crate::xtest::type_mapped;
+#[cfg(not(target_os = "linux"))]
+const TYPER: Typer = |_, _| Ok(false);
 
 type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
+/// Types a line on the core keyboard: true when typed, false when it typed nothing and leaves the line to the driver; it stops once the flag is set.
+type Typer = fn(&str, &AtomicBool) -> Result<bool, String>;
 
 /// The desk of one OS: `B` reads and acts on elements, `D` sends input.
 pub struct Desk<B, D> {
@@ -71,6 +78,7 @@ pub struct Desk<B, D> {
     turn_wait: Duration,
     read: std::sync::Mutex<Option<Read>>,
     allow: Allow,
+    typer: Typer,
     #[cfg(test)]
     skew: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -86,9 +94,16 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             turn_wait: TURN_WAIT,
             read: std::sync::Mutex::new(None),
             allow: Allow::default(),
+            typer: TYPER,
             #[cfg(test)]
             skew: Arc::default(),
         }
+    }
+
+    #[cfg(test)]
+    fn with_typer(mut self, typer: Typer) -> Self {
+        self.typer = typer;
+        self
     }
 
     /// Limits the desk calls to windows of `apps`, matched by app name or executable, case-insensitive; empty allows every app.
@@ -120,7 +135,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_act" => self.act(parse(args)?, turn.clone()).await?,
             "desk_at" => self.at(parse(args)?).await?,
             "desk_key" => self.key(&parse::<KeyArgs>(args)?.keys).await?,
-            "desk_type" => self.type_text(&parse::<TypeArgs>(args)?.text).await?,
+            "desk_type" => {
+                self.type_text(&parse::<TypeArgs>(args)?.text, turn.clone())
+                    .await?
+            }
             "desk_click" => self.click(parse(args)?).await?,
             "desk_scroll" => self.scroll(parse(args)?).await?,
             "desk_drag" => self.drag(parse(args)?).await?,
@@ -421,7 +439,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(OK.to_owned())
     }
 
-    async fn type_text(&self, text: &str) -> Result<String, String> {
+    async fn type_text(&self, text: &str, turn: Option<Turn>) -> Result<String, String> {
         for (i, line) in text.split('\n').enumerate() {
             if i > 0 {
                 self.driver
@@ -430,7 +448,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
             let line = line.trim_end_matches('\r');
             if self.os == Os::Linux {
-                if line.is_empty() || xtest(line).await {
+                if line.is_empty() || self.xtest(line, turn.clone()).await? {
                     continue;
                 }
                 for run in text_runs(line) {
@@ -460,6 +478,19 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             self.typed(text).await;
         }
         Ok(json!({"ok": true, "chars": text.chars().count()}).to_string())
+    }
+
+    /// Whether the typer typed `line` on the core keyboard; it runs on a blocking thread that holds the action's turn to its end and stops at its next key once this call is dropped.
+    async fn xtest(&self, line: &str, turn: Option<Turn>) -> Result<bool, String> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let _cancel = Cancel(stop.clone());
+        let (line, typer) = (line.to_owned(), self.typer);
+        tokio::task::spawn_blocking(move || {
+            let _turn = turn;
+            typer(&line, &stop)
+        })
+        .await
+        .map_err(|e| format!("XTest: {e}"))?
     }
 
     /// Waits at most [`TYPE_SETTLE`] until the focused element of the focused window holds the end of the last line typed, since an app reads typed keys after the input call returns.
@@ -967,18 +998,13 @@ fn live(frame: Frame) -> Result<Frame, String> {
     Ok(frame)
 }
 
-/// Whether XTest typed `line` on the core keyboard, which holds every character of it; else the driver types it.
-#[cfg(target_os = "linux")]
-async fn xtest(line: &str) -> bool {
-    let line = line.to_owned();
-    tokio::task::spawn_blocking(move || crate::xtest::type_mapped(&line))
-        .await
-        .is_ok_and(|typed| typed.unwrap_or(false))
-}
+/// Sets its flag when dropped, as when a stop drops the call that holds it.
+struct Cancel(Arc<AtomicBool>);
 
-#[cfg(not(target_os = "linux"))]
-async fn xtest(_: &str) -> bool {
-    false
+impl Drop for Cancel {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Runs of `text` with at most [`RUN_CHARS`] distinct non-ASCII characters; the Linux driver binds a spare keycode to each for the call and has fewer than 20 to lend.
@@ -1072,7 +1098,6 @@ pub(crate) mod tests {
     ];
 
     static ACTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    static MENUS: Mutex<Vec<bool>> = Mutex::new(Vec::new());
 
     #[test]
     fn an_outline_shows_a_linux_raw_key_binding_in_place_of_the_shortcut() {
@@ -1095,6 +1120,8 @@ pub(crate) mod tests {
     }
 
     #[derive(Default)]
+    static MENUS: Mutex<Vec<bool>> = Mutex::new(Vec::new());
+
     pub(crate) struct Fake {
         nodes: HashMap<String, (Node, Option<String>)>,
         pub(crate) hits: HashMap<(i32, i32), String>,
@@ -1829,7 +1856,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn linux_keys_take_keysym_names_and_text_goes_in_runs_of_eight_new_characters() {
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let desk = Desk::new(|| Ok(notepad()), Recorder(calls.clone()), Os::Linux);
+        let desk = Desk::new(|| Ok(notepad()), Recorder(calls.clone()), Os::Linux)
+            .with_typer(|_, _| Ok(false));
         desk.run("desk_key", json!({"keys": "Super_L+ctrl++"}))
             .await
             .unwrap();
@@ -1862,6 +1890,43 @@ pub(crate) mod tests {
                 ),
             ]
         );
+    }
+
+    static STOPPED: AtomicBool = AtomicBool::new(false);
+
+    #[tokio::test]
+    async fn a_linux_line_xtest_types_skips_the_driver_and_a_stop_ends_xtest_at_its_next_key() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(notepad()), Recorder(calls.clone()), Os::Linux)
+            .with_typer(|_, _| Ok(true));
+        desk.run("desk_type", json!({"text": "hello\nworld"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            calls.lock().unwrap().clone(),
+            [(
+                "press_key".to_owned(),
+                json!({"key": "return", "scope": "desktop"})
+            )]
+        );
+        let desk = Desk::new(|| Ok(notepad()), Recorder(calls.clone()), Os::Linux).with_typer(
+            |_, stop| {
+                while !stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+                STOPPED.store(true, Ordering::Relaxed);
+                Err("stopped by the user".to_owned())
+            },
+        );
+        let typing = desk.run("desk_type", json!({"text": "long text"}));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), typing)
+                .await
+                .is_err()
+        );
+        desk.run("desk_key", json!({"keys": "a"})).await.unwrap();
+        assert!(STOPPED.load(Ordering::Relaxed));
     }
 
     #[test]
