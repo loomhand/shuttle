@@ -336,6 +336,7 @@ impl Access for Ax {
     }
 
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
+        self.scale = display_scale();
         let started = Instant::now();
         let deadline = started + WALK_BUDGET;
         let el = self.element(&frame.id)?;
@@ -369,6 +370,7 @@ impl Access for Ax {
     }
 
     fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String> {
+        self.scale = display_scale();
         let el = self.element(id)?;
         let a = attrs(&self.names, &el);
         if a.role.is_empty() {
@@ -395,6 +397,7 @@ impl Access for Ax {
     }
 
     fn at(&mut self, window: &str, x: i32, y: i32) -> Result<Option<String>, String> {
+        self.scale = display_scale();
         let w = self.element(window)?;
         let app = application(pid(&w).ok_or("the window has no process")?);
         Ok(hit(&app, x, y, self.scale).map(|h| self.id_of(&h)))
@@ -422,6 +425,7 @@ impl Access for Ax {
     }
 
     fn pid_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
+        self.scale = display_scale();
         // SAFETY: the system-wide element is returned at +1 and wrapped once under the create rule.
         let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
         Ok(hit(&system, x, y, self.scale)
@@ -430,6 +434,7 @@ impl Access for Ax {
     }
 
     fn menu_at(&mut self, x: i32, y: i32) -> Result<Option<String>, String> {
+        self.scale = display_scale();
         // SAFETY: the system-wide element is returned at +1 and wrapped once under the create rule.
         let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
         Ok(hit(&system, x, y, self.scale)
