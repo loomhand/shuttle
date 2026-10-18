@@ -14,7 +14,7 @@ test('an app step focuses the app\'s open window, by its process or the window l
   ]
   const listed = ['GeoGebra Classic 5']
   const calls: string[] = []
-  const server = await toolhost(({ tool, args }) => {
+  await toolhost(t, ({ tool, args }) => {
     calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify([...wins].sort((a, b) => Number(b.active) - Number(a.active)))
     if (tool === 'desk_snapshot') return JSON.stringify({ window: wins.find((w) => w.active), nodes: [], truncated: false })
@@ -28,7 +28,6 @@ test('an app step focuses the app\'s open window, by its process or the window l
     if (tool === 'desk_launch') return { text: `no app named "${String(args.app)}"`, error: true }
     return '{"ok":true}'
   })
-  t.after(() => server.close())
   const own = await main({ steps: [{ app: 'sleep' }] })
   assert.equal(own.ok, true, JSON.stringify(own))
   assert.equal(own.window, 'Terminal - user@box: ~')

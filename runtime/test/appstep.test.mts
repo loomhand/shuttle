@@ -7,7 +7,7 @@ import { main } from '../lib/gui_plan.mts'
 test('an app step finds a running app by the app its windows name, whatever their titles', async (t) => {
   const doc = { id: '1', title: 'Untitled', role: 'window', pid: process.pid, active: false, app: 'TextEdit' }
   const calls: string[] = []
-  const server = await toolhost(({ tool, args }) => {
+  await toolhost(t, ({ tool, args }) => {
     calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify([doc])
     if (tool === 'desk_focus') {
@@ -18,7 +18,6 @@ test('an app step finds a running app by the app its windows name, whatever thei
     if (tool === 'desk_snapshot') return JSON.stringify({ window: doc, nodes: [], truncated: false })
     return '{"ok":true}'
   })
-  t.after(() => server.close())
   const r = await main({ steps: [{ app: 'TextEdit' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(r.window, 'Untitled')

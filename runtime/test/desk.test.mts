@@ -6,13 +6,12 @@ import * as desk from '../lib/desk.mts'
 
 test('ask sends one PNG buffer or a list of them as base64 and meters the usage by model', async (t) => {
   const sent: unknown[] = []
-  const server = await toolhost(({ tool, args }) => {
+  await toolhost(t, ({ tool, args }) => {
     if (tool !== 'model_ask') return { text: `unexpected ${tool}`, error: true }
     sent.push(args.images)
     return JSON.stringify({ text: 'ok', usage: { model: 'vision-1', input_tokens: 10, output_tokens: 2, cached_tokens: 0 } })
   })
   const png = Buffer.from('png')
-  t.after(() => server.close())
   assert.equal(await desk.ask('one', png), 'ok')
   assert.equal(await desk.ask('two', [png, png]), 'ok')
   assert.equal(await desk.ask('none'), 'ok')

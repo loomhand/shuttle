@@ -19,7 +19,7 @@ test('a click that opens a combo box\'s list leaves the next step in the dialog,
   ]
   const pressed: string[] = []
   const snapped: string[] = []
-  const server = await toolhost(({ tool, args }) => {
+  await toolhost(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify(open ? [wm, list, main, { ...prefs, active: false }] : [wm, main, prefs])
     if (tool === 'desk_snapshot') {
       snapped.push(String(args.window))
@@ -29,7 +29,6 @@ test('a click that opens a combo box\'s list leaves the next step in the dialog,
     if (tool === 'desk_press') { pressed.push(String(args.id)); open = args.id === '1.14/400'; return '{"ok":true,"how":"click"}' }
     return '{"ok":true}'
   })
-  t.after(() => server.close())
   const both = await plan({ steps: [{ click: 'Insert Tabs' }, { click: 'Insert Spaces' }] })
   assert.equal(both.ok, true, JSON.stringify(both))
   assert.deepEqual(pressed, ['1.14/400', '1.14/403'])

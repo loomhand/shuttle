@@ -63,9 +63,11 @@ const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'tog
 const FILLER = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'and', 'or', 'by', 'from', 'into', 'this', 'that', 'its', 'it', 'is', 'button', 'link', 'tab', 'field', 'box', 'icon', 'toggle', 'dropdown', 'input', 'control', 'item', 'entry'])
 const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close']
 const CUT = '\n(the outline holds only the start of the window: read the rest with desk find or snapshot)'
-const SHELL_WINDOWS = ({ linux: /^(Desktop|xfce4-panel)$/, win32: /^Program Manager$/ } as Record<string, RegExp>)[OS] ?? /(?!)/
+const SHELL_BY_OS: Partial<Record<NodeJS.Platform, RegExp>> = { linux: /^(Desktop|xfce4-panel)$/, win32: /^Program Manager$/ }
+const SHELL_WINDOWS = SHELL_BY_OS[OS] ?? /(?!)/
 const SHELL_TARGET = /\b(dock|panel|taskbar|desktop)\b/i
-const CHOOSER = ({ linux: /File Chooser Widget/, win32: /^\s*- (combobox|textbox) "File name:?"/m, darwin: /^\s*- text "Save As:"/m } as Record<string, RegExp>)[OS] ?? /(?!)/
+const CHOOSER_BY_OS: Partial<Record<NodeJS.Platform, RegExp>> = { linux: /File Chooser Widget/, win32: /^\s*- (combobox|textbox) "File name:?"/m, darwin: /^\s*- text "Save As:"/m }
+const CHOOSER = CHOOSER_BY_OS[OS] ?? /(?!)/
 const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
 const known = new Set<string>()
 let busNames: string[] | null = null
@@ -94,7 +96,6 @@ async function perform(p: Params): Promise<Result> {
   const plan: Step[] = (flow ? flow.steps : p.steps ?? []).filter((s) => !Object.keys(s).every((k) => ['screenshot', 'timeout_s', 'max_edge'].includes(k)))
   if (!plan.length) return { ok: false, error: 'pass steps, flow or find' }
   recording = !flow && !!plan[0]?.app && !p.start
-  // a plan sent again only to save it, while the window it left is still in front, would type again: it is saved from the last run instead
   if (p.save && !flow && !p.start && !idempotent(plan)) {
     const c = pending()
     const was = c?.steps.filter((s) => !s.close) ?? []; const now = plan.filter((s) => !s.close)
@@ -381,8 +382,8 @@ function gtkToggle(pid: number, label: string): boolean | null {
     busNames ??= [...gdbus('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus.ListNames').matchAll(/'([\w.-]+)'/g)].map((x) => x[1] ?? '')
     for (const bus of busNames.filter((n) => n.toLowerCase().split('.').at(-1) === comm)) {
       const root = `/${bus.replace(/\./g, '/')}`
-      const menus = gdbus(bus, `${root}/menus/menubar`, 'org.gtk.Menus.Start', `[${[...Array(64).keys()].join(',')}]`)
-      const actions = [...menus.matchAll(/\{[^{}]*\}/g)].map((x) => x[0]).filter((d) => norm(/'label': <'((?:[^'\\]|\\.)*)'>/.exec(d)?.[1] ?? '') === norm(label))
+      const listing = gdbus(bus, `${root}/menus/menubar`, 'org.gtk.Menus.Start', `[${[...Array(64).keys()].join(',')}]`)
+      const actions = [...listing.matchAll(/\{[^{}]*\}/g)].map((x) => x[0]).filter((d) => norm(/'label': <'((?:[^'\\]|\\.)*)'>/.exec(d)?.[1] ?? '') === norm(label))
         .map((d) => /'action': <'([^']+)'>/.exec(d)?.[1]).filter((a): a is string => !!a)
       if (new Set(actions).size !== 1) continue
       const [scope, ...rest] = (actions[0] ?? '').split('.'); const action = rest.join('.')
@@ -462,10 +463,10 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
     return (` ${nm} `.includes(` ${want} `) && b.length * 2 >= a.length) || (a.length >= 2 && ` ${want} `.includes(` ${nm} `))
   }
   const said = role || /\b(radio|spin|option|check) button\b/.test(want) ? undefined : Object.entries(SAID).find(([w]) => want.split(' ').includes(w))?.[1]
-  const bare = want.split(' ').filter((w) => !FILLER.has(w)).join(' ')
-  const named = (n: Node) => norm(n.name) === want || (!!bare && norm(n.name) === bare)
+  const core = want.split(' ').filter((w) => !FILLER.has(w)).join(' ')
+  const exact = (n: Node) => norm(n.name) === want || (!!core && norm(n.name) === core)
   const inside = (n: Node, i: number) => { for (const [p] of up(nodes, n.parent)) if (p === i) return true; return false }
-  for (const f of [named, (n: Node) => covers(n) && (!said || said.includes(n.role))]) {
+  for (const f of [exact, (n: Node) => covers(n) && (!said || said.includes(n.role))]) {
     const all = pool.filter(({ n }) => f(n)); const drawn = all.filter(({ n }) => n.shown && !!n.bounds)
     const some = drawn.length ? drawn : all.filter(({ n }) => n.role.startsWith('menu'))
     const hit = some.filter(({ n, i }) => !some.some((o) => o.i !== i && norm(o.n.name) === norm(n.name) && inside(o.n, i)))
@@ -526,17 +527,18 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
   const [ox, oy] = [area.left ?? 0, area.top ?? 0]
   const fit = (cw: number, ch: number): [number, number] => [Math.max(ox, Math.min(ox + area.width - cw, Math.round(x - cw / 2))), Math.max(oy, Math.min(oy + area.height - ch, Math.round(y - ch / 2)))]
   const yes = async (state: unknown[], question: string) => +prob((await desk.look(state, { on: desk.yes(question) })).on).toFixed(2)
-  const look = async (png: Buffer, at: number[]) => {
+  const peek = async (png: Buffer, at: number[]) => {
     const [px, py] = at.map(Math.round)
     return yes([`A ${png.readUInt32BE(16)}x${png.readUInt32BE(20)} crop of the screen. A click is about to land on its pixel (${px}, ${py}).`, desk.image(png)], `Is the pixel at (${px}, ${py}) of the image on ${target}?`)
   }
   const [cw, ch] = [Math.min(CROP.w, area.width), Math.min(CROP.h, area.height)], [left, top] = fit(cw, ch)
-  const [under, first] = await Promise.all([desk.at(x, y, w.title, w.pid).catch(() => ({ found: null, path: [] })), desk.shot({ x: left - ox, y: top - oy, w: cw, h: ch }).catch((e: unknown) => e)])
+  const [spot, shot] = await Promise.allSettled([desk.at(x, y, w.title, w.pid), desk.shot({ x: left - ox, y: top - oy, w: cw, h: ch })])
+  const under = spot.status === 'fulfilled' ? spot.value : { found: null, path: [] }
   const what = under.found ? [under.found, ...(under.path ?? []).toReversed()].filter((n) => n.name).map((n) => `${n.role} "${n.name}"`).join(' under ') : ''
   try {
-    if (!Buffer.isBuffer(first)) throw first
-    const k = first.readUInt32BE(16) / cw
-    const p = await look(first, [(x - left) * k, (y - top) * k])
+    if (shot.status === 'rejected') throw shot.reason
+    const k = shot.value.readUInt32BE(16) / cw
+    const p = await peek(shot.value, [(x - left) * k, (y - top) * k])
     const out: { what: string; ok: boolean; check: string; p: number; p_zoom?: number | null; p_full?: number | null } = { what, ok: p >= 0.5, check: 'jev-image', p }
     if (out.ok) return out
     const b = under.found?.bounds ?? (under.found?.id ? (await desk.read(under.found.id).catch(() => null))?.bounds : undefined)
@@ -544,7 +546,7 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
     const screen = unpng(await desk.shot()), s = screen.w / area.width
     const crop = async (cw: number, ch: number, k: number) => {
       const [left, top] = fit(cw, ch)
-      return look(cut(screen, Math.round((left - ox) * s), Math.round((top - oy) * s), Math.round(cw * s), Math.round(ch * s), k), [(x - left) * s * k, (y - top) * s * k])
+      return peek(cut(screen, Math.round((left - ox) * s), Math.round((top - oy) * s), Math.round(cw * s), Math.round(ch * s), k), [(x - left) * s * k, (y - top) * s * k])
     }
     if (!el || el[2] * el[3] < SMALL) {
       const rw = Math.min(area.width, el ? Math.min(384, Math.max(96, Math.round(1.5 * el[2]), Math.round(5 * el[3] * 4 / 3))) : 192)
@@ -660,10 +662,10 @@ async function documents(w: Win) {
 async function replaced(nodes: Node[], read: () => Promise<string>, before: string | undefined) {
   const t0 = Date.now(); let now = await read()
   for (let i = 0; i < 10 && now === before; i++) { await sleep(30); now = await read() }
-  const f = nodes.find((n) => n.role === 'textbox'); let find = ''
-  try { find = f ? (await desk.read(f.id)).value ?? '' : '' } catch {}
+  const f = nodes.find((n) => n.role === 'textbox'); let needle = ''
+  try { needle = f ? (await desk.read(f.id)).value ?? '' : '' } catch {}
   tick('verify', t0)
-  if (now === before && find && now.includes(find)) throw new Surprise(`Replace All replaced nothing: "${find}" is still in the document`, await seen())
+  if (now === before && needle && now.includes(needle)) throw new Surprise(`Replace All replaced nothing: "${needle}" is still in the document`, await seen())
 }
 
 async function setState(s: Step, hit: Hit, rec: Rec) {
@@ -686,8 +688,8 @@ async function flip(n: Node, on: boolean) {
 }
 
 async function option(combo: Node, opts: Node[], value: string, target: string, rec: Rec) {
-  const named = opts.filter((n) => norm(n.name) === norm(value)); const near = opts.filter((n) => norm(n.name).includes(norm(value)))
-  const o = named.length === 1 ? named[0] : near.length === 1 ? near[0] : null
+  const exact = opts.filter((n) => norm(n.name) === norm(value)); const near = opts.filter((n) => norm(n.name).includes(norm(value)))
+  const o = exact.length === 1 ? exact[0] : near.length === 1 ? near[0] : null
   if (!o) throw new Surprise(`"${target}" has no option "${value}"; its options: ${opts.map((n) => `"${n.name}"`).join(', ')}`, await seen())
   rec.value = o.name
   if (norm(combo.name) === norm(o.name)) { rec.noop = true; return }
@@ -711,13 +713,13 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.app) {
     const ws = await desk.windows(); const before = new Set(ws.map((w) => w.title))
     let launched = false
-    const name = norm(s.title ?? s.app); const bare = !s.title && /^[\w.-]+$/.test(s.app)
-    const entries = bare ? entryNames(s.app) : []
+    const name = norm(s.title ?? s.app); const word = !s.title && /^[\w.-]+$/.test(s.app)
+    const entries = word ? entryNames(s.app) : []
     const app = norm(s.app)
-    const own = (w: Win) => norm(w.title).includes(name) || (!s.title && !!w.app && norm(w.app).includes(app)) || (bare && (norm(w.title).includes(name.replace(/-/g, ' ')) || ownedBy(w.pid, name) || entries.some((e) => norm(w.title).includes(e))))
+    const own = (w: Win) => norm(w.title).includes(name) || (!s.title && !!w.app && norm(w.app).includes(app)) || (word && (norm(w.title).includes(name.replace(/-/g, ' ')) || ownedBy(w.pid, name) || entries.some((e) => norm(w.title).includes(e))))
     const has = async () => { const ws = await desk.windows(); return ws.find(own) ?? (launched ? ws.find((w) => w.title && !before.has(w.title)) : undefined) }
     let w = ws.find(own)
-    const listed = !w && bare ? await desk.focus(s.app).catch(() => null) : null
+    const listed = !w && word ? await desk.focus(s.app).catch(() => null) : null
     if (listed) { known.add(listed.title); rec.window = lastSeen = listed.title; return }
     if (!w) {
       const t0 = Date.now(); launched = true

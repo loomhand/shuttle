@@ -8,7 +8,7 @@ test('a step that typed into an empty field stops when its app was launched and 
   let launched = false
   const typed: string[] = []
   const win = { id: '1', title: 'alice.txt - Mousepad', role: 'frame', pid: process.pid, active: true }
-  const server = await toolhost(({ tool, args }) => {
+  await toolhost(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify(launched ? [win] : [])
     if (tool === 'desk_focus') return launched ? JSON.stringify({ ok: true, title: win.title, pid: win.pid }) : { text: 'no such window', error: true }
     if (tool === 'desk_launch') launched = true
@@ -24,7 +24,6 @@ test('a step that typed into an empty field stops when its app was launched and 
     }
     return '{"ok":true}'
   })
-  t.after(() => server.close())
   const r = await main({ steps: [{ app: 'mousepad' }, { type: 'bob lives in Oslo', blank: { role: 'textbox', name: '', parent: '', nth: 0 } }] })
   assert.equal(r.ok, false, JSON.stringify(r))
   assert.match(r.escalate?.reason ?? '', /already holds text/)

@@ -6,8 +6,7 @@ import { toolhost } from './toolhost.mts'
 import { main } from '../lib/gui_plan.mts'
 
 test('a flows directory an older version left readable by others turns 0700 on a find or a replay', { skip: process.platform === 'win32' }, async (t) => {
-  const server = await toolhost(() => '[]')
-  t.after(() => server.close())
+  await toolhost(t, () => '[]')
   const flows = process.env.SHUTTLE_FLOWS ?? ''
   mkdirSync(flows, { recursive: true })
   writeFileSync(`${flows}/old.json`, '{}')
