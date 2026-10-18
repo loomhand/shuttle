@@ -137,7 +137,6 @@ fn ask(question: &str, tx: oneshot::Sender<bool>) {
             if gone {
                 // SAFETY: `close` only posts WM_CLOSE to the windows of the dialog's thread.
                 let _ = unsafe { EnumThreadWindows(thread, Some(close), LPARAM(0)) };
-                return;
             }
         }
     });
