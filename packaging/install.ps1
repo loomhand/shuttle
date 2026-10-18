@@ -41,6 +41,13 @@ try {
     }
     try { Move-Item (Join-Path $New $Name) $InstallDir } catch { if (Test-Path $Old) { Move-Item $Old $InstallDir }; throw }
     Remove-Item -Recurse -Force $New
+    $Installed = try { & (Join-Path $InstallDir "$Name.exe") --version } catch { $null }
+    if ($LASTEXITCODE -ne 0 -or -not $Installed) {
+        $Code = $LASTEXITCODE
+        Remove-Item -Recurse -Force $InstallDir
+        if (Test-Path $Old) { Move-Item $Old $InstallDir }
+        throw "the new $Name does not start (--version exit code $Code); the previous install, if any, is back in place"
+    }
     if (Test-Path $Old) { Remove-Item -Recurse -Force $Old }
 } finally {
     Remove-Item -Recurse -Force $Tmp
@@ -53,8 +60,6 @@ if (-not (($UserPath -split ';') -contains $InstallDir)) {
 }
 $env:Path = "$env:Path;$InstallDir"
 
-$Installed = & (Join-Path $InstallDir "$Name.exe") --version
-if ($LASTEXITCODE -ne 0) { throw "$Name --version failed with exit code $LASTEXITCODE; the files are in $InstallDir but the program does not start" }
 Write-Host "installed $Installed in $InstallDir"
 Write-Host "register it with an agent, e.g.: claude mcp add shuttle -- `"$(Join-Path $InstallDir "$Name.exe")`" mcp"
 Write-Host 'The binaries are unsigned: SmartScreen may warn about a browser-downloaded copy (More info > Run anyway).'

@@ -6,6 +6,7 @@ $Bad = @()
 foreach ($Exe in @($args | ForEach-Object { $_ })) {
     $Deps = & $Dumpbin /nologo /dependents $Exe
     if ($LASTEXITCODE -ne 0) { throw "dumpbin /dependents $Exe failed" }
+    if (-not ($Deps -match 'Image has the following dependencies') -or -not ($Deps -match '^\s+\S+\.dll\s*$')) { throw "dumpbin /dependents $Exe listed no dependencies" }
     $Hits = $Deps | Select-String -Pattern '^\s+((vcruntime|msvcp|api-ms-win-crt)\S*\.dll)\s*$' | ForEach-Object { $_.Matches[0].Groups[1].Value }
     if ($Hits) { $Bad += "$Exe imports $($Hits -join ', ')" } else { Write-Host "${Exe}: no Visual C++ runtime imports" }
 }
