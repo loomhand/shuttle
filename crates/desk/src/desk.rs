@@ -67,6 +67,8 @@ pub struct Desk<B, D> {
     turn_wait: Duration,
     read: std::sync::Mutex<Option<Read>>,
     allow: Allow,
+    #[cfg(test)]
+    skew: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
@@ -80,6 +82,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             turn_wait: TURN_WAIT,
             read: std::sync::Mutex::new(None),
             allow: Allow::default(),
+            #[cfg(test)]
+            skew: Arc::default(),
         }
     }
 
@@ -162,16 +166,16 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             ),
             _ => None,
         };
-        let started = Instant::now();
+        let started = self.now();
         let mut last = Duration::ZERO;
         let mut hint = self.access.run(CALL_LIMIT, (), |b| Ok(b.hint())).await?;
-        let mut checked = Instant::now();
+        let mut checked = self.now();
         loop {
-            tokio::time::sleep(WAIT_POLL.min(limit.saturating_sub(started.elapsed()))).await;
+            tokio::time::sleep(WAIT_POLL.min(limit.saturating_sub(self.now() - started))).await;
             let now = self.access.run(CALL_LIMIT, (), |b| Ok(b.hint())).await?;
-            let over = started.elapsed() >= limit;
+            let over = self.now() - started >= limit;
             let moved = now.is_some() && now != hint;
-            let due = checked.elapsed()
+            let due = self.now() - checked
                 >= if now.is_some() {
                     last.max(WAIT_CHECK)
                 } else {
@@ -181,19 +185,29 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 continue;
             }
             hint = now;
-            let at = Instant::now();
+            let at = self.now();
             let frames = self.listed().await?;
-            last = at.elapsed();
-            checked = Instant::now();
+            last = self.now() - at;
+            checked = self.now();
             let windows =
                 serde_json::to_value(&frames).map_err(|e| format!("encode windows: {e}"))?;
             let same = since.as_ref() == Some(&windows);
-            if !same || started.elapsed() >= limit {
+            if !same || self.now() - started >= limit {
                 let mut out = json!({"changed": !same});
                 out["windows"] = windows;
                 return Ok(out.to_string());
             }
         }
+    }
+
+    #[cfg(not(test))]
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    #[cfg(test)]
+    fn now(&self) -> Instant {
+        Instant::now() + Duration::from_millis(self.skew.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     async fn admit(&self, tool: &str, args: &Value) -> Result<(), String> {
@@ -1146,6 +1160,7 @@ pub(crate) mod tests {
         at: usize,
         hinted: bool,
         list_ms: u64,
+        skew: Arc<std::sync::atomic::AtomicU64>,
         t: usize,
         lists: usize,
         seen: Option<usize>,
@@ -1154,7 +1169,8 @@ pub(crate) mod tests {
     impl Opens {
         fn frames(&mut self) -> Vec<Frame> {
             self.lists += 1;
-            std::thread::sleep(Duration::from_millis(self.list_ms));
+            self.skew
+                .fetch_add(self.list_ms, std::sync::atomic::Ordering::Relaxed);
             if !self.hinted {
                 self.t += 1;
             }
@@ -1450,7 +1466,7 @@ pub(crate) mod tests {
     ) -> (Value, Duration) {
         let since: Value =
             serde_json::from_str(&desk.run("desk_windows", json!({})).await.unwrap().text).unwrap();
-        let started = Instant::now();
+        let started = desk.now();
         let out = desk
             .run(
                 "desk_wait",
@@ -1458,7 +1474,21 @@ pub(crate) mod tests {
             )
             .await
             .unwrap();
-        (serde_json::from_str(&out.text).unwrap(), started.elapsed())
+        (
+            serde_json::from_str(&out.text).unwrap(),
+            desk.now() - started,
+        )
+    }
+
+    async fn clocked(mut desk: Desk<Stub, Slow>) -> Desk<Stub, Slow> {
+        desk.skew = desk
+            .access
+            .run(CALL_LIMIT, (), |b| {
+                Ok(b.opens.as_ref().map(|o| o.skew.clone()).unwrap_or_default())
+            })
+            .await
+            .unwrap();
+        desk
     }
 
     async fn lists(desk: &Desk<Stub, Slow>) -> usize {
@@ -1967,11 +1997,12 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn slow_window_lists_count_against_a_waits_timeout() {
-        let desk = Desk::new(
+        let desk = clocked(Desk::new(
             || Ok(Stub::opens(usize::MAX, false, 200)),
             Slow(Arc::default()),
             Os::Mac,
-        );
+        ))
+        .await;
         let (out, took) = wait_on(&desk, 300).await;
         assert_eq!(out["changed"], false);
         assert!(took >= Duration::from_millis(300), "{took:?}");
@@ -1980,11 +2011,12 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_read_that_ends_past_the_deadline_ends_the_wait() {
-        let desk = Desk::new(
+        let desk = clocked(Desk::new(
             || Ok(Stub::opens(usize::MAX, false, 300)),
             Slow(Arc::default()),
             Os::Mac,
-        );
+        ))
+        .await;
         let (out, _) = wait_on(&desk, 150).await;
         assert_eq!(out["changed"], false);
         assert_eq!(lists(&desk).await, 2);
@@ -2026,11 +2058,12 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_hint_change_right_after_a_slow_list_reads_the_list_at_once() {
-        let desk = Desk::new(
+        let desk = clocked(Desk::new(
             || Ok(Stub::opens(12, true, 150)),
             Slow(Arc::default()),
             Os::Mac,
-        );
+        ))
+        .await;
         let (out, _) = wait_on(&desk, 2000).await;
         assert_eq!(out["changed"], true);
         let seen = desk
