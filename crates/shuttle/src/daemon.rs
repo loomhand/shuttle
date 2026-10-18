@@ -1,7 +1,7 @@
 //! The daemon's handler: model calls with the configured providers, scripts and plans on the runtime, desk calls by this OS's desk.
 
 use std::hash::{BuildHasher, RandomState};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -23,6 +23,7 @@ const SCRIPT_RUN_OFF: &str =
     "script_run is turned off: set script_run = true under [tools] in config.toml";
 const DECLINED: &str = "declined by the user";
 const NO_ASK: &str = "confirm needs the menu-bar controls, which this OS does not have yet: set confirm = \"off\" under [safety] in config.toml";
+const CONFIRM_OPEN: &str = "a confirm dialog is open: answer it first";
 const QUESTION_CHARS: usize = 200;
 
 /// Shows the user a question about one action and answers whether it may run.
@@ -62,6 +63,7 @@ pub struct Daemon<H> {
     guard: Guard,
     halted: tokio::sync::watch::Sender<bool>,
     actions: AtomicUsize,
+    asking: AtomicBool,
     turn: tokio::sync::Mutex<()>,
     running: Mutex<Option<String>>,
     nonce: u64,
@@ -79,6 +81,7 @@ impl<H: Handler> Daemon<H> {
             guard,
             halted: tokio::sync::watch::Sender::new(false),
             actions: AtomicUsize::new(0),
+            asking: AtomicBool::new(false),
             turn: tokio::sync::Mutex::new(()),
             running: Mutex::new(None),
             nonce: RandomState::new().hash_one(std::process::id()),
@@ -111,6 +114,10 @@ impl<H: Handler> Daemon<H> {
             let Some(ask) = &self.guard.asker else {
                 return Output::error(NO_ASK);
             };
+            if self.asking.swap(true, Ordering::AcqRel) {
+                return Output::error(CONFIRM_OPEN);
+            }
+            let _open = Asking(&self.asking);
             if !ask(question(&call)).await.unwrap_or(false) {
                 return Output::error(DECLINED);
             }
@@ -178,6 +185,9 @@ impl<H: Handler> Handler for Daemon<H> {
         if let Err(e) = &self.models {
             return Output::error(e);
         }
+        if call.tool.starts_with("desk_") && self.asking.load(Ordering::Acquire) {
+            return Output::error(CONFIRM_OPEN);
+        }
         if let t @ ("gui_plan" | "script_run") = call.tool.as_str() {
             return self
                 .run(t, call.args)
@@ -214,6 +224,14 @@ impl<H: Handler> Controls for Daemon<H> {
 
     fn acting(&self) -> bool {
         self.actions.load(Ordering::Relaxed) > 0 || self.running().is_some()
+    }
+}
+
+struct Asking<'a>(&'a AtomicBool);
+
+impl Drop for Asking<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -464,6 +482,61 @@ mod tests {
         let none = daemon(Confirm::Coordinate, None);
         assert_eq!(none.answer(click()).await.text, NO_ASK);
         assert!(!none.acting() && !none.halted());
+    }
+
+    #[tokio::test]
+    async fn every_desk_call_fails_at_once_while_a_confirm_dialog_is_open() {
+        let pending = Arc::new(Mutex::new(None));
+        let held = pending.clone();
+        let asker: Asker = Arc::new(move |_| {
+            let (tx, rx) = oneshot::channel();
+            *held.lock().unwrap() = Some(tx);
+            rx
+        });
+        let d = Daemon::new(
+            Echo,
+            Ok(Models::new(Config::default())),
+            runner(),
+            Guard {
+                confirm: Confirm::Coordinate,
+                asker: Some(asker),
+                ..Guard::default()
+            },
+        );
+        let call = |tool: &str, args: Value| Call {
+            agent_id: String::new(),
+            tool: tool.into(),
+            args,
+        };
+        let click = || call("desk_click", json!({"x": 10, "y": 20}));
+        let both = async {
+            tokio::join!(d.answer(click()), async {
+                while pending.lock().unwrap().is_none() {
+                    tokio::task::yield_now().await;
+                }
+                let mut texts = Vec::new();
+                for c in [
+                    call("desk_key", json!({"keys": "return"})),
+                    call("desk_type", json!({"text": "\n"})),
+                    call("desk_windows", json!({})),
+                    click(),
+                ] {
+                    texts.push(d.answer(c).await.text);
+                }
+                let _ = pending.lock().unwrap().take().unwrap().send(false);
+                texts
+            })
+        };
+        let (asked, others) = tokio::time::timeout(Duration::from_secs(5), both)
+            .await
+            .expect("calls during an open dialog answer at once");
+        assert_eq!(asked.text, DECLINED);
+        assert_eq!(others, [CONFIRM_OPEN; 4]);
+        assert!(
+            !d.answer(call("desk_key", json!({"keys": "return"})))
+                .await
+                .is_error
+        );
     }
 
     #[tokio::test]
