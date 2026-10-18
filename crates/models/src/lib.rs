@@ -316,6 +316,9 @@ mod tests {
         for other in [
             "typesafe/jev-1.14",
             "typesafe/jev-1.13-20260917",
+            "typesafe/jev-preview",
+            "typesafe/jev-1.14-2026",
+            "typesafe/jev-1.141-20261014",
             "typesafe/jev-1.14-2026101",
             "typesafe/jev-1.14-202610140",
             "typesafe/jev-1.14-2026101x",
