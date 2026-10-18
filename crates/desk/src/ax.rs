@@ -289,7 +289,7 @@ impl Access for Ax {
         let mut nodes = Vec::new();
         let mut truncated = self.walk(&el, None, 0, extras, deadline, &mut nodes, &mut Vec::new());
         let walked = started.elapsed().as_micros();
-        if frame.role == "window" && !truncated {
+        if frame.role == "window" && !truncated && extras.menus {
             let app = frame.pid.map(|p| application(p as i32));
             if let Some(bar) = app.as_ref().and_then(|a| attr(a, "AXMenuBar")) {
                 let root = (!nodes.is_empty()).then_some(0);

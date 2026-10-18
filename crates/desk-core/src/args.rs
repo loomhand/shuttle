@@ -13,6 +13,8 @@ pub struct SnapArgs {
     pub text: bool,
     #[serde(default)]
     pub keys: bool,
+    #[serde(default)]
+    pub menus: bool,
     pub bounds: Option<bool>,
     pub max_chars: Option<usize>,
 }
