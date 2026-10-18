@@ -23,6 +23,11 @@ const clicked: string[] = []
 const atPids: unknown[] = []
 const asked: { image: boolean }[] = []
 const looks: string[] = []
+let shots = 0
+let tones: number[] = []
+let scale = 1
+const shades: number[] = []
+const prompts: string[] = []
 let pick: Record<string, number> = {}
 let looked: Record<string, number> = {}
 let build: string | null = null
@@ -46,7 +51,11 @@ function answer({ tool, args }: Call): Reply {
     return JSON.stringify(x ? { window: x.win, nodes: x.nodes, truncated: false } : { window: win, nodes, truncated: false })
   }
   if (tool === 'desk_press') { pressed.push(String(args.id)); return '{"ok":true,"how":"click"}' }
-  if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(Number(args.w ?? 1280), Number(args.h ?? 800)).toString('base64') }
+  if (tool === 'desk_shot') {
+    shots += 1
+    const image = gray(Number(args.w ?? 1280) * scale, Number(args.h ?? 800) * scale, tones.shift() ?? 128)
+    return { text: '{"ok":true}', image: image.toString('base64') }
+  }
   if (tool === 'desk_screen') return '{"width":1280,"height":800}'
   if (tool === 'desk_at') { atPids.push(args.pid); return JSON.stringify({ found: under, path: [] }) }
   if (tool === 'desk_click') clicked.push(`${args.x},${args.y}`)
@@ -57,6 +66,10 @@ function decide({ state, questions, image }: Decide): Reply {
   asked.push({ image })
   if (image && !build) return { text: 'the verify model failed', error: true }
   if (image) looks.push((state as Part[]).flatMap((p) => typeof p === 'object' && p.image_url ? [size(Buffer.from(p.image_url.url.split(',')[1] ?? '', 'base64'))] : []).join(' '))
+  if (image) for (const p of state as Part[]) {
+    if (typeof p === 'string') prompts.push(p)
+    else if (p.image_url) shades.push(inflateSync(Buffer.from(p.image_url.url.split(',')[1] ?? '', 'base64').subarray(41)).readUInt8(1))
+  }
   const p = Array.isArray(on) ? on.shift() ?? 0 : on
   const answers: Record<string, unknown> = {}
   for (const [k, q] of Object.entries(questions)) {
@@ -67,13 +80,13 @@ function decide({ state, questions, image }: Decide): Reply {
   return JSON.stringify({ answers, served: { model: 'decider', build: image ? build : text, id: null }, usage })
 }
 
-function gray(w: number, h: number) {
+function gray(w: number, h: number, tone = 128) {
   const chunk = (kind: string, data: Buffer) => {
     const head = Buffer.alloc(8), crc = Buffer.alloc(4); head.writeUInt32BE(data.length); head.write(kind, 4, 'ascii')
     crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data])) >>> 0); return Buffer.concat([head, data, crc])
   }
   const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 6
-  const raw = Buffer.alloc(h * (w * 4 + 1), 128); for (let y = 0; y < h; y++) raw[y * (w * 4 + 1)] = 0
+  const raw = Buffer.alloc(h * (w * 4 + 1), tone); for (let y = 0; y < h; y++) raw[y * (w * 4 + 1)] = 0
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))])
 }
 function size(png: Buffer) {
@@ -105,6 +118,9 @@ async function screen(tree: Spec[], probabilities: Record<string, number>) {
   clicked.length = 0
   asked.length = 0
   looks.length = 0
+  shots = 0
+  shades.length = 0
+  prompts.length = 0
   pick = probabilities
   return import('../lib/gui_plan.mts')
 }
@@ -351,6 +367,39 @@ test('a grounded click the 640x400 crop refuses is checked on the small element\
   assert.equal(off.ok, false, JSON.stringify(off))
   assert.deepEqual(looks, ['640x400', '384x288'])
   assert.equal(lastStep()?.checked, 'jev-image+zoom')
+  build = null
+  on = 0
+})
+
+test('a grounded step checks fresh captures taken after grounding: the crop, then one screen capture that the zoom and ring are cut from', async () => {
+  const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
+  build = 'typesafe/jev-1.14-20261014'
+  on = [0.3, 0.6, 0.96]
+  tones = [60, 200, 200]
+  const full = await plan('the yellow star', tree, {})
+  assert.equal(full.ok, true, JSON.stringify(full))
+  assert.deepEqual(looks, ['640x400', '384x288', '1280x800 ring'])
+  assert.deepEqual([shots, shades], [3, [200, 200, 200]])
+  on = 0.8
+  tones = [60, 200]
+  await plan('the yellow star', tree, {})
+  assert.deepEqual([shots, shades], [2, [200]])
+  tones = []
+  build = null
+  on = 0
+})
+
+test('a grounded check places the point in capture pixels on a 2x capture', async () => {
+  const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
+  build = 'typesafe/jev-1.14-20261014'
+  on = [0.3, 0.6, 0.96]
+  scale = 2
+  const retina = await plan('the yellow star', tree, {})
+  scale = 1
+  assert.equal(retina.ok, true, JSON.stringify(retina))
+  assert.deepEqual(looks, ['1280x800', '384x288', '2560x1600 ring'])
+  assert.match(prompts[0] ?? '', /pixel \(640, 400\)/)
+  assert.match(prompts[2] ?? '', /2560x1600.*pixel \(1280, 800\)/)
   build = null
   on = 0
 })
