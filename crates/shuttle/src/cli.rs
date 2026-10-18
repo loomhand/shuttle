@@ -12,6 +12,8 @@ use shuttle_models::Models;
 use shuttle_models::config::{Config, Safety, default_path};
 use tokio::runtime::Builder;
 
+#[cfg(any(target_os = "macos", windows))]
+use crate::daemon::Ui;
 use crate::daemon::{Asker, Controls, Daemon, Guard};
 use crate::driver::{self, Bundled};
 #[cfg(target_os = "macos")]
@@ -116,7 +118,7 @@ fn controls_serve(endpoint: String) -> ExitCode {
     std::thread::spawn(move || {
         let ready = move |controls, safety: &Safety| {
             let hotkey = crate::hotkey::parse(&safety.kill_hotkey)?;
-            let _ = tx.send(controls::Ui {
+            let _ = tx.send(Ui {
                 controls,
                 hotkey,
                 hotkey_label: safety.kill_hotkey.clone(),

@@ -17,21 +17,13 @@ use objc2_foundation::{NSObject, NSRunLoop, NSRunLoopCommonModes, NSString, NSTi
 use tokio::sync::oneshot;
 
 use crate::NAME;
-use crate::daemon::{Asker, Controls};
+use crate::daemon::{Asker, Controls, Ui};
 use crate::hotkey::Hotkey;
 
 const POLL_S: f64 = 0.25;
 const KEYBOARD_CLASS: u32 = u32::from_be_bytes(*b"keyb");
 const HOT_KEY_PRESSED: u32 = 5;
 const SIGNATURE: u32 = u32::from_be_bytes(*b"cshl");
-
-/// What the controls show and how to reach the daemon.
-pub struct Ui {
-    pub controls: Arc<dyn Controls>,
-    pub hotkey: Hotkey,
-    pub hotkey_label: String,
-    pub indicator: bool,
-}
 
 /// Runs the controls on this, the main, thread until the process exits.
 pub fn run(ui: Ui) -> ! {
