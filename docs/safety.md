@@ -26,7 +26,7 @@ On macOS a menu-bar item shows `Shuttle`, `● Shuttle` while a desk action or a
 
 ## Confirm mode
 
-`confirm = "coordinate"` asks before every step that can end in a click at a screen point, the least predictable action: `click`, `press`, and `act` with `click`. `confirm = "every"` asks before every desk action: `press`, `act`, `key`, `type`, `click`, `focus`, `close` and `launch`. On macOS the question is a dialog with Decline, the default button, and Allow; a step you decline fails with `declined by the user`, and a stop closes an open dialog. While the dialog is open every other desk call fails at once with `a confirm dialog is open`, so the agent cannot answer the dialog itself. Windows and Linux get the dialog in P2 and P3; until then a step that would ask fails and names `confirm = "off"`.
+`confirm = "coordinate"` asks before every step that can end in a click at a screen point, the least predictable action: `click`, `press`, and `act` with `click`. `confirm = "every"` asks before every desk action: `press`, `act`, `key`, `type`, `click`, `focus`, `close` and `launch`. On macOS the question is a dialog with Cancel and Allow: Escape presses Cancel and Return presses neither. A step you cancel fails with `declined by the user`, and a stop closes an open dialog. While the dialog is open every other desk call fails at once with `a confirm dialog is open`, so the agent cannot answer the dialog itself. Windows and Linux get the dialog in P2 and P3; until then a step that would ask fails and names `confirm = "off"`.
 
 ## App allowlist
 
