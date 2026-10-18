@@ -742,6 +742,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (!w) {
       const t0 = Date.now(); launched = true; let missing = false
       try { await desk.launch(s.app) } catch (e: unknown) {
+        if (e instanceof Error && e.message.includes('app allowlist')) throw new Surprise(e.message, await seen())
         if (!/^[\w.-]+$/.test(s.app)) throw e
         spawn(s.app, [], { detached: true, stdio: 'ignore' }).on('error', () => { missing = true }).unref()
       }
