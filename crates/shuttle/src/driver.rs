@@ -66,7 +66,7 @@ struct Running {
 impl Drop for Running {
     fn drop(&mut self) {
         if let Some(g) = self.group {
-            crate::runner::kill_group(g);
+            crate::kill_group(g);
         }
     }
 }

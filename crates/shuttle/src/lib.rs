@@ -27,3 +27,11 @@ pub const STOPPED: &str = "stopped by the user: run `cocoon-shuttle resume` to g
 pub(crate) fn log(line: impl Display) {
     let _ = writeln!(std::io::stderr(), "{NAME}: {line}");
 }
+
+#[cfg(unix)]
+pub(crate) fn kill_group(pid: u32) {
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        // SAFETY: kill takes no pointers; the negative pid names the process group the child leads.
+        unsafe { libc::kill(-pid, libc::SIGKILL) };
+    }
+}
