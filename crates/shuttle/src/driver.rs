@@ -57,12 +57,6 @@ impl Bundled {
     }
 }
 
-struct Proc {
-    bin: PathBuf,
-    endpoint: String,
-    pid_file: PathBuf,
-}
-
 struct Running {
     child: Child,
     #[cfg(unix)]
@@ -77,6 +71,12 @@ impl Drop for Running {
             unsafe { libc::kill(-pid, libc::SIGKILL) };
         }
     }
+}
+
+struct Proc {
+    bin: PathBuf,
+    endpoint: String,
+    pid_file: PathBuf,
 }
 
 impl Proc {

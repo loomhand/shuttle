@@ -1,20 +1,24 @@
 //! The Windows controls on their own message-loop thread: the kill hotkey, the tray icon with Stop and Resume, and the confirm dialog.
 
 use std::io::Write as _;
+use std::os::windows::io::AsRawHandle;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use tokio::sync::oneshot;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::{
+    HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, HWND, LPARAM, LRESULT, POINT, SetHandleInformation,
+    WPARAM,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, MOD_NOREPEAT, RegisterHotKey,
 };
 use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
-    Shell_NotifyIconW,
+    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFY_ICON_MESSAGE,
+    NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
@@ -143,6 +147,18 @@ pub fn asker() -> Asker {
     })
 }
 
+pub fn disinherit_stdio() {
+    for raw in [
+        std::io::stdin().as_raw_handle(),
+        std::io::stdout().as_raw_handle(),
+        std::io::stderr().as_raw_handle(),
+    ] {
+        // SAFETY: the handle is this process's own standard handle, valid for the call; clearing its inherit flag changes nothing else.
+        let _ =
+            unsafe { SetHandleInformation(HANDLE(raw), HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)) };
+    }
+}
+
 fn ask(question: &str, tx: oneshot::Sender<bool>) {
     let call = Arc::new(Mutex::new(Some(tx)));
     // SAFETY: GetCurrentThreadId has no preconditions.
@@ -206,7 +222,7 @@ struct Shown {
 }
 
 impl Shown {
-    fn tray(&self, window: HWND, action: windows::Win32::UI::Shell::NOTIFY_ICON_MESSAGE) {
+    fn tray(&self, window: HWND, action: NOTIFY_ICON_MESSAGE) {
         let (title, icon) = if self.controls.halted() {
             ("Shuttle stopped", IDI_ERROR)
         } else if self.controls.acting() {

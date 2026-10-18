@@ -76,30 +76,11 @@ async fn start(endpoint: &str) -> Result<Option<Child>, String> {
     #[cfg(windows)]
     {
         cmd.creation_flags(CREATE_NO_WINDOW);
-        disinherit_stdio();
+        crate::win::disinherit_stdio();
     }
     cmd.spawn()
         .map(Some)
         .map_err(|e| format!("start the daemon: {e}"))
-}
-
-#[cfg(windows)]
-fn disinherit_stdio() {
-    use std::os::windows::io::AsRawHandle;
-
-    use windows::Win32::Foundation::{
-        HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation,
-    };
-
-    for raw in [
-        std::io::stdin().as_raw_handle(),
-        std::io::stdout().as_raw_handle(),
-        std::io::stderr().as_raw_handle(),
-    ] {
-        // SAFETY: the handle is this process's own standard handle, valid for the call; clearing its inherit flag changes nothing else.
-        let _ =
-            unsafe { SetHandleInformation(HANDLE(raw), HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)) };
-    }
 }
 
 fn app_bundle(exe: &Path) -> Option<&Path> {
