@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **Android over adb.** With an `[android]` section ([docs/config.md](docs/config.md#android-over-adb)), the daemon drives one Android device instead of the desktop. The device is reached from a Linux or macOS host, and the `shuttle-android` crate holds the backend:
+  - the desk verbs answer from the device's UiAutomation tree, through a UI server the daemon pushes and runs under `app_process`;
+  - input goes through `adb shell input`, screenshots through `screencap`, and text through a scrcpy clipboard paste;
+  - `scroll`, `drag` and `still` answer `unknown desk tool`;
+  - the daemon starts no cua-driver, indicator or stop hotkey;
+  - `desk computer_state`, `desk computer_act` and `desk look` answer from the command line only, with their screenshot written to a file;
+  - `desk computer_act` is a desk action: `confirm` and the turn apply to it;
+  - `launch` takes only package and component names;
+  - an `[android]` section with a nonempty `[safety] apps` fails to load, since the device desk enforces no allowlist yet.
+
+  Tested on redroid 16; a stock phone is untested.
+
 ## 0.1.3 - 2026-10-19
 
 - **Desk verbs.** `scroll` (wheel notches at a point, or scroll keys to the front app window; on Windows a wheel at that window's center), `drag` (from one point to another; both ends pass the app allowlist, and `confirm = "coordinate"` asks first) and `still` (waits until the screen stops changing, ignoring blocks that keep changing, such as a clock or a caret; `timeout_ms` is a polling deadline, at most 5 s).
