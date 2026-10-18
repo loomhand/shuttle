@@ -620,7 +620,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
 dependencies = [
  "bitflags",
- "block2",
  "objc2",
  "objc2-core-foundation",
 ]
@@ -1016,7 +1015,6 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 name = "shuttle"
 version = "0.0.1"
 dependencies = [
- "block2",
  "dispatch2",
  "libc",
  "objc2",

@@ -3,10 +3,8 @@
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::io::Write as _;
-use std::rc::Rc;
 use std::sync::Arc;
 
-use block2::RcBlock;
 use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -55,20 +53,15 @@ pub fn asker() -> Asker {
     Arc::new(|question| {
         let (tx, rx) = oneshot::channel();
         DispatchQueue::main().exec_async(move || {
-            let tx = Rc::new(RefCell::new(Some(tx)));
-            let yes = ask(&question, &tx);
-            if let Some(tx) = tx.borrow_mut().take() {
-                let _ = tx.send(yes);
+            if let Some(mtm) = MainThreadMarker::new() {
+                ask(mtm, &question, tx);
             }
         });
         rx
     })
 }
 
-fn ask(question: &str, tx: &Rc<RefCell<Option<oneshot::Sender<bool>>>>) -> bool {
-    let Some(mtm) = MainThreadMarker::new() else {
-        return false;
-    };
+fn ask(mtm: MainThreadMarker, question: &str, tx: oneshot::Sender<bool>) {
     let app = NSApplication::sharedApplication(mtm);
     app.activate();
     let alert = NSAlert::new(mtm);
@@ -76,36 +69,70 @@ fn ask(question: &str, tx: &Rc<RefCell<Option<oneshot::Sender<bool>>>>) -> bool 
     alert.setInformativeText(&NSString::from_str(question));
     alert.addButtonWithTitle(&NSString::from_str("Decline"));
     alert.addButtonWithTitle(&NSString::from_str("Allow"));
-    let call = Rc::clone(tx);
-    let gone = RcBlock::new(move |_: std::ptr::NonNull<NSTimer>| {
-        if call
-            .borrow()
-            .as_ref()
-            .is_none_or(oneshot::Sender::is_closed)
-        {
-            NSApplication::sharedApplication(mtm).abortModal();
-        }
-    });
-    // SAFETY: the block lives until the timer is invalidated below, after the dialog ends.
+    let watch = Watch::new(mtm, tx);
+    // SAFETY: `watch` is a `Watch`, whose `watch:` method takes the timer, and there is no user info; the timer joins this thread's run loop in the common modes, which include the dialog's modal mode.
     let timer = unsafe {
-        let timer = NSTimer::timerWithTimeInterval_repeats_block(POLL_S, true, &gone);
+        let timer = NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(
+            POLL_S,
+            &watch,
+            sel!(watch:),
+            None,
+            true,
+        );
         NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
         timer
     };
-    let yes = alert.runModal() == NSAlertSecondButtonReturn;
+    let allowed = alert.runModal() == NSAlertSecondButtonReturn;
     timer.invalidate();
-    yes
+    if let Some(tx) = watch.ivars().take() {
+        let _ = tx.send(allowed);
+    }
+}
+
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "CocoonShuttleConfirmWatch"]
+    #[ivars = RefCell<Option<oneshot::Sender<bool>>>]
+    struct Watch;
+
+    impl Watch {
+        #[unsafe(method(watch:))]
+        fn watch(&self, _timer: Option<&AnyObject>) {
+            if self
+                .ivars()
+                .borrow()
+                .as_ref()
+                .is_none_or(oneshot::Sender::is_closed)
+            {
+                NSApplication::sharedApplication(self.mtm()).abortModal();
+            }
+        }
+    }
+);
+
+impl Watch {
+    fn new(mtm: MainThreadMarker, tx: oneshot::Sender<bool>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(RefCell::new(Some(tx)));
+        // SAFETY: NSObject's init on a freshly allocated object with its ivars set.
+        unsafe { msg_send![super(this), init] }
+    }
 }
 
 struct Indicator {
-    _item: Retained<NSStatusItem>,
     _target: Retained<Target>,
     _timer: Retained<NSTimer>,
 }
 
 fn indicator(mtm: MainThreadMarker, controls: &Arc<dyn Controls>, hotkey: &str) -> Indicator {
     let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
-    let target = Target::new(mtm, Arc::clone(controls));
+    let target = Target::new(
+        mtm,
+        Shown {
+            controls: Arc::clone(controls),
+            item: item.clone(),
+        },
+    );
     let menu = NSMenu::new(mtm);
     for (title, action) in [
         (format!("Stop ({hotkey})"), sel!(stop:)),
@@ -125,35 +152,42 @@ fn indicator(mtm: MainThreadMarker, controls: &Arc<dyn Controls>, hotkey: &str) 
         menu.addItem(&entry);
     }
     item.setMenu(Some(&menu));
-    show(&item, controls.as_ref(), mtm);
-    let shown = item.clone();
-    let state = Arc::clone(controls);
-    let tick = RcBlock::new(move |_: std::ptr::NonNull<NSTimer>| {
-        show(&shown, state.as_ref(), mtm);
-    });
-    // SAFETY: the block lives as long as the timer, which the indicator holds; the common modes include the confirm dialog's modal mode.
+    target.ivars().show(mtm);
+    // SAFETY: `target` is a `Target`, whose `tick:` method takes the timer, and there is no user info; the timer joins this thread's run loop in the common modes, which include the confirm dialog's modal mode.
     let timer = unsafe {
-        let timer = NSTimer::timerWithTimeInterval_repeats_block(POLL_S, true, &tick);
+        let timer = NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(
+            POLL_S,
+            &target,
+            sel!(tick:),
+            None,
+            true,
+        );
         NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
         timer
     };
     Indicator {
-        _item: item,
         _target: target,
         _timer: timer,
     }
 }
 
-fn show(item: &NSStatusItem, controls: &dyn Controls, mtm: MainThreadMarker) {
-    let title = if controls.halted() {
-        "■ Shuttle stopped"
-    } else if controls.acting() {
-        "● Shuttle"
-    } else {
-        "Shuttle"
-    };
-    if let Some(button) = item.button(mtm) {
-        button.setTitle(&NSString::from_str(title));
+struct Shown {
+    controls: Arc<dyn Controls>,
+    item: Retained<NSStatusItem>,
+}
+
+impl Shown {
+    fn show(&self, mtm: MainThreadMarker) {
+        let title = if self.controls.halted() {
+            "■ Shuttle stopped"
+        } else if self.controls.acting() {
+            "● Shuttle"
+        } else {
+            "Shuttle"
+        };
+        if let Some(button) = self.item.button(mtm) {
+            button.setTitle(&NSString::from_str(title));
+        }
     }
 }
 
@@ -161,25 +195,30 @@ define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "CocoonShuttleControls"]
-    #[ivars = Arc<dyn Controls>]
+    #[ivars = Shown]
     struct Target;
 
     impl Target {
         #[unsafe(method(stop:))]
         fn stop(&self, _sender: Option<&AnyObject>) {
-            self.ivars().halt(true);
+            self.ivars().controls.halt(true);
         }
 
         #[unsafe(method(resume:))]
         fn resume(&self, _sender: Option<&AnyObject>) {
-            self.ivars().halt(false);
+            self.ivars().controls.halt(false);
+        }
+
+        #[unsafe(method(tick:))]
+        fn tick(&self, _timer: Option<&AnyObject>) {
+            self.ivars().show(self.mtm());
         }
     }
 );
 
 impl Target {
-    fn new(mtm: MainThreadMarker, controls: Arc<dyn Controls>) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(controls);
+    fn new(mtm: MainThreadMarker, shown: Shown) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(shown);
         // SAFETY: NSObject's init on a freshly allocated object with its ivars set.
         unsafe { msg_send![super(this), init] }
     }
