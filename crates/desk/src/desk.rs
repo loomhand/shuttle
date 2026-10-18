@@ -11,15 +11,16 @@ use desk_core::args::{
     ActArgs, AtArgs, ClickArgs, FindArgs, IdArgs, KeyArgs, LaunchArgs, ReadArgs, ShotArgs,
     SnapArgs, TypeArgs, WaitArgs, WindowArgs, parse,
 };
-use desk_core::press::{MENU_POLL, MENU_POLLS, SELECTED_ROLES};
 use desk_core::text::{MAX_FOUND, NAME_CHARS, matches, ms, quote};
-use desk_core::window;
 use desk_core::wire::Output;
 use serde_json::{Map, Value, json};
 
+use crate::allow::{Allow, Target, app_key, app_of};
 use crate::driver::{Input, WINDOW_SESSION, desktop, text_of};
-use crate::keys::{Os, key_names};
+use crate::keys::{Os, key_names, keystroke};
 use crate::model::{Access, Act, Extras, Frame, Node};
+use crate::press::{Press, plan_press};
+use crate::shot::crop_png;
 use crate::worker::Worker;
 
 pub const TURN_WAIT: Duration = Duration::from_secs(15);
@@ -45,8 +46,6 @@ const NO_WINDOW_UNDER: &str =
 const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
 const WINDOW_NEVER_READ: &str = "window_never_read";
 const OK: &str = r#"{"ok":true}"#;
-const SHIFTED: &str = "!@#$%^&*()_+:\"<>?~{}|";
-const BASE: &str = "1234567890-=;',./`[]\\";
 
 type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
 
@@ -689,51 +688,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 }
 
-#[derive(Clone, Default)]
-struct Allow(Arc<[String]>);
-
-impl Allow {
-    fn is_open(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    fn admits(&self, app: Option<&str>) -> bool {
-        self.is_open() || app.is_some_and(|a| self.0.contains(&app_key(a)))
-    }
-
-    fn check(&self, app: Option<&str>) -> Result<(), String> {
-        if self.admits(app) {
-            Ok(())
-        } else {
-            Err(refused(app.unwrap_or("an unknown app")))
-        }
-    }
-
-    fn check_pid(&self, frames: &[Frame], pid: Option<u32>) -> Result<(), String> {
-        self.check(app_of(frames, pid))
-    }
-
-    fn pick(
-        &self,
-        mut frames: Vec<Frame>,
-        want: Option<&str>,
-        pid: Option<u32>,
-    ) -> Result<Frame, String> {
-        if want.is_none() || self.is_open() {
-            let frame = window::pick(frames, want, pid)?;
-            self.check(frame.app.as_deref())?;
-            return Ok(frame);
-        }
-        frames.retain(|f| self.admits(f.app.as_deref()));
-        window::pick(frames, want, pid)
-    }
-}
-
-enum Target {
-    Element(String),
-    Focused,
-}
-
 struct Under {
     pid: i64,
     id: i64,
@@ -747,14 +701,6 @@ struct Read {
     id: i64,
     bounds: [f64; 4],
     k: (f64, f64),
-}
-
-/// What a press comes to after the backend's part of it.
-#[derive(Debug, PartialEq)]
-enum Press {
-    Selected,
-    Click(i32, i32),
-    Acted(bool),
 }
 
 /// The windows a call picks from: the app of `pid` alone, unless the allowlist needs every window to judge the call.
@@ -775,21 +721,6 @@ fn live(frame: Frame) -> Result<Frame, String> {
     Ok(frame)
 }
 
-fn app_key(app: &str) -> String {
-    let mut key = app.to_lowercase();
-    if key.ends_with(".exe") {
-        key.truncate(key.len() - 4);
-    }
-    key
-}
-
-fn app_of(frames: &[Frame], pid: Option<u32>) -> Option<&str> {
-    frames
-        .iter()
-        .find(|f| pid.is_some() && f.pid == pid)
-        .and_then(|f| f.app.as_deref())
-}
-
 fn key_request(mut keys: Vec<String>) -> (&'static str, Value) {
     let mut req = json!({});
     if keys.len() == 1
@@ -805,73 +736,6 @@ fn key_request(mut keys: Vec<String>) -> (&'static str, Value) {
 fn bounds(w: &Value) -> [f64; 4] {
     let b = &w["bounds"];
     ["x", "y", "width", "height"].map(|k| b[k].as_f64().unwrap_or(0.0))
-}
-
-fn refused(app: &str) -> String {
-    format!("{app} is not in the app allowlist ([safety] apps in config.toml)")
-}
-
-/// Presses `id` the way a user would; a menu entry runs its action, since a click right after its popup opens misses it.
-fn plan_press<B: Access>(b: &mut B, id: &str) -> Result<Press, String> {
-    let mut node = b.node(id, Extras::BOUNDS, 0)?;
-    if SELECTED_ROLES.contains(&node.role) && b.act(id, Act::Select).unwrap_or(false) {
-        return Ok(Press::Selected);
-    }
-    if node.role.starts_with("menuitem") {
-        return Ok(Press::Acted(b.act(id, Act::Action)?));
-    }
-    let chain = b.ancestors(id)?;
-    if node.role.starts_with("menu") && !node.has("showing") && open_menus(b, &chain) {
-        for _ in 0..MENU_POLLS {
-            node = b.node(id, Extras::BOUNDS, 0)?;
-            if node.has("showing") {
-                break;
-            }
-            std::thread::sleep(MENU_POLL);
-        }
-    }
-    if let Some((x, y)) = reachable(b, id, &node, &chain) {
-        return Ok(Press::Click(x, y));
-    }
-    Ok(Press::Acted(b.act(id, Act::Action)?))
-}
-
-fn open_menus<B: Access>(b: &mut B, chain: &[String]) -> bool {
-    let start = chain
-        .iter()
-        .map(|id| b.node(id, Extras::default(), 0).map_or("", |n| n.role))
-        .rposition(|r| r != "menu")
-        .map_or(0, |i| i + 1);
-    for menu in &chain[start..] {
-        let _ = b.act(menu, Act::Action);
-    }
-    start < chain.len()
-}
-
-fn reachable<B: Access>(b: &mut B, id: &str, node: &Node, chain: &[String]) -> Option<(i32, i32)> {
-    let [x, y, w, h] = node.bounds?;
-    if !node.has("showing") || w <= 0 || h <= 0 || x < 0 || y < 0 {
-        return None;
-    }
-    let (cx, cy) = (x + w / 2, y + h / 2);
-    if node.role.starts_with("menu") {
-        return Some((cx, cy));
-    }
-    let inside = chain.iter().all(|a| {
-        b.node(a, Extras::BOUNDS, 0).is_ok_and(|n| {
-            n.role == "tab"
-                || n.bounds.is_none_or(|[bx, by, bw, bh]| {
-                    (bx..bx + bw).contains(&cx) && (by..by + bh).contains(&cy)
-                })
-        })
-    });
-    if !inside {
-        return None;
-    }
-    let hit = b.at(chain.first()?, cx, cy).ok()??;
-    let reaches =
-        hit == id || chain.contains(&hit) || b.ancestors(&hit).ok()?.iter().any(|a| a == id);
-    reaches.then_some((cx, cy))
 }
 
 /// One line per node: `- role "name" [disabled] [checked] [shortcut] [id=ID]: "value"`, indented by depth.
@@ -901,100 +765,12 @@ fn outline(nodes: &[Node], max_chars: usize) -> String {
     out
 }
 
-/// A crop of the screen rectangle `[x, y, w, h]` from a screenshot scaled by `factor`, as `(width, height, PNG)`.
-fn crop_png(
-    png: &[u8],
-    [x, y, w, h]: [f64; 4],
-    factor: f64,
-    mask: Option<&[([f64; 4], bool)]>,
-) -> Result<(u32, u32, Vec<u8>), String> {
-    let mut dec = png::Decoder::new(std::io::Cursor::new(png));
-    dec.set_transformations(png::Transformations::normalize_to_color8());
-    let mut reader = dec
-        .read_info()
-        .map_err(|e| format!("decode screenshot: {e}"))?;
-    let mut buf = vec![0; reader.output_buffer_size().ok_or("screenshot too large")?];
-    let info = reader
-        .next_frame(&mut buf)
-        .map_err(|e| format!("decode screenshot: {e}"))?;
-    let channels = info.color_type.samples();
-    let clip = |v: f64, max: u32| (v * factor).floor().clamp(0.0, f64::from(max)) as u32;
-    let (left, top) = (clip(x, info.width), clip(y, info.height));
-    let (right, bottom) = (clip(x + w, info.width), clip(y + h, info.height));
-    if right <= left || bottom <= top {
-        return Err("the rectangle is off the screen".to_owned());
-    }
-    let (cw, ch) = (right - left, bottom - top);
-    let keep = mask.map(|m| keep_map(m, [left, top, right, bottom]));
-    let mut rgb = Vec::with_capacity((cw * ch * 3) as usize);
-    for row in top..bottom {
-        for col in left..right {
-            let i = ((row - top) * cw + col - left) as usize;
-            if keep.as_ref().is_some_and(|k| !k[i]) {
-                rgb.extend([0; 3]);
-                continue;
-            }
-            let at = (row as usize * info.width as usize + col as usize) * channels;
-            let px = &buf[at..at + channels];
-            match channels {
-                1 | 2 => rgb.extend([px[0]; 3]),
-                _ => rgb.extend(&px[..3]),
-            }
-        }
-    }
-    let mut out = Vec::new();
-    let mut enc = png::Encoder::new(&mut out, cw, ch);
-    enc.set_color(png::ColorType::Rgb);
-    enc.set_depth(png::BitDepth::Eight);
-    enc.write_header()
-        .and_then(|mut w| w.write_image_data(&rgb))
-        .map_err(|e| format!("encode PNG: {e}"))?;
-    Ok((cw, ch, out))
-}
-
-fn keep_map(mask: &[([f64; 4], bool)], [left, top, right, bottom]: [u32; 4]) -> Vec<bool> {
-    let cw = (right - left) as usize;
-    let mut keep = vec![false; cw * (bottom - top) as usize];
-    for &([x, y, w, h], admitted) in mask {
-        let span = |a: f64, b: f64, min: u32, max: u32| {
-            let (a, b) = if admitted {
-                (a.ceil(), b.floor())
-            } else {
-                (a.floor(), b.ceil())
-            };
-            let clip = |v: f64| (v.clamp(f64::from(min), f64::from(max)) as u32 - min) as usize;
-            clip(a)..clip(b)
-        };
-        let cols = span(x, x + w, left, right);
-        for row in span(y, y + h, top, bottom) {
-            keep[row * cw + cols.start..row * cw + cols.end.max(cols.start)].fill(admitted);
-        }
-    }
-    keep
-}
-
-/// The US-layout keys that type `c`, shift first for a shifted character; none for a character Windows types as Unicode.
-fn keystroke(c: char) -> Option<Vec<String>> {
-    match c {
-        'a'..='z' | '0'..='9' => Some(vec![c.to_string()]),
-        ' ' => Some(vec!["space".to_owned()]),
-        'A'..='Z' => Some(vec!["shift".to_owned(), c.to_ascii_lowercase().to_string()]),
-        _ => {
-            if let Some(i) = SHIFTED.find(c) {
-                return BASE[i..]
-                    .chars()
-                    .next()
-                    .map(|k| vec!["shift".to_owned(), k.to_string()]);
-            }
-            BASE.contains(c).then(|| vec![c.to_string()])
-        }
-    }
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
+
+    use desk_core::window;
 
     use super::*;
     use crate::model::Tree;
@@ -1012,15 +788,15 @@ mod tests {
     static STALE_CLOSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
     #[derive(Default)]
-    struct Fake {
+    pub(crate) struct Fake {
         nodes: HashMap<String, (Node, Option<String>)>,
-        hits: HashMap<(i32, i32), String>,
-        acts: Vec<(String, Act)>,
+        pub(crate) hits: HashMap<(i32, i32), String>,
+        pub(crate) acts: Vec<(String, Act)>,
         opened: bool,
     }
 
     impl Fake {
-        fn add(
+        pub(crate) fn add(
             &mut self,
             id: &str,
             parent: Option<&str>,
@@ -1113,7 +889,7 @@ mod tests {
         }
     }
 
-    fn notepad() -> Fake {
+    pub(crate) fn notepad() -> Fake {
         let mut f = Fake::default();
         f.add("w", None, "window", &["showing"], Some([0, 0, 800, 600]));
         f.add(
@@ -1142,42 +918,6 @@ mod tests {
         f.hits.insert((140, 110), "ok".into());
         f.hits.insert((340, 110), "w".into());
         f
-    }
-
-    #[test]
-    fn a_shown_control_that_a_hit_test_finds_takes_a_click() {
-        let mut f = notepad();
-        assert_eq!(plan_press(&mut f, "ok").unwrap(), Press::Click(140, 110));
-        assert!(f.acts.is_empty());
-    }
-
-    #[test]
-    fn a_covered_control_runs_its_action() {
-        let mut f = notepad();
-        f.hits.insert((340, 110), "elsewhere".into());
-        f.add("elsewhere", None, "button", &[], None);
-        assert_eq!(plan_press(&mut f, "hidden").unwrap(), Press::Acted(true));
-        assert_eq!(f.acts, [("hidden".to_owned(), Act::Action)]);
-    }
-
-    #[test]
-    fn a_tab_is_selected() {
-        let mut f = notepad();
-        assert_eq!(plan_press(&mut f, "tab").unwrap(), Press::Selected);
-    }
-
-    #[test]
-    fn a_macos_menu_entry_runs_its_action_without_opening_its_menu() {
-        let mut f = notepad();
-        assert_eq!(plan_press(&mut f, "save").unwrap(), Press::Acted(true));
-        assert_eq!(f.acts, [("save".to_owned(), Act::Action)]);
-    }
-
-    #[test]
-    fn a_windows_menu_entry_runs_its_action() {
-        let mut f = notepad();
-        assert_eq!(plan_press(&mut f, "save").unwrap(), Press::Acted(true));
-        assert_eq!(f.acts, [("save".to_owned(), Act::Action)]);
     }
 
     #[test]
@@ -1248,24 +988,6 @@ mod tests {
             outline(&nodes, 80),
             "- dialog \"Font\" [id=42-1]\n  - checkbox \"Bold \\\"b\\\"\" [checked] [ctrl+b] [id=42-1-7]\n  - checkbox \"Mixed\" [disabled] [mixed]: \"12\"\n"
         );
-    }
-
-    #[test]
-    fn a_crop_scales_screen_pixels_to_the_screenshot() {
-        let mut png = Vec::new();
-        let mut enc = png::Encoder::new(&mut png, 4, 2);
-        enc.set_color(png::ColorType::Rgba);
-        let mut px = Vec::new();
-        for i in 0..8u8 {
-            px.extend([i, i, i, 255]);
-        }
-        enc.write_header().unwrap().write_image_data(&px).unwrap();
-        let (w, h, _) = crop_png(&png, [2.0, 0.0, 4.0, 4.0], 0.5, None).unwrap();
-        assert_eq!((w, h), (2, 2));
-        let (w, h, _) =
-            crop_png(&png, [0.0, 0.0, f64::MAX / 4.0, f64::MAX / 4.0], 1.0, None).unwrap();
-        assert_eq!((w, h), (4, 2));
-        assert!(crop_png(&png, [100.0, 0.0, 4.0, 4.0], 1.0, None).is_err());
     }
 
     struct Recorder(Arc<Mutex<Vec<(String, Value)>>>);
@@ -2324,19 +2046,5 @@ mod tests {
         assert_eq!(out["changed"], true);
         assert_eq!(lists(&desk).await, 2);
         assert!(took < WAIT_CHECK, "{took:?}");
-    }
-
-    #[test]
-    fn windows_characters_map_to_us_layout_keys() {
-        let k = |c| keystroke(c).map(|v| v.join("+"));
-        assert_eq!(k('a').as_deref(), Some("a"));
-        assert_eq!(k('Q').as_deref(), Some("shift+q"));
-        assert_eq!(k(' ').as_deref(), Some("space"));
-        assert_eq!(k('!').as_deref(), Some("shift+1"));
-        assert_eq!(k(':').as_deref(), Some("shift+;"));
-        assert_eq!(k('|').as_deref(), Some("shift+\\"));
-        assert_eq!(k('/').as_deref(), Some("/"));
-        assert_eq!(k('\\').as_deref(), Some("\\"));
-        assert_eq!(k('é'), None);
     }
 }
