@@ -151,9 +151,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .await
     }
 
-    /// Waits until the window list differs from `since`; time spent reading lists does not count against `timeout_ms`, as in a poll loop.
+    /// Waits until the window list differs from `since` or `timeout_ms` passes.
     async fn wait(&self, a: WaitArgs) -> Result<String, String> {
-        let limit = Duration::from_millis(a.timeout_ms);
+        let limit = Duration::from_millis(a.timeout_ms).min(WAIT_MAX);
         let since = match a.since {
             Value::Array(ws) => Some(
                 ws.into_iter()
@@ -163,14 +163,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             _ => None,
         };
         let started = Instant::now();
-        let (mut listing, mut last) = (Duration::ZERO, Duration::ZERO);
+        let mut last = Duration::ZERO;
         let mut hint = self.access.run(CALL_LIMIT, (), |b| Ok(b.hint())).await?;
         let mut checked = Instant::now();
         loop {
             tokio::time::sleep(WAIT_POLL).await;
             let now = self.access.run(CALL_LIMIT, (), |b| Ok(b.hint())).await?;
-            let t = started.elapsed();
-            let over = t >= WAIT_MAX || t.saturating_sub(listing) >= limit;
+            let over = started.elapsed() >= limit;
             let moved = now.is_some() && now != hint;
             let due = checked.elapsed()
                 >= if now.is_some() {
@@ -185,12 +184,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let at = Instant::now();
             let frames = self.listed().await?;
             last = at.elapsed();
-            listing += last;
             checked = Instant::now();
             let windows =
                 serde_json::to_value(&frames).map_err(|e| format!("encode windows: {e}"))?;
             let same = since.as_ref() == Some(&windows);
-            if !same || over || started.elapsed() >= WAIT_MAX {
+            if !same || over {
                 let mut out = json!({"changed": !same});
                 out["windows"] = windows;
                 return Ok(out.to_string());
@@ -1968,7 +1966,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn slow_window_lists_stretch_a_wait_like_a_poll_loop() {
+    async fn slow_window_lists_count_against_a_waits_timeout() {
         let desk = Desk::new(
             || Ok(Stub::opens(usize::MAX, false, 40)),
             Slow(Arc::default()),
@@ -1976,10 +1974,10 @@ pub(crate) mod tests {
         );
         let (out, took) = wait_on(&desk, 100).await;
         assert_eq!(out["changed"], false);
-        let waited = lists(&desk).await as u64 - 1;
+        assert!(lists(&desk).await >= 3, "{}", lists(&desk).await);
         assert!(
-            waited >= 2 && took >= Duration::from_millis(100 + 40 * waited),
-            "{took:?} {waited}"
+            took >= Duration::from_millis(100) && took < Duration::from_millis(200),
+            "{took:?}"
         );
     }
 
