@@ -69,7 +69,7 @@ pub fn list() -> Value {
         },
         {
             "name": "status",
-            "description": "This host's version, OS and architecture, and which tools this release runs.",
+            "description": "This host's version, OS and architecture.",
             "inputSchema": {"type": "object", "properties": {}}
         }
     ]})
@@ -134,7 +134,6 @@ fn status() -> Value {
         "version": VERSION,
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
-        "runs": ["status", "desk", "screenshot", "gui_plan", "script_run"],
     })
 }
 
