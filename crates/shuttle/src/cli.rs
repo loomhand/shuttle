@@ -231,6 +231,12 @@ async fn serve(
     } else {
         None
     };
+    if local && bundled.is_none() && cfg!(target_os = "linux") {
+        return Err(format!(
+            "no cua-driver beside {}: the Linux desk runs only the bundled one",
+            exe.display()
+        ));
+    }
     let driver = if bundled.is_some() {
         own
     } else {
