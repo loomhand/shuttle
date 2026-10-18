@@ -27,6 +27,7 @@ const SWITCH_POLLS: u32 = 10;
 const SCROLL_TRIES: u32 = 6;
 const SCROLL_MS: &str = "600";
 const SCROLL_SETTLE: Duration = Duration::from_millis(400);
+const MIN_SPAN: i32 = 8;
 
 /// One element of a window as the desk and computer_state show it.
 #[derive(Debug)]
@@ -136,13 +137,23 @@ impl Frame {
         })
     }
 
-    fn clear(&self, x: i32, y: i32) -> bool {
-        (0..SCREEN.0).contains(&x)
-            && (0..SCREEN.1).contains(&y)
-            && !self
-                .covers
-                .iter()
-                .any(|&[cx, cy, cw, ch]| (cx..cx + cw).contains(&x) && (cy..cy + ch).contains(&y))
+    fn span(&self, x: i32, top: i32, bottom: i32) -> Option<(i32, i32)> {
+        if !(0..SCREEN.0).contains(&x) {
+            return None;
+        }
+        let mut open = vec![(top.max(0), bottom.min(SCREEN.1))];
+        for &[cx, cy, cw, ch] in &self.covers {
+            if (cx..cx + cw).contains(&x) {
+                open = open
+                    .into_iter()
+                    .flat_map(|(a, b)| [(a, b.min(cy)), (a.max(cy + ch), b)])
+                    .filter(|(a, b)| b > a)
+                    .collect();
+            }
+        }
+        open.into_iter()
+            .filter(|(a, b)| b - a >= MIN_SPAN)
+            .max_by_key(|(a, b)| b - a)
     }
 }
 
@@ -714,19 +725,28 @@ async fn read(android: &Android, a: ReadArgs) -> Result<String, String> {
 
 /// Taps an element, after scrolling its list until it shows.
 async fn press(android: &Android, id: &str) -> Result<String, String> {
-    let (frame, mut node) = node(android, id).await?;
+    let (mut frame, mut node) = node(android, id).await?;
     for _ in 0..SCROLL_TRIES {
-        let (x, y) = node.center();
-        let [_, _, w, h] = node.bounds;
-        if node.visible && w > 0 && h > 0 && frame.clear(x, y) {
+        let [x, y, w, h] = node.bounds;
+        let x = x + w / 2;
+        if node.visible
+            && w > 0
+            && h > 0
+            && let Some((top, bottom)) = frame.span(x, y, y + h)
+        {
+            let y = (top + bottom) / 2;
             android.tap((x, y)).await?;
             return Ok(json!({"ok": true, "how": "click", "x": x, "y": y}).to_string());
         }
         let Some([sx, sy, sw, sh]) = node.scroller else {
             break;
         };
-        let (cx, low, high) = (sx + sw / 2, sy + sh * 3 / 4, sy + sh / 4);
-        let (from, to) = if node.bounds[1] >= sy + sh / 2 {
+        let cx = sx + sw / 2;
+        let (top, bottom) = frame
+            .span(cx, sy, sy + sh)
+            .ok_or_else(|| format!("element {id} is off the screen, and its list is covered"))?;
+        let (low, high) = (top + (bottom - top) * 3 / 4, top + (bottom - top) / 4);
+        let (from, to) = if node.bounds[1] >= top + (bottom - top) / 2 {
             (low, high)
         } else {
             (high, low)
@@ -742,7 +762,8 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
             ])
             .await?;
         tokio::time::sleep(SCROLL_SETTLE).await;
-        let (_, mut nodes) = app_tree(android, &frame.package).await?;
+        let (refreshed, mut nodes) = app_tree(android, &frame.package).await?;
+        frame = refreshed;
         let i = unique(&nodes, node.role, &node.name).ok_or_else(|| {
             format!("element {id} is gone or not unique after a scroll; read the window again")
         })?;
@@ -948,13 +969,52 @@ mod tests {
         assert_eq!(frames.len(), 1);
         let settings = &frames[0];
         assert_eq!(settings.covers, [[0, 1184, 720, 96], [0, 0, 720, 48]]);
-        assert!(settings.clear(360, 763));
-        assert!(
-            !settings.clear(360, 1236),
+        assert_eq!(settings.span(360, 700, 826), Some((700, 826)));
+        assert_eq!(
+            settings.span(360, 1224, 1248),
+            None,
             "the navigation bar takes the tap"
         );
-        assert!(!settings.clear(360, 20), "the status bar takes the tap");
-        assert!(!settings.clear(360, 1300));
+        assert_eq!(
+            settings.span(360, 10, 40),
+            None,
+            "the status bar takes the tap"
+        );
+        assert_eq!(settings.span(360, 1300, 1340), None);
+        assert_eq!(settings.span(800, 700, 826), None);
+        assert_eq!(
+            settings.span(360, 1144, 1224),
+            Some((1144, 1184)),
+            "a button partly under the bar is tapped in its open part"
+        );
+        assert_eq!(
+            settings.span(360, 600, 1280),
+            Some((600, 1184)),
+            "a list's swipe stays above the bar"
+        );
+        let ime = WindowInfo {
+            kind: 2,
+            ..bar(9, 3, [0, 700, 720, 1184])
+        };
+        let typing = frames_of(vec![
+            ime,
+            bar(5, 2, [0, 1184, 720, 1280]),
+            window([0, 0, 720, 1280]),
+        ]);
+        assert_eq!(
+            typing[0].span(360, 760, 820),
+            None,
+            "the keyboard covers the field"
+        );
+        let closed = frames_of(vec![
+            bar(5, 2, [0, 1184, 720, 1280]),
+            window([0, 0, 720, 1280]),
+        ]);
+        assert_eq!(
+            closed[0].span(360, 760, 820),
+            Some((760, 820)),
+            "a refreshed frame without the keyboard"
+        );
     }
 
     #[test]
