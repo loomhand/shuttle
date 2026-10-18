@@ -811,7 +811,10 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   }
   let nodes = parse(snap); tick('snap', t0)
   const aim = s.verify ?? s.click ?? s.check
-  if (OS === 'darwin' && !r.menus && aim !== undefined && !(await resolve(nodes, aim, targetRole(s), undefined, 0.7, s.fp, false))) nodes = parse(await snapOf(w, { ...r, menus: true }))
+  if (OS === 'darwin' && !r.menus && aim !== undefined) {
+    const near = await resolve(nodes, aim, targetRole(s), undefined, 0.7, s.fp, false)
+    if (!near || (near.how !== 'fp' && norm(near.n.name) !== norm(aim))) nodes = parse(await snapOf(w, { ...r, menus: true }))
+  }
   if (s.expect) {
     const d = await decide({ window_title: w.title, contents: render(nodes, 60, false).slice(0, 4000) }, { ok: desk.yes(s.expect) })
     rec.p = +prob(d.ok).toFixed(2)
