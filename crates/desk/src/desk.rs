@@ -845,7 +845,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 ..Frame::default()
             })
             .collect();
-        if !self.allow.is_open() || self.os == Os::Linux {
+        let want = a.window.trim().to_lowercase();
+        let unique = windows
+            .iter()
+            .filter(|w| w.title.to_lowercase().contains(&want))
+            .count()
+            == 1;
+        if !self.allow.is_open() || (self.os == Os::Linux && !unique) {
             let frames = self.access.run(CALL_LIMIT, (), |b| b.frames()).await?;
             for w in &mut windows {
                 w.app = app_of(&frames, w.pid).map(str::to_owned);
