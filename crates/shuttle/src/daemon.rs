@@ -298,29 +298,113 @@ mod tests {
         }
     }
 
+    struct Typing;
+
+    impl Handler for Typing {
+        async fn answer(&self, call: Call) -> Output {
+            if call.tool == "desk_type" {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            Output::text(format!("desk answered {}", call.tool))
+        }
+    }
+
+    #[cfg(unix)]
+    #[derive(Clone, Default)]
+    struct Keys(Arc<Mutex<Vec<String>>>);
+
+    #[cfg(unix)]
+    impl Handler for Keys {
+        async fn answer(&self, call: Call) -> Output {
+            if let Some(k) = call.args["keys"].as_str() {
+                self.0.lock().unwrap().push(k.to_owned());
+            }
+            Output::text("{}")
+        }
+    }
+
+    fn call(tool: &str, args: Value) -> Call {
+        Call {
+            agent_id: String::new(),
+            tool: tool.into(),
+            args,
+        }
+    }
+
+    fn runner() -> Runner {
+        let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
+        Runner::new(
+            "node".into(),
+            runtime,
+            "unused".into(),
+            std::env::temp_dir().join("shuttle-test-flows"),
+            Vec::new(),
+        )
+    }
+
+    #[cfg(unix)]
+    async fn served(wait: Duration) -> (Arc<Daemon<Keys>>, Keys, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("d.sock").to_string_lossy().into_owned();
+        let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
+        let keys = Keys::default();
+        let runner = Runner::new(
+            "node".into(),
+            runtime,
+            endpoint.clone(),
+            dir.path().join("flows"),
+            Vec::new(),
+        );
+        let mut d = Daemon::new(
+            keys.clone(),
+            Ok(Models::new(Config::default())),
+            runner,
+            Guard::default(),
+        );
+        d.wait = wait;
+        let d = Arc::new(d);
+        tokio::spawn({
+            let (d, endpoint) = (Arc::clone(&d), endpoint.clone());
+            async move {
+                shuttle_desk::server::serve(d, shuttle_desk::server::bind(&endpoint).await?).await
+            }
+        });
+        for _ in 0..50 {
+            if shuttle_desk::server::connect(&endpoint).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        (d, keys, dir)
+    }
+
+    #[cfg(unix)]
+    fn script(code: &str) -> Call {
+        Call {
+            agent_id: "agent".into(),
+            tool: "script_run".into(),
+            args: json!({"code": code}),
+        }
+    }
+
     #[tokio::test]
     async fn stop_ends_a_desk_call_in_flight() {
-        let d = std::sync::Arc::new(Daemon::new(
+        let d = Arc::new(Daemon::new(
             Slow,
             Ok(Models::new(Config::default())),
             runner(),
             Guard::default(),
         ));
-        let call = |tool: &str| Call {
-            agent_id: String::new(),
-            tool: tool.into(),
-            args: json!({}),
-        };
         let calls = ["desk_click", "desk_wait"].map(|tool| {
             tokio::spawn({
                 let d = d.clone();
-                let call = call(tool);
+                let call = call(tool, json!({}));
                 async move { d.answer(call).await }
             })
         });
         tokio::time::sleep(Duration::from_millis(100)).await;
         let started = std::time::Instant::now();
-        d.answer(call("safety_stop")).await;
+        d.answer(call("safety_stop", json!({}))).await;
         for c in calls {
             let out = c.await.unwrap();
             assert_eq!((out.is_error, out.text.as_str()), (true, crate::STOPPED));
@@ -336,33 +420,17 @@ mod tests {
             runner(),
             Guard::default(),
         ));
-        let call = |tool: &str| Call {
-            agent_id: String::new(),
-            tool: tool.into(),
-            args: json!({}),
-        };
         let action = tokio::spawn({
             let d = d.clone();
-            let call = call("desk_click");
+            let call = call("desk_click", json!({}));
             async move { d.answer(call).await }
         });
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(d.acting());
-        d.answer(call("safety_stop")).await;
+        d.answer(call("safety_stop", json!({}))).await;
         action.await.unwrap();
-        d.answer(call("safety_resume")).await;
+        d.answer(call("safety_resume", json!({}))).await;
         assert!(!d.acting());
-    }
-
-    fn runner() -> Runner {
-        let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
-        Runner::new(
-            "node".into(),
-            runtime,
-            "unused".into(),
-            std::env::temp_dir().join("shuttle-test-flows"),
-            Vec::new(),
-        )
     }
 
     #[tokio::test]
@@ -372,29 +440,24 @@ mod tests {
             ..Config::default()
         };
         let d = Daemon::new(Echo, Ok(Models::new(closed)), runner(), Guard::default());
-        let ask = |tool: &str, args: Value| Call {
-            agent_id: "desk".into(),
-            tool: tool.into(),
-            args,
-        };
-        let desk = d.answer(ask("desk_windows", json!({}))).await;
+        let desk = d.answer(call("desk_windows", json!({}))).await;
         assert_eq!(
             (desk.is_error, desk.text.as_str()),
             (false, "desk answered desk_windows")
         );
-        let model = d.answer(ask("model_ask", json!({"prompt": "x"}))).await;
+        let model = d.answer(call("model_ask", json!({"prompt": "x"}))).await;
         assert!(
             model.is_error && model.text.starts_with("anthropic/claude-sonnet-5: "),
             "{}",
             model.text
         );
-        let bad = d.answer(ask("model_ground", json!({"target": "x"}))).await;
+        let bad = d.answer(call("model_ground", json!({"target": "x"}))).await;
         assert!(
             bad.is_error && bad.text.starts_with("invalid arguments"),
             "{}",
             bad.text
         );
-        let unknown = d.answer(ask("model_plan", json!({}))).await;
+        let unknown = d.answer(call("model_plan", json!({}))).await;
         assert_eq!(unknown.text, "unknown tool model_plan");
     }
 
@@ -413,35 +476,25 @@ mod tests {
             runner(),
             Guard::default(),
         );
-        let call = |tool: &str| Call {
-            agent_id: String::new(),
-            tool: tool.into(),
-            args: json!({"prompt": "x"}),
-        };
         for tool in ["model_ask", "script_run", "gui_plan", "desk_screen"] {
-            let out = d.answer(call(tool)).await;
+            let out = d.answer(call(tool, json!({"prompt": "x"}))).await;
             assert_eq!(
                 (out.is_error, out.text.as_str()),
                 (true, "config.toml line 3: invalid type"),
                 "{tool}"
             );
         }
-        assert!(!d.answer(call("safety_stop")).await.is_error);
+        assert!(!d.answer(call("safety_stop", json!({}))).await.is_error);
     }
 
     #[tokio::test]
     async fn stop_fails_every_call_and_ends_the_run_in_flight_until_resume() {
-        let d = std::sync::Arc::new(Daemon::new(
+        let d = Arc::new(Daemon::new(
             Echo,
             Ok(Models::new(Config::default())),
             runner(),
             Guard::default(),
         ));
-        let call = |tool: &str, args: Value| Call {
-            agent_id: String::new(),
-            tool: tool.into(),
-            args,
-        };
         let slow = json!({"code": "export async function main() { await new Promise((r) => setTimeout(r, 20000)) }"});
         let run = tokio::spawn({
             let d = d.clone();
@@ -499,11 +552,6 @@ mod tests {
                 },
             )
         };
-        let call = |tool: &str, args: Value| Call {
-            agent_id: String::new(),
-            tool: tool.into(),
-            args,
-        };
         let click = || call("desk_click", json!({"x": 10, "y": 20}));
         let key = || call("desk_key", json!({"keys": "ctrl+s"}));
         let no = daemon(Confirm::Coordinate, Some(asker(false, asked.clone())));
@@ -535,17 +583,6 @@ mod tests {
         assert!(!none.acting() && !none.halted());
     }
 
-    struct Typing;
-
-    impl Handler for Typing {
-        async fn answer(&self, call: Call) -> Output {
-            if call.tool == "desk_type" {
-                tokio::time::sleep(Duration::from_millis(300)).await;
-            }
-            Output::text(format!("desk answered {}", call.tool))
-        }
-    }
-
     #[tokio::test]
     async fn an_action_queued_before_a_confirm_dialog_opens_is_refused_when_its_turn_comes() {
         let pending = Arc::new(Mutex::new(None));
@@ -565,11 +602,6 @@ mod tests {
                 ..Guard::default()
             },
         );
-        let call = |tool: &str, args: Value| Call {
-            agent_id: String::new(),
-            tool: tool.into(),
-            args,
-        };
         let pause = |ms| tokio::time::sleep(Duration::from_millis(ms));
         let (typed, queued, asked) = tokio::join!(
             d.answer(call("desk_type", json!({"text": "a"}))),
@@ -611,11 +643,6 @@ mod tests {
                 ..Guard::default()
             },
         );
-        let call = |tool: &str, args: Value| Call {
-            agent_id: String::new(),
-            tool: tool.into(),
-            args,
-        };
         let click = || call("desk_click", json!({"x": 10, "y": 20}));
         let both = async {
             tokio::join!(d.answer(click()), async {
@@ -660,11 +687,10 @@ mod tests {
             },
         );
         let out = d
-            .answer(Call {
-                agent_id: String::new(),
-                tool: "script_run".into(),
-                args: json!({"code": "export function main() { return 1 }"}),
-            })
+            .answer(call(
+                "script_run",
+                json!({"code": "export function main() { return 1 }"}),
+            ))
             .await;
         assert_eq!((out.is_error, out.text.as_str()), (true, SCRIPT_RUN_OFF));
     }
@@ -678,73 +704,13 @@ mod tests {
             Guard::default(),
         );
         let out = d
-            .answer(Call {
-                agent_id: String::new(),
-                tool: "script_run".into(),
-                args: json!({"code": "export function main() { return 42 }"}),
-            })
+            .answer(call(
+                "script_run",
+                json!({"code": "export function main() { return 42 }"}),
+            ))
             .await;
         let report: Value = serde_json::from_str(&out.text).unwrap();
         assert_eq!(report["result"], 42, "{report}");
-    }
-
-    #[cfg(unix)]
-    #[derive(Clone, Default)]
-    struct Keys(std::sync::Arc<Mutex<Vec<String>>>);
-
-    #[cfg(unix)]
-    impl Handler for Keys {
-        async fn answer(&self, call: Call) -> Output {
-            if let Some(k) = call.args["keys"].as_str() {
-                self.0.lock().unwrap().push(k.to_owned());
-            }
-            Output::text("{}")
-        }
-    }
-
-    #[cfg(unix)]
-    async fn served(wait: Duration) -> (std::sync::Arc<Daemon<Keys>>, Keys, tempfile::TempDir) {
-        let dir = tempfile::tempdir().unwrap();
-        let endpoint = dir.path().join("d.sock").to_string_lossy().into_owned();
-        let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
-        let keys = Keys::default();
-        let runner = Runner::new(
-            "node".into(),
-            runtime,
-            endpoint.clone(),
-            dir.path().join("flows"),
-            Vec::new(),
-        );
-        let mut d = Daemon::new(
-            keys.clone(),
-            Ok(Models::new(Config::default())),
-            runner,
-            Guard::default(),
-        );
-        d.wait = wait;
-        let d = std::sync::Arc::new(d);
-        tokio::spawn({
-            let (d, endpoint) = (std::sync::Arc::clone(&d), endpoint.clone());
-            async move {
-                shuttle_desk::server::serve(d, shuttle_desk::server::bind(&endpoint).await?).await
-            }
-        });
-        for _ in 0..50 {
-            if shuttle_desk::server::connect(&endpoint).await.is_ok() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        (d, keys, dir)
-    }
-
-    #[cfg(unix)]
-    fn script(code: &str) -> Call {
-        Call {
-            agent_id: "agent".into(),
-            tool: "script_run".into(),
-            args: json!({"code": code}),
-        }
     }
 
     #[cfg(unix)]
