@@ -7,7 +7,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use desk_core::args::{
     ActArgs, AtArgs, ClickArgs, FindArgs, IdArgs, KeyArgs, LaunchArgs, ReadArgs, ShotArgs,
-    SnapArgs, TypeArgs, WindowArgs, parse,
+    SnapArgs, TypeArgs, WaitArgs, WindowArgs, parse,
 };
 use desk_core::text::{MAX_FOUND, NAME_CHARS, Named, matches, ms, quote};
 use desk_core::window::{self, Window};
@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 
 use super::android::{Android, SCREEN};
 use super::cua::png_rgb;
+use super::desk::wait_for;
 use super::rpc::Output;
 
 const APPLICATION: i64 = 1;
@@ -200,6 +201,16 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
     let text = match verb {
         "desk_windows" => {
             Value::Array(frames(android).await?.iter().map(Frame::json).collect()).to_string()
+        }
+        "desk_wait" => {
+            let a: WaitArgs = parse(args)?;
+            wait_for(a.since, Duration::from_millis(a.timeout_ms), || async {
+                Ok(Value::Array(
+                    frames(android).await?.iter().map(Frame::json).collect(),
+                ))
+            })
+            .await?
+            .to_string()
         }
         "desk_snapshot" => snapshot(android, parse(args)?).await?,
         "desk_find" => find(android, parse(args)?).await?,
