@@ -150,8 +150,8 @@ impl Runner {
         ];
         let mut stopped = self.stop.subscribe();
         let status = tokio::select! {
-            s = tokio::time::timeout(timeout, child.wait()) => s.map_err(|_| "timeout"),
-            _ = stopped.wait_for(|s| *s) => Err("stopped"),
+            s = tokio::time::timeout(timeout, child.wait()) => s.map_err(|_| Ended::Timeout),
+            _ = stopped.wait_for(|s| *s) => Err(Ended::Stopped),
         };
         if status.is_err() {
             #[cfg(unix)]
@@ -175,10 +175,10 @@ impl Runner {
         report["logs"] = text(&logs).into();
         report["stderr"] = text(&stderr).into();
         match status {
-            Err("stopped") => {
+            Err(Ended::Stopped) => {
                 report["error"] = json!({"kind": "stopped", "message": crate::STOPPED});
             }
-            Err(_) => {
+            Err(Ended::Timeout) => {
                 report["error"] = json!({"kind": "timeout", "message": format!("the run passed {}s and was stopped", timeout.as_secs())});
             }
             Ok(status) => {
@@ -208,6 +208,11 @@ struct ScriptArgs {
     script: Option<PathBuf>,
     params: Option<Value>,
     timeout_s: Option<u64>,
+}
+
+enum Ended {
+    Timeout,
+    Stopped,
 }
 
 #[cfg(unix)]
