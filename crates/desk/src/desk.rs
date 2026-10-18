@@ -151,7 +151,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .await
     }
 
-    /// Waits until the window list differs from `since` or `timeout_ms` passes.
+    /// Waits until the window list differs from `since` or `timeout_ms` of wall time passes, list reads included.
     async fn wait(&self, a: WaitArgs) -> Result<String, String> {
         let limit = Duration::from_millis(a.timeout_ms).min(WAIT_MAX);
         let since = match a.since {
@@ -167,7 +167,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let mut hint = self.access.run(CALL_LIMIT, (), |b| Ok(b.hint())).await?;
         let mut checked = Instant::now();
         loop {
-            tokio::time::sleep(WAIT_POLL).await;
+            tokio::time::sleep(WAIT_POLL.min(limit.saturating_sub(started.elapsed()))).await;
             let now = self.access.run(CALL_LIMIT, (), |b| Ok(b.hint())).await?;
             let over = started.elapsed() >= limit;
             let moved = now.is_some() && now != hint;
@@ -1976,6 +1976,19 @@ pub(crate) mod tests {
         assert_eq!(out["changed"], false);
         assert!(took >= Duration::from_millis(300), "{took:?}");
         assert_eq!(lists(&desk).await, 3);
+    }
+
+    #[tokio::test]
+    async fn a_zero_timeout_wait_reads_the_list_once_at_once() {
+        let desk = Desk::new(
+            || Ok(Stub::opens(usize::MAX, false, 0)),
+            Slow(Arc::default()),
+            Os::Mac,
+        );
+        let (out, took) = wait_on(&desk, 0).await;
+        assert_eq!(out["changed"], false);
+        assert_eq!(lists(&desk).await, 2);
+        assert!(took < Duration::from_millis(10), "{took:?}");
     }
 
     #[tokio::test]
