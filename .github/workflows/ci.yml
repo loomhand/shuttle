@@ -40,6 +40,20 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+      - name: No Visual C++ runtime imports
+        if: runner.os == 'Windows'
+        run: |
+          cargo build --release --locked -p shuttle
+          packaging/crt.ps1 target/release/cocoon-shuttle.exe
+
+      - name: Upload the Windows binary
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: cocoon-shuttle-windows-x64
+          path: target/release/cocoon-shuttle.exe
+          retention-days: 7
+
   runtime:
     strategy:
       fail-fast: false

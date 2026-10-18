@@ -63,6 +63,13 @@ jobs:
         shell: bash
         run: packaging/package.sh ${{ matrix.platform }} target/${{ matrix.target }}/release "$GITHUB_REF_NAME" dist
 
+      - name: No Visual C++ runtime imports
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Expand-Archive -Path (Get-Item dist/*.zip).FullName -DestinationPath crt
+          packaging/crt.ps1 (Get-ChildItem crt -Recurse -Filter *.exe).FullName
+
       - name: Upload
         uses: actions/upload-artifact@v7.0.2
         with:
