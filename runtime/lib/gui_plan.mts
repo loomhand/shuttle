@@ -497,18 +497,20 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>) 
   } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
 
-async function grounded(x: number, y: number, target: string, w: Win, area: { width: number; height: number }, screen: Buffer) {
+async function grounded(x: number, y: number, target: string, w: Win, area: desk.Size) {
   const under = await desk.at(x, y, w.title, w.pid).catch(() => ({ found: null, path: [] }))
   const what = under.found ? [under.found, ...(under.path ?? []).toReversed()].filter((n) => n.name).map((n) => `${n.role} "${n.name}"`).join(' under ') : ''
   const t0 = Date.now()
-  const fit = (cw: number, ch: number): [number, number] => [Math.max(0, Math.min(area.width - cw, Math.round(x - cw / 2))), Math.max(0, Math.min(area.height - ch, Math.round(y - ch / 2)))]
+  const [ox, oy] = [area.left ?? 0, area.top ?? 0]
+  const fit = (cw: number, ch: number): [number, number] => [Math.max(ox, Math.min(ox + area.width - cw, Math.round(x - cw / 2))), Math.max(oy, Math.min(oy + area.height - ch, Math.round(y - ch / 2)))]
   const yes = async (state: unknown[], question: string) => +prob((await desk.look(state, { on: desk.yes(question) })).on).toFixed(2)
-  const crop = async (cw: number, ch: number, k: number) => {
-    const [left, top] = fit(cw, ch), [px, py] = [(x - left) * k, (y - top) * k]
-    const png = zoom(cut(screen, area.width, left, top, cw, ch), k)
-    return yes([`A ${cw * k}x${ch * k} crop of the screen. A click is about to land on its pixel (${px}, ${py}).`, desk.image(png)], `Is the pixel at (${px}, ${py}) of the image on ${target}?`)
-  }
   try {
+    const screen = unpng(await desk.shot()), s = screen.w / area.width
+    const crop = async (cw: number, ch: number, k: number) => {
+      const [left, top] = fit(cw, ch), [px, py] = [Math.round((x - left) * s * k), Math.round((y - top) * s * k)]
+      const png = cut(screen, Math.round((left - ox) * s), Math.round((top - oy) * s), Math.round(cw * s), Math.round(ch * s), k)
+      return yes([`A ${png.readUInt32BE(16)}x${png.readUInt32BE(20)} crop of the screen. A click is about to land on its pixel (${px}, ${py}).`, desk.image(png)], `Is the pixel at (${px}, ${py}) of the image on ${target}?`)
+    }
     const p = await crop(Math.min(CROP.w, area.width), Math.min(CROP.h, area.height), 1)
     const out: { what: string; ok: boolean; check: string; p: number; p_zoom?: number | null; p_full?: number | null } = { what, ok: p >= 0.5, check: 'jev-image', p }
     if (out.ok) return out
@@ -517,11 +519,12 @@ async function grounded(x: number, y: number, target: string, w: Win, area: { wi
     if (!el || el[2] * el[3] < SMALL) {
       const rw = Math.min(area.width, el ? Math.min(384, Math.max(96, Math.round(1.5 * el[2]), Math.round(5 * el[3] * 4 / 3))) : 192)
       const rh = Math.min(area.height, el ? Math.round(rw * 3 / 4) : 144)
-      out.check += '+zoom'; out.p_zoom = await crop(rw, rh, Math.max(1, Math.ceil(Math.max(384 / rw, 288 / rh)))).catch(() => null)
+      out.check += '+zoom'; out.p_zoom = await crop(rw, rh, Math.max(1, Math.ceil(Math.max(384 / (rw * s), 288 / (rh * s))))).catch(() => null)
       out.ok = (out.p_zoom ?? 0) >= ZOOM_BAR
     }
     if (!out.ok && desk.setting('DESK_FULL_CHECK') !== 'off') {
-      const full = async () => yes([`The screen, ${area.width}x${area.height}. A red ring with four ticks marks the spot a click is about to land on, centred at pixel (${x}, ${y}).`, desk.image(ring(screen, x, y, RING))], `Is the spot marked by the red ring on ${target}?`)
+      const [px, py] = [Math.round((x - ox) * s), Math.round((y - oy) * s)]
+      const full = async () => yes([`The screen, ${screen.w}x${screen.h}. A red ring with four ticks marks the spot a click is about to land on, centred at pixel (${px}, ${py}).`, desk.image(ring(screen, px, py, Math.round(RING * s)))], `Is the spot marked by the red ring on ${target}?`)
       out.check += '+full'; out.p_full = await full().catch(() => null)
       out.ok = (out.p_full ?? 0) >= FULL_BAR
     }
@@ -564,24 +567,16 @@ function png(w: number, h: number, type: number, bpp: number, px: Buffer) {
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))])
 }
 
-function cut(image: Buffer, width: number, left: number, top: number, cw: number, ch: number) {
-  const { w, h, type, bpp, px } = unpng(image), k = w / width
-  const [l, t] = [Math.min(w - 1, Math.floor(left * k)), Math.min(h - 1, Math.floor(top * k))]
-  const [cwp, chp] = [Math.max(1, Math.min(w - l, Math.floor(cw * k))), Math.max(1, Math.min(h - t, Math.floor(ch * k)))]
-  const out = Buffer.alloc(cwp * chp * bpp)
-  for (let y = 0; y < chp; y++) px.copy(out, y * cwp * bpp, ((t + y) * w + l) * bpp, ((t + y) * w + l + cwp) * bpp)
-  return png(cwp, chp, type, bpp, out)
+function cut({ w, h, type, bpp, px }: ReturnType<typeof unpng>, left: number, top: number, cw: number, ch: number, k: number) {
+  const [l, t] = [Math.max(0, Math.min(w - 1, left)), Math.max(0, Math.min(h - 1, top))]
+  const [rw, rh] = [Math.max(1, Math.min(w - l, cw)), Math.max(1, Math.min(h - t, ch))]
+  const out = Buffer.alloc(rw * k * rh * k * bpp)
+  for (let y = 0; y < rh * k; y++) for (let x = 0; x < rw * k; x++) px.copy(out, (y * rw * k + x) * bpp, ((t + Math.floor(y / k)) * w + l + Math.floor(x / k)) * bpp, ((t + Math.floor(y / k)) * w + l + Math.floor(x / k) + 1) * bpp)
+  return png(rw * k, rh * k, type, bpp, out)
 }
 
-function zoom(image: Buffer, k: number) {
-  if (k <= 1) return image
-  const { w, h, type, bpp, px } = unpng(image), out = Buffer.alloc(w * k * h * k * bpp)
-  for (let y = 0; y < h * k; y++) for (let x = 0; x < w * k; x++) px.copy(out, (y * w * k + x) * bpp, (Math.floor(y / k) * w + Math.floor(x / k)) * bpp, (Math.floor(y / k) * w + Math.floor(x / k) + 1) * bpp)
-  return png(w * k, h * k, type, bpp, out)
-}
-
-function ring(image: Buffer, cx: number, cy: number, r: number) {
-  const { w, h, type, bpp, px } = unpng(image), t = Math.max(2, Math.round(r / 7)), tick = r + 3 * t, len = 3 * r
+function ring({ w, h, type, bpp, px: from }: ReturnType<typeof unpng>, cx: number, cy: number, r: number) {
+  const px = Buffer.from(from), t = Math.max(2, Math.round(r / 7)), tick = r + 3 * t, len = 3 * r
   for (const [c, pad] of [[[255, 255, 255], 1], [[230, 0, 0], 0]] as [[number, number, number], number][]) {
     for (let y = Math.max(0, Math.floor(cy - tick - len - 2)); y <= Math.min(h - 1, cy + tick + len + 2); y++) for (let x = Math.max(0, Math.floor(cx - tick - len - 2)); x <= Math.min(w - 1, cx + tick + len + 2); x++) {
       const dx = Math.abs(x - cx), dy = Math.abs(y - cy)
@@ -879,10 +874,9 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (!s.click) throw new Surprise(`no element matches "${target}"`, await seen())
     t0 = Date.now()
     const area = await desk.screen()
-    const screen = await desk.shot()
-    const [x, y] = await desk.ground(screen, `${target} in the "${w.title}" window`, area)
+    const [x, y] = await desk.ground(await desk.shot(), `${target} in the "${w.title}" window`, area)
     tick('ground', t0)
-    const { what, ok, check, p, p_zoom, p_full } = await grounded(x, y, target, w, area, screen)
+    const { what, ok, check, p, p_zoom, p_full } = await grounded(x, y, target, w, area)
     rec.ground_hit = what.slice(0, 80); rec.checked = check; rec.p = p; rec.p_zoom = p_zoom; rec.p_full = p_full
     if (!ok) throw new Surprise(`no element matches "${target}"${what.trim() ? `; grounding pointed at ${what.slice(0, 80)}` : ''}`, await seen())
     t0 = Date.now(); await desk.click(x, y); tick('act', t0)
