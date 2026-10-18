@@ -166,7 +166,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let (tree, found) = self
             .access
             .run(TREE_LIMIT, (), move |b| {
-                let frame = allow.pick(b.frames()?, window.as_deref(), pid)?;
+                let frame = live(allow.pick(b.frames()?, window.as_deref(), pid)?)?;
                 let found = started.elapsed().as_micros();
                 Ok((b.tree(&frame, extras)?, found))
             })
@@ -207,7 +207,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let tree = self
             .access
             .run(TREE_LIMIT, (), move |b| {
-                let frame = allow.pick(b.frames()?, window.as_deref(), pid)?;
+                let frame = live(allow.pick(b.frames()?, window.as_deref(), pid)?)?;
                 b.tree(&frame, extras)
             })
             .await?;
@@ -284,7 +284,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.access
             .run(CALL_LIMIT, (), move |b| {
                 let frames = b.frames()?;
-                let frame = allow.pick(frames.clone(), a.window.as_deref(), a.pid)?;
+                let frame = live(allow.pick(frames.clone(), a.window.as_deref(), a.pid)?)?;
                 let Some(hit) = b.at(&frame.id, a.x, a.y)? else {
                     return Ok(json!({"found": null, "window": frame}).to_string());
                 };
@@ -313,7 +313,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let allow = self.allow.clone();
         self.access
             .run(CALL_LIMIT, turn, move |b| {
-                let frame = allow.pick(b.frames()?, Some(&a.window), a.pid)?;
+                let frame = live(allow.pick(b.frames()?, Some(&a.window), a.pid)?)?;
                 b.close(&frame)?;
                 Ok(json!({"ok": true, "title": frame.title}).to_string())
             })
@@ -715,6 +715,16 @@ struct Read {
     k: (f64, f64),
 }
 
+fn live(frame: Frame) -> Result<Frame, String> {
+    if frame.stale {
+        return Err(format!(
+            "window list is stale: {:?} did not answer; take a new snapshot",
+            frame.title
+        ));
+    }
+    Ok(frame)
+}
+
 /// What a press comes to after the backend's part of it.
 #[derive(Debug, PartialEq)]
 enum Press {
@@ -977,6 +987,7 @@ mod tests {
                 pid: Some(4),
                 active: true,
                 app: Some("Notepad".into()),
+                stale: false,
             }])
         }
 
@@ -1116,6 +1127,7 @@ mod tests {
             pid: Some(pid),
             active,
             app: None,
+            stale: false,
         };
         let frames = vec![
             frame("Untitled - Notepad", false, 7),
@@ -1230,6 +1242,7 @@ mod tests {
                 pid: Some(4),
                 active,
                 app: None,
+                stale: false,
             };
             Ok(vec![frame("front", true), frame("back", false)])
         }
@@ -1280,6 +1293,68 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(*MENUS.lock().unwrap(), [false, true, true]);
+    }
+
+    static STALE_CLOSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    struct Busy;
+
+    impl Access for Busy {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            Ok(vec![Frame {
+                id: "w".into(),
+                title: "Draft".into(),
+                role: "window",
+                pid: Some(4),
+                active: true,
+                app: None,
+                stale: true,
+            }])
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            Ok(Tree {
+                frame: frame.clone(),
+                ..Tree::default()
+            })
+        }
+
+        fn node(&mut self, _: &str, _: Extras, _: usize) -> Result<Node, String> {
+            Err("no node".into())
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Ok(false)
+        }
+
+        fn close(&mut self, frame: &Frame) -> Result<(), String> {
+            STALE_CLOSED.lock().unwrap().push(frame.title.clone());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_window_kept_from_an_earlier_list_is_listed_but_never_acted_on() {
+        let desk = Desk::new(|| Ok(Busy), Slow(Arc::default()), Os::Mac);
+        let listed = desk.run("desk_windows", json!({})).await.unwrap();
+        assert!(listed.text.contains("Draft"), "{}", listed.text);
+        for (tool, args) in [
+            ("desk_close", json!({"window": "Draft"})),
+            ("desk_snapshot", json!({"window": "Draft"})),
+            ("desk_find", json!({"name": "Save", "window": "Draft"})),
+        ] {
+            let err = desk.run(tool, args).await.unwrap_err();
+            assert!(err.contains("stale"), "{tool}: {err}");
+        }
+        assert!(STALE_CLOSED.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1525,6 +1600,7 @@ mod tests {
                 pid: Some(pid),
                 active,
                 app: Some(app.into()),
+                stale: false,
             };
             Ok(vec![
                 frame("4/1", "Untitled - Notepad", 4, true, "Notepad.exe"),

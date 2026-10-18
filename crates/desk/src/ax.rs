@@ -246,7 +246,11 @@ impl Access for Ax {
             let read = values(&self.app_names, &app);
             if read.iter().all(Option::is_none) && asked.elapsed() >= MESSAGING_TIMEOUT * 9 / 10 {
                 if self.slow.insert(p) {
-                    frames.extend(self.last.get(&p).cloned().unwrap_or_default());
+                    let kept = self.last.get(&p).into_iter().flatten();
+                    frames.extend(kept.map(|f| Frame {
+                        stale: true,
+                        ..f.clone()
+                    }));
                 } else {
                     self.slow.remove(&p);
                     self.last.remove(&p);
@@ -289,6 +293,7 @@ impl Access for Ax {
                         pid: Some(p as u32),
                         active,
                         app: name.clone(),
+                        stale: false,
                     });
                     active = false;
                 }
@@ -305,6 +310,7 @@ impl Access for Ax {
                     pid: Some(p as u32),
                     active,
                     app: name.clone(),
+                    stale: false,
                 });
             }
             self.last.insert(p, frames[from..].to_vec());
