@@ -245,6 +245,10 @@ async function titled(title: string, pid: number | null) { return pid !== null &
 async function snapOf(w: Win, r: Reads = {}): Promise<desk.Snap> {
   return desk.snapshot(w.title, { pid: w.pid, ...r })
 }
+function targetRole(s: Step) {
+  if (s.verify !== undefined) return s.role ?? (s.value !== undefined ? FIELDS : s.on !== undefined ? `${TOGGLES}|menuitem` : undefined)
+  return s.role ?? (s.check ? TOGGLES : s.set ? FIELDS : undefined)
+}
 // a step reads the shortcuts of what it may press, and the menu bar only when it may land in it
 function reads(s: Step): Reads {
   return { keys: !!(s.menu || s.click), menus: !!s.menu || (!!s.verify && s.on !== undefined) }
@@ -422,7 +426,7 @@ function candidates(nodes: Node[], role?: string, within?: number) {
   return nodes.map((n, i) => ({ n, i })).filter(({ n, i }) => (ACTIVE.has(n.role) || item(n)) && (!roles || roles.has(n.role)) && inside(i))
 }
 
-async function resolve(nodes: Node[], target: string, role?: string, within?: number, bar = 0.5, fp?: Fp): Promise<Hit | null> {
+async function resolve(nodes: Node[], target: string, role?: string, within?: number, bar = 0.5, fp?: Fp, ask = true): Promise<Hit | null> {
   const t0 = Date.now()
   const pinned = byFp(nodes, fp, within)
   if (pinned) { tick('ax', t0); return pinned }
@@ -446,7 +450,7 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   }
   const shown = pool.filter(({ n }) => n.shown)
   tick('ax', t0)
-  if (!shown.length) return null
+  if (!shown.length || !ask) return null
   const words = want.split(' ')
   const ranked = shown.map((c) => { const all = norm(`${c.n.role} ${c.n.name} ${c.n.value}`); return { c, s: words.filter((x) => all.includes(x)).length } }).sort((a, b) => b.s - a.s).slice(0, 40)
   const label = (c: { n: Node; i: number }) => {
@@ -806,6 +810,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     throw e
   }
   let nodes = parse(snap); tick('snap', t0)
+  const aim = s.click ?? s.check
+  if (OS === 'darwin' && !r.menus && aim !== undefined && !(await resolve(nodes, aim, targetRole(s), undefined, 0.7, s.fp, false))) nodes = parse(await snapOf(w, { ...r, menus: true }))
   if (s.expect) {
     const d = await decide({ window_title: w.title, contents: render(nodes, 60, false).slice(0, 4000) }, { ok: desk.yes(s.expect) })
     rec.p = +prob(d.ok).toFixed(2)
@@ -855,7 +861,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     await act(hit.n); await settle(w.title); return
   }
   const target = s.click ?? s.check ?? s.set ?? ''
-  const hit = await resolve(nodes, target, s.role ?? (s.check ? TOGGLES : s.set ? FIELDS : undefined), undefined, s.set ? 0.5 : 0.7, s.fp)
+  const hit = await resolve(nodes, target, targetRole(s), undefined, s.set ? 0.5 : 0.7, s.fp)
   if (!hit) {
     if (!s.click) throw new Surprise(`no element matches "${target}"`, await seen())
     t0 = Date.now()
