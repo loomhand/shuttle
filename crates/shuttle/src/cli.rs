@@ -179,6 +179,7 @@ async fn serve(
         confirm: safety.confirm,
         asker,
     };
+    let overlay = !config.as_ref().is_ok_and(|c| !c.driver.overlay);
     let models = config.map(Models::new);
     let exe = std::env::current_exe()
         .and_then(std::fs::canonicalize)
@@ -186,7 +187,7 @@ async fn serve(
     let listener = server::bind(endpoint).await?;
     let own = driver::endpoint(endpoint);
     let bundled = if cfg!(any(target_os = "macos", windows)) {
-        Bundled::start(&exe, &own).await?
+        Bundled::start(&exe, &own, overlay).await?
     } else {
         None
     };
