@@ -8,7 +8,7 @@ shuttle (binary `cocoon-shuttle`, app Cocoon Shuttle) is a computer-use host tha
 
 shuttle is part of [loomhand](https://github.com/loomhand). It takes its desk core and plan executor from [cocoonbox](https://loomhand.github.io/cocoonbox/), where they drive cloud desktops, and its input, capture and window layer from [cua-driver](https://github.com/loomhand/cua) (MIT).
 
-**Status:** v0.1.3 is the current release. On macOS and Windows the daemon drives the desktop through the bundled cua-driver (`desk`, `screenshot`, `gui_plan`, `script_run`), calls models with your own key, and has its safety controls: kill switch and hotkey, indicator, confirm mode and app allowlist. On Linux shuttle installs and answers MCP; its desk backend comes in P3. v0.1.0's Windows build needs the Visual C++ Redistributable; later releases do not. See [Platforms](platforms.md).
+**Status:** v0.1.3 is the current release. On macOS and Windows the daemon drives the desktop through the bundled cua-driver (`desk`, `screenshot`, `gui_plan`, `script_run`), calls models with your own key, and has its safety controls: kill switch and hotkey, indicator, confirm mode and app allowlist. On Linux shuttle installs and answers MCP; its desk backend over AT-SPI and X11 is on main, not yet in a release, without the hotkey, indicator or confirm dialog. v0.1.0's Windows build needs the Visual C++ Redistributable; later releases do not. See [Platforms](platforms.md).
 
 ## Guides
 

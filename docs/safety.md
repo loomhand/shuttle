@@ -1,6 +1,6 @@
 # Safety
 
-shuttle acts on your own desktop, with your accounts signed in. The controls below are built on macOS (P1) and Windows (P2). Linux already has `cocoon-shuttle stop` and `resume` and the `script_run` switch; its hotkey, indicator and confirm dialog come in P3, together with its desk backend.
+shuttle acts on your own desktop, with your accounts signed in. The controls below are built on macOS (P1) and Windows (P2). On Linux, with its desk backend, `cocoon-shuttle stop` and `resume`, the `script_run` switch and the app allowlist are built; its hotkey, indicator and confirm dialog are not yet.
 
 ## What these controls are
 
@@ -10,7 +10,7 @@ The kill switch, the app allowlist and the confirm mode are guard rails for an a
 
 `cocoon-shuttle stop` stops shuttle at once: it kills the running `gui_plan` or `script_run` process (on macOS with its process group; on Windows only the Node process, so programs a script started keep running), ends the desk and model calls in flight, and halts. Every tool call except `status` then fails with `stopped by the user` until you resume, with `cocoon-shuttle resume` or the indicator's Resume. The stop lives in the running daemon; a daemon that starts again starts running. Only you stop and resume, from the command line, the hotkey or the indicator's menu: no MCP tool and no `gui_plan` step reaches them. A desk action that the driver or the accessibility API has already started ends on its own, so at most one action in flight completes after the stop. Likewise a window list or tree read in flight cannot be cancelled: a call after resume can queue behind it, at most until its own accessibility limit (3 s; 10 s for `snapshot`, `find` and `press`), and then fails with `no accessibility answer`.
 
-A global hotkey does the same stop, and the indicator's menu has Stop and Resume. The hotkey is built on macOS and Windows; Linux gets it in P3:
+A global hotkey does the same stop, and the indicator's menu has Stop and Resume. The hotkey is built on macOS and Windows; Linux does not have it yet, and its row is the planned default:
 
 | OS | Default | Registered with |
 |---|---|---|
@@ -26,11 +26,11 @@ On macOS a menu-bar item shows `Shuttle`, `● Shuttle` while a desk action or a
 
 ## Confirm mode
 
-`confirm = "coordinate"` asks before every step that can end in a click at a screen point, the least predictable action: `click`, `press`, `act` with `click`, and `drag`, which presses at one point and releases at another. `confirm = "every"` asks before every desk action: `press`, `act`, `key`, `type`, `click`, `scroll`, `drag`, `focus`, `close` and `launch`. On an Android device `desk computer_act` is an action too: `coordinate` asks before its `tap`, `click`, `double_tap`, `double_click`, `long_press`, `swipe` and `drag`, and `every` before each of its actions. On macOS the question is a dialog with Cancel and Allow: Escape presses Cancel and Return presses neither. A step you cancel fails with `declined by the user`, and a stop closes an open dialog. While the dialog is open every other desk call fails at once with `a confirm dialog is open`, so the agent cannot answer the dialog itself. On Windows the question is a message box with OK and Cancel; Cancel is the default, so Return and Escape both refuse. The box opens in front of other windows with the keyboard focus; if Windows refuses it the focus, its taskbar button flashes instead. Linux gets the dialog in P3; until then a step that would ask fails and names `confirm = "off"`. With `confirm = "every"`, a `gui_plan` `app` step for an app that is not running asks twice, first to focus it and then to launch it; declining the focus does not end the step, and the launch still asks.
+`confirm = "coordinate"` asks before every step that can end in a click at a screen point, the least predictable action: `click`, `press`, `act` with `click`, and `drag`, which presses at one point and releases at another. `confirm = "every"` asks before every desk action: `press`, `act`, `key`, `type`, `click`, `scroll`, `drag`, `focus`, `close` and `launch`. On an Android device `desk computer_act` is an action too: `coordinate` asks before its `tap`, `click`, `double_tap`, `double_click`, `long_press`, `swipe` and `drag`, and `every` before each of its actions. On macOS the question is a dialog with Cancel and Allow: Escape presses Cancel and Return presses neither. A step you cancel fails with `declined by the user`, and a stop closes an open dialog. While the dialog is open every other desk call fails at once with `a confirm dialog is open`, so the agent cannot answer the dialog itself. On Windows the question is a message box with OK and Cancel; Cancel is the default, so Return and Escape both refuse. The box opens in front of other windows with the keyboard focus; if Windows refuses it the focus, its taskbar button flashes instead. Linux has no dialog yet, so a step that would ask fails and names `confirm = "off"`. With `confirm = "every"`, a `gui_plan` `app` step for an app that is not running asks twice, first to focus it and then to launch it; declining the focus does not end the step, and the launch still asks.
 
 ## App allowlist
 
-`apps = ["TextEdit", "notepad.exe"]` under `[safety]` limits the desk calls to windows of those apps. A name matches the macOS app name or the Windows executable, case-insensitive and with or without `.exe`. The daemon checks the app on every desk call:
+`apps = ["TextEdit", "notepad.exe"]` under `[safety]` limits the desk calls to windows of those apps. A name matches the macOS app name, the Windows executable or the Linux executable's file name (`/proc/PID/exe`), case-insensitive and with or without `.exe`; a Linux window whose executable cannot be read is refused. The daemon checks the app on every desk call:
 - a window name picks only among the allowed apps' windows, and an error lists only those; with no name, the focused window must belong to an allowed app;
 - the focused window for `key` and `type`;
 - the process of the element for `read`, `press` and `act`, and of the element `at` finds;

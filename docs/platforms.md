@@ -3,10 +3,10 @@
 | | macOS | Windows | Linux |
 |---|---|---|---|
 | Release archive | arm64, x64 (13.5+) | x64 | x64, arm64 (glibc 2.31+) |
-| Accessibility tree | AX: done in `shuttle-desk` | UI Automation: done in `shuttle-desk` | AT-SPI: in cocoonbox's toolhost, moves here in P3 |
-| Input, windows, capture | cua-driver | cua-driver | cua-driver (X11; Wayland best effort) |
-| MCP tools that act | built (P1) | built (P2) | P3 |
-| Kill switch, indicator, allowlist, confirm | built (P1) | built (P2) | `stop`/`resume` and the `script_run` switch built; hotkey, indicator, confirm in P3 |
+| Accessibility tree | AX: done in `shuttle-desk` | UI Automation: done in `shuttle-desk` | AT-SPI: done in `shuttle-desk` |
+| Input, windows, capture | cua-driver | cua-driver | cua-driver, with XTest typing, MIT-SHM capture and window-manager close (X11 only) |
+| MCP tools that act | built (P1) | built (P2) | built (P3) |
+| Kill switch, indicator, allowlist, confirm | built (P1) | built (P2) | `stop`/`resume`, the `script_run` switch and the allowlist built; no hotkey, indicator or confirm dialog |
 
 Every platform installs and runs `cocoon-shuttle mcp`. On macOS and Windows, the `desk`, `screenshot`, `gui_plan` and `script_run` tools reach the desk verbs through the daemon, which runs the bundled cua-driver, with the safety controls of [safety.md](safety.md). On Linux (X11) the same tools reach the desk verbs over AT-SPI, with input through the bundled cua-driver; the daemon needs the desktop session's environment (`DISPLAY`, `XAUTHORITY`, the session D-Bus), which it has when an MCP client in that session starts it.
 
@@ -27,9 +27,10 @@ Every platform installs and runs `cocoon-shuttle mcp`. On macOS and Windows, the
 
 ## Linux
 
-- **X11:** AT-SPI gives the trees, read in parallel over D-Bus. Typing goes through XTest on the core keyboard when the keyboard map holds every character of a line, on its first group with no Caps or Shift lock; any other text, and every other input, goes through the bundled cua-driver, one driver session per call. Shots read the screen over MIT-SHM, and `windows` reports a modal dialog the screen does not show as `modal` and `blocks`. `close` asks the window manager (`_NET_CLOSE_WINDOW`); it fails when the window manager does not support that request or two windows of the process share the title.
-- **Launched apps** move into a systemd user scope of their own (`app-desk-APP-PID.scope`) when a systemd user manager runs, so a restart of the daemon or its service does not end them. Without one, the launch result says `scoped: false`: the app stays in the daemon's cgroup, and a restart of the daemon or its service can end it.
-- **Wayland** gives AT-SPI trees but no global input or window positions to a client. cua-driver goes through the desktop portal (with its consent prompts) and, on GNOME, a small shell extension in `wayland-helper/` for window positions. Expect gaps.
+- **X11:** AT-SPI gives the trees, read in parallel over D-Bus. Typing goes through XTest on the core keyboard for a line of printable ASCII and tabs, when the keyboard map holds every character on its first group with no Caps or Shift lock; any other text, such as accented or CJK characters, and every other input, goes through the bundled cua-driver, one driver session per call. Shots read the screen over MIT-SHM, else the driver's capture, and `windows` reports a modal dialog the screen does not show as `modal` and `blocks`. `close` asks the window manager (`_NET_CLOSE_WINDOW`); it fails when the window manager does not support that request or two windows of the process share the title.
+- **Launched apps** move into a systemd user scope of their own (`app-desk-APP-PID.scope`) when a systemd user manager runs, so a restart of the daemon or its service does not end them. The move is best effort: `scoped: true` means the request to systemd went out, before its start job finished, and a stop that lands between the driver's launch reply and the move leaves the app where it was. Without a user manager, the launch result says `scoped: false`: the app stays in the daemon's cgroup, and a restart of the daemon or its service can end it.
+- **X11 is required.** The desk reads the screen, types and closes windows through the X server; a Wayland-only session is not supported. Under XWayland, X11 apps work as far as the compositor lets an X client see them.
+- **Known limits.** Two windows of one process with the same title both show the active state when one of them is active. A modifier that Sticky Keys latched changes what XTest types. A key XTest pressed stays down if the X connection dies mid-line.
 - **AT-SPI** must be on: most desktops start it; on a minimal session, start `at-spi-bus-launcher` and set `GTK_MODULES=gail:atk-bridge` for older GTK apps.
 
 ## Android over adb
