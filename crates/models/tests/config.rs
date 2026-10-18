@@ -173,4 +173,14 @@ mod tests {
         );
         assert!(Config::load(bad.path()).unwrap_err().contains("port"));
     }
+
+    #[test]
+    fn an_android_section_refuses_an_app_allowlist_it_does_not_enforce() {
+        let android = "[android]\nui_jar = \"/u.jar\"\nscrcpy_jar = \"/s.jar\"\nsu = \"/su\"\n";
+        let err = Config::load(file(&format!("[safety]\napps = [\"Settings\"]\n{android}")).path())
+            .unwrap_err();
+        assert!(err.contains("[safety] apps is not enforced"), "{err}");
+        assert!(Config::load(file(&format!("[safety]\napps = []\n{android}")).path()).is_ok());
+        assert!(Config::load(file("[safety]\napps = [\"Settings\"]\n").path()).is_ok());
+    }
 }
