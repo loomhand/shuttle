@@ -260,6 +260,20 @@ impl Uia {
         (shown, roots)
     }
 
+    fn owns_dialog(&mut self, el: &IUIAutomationElement) -> bool {
+        // SAFETY: `el` is a live UIA element of this thread.
+        let Ok(hwnd) = (unsafe { el.CurrentNativeWindowHandle() }) else {
+            return false;
+        };
+        shown()
+            .iter()
+            .filter(|s| s.owner == hwnd.0 as isize)
+            .any(|s| {
+                self.top_of(s)
+                    .is_some_and(|t| t.control_type == WINDOW && t.dialog)
+            })
+    }
+
     fn frame_of(&mut self, s: &Shown, foreground: HWND) -> Option<Frame> {
         let (dialog, app, el) = match self.top_of(s)? {
             t if t.control_type == WINDOW => (t.dialog, t.app.clone(), t.el.clone()),
@@ -298,7 +312,7 @@ impl Access for Uia {
         let started = Instant::now();
         let el = self.element(&frame.id)?;
         // a subtree cache of a window spans the dialogs it owns, which the walk skips
-        let owns = owns_window(&el);
+        let owns = self.owns_dialog(&el);
         let cached = self.cached(&el, if owns { &self.children } else { &self.subtree })?;
         let mut kids = children(&cached);
         if owns {
@@ -697,14 +711,6 @@ fn document_text(el: &IUIAutomationElement, chars: usize) -> Option<String> {
             .and_then(|r| r.GetText(max))
     };
     text.ok().map(|t| t.to_string()).filter(|t| !t.is_empty())
-}
-
-fn owns_window(el: &IUIAutomationElement) -> bool {
-    // SAFETY: `el` is a live UIA element of this thread.
-    let Ok(hwnd) = (unsafe { el.CurrentNativeWindowHandle() }) else {
-        return false;
-    };
-    shown().iter().any(|s| s.owner == hwnd.0 as isize)
 }
 
 fn owned_dialog(el: &IUIAutomationElement) -> bool {
