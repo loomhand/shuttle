@@ -80,6 +80,7 @@ pub struct Uia {
     root: IUIAutomationElement,
     ids: HashMap<String, IUIAutomationElement>,
     tops: HashMap<isize, Top>,
+    windows: Vec<isize>,
 }
 
 impl Uia {
@@ -111,6 +112,7 @@ impl Uia {
             root,
             ids: HashMap::new(),
             tops: HashMap::new(),
+            windows: Vec::new(),
         })
     }
 
@@ -210,7 +212,7 @@ impl Uia {
             return Ok(false);
         }
         for child in kids {
-            if owned_dialog(child) {
+            if listed_dialog(child, &self.windows) {
                 continue;
             }
             if self.walk(child, &children(child), parent, depth, extras, out)? {
@@ -251,12 +253,12 @@ impl Uia {
         (shown, roots)
     }
 
-    fn owns_dialog(&mut self, el: &IUIAutomationElement) -> bool {
+    fn owns_dialog(&mut self, el: &IUIAutomationElement, shown: &[Shown]) -> bool {
         // SAFETY: `el` is a live UIA element of this thread.
         let Ok(hwnd) = (unsafe { el.CurrentNativeWindowHandle() }) else {
             return false;
         };
-        shown()
+        shown
             .iter()
             .filter(|s| s.owner == hwnd.0 as isize)
             .any(|s| {
@@ -314,13 +316,15 @@ impl Access for Uia {
         let started = Instant::now();
         let el = self.element(&frame.id)?;
         // a subtree cache of a window spans the dialogs it owns, which the walk skips
-        let owns = self.owns_dialog(&el);
+        let shown = shown();
+        self.windows = shown.iter().map(|s| s.hwnd.0 as isize).collect();
+        let owns = self.owns_dialog(&el, &shown);
         let cached = self.cached(&el, if owns { &self.children } else { &self.subtree })?;
         let mut kids = children(&cached);
         if owns {
             kids = kids
                 .iter()
-                .filter(|c| !owned_dialog(c))
+                .filter(|c| !listed_dialog(c, &self.windows))
                 .filter_map(|c| self.cached(c, &self.subtree).ok())
                 .collect();
         }
@@ -747,13 +751,20 @@ fn document_text(el: &IUIAutomationElement, chars: usize) -> Option<String> {
     text.ok().map(|t| t.to_string()).filter(|t| !t.is_empty())
 }
 
-fn owned_dialog(el: &IUIAutomationElement) -> bool {
+fn listed_dialog(el: &IUIAutomationElement, listed: &[isize]) -> bool {
     if raw_control_type(el) != UIA_WindowControlTypeId.0 {
         return false;
     }
     let flag = |p| matches!(value(el, p), Val::Bool(true));
-    flag(UIA_IsDialogPropertyId)
-        || flag(UIA_IsWindowPatternAvailablePropertyId) && flag(UIA_WindowIsModalPropertyId)
+    let dialog = flag(UIA_IsDialogPropertyId)
+        || flag(UIA_IsWindowPatternAvailablePropertyId) && flag(UIA_WindowIsModalPropertyId);
+    // SAFETY: `el` is a live UIA element of this thread.
+    dialog
+        && unsafe { el.CurrentNativeWindowHandle() }.is_ok_and(|h| own_frame(h.0 as isize, listed))
+}
+
+fn own_frame(hwnd: isize, listed: &[isize]) -> bool {
+    hwnd != 0 && listed.contains(&hwnd)
 }
 
 fn raw_control_type(el: &IUIAutomationElement) -> i32 {
@@ -842,6 +853,14 @@ mod tests {
             owner,
             pid: 1,
         }
+    }
+
+    #[test]
+    fn only_a_dialog_with_a_listed_window_of_its_own_leaves_the_tree() {
+        let listed = [7, 9];
+        assert!(own_frame(9, &listed));
+        assert!(!own_frame(0, &listed));
+        assert!(!own_frame(8, &listed));
     }
 
     #[test]
