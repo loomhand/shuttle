@@ -10,13 +10,17 @@ use desk_core::wire::Call;
 use shuttle_desk::driver::Driver;
 use shuttle_desk::server;
 use shuttle_models::Models;
-use shuttle_models::config::{Config, Safety, default_path};
+#[cfg(any(target_os = "macos", windows))]
+use shuttle_models::config::Safety;
+use shuttle_models::config::{Config, default_path};
 use tokio::runtime::Builder;
 
+use crate::daemon::{Asker, Daemon, Guard};
 #[cfg(any(target_os = "macos", windows))]
-use crate::daemon::Ui;
-use crate::daemon::{Asker, Controls, Daemon, Guard};
+use crate::daemon::{Controls, Ui};
 use crate::driver::{self, Bundled};
+#[cfg(any(target_os = "macos", windows))]
+use crate::hotkey::{self, Hotkey};
 #[cfg(target_os = "macos")]
 use crate::mac as controls;
 use crate::runner::Runner;
@@ -50,7 +54,7 @@ pub fn run(args: &[String]) -> ExitCode {
             #[cfg(not(any(target_os = "macos", windows)))]
             exit(block_on(
                 Builder::new_multi_thread(),
-                serve(&endpoint, None, |_, _| Ok(())),
+                serve(&endpoint, None),
             ))
         }
         "desk" => call_desk(rest),
@@ -109,15 +113,13 @@ fn send(call: &Call, what: impl Display) -> ExitCode {
 fn controls_serve(endpoint: String) -> ExitCode {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let ready = move |controls, safety: &Safety| {
-            let hotkey = crate::hotkey::parse(&safety.kill_hotkey)?;
+        let ready = move |controls, safety: Safety, hotkey| {
             let _ = tx.send(Ui {
                 controls,
                 hotkey,
-                hotkey_label: safety.kill_hotkey.clone(),
+                hotkey_label: safety.kill_hotkey,
                 indicator: safety.indicator,
             });
-            Ok(())
         };
         let done = block_on(
             Builder::new_multi_thread(),
@@ -141,26 +143,29 @@ fn controls_serve(endpoint: String) -> ExitCode {
 async fn serve(
     endpoint: &str,
     asker: Option<Asker>,
-    ready: impl FnOnce(Arc<dyn Controls>, &Safety) -> Result<(), String>,
+    #[cfg(any(target_os = "macos", windows))] ready: impl FnOnce(Arc<dyn Controls>, Safety, Hotkey),
 ) -> Result<(), String> {
     let path = default_path(NAME);
     let mut config = Config::load(&path);
+    let mut safety = config
+        .as_mut()
+        .map(|c| std::mem::take(&mut c.safety))
+        .unwrap_or_default();
     #[cfg(any(target_os = "macos", windows))]
-    if let Ok(c) = &config
-        && let Err(e) = crate::hotkey::parse(&c.safety.kill_hotkey)
-    {
-        config = Err(format!("{}: {e}", path.display()));
-    }
+    let hotkey = match hotkey::parse(&safety.kill_hotkey) {
+        Ok(h) => h,
+        Err(e) => {
+            config = Err(format!("{}: {e}", path.display()));
+            safety = Safety::default();
+            hotkey::parse(&safety.kill_hotkey)?
+        }
+    };
     let mut key_vars = vec![Config::default().api_key_env];
     if let Ok(c) = &config
         && !key_vars.contains(&c.api_key_env)
     {
         key_vars.push(c.api_key_env.clone());
     }
-    let mut safety = config
-        .as_mut()
-        .map(|c| std::mem::take(&mut c.safety))
-        .unwrap_or_default();
     let apps = std::mem::take(&mut safety.apps);
     let guard = Guard {
         script_run: config.as_ref().is_ok_and(|c| c.tools.script_run),
@@ -195,12 +200,8 @@ async fn serve(
         runner,
         guard,
     ));
-    if let Err(e) = ready(daemon.clone(), &safety) {
-        if let Some(b) = bundled {
-            b.stop().await;
-        }
-        return Err(e);
-    }
+    #[cfg(any(target_os = "macos", windows))]
+    ready(daemon.clone(), safety, hotkey);
     let served = tokio::select! {
         r = server::serve(daemon, listener) => r,
         () = shutdown() => Ok(()),
