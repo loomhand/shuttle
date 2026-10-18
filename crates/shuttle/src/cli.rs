@@ -173,7 +173,7 @@ async fn serve(
     let listener = server::bind(endpoint).await?;
     let own = driver::endpoint(endpoint);
     let bundled = if cfg!(any(target_os = "macos", windows)) {
-        Bundled::start(&exe, &own, safety.indicator).await?
+        Bundled::start(&exe, &own).await?
     } else {
         None
     };
