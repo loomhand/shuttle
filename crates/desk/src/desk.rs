@@ -1060,6 +1060,270 @@ pub(crate) mod tests {
             .unwrap()
     }
 
+    struct Recorder(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for Recorder {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(json!({}))
+        }
+    }
+
+    struct Slow(Arc<Mutex<Vec<String>>>);
+
+    impl Input for Slow {
+        async fn call(&self, _: &str, args: Value) -> Result<Value, String> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(args["key"].as_str().unwrap_or_default().to_owned());
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            Ok(json!({}))
+        }
+    }
+
+    struct Screen(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for Screen {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args.clone()));
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 2.0}}),
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 7, "window_id": 40, "layer": 0, "z_index": 5, "bounds": {"x": 100.0, "y": 50.0, "width": 300.0, "height": 200.0}},
+                    {"pid": 8, "window_id": 41, "layer": 0, "z_index": 9, "bounds": {"x": 140.0, "y": 60.0, "width": 50.0, "height": 50.0}},
+                    {"pid": 9, "window_id": 42, "layer": 25, "z_index": 30, "bounds": {"x": 0.0, "y": 0.0, "width": 2000.0, "height": 30.0}}
+                ]}}),
+                "get_window_state" if args["window_id"] == 40 => json!({"structuredContent": {
+                    "screenshot_width": 450, "screenshot_height": 300,
+                    "window_bounds": {"x": 100.0, "y": 50.0, "width": 300.0, "height": 200.0}
+                }}),
+                "get_window_state" => json!({"structuredContent": {
+                    "screenshot_width": 100, "screenshot_height": 100,
+                    "window_bounds": {"x": 140.0, "y": 60.0, "width": 50.0, "height": 50.0}
+                }}),
+                _ => json!({}),
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct Reads {
+        reads: Mutex<usize>,
+        clicks: Mutex<usize>,
+        forget: Mutex<bool>,
+        scale: Mutex<Option<f64>>,
+    }
+
+    impl Input for Arc<Reads> {
+        async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
+            Ok(match tool {
+                "get_screen_size" => {
+                    json!({"structuredContent": {"scale_factor": *self.scale.lock().unwrap()}})
+                }
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 7, "window_id": 40, "layer": 0, "z_index": 5, "bounds": {"x": 0.0, "y": 0.0, "width": 300.0, "height": 200.0}}
+                ]}}),
+                "get_window_state" => {
+                    *self.reads.lock().unwrap() += 1;
+                    json!({"structuredContent": {
+                        "screenshot_width": 300, "screenshot_height": 200,
+                        "window_bounds": {"x": 0.0, "y": 0.0, "width": 300.0, "height": 200.0}
+                    }})
+                }
+                "click" => {
+                    *self.clicks.lock().unwrap() += 1;
+                    if std::mem::take(&mut *self.forget.lock().unwrap()) {
+                        return Err("screenshot_context_missing: window_never_read".into());
+                    }
+                    json!({})
+                }
+                _ => json!({}),
+            })
+        }
+    }
+
+    struct Sheet(Arc<Mutex<Vec<Value>>>);
+
+    impl Input for Sheet {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            Ok(match tool {
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 7, "window_id": 491, "layer": 0, "z_index": 7, "bounds": {"x": 0.0, "y": 0.0, "width": 390.0, "height": 332.0}}
+                ]}}),
+                "get_window_state" => json!({"structuredContent": {
+                    "screenshot_width": 390, "screenshot_height": 332,
+                    "window_bounds": {"x": 0.0, "y": 0.0, "width": 390.0, "height": 332.0},
+                    "background_input": {"routes": [
+                        {"route": "accessibility", "status": "refused"},
+                        {"route": "window_pointer", "status": "refused"}
+                    ]}
+                }}),
+                "click" => {
+                    self.0.lock().unwrap().push(args);
+                    json!({})
+                }
+                _ => json!({}),
+            })
+        }
+    }
+
+    struct NoConnection(Arc<Mutex<Vec<Value>>>);
+
+    impl Input for NoConnection {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            Ok(match tool {
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 7, "window_id": 40, "layer": 0, "z_index": 5, "bounds": {"x": 0.0, "y": 0.0, "width": 300.0, "height": 200.0}}
+                ]}}),
+                "get_window_state" => json!({"structuredContent": {
+                    "screenshot_width": 300, "screenshot_height": 200,
+                    "window_bounds": {"x": 0.0, "y": 0.0, "width": 300.0, "height": 200.0}
+                }}),
+                "click" if args.get("window_id").is_some() => {
+                    return Err(
+                        "click: Background input is not available for pid 7: the WindowServer \
+                        connection is invalid (SLPSPostEventRecordTo returned 1002). Run the \
+                        app-bundle daemon: `open -n -g -a CuaDriver --args serve`."
+                            .into(),
+                    );
+                }
+                "click" => {
+                    self.0.lock().unwrap().push(args);
+                    json!({})
+                }
+                _ => json!({}),
+            })
+        }
+    }
+
+    struct Apps;
+
+    impl Access for Apps {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            Ok(vec![
+                frame("4/1", "Untitled - Notepad", 4, true, Some("Notepad.exe")),
+                frame("8/1", "Inbox", 8, false, Some("Mail")),
+            ])
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            Ok(Tree {
+                frame: frame.clone(),
+                ..Tree::default()
+            })
+        }
+
+        fn node(&mut self, id: &str, _: Extras, _: usize) -> Result<Node, String> {
+            match id {
+                "4/5" => Ok(Node {
+                    id: id.into(),
+                    role: "button",
+                    states: vec!["showing"],
+                    bounds: Some([680, 190, 40, 20]),
+                    ..Node::default()
+                }),
+                _ => Err(format!("no node {id}")),
+            }
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
+
+        fn at(&mut self, _: &str, x: i32, y: i32) -> Result<Option<String>, String> {
+            Ok(((x, y) == (5, 5)).then(|| "8/3".into()))
+        }
+
+        fn menu_at(&mut self, x: i32, y: i32) -> Result<Option<String>, String> {
+            Ok(((x, y) == (100, 800)).then(|| "8/9".into()))
+        }
+
+        fn pid_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
+            Ok(Some(if (x, y) == (50, 600) { 12 } else { 4 }))
+        }
+
+        fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
+            Ok(id.split('/').next().and_then(|p| p.parse().ok()))
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct Desktop(Arc<Mutex<Vec<String>>>);
+
+    impl Input for Desktop {
+        async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push(tool.to_owned());
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 98, "window_id": 4, "layer": 0, "z_index": 4, "title": "Cua.AgentCursorOverlay.default", "bounds": {"x": 0.0, "y": 900.0, "width": 100.0, "height": 100.0}},
+                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "bounds": {"x": 0.0, "y": 0.0, "width": 1000.0, "height": 1000.0}},
+                    {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "bounds": {"x": 500.0, "y": 0.0, "width": 500.0, "height": 500.0}}
+                ]}}),
+                "get_desktop_state" => {
+                    let mut png = Vec::new();
+                    let mut enc = png::Encoder::new(&mut png, 10, 10);
+                    enc.set_color(png::ColorType::Rgb);
+                    enc.write_header()
+                        .unwrap()
+                        .write_image_data(&[255; 300])
+                        .unwrap();
+                    let mut v = json!({"structuredContent": {"screenshot_width": 10, "screenshot_original_width": 1000}});
+                    v["content"] = json!([{"type": "image", "data": B64.encode(&png)}]);
+                    v
+                }
+                _ => json!({}),
+            })
+        }
+    }
+
+    fn pixels(out: &Output) -> Vec<[u8; 3]> {
+        let png = B64.decode(out.image_b64.as_deref().unwrap()).unwrap();
+        let mut reader = png::Decoder::new(std::io::Cursor::new(png))
+            .read_info()
+            .unwrap();
+        let mut buf = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut buf).unwrap();
+        buf[..info.buffer_size()]
+            .chunks(3)
+            .map(|p| [p[0], p[1], p[2]])
+            .collect()
+    }
+
+    async fn wait_on<B: Access + 'static>(
+        desk: &Desk<B, Slow>,
+        timeout_ms: u64,
+    ) -> (Value, Duration) {
+        let since: Value =
+            serde_json::from_str(&desk.run("desk_windows", json!({})).await.unwrap().text).unwrap();
+        let started = Instant::now();
+        let out = desk
+            .run(
+                "desk_wait",
+                json!({"since": since, "timeout_ms": timeout_ms}),
+            )
+            .await
+            .unwrap();
+        (serde_json::from_str(&out.text).unwrap(), started.elapsed())
+    }
+
+    async fn lists(desk: &Desk<Stub, Slow>) -> usize {
+        desk.access
+            .run(CALL_LIMIT, (), |b| {
+                Ok(b.opens.as_ref().map_or(0, |o| o.lists))
+            })
+            .await
+            .unwrap()
+    }
+
     #[test]
     fn the_outline_shows_states_shortcuts_ids_and_values() {
         let nodes = vec![
@@ -1093,28 +1357,6 @@ pub(crate) mod tests {
             outline(&nodes, 80),
             "- dialog \"Font\" [id=42-1]\n  - checkbox \"Bold \\\"b\\\"\" [checked] [ctrl+b] [id=42-1-7]\n  - checkbox \"Mixed\" [disabled] [mixed]: \"12\"\n"
         );
-    }
-
-    struct Recorder(Arc<Mutex<Vec<(String, Value)>>>);
-
-    impl Input for Recorder {
-        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
-            self.0.lock().unwrap().push((tool.to_owned(), args));
-            Ok(json!({}))
-        }
-    }
-
-    struct Slow(Arc<Mutex<Vec<String>>>);
-
-    impl Input for Slow {
-        async fn call(&self, _: &str, args: Value) -> Result<Value, String> {
-            self.0
-                .lock()
-                .unwrap()
-                .push(args["key"].as_str().unwrap_or_default().to_owned());
-            tokio::time::sleep(Duration::from_millis(5)).await;
-            Ok(json!({}))
-        }
     }
 
     #[tokio::test]
@@ -1281,121 +1523,6 @@ pub(crate) mod tests {
         );
     }
 
-    struct Screen(Arc<Mutex<Vec<(String, Value)>>>);
-
-    impl Input for Screen {
-        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
-            self.0.lock().unwrap().push((tool.to_owned(), args.clone()));
-            Ok(match tool {
-                "get_screen_size" => json!({"structuredContent": {"scale_factor": 2.0}}),
-                "list_windows" => json!({"structuredContent": {"windows": [
-                    {"pid": 7, "window_id": 40, "layer": 0, "z_index": 5, "bounds": {"x": 100.0, "y": 50.0, "width": 300.0, "height": 200.0}},
-                    {"pid": 8, "window_id": 41, "layer": 0, "z_index": 9, "bounds": {"x": 140.0, "y": 60.0, "width": 50.0, "height": 50.0}},
-                    {"pid": 9, "window_id": 42, "layer": 25, "z_index": 30, "bounds": {"x": 0.0, "y": 0.0, "width": 2000.0, "height": 30.0}}
-                ]}}),
-                "get_window_state" if args["window_id"] == 40 => json!({"structuredContent": {
-                    "screenshot_width": 450, "screenshot_height": 300,
-                    "window_bounds": {"x": 100.0, "y": 50.0, "width": 300.0, "height": 200.0}
-                }}),
-                "get_window_state" => json!({"structuredContent": {
-                    "screenshot_width": 100, "screenshot_height": 100,
-                    "window_bounds": {"x": 140.0, "y": 60.0, "width": 50.0, "height": 50.0}
-                }}),
-                _ => json!({}),
-            })
-        }
-    }
-
-    #[derive(Default)]
-    struct Reads {
-        reads: Mutex<usize>,
-        clicks: Mutex<usize>,
-        forget: Mutex<bool>,
-        scale: Mutex<Option<f64>>,
-    }
-
-    impl Input for Arc<Reads> {
-        async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
-            Ok(match tool {
-                "get_screen_size" => {
-                    json!({"structuredContent": {"scale_factor": *self.scale.lock().unwrap()}})
-                }
-                "list_windows" => json!({"structuredContent": {"windows": [
-                    {"pid": 7, "window_id": 40, "layer": 0, "z_index": 5, "bounds": {"x": 0.0, "y": 0.0, "width": 300.0, "height": 200.0}}
-                ]}}),
-                "get_window_state" => {
-                    *self.reads.lock().unwrap() += 1;
-                    json!({"structuredContent": {
-                        "screenshot_width": 300, "screenshot_height": 200,
-                        "window_bounds": {"x": 0.0, "y": 0.0, "width": 300.0, "height": 200.0}
-                    }})
-                }
-                "click" => {
-                    *self.clicks.lock().unwrap() += 1;
-                    if std::mem::take(&mut *self.forget.lock().unwrap()) {
-                        return Err("screenshot_context_missing: window_never_read".into());
-                    }
-                    json!({})
-                }
-                _ => json!({}),
-            })
-        }
-    }
-
-    struct Sheet(Arc<Mutex<Vec<Value>>>);
-
-    impl Input for Sheet {
-        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
-            Ok(match tool {
-                "list_windows" => json!({"structuredContent": {"windows": [
-                    {"pid": 7, "window_id": 491, "layer": 0, "z_index": 7, "bounds": {"x": 0.0, "y": 0.0, "width": 390.0, "height": 332.0}}
-                ]}}),
-                "get_window_state" => json!({"structuredContent": {
-                    "screenshot_width": 390, "screenshot_height": 332,
-                    "window_bounds": {"x": 0.0, "y": 0.0, "width": 390.0, "height": 332.0},
-                    "background_input": {"routes": [
-                        {"route": "accessibility", "status": "refused"},
-                        {"route": "window_pointer", "status": "refused"}
-                    ]}
-                }}),
-                "click" => {
-                    self.0.lock().unwrap().push(args);
-                    json!({})
-                }
-                _ => json!({}),
-            })
-        }
-    }
-
-    struct NoConnection(Arc<Mutex<Vec<Value>>>);
-
-    impl Input for NoConnection {
-        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
-            Ok(match tool {
-                "list_windows" => json!({"structuredContent": {"windows": [
-                    {"pid": 7, "window_id": 40, "layer": 0, "z_index": 5, "bounds": {"x": 0.0, "y": 0.0, "width": 300.0, "height": 200.0}}
-                ]}}),
-                "get_window_state" => json!({"structuredContent": {
-                    "screenshot_width": 300, "screenshot_height": 200,
-                    "window_bounds": {"x": 0.0, "y": 0.0, "width": 300.0, "height": 200.0}
-                }}),
-                "click" if args.get("window_id").is_some() => {
-                    return Err(
-                        "click: Background input is not available for pid 7: the WindowServer \
-                        connection is invalid (SLPSPostEventRecordTo returned 1002). Run the \
-                        app-bundle daemon: `open -n -g -a CuaDriver --args serve`."
-                            .into(),
-                    );
-                }
-                "click" => {
-                    self.0.lock().unwrap().push(args);
-                    json!({})
-                }
-                _ => json!({}),
-            })
-        }
-    }
-
     #[tokio::test]
     async fn a_macos_window_click_without_a_windowserver_connection_goes_to_the_desktop() {
         let clicks = Arc::new(Mutex::new(Vec::new()));
@@ -1484,65 +1611,6 @@ pub(crate) mod tests {
         assert!(out.is_err(), "{out:?}");
     }
 
-    struct Apps;
-
-    impl Access for Apps {
-        fn frames(&mut self) -> Result<Vec<Frame>, String> {
-            Ok(vec![
-                frame("4/1", "Untitled - Notepad", 4, true, Some("Notepad.exe")),
-                frame("8/1", "Inbox", 8, false, Some("Mail")),
-            ])
-        }
-
-        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
-            Ok(Tree {
-                frame: frame.clone(),
-                ..Tree::default()
-            })
-        }
-
-        fn node(&mut self, id: &str, _: Extras, _: usize) -> Result<Node, String> {
-            match id {
-                "4/5" => Ok(Node {
-                    id: id.into(),
-                    role: "button",
-                    states: vec!["showing"],
-                    bounds: Some([680, 190, 40, 20]),
-                    ..Node::default()
-                }),
-                _ => Err(format!("no node {id}")),
-            }
-        }
-
-        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
-            Ok(Vec::new())
-        }
-
-        fn at(&mut self, _: &str, x: i32, y: i32) -> Result<Option<String>, String> {
-            Ok(((x, y) == (5, 5)).then(|| "8/3".into()))
-        }
-
-        fn menu_at(&mut self, x: i32, y: i32) -> Result<Option<String>, String> {
-            Ok(((x, y) == (100, 800)).then(|| "8/9".into()))
-        }
-
-        fn pid_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
-            Ok(Some(if (x, y) == (50, 600) { 12 } else { 4 }))
-        }
-
-        fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
-            Ok(id.split('/').next().and_then(|p| p.parse().ok()))
-        }
-
-        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
-            Ok(true)
-        }
-
-        fn close(&mut self, _: &Frame) -> Result<(), String> {
-            Ok(())
-        }
-    }
-
     #[tokio::test]
     async fn an_app_allowlist_hides_and_refuses_the_windows_of_other_apps() {
         let desk =
@@ -1585,48 +1653,6 @@ pub(crate) mod tests {
             mail.run("desk_key", json!({"keys": "ctrl+s"})).await
         ));
         assert!(refused(mail.run("desk_type", json!({"text": "x"})).await));
-    }
-
-    struct Desktop(Arc<Mutex<Vec<String>>>);
-
-    impl Input for Desktop {
-        async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
-            self.0.lock().unwrap().push(tool.to_owned());
-            Ok(match tool {
-                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
-                "list_windows" => json!({"structuredContent": {"windows": [
-                    {"pid": 98, "window_id": 4, "layer": 0, "z_index": 4, "title": "Cua.AgentCursorOverlay.default", "bounds": {"x": 0.0, "y": 900.0, "width": 100.0, "height": 100.0}},
-                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "bounds": {"x": 0.0, "y": 0.0, "width": 1000.0, "height": 1000.0}},
-                    {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "bounds": {"x": 500.0, "y": 0.0, "width": 500.0, "height": 500.0}}
-                ]}}),
-                "get_desktop_state" => {
-                    let mut png = Vec::new();
-                    let mut enc = png::Encoder::new(&mut png, 10, 10);
-                    enc.set_color(png::ColorType::Rgb);
-                    enc.write_header()
-                        .unwrap()
-                        .write_image_data(&[255; 300])
-                        .unwrap();
-                    let mut v = json!({"structuredContent": {"screenshot_width": 10, "screenshot_original_width": 1000}});
-                    v["content"] = json!([{"type": "image", "data": B64.encode(&png)}]);
-                    v
-                }
-                _ => json!({}),
-            })
-        }
-    }
-
-    fn pixels(out: &Output) -> Vec<[u8; 3]> {
-        let png = B64.decode(out.image_b64.as_deref().unwrap()).unwrap();
-        let mut reader = png::Decoder::new(std::io::Cursor::new(png))
-            .read_info()
-            .unwrap();
-        let mut buf = vec![0; reader.output_buffer_size().unwrap()];
-        let info = reader.next_frame(&mut buf).unwrap();
-        buf[..info.buffer_size()]
-            .chunks(3)
-            .map(|p| [p[0], p[1], p[2]])
-            .collect()
     }
 
     #[tokio::test]
@@ -1765,32 +1791,6 @@ pub(crate) mod tests {
             serde_json::from_str::<Value>(&out.text).unwrap(),
             json!([{"id": "w", "title": "Untitled - Notepad", "role": "window", "pid": 4, "active": true, "app": "Notepad"}])
         );
-    }
-
-    async fn wait_on<B: Access + 'static>(
-        desk: &Desk<B, Slow>,
-        timeout_ms: u64,
-    ) -> (Value, Duration) {
-        let since: Value =
-            serde_json::from_str(&desk.run("desk_windows", json!({})).await.unwrap().text).unwrap();
-        let started = Instant::now();
-        let out = desk
-            .run(
-                "desk_wait",
-                json!({"since": since, "timeout_ms": timeout_ms}),
-            )
-            .await
-            .unwrap();
-        (serde_json::from_str(&out.text).unwrap(), started.elapsed())
-    }
-
-    async fn lists(desk: &Desk<Stub, Slow>) -> usize {
-        desk.access
-            .run(CALL_LIMIT, (), |b| {
-                Ok(b.opens.as_ref().map_or(0, |o| o.lists))
-            })
-            .await
-            .unwrap()
     }
 
     #[tokio::test]
