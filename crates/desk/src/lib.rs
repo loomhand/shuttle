@@ -10,6 +10,8 @@ pub mod driver;
 pub mod keys;
 pub mod model;
 pub mod server;
+#[cfg(target_os = "linux")]
+pub mod spi;
 #[cfg(windows)]
 pub mod uia;
 pub mod uia_roles;
