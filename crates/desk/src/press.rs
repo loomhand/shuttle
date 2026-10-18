@@ -1,3 +1,5 @@
+//! Press planning: whether a press selects, clicks a point or runs the element's action.
+
 use desk_core::press::{MENU_POLL, MENU_POLLS, SELECTED_ROLES};
 
 use crate::model::{Access, Act, Extras, Node};

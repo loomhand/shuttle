@@ -1,3 +1,5 @@
+//! Screenshot crops, with the windows of apps outside the allowlist painted over.
+
 /// A crop of the screen rectangle `[x, y, w, h]` from a screenshot scaled by `factor`, as `(width, height, PNG)`.
 pub(crate) fn crop_png(
     png: &[u8],

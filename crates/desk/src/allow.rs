@@ -1,3 +1,5 @@
+//! The app allowlist: which windows and elements the desk may list, read, shoot and act on.
+
 use std::sync::Arc;
 
 use desk_core::window;
