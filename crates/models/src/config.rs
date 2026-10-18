@@ -121,7 +121,7 @@ pub struct Safety {
     pub apps: Vec<String>,
     /// The global key combination that stops shuttle, such as `ctrl+alt+cmd+escape`.
     pub kill_hotkey: String,
-    /// The menu-bar item that shows shuttle acting or stopped.
+    /// The menu-bar item, or tray icon on Windows, that shows shuttle acting or stopped.
     pub indicator: bool,
     pub confirm: Confirm,
 }
