@@ -1322,4 +1322,47 @@ mod tests {
             "{t:?}"
         );
     }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_first_read_longer_than_the_timeout_is_the_only_read() {
+        let since = json!([{"title": "Settings"}]);
+        let lists = std::cell::Cell::new(0);
+        let started = tokio::time::Instant::now();
+        let out = wait_for(since.clone(), Duration::from_millis(150), || {
+            lists.set(lists.get() + 1);
+            let since = since.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                Ok(since)
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(out["changed"], false);
+        assert_eq!(lists.get(), 1);
+        assert_eq!(started.elapsed(), Duration::from_millis(310));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_change_on_the_read_at_the_deadline_is_reported() {
+        let since = json!([{"title": "Settings"}]);
+        let after = json!([{"title": "Settings"}, {"title": "Wi-Fi"}]);
+        let started = tokio::time::Instant::now();
+        let out = wait_for(since.clone(), Duration::from_millis(150), || {
+            let list = if started.elapsed() >= Duration::from_millis(150) {
+                after.clone()
+            } else {
+                since.clone()
+            };
+            async move {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                Ok(list)
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(out["changed"], true);
+        assert_eq!(out["windows"], after);
+        assert_eq!(started.elapsed(), Duration::from_millis(151));
+    }
 }
