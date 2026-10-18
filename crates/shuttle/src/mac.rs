@@ -12,7 +12,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSApplication, NSApplicationActivationPolicy, NSMenu,
+    NSAlert, NSAlertSecondButtonReturn, NSApplication, NSApplicationActivationPolicy, NSMenu,
     NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
 };
 use objc2_foundation::{NSObject, NSRunLoop, NSRunLoopCommonModes, NSString, NSTimer};
@@ -74,8 +74,8 @@ fn ask(question: &str, tx: &Rc<RefCell<Option<oneshot::Sender<bool>>>>) -> bool 
     let alert = NSAlert::new(mtm);
     alert.setMessageText(&NSString::from_str("Cocoon Shuttle"));
     alert.setInformativeText(&NSString::from_str(question));
-    alert.addButtonWithTitle(&NSString::from_str("Allow"));
     alert.addButtonWithTitle(&NSString::from_str("Decline"));
+    alert.addButtonWithTitle(&NSString::from_str("Allow"));
     let call = Rc::clone(tx);
     let gone = RcBlock::new(move |_: std::ptr::NonNull<NSTimer>| {
         if call
@@ -92,7 +92,7 @@ fn ask(question: &str, tx: &Rc<RefCell<Option<oneshot::Sender<bool>>>>) -> bool 
         NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
         timer
     };
-    let yes = alert.runModal() == NSAlertFirstButtonReturn;
+    let yes = alert.runModal() == NSAlertSecondButtonReturn;
     timer.invalidate();
     yes
 }
