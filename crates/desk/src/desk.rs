@@ -43,6 +43,8 @@ const WAIT_CHECK: Duration = Duration::from_millis(100);
 const NO_WINDOW_UNDER: &str =
     "no window under the point, and the app allowlist admits only windows";
 const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
+const WINDOW_NEVER_READ: &str = "window_never_read";
+const OK: &str = r#"{"ok":true}"#;
 const SHIFTED: &str = "!@#$%^&*()_+:\"<>?~{}|";
 const BASE: &str = "1234567890-=;',./`[]\\";
 
@@ -141,12 +143,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     /// Waits until the window list differs from `since`; time spent reading lists does not count against `timeout_ms`, as in a poll loop.
     async fn wait(&self, a: WaitArgs) -> Result<String, String> {
         let limit = Duration::from_millis(a.timeout_ms);
-        let since = a.since.as_array().map(|ws| {
-            ws.iter()
-                .filter(|w| self.allow.admits(w["app"].as_str()))
-                .cloned()
-                .collect::<Value>()
-        });
+        let since = match a.since {
+            Value::Array(ws) => Some(
+                ws.into_iter()
+                    .filter(|w| self.allow.admits(w["app"].as_str()))
+                    .collect::<Value>(),
+            ),
+            _ => None,
+        };
         let started = Instant::now();
         let (mut listing, mut last) = (Duration::ZERO, Duration::ZERO);
         let mut hint = self.access.run(CALL_LIMIT, (), |b| Ok(b.hint())).await?;
@@ -172,9 +176,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             last = at.elapsed();
             listing += last;
             checked = Instant::now();
-            let same = serde_json::to_value(&frames).is_ok_and(|v| Some(v) == since);
+            let windows =
+                serde_json::to_value(&frames).map_err(|e| format!("encode windows: {e}"))?;
+            let same = since.as_ref() == Some(&windows);
             if !same || over || started.elapsed() >= WAIT_MAX {
-                return Ok(json!({"changed": !same, "windows": frames}).to_string());
+                let mut out = json!({"changed": !same});
+                out["windows"] = windows;
+                return Ok(out.to_string());
             }
         }
     }
@@ -311,7 +319,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 let [x, y, w, h] = n.bounds.ok_or("the element has no screen position")?;
                 self.click_at(json!({"x": x + w / 2, "y": y + h / 2}))
                     .await?;
-                return Ok(json!({"ok": true}).to_string());
+                return Ok(OK.to_owned());
             }
             other => {
                 return Err(format!(
@@ -331,13 +339,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.access
             .run(CALL_LIMIT, (), move |b| {
                 let frames = frames(b, a.pid, &allow)?;
-                let frame = live(allow.pick(frames.clone(), a.window.as_deref(), a.pid)?)?;
+                let kept = (!allow.is_open()).then(|| frames.clone());
+                let frame = live(allow.pick(frames, a.window.as_deref(), a.pid)?)?;
                 let Some(hit) = b.at(&frame.id, a.x, a.y)? else {
                     return Ok(json!({"found": null, "window": frame}).to_string());
                 };
-                if !allow.is_open() {
+                if let Some(frames) = &kept {
                     let pid = b.pid_of(&hit)?;
-                    allow.check_pid(&frames, pid)?;
+                    allow.check_pid(frames, pid)?;
                 }
                 let node = b.node(&hit, Extras::default(), 0)?;
                 let path: Vec<Value> = b
@@ -368,20 +377,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn key(&self, combo: &str) -> Result<String, String> {
-        let keys = key_names(combo, self.os)?;
-        match keys.as_slice() {
-            [one] => {
-                self.driver
-                    .call("press_key", desktop(json!({"key": one})))
-                    .await?
-            }
-            _ => {
-                self.driver
-                    .call("hotkey", desktop(json!({"keys": keys})))
-                    .await?
-            }
-        };
-        Ok(json!({"ok": true}).to_string())
+        let (tool, req) = key_request(key_names(combo, self.os)?);
+        self.driver.call(tool, desktop(req)).await?;
+        Ok(OK.to_owned())
     }
 
     async fn type_text(&self, text: &str) -> Result<String, String> {
@@ -401,12 +399,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 continue;
             }
             for (at, c) in line.char_indices() {
-                let req = match keystroke(c) {
-                    Some(keys) if keys.len() == 1 => ("press_key", json!({"key": keys[0]})),
-                    Some(keys) => ("hotkey", json!({"keys": keys})),
+                let (tool, req) = match keystroke(c) {
+                    Some(keys) => key_request(keys),
                     None => ("type_text", json!({"text": &line[at..at + c.len_utf8()]})),
                 };
-                self.driver.call(req.0, desktop(req.1)).await?;
+                self.driver.call(tool, desktop(req)).await?;
             }
         }
         Ok(json!({"ok": true, "chars": text.chars().count()}).to_string())
@@ -421,7 +418,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             req["count"] = count.into();
         }
         self.click_at(req).await?;
-        Ok(json!({"ok": true}).to_string())
+        Ok(OK.to_owned())
     }
 
     async fn click_at(&self, req: Value) -> Result<(), String> {
@@ -511,7 +508,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             Err(e) if e.contains(NO_WINDOWSERVER_CONNECTION) => {
                 self.driver.call("click", desktop(req)).await?;
             }
-            Err(e) if cached.is_some() && e.contains("window_never_read") => {
+            Err(e) if cached.is_some() && e.contains(WINDOW_NEVER_READ) => {
                 match self.pixels(w).await? {
                     Some(k) => {
                         at(&mut win, k);
@@ -713,9 +710,6 @@ impl Allow {
     }
 
     fn check_pid(&self, frames: &[Frame], pid: Option<u32>) -> Result<(), String> {
-        if self.is_open() {
-            return Ok(());
-        }
         self.check(app_of(frames, pid))
     }
 
@@ -782,8 +776,11 @@ fn live(frame: Frame) -> Result<Frame, String> {
 }
 
 fn app_key(app: &str) -> String {
-    let app = app.to_lowercase();
-    app.strip_suffix(".exe").map(str::to_owned).unwrap_or(app)
+    let mut key = app.to_lowercase();
+    if key.ends_with(".exe") {
+        key.truncate(key.len() - 4);
+    }
+    key
 }
 
 fn app_of(frames: &[Frame], pid: Option<u32>) -> Option<&str> {
@@ -791,6 +788,18 @@ fn app_of(frames: &[Frame], pid: Option<u32>) -> Option<&str> {
         .iter()
         .find(|f| pid.is_some() && f.pid == pid)
         .and_then(|f| f.app.as_deref())
+}
+
+fn key_request(mut keys: Vec<String>) -> (&'static str, Value) {
+    let mut req = json!({});
+    if keys.len() == 1
+        && let Some(key) = keys.pop()
+    {
+        req["key"] = key.into();
+        return ("press_key", req);
+    }
+    req["keys"] = keys.into();
+    ("hotkey", req)
 }
 
 fn bounds(w: &Value) -> [f64; 4] {

@@ -19,11 +19,12 @@ pub trait Window: Clone {
 }
 
 /// The window named `want` (by [`title_matches`] tiers), else the focused one; among equals the active one, else the newest.
-pub fn pick<W: Window>(windows: Vec<W>, want: Option<&str>, pid: Option<u32>) -> Result<W, String> {
-    let windows: Vec<W> = windows
-        .into_iter()
-        .filter(|w| w.listed() && pid.is_none_or(|p| w.pid() == Some(p)))
-        .collect();
+pub fn pick<W: Window>(
+    mut windows: Vec<W>,
+    want: Option<&str>,
+    pid: Option<u32>,
+) -> Result<W, String> {
+    windows.retain(|w| w.listed() && pid.is_none_or(|p| w.pid() == Some(p)));
     let Some(want) = want else {
         let active: Vec<&W> = windows
             .iter()
@@ -45,11 +46,10 @@ pub fn pick<W: Window>(windows: Vec<W>, want: Option<&str>, pid: Option<u32>) ->
 
 /// Whether `title` matches `want` at `tier`: 0 equal, 1 equal ignoring case and outer spaces, 2 containing it ignoring case.
 pub fn title_matches(tier: usize, title: &str, want: &str) -> bool {
-    let lower = want.trim().to_lowercase();
     match tier {
         0 => title == want,
-        1 => title.trim().to_lowercase() == lower,
-        _ => title.to_lowercase().contains(&lower),
+        1 => title.trim().to_lowercase() == want.trim().to_lowercase(),
+        _ => title.to_lowercase().contains(&want.trim().to_lowercase()),
     }
 }
 

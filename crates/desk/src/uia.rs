@@ -120,16 +120,14 @@ impl Uia {
         lookup(&self.ids, id)
     }
 
-    fn remember(&mut self, id: &str, el: &IUIAutomationElement) {
+    fn id_of(&mut self, el: &IUIAutomationElement) -> Result<String, String> {
+        let id = runtime_id(el)?;
         if self.ids.len() >= MAX_IDS {
             self.ids.clear();
         }
-        self.ids.entry(id.to_owned()).or_insert_with(|| el.clone());
-    }
-
-    fn id_of(&mut self, el: &IUIAutomationElement) -> Result<String, String> {
-        let id = runtime_id(el)?;
-        self.remember(&id, el);
+        if !self.ids.contains_key(&id) {
+            self.ids.insert(id.clone(), el.clone());
+        }
         Ok(id)
     }
 
@@ -158,7 +156,7 @@ impl Uia {
         extras: Extras,
         chars: usize,
     ) -> Result<Node, String> {
-        let r = raw(el);
+        let mut r = raw(el);
         let kind = Kind {
             control_type: r.control_type,
             named: !r.name.is_empty(),
@@ -167,11 +165,12 @@ impl Uia {
             dialog: r.dialog || r.modal,
             submenu: r.expand.is_some_and(|e| e != LEAF),
         };
-        let role = uia_roles::role(kind).unwrap_or("generic");
+        let mapped = uia_roles::role(kind);
+        let role = mapped.unwrap_or("generic");
         let [x, y, w, h] = r.bounds;
         let value = if extras.values {
             r.value
-                .clone()
+                .take()
                 .filter(|v| !v.is_empty())
                 .or_else(|| r.range.map(format_number))
                 .map(|v| v.chars().take(chars).collect::<String>())
@@ -181,7 +180,7 @@ impl Uia {
         Ok(Node {
             id: self.id_of(el)?,
             role,
-            native_role: uia_roles::role(kind)
+            native_role: mapped
                 .is_none()
                 .then(|| uia_roles::native(r.control_type).to_owned()),
             name: r.name.trim_end().to_owned(),
