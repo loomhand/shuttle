@@ -153,4 +153,24 @@ mod tests {
         assert!(err.contains("line 5"), "{err}");
         assert!(!err.contains("sk-live-secret"), "{err}");
     }
+
+    #[test]
+    fn an_android_section_names_the_device_and_its_files() {
+        assert!(
+            Config::load(file("").path()).unwrap().android.is_none(),
+            "no section serves this desktop"
+        );
+        let c = Config::load(
+            file("[android]\nserial = \"127.0.0.1:5555\"\nui_jar = \"/u.jar\"\nscrcpy_jar = \"/s.jar\"\nsu = \"/su\"\n").path(),
+        )
+        .unwrap();
+        let a = c.android.unwrap();
+        assert_eq!(a.adb, std::path::PathBuf::from("adb"));
+        assert_eq!(a.serial.as_deref(), Some("127.0.0.1:5555"));
+        assert_eq!(a.ui_jar, std::path::PathBuf::from("/u.jar"));
+        let bad = file(
+            "[android]\nui_jar = \"/u.jar\"\nscrcpy_jar = \"/s.jar\"\nsu = \"/su\"\nport = 5\n",
+        );
+        assert!(Config::load(bad.path()).unwrap_err().contains("port"));
+    }
 }

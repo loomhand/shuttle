@@ -1,7 +1,7 @@
-//! Screenshot, UI elements and input on an Android box through adb, with text pasted by a scrcpy control session.
+//! Screenshot, UI elements and input on an Android device through adb, with text pasted by a scrcpy control session.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -14,10 +14,12 @@ use tokio::net::TcpStream;
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
-use super::android_desk::{self, Node};
-use super::rpc::{self, Output};
+use desk_core::args::parse;
+use desk_core::wire::Output;
 
-pub(super) const SCREEN: (i32, i32) = (720, 1280);
+use crate::desk::{self, Node};
+
+pub(crate) const SCREEN: (i32, i32) = (720, 1280);
 
 const ADB_TIMEOUT: Duration = Duration::from_secs(30);
 const SETTLE: Duration = Duration::from_millis(500);
@@ -26,8 +28,6 @@ const MAX_ELEMENTS: usize = 200;
 const LONG_PRESS_MS: u32 = 800;
 const SWIPE_MS: u32 = 300;
 const SCROLL_FRACTION: i32 = 3;
-const SCRCPY_JAR: &str = "/usr/local/share/scrcpy/scrcpy-server.jar";
-const SCRCPY_SU: &str = "/usr/local/share/scrcpy/su1000";
 const DEVICE_JAR: &str = "/data/local/tmp/cb-scrcpy.jar";
 const DEVICE_SU: &str = "/data/local/tmp/su1000";
 const SCRCPY_VERSION: &str = "4.1";
@@ -36,7 +36,6 @@ const SET_CLIPBOARD: u8 = 9;
 const CONNECT_TRIES: u32 = 50;
 const CONNECT_PAUSE: Duration = Duration::from_millis(100);
 const PASTE_SETTLE: Duration = Duration::from_millis(300);
-const UI_JAR: &str = "/usr/local/share/cocoonbox/cb-ui.jar";
 const DEVICE_UI_JAR: &str = "/data/local/tmp/cb-ui.jar";
 const UI_CLASSPATH: &str = "CLASSPATH=/system/framework/uiautomator.jar:/data/local/tmp/cb-ui.jar";
 const UI_TIMEOUT: Duration = Duration::from_secs(10);
@@ -70,18 +69,29 @@ const KEYCODES: [(&str, u32); 26] = [
     ("alt", 57),
 ];
 
-/// adb on the box's Android, with the element centres of each session's latest computer_state.
+/// Where an Android device is, and the host files its UI server and paste push to it.
+pub struct Device {
+    pub adb: PathBuf,
+    /// The adb serial; none takes adb's own choice, such as `ANDROID_SERIAL`.
+    pub serial: Option<String>,
+    pub ui_jar: PathBuf,
+    pub scrcpy_jar: PathBuf,
+    /// The helper that runs the paste server as the system uid.
+    pub su: PathBuf,
+}
+
+/// adb on an Android device, with the element centres of each session's latest computer_state.
 pub struct Android {
-    adb: PathBuf,
+    device: Device,
     points: Mutex<HashMap<String, Vec<(i32, i32)>>>,
     ui: Mutex<Option<UiServer>>,
 }
 
 impl Android {
-    /// Drives Android with the adb program `adb`, which finds the device by `ANDROID_SERIAL`.
-    pub fn new(adb: PathBuf) -> Self {
+    /// Drives the Android device `device`.
+    pub fn new(device: Device) -> Self {
         Self {
-            adb,
+            device,
             points: Mutex::new(HashMap::new()),
             ui: Mutex::new(None),
         }
@@ -99,9 +109,9 @@ impl Android {
 
     /// The UI elements of the screen, [index] for computer_act, and a screenshot.
     pub async fn state(&self, args: Value) -> Result<Output, String> {
-        let args: StateArgs = rpc::parse(args)?;
+        let args: StateArgs = parse(args)?;
         let (xml, shot) = tokio::join!(self.tree(None), self.look());
-        let mut elements = android_desk::elements(&xml?);
+        let mut elements = desk::elements(&xml?);
         if let Some(q) = args.query.as_deref().map(str::to_lowercase) {
             elements.retain(|e| e.mentions(&q));
         }
@@ -127,7 +137,7 @@ impl Android {
 
     /// Performs one input action, then returns a fresh screenshot.
     pub async fn act(&self, args: Value) -> Result<Output, String> {
-        let args: ActArgs = rpc::parse(args)?;
+        let args: ActArgs = parse(args)?;
         let point = self.point(&args).await?;
         let target = || point.ok_or_else(|| format!("{} needs element or x,y", args.action));
         let report = match args.action.as_str() {
@@ -209,7 +219,7 @@ impl Android {
     }
 
     /// Starts the launcher activity of package `app`; its component.
-    pub(super) async fn launch(&self, app: &str) -> Result<String, String> {
+    pub(crate) async fn launch(&self, app: &str) -> Result<String, String> {
         let out = self
             .adb(&[
                 "shell",
@@ -229,12 +239,12 @@ impl Android {
         Ok(component)
     }
 
-    pub(super) async fn tap(&self, (x, y): (i32, i32)) -> Result<(), String> {
+    pub(crate) async fn tap(&self, (x, y): (i32, i32)) -> Result<(), String> {
         self.input(&["tap", &x.to_string(), &y.to_string()]).await
     }
 
     /// Presses a key or a combination such as `ctrl+a`.
-    pub(super) async fn keys(&self, keys: &str) -> Result<(), String> {
+    pub(crate) async fn keys(&self, keys: &str) -> Result<(), String> {
         let codes: Vec<String> = keycodes(keys)?.iter().map(u32::to_string).collect();
         let mut argv = vec![if codes.len() == 1 {
             "keyevent"
@@ -245,14 +255,14 @@ impl Android {
         self.input(&argv).await
     }
 
-    pub(super) async fn input(&self, args: &[&str]) -> Result<(), String> {
+    pub(crate) async fn input(&self, args: &[&str]) -> Result<(), String> {
         let mut argv = vec!["shell", "input"];
         argv.extend_from_slice(args);
         self.adb(&argv).await.map(drop)
     }
 
     /// The UI tree of window `window`, else of the active one, from the image's UI server.
-    pub(super) async fn tree(&self, window: Option<&str>) -> Result<String, String> {
+    pub(crate) async fn tree(&self, window: Option<&str>) -> Result<String, String> {
         match window {
             Some(w) => self.served(&format!("dump {w}")).await,
             None => self.served("dump").await,
@@ -260,20 +270,26 @@ impl Android {
     }
 
     /// The interactive windows as the UI server lists them, as JSON.
-    pub(super) async fn windows(&self) -> Result<String, String> {
+    pub(crate) async fn windows(&self) -> Result<String, String> {
         self.served("windows").await
     }
 
     /// Pastes `text` into the focused field through the clipboard, which takes any Unicode, unlike key injection.
-    pub(super) async fn paste(&self, text: &str) -> Result<(), String> {
-        self.adb(&["push", SCRCPY_JAR, DEVICE_JAR]).await?;
-        self.adb(&["push", SCRCPY_SU, DEVICE_SU]).await?;
+    pub(crate) async fn paste(&self, text: &str) -> Result<(), String> {
+        self.adb(&[
+            "push",
+            &self.device.scrcpy_jar.to_string_lossy(),
+            DEVICE_JAR,
+        ])
+        .await?;
+        self.adb(&["push", &self.device.su.to_string_lossy(), DEVICE_SU])
+            .await?;
         let socket = format!("localabstract:scrcpy_{SCRCPY_SCID}");
         let port = String::from_utf8_lossy(&self.adb(&["forward", "tcp:0", &socket]).await?)
             .trim()
             .to_owned();
         let forward = Forward {
-            adb: &self.adb,
+            android: self,
             port,
         };
         let pasted = match self.scrcpy_control() {
@@ -290,10 +306,9 @@ impl Android {
         pasted
     }
 
-    pub(super) async fn adb(&self, args: &[&str]) -> Result<Vec<u8>, String> {
-        let mut cmd = Command::new(&self.adb);
+    pub(crate) async fn adb(&self, args: &[&str]) -> Result<Vec<u8>, String> {
+        let mut cmd = self.command();
         cmd.args(args).stdin(Stdio::null()).kill_on_drop(true);
-        crate::sys::unprotect(&mut cmd);
         let out = tokio::time::timeout(ADB_TIMEOUT, cmd.output())
             .await
             .map_err(|_| format!("adb {}: timed out", args.join(" ")))?
@@ -308,6 +323,14 @@ impl Android {
                 String::from_utf8_lossy(&out.stderr).trim()
             ))
         }
+    }
+
+    fn command(&self) -> Command {
+        let mut cmd = Command::new(&self.device.adb);
+        if let Some(serial) = &self.device.serial {
+            cmd.args(["-s", serial]);
+        }
+        cmd
     }
 
     async fn point(&self, args: &ActArgs) -> Result<Option<(i32, i32)>, String> {
@@ -349,15 +372,15 @@ impl Android {
     }
 
     async fn start_ui(&self) -> Result<UiServer, String> {
-        self.adb(&["push", UI_JAR, DEVICE_UI_JAR]).await?;
+        self.adb(&["push", &self.device.ui_jar.to_string_lossy(), DEVICE_UI_JAR])
+            .await?;
         let _ = self.adb(&["shell", "pkill", "-f", "cb.Ui"]).await;
-        let mut cmd = Command::new(&self.adb);
+        let mut cmd = self.command();
         cmd.args(["shell", UI_CLASSPATH, "app_process", "/", "cb.Ui"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
-        crate::sys::unprotect(&mut cmd);
         let mut child = cmd.spawn().map_err(|e| format!("run UI server: {e}"))?;
         let stdin = child.stdin.take().ok_or("take UI server stdin")?;
         let mut stdout = BufReader::new(child.stdout.take().ok_or("take UI server stdout")?);
@@ -378,7 +401,7 @@ impl Android {
 
     /// A control-only scrcpy server as the system uid, which may set the clipboard; dropping the child stops it.
     fn scrcpy_control(&self) -> Result<Child, String> {
-        let mut cmd = Command::new(&self.adb);
+        let mut cmd = self.command();
         cmd.args([
             "shell",
             &format!("CLASSPATH={DEVICE_JAR}"),
@@ -402,7 +425,6 @@ impl Android {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-        crate::sys::unprotect(&mut cmd);
         cmd.spawn().map_err(|e| format!("run scrcpy control: {e}"))
     }
 }
@@ -441,18 +463,17 @@ impl UiServer {
 }
 
 struct Forward<'a> {
-    adb: &'a Path,
+    android: &'a Android,
     port: String,
 }
 
 impl Drop for Forward<'_> {
     fn drop(&mut self) {
-        let mut cmd = Command::new(self.adb);
+        let mut cmd = self.android.command();
         cmd.args(["forward", "--remove", &format!("tcp:{}", self.port)])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        crate::sys::unprotect(&mut cmd);
         let _ = cmd.spawn();
     }
 }

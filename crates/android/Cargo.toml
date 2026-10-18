@@ -1,0 +1,20 @@
+[package]
+name = "shuttle-android"
+description = "The desk verbs on an Android device over adb: the UI server's element trees, input, screencap and a scrcpy paste"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64 = "0.23"
+png = "0.18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+shuttle-desk-core = { path = "../desk-core" }
+tokio = { version = "1", features = ["fs", "io-util", "net", "process", "sync", "time"] }
+
+[lints]
+workspace = true

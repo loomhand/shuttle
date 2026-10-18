@@ -11,13 +11,11 @@ use desk_core::args::{
 };
 use desk_core::text::{MAX_FOUND, NAME_CHARS, Named, matches, ms, quote};
 use desk_core::window::{self, Window};
+use desk_core::wire::Output;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::android::{Android, SCREEN};
-use super::cua::png_rgb;
-use super::desk::wait_for;
-use super::rpc::Output;
+use crate::adb::{Android, SCREEN};
 
 const APPLICATION: i64 = 1;
 const PID_BASE: u32 = 1 << 22;
@@ -29,10 +27,12 @@ const SCROLL_MS: &str = "600";
 const SCROLL_SETTLE: Duration = Duration::from_millis(400);
 const MIN_SPAN: i32 = 8;
 const MIN_SWIPE: i32 = 48;
+const WAIT_MAX: Duration = Duration::from_secs(5);
+const WAIT_POLL: Duration = Duration::from_millis(10);
 
 /// One element of a window as the desk and computer_state show it.
 #[derive(Debug)]
-pub(super) struct Node {
+pub(crate) struct Node {
     path: String,
     parent: i64,
     depth: usize,
@@ -50,7 +50,7 @@ pub(super) struct Node {
 
 impl Node {
     /// The computer_state line of the element as `[i]`.
-    pub(super) fn line(&self, i: usize) -> String {
+    pub(crate) fn line(&self, i: usize) -> String {
         let (x, y) = self.center();
         let mut line = format!("[{i}] {} {:?} at {x},{y}", self.role, self.name);
         for s in self.states.iter().filter(|s| **s != "showing") {
@@ -62,13 +62,13 @@ impl Node {
         line
     }
 
-    pub(super) fn center(&self) -> (i32, i32) {
+    pub(crate) fn center(&self) -> (i32, i32) {
         let [x, y, w, h] = self.bounds;
         (x + w / 2, y + h / 2)
     }
 
     /// Whether the name, description or value contains lowercase `q`, ignoring their case.
-    pub(super) fn mentions(&self, q: &str) -> bool {
+    pub(crate) fn mentions(&self, q: &str) -> bool {
         [
             Some(self.name.as_str()),
             Some(self.description.as_str()),
@@ -294,7 +294,7 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
 }
 
 /// The shown elements of a UI server dump.
-pub(super) fn elements(xml: &str) -> Vec<Node> {
+pub(crate) fn elements(xml: &str) -> Vec<Node> {
     nodes(&Frame::default(), &raws(xml))
         .into_iter()
         .skip(1)
@@ -871,7 +871,7 @@ async fn shot(android: &Android, a: ShotArgs) -> Result<Output, String> {
     let mut out = json!({"ok": true, "width": w, "height": h});
     match a.path {
         Some(path) => {
-            super::files::write_bytes(std::path::Path::new(&path), &png).await?;
+            write_bytes(std::path::Path::new(&path), &png).await?;
             out["path"] = path.into();
         }
         None => out["png_b64"] = image.clone().into(),
@@ -910,6 +910,50 @@ fn crop(png: &[u8], [x, y, w, h]: [f64; 4]) -> Result<(u32, u32, Vec<u8>), Strin
         }
     }
     Ok((cw, ch, png_rgb(cw, ch, &rgb)?))
+}
+
+/// Lists the windows until they differ from `since` or `limit` of waiting passes, listing time excluded, 5 s at most.
+async fn wait_for<F, Fut>(since: Value, limit: Duration, mut read: F) -> Result<Value, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<Value, String>>,
+{
+    let started = tokio::time::Instant::now();
+    let (mut listing, mut last) = (Duration::ZERO, Duration::ZERO);
+    loop {
+        tokio::time::sleep(last.max(WAIT_POLL)).await;
+        let at = tokio::time::Instant::now();
+        let windows = read().await?;
+        last = at.elapsed();
+        listing += last;
+        let t = started.elapsed();
+        let same = windows == since;
+        if !same || t >= WAIT_MAX || t.saturating_sub(listing) >= limit {
+            return Ok(json!({"changed": !same, "windows": windows}));
+        }
+    }
+}
+
+fn png_rgb(width: u32, height: u32, rgb: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::new(&mut out, width, height);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .and_then(|mut w| w.write_image_data(rgb))
+        .map_err(|e| format!("encode PNG: {e}"))?;
+    Ok(out)
+}
+
+async fn write_bytes(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    tokio::fs::write(path, data)
+        .await
+        .map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 #[cfg(test)]

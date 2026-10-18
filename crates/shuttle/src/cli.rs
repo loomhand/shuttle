@@ -15,6 +15,7 @@ use shuttle_models::config::Safety;
 use shuttle_models::config::{Config, DEFAULT_KEY_ENV, default_path};
 use tokio::runtime::Builder;
 
+use crate::android::{self, Desks};
 use crate::daemon::{Asker, Daemon, Guard};
 #[cfg(any(target_os = "macos", windows))]
 use crate::daemon::{Controls, Ui};
@@ -161,10 +162,13 @@ async fn serve(
 ) -> Result<(), String> {
     let path = default_path(NAME);
     let mut config = Config::load(&path);
+    let android = config.as_mut().ok().and_then(|c| c.android.take());
+    let local = android::local_controls(android.as_ref());
     let mut safety = config
         .as_mut()
         .map(|c| std::mem::take(&mut c.safety))
         .unwrap_or_default();
+    safety.indicator &= local;
     #[cfg(any(target_os = "macos", windows))]
     let hotkey = match hotkey::parse(&safety.kill_hotkey) {
         Ok(h) => h,
@@ -194,7 +198,7 @@ async fn serve(
         .map_err(|e| format!("locate this program: {e}"))?;
     let listener = server::bind(endpoint).await?;
     let own = driver::endpoint(endpoint);
-    let bundled = if cfg!(any(target_os = "macos", windows)) {
+    let bundled = if local && cfg!(any(target_os = "macos", windows)) {
         Bundled::start(&exe, &own, overlay).await?
     } else {
         None
@@ -210,11 +214,13 @@ async fn serve(
         path.with_file_name("flows"),
         key_vars,
     );
-    let daemon = Arc::new(
-        Daemon::new(server::native(driver, &apps), models, runner, guard).with_plugins(plugins),
-    );
+    let desk = match android {
+        Some(settings) => Desks::Android(Box::new(android::device(settings))),
+        None => Desks::Native(server::native(driver, &apps)),
+    };
+    let daemon = Arc::new(Daemon::new(desk, models, runner, guard).with_plugins(plugins));
     #[cfg(any(target_os = "macos", windows))]
-    ready(daemon.clone(), safety, hotkey);
+    ready(daemon.clone(), safety, hotkey.filter(|_| local));
     let served = tokio::select! {
         r = server::serve(daemon, listener) => r,
         () = shutdown() => Ok(()),
