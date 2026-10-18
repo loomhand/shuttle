@@ -6,7 +6,7 @@
 | Accessibility tree | AX: done in `shuttle-desk` | UI Automation: done in `shuttle-desk` | AT-SPI: in cocoonbox's toolhost, moves here in P3 |
 | Input, windows, capture | cua-driver | cua-driver | cua-driver (X11; Wayland best effort) |
 | MCP tools that act | developer preview on `main` (P1) | developer preview on `main` (P2) | P3 |
-| Kill switch, indicator, allowlist, confirm | P1 | P2 | P3 |
+| Kill switch, indicator, allowlist, confirm | built (P1) | built (P2) | P3 |
 
 Every platform installs and runs `cocoon-shuttle mcp`. On macOS and Windows, the `desk`, `screenshot`, `gui_plan` and `script_run` tools reach the desk verbs through the daemon, which runs the bundled cua-driver; that is a developer preview without the safety controls. On Linux, `gui_plan` and `script_run` run, but their desk calls answer that there is no desk backend yet.
 

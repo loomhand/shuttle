@@ -10,7 +10,7 @@ The kill switch, the app allowlist and the confirm mode are guard rails for an a
 
 `cocoon-shuttle stop` stops shuttle at once: it kills the running `gui_plan` or `script_run` process with its process group, ends the desk and model calls in flight, and halts. Every tool call then fails with `stopped by the user` until you resume, with `cocoon-shuttle resume` or the indicator's Resume. The stop lives in the running daemon; a daemon that starts again starts running. Only you stop and resume, from the command line, the hotkey or the indicator's menu: no MCP tool and no `gui_plan` step reaches them. A desk action that the driver or the accessibility API has already started ends on its own, so at most one action in flight completes after the stop.
 
-A global hotkey does the same stop, and the indicator's menu has Stop and Resume. The hotkey is built on macOS; Windows and Linux get theirs in P2 and P3:
+A global hotkey does the same stop, and the indicator's menu has Stop and Resume. The hotkey is built on macOS and Windows; Linux gets its in P3:
 
 | OS | Default | Registered with |
 |---|---|---|
@@ -22,11 +22,11 @@ Set `kill_hotkey` in [config.md](config.md) to change it. On macOS a system perm
 
 ## Indicator
 
-On macOS a menu-bar item shows `Shuttle`, `● Shuttle` while a desk action or a run is in progress, and `■ Shuttle stopped` after a stop; its menu has Stop and Resume. `indicator = false` hides the menu-bar item. cua-driver draws its agent cursor where shuttle points either way, since macOS needs its overlay to track the front window. The Windows and Linux tray icon comes in P2 and P3.
+On macOS a menu-bar item shows `Shuttle`, `● Shuttle` while a desk action or a run is in progress, and `■ Shuttle stopped` after a stop; its menu has Stop and Resume. `indicator = false` hides the menu-bar item. cua-driver draws its agent cursor where shuttle points either way, since macOS needs its overlay to track the front window. On Windows a notification-area icon shows the same three states, as the stock application, information and error icons with the tooltip `Shuttle`, `Shuttle acting` or `Shuttle stopped`; a click opens its Stop and Resume menu. Windows 11 puts a new icon under the ^ overflow until you drag it onto the taskbar. `indicator = false` hides it. The Linux tray icon comes in P3.
 
 ## Confirm mode
 
-`confirm = "coordinate"` asks before every step that can end in a click at a screen point, the least predictable action: `click`, `press`, and `act` with `click`. `confirm = "every"` asks before every desk action: `press`, `act`, `key`, `type`, `click`, `focus`, `close` and `launch`. On macOS the question is a dialog with Cancel and Allow: Escape presses Cancel and Return presses neither. A step you cancel fails with `declined by the user`, and a stop closes an open dialog. While the dialog is open every other desk call fails at once with `a confirm dialog is open`, so the agent cannot answer the dialog itself. Windows and Linux get the dialog in P2 and P3; until then a step that would ask fails and names `confirm = "off"`.
+`confirm = "coordinate"` asks before every step that can end in a click at a screen point, the least predictable action: `click`, `press`, and `act` with `click`. `confirm = "every"` asks before every desk action: `press`, `act`, `key`, `type`, `click`, `focus`, `close` and `launch`. On macOS the question is a dialog with Cancel and Allow: Escape presses Cancel and Return presses neither. A step you cancel fails with `declined by the user`, and a stop closes an open dialog. While the dialog is open every other desk call fails at once with `a confirm dialog is open`, so the agent cannot answer the dialog itself. On Windows the question is a message box with OK and Cancel; Cancel is the default, so Return and Escape both refuse. Windows does not let a background program take the keyboard focus, so the box opens behind the window in front and its taskbar button flashes; click the button to answer. Linux gets the dialog in P3; until then a step that would ask fails and names `confirm = "off"`.
 
 ## App allowlist
 
