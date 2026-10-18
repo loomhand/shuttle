@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -399,6 +400,23 @@ impl Access for Ax {
         Ok(hit(&app, x, y, self.scale).map(|h| self.id_of(&h)))
     }
 
+    fn hint(&mut self) -> Option<u64> {
+        let mut h = std::hash::DefaultHasher::new();
+        for d in on_screen() {
+            let name = string(
+                d.find(CFString::from_static_string("kCGWindowName"))
+                    .map(|v| (*v).clone()),
+            );
+            (
+                number(&d, "kCGWindowOwnerPID"),
+                number(&d, "kCGWindowNumber"),
+                name,
+            )
+                .hash(&mut h);
+        }
+        Some(h.finish())
+    }
+
     fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
         Ok(pid(&self.element(id)?).and_then(|p| u32::try_from(p).ok()))
     }
@@ -679,6 +697,22 @@ fn application(p: i32) -> CFType {
 }
 
 fn window_pids() -> Vec<i32> {
+    let mut pids = Vec::new();
+    for p in on_screen()
+        .iter()
+        .filter_map(|d| number(d, "kCGWindowOwnerPID"))
+    {
+        if let Ok(p) = i32::try_from(p)
+            && !pids.contains(&p)
+        {
+            pids.push(p);
+        }
+    }
+    pids
+}
+
+/// The layer-0 windows on screen, front to back.
+fn on_screen() -> Vec<CFDictionary<CFString, CFType>> {
     // SAFETY: the window list is returned at +1, or null, and wrapped once under the create rule.
     let list = unsafe { CGWindowListCopyWindowInfo(ON_SCREEN_ONLY | EXCLUDE_DESKTOP, 0) };
     if list.is_null() {
@@ -687,21 +721,16 @@ fn window_pids() -> Vec<i32> {
     // SAFETY: `list` is a non-null CFArray at +1.
     let list: CFArray<CFDictionary<CFString, CFType>> =
         unsafe { CFArray::wrap_under_create_rule(list) };
-    let number = |d: &CFDictionary<CFString, CFType>, key: &'static str| {
-        d.find(CFString::from_static_string(key))
-            .and_then(|v| v.downcast::<CFNumber>())
-            .and_then(|n| n.to_i64())
-    };
-    let mut pids = Vec::new();
-    for d in list.iter() {
-        if number(&d, "kCGWindowLayer") == Some(0)
-            && let Some(p) = number(&d, "kCGWindowOwnerPID").and_then(|p| i32::try_from(p).ok())
-            && !pids.contains(&p)
-        {
-            pids.push(p);
-        }
-    }
-    pids
+    list.iter()
+        .filter(|d| number(d, "kCGWindowLayer") == Some(0))
+        .map(|d| (*d).clone())
+        .collect()
+}
+
+fn number(d: &CFDictionary<CFString, CFType>, key: &'static str) -> Option<i64> {
+    d.find(CFString::from_static_string(key))
+        .and_then(|v| v.downcast::<CFNumber>())
+        .and_then(|n| n.to_i64())
 }
 
 fn display_scale() -> f64 {

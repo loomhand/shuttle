@@ -1,4 +1,5 @@
 import { createConnection } from 'node:net'
+import { setTimeout as sleep } from 'node:timers/promises'
 
 export type Win = { id: string; title: string; role: string; pid: number | null; active: boolean; app?: string; modal?: string; blocks?: string }
 export type El = {
@@ -17,8 +18,10 @@ type Metered = { usage: { model: string; input_tokens: number; output_tokens: nu
 type Decided = Metered & { answers: Record<string, Judgment>; served: Omit<Served, 'image'> }
 
 const LOOK_TIMEOUT = 5_000
+const POLL_MS = 40
 
 let screenSize: Size | null = null
+let waitless = false
 export const usage: Usage = {}
 /** Every decisions call: the model that answered (its role while it has not), whether its state held an image, and the build and generation id it named. */
 export const served: Served[] = []
@@ -29,6 +32,20 @@ export function call<T>(op: string, args: Record<string, unknown> = {}): Promise
 }
 
 export const windows = (): Promise<Win[]> => call('windows')
+/** Waits until the window list differs from `since` or `timeout_ms` of waiting passes, and returns the list; a toolhost without `desk_wait` is polled. */
+export async function wait(since: Win[], timeout_ms: number): Promise<{ changed: boolean; windows: Win[] }> {
+  if (!waitless) {
+    try {
+      return await call('wait', { since, timeout_ms: Math.max(0, Math.round(timeout_ms)) })
+    } catch (err: unknown) {
+      if (!(err instanceof Error && err.message.startsWith('unknown desk tool'))) throw err
+      waitless = true
+    }
+  }
+  await sleep(Math.min(Math.max(0, timeout_ms), POLL_MS))
+  const ws = await windows()
+  return { changed: JSON.stringify(ws) !== JSON.stringify(since), windows: ws }
+}
 export const front = (ws: Win[]): Win | null => ws.find((w) => w.active && (w.title !== '' || w.role !== 'window')) ?? null
 export async function focused(): Promise<Win | null> {
   return front(await windows())

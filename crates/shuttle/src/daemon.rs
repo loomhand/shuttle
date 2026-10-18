@@ -296,17 +296,21 @@ mod tests {
             tool: tool.into(),
             args: json!({}),
         };
-        let click = tokio::spawn({
-            let d = d.clone();
-            let call = call("desk_click");
-            async move { d.answer(call).await }
+        let calls = ["desk_click", "desk_wait"].map(|tool| {
+            tokio::spawn({
+                let d = d.clone();
+                let call = call(tool);
+                async move { d.answer(call).await }
+            })
         });
         tokio::time::sleep(Duration::from_millis(100)).await;
         let started = std::time::Instant::now();
         d.answer(call("safety_stop")).await;
-        let out = click.await.unwrap();
+        for c in calls {
+            let out = c.await.unwrap();
+            assert_eq!((out.is_error, out.text.as_str()), (true, crate::STOPPED));
+        }
         assert!(started.elapsed() < Duration::from_secs(1));
-        assert_eq!((out.is_error, out.text.as_str()), (true, crate::STOPPED));
     }
 
     fn runner() -> Runner {
@@ -413,7 +417,13 @@ mod tests {
             started.elapsed()
         );
         assert!(ended.text.contains("stopped by the user"), "{}", ended.text);
-        for tool in ["desk_screen", "desk_click", "model_ask", "script_run"] {
+        for tool in [
+            "desk_screen",
+            "desk_click",
+            "desk_wait",
+            "model_ask",
+            "script_run",
+        ] {
             let out = d.answer(call(tool, json!({}))).await;
             assert_eq!(
                 (out.is_error, out.text.as_str()),
@@ -519,6 +529,7 @@ mod tests {
                     call("desk_key", json!({"keys": "return"})),
                     call("desk_type", json!({"text": "\n"})),
                     call("desk_windows", json!({})),
+                    call("desk_wait", json!({"since": [], "timeout_ms": 1000})),
                     click(),
                 ] {
                     texts.push(d.answer(c).await.text);
@@ -531,7 +542,7 @@ mod tests {
             .await
             .expect("calls during an open dialog answer at once");
         assert_eq!(asked.text, DECLINED);
-        assert_eq!(others, [CONFIRM_OPEN; 4]);
+        assert_eq!(others, [CONFIRM_OPEN; 5]);
         assert!(
             !d.answer(call("desk_key", json!({"keys": "return"})))
                 .await

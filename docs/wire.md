@@ -26,6 +26,7 @@ Desk calls name `desk_<verb>` tools:
 | Verb | Arguments | Result |
 |---|---|---|
 | `windows` | | the top-level windows: `id`, `title`, `role`, `pid`, `active`, and `app` (the app's name on macOS, the executable on Windows) when the OS says; cocoonbox's Linux toolhost also gives `modal`/`blocks` for dialogs. Optional fields are left out when unknown, so older readers of the wire are unaffected |
+| `wait` | `since` (a `windows` result), `timeout_ms` | `changed` and `windows`: answers once the window list differs from `since`, or with the same list after `timeout_ms` of waiting (time spent reading lists does not count, up to 5 s in all); shuttle reads the full list only when a cheap on-screen window fingerprint changes, and at least every 100 ms. The runtime polls `windows` on a toolhost that answers `unknown desk tool` |
 | `snapshot` | `window?`, `pid?`, `keys?`, `menus?`, `bounds?`, `text?`, `max_chars?` (with `text`); `id?` on the Linux toolhost | a window's tree as nodes (`ref`, `id`, `parent`, `depth`, `role`, `name`, `states`, ...), or an outline with `text`; on macOS the app's menu bar comes with a window only with `menus` (omitted or false: no app menu bar in the snapshot), and other backends ignore it |
 | `find` | `name`, `role?`, `window?`, `pid?` | the window and the nodes whose name matches |
 | `read` | `id`, `text?` | one node with its value and text |

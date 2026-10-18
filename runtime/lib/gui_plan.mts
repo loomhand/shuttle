@@ -146,9 +146,9 @@ async function perform(p: Params): Promise<Result> {
   const last = plan.at(-1) ?? {}
   let opened = false
   if (!escalate) {
-    const ts = Date.now(); const was = (await focused())?.title
+    const ts = Date.now(); const ws = await desk.windows(); const was = focusedIn(ws)?.title
     if ((last.key || last.type !== undefined || last.click) && !recs.at(-1)?.submit) {
-      for (let i = 0; i < 12 && (await focused())?.title === was; i++) await sleep(40)
+      await until((ws) => focusedIn(ws)?.title !== was, 480, ws)
       await sleep(80)
     }
     const acted = !!(last.click || last.check || last.set || last.menu || last.key || last.close || last.type !== undefined)
@@ -231,17 +231,24 @@ function parse(snap: desk.Snap): Node[] {
   }))
 }
 
-async function focused() {
-  const ws = await desk.windows(); const f = desk.front(ws); if (f) return f
+async function focused() { return focusedIn(await desk.windows()) }
+function focusedIn(ws: Win[]) {
+  const f = desk.front(ws); if (f) return f
   const own = ws.filter((x) => x.title.trim() && ws.some((p) => p.active && !p.title.trim() && p.pid === x.pid))
   return own.find((x) => x.title === lastSeen) ?? own.at(-1) ?? null
 }
+async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
+  let ws = seed ?? await desk.windows()
+  for (const end = Date.now() + ms; !ok(ws) && Date.now() < end;) ws = (await desk.wait(ws, end - Date.now())).windows
+  return ws
+}
 async function current(bound = SETTLE) {
   const k = pressed; pressed = null; const t0 = Date.now()
-  while (k && Date.now() - k.at < bound) { const f = await focused(); if (f && f.title !== k.title) break; await sleep(10) }
-  tick('settle', t0); return focused()
+  const ws = k ? await until((ws) => { const f = focusedIn(ws); return !!f && f.title !== k.title }, bound - (t0 - k.at)) : await desk.windows()
+  tick('settle', t0); return focusedIn(ws)
 }
-async function titled(title: string, pid: number | null) { return pid !== null && (await desk.windows()).some((x) => x.title === title && x.pid === pid) }
+const titledIn = (ws: Win[], title: string, pid: number | null) => pid !== null && ws.some((x) => x.title === title && x.pid === pid)
+async function titled(title: string, pid: number | null) { return titledIn(await desk.windows(), title, pid) }
 async function snapOf(w: Win, r: Reads = {}): Promise<desk.Snap> {
   return desk.snapshot(w.title, { pid: w.pid, ...r })
 }
@@ -617,7 +624,7 @@ async function choose(nodes: Node[], n: Node, rec: { via?: string }, open = fals
 
 async function settle(before: string | undefined) {
   const t0 = Date.now()
-  for (let i = 0; i < 6 && (await focused())?.title === before; i++) await sleep(25)
+  await until((ws) => focusedIn(ws)?.title !== before, 150)
   tick('settle', t0)
 }
 
@@ -636,22 +643,21 @@ async function submit(w: Win, chooser = false) {
   if (chooser) await ready(w)
   const t0 = Date.now()
   const [title, pid] = [w.title, w.pid]
-  const open = () => titled(title, pid)
-  for (let i = 0; i < 3 && await open(); i++) {
+  let ws = await desk.windows()
+  for (let i = 0; i < 3 && titledIn(ws, title, pid); i++) {
     await desk.key('Return')
-    for (let k = 0; k < 15 && await open(); k++) await sleep(40)
+    ws = await until((ws) => !titledIn(ws, title, pid), 600)
   }
   tick('submit', t0)
-  if (await open() && (await focused())?.title === title) throw new Surprise(`"${title}" is still open after Return`, await seen())
+  if (titledIn(ws, title, pid) && focusedIn(ws)?.title === title) throw new Surprise(`"${title}" is still open after Return`, await seen())
 }
 
 async function closed(title: string, pid: number | null) {
   const t0 = Date.now()
-  const open = () => titled(title, pid)
-  const landed = async () => { const f = await focused(); return !!f && f.title !== title && f.pid !== null }
-  for (let k = 0; k < 25 && await open(); k++) await sleep(40)
-  for (let k = 0; k < 25 && !(await open()) && !(await landed()); k++) await sleep(20)
-  tick('settle', t0); return !(await open())
+  const landed = (ws: Win[]) => { const f = focusedIn(ws); return !!f && f.title !== title && f.pid !== null }
+  const gone = await until((ws) => !titledIn(ws, title, pid), 1000)
+  const ws = await until((ws) => titledIn(ws, title, pid) || landed(ws), 500, gone)
+  tick('settle', t0); return !titledIn(ws, title, pid)
 }
 
 // a replay checks that the field its first typing filled from empty is still empty
