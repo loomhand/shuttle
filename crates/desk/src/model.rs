@@ -89,6 +89,8 @@ pub struct Node {
     pub value: Option<String>,
     pub shortcut: Option<String>,
     pub mnemonic: Option<String>,
+    /// The raw key binding of a Linux element, `mnemonic;sequence;accelerator`.
+    pub keys: Option<String>,
     pub bounds: Option<[i32; 4]>,
 }
 
@@ -117,6 +119,7 @@ impl Node {
             ("value", self.value.as_deref()),
             ("shortcut", self.shortcut.as_deref()),
             ("mnemonic", self.mnemonic.as_deref()),
+            ("keys", self.keys.as_deref()),
         ];
         for (key, field) in optional {
             if let Some(field) = field {
