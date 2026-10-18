@@ -54,8 +54,7 @@ pub fn run(args: &[String]) -> ExitCode {
             ))
         }
         "desk" => call_desk(rest),
-        "stop" => safety("safety_stop"),
-        "resume" => safety("safety_resume"),
+        "stop" | "resume" => safety(cmd),
         _ => usage(),
     }
 }
@@ -64,23 +63,13 @@ fn desk_endpoint() -> String {
     server::cache_endpoint("SHUTTLE_SOCKET", &format!("{NAME}-desk"), NAME, "desk.sock")
 }
 
-fn safety(tool: &str) -> ExitCode {
+fn safety(cmd: &str) -> ExitCode {
     let call = Call {
         agent_id: "user".to_owned(),
-        tool: tool.to_owned(),
+        tool: format!("safety_{cmd}"),
         args: serde_json::json!({}),
     };
-    match block_on(
-        Builder::new_current_thread(),
-        server::call(&desk_endpoint(), &call),
-    ) {
-        Ok(out) if !out.is_error => {
-            let _ = writeln!(std::io::stdout(), "{}", out.text);
-            ExitCode::SUCCESS
-        }
-        Ok(out) => fail(out.text),
-        Err(e) => fail(format_args!("no daemon answers: {e}")),
-    }
+    send(&call, cmd)
 }
 
 fn call_desk(rest: &[String]) -> ExitCode {
@@ -98,17 +87,20 @@ fn call_desk(rest: &[String]) -> ExitCode {
             return usage();
         }
     };
-    let out = block_on(
+    send(&call, format_args!("desk {verb}"))
+}
+
+fn send(call: &Call, what: impl Display) -> ExitCode {
+    match block_on(
         Builder::new_current_thread(),
-        server::call(&desk_endpoint(), &call),
-    );
-    match out {
+        server::call(&desk_endpoint(), call),
+    ) {
         Ok(out) if !out.is_error => {
             let _ = writeln!(std::io::stdout(), "{}", out.text);
             ExitCode::SUCCESS
         }
-        Ok(out) => fail(format_args!("desk {verb}: {}", out.text)),
-        Err(e) => fail(format_args!("desk {verb}: {e}")),
+        Ok(out) => fail(format_args!("{what}: {}", out.text)),
+        Err(e) => fail(format_args!("{what}: no daemon answers: {e}")),
     }
 }
 
