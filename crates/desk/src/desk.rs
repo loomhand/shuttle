@@ -917,8 +917,8 @@ fn outline(nodes: &[Node], max_chars: usize) -> String {
                 let _ = write!(out, " [{state}]");
             }
         }
-        if let Some(s) = &n.shortcut {
-            let _ = write!(out, " [{s}]");
+        if let Some(k) = n.keys.as_ref().or(n.shortcut.as_ref()) {
+            let _ = write!(out, " [{k}]");
         }
         if !n.id.is_empty() {
             let _ = write!(out, " [id={}]", n.id);
@@ -948,6 +948,26 @@ pub(crate) mod tests {
 
     static ACTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
     static MENUS: Mutex<Vec<bool>> = Mutex::new(Vec::new());
+
+    #[test]
+    fn an_outline_shows_a_linux_raw_key_binding_in_place_of_the_shortcut() {
+        let n = |keys: Option<&str>| Node {
+            id: "1.2/3".into(),
+            role: "menuitem",
+            name: "Save".into(),
+            shortcut: Some("ctrl+s".into()),
+            keys: keys.map(str::to_owned),
+            ..Node::default()
+        };
+        assert_eq!(
+            outline(&[n(Some("<Alt>s;;<Control>s"))], 80),
+            "- menuitem \"Save\" [<Alt>s;;<Control>s] [id=1.2/3]\n"
+        );
+        assert_eq!(
+            outline(&[n(None)], 80),
+            "- menuitem \"Save\" [ctrl+s] [id=1.2/3]\n"
+        );
+    }
 
     #[derive(Default)]
     pub(crate) struct Fake {
