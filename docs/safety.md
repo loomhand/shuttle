@@ -18,7 +18,7 @@ A global hotkey does the same stop, and the indicator's menu has Stop and Resume
 | Windows | Ctrl+Alt+Shift+Esc | `RegisterHotKey` |
 | Linux (X11) | Ctrl+Alt+Shift+Esc | `XGrabKey` |
 
-Set `kill_hotkey` in [config.md](config.md) to change it. On macOS a system permission prompt in front holds the hotkey until the prompt closes; `cocoon-shuttle stop` works regardless. On Wayland a global hotkey depends on the compositor's GlobalShortcuts portal; where there is none, `cocoon-shuttle stop` from a terminal is the kill switch.
+Set `kill_hotkey` in [config.md](config.md) to change it, or to `off` to register no global hotkey (the menu's Stop and `cocoon-shuttle stop` remain). On macOS a system permission prompt in front holds the hotkey until the prompt closes; `cocoon-shuttle stop` works regardless. On Wayland a global hotkey depends on the compositor's GlobalShortcuts portal; where there is none, `cocoon-shuttle stop` from a terminal is the kill switch.
 
 ## Indicator
 

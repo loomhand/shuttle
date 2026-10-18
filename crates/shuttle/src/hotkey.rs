@@ -1,4 +1,4 @@
-//! The kill hotkey: a `ctrl+alt+cmd+escape` string as a virtual key code and modifier mask, macOS Carbon or Windows `RegisterHotKey`.
+//! The kill hotkey: a `ctrl+alt+cmd+escape` string as a virtual key code and modifier mask, macOS Carbon or Windows `RegisterHotKey`; `off` registers none.
 
 const CMD: u32 = 1 << 8;
 const SHIFT: u32 = 1 << 9;
@@ -9,6 +9,8 @@ const MOD_ALT: u32 = 0x1;
 const MOD_CONTROL: u32 = 0x2;
 const MOD_SHIFT: u32 = 0x4;
 const MOD_WIN: u32 = 0x8;
+
+const OFF: &str = "off";
 
 const KEYS: [(&str, u32, u32); 53] = [
     ("escape", 53, 0x1B),
@@ -73,13 +75,16 @@ pub struct Hotkey {
     pub modifiers: u32,
 }
 
-/// Reads `ctrl+alt+cmd+escape`: modifiers, then one key; a hotkey without a modifier would take that key from every app.
-pub fn parse(spec: &str) -> Result<Hotkey, String> {
+/// Reads `ctrl+alt+cmd+escape`: modifiers, then one key; a hotkey without a modifier would take that key from every app. `off` is no hotkey.
+pub fn parse(spec: &str) -> Result<Option<Hotkey>, String> {
     parse_for(spec, cfg!(windows))
 }
 
-fn parse_for(spec: &str, windows: bool) -> Result<Hotkey, String> {
+fn parse_for(spec: &str, windows: bool) -> Result<Option<Hotkey>, String> {
     let lower = spec.to_lowercase();
+    if lower.trim() == OFF {
+        return Ok(None);
+    }
     let mut parts = lower.split('+').map(str::trim);
     let key = parts.next_back().unwrap_or_default();
     let mut modifiers = 0;
@@ -101,7 +106,7 @@ fn parse_for(spec: &str, windows: bool) -> Result<Hotkey, String> {
         .find(|(k, _, _)| *k == key)
         .map(|&(_, mac, win)| if windows { win } else { mac })
         .ok_or_else(|| format!("kill_hotkey {spec}: unknown key {key}"))?;
-    Ok(Hotkey { code, modifiers })
+    Ok(Some(Hotkey { code, modifiers }))
 }
 
 #[cfg(test)]
@@ -112,17 +117,17 @@ mod tests {
     fn the_default_and_spelled_out_combinations_parse_and_a_bare_or_unknown_key_does_not() {
         assert_eq!(
             parse_for("ctrl+alt+cmd+escape", false),
-            Ok(Hotkey {
+            Ok(Some(Hotkey {
                 code: 53,
                 modifiers: CONTROL | OPTION | CMD
-            })
+            }))
         );
         assert_eq!(
             parse_for("Control + Option + K", false),
-            Ok(Hotkey {
+            Ok(Some(Hotkey {
                 code: 40,
                 modifiers: CONTROL | OPTION
-            })
+            }))
         );
         assert!(
             parse_for("escape", false)
@@ -145,25 +150,35 @@ mod tests {
     fn windows_combinations_parse_to_virtual_keys_and_register_hotkey_modifiers() {
         assert_eq!(
             parse_for("ctrl+alt+shift+escape", true),
-            Ok(Hotkey {
+            Ok(Some(Hotkey {
                 code: 0x1B,
                 modifiers: MOD_CONTROL | MOD_ALT | MOD_SHIFT
-            })
+            }))
         );
         assert_eq!(
             parse_for("Win + F12", true),
-            Ok(Hotkey {
+            Ok(Some(Hotkey {
                 code: 0x7B,
                 modifiers: MOD_WIN
-            })
+            }))
         );
         assert_eq!(
             parse_for("ctrl+shift+k", true),
-            Ok(Hotkey {
+            Ok(Some(Hotkey {
                 code: 0x4B,
                 modifiers: MOD_CONTROL | MOD_SHIFT
-            })
+            }))
         );
         assert!(parse_for("escape", true).is_err());
+    }
+
+    #[test]
+    fn off_in_any_case_or_spacing_is_no_hotkey_on_either_os() {
+        for windows in [false, true] {
+            for spec in ["off", "OFF", " Off "] {
+                assert_eq!(parse_for(spec, windows), Ok(None), "{spec}");
+            }
+        }
+        assert!(parse_for("ctrl+off", false).is_err());
     }
 }

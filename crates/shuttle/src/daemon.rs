@@ -61,8 +61,9 @@ pub trait Controls: Send + Sync {
 #[cfg(any(target_os = "macos", windows))]
 pub struct Ui {
     pub controls: Arc<dyn Controls>,
-    pub hotkey: Hotkey,
-    pub hotkey_label: String,
+    pub hotkey: Option<Hotkey>,
+    /// The Stop entry's title, with the hotkey when one is set.
+    pub stop_label: String,
     pub indicator: bool,
 }
 
