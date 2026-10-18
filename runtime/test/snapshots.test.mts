@@ -223,3 +223,29 @@ test('a menu step asks for the menu bar and a click step does not', async () => 
     server.close()
   }
 })
+
+test('a click on macOS whose target sits only in the menu bar reads the window again with its menu bar before any model call', { skip: process.platform !== 'darwin' }, async () => {
+  const win = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
+  const calls: string[] = []
+  const server = await toolhost(({ tool, args }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') {
+      const bar = args.menus ? [
+        { ref: 2, id: '1/3', parent: 0, depth: 1, role: 'menubar', name: '', states: ['showing'] },
+        { ref: 3, id: '1/4', parent: 2, depth: 2, role: 'menu', name: 'Editor', states: ['showing'], bounds: [0, 0, 30, 20] },
+        { ref: 4, id: '1/5', parent: 3, depth: 3, role: 'menuitem', name: 'Settings…', states: [], shortcut: 'cmd+,' },
+      ] : []
+      return JSON.stringify({ window: win, truncated: false, nodes: [root('window', win.title), { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'OK', states: ['showing'], bounds: [10, 10, 40, 20] }, ...bar] })
+    }
+    return '{"ok":true}'
+  })
+  const { main } = await import('../lib/gui_plan.mts')
+  try {
+    const r = await main({ steps: [{ click: 'Settings…' }] })
+    assert.equal(r.ok, true, JSON.stringify(r))
+    assert.ok(!calls.some((c) => c.startsWith('model_') || c === 'desk_shot'), calls.join(' '))
+  } finally {
+    server.close()
+  }
+})
