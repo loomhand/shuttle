@@ -6,7 +6,10 @@ import android.graphics.Rect;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 import com.android.uiautomator.core.UiAutomationShellWrapper;
+import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.util.List;
@@ -21,6 +24,7 @@ public final class Ui {
     private static final long IDLE_MS = 100;
     private static final long IDLE_TIMEOUT_MS = 1000;
     private static final String END = "<<end>>";
+    private static final int OUT_BUFFER = 1 << 20;
 
     public static void main(String[] args) throws Exception {
         UiAutomationShellWrapper wrapper = new UiAutomationShellWrapper();
@@ -31,7 +35,8 @@ public final class Ui {
         info.flags |= AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS;
         ui.setServiceInfo(info);
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in, "UTF-8"));
-        PrintStream out = new PrintStream(System.out, false, "UTF-8");
+        PrintStream out = new PrintStream(
+                new BufferedOutputStream(new FileOutputStream(FileDescriptor.out), OUT_BUFFER), false, "UTF-8");
         out.println("ready");
         out.flush();
         String line;
