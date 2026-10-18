@@ -949,6 +949,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             Some(self.mask(factor).await?)
         };
         let (w, h, png) = crop_png(&png, rect, factor, mask.as_deref())?;
+        if self.os == Os::Linux {
+            return delivered(png, w, h, a.path).await;
+        }
         Ok(Output {
             text: json!({"ok": true, "width": w, "height": h}).to_string(),
             image_b64: Some(B64.encode(&png)),
@@ -965,22 +968,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             Some(self.mask(1.0).await?)
         };
         let png = rgb_png(c.rgb, rect, mask.as_deref())?;
-        let image = B64.encode(&png);
-        let mut out = json!({"ok": true, "width": rect[2], "height": rect[3]});
-        match path {
-            Some(path) => {
-                tokio::fs::write(&path, &png)
-                    .await
-                    .map_err(|e| format!("write {path}: {e}"))?;
-                out["path"] = path.into();
-            }
-            None => out["png_b64"] = image.clone().into(),
-        }
-        Ok(Output {
-            text: out.to_string(),
-            image_b64: Some(image),
-            ..Output::default()
-        })
+        delivered(png, rect[2], rect[3], path).await
     }
 
     async fn mask(&self, factor: f64) -> Result<Vec<([f64; 4], bool)>, String> {
@@ -1037,6 +1025,26 @@ fn live(frame: Frame) -> Result<Frame, String> {
         ));
     }
     Ok(frame)
+}
+
+/// A Linux shot's answer: the PNG as the image and, in the text, `png_b64` or the file at `path` it is written to.
+async fn delivered(png: Vec<u8>, w: u32, h: u32, path: Option<String>) -> Result<Output, String> {
+    let image = B64.encode(&png);
+    let mut out = json!({"ok": true, "width": w, "height": h});
+    match path {
+        Some(path) => {
+            tokio::fs::write(&path, &png)
+                .await
+                .map_err(|e| format!("write {path}: {e}"))?;
+            out["path"] = path.into();
+        }
+        None => out["png_b64"] = image.clone().into(),
+    }
+    Ok(Output {
+        text: out.to_string(),
+        image_b64: Some(image),
+        ..Output::default()
+    })
 }
 
 /// Sets its flag when dropped, as when a stop drops the call that holds it.
@@ -2244,6 +2252,27 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert!(pixels(&crop).iter().all(|p| *p == [0; 3]));
+    }
+
+    #[tokio::test]
+    async fn a_linux_shot_from_the_driver_answers_png_b64_or_writes_its_path() {
+        let desk = Desk::new(|| Ok(Apps), Desktop(Arc::default()), Os::Linux);
+        let shot = desk.run("desk_shot", json!({})).await.unwrap();
+        let text: Value = serde_json::from_str(&shot.text).unwrap();
+        assert_eq!(text["png_b64"].as_str(), shot.image_b64.as_deref());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        let shot = desk
+            .run("desk_shot", json!({"path": path.to_string_lossy()}))
+            .await
+            .unwrap();
+        let text: Value = serde_json::from_str(&shot.text).unwrap();
+        assert_eq!(text["path"].as_str(), Some(&*path.to_string_lossy()));
+        assert!(text.get("png_b64").is_none(), "{text}");
+        assert_eq!(
+            B64.encode(std::fs::read(&path).unwrap()),
+            shot.image_b64.unwrap()
+        );
     }
 
     #[tokio::test]
