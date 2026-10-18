@@ -1,7 +1,9 @@
 //! The macOS controls on the main thread's AppKit loop: the kill hotkey, the menu-bar indicator with Stop and Resume, and the confirm dialog.
 
+use std::cell::RefCell;
 use std::ffi::c_void;
 use std::io::Write as _;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use block2::RcBlock;
@@ -53,13 +55,17 @@ pub fn asker() -> Asker {
     Arc::new(|question| {
         let (tx, rx) = oneshot::channel();
         DispatchQueue::main().exec_async(move || {
-            let _ = tx.send(ask(&question));
+            let tx = Rc::new(RefCell::new(Some(tx)));
+            let yes = ask(&question, &tx);
+            if let Some(tx) = tx.borrow_mut().take() {
+                let _ = tx.send(yes);
+            }
         });
         rx
     })
 }
 
-fn ask(question: &str) -> bool {
+fn ask(question: &str, tx: &Rc<RefCell<Option<oneshot::Sender<bool>>>>) -> bool {
     let Some(mtm) = MainThreadMarker::new() else {
         return false;
     };
@@ -70,7 +76,25 @@ fn ask(question: &str) -> bool {
     alert.setInformativeText(&NSString::from_str(question));
     alert.addButtonWithTitle(&NSString::from_str("Allow"));
     alert.addButtonWithTitle(&NSString::from_str("Decline"));
-    alert.runModal() == NSAlertFirstButtonReturn
+    let call = Rc::clone(tx);
+    let gone = RcBlock::new(move |_: std::ptr::NonNull<NSTimer>| {
+        if call
+            .borrow()
+            .as_ref()
+            .is_none_or(oneshot::Sender::is_closed)
+        {
+            NSApplication::sharedApplication(mtm).abortModal();
+        }
+    });
+    // SAFETY: the block lives until the timer is invalidated below, after the dialog ends.
+    let timer = unsafe {
+        let timer = NSTimer::timerWithTimeInterval_repeats_block(POLL_S, true, &gone);
+        NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
+        timer
+    };
+    let yes = alert.runModal() == NSAlertFirstButtonReturn;
+    timer.invalidate();
+    yes
 }
 
 struct Indicator {
