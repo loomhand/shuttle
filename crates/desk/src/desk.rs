@@ -166,7 +166,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let (tree, found) = self
             .access
             .run(TREE_LIMIT, (), move |b| {
-                let frame = live(allow.pick(b.frames()?, window.as_deref(), pid)?)?;
+                let frame = live(allow.pick(frames(b, pid, &allow)?, window.as_deref(), pid)?)?;
                 let found = started.elapsed().as_micros();
                 Ok((b.tree(&frame, extras)?, found))
             })
@@ -207,7 +207,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let tree = self
             .access
             .run(TREE_LIMIT, (), move |b| {
-                let frame = live(allow.pick(b.frames()?, window.as_deref(), pid)?)?;
+                let frame = live(allow.pick(frames(b, pid, &allow)?, window.as_deref(), pid)?)?;
                 b.tree(&frame, extras)
             })
             .await?;
@@ -283,7 +283,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let allow = self.allow.clone();
         self.access
             .run(CALL_LIMIT, (), move |b| {
-                let frames = b.frames()?;
+                let frames = frames(b, a.pid, &allow)?;
                 let frame = live(allow.pick(frames.clone(), a.window.as_deref(), a.pid)?)?;
                 let Some(hit) = b.at(&frame.id, a.x, a.y)? else {
                     return Ok(json!({"found": null, "window": frame}).to_string());
@@ -313,7 +313,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let allow = self.allow.clone();
         self.access
             .run(CALL_LIMIT, turn, move |b| {
-                let frame = live(allow.pick(b.frames()?, Some(&a.window), a.pid)?)?;
+                let frame = live(allow.pick(frames(b, a.pid, &allow)?, Some(&a.window), a.pid)?)?;
                 b.close(&frame)?;
                 Ok(json!({"ok": true, "title": frame.title}).to_string())
             })
@@ -713,6 +713,14 @@ struct Read {
     id: i64,
     bounds: [f64; 4],
     k: (f64, f64),
+}
+
+/// The windows a call picks from: the app of `pid` alone, unless the allowlist needs every window to judge the call.
+fn frames<B: Access>(b: &mut B, pid: Option<u32>, allow: &Allow) -> Result<Vec<Frame>, String> {
+    match pid {
+        Some(p) if allow.is_open() => b.frames_of(p),
+        _ => b.frames(),
+    }
 }
 
 fn live(frame: Frame) -> Result<Frame, String> {
@@ -1355,6 +1363,97 @@ mod tests {
             assert!(err.contains("stale"), "{tool}: {err}");
         }
         assert!(STALE_CLOSED.lock().unwrap().is_empty());
+    }
+
+    struct OneApp {
+        scoped: bool,
+    }
+
+    impl Access for OneApp {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            if self.scoped {
+                return Err("every app was read".into());
+            }
+            self.frames_of(4)
+        }
+
+        fn frames_of(&mut self, pid: u32) -> Result<Vec<Frame>, String> {
+            Ok(vec![Frame {
+                id: "w".into(),
+                title: "Untitled - Notepad".into(),
+                role: "window",
+                pid: Some(pid),
+                active: true,
+                app: Some("Notepad".into()),
+                stale: false,
+            }])
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            Ok(Tree {
+                frame: frame.clone(),
+                ..Tree::default()
+            })
+        }
+
+        fn node(&mut self, _: &str, _: Extras, _: usize) -> Result<Node, String> {
+            Err("no node".into())
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Ok(false)
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    const PID_CALLS: [(&str, &str); 4] = [
+        ("desk_snapshot", r#"{"pid": 4}"#),
+        ("desk_find", r#"{"name": "Save", "pid": 4}"#),
+        ("desk_at", r#"{"x": 1, "y": 1, "pid": 4}"#),
+        ("desk_close", r#"{"window": "Notepad", "pid": 4}"#),
+    ];
+
+    #[tokio::test]
+    async fn a_call_that_names_a_process_reads_only_that_app_s_windows() {
+        let desk = Desk::new(
+            || Ok(OneApp { scoped: true }),
+            Slow(Arc::default()),
+            Os::Mac,
+        );
+        for (tool, args) in PID_CALLS {
+            desk.run(tool, serde_json::from_str(args).unwrap())
+                .await
+                .unwrap();
+        }
+        assert!(desk.run("desk_snapshot", json!({})).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn with_an_allowlist_a_call_that_names_a_process_still_reads_every_window() {
+        let desk = Desk::new(
+            || Ok(OneApp { scoped: true }),
+            Slow(Arc::default()),
+            Os::Mac,
+        )
+        .allow(vec!["Notepad".into()]);
+        for (tool, args) in PID_CALLS {
+            let err = desk
+                .run(tool, serde_json::from_str(args).unwrap())
+                .await
+                .unwrap_err();
+            assert_eq!(err, "every app was read", "{tool}");
+        }
     }
 
     #[tokio::test]

@@ -110,6 +110,97 @@ impl Ax {
         })
     }
 
+    fn listed(&mut self) -> Vec<i32> {
+        let pids = window_pids();
+        self.hung.retain(|_, at| at.elapsed() < HUNG_SKIP);
+        self.last.retain(|p, _| pids.contains(p));
+        self.slow.retain(|p, _| pids.contains(p));
+        pids
+    }
+
+    fn app_frames(&mut self, pids: impl IntoIterator<Item = i32>) -> Vec<Frame> {
+        let mut frames = Vec::new();
+        for p in pids {
+            if self.hung.contains_key(&p) {
+                continue;
+            }
+            let app = application(p);
+            let asked = Instant::now();
+            let read = values(&self.app_names, &app);
+            if read.iter().all(Option::is_none) && asked.elapsed() >= MESSAGING_TIMEOUT * 9 / 10 {
+                if self.slow.entry(p).or_insert(asked).elapsed() < HUNG_AFTER {
+                    let kept = self.last.get(&p).into_iter().flatten();
+                    frames.extend(kept.map(|f| Frame {
+                        stale: true,
+                        ..f.clone()
+                    }));
+                } else {
+                    self.slow.remove(&p);
+                    self.last.remove(&p);
+                    self.hung.insert(p, Instant::now());
+                }
+                continue;
+            }
+            self.slow.remove(&p);
+            let from = frames.len();
+            let [name, front, focused, main, windows] = read;
+            let name = name
+                .and_then(|v| v.downcast::<CFString>())
+                .map(|s| s.to_string());
+            let front = boolean(front).unwrap_or(false);
+            let focused = focused.or(main);
+            let Some(windows) = windows.map(|w| items(&w)) else {
+                continue;
+            };
+            for w in windows.iter() {
+                let [role, subrole, title, children] = values(&self.frame_names, w);
+                let children = children.map(|c| items(&c)).unwrap_or_default();
+                let sheets: Vec<&CFType> = children
+                    .iter()
+                    .filter(|c| string(attr(c, "AXRole")) == "AXSheet")
+                    .collect();
+                let mine = focused
+                    .as_ref()
+                    .is_some_and(|f| f == w || sheets.contains(&f));
+                let mut active = front && mine;
+                let title = string(title).trim().to_owned();
+                for sheet in sheets {
+                    let s = attrs(&self.names, sheet);
+                    frames.push(Frame {
+                        id: self.id_of(sheet),
+                        title: [s.title, s.description]
+                            .into_iter()
+                            .find(|t| !t.is_empty())
+                            .unwrap_or_else(|| title.clone()),
+                        role: "dialog",
+                        pid: Some(p as u32),
+                        active,
+                        app: name.clone(),
+                        stale: false,
+                    });
+                    active = false;
+                }
+                let (role, subrole) = (string(role), string(subrole));
+                let kind = Kind {
+                    role: &role,
+                    subrole: &subrole,
+                    ..Kind::default()
+                };
+                frames.push(Frame {
+                    id: self.id_of(w),
+                    title,
+                    role: ax_roles::role(kind).unwrap_or("window"),
+                    pid: Some(p as u32),
+                    active,
+                    app: name.clone(),
+                    stale: false,
+                });
+            }
+            self.last.insert(p, frames[from..].to_vec());
+        }
+        frames
+    }
+
     fn id_of(&mut self, el: &CFType) -> String {
         // SAFETY: `el` is a live CF object for the duration of the call.
         let hash = unsafe { CFHash(el.as_CFTypeRef()) };
@@ -234,90 +325,13 @@ impl Ax {
 
 impl Access for Ax {
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
-        let mut frames = Vec::new();
-        self.hung.retain(|_, at| at.elapsed() < HUNG_SKIP);
-        let pids = window_pids();
-        self.last.retain(|p, _| pids.contains(p));
-        self.slow.retain(|p, _| pids.contains(p));
-        for p in pids {
-            if self.hung.contains_key(&p) {
-                continue;
-            }
-            let app = application(p);
-            let asked = Instant::now();
-            let read = values(&self.app_names, &app);
-            if read.iter().all(Option::is_none) && asked.elapsed() >= MESSAGING_TIMEOUT * 9 / 10 {
-                if self.slow.entry(p).or_insert(asked).elapsed() < HUNG_AFTER {
-                    let kept = self.last.get(&p).into_iter().flatten();
-                    frames.extend(kept.map(|f| Frame {
-                        stale: true,
-                        ..f.clone()
-                    }));
-                } else {
-                    self.slow.remove(&p);
-                    self.last.remove(&p);
-                    self.hung.insert(p, Instant::now());
-                }
-                continue;
-            }
-            self.slow.remove(&p);
-            let from = frames.len();
-            let [name, front, focused, main, windows] = read;
-            let name = name
-                .and_then(|v| v.downcast::<CFString>())
-                .map(|s| s.to_string());
-            let front = boolean(front).unwrap_or(false);
-            let focused = focused.or(main);
-            let Some(windows) = windows.map(|w| items(&w)) else {
-                continue;
-            };
-            for w in windows.iter() {
-                let [role, subrole, title, children] = values(&self.frame_names, w);
-                let children = children.map(|c| items(&c)).unwrap_or_default();
-                let sheets: Vec<&CFType> = children
-                    .iter()
-                    .filter(|c| string(attr(c, "AXRole")) == "AXSheet")
-                    .collect();
-                let mine = focused
-                    .as_ref()
-                    .is_some_and(|f| f == w || sheets.contains(&f));
-                let mut active = front && mine;
-                let title = string(title).trim().to_owned();
-                for sheet in sheets {
-                    let s = attrs(&self.names, sheet);
-                    frames.push(Frame {
-                        id: self.id_of(sheet),
-                        title: [s.title, s.description]
-                            .into_iter()
-                            .find(|t| !t.is_empty())
-                            .unwrap_or_else(|| title.clone()),
-                        role: "dialog",
-                        pid: Some(p as u32),
-                        active,
-                        app: name.clone(),
-                        stale: false,
-                    });
-                    active = false;
-                }
-                let (role, subrole) = (string(role), string(subrole));
-                let kind = Kind {
-                    role: &role,
-                    subrole: &subrole,
-                    ..Kind::default()
-                };
-                frames.push(Frame {
-                    id: self.id_of(w),
-                    title,
-                    role: ax_roles::role(kind).unwrap_or("window"),
-                    pid: Some(p as u32),
-                    active,
-                    app: name.clone(),
-                    stale: false,
-                });
-            }
-            self.last.insert(p, frames[from..].to_vec());
-        }
-        Ok(frames)
+        let pids = self.listed();
+        Ok(self.app_frames(pids))
+    }
+
+    fn frames_of(&mut self, pid: u32) -> Result<Vec<Frame>, String> {
+        let pids = self.listed().into_iter().filter(|&p| p as u32 == pid);
+        Ok(self.app_frames(pids))
     }
 
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
