@@ -5,7 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 
 const FLOWS = `${mkdtempSync(`${tmpdir()}/flows-`)}/flows`
 
-export const endpoint = (dir: string) => process.platform === 'win32' ? `\\\\.\\pipe\\${dir.replace(/[\\/:]/g, '-')}` : `${dir}/toolhost.sock`
+export const endpoint = (dir: string): string => process.platform === 'win32' ? `\\\\.\\pipe\\${dir.replace(/[\\/:]/g, '-')}` : `${dir}/toolhost.sock`
 
 export type Call = { tool: string; args: Record<string, unknown> }
 export type Reply = string | { text: string; error?: boolean; image?: string }

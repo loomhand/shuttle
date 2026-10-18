@@ -4,6 +4,7 @@ import type { Server } from 'node:net'
 import { after, before, test } from 'node:test'
 import { crc32, deflateSync, inflateSync } from 'node:zlib'
 
+import type { Size } from '../lib/desk.mts'
 import type { Result } from '../lib/gui_plan.mts'
 import { toolhost, type Call, type Reply } from './toolhost.mts'
 
@@ -11,7 +12,6 @@ type El = { ref: number; id: string; parent: number; depth: number; role: string
 type Spec = Omit<El, 'ref' | 'depth' | 'states'> & { states?: string[] }
 type Part = string | { image_url?: { url: string } }
 type Decide = { state: unknown; questions: Record<string, { type: string }>; image: boolean }
-type Area = { left?: number; top?: number; width: number; height: number }
 type RunStep = { checked?: string; p?: number; p_zoom?: number | null; p_full?: number | null; served?: unknown[] }
 
 const win = { id: '1.1/1', title: 'Portal', role: 'frame', pid: process.pid, active: true }
@@ -40,7 +40,7 @@ let server: Server | undefined
 function answer({ tool, args }: Call): Reply {
   if (tool === 'model_decide') return decide(args as Decide)
   if (tool === 'model_ground') {
-    const a = args.area as Area
+    const a = args.area as Size
     return JSON.stringify({ x: (a.left ?? 0) + a.width / 2, y: (a.top ?? 0) + a.height / 2, usage })
   }
   if (tool === 'model_ask') return JSON.stringify({ text: '{"on": false}', usage })
@@ -82,7 +82,7 @@ function decide({ state, questions, image }: Decide): Reply {
 function gray(w: number, h: number, tone = 128) {
   const chunk = (kind: string, data: Buffer) => {
     const head = Buffer.alloc(8), crc = Buffer.alloc(4); head.writeUInt32BE(data.length); head.write(kind, 4, 'ascii')
-    crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data])) >>> 0); return Buffer.concat([head, data, crc])
+    crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data]))); return Buffer.concat([head, data, crc])
   }
   const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 6
   const raw = Buffer.alloc(h * (w * 4 + 1), tone); for (let y = 0; y < h; y++) raw[y * (w * 4 + 1)] = 0

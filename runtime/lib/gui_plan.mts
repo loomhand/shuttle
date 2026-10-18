@@ -1,7 +1,9 @@
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { win32 } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { isDeepStrictEqual } from 'node:util'
 import { crc32, deflateSync, inflateSync } from 'node:zlib'
 import * as desk from './desk.mts'
 import type { Win } from './desk.mts'
@@ -129,7 +131,7 @@ async function perform(p: Params): Promise<Result> {
       const kept = f && pre?.snap && f.title !== pressed?.title ? { ...r, id: f.id, snap: pre.snap } : undefined
       const prev = plan[i - 1]
       await run(s, rec, kept).catch(async (e: unknown) => {
-        const late = (x: unknown) => x instanceof Surprise && (x.reason.startsWith('no element matches') || x.reason === 'no focused window')
+        const late = (x: unknown) => x instanceof Surprise && x.late
         if (!late(e) || !(prev?.menu || prev?.click || prev?.key)) throw e
         for (const end = Date.now() + 3000; ; await sleep(200)) {
           try { return await run(s, rec) } catch (again: unknown) { if (!late(again) || Date.now() > end) throw again }
@@ -164,9 +166,9 @@ async function perform(p: Params): Promise<Result> {
   const jevs = recs.filter((r) => r?.pick).length
   const settled = !escalate && !opened
   if (flow) {
-    try { writeFileSync(PENDING, 'null', PRIVATE) } catch {}
+    putPending(null)
     if (settled && recs.every((r) => !r?.unsaved)) {
-      const rewrites = recs.filter((r, i) => r?.fp && JSON.stringify(r.fp) !== JSON.stringify(flow.steps[i]?.fp))
+      const rewrites = recs.filter((r, i) => r?.fp && !isDeepStrictEqual(r.fp, flow.steps[i]?.fp))
       flow.runs += 1
       if (rewrites.length) {
         recs.forEach((r, i) => { const st = flow.steps[i]; if (!st) return; if (r?.fp) st.fp = r.fp; if (r?.seen) st.seen = r.seen })
@@ -189,8 +191,8 @@ async function perform(p: Params): Promise<Result> {
       const end = await focused()
       chain.window = end?.title ?? null
       if (end && !SHELL_WINDOWS.test(end.title)) chain.pid = end.pid
-      try { writeFileSync(PENDING, JSON.stringify(chain), PRIVATE) } catch {}
-    } else if (prev) try { writeFileSync(PENDING, JSON.stringify({ ...prev, saved: false, escalated: false }), PRIVATE) } catch {}
+      putPending(chain)
+    } else if (prev) putPending({ ...prev, saved: false, escalated: false })
   }
   const ms = Date.now() - t0
   try { appendFileSync(LOG, `${JSON.stringify({ at: new Date().toISOString(), flow: p.flow ?? null, ok: !escalate, ms, jevs, saved: saved ?? null, usage: desk.usage, steps: log })}\n`, PRIVATE) } catch {}
@@ -205,7 +207,8 @@ async function perform(p: Params): Promise<Result> {
 class Surprise extends Error {
   reason: string
   seen: Seen
-  constructor(reason: string, seen: Seen = {}) { super(reason); this.reason = reason; this.seen = seen }
+  late: boolean
+  constructor(reason: string, seen: Seen = {}, late = false) { super(reason); this.reason = reason; this.seen = seen; this.late = late }
 }
 
 function terms(s: string) { return norm(s).split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !FILLER.has(w)).map((w) => w.length > 3 ? w.replace(/s$/, '') : w) }
@@ -287,7 +290,7 @@ async function hiddenModal(ws: Win[], f: Win | null) {
   const of = (list: Win[]) => f && list.find((x) => x.modal && x.pid === f.pid)
   if (!of(ws)) return null
   await sleep(200)
-  return of(await desk.windows()) || null
+  return of(await desk.windows()) ?? null
 }
 function modalBlocks(m: Win) { return `modal dialog "${m.title}" is open but ${m.modal}, and ${m.blocks ? `"${m.blocks}"` : 'its app'} takes no input until it closes: finish it, or close it with {close: true, window: "${m.title}"}` }
 function blocked(o: string) { return /AT-SPI peer \S+ is not responding|no accessibility answer within/.test(o) }
@@ -383,7 +386,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string): Pro
   if (!want) {
     // an untitled focused window that is no alert (a completion popup) leaves the step in the window the plan was in
     if (w && !w.title.trim() && lastSeen && !isAlert(await outline(w))) { const pid = w.pid; w = (await desk.windows()).find((x) => x.title === lastSeen && x.pid === pid) ?? w }
-    tick('wait', t0); if (!w) throw new Surprise('no focused window'); return w
+    tick('wait', t0); if (!w) throw new Surprise('no focused window', {}, true); return w
   }
   const end = Date.now() + ms; let asked: string | null = null
   for (;;) {
@@ -571,7 +574,7 @@ function unpng(png: Buffer) {
 function png(w: number, h: number, type: number, bpp: number, px: Buffer) {
   const chunk = (kind: string, data: Buffer) => {
     const head = Buffer.alloc(8), crc = Buffer.alloc(4); head.writeUInt32BE(data.length); head.write(kind, 4, 'ascii')
-    crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data])) >>> 0); return Buffer.concat([head, data, crc])
+    crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data]))); return Buffer.concat([head, data, crc])
   }
   const stride = w * bpp, raw = Buffer.alloc(h * (stride + 1)), ihdr = Buffer.alloc(13)
   for (let y = 0; y < h; y++) px.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride)
@@ -876,14 +879,14 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   const target = s.click ?? s.check ?? s.set ?? ''
   const hit = await resolve(nodes, target, targetRole(s), undefined, s.set ? 0.5 : 0.7, s.fp)
   if (!hit) {
-    if (!s.click) throw new Surprise(`no element matches "${target}"`, await seen())
+    if (!s.click) throw new Surprise(`no element matches "${target}"`, await seen(), true)
     t0 = Date.now()
     const area = await desk.screen()
     const [x, y] = await desk.ground(await desk.shot(), `${target} in the "${w.title}" window`, area)
     tick('ground', t0)
     const { what, ok, check, p, p_zoom, p_full } = await grounded(x, y, target, w, area)
     rec.ground_hit = what.slice(0, 80); rec.checked = check; rec.p = p; rec.p_zoom = p_zoom; rec.p_full = p_full
-    if (!ok) throw new Surprise(`no element matches "${target}"${what.trim() ? `; grounding pointed at ${what.slice(0, 80)}` : ''}`, await seen())
+    if (!ok) throw new Surprise(`no element matches "${target}"${what.trim() ? `; grounding pointed at ${what.slice(0, 80)}` : ''}`, await seen(), true)
     t0 = Date.now(); await desk.click(x, y); tick('act', t0)
     rec.how = 'ground'; rec.unsaved = true; await settle(w.title); return
   }
@@ -955,7 +958,7 @@ async function menuEntry(w: Win, nodes: Node[], menu: string, fp: Fp | undefined
 }
 
 function fill(s: Step, p: Record<string, string>): Step {
-  const sub = (v: string) => v.replace(/\{\{(\w+)(:base)?\}\}/g, (all: string, n: string, b: string | undefined) => { const x = p[n]; return x === undefined ? all : b ? x.split(/[\\/]/).at(-1) ?? x : x })
+  const sub = (v: string) => v.replace(/\{\{(\w+)(:base)?\}\}/g, (all: string, n: string, b: string | undefined) => { const x = p[n]; return x === undefined ? all : b ? win32.basename(x) : x })
   return Object.fromEntries(Object.entries(s).map(([k, v]) => [k, typeof v === 'string' ? sub(v) : v])) as Step
 }
 
@@ -975,8 +978,9 @@ function templated(steps: Step[], params: Record<string, string>) {
   for (const t of out) for (const k of ['wait', 'window'] as const) {
     let v = t[k]; if (!v) continue
     for (const [n, x] of Object.entries(p)) {
+      const base = win32.basename(x)
       if (x.length > 2 && v.includes(x)) v = v.replace(x, `{{${n}}}`)
-      else if (/[\\/]/.test(x) && (x.split(/[\\/]/).at(-1) ?? '').length > 2 && v.includes(x.split(/[\\/]/).at(-1) ?? '')) v = v.replace(x.split(/[\\/]/).at(-1) ?? '', `{{${n}:base}}`)
+      else if (/[\\/]/.test(x) && base.length > 2 && v.includes(base)) v = v.replace(base, `{{${n}:base}}`)
     }
     t[k] = v
   }
@@ -1049,12 +1053,16 @@ async function promote(name: string, params: Record<string, string> = {}, rerun 
   c.name = slug(name); c.named = true; c.params = { ...c.params, ...params }
   if (old && old !== c.name) rmSync(`${FLOWS}/${old}.json`, { force: true })
   store(c); c.saved = true; c.escalated = false
-  try { writeFileSync(PENDING, JSON.stringify(c), PRIVATE) } catch {}
+  putPending(c)
   return { ok: true, saved: c.name, params: templated(c.steps, c.params).params, ...(idempotent(c.steps) ? {} : { note: 'a replay of this flow types again' }) }
 }
 
 function pending(): Chain | null {
   try { return JSON.parse(readFileSync(PENDING, 'utf8')) as Chain | null } catch { return null }
+}
+
+function putPending(c: Chain | null) {
+  try { writeFileSync(PENDING, JSON.stringify(c), PRIVATE) } catch {}
 }
 
 function loadFlow(name: string): Flow {
