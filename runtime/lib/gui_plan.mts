@@ -63,7 +63,7 @@ const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'tog
 const FILLER = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'and', 'or', 'by', 'from', 'into', 'this', 'that', 'its', 'it', 'is', 'button', 'link', 'tab', 'field', 'box', 'icon', 'toggle', 'dropdown', 'input', 'control', 'item', 'entry'])
 const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close']
 const TEXT_CUT = '\n(the outline shows only the start of the window: desk snapshot or find reads the rest)'
-const TREE_CUT = '\n(the window has more elements than one accessibility read covers: the ones past the cut stay unseen until the view narrows, e.g. by scrolling or opening a pane)'
+const TREE_CUT = '\n(this accessibility read stopped before the end of the window: the elements past the cut are missing here; narrowing the view, e.g. by scrolling or opening a pane, brings them in)'
 const SHELL_BY_OS: Partial<Record<NodeJS.Platform, RegExp>> = { linux: /^(Desktop|xfce4-panel)$/, win32: /^Program Manager$/ }
 const SHELL_WINDOWS = SHELL_BY_OS[OS] ?? /(?!)/
 const SHELL_TARGET = /\b(dock|panel|taskbar|desktop)\b/i
@@ -294,7 +294,7 @@ async function outline(w: Win | null, r: Reads = {}, kept?: Kept, max = 1800) {
   return (await look(w, r, kept, max)).text
 }
 async function look(w: Win, r: Reads = {}, kept?: Kept, max = 1800): Promise<{ text: string; snap?: desk.Snap; nodes?: Node[] }> {
-  try { const k = reuse(kept, w, r); const s = k?.snap ?? await snapOf(w, r); const nodes = k?.nodes ?? parse(s); const text = render(nodes, 100, nodes.length > 60, max); return { text: `${text}${s.truncated ? TREE_CUT : text.length >= max ? TEXT_CUT : ''}`, snap: s, nodes } } catch (e: unknown) { return { text: String(e) } }
+  try { const k = reuse(kept, w, r); const s = k?.snap ?? await snapOf(w, r); const nodes = k?.nodes ?? parse(s); const full = render(nodes, 100, nodes.length > 60, max + 1); return { text: `${full.slice(0, max)}${s.truncated ? TREE_CUT : full.length > max ? TEXT_CUT : ''}`, snap: s, nodes } } catch (e: unknown) { return { text: String(e) } }
 }
 async function seen(): Promise<Seen> {
   const ws = await desk.windows(); const w = focusedIn(ws)

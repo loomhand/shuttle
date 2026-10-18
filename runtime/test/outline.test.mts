@@ -16,11 +16,11 @@ function escalation(t: { after(fn: () => void): void }, truncated: boolean, butt
   })
 }
 
-test('an outline cut by the backend node cap says the rest stays unseen until the view narrows', async (t) => {
+test('an outline cut by the backend says this read missed the rest and narrowing the view brings it in', async (t) => {
   await escalation(t, true, 3)
   const r = await main({ steps: [{ check: 'Nope' }] })
   assert.equal(r.ok, false, JSON.stringify(r))
-  assert.match(r.escalate?.outline ?? '', /more elements than one accessibility read covers/)
+  assert.match(r.escalate?.outline ?? '', /accessibility read stopped before the end of the window/)
   assert.doesNotMatch(r.escalate?.outline ?? '', /desk snapshot or find reads the rest/)
 })
 
@@ -29,5 +29,12 @@ test('an outline cut only by its text budget points to desk snapshot or find', a
   const r = await main({ steps: [{ check: 'Nope' }] })
   assert.equal(r.ok, false, JSON.stringify(r))
   assert.match(r.escalate?.outline ?? '', /desk snapshot or find reads the rest/)
-  assert.doesNotMatch(r.escalate?.outline ?? '', /accessibility read covers/)
+  assert.doesNotMatch(r.escalate?.outline ?? '', /accessibility read stopped/)
+})
+
+test('a complete outline gets no cut note', async (t) => {
+  await escalation(t, false, 3)
+  const r = await main({ steps: [{ check: 'Nope' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.doesNotMatch(r.escalate?.outline ?? '', /reads the rest|accessibility read stopped/)
 })
