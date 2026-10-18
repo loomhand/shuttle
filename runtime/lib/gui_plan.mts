@@ -56,7 +56,7 @@ const RING = 14
 const PICK_MARGIN = 0.6
 const SETTLE = 150
 const OPENING = 1000
-const INERT_KEY = /^(shift\+)?tab$|^shift\+[^+]$/i
+const INERT_KEY = /^shift\+[^+]$/i
 const ARROW_KEY = /^(shift\+)?(arrow)?(up|down|left|right)$/i
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
 const FILLER = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'and', 'or', 'by', 'from', 'into', 'this', 'that', 'its', 'it', 'is', 'button', 'link', 'tab', 'field', 'box', 'icon', 'toggle', 'dropdown', 'input', 'control', 'item', 'entry'])
@@ -152,8 +152,8 @@ async function perform(p: Params): Promise<Result> {
   let opened = false
   let end: Win | null = null
   if (!escalate) {
-    const ts = Date.now(); let ws = await desk.windows(); const was = focusedIn(ws)?.title
-    const inert = (last.type !== undefined && !last.type.includes('\n')) || (last.key !== undefined && (INERT_KEY.test(last.key) || (ARROW_KEY.test(last.key) && focusedIn(ws)?.role === 'window')))
+    const ts = Date.now(); let ws = await desk.windows(); const front = focusedIn(ws); const was = front?.title
+    const inert = (last.type !== undefined && !last.type.includes('\n')) || (last.key !== undefined && (INERT_KEY.test(last.key) || (ARROW_KEY.test(last.key) && front?.role === 'window')))
     if ((last.key || last.type !== undefined || last.click) && !recs.at(-1)?.submit && !inert) {
       await until((ws) => focusedIn(ws)?.title !== was, 480, ws)
       await sleep(80); ws = await desk.windows()
