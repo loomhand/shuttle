@@ -1,8 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Fixes.** `install.sh` checks the new program before it replaces the installed one; `install.ps1` leaves no variables in the caller's PowerShell session; `gui_plan`'s outline note no longer names tools shuttle does not have; fewer window-list reads per plan step; the run log is capped.
+
 ## 0.1.1 - 2026-10-18
 
-- **Fixes.** The Windows binary links the C runtime statically, so it starts on a Windows without the Visual C++ Redistributable (v0.1.0 exited with STATUS_DLL_NOT_FOUND, 0xC0000135); `install.ps1` fails and keeps the previous install when the new program does not start.
+- **Fixes.** The Windows binary links the C runtime statically, so it starts on a Windows without the Visual C++ Redistributable (v0.1.0 exited with STATUS_DLL_NOT_FOUND, 0xC0000135); `install.ps1` fails and keeps the previous install when the new program does not start. CI and the release fail when a Windows executable imports the Visual C++ runtime.
 
 ## 0.1.0 - 2026-10-18
 
@@ -10,7 +14,7 @@ The first usable release: shuttle drives the desktop on macOS and Windows.
 
 - **Daemon.** `cocoon-shuttle mcp` starts `cocoon-shuttle serve` on the first tool call other than `status`, which the MCP server answers itself (on macOS from `Cocoon Shuttle.app`, so the permissions go to the app). The daemon runs the bundled cua-driver on a socket of its own, restarts it when it exits and stops it with itself; desk actions run one at a time.
 - **Tools.** `desk` (windows, wait, snapshot, find, read, press, act, at, key, type, click, focus, close, launch, shot, screen), `screenshot`, `gui_plan` and `script_run` now run on macOS (AX) and Windows (UI Automation). `gui_plan` runs whole GUI plans, saves passing ones as flows and replays them; `script_run` runs a module on the bundled Node with the desk API. On Linux the `desk` and `screenshot` tools and the desk calls of a plan or script answer that there is no desk backend yet (P3); `script_run` and model calls run.
-- **Models, bring your own key.** One OpenAI-compatible endpoint and key, OpenRouter by default: chat completions for `ask`, `ground` and `decide` over chat, and the decisions endpoint for `decide` and `verify`. The key comes from `config.toml` or an environment variable; scripts run without it in their environment.
+- **Models, bring your own key.** One OpenAI-compatible endpoint and key, OpenRouter by default: chat completions for `ask`, `ground`, `decide` and `verify` over chat, and the decisions endpoint for `decide` and `verify`. The key comes from `config.toml` or an environment variable; scripts run without it in their environment.
 - **Safety controls on macOS and Windows.**
   - `cocoon-shuttle stop` / `resume`, a global kill hotkey (⌃⌥⌘⎋ on macOS, Ctrl+Alt+Shift+Esc on Windows) and the indicator's Stop and Resume. Stop kills the running plan or script and ends the calls in flight; no MCP tool or plan step can resume.
   - An indicator: a menu-bar item on macOS, a tray icon on Windows.
@@ -19,7 +23,7 @@ The first usable release: shuttle drives the desktop on macOS and Windows.
   - `[tools] script_run = false`; a `config.toml` that fails to load fails every tool call except `status`.
   - These are guard rails for tool use, not a sandbox; they hold only with `script_run = false`. [docs/safety.md](docs/safety.md) lists the limits.
 - **Speed.** Batched macOS window lists, process-scoped window reads, the menu bar only in snapshots that need it, a plan step that reuses the plan's snapshot, a window wait in the daemon (`desk wait`) instead of polling, a 1 ms cursor glide, and a grounded click that takes at most 3 screen captures.
-  - A plan whose last step is a shift key, an arrow in a plain window, or typing without a newline ends without the end-of-plan window wait.
+  - A plan whose last step is a shifted character such as `shift+a`, an arrow key (with or without shift) while a plain window is in front, or typing without a newline ends without the end-of-plan window wait; Tab and shift+Tab keep it.
   - The macOS window list skips the bundled cua-driver's own windows instead of reading them.
 - **Fixes.** On Windows a dialog inside its window's tree, such as Notepad's unsaved-changes prompt, shows in `desk snapshot` and `find` and can be pressed; before, the walk skipped it.
 - **Bundled:** cua-driver v0.36.0-loomhand.4 and Node.js 24.22.0, both checked by sha256 at build time.

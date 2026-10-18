@@ -6,13 +6,16 @@ The desk verbs on macOS and Windows: `desk_windows`, `desk_wait`, `desk_snapshot
 
 | File | Role |
 |---|---|
-| `desk.rs` | The verbs: window choice, find, outline, the press plan (select, open menus, click when a hit test finds the element, else its action), crops |
+| `desk.rs` | The verbs: window choice, find, outline, waits, clicks at a point |
+| `press.rs` | The press plan: select, open menus, click when a hit test finds the element, else its action |
+| `shot.rs` | Screenshot crops, with apps outside the allowlist painted over |
+| `allow.rs` | The app allowlist: which windows and elements a call may list, read, shoot and act on |
 | `model.rs` | Neutral windows, nodes and trees, and the `Access` trait each OS backend implements |
-| `uia.rs`, `uia_roles.rs` | Windows: top-level windows from the Win32 window list, one UIA cache request over the control view per tree; control types and Toggle/ExpandCollapse/SelectionItem/Value states mapped to ARIA roles and desk states; ids are runtime ids |
+| `uia.rs`, `uia_roles.rs` | Windows: top-level windows from the Win32 window list, one UIA cache request over the control view per tree, one per child when the window owns a dialog; control types and Toggle/ExpandCollapse/SelectionItem/Value states mapped to ARIA roles and desk states; ids are runtime ids |
 | `ax.rs`, `ax_roles.rs` | macOS: a walk with one batched AX read per element, at most 2500 nodes and 4 s; the app's menu bar joins its main window's tree; sheets are dialogs; bounds in pixels by the display scale |
 | `worker.rs` | The backend's own thread; a call past its limit leaves that thread behind and the next call starts a fresh one |
 | `driver.rs` | cua-driver client (line JSON over its socket or named pipe) for input, window focus, launch and capture |
-| `keys.rs` | The key vocabulary per OS (`cmd` on macOS, `win` on Windows) and the UIA and AX shortcut forms |
+| `keys.rs` | The key vocabulary per OS (`cmd` on macOS, `win` on Windows), the UIA and AX shortcut forms, and the keystroke of each typed character on Windows |
 | `server.rs` | The endpoint (socket or pipe, one daemon per endpoint), the `Handler` trait, `serve`, `call` and `native`, which picks this OS's backend |
 
 ## Build
