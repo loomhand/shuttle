@@ -2,7 +2,7 @@
 //! capture through cua-driver; the same verbs and JSON as the Linux toolhost.
 
 use std::fmt::Write as _;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -53,7 +53,6 @@ pub struct Desk<B, D> {
     os: Os,
     acting: Arc<tokio::sync::Mutex<()>>,
     turn_wait: Duration,
-    scale: OnceLock<f64>,
     read: std::sync::Mutex<Option<Read>>,
     allow: Allow,
 }
@@ -67,7 +66,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             os,
             acting: Arc::new(tokio::sync::Mutex::new(())),
             turn_wait: TURN_WAIT,
-            scale: OnceLock::new(),
             read: std::sync::Mutex::new(None),
             allow: Allow::default(),
         }
@@ -528,14 +526,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn scale(&self) -> Result<f64, String> {
-        if let Some(s) = self.scale.get() {
-            return Ok(*s);
-        }
         let v = self.driver.call("get_screen_size", json!({})).await?;
-        let s = v["structuredContent"]["scale_factor"]
+        Ok(v["structuredContent"]["scale_factor"]
             .as_f64()
-            .unwrap_or(1.0);
-        Ok(*self.scale.get_or_init(|| s))
+            .unwrap_or(1.0))
     }
 
     async fn window_at(&self, x: f64, y: f64) -> Result<Option<Under>, String> {
@@ -1612,11 +1606,15 @@ mod tests {
         reads: Mutex<usize>,
         clicks: Mutex<usize>,
         forget: Mutex<bool>,
+        scale: Mutex<Option<f64>>,
     }
 
     impl Input for Arc<Reads> {
         async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
             Ok(match tool {
+                "get_screen_size" => {
+                    json!({"structuredContent": {"scale_factor": *self.scale.lock().unwrap()}})
+                }
                 "list_windows" => json!({"structuredContent": {"windows": [
                     {"pid": 7, "window_id": 40, "layer": 0, "z_index": 5, "bounds": {"x": 0.0, "y": 0.0, "width": 300.0, "height": 200.0}}
                 ]}}),
@@ -1738,6 +1736,18 @@ mod tests {
             ),
             (2, 4)
         );
+    }
+
+    #[tokio::test]
+    async fn a_macos_click_takes_the_display_scale_of_the_moment() {
+        let driver = Arc::new(Reads::default());
+        let desk = Desk::new(|| Ok(notepad()), driver.clone(), Os::Mac);
+        let click = || desk.run("desk_click", json!({"x": 500.0, "y": 300.0}));
+        click().await.unwrap();
+        assert_eq!(*driver.reads.lock().unwrap(), 0);
+        *driver.scale.lock().unwrap() = Some(2.0);
+        click().await.unwrap();
+        assert_eq!(*driver.reads.lock().unwrap(), 1);
     }
 
     #[tokio::test]
@@ -2057,7 +2067,7 @@ mod tests {
             .iter()
             .filter(|(t, _)| t == "get_screen_size")
             .count();
-        assert_eq!(sizes, 1);
+        assert_eq!(sizes, 3);
     }
 
     #[tokio::test]
