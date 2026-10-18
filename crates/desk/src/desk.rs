@@ -141,6 +141,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     /// Waits until the window list differs from `since`; time spent reading lists does not count against `timeout_ms`, as in a poll loop.
     async fn wait(&self, a: WaitArgs) -> Result<String, String> {
         let limit = Duration::from_millis(a.timeout_ms);
+        let since = a.since.as_array().map(|ws| {
+            ws.iter()
+                .filter(|w| self.allow.admits(w["app"].as_str()))
+                .cloned()
+                .collect::<Value>()
+        });
         let started = Instant::now();
         let (mut listing, mut last) = (Duration::ZERO, Duration::ZERO);
         let mut hint = self.access.run(CALL_LIMIT, (), |b| Ok(b.hint())).await?;
@@ -150,8 +156,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let now = self.access.run(CALL_LIMIT, (), |b| Ok(b.hint())).await?;
             let t = started.elapsed();
             let over = t >= WAIT_MAX || t.saturating_sub(listing) >= limit;
-            let rested = checked.elapsed();
-            if !over && (rested < last || (now.is_some() && now == hint && rested < WAIT_CHECK)) {
+            let moved = now.is_some() && now != hint;
+            let due = checked.elapsed()
+                >= if now.is_some() {
+                    last.max(WAIT_CHECK)
+                } else {
+                    last
+                };
+            if !over && !moved && !due {
                 continue;
             }
             hint = now;
@@ -160,8 +172,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             last = at.elapsed();
             listing += last;
             checked = Instant::now();
-            let same = serde_json::to_value(&frames).is_ok_and(|v| v == a.since);
-            if !same || over {
+            let same = serde_json::to_value(&frames).is_ok_and(|v| Some(v) == since);
+            if !same || over || started.elapsed() >= WAIT_MAX {
                 return Ok(json!({"changed": !same, "windows": frames}).to_string());
             }
         }
@@ -2065,6 +2077,7 @@ mod tests {
         list_ms: u64,
         t: usize,
         lists: usize,
+        seen: Option<usize>,
     }
 
     impl Opens {
@@ -2094,6 +2107,9 @@ mod tests {
                 app: None,
                 stale: false,
             };
+            if self.t >= self.at {
+                self.seen.get_or_insert(self.t);
+            }
             Ok(if self.t >= self.at {
                 vec![
                     frame("save", "Save", true),
@@ -2237,6 +2253,40 @@ mod tests {
         let out: Value = serde_json::from_str(&out.text).unwrap();
         assert_eq!(out["changed"], false);
         assert!(!out.to_string().contains("Inbox"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_hint_change_right_after_a_slow_list_reads_the_list_at_once() {
+        let desk = Desk::new(
+            || Ok(Opens::new(12, true, 150)),
+            Slow(Arc::default()),
+            Os::Mac,
+        );
+        let (out, _) = wait_on(&desk, 2000).await;
+        assert_eq!(out["changed"], true);
+        let seen = desk
+            .access
+            .run(CALL_LIMIT, (), |b| Ok(b.seen))
+            .await
+            .unwrap();
+        assert_eq!(seen, Some(12));
+    }
+
+    #[tokio::test]
+    async fn a_wait_ignores_windows_of_other_apps_in_the_list_it_is_given() {
+        let desk = Desk::new(|| Ok(Apps), Screen(Arc::default()), Os::Mac)
+            .allow(vec!["notepad.exe".into()]);
+        let mut since: Value =
+            serde_json::from_str(&desk.run("desk_windows", json!({})).await.unwrap().text).unwrap();
+        since.as_array_mut().unwrap().push(json!({"id": "8/1", "title": "Inbox", "role": "window", "pid": 8, "active": false, "app": "Mail"}));
+        let out = desk
+            .run("desk_wait", json!({"since": since, "timeout_ms": 50}))
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&out.text).unwrap()["changed"],
+            false
+        );
     }
 
     #[tokio::test]
