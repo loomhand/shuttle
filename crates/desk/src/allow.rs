@@ -26,10 +26,6 @@ impl Allow {
         }
     }
 
-    pub(crate) fn check_pid(&self, frames: &[Frame], pid: Option<u32>) -> Result<(), String> {
-        self.check(app_of(frames, pid))
-    }
-
     pub(crate) fn pick(
         &self,
         mut frames: Vec<Frame>,

@@ -330,34 +330,36 @@ impl Access for Uia {
         let mut nodes = Vec::new();
         let mut truncated = self.walk(&cached, &kids, None, 0, extras, &mut nodes)?;
         let walked = started.elapsed().as_micros() - fetched;
-        let (shown, roots) = self.roots();
-        let mut menus = Vec::new();
-        for i in roots
-            .into_iter()
-            .filter(|&i| Some(shown[i].pid) == frame.pid)
-        {
-            let el = match self.top_of(&shown[i]) {
-                Some(t) if t.control_type == UIA_MenuControlTypeId.0 => t.el.clone(),
-                _ => continue,
-            };
-            menus.extend(self.cached(&el, &self.subtree).ok());
-        }
-        if nodes.iter().any(|n| n.role == "menu" && n.has("expanded")) {
-            menus_in(&kids, &mut menus);
-        }
-        for menu in menus {
-            let listed = runtime_id(&menu).is_ok_and(|id| nodes.iter().any(|n| n.id == id));
-            if truncated || listed {
-                continue;
+        if !truncated {
+            let (shown, roots) = self.roots();
+            let mut menus = Vec::new();
+            for i in roots
+                .into_iter()
+                .filter(|&i| Some(shown[i].pid) == frame.pid)
+            {
+                let el = match self.top_of(&shown[i]) {
+                    Some(t) if t.control_type == UIA_MenuControlTypeId.0 => t.el.clone(),
+                    _ => continue,
+                };
+                menus.extend(self.cached(&el, &self.subtree).ok());
             }
-            truncated = self.walk(
-                &menu,
-                &children(&menu),
-                (!nodes.is_empty()).then_some(0),
-                1,
-                extras,
-                &mut nodes,
-            )?;
+            if nodes.iter().any(|n| n.role == "menu" && n.has("expanded")) {
+                menus_in(&kids, &mut menus);
+            }
+            for menu in menus {
+                let listed = runtime_id(&menu).is_ok_and(|id| nodes.iter().any(|n| n.id == id));
+                if truncated || listed {
+                    continue;
+                }
+                truncated = self.walk(
+                    &menu,
+                    &children(&menu),
+                    (!nodes.is_empty()).then_some(0),
+                    1,
+                    extras,
+                    &mut nodes,
+                )?;
+            }
         }
         let menus = started.elapsed().as_micros() - fetched - walked;
         Ok(Tree {
