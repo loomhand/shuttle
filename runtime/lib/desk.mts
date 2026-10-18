@@ -23,10 +23,9 @@ const POLL_MS = 40
 let screenSize: Size | null = null
 let waitless = false
 export const usage: Usage = {}
-/** Every decisions call: the model that answered (its role while it has not), whether its state held an image, and the build and generation id it named. */
+/** One entry per decide/look call: the answering model, whether an image went in, and the build and id it named. */
 export const served: Served[] = []
 
-/** One desk call over the toolhost socket that TOOLHOST_SOCKET names. */
 export function call<T>(op: string, args: Record<string, unknown> = {}): Promise<T> {
   return request<T>(`desk_${op}`, args)
 }
@@ -69,7 +68,6 @@ export async function screen(): Promise<Size> {
   return screenSize
 }
 
-/** A PNG of a screen rectangle, the whole screen by default. */
 export async function shot(r: { x?: number; y?: number; w?: number; h?: number } = {}): Promise<Buffer> {
   const out = await exchange('desk_shot', r)
   if (out.image_b64 === undefined) throw new Error('desk_shot returned no image')

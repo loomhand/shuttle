@@ -71,7 +71,7 @@ let typed = false
 let pressed: { title: string; at: number } | null = null
 let T: Record<string, number> = {}
 
-/** Runs {steps, params?, save?, start?}, {flow, params?, start?}, {save}, {find}, {reindex} or {locate}; returns {ok, done, ms, trace, window | escalate, saved? | flow?, usage}. */
+/** Runs one gui_plan call: a plan, a saved flow, or a flow-library verb. */
 export async function main(p: Params): Promise<Result> {
   return { ...(await perform(p)), usage: desk.usage }
 }
@@ -257,7 +257,6 @@ function targetRole(s: Step) {
   if (s.verify !== undefined) return s.role ?? (s.value !== undefined ? FIELDS : s.on !== undefined ? `${TOGGLES}|menuitem` : undefined)
   return s.role ?? (s.check ? TOGGLES : s.set ? FIELDS : undefined)
 }
-// a step reads the shortcuts of what it may press, and the menu bar only when it may land in it
 function reads(s: Step): Reads {
   return { keys: !!(s.menu || s.click), menus: !!s.menu || (!!s.verify && s.on !== undefined) }
 }
@@ -330,7 +329,7 @@ async function checked(n: Node): Promise<boolean | 'mixed' | null> {
   const t0 = Date.now()
   try { const r = await desk.read(n.id); return r.states.includes('mixed') ? 'mixed' : r.states.includes('checked') || r.states.includes('pressed') } catch { return null } finally { tick('state', t0) }
 }
-// a word of the window's process command line starts with the app's command, such as gnome-terminal-server for gnome-terminal
+// a command-line word may extend the app name: gnome-terminal-server for gnome-terminal
 function ownedBy(pid: number | null, app: string) {
   if (OS !== 'linux' || !pid) return false
   try { return readFileSync(`/proc/${pid}/cmdline`, 'utf8').toLowerCase().split(/[\0/\s]+/).some((x) => x.startsWith(app)) } catch { return false }
@@ -661,7 +660,6 @@ async function closed(title: string, pid: number | null) {
   tick('settle', t0); return !titledIn(ws, title, pid)
 }
 
-// a replay checks that the field its first typing filled from empty is still empty
 function shownFields(nodes: Node[], fp: Pick<Fp, 'role' | 'name' | 'label'>) {
   return candidates(nodes, fp.role).filter(({ n, i }) => n.name === fp.name && (sibling(nodes, i) ?? '') === (fp.label ?? '') && n.shown)
 }
