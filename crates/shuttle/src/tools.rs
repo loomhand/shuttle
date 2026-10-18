@@ -76,25 +76,13 @@ pub fn list() -> Value {
 }
 
 /// Answers a `tools/call` of `name` with `args`: an MCP tool result, or `None` for an unknown tool.
-pub async fn call(name: &str, mut args: Value, endpoint: &str) -> Option<Value> {
-    let (tool, args) = match name {
-        "status" => return Some(result(status().to_string(), false)),
-        "desk" => match args["verb"].as_str().filter(|v| DESK_VERBS.contains(v)) {
-            Some(verb) => (
-                format!("desk_{verb}"),
-                args.get_mut("args").map_or_else(|| json!({}), Value::take),
-            ),
-            None => {
-                return Some(result(
-                    format!("desk needs a verb of {}", DESK_VERBS.join(", ")),
-                    true,
-                ));
-            }
-        },
-        "screenshot" => ("desk_shot".to_owned(), args),
-        "script_run" => (name.to_owned(), absolute_script(args)),
-        "gui_plan" => (name.to_owned(), args),
-        _ => return None,
+pub async fn call(name: &str, args: Value, endpoint: &str) -> Option<Value> {
+    if name == "status" {
+        return Some(result(status().to_string(), false));
+    }
+    let (tool, args) = match route(name, args)? {
+        Ok(routed) => routed,
+        Err(e) => return Some(result(e, true)),
     };
     let call = Call {
         agent_id: NAME.to_owned(),
@@ -105,6 +93,27 @@ pub async fn call(name: &str, mut args: Value, endpoint: &str) -> Option<Value> 
         Ok(out) => output(out),
         Err(e) => result(e, true),
     })
+}
+
+fn route(name: &str, mut args: Value) -> Option<Result<(String, Value), String>> {
+    Some(Ok(match name {
+        "desk" => match args["verb"].as_str().filter(|v| DESK_VERBS.contains(v)) {
+            Some(verb) => (
+                format!("desk_{verb}"),
+                args.get_mut("args").map_or_else(|| json!({}), Value::take),
+            ),
+            None => {
+                return Some(Err(format!(
+                    "desk needs a verb of {}",
+                    DESK_VERBS.join(", ")
+                )));
+            }
+        },
+        "screenshot" => ("desk_shot".to_owned(), args),
+        "script_run" => (name.to_owned(), absolute_script(args)),
+        "gui_plan" => (name.to_owned(), args),
+        _ => return None,
+    }))
 }
 
 // a relative script path names a file under the agent's working directory, which the daemon does not share
@@ -143,4 +152,33 @@ fn result(text: String, is_error: bool) -> Value {
     let mut out = json!({"content": [{"type": "text"}], "isError": is_error});
     out["content"][0]["text"] = text.into();
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_mcp_tool_reaches_the_safety_controls() {
+        let tools = list();
+        let names: Vec<&str> = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        let mut routed = Vec::new();
+        for name in names.iter().chain(&["safety_stop", "safety_resume"]) {
+            let verbs = DESK_VERBS
+                .iter()
+                .chain(&["../safety_stop", "safety_resume"]);
+            for verb in verbs {
+                if let Some(Ok((tool, _))) = route(name, json!({"verb": verb})) {
+                    routed.push(tool);
+                }
+            }
+        }
+        assert!(routed.len() > DESK_VERBS.len(), "{routed:?}");
+        assert!(!routed.iter().any(|t| t.contains("safety")), "{routed:?}");
+    }
 }

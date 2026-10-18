@@ -2,9 +2,13 @@
 
 shuttle acts on your own desktop, with your accounts signed in. These controls land in P1 (macOS), P2 (Windows) and P3 (Linux). The released v0.0.1 runs no desktop action; `main` (unreleased) already acts on the desktop as a developer preview, without any of them.
 
+## What these controls are
+
+The kill switch, the app allowlist and the confirm mode are guard rails for an agent that means well and reaches for the wrong app or acts at the wrong time. They bound the `desk`, `screenshot` and `gui_plan` tools. They are not a sandbox: with `script_run` on, which is the default, a script is your own user's code, and it can resume a stopped daemon, edit `config.toml`, restart the daemon or start programs, and no check inside shuttle stops it. The guard rails hold only with `script_run = false` under `[tools]`.
+
 ## Kill switch
 
-`cocoon-shuttle stop` stops shuttle at once: it kills the running `gui_plan` or `script_run` process with its process group, ends the desk and model calls in flight, and halts. Every tool call then fails with `stopped by the user` until you run `cocoon-shuttle resume`. The stop lives in the running daemon; a daemon that starts again starts running.
+`cocoon-shuttle stop` stops shuttle at once: it kills the running `gui_plan` or `script_run` process with its process group, ends the desk and model calls in flight, and halts. Every tool call then fails with `stopped by the user` until you run `cocoon-shuttle resume`. The stop lives in the running daemon; a daemon that starts again starts running. Only the command line stops and resumes: no MCP tool and no `gui_plan` step reaches them. A desk action that the driver or the accessibility API has already started ends on its own, so at most one action in flight completes after the stop.
 
 A global hotkey for the same stop, and Resume from the indicator, come with the macOS controls below (not built yet):
 
@@ -27,25 +31,25 @@ While shuttle acts, a menu-bar item (macOS) or tray icon (Windows, Linux) shows 
 ## App allowlist
 
 `apps = ["TextEdit", "notepad.exe"]` under `[safety]` limits the desk calls to windows of those apps. A name matches the macOS app name or the Windows executable, case-insensitive and with or without `.exe`. The daemon checks the app on every desk call:
-- the window a call names, or the focused window when it names none;
+- a window name picks only among the allowed apps' windows, and an error lists only those; with no name, the focused window must belong to an allowed app;
 - the focused window for `key` and `type`;
-- the process of the element for `read`, `press` and `act`;
-- the window under the point for `click`.
+- the process of the element for `read`, `press` and `act`, and of the element `at` finds;
+- the window under the point for every click at a point, from `click`, `press` or `act`; on macOS, an open menu item at the point instead.
 
-`windows` lists only the allowed apps' windows, and `launch` starts only an allowed app. `shot` and `screen` are not bound to a window and still show the whole screen. An empty list allows every app. Each check reads the window list once, which costs a few ms to a few hundred ms on macOS depending on the apps on screen.
+`windows` lists only the allowed apps' windows, and `launch` and a `gui_plan` app step start only an allowed app. A screenshot or crop, also the one a model call gets, is black wherever no allowed app's window is on top: the desktop, the menu bar, the Dock or taskbar, other apps' windows, and on macOS also open menus. An empty list allows every app and costs nothing. A check reads the window list once, which costs a few ms to a few hundred ms on macOS depending on the apps on screen.
 
-## What these controls do not cover
+The check runs before the action, not at the input event: a window that comes to the front in between can take a key or a click. A process with no window of its own, such as a helper or a renderer, is refused. Without a `config.toml` there is no allowlist.
 
-`script_run` runs JavaScript with your user's rights. The allowlist and the confirm mode bound the desk calls a script makes, not the script's own code, which can read files or start programs. If you do not want that, set `script_run = false` under `[tools]`; `script_run` then answers how to turn it back on, and `gui_plan`, `desk` and `screenshot` keep working.
+## Turning script_run off
+
+`script_run = false` under `[tools]` turns off the one tool that runs the agent's own code. `script_run` then answers how to turn it back on, and `gui_plan`, `desk` and `screenshot` keep working.
 
 ## Input on macOS
 
-This is the P1 design. Today a press runs a menu entry's AX action, clicks any other element's centre when a hit test there finds it, and runs its AX action otherwise; keys go to the desktop through cua-driver.
+macOS has one pointer and one keyboard focus, shared by you and shuttle:
 
-macOS has one pointer and one keyboard focus, shared by you and shuttle. shuttle uses them as little as it can:
+1. **Accessibility actions.** A press runs a menu entry's AX action, clicks any other element's centre when a hit test there finds it, and runs its AX action otherwise. A click at a point on an open menu item runs that item's AX action.
+2. **Keys to the desktop.** Keys and typed text go through cua-driver to the focused window, so the target window must be in front.
+3. **Coordinate clicks.** A click at a point goes through cua-driver to the window under it, which shuttle brings to the front first; a window that refuses pointer input, such as a sheet, gets a desktop click. shuttle does not wait for you to stop using the mouse or keyboard, so a click can land on something you opened in that instant.
 
-1. **Accessibility actions first.** A press, a toggle, a menu pick or a text value goes through the element's AX action. The cursor does not move and the focus does not change.
-2. **Keys to the app.** Key presses go to the target app's process (`CGEventPostToPid`), so the app does not need to be in front. Some apps read keys only from the frontmost window; for those shuttle brings the window forward first.
-3. **Coordinate clicks last.** When an element exposes no action (canvases, some Electron and game UIs), shuttle clicks its point. It first waits until you have not touched the mouse or keyboard for `user_idle_ms`, then moves, clicks and puts the cursor back. You still see the cursor jump, and a click can land on something you opened in that instant.
-
-On Windows the same order holds with UI Automation patterns and `SendInput`. On Linux the X11 server has one core pointer as well; AT-SPI actions come first there too.
+On Windows the same order holds with UI Automation patterns and cua-driver input. On Linux AT-SPI actions come first too.
