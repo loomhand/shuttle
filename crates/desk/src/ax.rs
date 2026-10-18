@@ -382,7 +382,7 @@ impl Access for Ax {
             let Some(parent) = attr(&at, "AXParent") else {
                 break;
             };
-            if attrs(&self.names, &parent).role == "AXApplication" {
+            if string(attr(&parent, "AXRole")) == "AXApplication" {
                 break;
             }
             chain.push(self.id_of(&parent));
@@ -401,17 +401,14 @@ impl Access for Ax {
 
     fn hint(&mut self) -> Option<u64> {
         let mut h = std::hash::DefaultHasher::new();
+        let (owner, window, name) = (
+            CFString::from_static_string("kCGWindowOwnerPID"),
+            CFString::from_static_string("kCGWindowNumber"),
+            CFString::from_static_string("kCGWindowName"),
+        );
         for d in on_screen() {
-            let name = string(
-                d.find(CFString::from_static_string("kCGWindowName"))
-                    .map(|v| (*v).clone()),
-            );
-            (
-                number(&d, "kCGWindowOwnerPID"),
-                number(&d, "kCGWindowNumber"),
-                name,
-            )
-                .hash(&mut h);
+            let title = string(d.find(&name).map(|v| (*v).clone()));
+            (number(&d, &owner), number(&d, &window), title).hash(&mut h);
         }
         Some(h.finish())
     }
@@ -444,12 +441,13 @@ impl Access for Ax {
 
     fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
         let el = self.element(id)?;
-        let a = attrs(&self.names, &el);
         Ok(match act {
             Act::Action => {
                 perform(&el, "AXPress") || perform(&el, "AXConfirm") || perform(&el, "AXPick")
             }
-            Act::Select if a.role == "AXRadioButton" => perform(&el, "AXPress"),
+            Act::Select if string(attr(&el, "AXRole")) == "AXRadioButton" => {
+                perform(&el, "AXPress")
+            }
             Act::Select => set(&el, "AXSelected", CFBoolean::true_value().as_CFType()),
             Act::Focus => set(&el, "AXFocused", CFBoolean::true_value().as_CFType()),
         })
@@ -706,10 +704,8 @@ fn application(p: i32) -> CFType {
 
 fn window_pids() -> Vec<i32> {
     let mut pids = Vec::new();
-    for p in on_screen()
-        .iter()
-        .filter_map(|d| number(d, "kCGWindowOwnerPID"))
-    {
+    let owner = CFString::from_static_string("kCGWindowOwnerPID");
+    for p in on_screen().iter().filter_map(|d| number(d, &owner)) {
         if let Ok(p) = i32::try_from(p)
             && !pids.contains(&p)
         {
@@ -729,14 +725,15 @@ fn on_screen() -> Vec<CFDictionary<CFString, CFType>> {
     // SAFETY: `list` is a non-null CFArray at +1.
     let list: CFArray<CFDictionary<CFString, CFType>> =
         unsafe { CFArray::wrap_under_create_rule(list) };
+    let layer = CFString::from_static_string("kCGWindowLayer");
     list.iter()
-        .filter(|d| number(d, "kCGWindowLayer") == Some(0))
+        .filter(|d| number(d, &layer) == Some(0))
         .map(|d| (*d).clone())
         .collect()
 }
 
-fn number(d: &CFDictionary<CFString, CFType>, key: &'static str) -> Option<i64> {
-    d.find(CFString::from_static_string(key))
+fn number(d: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<i64> {
+    d.find(key)
         .and_then(|v| v.downcast::<CFNumber>())
         .and_then(|n| n.to_i64())
 }

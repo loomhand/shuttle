@@ -19,20 +19,20 @@ pub fn matches<N: Named>(nodes: &[N], name: &str, role: Option<&str>) -> Vec<usi
     if want.is_empty() {
         return Vec::new();
     }
-    let pool: Vec<usize> = (0..nodes.len())
-        .filter(|&i| role.is_none_or(|r| r.split('|').any(|r| r == nodes[i].role())))
-        .collect();
-    let exact: Vec<usize> = pool
+    let (mut exact, mut contained) = (Vec::new(), Vec::new());
+    let kept = nodes
         .iter()
-        .copied()
-        .filter(|&i| norm(nodes[i].name()) == want)
-        .collect();
-    if !exact.is_empty() {
-        return exact;
+        .enumerate()
+        .filter(|(_, n)| role.is_none_or(|r| r.split('|').any(|r| r == n.role())));
+    for (i, n) in kept {
+        let have = norm(n.name());
+        if have == want {
+            exact.push(i);
+        } else if have.contains(&want) {
+            contained.push(i);
+        }
     }
-    pool.into_iter()
-        .filter(|&i| norm(nodes[i].name()).contains(&want))
-        .collect()
+    if exact.is_empty() { contained } else { exact }
 }
 
 /// Lower case without the punctuation that labels add: underscores, ellipses, a trailing colon.
