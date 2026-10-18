@@ -1,6 +1,6 @@
 # Safety
 
-shuttle acts on your own desktop, with your accounts signed in. The controls below are built on macOS (P1) and Windows (P2); Linux gets them in P3, together with its desk backend.
+shuttle acts on your own desktop, with your accounts signed in. The controls below are built on macOS (P1) and Windows (P2). Linux already has `cocoon-shuttle stop` and `resume` and the `script_run` switch; its hotkey, indicator and confirm dialog come in P3, together with its desk backend.
 
 ## What these controls are
 
