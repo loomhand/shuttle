@@ -74,6 +74,21 @@ mod tests {
     }
 
     #[test]
+    fn the_driver_table_turns_the_overlay_off_and_defaults_to_on() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            Config::load(&dir.path().join("config.toml"))
+                .unwrap()
+                .driver
+                .overlay
+        );
+        let off = file("[driver]\noverlay = false\n");
+        assert!(!Config::load(off.path()).unwrap().driver.overlay);
+        let bad = file("[driver]\ncursor = false\n");
+        assert!(Config::load(bad.path()).unwrap_err().contains("cursor"));
+    }
+
+    #[test]
     fn the_key_comes_from_the_file_else_from_its_variable() {
         let c = Config {
             api_key_env: "CARGO_PKG_NAME".to_owned(),

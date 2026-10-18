@@ -35,6 +35,7 @@ pub struct Config {
     pub models: Roles,
     pub safety: Safety,
     pub tools: Tools,
+    pub driver: DriverSettings,
 }
 
 impl Default for Config {
@@ -49,6 +50,7 @@ impl Default for Config {
             models: Roles::default(),
             safety: Safety::default(),
             tools: Tools::default(),
+            driver: DriverSettings::default(),
         }
     }
 }
@@ -157,6 +159,19 @@ pub struct Tools {
 impl Default for Tools {
     fn default() -> Self {
         Self { script_run: true }
+    }
+}
+
+/// The bundled cua-driver: `overlay = false` starts it without its agent cursor, except on macOS, whose front-window tracking needs the overlay.
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DriverSettings {
+    pub overlay: bool,
+}
+
+impl Default for DriverSettings {
+    fn default() -> Self {
+        Self { overlay: true }
     }
 }
 

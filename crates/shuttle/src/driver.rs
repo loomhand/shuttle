@@ -25,8 +25,8 @@ pub struct Bundled {
 }
 
 impl Bundled {
-    /// Starts the cua-driver beside `exe` at `endpoint`, after stopping one that a killed daemon left there; none when no driver is bundled.
-    pub async fn start(exe: &Path, endpoint: &str) -> Result<Option<Self>, String> {
+    /// Starts the cua-driver beside `exe` at `endpoint`, after stopping one that a killed daemon left there; none when no driver is bundled. Off macOS `overlay = false` starts it without its agent cursor.
+    pub async fn start(exe: &Path, endpoint: &str, overlay: bool) -> Result<Option<Self>, String> {
         let bin = exe.with_file_name(if cfg!(windows) {
             "cua-driver.exe"
         } else {
@@ -35,10 +35,16 @@ impl Bundled {
         if !bin.is_file() {
             return Ok(None);
         }
+        if !overlay && cfg!(target_os = "macos") {
+            log(
+                "[driver] overlay = false has no effect on macOS: front-window tracking needs the overlay",
+            );
+        }
         let proc = Proc {
             bin,
             endpoint: endpoint.to_owned(),
             pid_file: pid_file(endpoint)?,
+            overlay: overlay || cfg!(target_os = "macos"),
         };
         if server::connect(endpoint).await.is_ok() {
             proc.stop_stale().await?;
@@ -75,6 +81,7 @@ struct Proc {
     bin: PathBuf,
     endpoint: String,
     pid_file: PathBuf,
+    overlay: bool,
 }
 
 impl Proc {
@@ -83,6 +90,7 @@ impl Proc {
         cmd.args(["serve", "--socket", &self.endpoint, "--pid-file"])
             .arg(&self.pid_file)
             .args(["--glide-ms", GLIDE_MS])
+            .args((!self.overlay).then_some("--no-overlay"))
             .env(TELEMETRY, "false")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -264,7 +272,7 @@ while True:
     async fn no_bundled_driver_starts_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let started = Bundled::start(&dir.path().join(NAME), &endpoint).await;
+        let started = Bundled::start(&dir.path().join(NAME), &endpoint, true).await;
         assert!(matches!(started, Ok(None)));
     }
 
@@ -274,7 +282,10 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint).await.unwrap().unwrap();
+        let driver = Bundled::start(&exe, &endpoint, true)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(server::connect(&endpoint).await.is_ok());
         let first = pid(&endpoint).unwrap();
         // SAFETY: the pid is the fake driver this test started.
@@ -298,7 +309,10 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint).await.unwrap().unwrap();
+        let driver = Bundled::start(&exe, &endpoint, true)
+            .await
+            .unwrap()
+            .unwrap();
         let argv = std::fs::read_to_string(format!("{endpoint}.argv")).unwrap_or_default();
         driver.stop().await;
         assert!(argv.contains("--glide-ms 1"), "{argv}");
@@ -306,11 +320,32 @@ while True:
     }
 
     #[tokio::test]
+    async fn with_the_overlay_off_the_driver_starts_without_its_cursor_except_on_macos() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake(dir.path(), FAKE).unwrap();
+        let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
+        let driver = Bundled::start(&exe, &endpoint, false)
+            .await
+            .unwrap()
+            .unwrap();
+        let argv = std::fs::read_to_string(format!("{endpoint}.argv")).unwrap_or_default();
+        driver.stop().await;
+        assert_eq!(
+            argv.contains("--no-overlay"),
+            !cfg!(target_os = "macos"),
+            "{argv}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_stop_the_driver_never_answers_still_leaves_no_driver() {
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint).await.unwrap().unwrap();
+        let driver = Bundled::start(&exe, &endpoint, true)
+            .await
+            .unwrap()
+            .unwrap();
         let server = pid(&endpoint).unwrap();
         std::fs::write(format!("{endpoint}.hang"), "").unwrap();
         driver.stop().await;
@@ -322,7 +357,10 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint).await.unwrap().unwrap();
+        let driver = Bundled::start(&exe, &endpoint, true)
+            .await
+            .unwrap()
+            .unwrap();
         let first = pid(&endpoint).unwrap();
         std::fs::write(format!("{endpoint}.slow"), "").unwrap();
         std::fs::write(format!("{endpoint}.hang"), "").unwrap();
@@ -358,7 +396,10 @@ while True:
             tokio::time::sleep(POLL).await;
         }
         let stale = pid(&endpoint).unwrap();
-        let driver = Bundled::start(&exe, &endpoint).await.unwrap().unwrap();
+        let driver = Bundled::start(&exe, &endpoint, true)
+            .await
+            .unwrap()
+            .unwrap();
         let _ = left.wait();
         let stopped = gone(stale).await;
         let replaced = pid(&endpoint) != Some(stale) && server::connect(&endpoint).await.is_ok();
@@ -374,7 +415,7 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), "#!/bin/sh\nexit 3\n").unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let err = Bundled::start(&exe, &endpoint)
+        let err = Bundled::start(&exe, &endpoint, true)
             .await
             .err()
             .unwrap_or_default();
