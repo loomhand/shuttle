@@ -267,7 +267,7 @@ pub fn states(s: States) -> Vec<&'static str> {
 
 pub fn format_number(v: f64) -> String {
     if v.fract() == 0.0 && v.abs() < 1e15 {
-        format!("{v:.0}")
+        (v as i64).to_string()
     } else {
         v.to_string()
     }
@@ -318,5 +318,13 @@ mod tests {
             json!({"ref": 3, "id": "1/2", "parent": 0, "depth": 1, "role": "checkbox", "name": "Wrap",
                 "states": ["checked", "showing"], "shortcut": "ctrl+w"})
         );
+    }
+
+    #[test]
+    fn a_whole_number_prints_without_decimals_and_zero_without_sign() {
+        assert_eq!(format_number(-0.0), "0");
+        assert_eq!(format_number(3.0), "3");
+        assert_eq!(format_number(-2.0), "-2");
+        assert_eq!(format_number(2.5), "2.5");
     }
 }
