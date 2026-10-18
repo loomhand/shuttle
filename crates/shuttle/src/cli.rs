@@ -12,7 +12,7 @@ use shuttle_desk::server;
 use shuttle_models::Models;
 #[cfg(any(target_os = "macos", windows))]
 use shuttle_models::config::Safety;
-use shuttle_models::config::{Config, default_path};
+use shuttle_models::config::{Config, DEFAULT_KEY_ENV, default_path};
 use tokio::runtime::Builder;
 
 use crate::daemon::{Asker, Daemon, Guard};
@@ -160,7 +160,7 @@ async fn serve(
             hotkey::parse(&safety.kill_hotkey)?
         }
     };
-    let mut key_vars = vec![Config::default().api_key_env];
+    let mut key_vars = vec![DEFAULT_KEY_ENV.to_owned()];
     if let Ok(c) = &config
         && !key_vars.contains(&c.api_key_env)
     {

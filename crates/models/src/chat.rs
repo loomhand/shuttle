@@ -20,11 +20,13 @@ pub(crate) enum Part<'a> {
 
 impl<'a> Part<'a> {
     /// The parts of a runtime state: strings are text, PNG data URLs are PNGs, anything else is its JSON.
-    pub(crate) fn from_state(state: &'a Value) -> Vec<Part<'a>> {
+    pub(crate) fn from_state(state: &'a Value) -> impl Iterator<Item = Part<'a>> {
         match state {
-            Value::Array(items) => items.iter().map(Part::from_item).collect(),
-            other => vec![Part::from_item(other)],
+            Value::Array(items) => items.as_slice(),
+            other => std::slice::from_ref(other),
         }
+        .iter()
+        .map(Part::from_item)
     }
 
     fn from_item(v: &'a Value) -> Part<'a> {
@@ -155,7 +157,7 @@ mod tests {
     fn a_state_becomes_text_and_png_parts() {
         let state = json!(["the list", {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}, {"k": 1}]);
         assert_eq!(
-            Part::from_state(&state),
+            Part::from_state(&state).collect::<Vec<_>>(),
             [
                 Part::Text("the list".into()),
                 Part::Png("QUJD"),
@@ -164,7 +166,7 @@ mod tests {
         );
         let window = json!({"window_title": "x"});
         assert_eq!(
-            Part::from_state(&window),
+            Part::from_state(&window).collect::<Vec<_>>(),
             [Part::Text("{\"window_title\":\"x\"}".into())]
         );
     }
