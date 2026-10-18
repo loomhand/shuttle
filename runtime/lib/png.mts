@@ -3,10 +3,10 @@ import { crc32, deflateSync, inflateSync } from 'node:zlib'
 export type Image = { w: number; h: number; type: number; bpp: number; px: Buffer }
 
 // 8-bit RGB or RGBA PNGs, as the toolhost writes them
-export function unpng(png: Buffer): Image {
+export function unpng(buf: Buffer): Image {
   const idat: Buffer[] = []; let w = 0, h = 0, type = 0
-  for (let p = 8; p < png.length; p += 12 + png.readUInt32BE(p)) {
-    const kind = png.toString('ascii', p + 4, p + 8), data = png.subarray(p + 8, p + 8 + png.readUInt32BE(p))
+  for (let p = 8; p < buf.length; p += 12 + buf.readUInt32BE(p)) {
+    const kind = buf.toString('ascii', p + 4, p + 8), data = buf.subarray(p + 8, p + 8 + buf.readUInt32BE(p))
     if (kind === 'IHDR') { w = data.readUInt32BE(0); h = data.readUInt32BE(4); type = data.readUInt8(9); if (data.readUInt8(8) !== 8 || data.readUInt8(12) !== 0 || (type !== 2 && type !== 6)) throw new Error(`unsupported PNG (depth ${data.readUInt8(8)}, type ${type})`) }
     if (kind === 'IDAT') idat.push(data)
   }
@@ -43,7 +43,7 @@ export function ring({ w, h, type, bpp, px }: Image, cx: number, cy: number, r: 
   return png(w, h, type, bpp, px)
 }
 
-function png(w: number, h: number, type: number, bpp: number, px: Buffer) {
+export function png(w: number, h: number, type: number, bpp: number, px: Buffer) {
   const chunk = (kind: string, data: Buffer) => {
     const head = Buffer.alloc(8), crc = Buffer.alloc(4); head.writeUInt32BE(data.length); head.write(kind, 4, 'ascii')
     crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data]))); return Buffer.concat([head, data, crc])

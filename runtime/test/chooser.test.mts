@@ -27,8 +27,7 @@ function desktop(role: string) {
 
 test('a typed path finds the file chooser by its name field even when the field sits past the outline\'s first 1800 characters', async (t) => {
   const d = desktop('dialog')
-  const server = await toolhost(d.answer)
-  t.after(() => server.close())
+  await toolhost(t, d.answer)
   const r = await main({ steps: [{ type: 'b.txt\n' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   const before = d.calls.slice(0, d.calls.indexOf('desk_type'))
@@ -37,8 +36,7 @@ test('a typed path finds the file chooser by its name field even when the field 
 
 test('Enter in a file chooser whose name field sits past the outline\'s first 1800 characters waits for its button before it submits', async (t) => {
   const d = desktop('dialog')
-  const server = await toolhost(d.answer)
-  t.after(() => server.close())
+  await toolhost(t, d.answer)
   const r = await main({ steps: [{ key: 'Return' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   const before = d.calls.slice(0, d.calls.indexOf('key Return'))
@@ -47,8 +45,7 @@ test('Enter in a file chooser whose name field sits past the outline\'s first 18
 
 test('a typed line into a large window that is no dialog but holds a File name field goes in as plain typing with one Return', async (t) => {
   const d = desktop('window')
-  const server = await toolhost(d.answer)
-  t.after(() => server.close())
+  await toolhost(t, d.answer)
   await main({ steps: [{ type: 'b.txt\n' }] })
   const before = d.calls.slice(0, d.calls.indexOf('desk_type'))
   assert.ok(!before.some((c) => c.startsWith('key ')), `a select key before plain typing: ${before.join(' ')}`)

@@ -13,13 +13,12 @@ test('a step in a window whose app holds a modal dialog the screen does not show
   const calls: string[] = []
   const [doc, dialog, terminal] = wins
   assert.ok(doc && dialog && terminal)
-  const server = await toolhost(({ tool }) => {
+  await toolhost(t, ({ tool }) => {
     calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify(wins)
     if (tool === 'desk_snapshot') return JSON.stringify({ window: doc, nodes: [], truncated: false })
     return '{"ok":true}'
   })
-  t.after(() => server.close())
   const blocked = await main({ steps: [{ type: 'hello' }] })
   assert.equal(blocked.ok, false, JSON.stringify(blocked))
   assert.equal(blocked.escalate?.reason, 'modal dialog "Save As" is open but hidden, and "Untitled 1 - Mousepad" takes no input until it closes: finish it, or close it with {close: true, window: "Save As"}')

@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import type { Server } from 'node:net'
-import { after, before, beforeEach, test } from 'node:test'
-import { inflateSync } from 'node:zlib'
+import { after, beforeEach, test } from 'node:test'
 
 import { BUILD, gray, toolhost, type Call, type Reply } from './toolhost.mts'
 import type { Size } from '../lib/desk.mts'
 import { main, type Result } from '../lib/gui_plan.mts'
+import { unpng } from '../lib/png.mts'
 
 type El = { ref: number; id: string; parent: number; depth: number; role: string; name: string; states: string[]; bounds?: number[] }
 type Spec = Omit<El, 'ref' | 'depth' | 'states'> & { states?: string[] }
@@ -34,7 +33,6 @@ let build: string | null = null
 let on: number | number[] = 0
 let under: { role: string; name: string; bounds?: number[] } | null = null
 let yes = 0
-let server: Server | undefined
 
 function answer({ tool, args }: Call): Reply {
   if (tool === 'model_decide') return decide(args as Decide)
@@ -66,7 +64,7 @@ function decide({ state, questions, image }: Decide): Reply {
   if (image) looks.push((state as Part[]).flatMap((p) => typeof p === 'object' && p.image_url ? [size(Buffer.from(p.image_url.url.split(',')[1] ?? '', 'base64'))] : []).join(' '))
   if (image) for (const p of state as Part[]) {
     if (typeof p === 'string') prompts.push(p)
-    else if (p.image_url) shades.push(inflateSync(Buffer.from(p.image_url.url.split(',')[1] ?? '', 'base64').subarray(41)).readUInt8(1))
+    else if (p.image_url) shades.push(unpng(Buffer.from(p.image_url.url.split(',')[1] ?? '', 'base64')).px.readUInt8(0))
   }
   const p = Array.isArray(on) ? on.shift() ?? 0 : on
   const answers: Record<string, unknown> = {}
@@ -79,10 +77,9 @@ function decide({ state, questions, image }: Decide): Reply {
 }
 
 function size(png: Buffer) {
-  const [w, h] = [png.readUInt32BE(16), png.readUInt32BE(20)]
-  const raw = inflateSync(png.subarray(41, 41 + png.readUInt32BE(33)))
+  const { w, h, bpp, px } = unpng(png)
   let red = false
-  for (let y = 0; y < h && !red; y++) for (let x = 0; x < w && !red; x++) { const i = y * (w * 4 + 1) + 1 + x * 4; red = raw[i] === 230 && raw[i + 1] === 0 && raw[i + 2] === 0 }
+  for (let i = 0; i < px.length && !red; i += bpp) red = px[i] === 230 && px[i + 1] === 0 && px[i + 2] === 0
   return `${w}x${h}${red ? ' ring' : ''}`
 }
 
@@ -113,12 +110,7 @@ function screen(tree: Spec[], probabilities: Record<string, number>) {
   pick = probabilities
 }
 
-before(async () => {
-  server = await toolhost(answer)
-})
-after(() => {
-  server?.close()
-})
+await toolhost({ after }, answer)
 beforeEach(() => {
   build = null; on = 0; looked = {}; pick = {}; under = null; yes = 0; tones = []; scale = 1
 })
@@ -323,7 +315,7 @@ test('locate gives a LibreOffice toolbar or tab row element the menu bar height 
   assert.equal(await shift(frame(78, 117, 753), 'Bold'), 0)
 })
 
-test('a grounded click the 640x400 crop refuses is checked on the small element\'s crop scaled up, then on the screen with a ring at the point, unless DESK_FULL_CHECK=off; the run log keeps each score and the path', async () => {
+test('a grounded click the 640x400 crop refuses is checked on the small element\'s crop scaled up, then on the screen with a ring at the point, unless DESK_FULL_CHECK=off; the run log keeps each score and the path', async (t) => {
   const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
   build = BUILD
   on = [0.3, 0.7]
@@ -351,9 +343,9 @@ test('a grounded click the 640x400 crop refuses is checked on the small element\
   assert.equal(lastStep()?.checked, 'jev-image+full')
   under = null
   process.env.DESK_FULL_CHECK = 'off'
+  t.after(() => { delete process.env.DESK_FULL_CHECK })
   on = [0.3, 0.6, 0.96]
   const off = await plan('the yellow star', tree, {})
-  delete process.env.DESK_FULL_CHECK
   assert.equal(off.ok, false, JSON.stringify(off))
   assert.deepEqual(looks, ['640x400', '384x288'])
   assert.equal(lastStep()?.checked, 'jev-image+zoom')

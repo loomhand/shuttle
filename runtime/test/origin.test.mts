@@ -12,7 +12,7 @@ test('a grounded check on a screen whose origin is left of zero crops around the
   const prompts: string[] = []
   const clicked: string[] = []
   const shots: Record<string, unknown>[] = []
-  const server = await toolhost(({ tool, args }) => {
+  await toolhost(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, nodes: [{ ref: 0, id: '1.1/1', parent: -1, depth: 0, role: 'frame', name: 'Portal', states: ['showing'], bounds: [0, 0, 10, 10] }], truncated: false })
     if (tool === 'desk_screen') return '{"left":-1280,"top":0,"width":2560,"height":800}'
@@ -28,7 +28,6 @@ test('a grounded check on a screen whose origin is left of zero crops around the
     if (tool === 'desk_click') clicked.push(`${args.x},${args.y}`)
     return '{"ok":true}'
   })
-  t.after(() => server.close())
   const r = await main({ steps: [{ click: 'the yellow star' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(clicked, ['0,400'])

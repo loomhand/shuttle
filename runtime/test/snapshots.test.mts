@@ -29,8 +29,7 @@ function desktop() {
 
 test('a type step into a dialog that opened mid-plan reads the dialog once before typing', async (t) => {
   const d = desktop()
-  const server = await toolhost(d.answer)
-  t.after(() => server.close())
+  await toolhost(t, d.answer)
   const r = await main({ steps: [{ key: 'f2' }, { type: 'b.txt' }] })
   assert.equal(r.done, 2, JSON.stringify(r))
   const between = d.calls.slice(d.calls.indexOf('desk_key'), d.calls.indexOf('desk_type'))
@@ -39,8 +38,7 @@ test('a type step into a dialog that opened mid-plan reads the dialog once befor
 
 test('a step in a dialog this plan already read reads no tree when its op needs none', async (t) => {
   const d = desktop()
-  const server = await toolhost(d.answer)
-  t.after(() => server.close())
+  await toolhost(t, d.answer)
   const r = await main({ steps: [{ key: 'f2' }, { type: 'b' }, { key: 'tab' }] })
   assert.equal(r.done, 3, JSON.stringify(r))
   const tab = d.calls.lastIndexOf('desk_key')
@@ -50,8 +48,7 @@ test('a step in a dialog this plan already read reads no tree when its op needs 
 
 test('a plan whose last step cannot open anything ends in a plain window without a tree read', async (t) => {
   const d = desktop()
-  const server = await toolhost(d.answer)
-  t.after(() => server.close())
+  await toolhost(t, d.answer)
   const r = await main({ steps: [{ wait: 'a.txt' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.ok(!d.calls.includes('desk_snapshot'), d.calls.join(' '))
@@ -64,7 +61,7 @@ for (const shortcut of ['ctrl+shift+s', 'cmd+shift+s']) {
     const calls: string[] = []
     let polls = -1
     let shown = false
-    const server = await toolhost(({ tool, args }) => {
+    await toolhost(t, ({ tool, args }) => {
       calls.push(tool === 'desk_key' ? `key ${String(args.keys)}` : tool)
       if (tool === 'desk_windows' && polls >= 0 && ++polls === 25) shown = true
       if (tool === 'desk_windows') return JSON.stringify(shown ? [{ ...doc, active: false }, dialog] : [doc])
@@ -78,7 +75,6 @@ for (const shortcut of ['ctrl+shift+s', 'cmd+shift+s']) {
       if (tool === 'desk_key' && /^return$/i.test(String(args.keys))) shown = false
       return '{"ok":true}'
     })
-    t.after(() => server.close())
     const r = await main({ steps: [{ key: shortcut }, { type: 'b.txt\n' }] })
     const typed = calls.slice(calls.indexOf(`key ${shortcut}`) + 1, calls.indexOf('desk_type'))
     assert.ok(typed.some((c) => c.startsWith('key ')), `no select key before typing into the chooser: ${typed.join(' ')}`)
@@ -89,13 +85,12 @@ for (const shortcut of ['ctrl+shift+s', 'cmd+shift+s']) {
 test('a plan whose last key leaves its app blocked behind a dialog it cannot see escalates instead of passing', async (t) => {
   const doc = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
   let blocked = false
-  const server = await toolhost(({ tool, args }) => {
+  await toolhost(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify([doc])
     if (tool === 'desk_snapshot') return blocked ? { text: 'no accessibility answer within 3000 ms; the app may hang', error: true } : JSON.stringify({ window: doc, truncated: false, nodes: [root('window', doc.title)] })
     if (tool === 'desk_key' && args.keys === 'ctrl+e') blocked = true
     return '{"ok":true}'
   })
-  t.after(() => server.close())
   const r = await main({ steps: [{ key: 'ctrl+e' }] })
   assert.equal(r.ok, false, JSON.stringify(r))
   assert.match(r.escalate?.reason ?? '', /answers no accessibility calls/)
@@ -106,7 +101,7 @@ test('a click in a dialog whose controls show after the step read its bare root 
   const dialog = { id: '2', title: 'Confirm', role: 'dialog', pid: process.pid, active: true }
   let open = false
   let reads = 0
-  const server = await toolhost(({ tool, args }) => {
+  await toolhost(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify(open ? [{ ...doc, active: false }, dialog] : [doc])
     if (tool === 'desk_snapshot') {
       const ok = { ref: 1, id: '2/2', parent: 0, depth: 1, role: 'button', name: 'OK', states: ['showing'], bounds: [10, 10, 40, 20] }
@@ -116,7 +111,6 @@ test('a click in a dialog whose controls show after the step read its bare root 
     if (tool === 'desk_press') { open = false; return '{"ok":true,"how":"click"}' }
     return '{"ok":true}'
   })
-  t.after(() => server.close())
   const r = await main({ steps: [{ key: 'f2' }, { click: 'OK' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
 })
@@ -124,14 +118,13 @@ test('a click in a dialog whose controls show after the step read its bare root 
 test('a window id the plan vetted names a new window when its title changes, which the step reads again', async (t) => {
   const doc = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: false }
   const front = { id: '2', title: 'Rename', role: 'dialog', pid: process.pid, active: false }
-  const server = await toolhost(({ tool, args }) => {
+  await toolhost(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify(front.active ? [doc, front] : [{ ...doc, active: true }])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: front, truncated: false, nodes: [root(front.title === 'Error' ? 'alert' : 'dialog', front.title)] })
     if (tool === 'desk_key' && args.keys === 'f2') front.active = true
     if (tool === 'desk_key' && args.keys === 'tab') front.title = 'Error'
     return '{"ok":true}'
   })
-  t.after(() => server.close())
   const r = await main({ steps: [{ key: 'f2' }, { key: 'tab' }, { key: 'space' }] })
   assert.match(r.escalate?.reason ?? '', /alert "Error" is in front/, JSON.stringify(r))
 })
@@ -142,7 +135,7 @@ test('a typed line after a shortcut keeps waiting while no window is in front, a
   const calls: string[] = []
   let polls = -1
   let state: 'doc' | 'none' | 'dialog' = 'doc'
-  const server = await toolhost(({ tool, args }) => {
+  await toolhost(t, ({ tool, args }) => {
     calls.push(tool === 'desk_key' ? `key ${String(args.keys)}` : tool)
     if (tool === 'desk_windows' && polls >= 0) { polls++; if (polls === 2) state = 'none'; if (polls === 25) state = 'dialog' }
     if (tool === 'desk_windows') return JSON.stringify(state === 'doc' ? [doc] : state === 'none' ? [{ ...doc, active: false }] : [{ ...doc, active: false }, dialog])
@@ -156,7 +149,6 @@ test('a typed line after a shortcut keeps waiting while no window is in front, a
     if (tool === 'desk_key' && /^return$/i.test(String(args.keys))) state = 'doc'
     return '{"ok":true}'
   })
-  t.after(() => server.close())
   const r = await main({ steps: [{ key: 'ctrl+shift+s' }, { type: 'b.txt\n' }] })
   const typed = calls.slice(calls.indexOf('key ctrl+shift+s') + 1, calls.indexOf('desk_type'))
   assert.ok(typed.some((c) => c.startsWith('key ')), `no select key before typing into the chooser: ${typed.join(' ')}`)
@@ -173,13 +165,12 @@ test('a menu step asks for the menu bar and a click step does not', async (t) =>
     { ref: 3, id: '1/4', parent: 2, depth: 2, role: 'menu', name: 'File', states: ['showing'], bounds: [0, 0, 30, 20] },
     { ref: 4, id: '1/5', parent: 3, depth: 3, role: 'menuitem', name: 'Save', states: [], shortcut: 'ctrl+s' },
   ]
-  const server = await toolhost(({ tool, args }) => {
+  await toolhost(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') { asked.push(args.menus ?? false); return JSON.stringify({ window: win, truncated: false, nodes }) }
     if (tool === 'desk_press') return '{"ok":true,"how":"click"}'
     return '{"ok":true}'
   })
-  t.after(() => server.close())
   const click = await main({ steps: [{ click: 'OK' }] })
   assert.equal(click.ok, true, JSON.stringify(click))
   assert.ok(!asked.includes(true), JSON.stringify(asked))
@@ -192,7 +183,7 @@ test('a menu step asks for the menu bar and a click step does not', async (t) =>
 test('a click on macOS whose target sits only in the menu bar reads the window again with its menu bar before any model call', { skip: process.platform !== 'darwin' }, async (t) => {
   const win = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
   const calls: string[] = []
-  const server = await toolhost(({ tool, args }) => {
+  await toolhost(t, ({ tool, args }) => {
     calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') {
@@ -205,7 +196,6 @@ test('a click on macOS whose target sits only in the menu bar reads the window a
     }
     return '{"ok":true}'
   })
-  t.after(() => server.close())
   const r = await main({ steps: [{ click: 'Settings…' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.ok(!calls.some((c) => c.startsWith('model_') || c === 'desk_shot'), calls.join(' '))
@@ -221,12 +211,11 @@ function menuBar(item: { name: string; shortcut?: string; states?: string[] }) {
 
 test('a verify on macOS that finds its target only in the menu bar checks it there, instead of passing on the miss', { skip: process.platform !== 'darwin' }, async (t) => {
   const win = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
-  const server = await toolhost(({ tool, args }) => {
+  await toolhost(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root('window', win.title), ...(args.menus ? menuBar({ name: 'Print' }) : [])] })
     return '{"ok":true}'
   })
-  t.after(() => server.close())
   const r = await main({ steps: [{ verify: 'Print', enabled: false }] })
   assert.match(r.escalate?.reason ?? '', /"Print" is enabled/, JSON.stringify(r))
 })
@@ -234,7 +223,7 @@ test('a verify on macOS that finds its target only in the menu bar checks it the
 test('a click on macOS that names a menu item exactly takes it over a window button whose name only contains it', { skip: process.platform !== 'darwin' }, async (t) => {
   const win = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
   const calls: string[] = []
-  const server = await toolhost(({ tool, args }) => {
+  await toolhost(t, ({ tool, args }) => {
     calls.push(tool === 'desk_key' ? `key ${String(args.keys)}` : tool === 'desk_press' ? `press ${String(args.id)}` : tool)
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') {
@@ -244,7 +233,6 @@ test('a click on macOS that names a menu item exactly takes it over a window but
     if (tool === 'desk_press') return '{"ok":true,"how":"click"}'
     return '{"ok":true}'
   })
-  t.after(() => server.close())
   const r = await main({ steps: [{ click: 'Print' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.ok(calls.includes('press 1/12') && !calls.includes('press 1/2') && !calls.some((c) => c.startsWith('key ')), calls.join(' '))
@@ -253,13 +241,12 @@ test('a click on macOS that names a menu item exactly takes it over a window but
 test('a click in a listed window that no longer answers escalates as unanswered and acts on nothing', async (t) => {
   const win = { id: '1', title: 'Untitled', role: 'window', pid: process.pid, active: true }
   const calls: string[] = []
-  const server = await toolhost(({ tool }) => {
+  await toolhost(t, ({ tool }) => {
     calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return { text: 'no accessibility answer within 500 ms from window "Untitled": it closed or its app is busy; take a new snapshot', error: true }
     return '{"ok":true}'
   })
-  t.after(() => server.close())
   const r = await main({ steps: [{ click: 'Save' }] })
   assert.match(r.escalate?.reason ?? '', /answers no accessibility calls/, JSON.stringify(r))
   assert.ok(!calls.some((c) => ['desk_press', 'desk_click', 'desk_key', 'desk_type', 'desk_shot'].includes(c) || c.startsWith('model_')), calls.join(' '))

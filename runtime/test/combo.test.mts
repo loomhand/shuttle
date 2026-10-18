@@ -20,7 +20,7 @@ test('set on a combo box without a text field picks the option from its list, do
   const typed: string[] = []
   const combo = nodes[1]
   assert.ok(combo)
-  const server = await toolhost(({ tool, args }) => {
+  await toolhost(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify(open ? [list, { ...prefs, active: false }] : [prefs])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: prefs, nodes: now(), truncated: false })
     if (tool === 'desk_read') return JSON.stringify(now().find((n) => n.id === args.id))
@@ -34,7 +34,6 @@ test('set on a combo box without a text field picks the option from its list, do
     }
     return '{"ok":true}'
   })
-  t.after(() => server.close())
   const set = await main({ steps: [{ set: 'Insert Tabs', value: 'Insert Spaces' }] })
   assert.equal(set.ok, true, JSON.stringify(set))
   assert.deepEqual(pressed, ['1.14/400', '1.14/403'])

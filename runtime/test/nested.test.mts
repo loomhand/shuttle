@@ -13,7 +13,7 @@ test('a field named like the combobox it sits in is one target, and set needs no
     { ref: 1, id: '2/2', parent: 0, depth: 1, role: 'combobox', name: 'File name:', states: ['showing', 'focusable'], bounds: [10, 10, 200, 20], value },
     { ref: 2, id: '2/3', parent: 1, depth: 2, role: 'textbox', name: 'File name:', states: ['showing', 'focused', 'editable'], bounds: [12, 12, 180, 16], value },
   ]
-  const server = await toolhost(({ tool, args }) => {
+  await toolhost(t, ({ tool, args }) => {
     calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify([dialog])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: dialog, truncated: false, nodes: nodes() })
@@ -23,7 +23,6 @@ test('a field named like the combobox it sits in is one target, and set needs no
     if (tool === 'desk_type') { value = selected ? String(args.text) : value + String(args.text); selected = false }
     return '{"ok":true}'
   })
-  t.after(() => server.close())
   const r = await main({ steps: [{ set: 'File name:', value: 'a.txt' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(value, 'a.txt')

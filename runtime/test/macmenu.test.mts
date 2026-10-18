@@ -18,14 +18,13 @@ for (const [name, step] of [
 ] as const) {
   test(name, { skip: process.platform !== 'darwin' }, async (t) => {
     const calls: { tool: string; args: Record<string, unknown> }[] = []
-    const server = await toolhost(({ tool, args }) => {
+    await toolhost(t, ({ tool, args }) => {
       calls.push({ tool, args })
       if (tool === 'desk_windows') return JSON.stringify([win])
       if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes })
       if (tool === 'desk_press') return '{"ok":true,"how":"action"}'
       return '{"ok":true}'
     })
-    t.after(() => server.close())
     const r = await main({ steps: [step] })
     assert.equal(r.ok, true, JSON.stringify(r))
     assert.ok(calls.some((c) => c.tool === 'desk_press' && c.args.id === '1/4'), JSON.stringify(calls.map((c) => c.tool)))

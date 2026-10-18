@@ -22,8 +22,7 @@ function retitled(onlyWaits = false) {
 
 test('a key that retitles the window late waits on the desk for the change instead of polling window lists', async (t) => {
   const d = retitled(true)
-  const server = await toolhost(d.answer)
-  t.after(() => server.close())
+  await toolhost(t, d.answer)
   const r = await main({ steps: [{ key: 'ctrl+s' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   const after = d.calls.slice(d.calls.indexOf('desk_key'))
@@ -34,8 +33,7 @@ test('a key that retitles the window late waits on the desk for the change inste
 
 test('a toolhost without desk_wait gets the window list polled instead', async (t) => {
   const d = retitled()
-  const server = await toolhost(d.answer, { wait: false })
-  t.after(() => server.close())
+  await toolhost(t, d.answer, { wait: false })
   const r = await main({ steps: [{ key: 'ctrl+s' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(r.window, '*a.txt - Editor')

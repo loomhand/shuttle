@@ -13,12 +13,11 @@ test('a plan, a save and a reindex write flows, the index, the pending chain and
   const stamp = () => real.map((f) => existsSync(f) ? statSync(f).mtimeMs : null)
   const before = stamp()
   const win = { id: '1', title: 'notes.txt - Mousepad', role: 'frame', pid: process.pid, active: true }
-  const server = await toolhost(({ tool }) => {
+  await toolhost(t, ({ tool }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, nodes: [], truncated: false })
     return '{"ok":true}'
   })
-  t.after(() => server.close())
   const ran = await main({ steps: [{ app: 'Mousepad' }, { key: 'ctrl+s' }] })
   assert.equal(ran.ok, true, JSON.stringify(ran))
   const saved = await main({ save: 'saved' })
@@ -39,8 +38,7 @@ test('a plan, a save and a reindex write flows, the index, the pending chain and
 
 test('the run log starts over once it passes 1 MiB', async (t) => {
   const win = { id: '1', title: 'notes.txt - Mousepad', role: 'frame', pid: process.pid, active: true }
-  const server = await toolhost(({ tool }) => tool === 'desk_windows' ? JSON.stringify([win]) : '{"ok":true}')
-  t.after(() => server.close())
+  await toolhost(t, ({ tool }) => tool === 'desk_windows' ? JSON.stringify([win]) : '{"ok":true}')
   const flows = process.env.SHUTTLE_FLOWS ?? ''
   mkdirSync(flows, { recursive: true })
   writeFileSync(`${flows}/.runs.jsonl`, `${'x'.repeat(1024 * 1024)}\n`)
