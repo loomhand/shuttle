@@ -182,23 +182,23 @@ pub async fn exchange(mut conn: Conn, call: &Call) -> Result<Output, String> {
     read_frame(&mut conn).await
 }
 
-/// This OS's desk: its accessibility tree, with input through the cua-driver at `driver`.
+/// This OS's desk: its accessibility tree, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
 #[cfg(target_os = "macos")]
-pub fn native(driver: String) -> impl Handler {
+pub fn native(driver: String, apps: Vec<String>) -> impl Handler {
     use crate::{ax::Ax, driver::Driver, keys::Os};
-    Desk::new(Ax::open, Driver::new(driver), Os::Mac)
+    Desk::new(Ax::open, Driver::new(driver), Os::Mac).allow(apps)
 }
 
-/// This OS's desk: its accessibility tree, with input through the cua-driver at `driver`.
+/// This OS's desk: its accessibility tree, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
 #[cfg(windows)]
-pub fn native(driver: String) -> impl Handler {
+pub fn native(driver: String, apps: Vec<String>) -> impl Handler {
     use crate::{driver::Driver, keys::Os, uia::Uia};
-    Desk::new(Uia::open, Driver::new(driver), Os::Windows)
+    Desk::new(Uia::open, Driver::new(driver), Os::Windows).allow(apps)
 }
 
 /// This OS's desk: none yet.
 #[cfg(not(any(windows, target_os = "macos")))]
-pub fn native(_: String) -> impl Handler {
+pub fn native(_: String, _: Vec<String>) -> impl Handler {
     NoDesk
 }
 

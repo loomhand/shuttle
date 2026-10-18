@@ -13,15 +13,20 @@ use shuttle_desk::desk::{ACTIONS, TURN_WAIT};
 use shuttle_desk::server::Handler;
 use shuttle_models::Models;
 
+use crate::STOPPED;
 use crate::runner::Runner;
 
 const BUSY: &str = "desk busy: another run or action is still going";
+const SCRIPT_RUN_OFF: &str =
+    "script_run is turned off: set script_run = true under [tools] in config.toml";
 
-/// Answers `model_*` calls with `models`, `gui_plan` and `script_run` with `runner`, and the rest with `desk`.
+/// Answers `model_*` calls with `models`, `gui_plan` and `script_run` with `runner`, and the rest with `desk`; `safety_stop` halts every call until `safety_resume`.
 pub struct Daemon<H> {
     desk: H,
     models: Result<Models, String>,
     runner: Runner,
+    script_run: bool,
+    halted: tokio::sync::watch::Sender<bool>,
     turn: tokio::sync::Mutex<()>,
     running: Mutex<Option<String>>,
     nonce: u64,
@@ -30,12 +35,14 @@ pub struct Daemon<H> {
 }
 
 impl<H: Handler> Daemon<H> {
-    /// A daemon whose model calls fail with the configuration's error while desk calls still work.
-    pub fn new(desk: H, models: Result<Models, String>, runner: Runner) -> Self {
+    /// A daemon whose every call fails with the configuration's error when it does not load, since the safety controls are in it.
+    pub fn new(desk: H, models: Result<Models, String>, runner: Runner, script_run: bool) -> Self {
         Self {
             desk,
             models,
             runner,
+            script_run,
+            halted: tokio::sync::watch::Sender::new(false),
             turn: tokio::sync::Mutex::new(()),
             running: Mutex::new(None),
             nonce: RandomState::new().hash_one(std::process::id()),
@@ -45,7 +52,9 @@ impl<H: Handler> Daemon<H> {
     }
 
     async fn run(&self, tool: &str, args: Value) -> Result<String, String> {
-        self.models.as_ref().map_err(String::clone)?;
+        if tool == "script_run" && !self.script_run {
+            return Err(SCRIPT_RUN_OFF.to_owned());
+        }
         let _turn = tokio::time::timeout(self.wait, self.turn.lock())
             .await
             .map_err(|_| BUSY.to_owned())?;
@@ -71,6 +80,12 @@ impl<H: Handler> Daemon<H> {
         }
     }
 
+    fn halt(&self, stopped: bool) -> Output {
+        self.halted.send_replace(stopped);
+        self.runner.halt(stopped);
+        Output::text(serde_json::json!({"ok": true, "stopped": stopped}).to_string())
+    }
+
     fn running(&self) -> std::sync::MutexGuard<'_, Option<String>> {
         self.running
             .lock()
@@ -90,13 +105,38 @@ impl<H: Handler> Daemon<H> {
 
 impl<H: Handler> Handler for Daemon<H> {
     async fn answer(&self, call: Call) -> Output {
-        let out = match call.tool.as_str() {
-            t @ ("gui_plan" | "script_run") => self.run(t, call.args).await,
-            t if t.starts_with("model_") => self.model(t, call.args).await,
-            t if ACTIONS.contains(&t) => return self.act(call).await,
-            _ => return self.desk.answer(call).await,
+        match call.tool.as_str() {
+            "safety_stop" => return self.halt(true),
+            "safety_resume" => return self.halt(false),
+            _ => {}
+        }
+        if *self.halted.borrow() {
+            return Output::error(STOPPED);
+        }
+        if let Err(e) = &self.models {
+            return Output::error(e);
+        }
+        if let t @ ("gui_plan" | "script_run") = call.tool.as_str() {
+            return self
+                .run(t, call.args)
+                .await
+                .map_or_else(Output::error, Output::text);
+        }
+        let mut halted = self.halted.subscribe();
+        let out = async {
+            match call.tool.as_str() {
+                t if t.starts_with("model_") => self
+                    .model(t, call.args)
+                    .await
+                    .map_or_else(Output::error, Output::text),
+                t if ACTIONS.contains(&t) => self.act(call).await,
+                _ => self.desk.answer(call).await,
+            }
         };
-        out.map_or_else(Output::error, Output::text)
+        tokio::select! {
+            out = out => out,
+            _ = halted.wait_for(|h| *h) => Output::error(STOPPED),
+        }
     }
 }
 
@@ -119,6 +159,41 @@ mod tests {
         }
     }
 
+    struct Slow;
+
+    impl Handler for Slow {
+        async fn answer(&self, _: Call) -> Output {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            Output::text("too late")
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_ends_a_desk_call_in_flight() {
+        let d = std::sync::Arc::new(Daemon::new(
+            Slow,
+            Ok(Models::new(Config::default())),
+            runner(),
+            true,
+        ));
+        let call = |tool: &str| Call {
+            agent_id: String::new(),
+            tool: tool.into(),
+            args: json!({}),
+        };
+        let click = tokio::spawn({
+            let d = d.clone();
+            let call = call("desk_click");
+            async move { d.answer(call).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let started = std::time::Instant::now();
+        d.answer(call("safety_stop")).await;
+        let out = click.await.unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!((out.is_error, out.text.as_str()), (true, crate::STOPPED));
+    }
+
     fn runner() -> Runner {
         let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
         Runner::new(
@@ -136,7 +211,7 @@ mod tests {
             base_url: "http://127.0.0.1:9/v1".to_owned(),
             ..Config::default()
         };
-        let d = Daemon::new(Echo, Ok(Models::new(closed)), runner());
+        let d = Daemon::new(Echo, Ok(Models::new(closed)), runner(), true);
         let ask = |tool: &str, args: Value| Call {
             agent_id: "desk".into(),
             tool: tool.into(),
@@ -165,24 +240,25 @@ mod tests {
 
     #[test]
     fn each_daemon_names_its_runs_apart_from_any_earlier_daemon() {
-        let a = Daemon::new(Echo, Err(String::new()), runner());
-        let b = Daemon::new(Echo, Err(String::new()), runner());
+        let a = Daemon::new(Echo, Err(String::new()), runner(), true);
+        let b = Daemon::new(Echo, Err(String::new()), runner(), true);
         assert_ne!(a.nonce, b.nonce);
     }
 
     #[tokio::test]
-    async fn a_broken_config_fails_model_calls_and_runs_and_leaves_the_desk_working() {
+    async fn a_broken_config_fails_every_call_but_stop_since_the_safety_controls_are_in_it() {
         let d = Daemon::new(
             Echo,
             Err("config.toml line 3: invalid type".to_owned()),
             runner(),
+            true,
         );
         let call = |tool: &str| Call {
             agent_id: String::new(),
             tool: tool.into(),
             args: json!({"prompt": "x"}),
         };
-        for tool in ["model_ask", "script_run", "gui_plan"] {
+        for tool in ["model_ask", "script_run", "gui_plan", "desk_screen"] {
             let out = d.answer(call(tool)).await;
             assert_eq!(
                 (out.is_error, out.text.as_str()),
@@ -190,12 +266,66 @@ mod tests {
                 "{tool}"
             );
         }
-        assert!(!d.answer(call("desk_screen")).await.is_error);
+        assert!(!d.answer(call("safety_stop")).await.is_error);
+    }
+
+    #[tokio::test]
+    async fn stop_fails_every_call_and_ends_the_run_in_flight_until_resume() {
+        let d = std::sync::Arc::new(Daemon::new(
+            Echo,
+            Ok(Models::new(Config::default())),
+            runner(),
+            true,
+        ));
+        let call = |tool: &str, args: Value| Call {
+            agent_id: String::new(),
+            tool: tool.into(),
+            args,
+        };
+        let slow = json!({"code": "export async function main() { await new Promise((r) => setTimeout(r, 20000)) }"});
+        let run = tokio::spawn({
+            let d = d.clone();
+            let call = call("script_run", slow.clone());
+            async move { d.answer(call).await }
+        });
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let started = std::time::Instant::now();
+        assert!(!d.answer(call("safety_stop", json!({}))).await.is_error);
+        let ended = run.await.unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(ended.text.contains("stopped by the user"), "{}", ended.text);
+        for tool in ["desk_screen", "desk_click", "model_ask", "script_run"] {
+            let out = d.answer(call(tool, json!({}))).await;
+            assert_eq!(
+                (out.is_error, out.text.as_str()),
+                (true, crate::STOPPED),
+                "{tool}"
+            );
+        }
+        assert!(!d.answer(call("safety_resume", json!({}))).await.is_error);
+        assert!(!d.answer(call("desk_screen", json!({}))).await.is_error);
+    }
+
+    #[tokio::test]
+    async fn script_run_turned_off_answers_how_to_turn_it_on() {
+        let d = Daemon::new(Echo, Ok(Models::new(Config::default())), runner(), false);
+        let out = d
+            .answer(Call {
+                agent_id: String::new(),
+                tool: "script_run".into(),
+                args: json!({"code": "export function main() { return 1 }"}),
+            })
+            .await;
+        assert_eq!((out.is_error, out.text.as_str()), (true, SCRIPT_RUN_OFF));
     }
 
     #[tokio::test]
     async fn script_run_goes_to_the_runner() {
-        let d = Daemon::new(Echo, Ok(Models::new(Config::default())), runner());
+        let d = Daemon::new(Echo, Ok(Models::new(Config::default())), runner(), true);
         let out = d
             .answer(Call {
                 agent_id: String::new(),
@@ -234,7 +364,12 @@ mod tests {
             dir.path().join("flows"),
             Vec::new(),
         );
-        let mut d = Daemon::new(keys.clone(), Ok(Models::new(Config::default())), runner);
+        let mut d = Daemon::new(
+            keys.clone(),
+            Ok(Models::new(Config::default())),
+            runner,
+            true,
+        );
         d.wait = wait;
         let d = std::sync::Arc::new(d);
         tokio::spawn({
