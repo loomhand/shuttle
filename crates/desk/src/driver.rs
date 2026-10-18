@@ -2,11 +2,12 @@
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::time::Instant;
 
 pub const WINDOW_SESSION: &str = "desk-window";
 
@@ -311,10 +312,10 @@ mod tests {
     async fn a_click_near_the_last_one_waits_out_the_spacing() {
         let d = Driver::new(String::new());
         *d.last_click() = Some((Instant::now(), 100.0, 100.0));
-        let started = tokio::time::Instant::now();
+        let started = Instant::now();
         d.space_click((110.0, 100.0)).await;
         assert_eq!(started.elapsed(), CLICK_SPACING);
-        let started = tokio::time::Instant::now();
+        let started = Instant::now();
         d.space_click((300.0, 100.0)).await;
         assert_eq!(started.elapsed(), Duration::ZERO);
     }
