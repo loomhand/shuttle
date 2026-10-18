@@ -1,6 +1,6 @@
 [package]
 name = "shuttle-desk"
-description = "The desk verbs over the macOS and Windows accessibility trees, with input through cua-driver"
+description = "The desk verbs over the macOS, Windows and Linux accessibility trees, with input through cua-driver"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
