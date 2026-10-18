@@ -42,10 +42,10 @@ ground = "qwen/qwen3-vl-235b-a22b-instruct"
 ask = "anthropic/claude-sonnet-5"
 ```
 
-- shuttle makes two calls, both non-streaming: `POST {base_url}/chat/completions` for `ask`, `ground`, and `decide` with `decide_api = "chat"`, and `POST {decisions_url}` with `{model, state, questions}` for `decide` and `verify` with `decide_api = "decisions"`. Chat bodies carry `max_tokens` (100 for `ground`, 400 for `ask`, 800 for `decide` over chat), which OpenRouter accepts for every model.
+- shuttle makes two calls, both non-streaming: `POST {base_url}/chat/completions` for `ask`, `ground`, `decide` and `verify` with `decide_api = "chat"`, and `POST {decisions_url}` with `{model, state, questions}` for `decide` and `verify` with `decide_api = "decisions"`. Chat bodies carry `max_tokens` (100 for `ground`, 400 for `ask`, 800 for `decide` over chat), which OpenRouter accepts for every model.
 - **A local server** (vLLM, llama.cpp, Ollama's OpenAI API): set `base_url` to its `/v1` root, `decide_api = "chat"` and the model names it serves. A server without a key needs none: with no key shuttle sends no `Authorization` header.
 - **Your own gateway**: set `base_url` to its OpenAI-compatible root and `decisions_url` to its decisions route, such as `base_url = "https://gw.example/v1"` and `decisions_url = "https://gw.example/v1/decisions"`.
-- `timeout_ms` bounds each call; a crop check caps it at 5 s. One call is one request: shuttle does not retry it.
+- `timeout_ms` bounds each call; every screenshot judgment (`desk.look`, the `verify` role) caps it at 5 s. One call is one request: shuttle does not retry it.
 
 ### `decide` without a decisions endpoint
 
