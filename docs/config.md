@@ -68,7 +68,7 @@ ask = "anthropic/claude-sonnet-5"
 [safety]
 apps = []                             # app allowlist; empty allows every app
 kill_hotkey = "ctrl+alt+cmd+escape"   # ctrl+alt+shift+escape off macOS
-indicator = true                      # menu-bar item and agent cursor
+indicator = true                      # menu-bar item
 confirm = "off"                       # "coordinate" or "every" asks first
 
 [tools]

@@ -8,7 +8,7 @@ The kill switch, the app allowlist and the confirm mode are guard rails for an a
 
 ## Kill switch
 
-`cocoon-shuttle stop` stops shuttle at once: it kills the running `gui_plan` or `script_run` process with its process group, ends the desk and model calls in flight, and halts. Every tool call then fails with `stopped by the user` until you run `cocoon-shuttle resume`. The stop lives in the running daemon; a daemon that starts again starts running. Only the command line stops and resumes: no MCP tool and no `gui_plan` step reaches them. A desk action that the driver or the accessibility API has already started ends on its own, so at most one action in flight completes after the stop.
+`cocoon-shuttle stop` stops shuttle at once: it kills the running `gui_plan` or `script_run` process with its process group, ends the desk and model calls in flight, and halts. Every tool call then fails with `stopped by the user` until you resume, with `cocoon-shuttle resume` or the indicator's Resume. The stop lives in the running daemon; a daemon that starts again starts running. Only you stop and resume, from the command line, the hotkey or the indicator's menu: no MCP tool and no `gui_plan` step reaches them. A desk action that the driver or the accessibility API has already started ends on its own, so at most one action in flight completes after the stop.
 
 A global hotkey does the same stop, and the indicator's menu has Stop and Resume. The hotkey is built on macOS; Windows and Linux get theirs in P2 and P3:
 
@@ -22,11 +22,11 @@ Set `kill_hotkey` in [config.md](config.md) to change it. On macOS a system perm
 
 ## Indicator
 
-On macOS a menu-bar item shows `Shuttle`, `● Shuttle` while a desk action or a run is in progress, and `■ Shuttle stopped` after a stop; its menu has Stop and Resume. cua-driver draws its agent cursor where shuttle points. `indicator = false` turns both off. The Windows and Linux tray icon comes in P2 and P3; there `indicator = false` turns the agent cursor off.
+On macOS a menu-bar item shows `Shuttle`, `● Shuttle` while a desk action or a run is in progress, and `■ Shuttle stopped` after a stop; its menu has Stop and Resume. `indicator = false` hides the menu-bar item. cua-driver draws its agent cursor where shuttle points either way, since macOS needs its overlay to track the front window. The Windows and Linux tray icon comes in P2 and P3.
 
 ## Confirm mode
 
-`confirm = "coordinate"` asks before every click at a screen point, the least predictable action. `confirm = "every"` asks before every desk action: `press`, `act`, `key`, `type`, `click`, `focus`, `close` and `launch`. On macOS the question is a dialog with Allow and Decline; a step you decline fails with `declined by the user`, and a stop closes an open dialog. Windows and Linux get the dialog in P2 and P3; until then a step that would ask fails and names `confirm = "off"`.
+`confirm = "coordinate"` asks before every step that can end in a click at a screen point, the least predictable action: `click`, `press`, and `act` with `click`. `confirm = "every"` asks before every desk action: `press`, `act`, `key`, `type`, `click`, `focus`, `close` and `launch`. On macOS the question is a dialog with Decline, the default button, and Allow; a step you decline fails with `declined by the user`, and a stop closes an open dialog. While the dialog is open every other desk call fails at once with `a confirm dialog is open`, so the agent cannot answer the dialog itself. Windows and Linux get the dialog in P2 and P3; until then a step that would ask fails and names `confirm = "off"`.
 
 ## App allowlist
 
