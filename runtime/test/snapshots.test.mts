@@ -162,3 +162,34 @@ test('a window id the plan vetted names a new window when its title changes, whi
     server.close()
   }
 })
+
+test('a typed line after a shortcut keeps waiting while no window is in front, as when the focus is between the app and the chooser it opens', async () => {
+  const doc = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
+  const dialog = { id: '2', title: 'Save As', role: 'dialog', pid: process.pid, active: true }
+  const calls: string[] = []
+  let polls = -1
+  let state: 'doc' | 'none' | 'dialog' = 'doc'
+  const server = await toolhost(({ tool, args }) => {
+    calls.push(tool === 'desk_key' ? `key ${String(args.keys)}` : tool)
+    if (tool === 'desk_windows' && polls >= 0) { polls++; if (polls === 2) state = 'none'; if (polls === 25) state = 'dialog' }
+    if (tool === 'desk_windows') return JSON.stringify(state === 'doc' ? [doc] : state === 'none' ? [{ ...doc, active: false }] : [{ ...doc, active: false }, dialog])
+    if (tool === 'desk_snapshot') {
+      const nodes = state === 'dialog'
+        ? [root('dialog', 'Save As'), { ref: 1, id: '2/2', parent: 0, depth: 1, role: 'text', name: 'Save As:', states: ['showing'] }, { ref: 2, id: '2/3', parent: 0, depth: 1, role: 'combobox', name: 'File name:', states: ['showing', 'focused'] }, { ref: 3, id: '2/4', parent: 0, depth: 1, role: 'filler', name: 'File Chooser Widget', states: ['showing'] }]
+        : [root('window', doc.title)]
+      return JSON.stringify({ window: state === 'dialog' ? dialog : doc, truncated: false, nodes })
+    }
+    if (tool === 'desk_key' && args.keys === 'ctrl+shift+s') polls = 0
+    if (tool === 'desk_key' && /^return$/i.test(String(args.keys))) state = 'doc'
+    return '{"ok":true}'
+  })
+  const { main } = await import('../lib/gui_plan.mts')
+  try {
+    const r = await main({ steps: [{ key: 'ctrl+shift+s' }, { type: 'b.txt\n' }] })
+    const typed = calls.slice(calls.indexOf('key ctrl+shift+s') + 1, calls.indexOf('desk_type'))
+    assert.ok(typed.some((c) => c.startsWith('key ')), `no select key before typing into the chooser: ${typed.join(' ')}`)
+    assert.equal(r.ok, true, JSON.stringify(r))
+  } finally {
+    server.close()
+  }
+})
