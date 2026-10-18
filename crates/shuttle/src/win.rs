@@ -1,6 +1,7 @@
 //! The Windows controls on their own message-loop thread: the kill hotkey, the tray icon with Stop and Resume, and the confirm dialog.
 
 use std::io::Write as _;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
@@ -12,15 +13,17 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, MOD_NOREPEAT, RegisterHotKey,
 };
 use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW,
+    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+    Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
     EnumThreadWindows, GetCursorPos, GetMessageW, IDI_APPLICATION, IDI_ERROR, IDI_INFORMATION,
     IDOK, LoadIconW, MB_DEFBUTTON2, MB_ICONQUESTION, MB_OKCANCEL, MB_SETFOREGROUND, MB_TOPMOST,
-    MF_STRING, MSG, MessageBoxW, PostMessageW, RegisterClassW, SetForegroundWindow, SetTimer,
-    TPM_NONOTIFY, TPM_RETURNCMD, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_APP, WM_CLOSE, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
+    MF_STRING, MSG, MessageBoxW, PostMessageW, RegisterClassW, RegisterWindowMessageW,
+    SetForegroundWindow, SetTimer, TPM_NONOTIFY, TPM_RETURNCMD, TrackPopupMenu, TranslateMessage,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP,
+    WM_TIMER, WNDCLASSW,
 };
 use windows::core::{BOOL, HSTRING, w};
 
@@ -34,6 +37,8 @@ const STOP: usize = 1;
 const RESUME: usize = 2;
 
 static SHOWN: OnceLock<Shown> = OnceLock::new();
+static TASKBAR_CREATED: OnceLock<u32> = OnceLock::new();
+static TRAY: AtomicIsize = AtomicIsize::new(0);
 
 /// What the controls show and how to reach the daemon.
 pub struct Ui {
@@ -95,7 +100,10 @@ pub fn run(ui: Ui) -> ! {
         ));
     }
     if ui.indicator {
+        // SAFETY: the message name is a static string.
+        TASKBAR_CREATED.get_or_init(|| unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) });
         shown.tray(window, NIM_ADD);
+        TRAY.store(window.0 as isize, Ordering::Release);
         // SAFETY: `window` is this thread's window; the timer has no callback, so it posts WM_TIMER.
         unsafe { SetTimer(Some(window), 1, POLL.as_millis() as u32, None) };
     }
@@ -109,6 +117,21 @@ pub fn run(ui: Ui) -> ! {
         }
     }
     std::process::exit(0)
+}
+
+pub fn shutdown() {
+    let window = TRAY.load(Ordering::Acquire);
+    if window == 0 {
+        return;
+    }
+    let data = NOTIFYICONDATAW {
+        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: HWND(window as *mut _),
+        uID: 1,
+        ..Default::default()
+    };
+    // SAFETY: `data` names the icon `run` added for the controls window.
+    let _ = unsafe { Shell_NotifyIconW(NIM_DELETE, &data) };
 }
 
 /// The asker that shows each question as a dialog on a thread of its own.
@@ -168,6 +191,7 @@ extern "system" fn procedure(
             TRAY_MESSAGE if matches!(lparam.0 as u32 & 0xFFFF, WM_LBUTTONUP | WM_RBUTTONUP) => {
                 shown.menu(window);
             }
+            _ if TASKBAR_CREATED.get() == Some(&message) => shown.tray(window, NIM_ADD),
             _ => {}
         }
     }
