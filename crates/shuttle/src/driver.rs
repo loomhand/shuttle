@@ -29,8 +29,8 @@ pub struct Bundled {
 }
 
 impl Bundled {
-    /// Starts the cua-driver beside `exe` at `endpoint`, with its agent cursor when `overlay`, after stopping one that a killed daemon left there; none when no driver is bundled.
-    pub async fn start(exe: &Path, endpoint: &str, overlay: bool) -> Result<Option<Self>, String> {
+    /// Starts the cua-driver beside `exe` at `endpoint`, after stopping one that a killed daemon left there; none when no driver is bundled.
+    pub async fn start(exe: &Path, endpoint: &str) -> Result<Option<Self>, String> {
         let bin = exe.with_file_name(if cfg!(windows) {
             "cua-driver.exe"
         } else {
@@ -44,7 +44,6 @@ impl Bundled {
             endpoint: endpoint.to_owned(),
             pid_file: pid_file(endpoint)?,
             pid: Arc::default(),
-            overlay,
         };
         if server::connect(endpoint).await.is_ok() {
             proc.stop_stale().await?;
@@ -72,7 +71,6 @@ struct Proc {
     endpoint: String,
     pid_file: PathBuf,
     pid: Arc<AtomicU32>,
-    overlay: bool,
 }
 
 struct Running {
@@ -97,7 +95,6 @@ impl Proc {
         cmd.args(["serve", "--socket", &self.endpoint, "--pid-file"])
             .arg(&self.pid_file)
             .args(["--glide-ms", GLIDE_MS])
-            .args((!self.overlay).then_some("--no-overlay"))
             .env(TELEMETRY, "false")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -287,7 +284,7 @@ while True:
     async fn no_bundled_driver_starts_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let started = Bundled::start(&dir.path().join(NAME), &endpoint, true).await;
+        let started = Bundled::start(&dir.path().join(NAME), &endpoint).await;
         assert!(matches!(started, Ok(None)));
     }
 
@@ -297,10 +294,7 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, true)
-            .await
-            .unwrap()
-            .unwrap();
+        let driver = Bundled::start(&exe, &endpoint).await.unwrap().unwrap();
         assert!(server::connect(&endpoint).await.is_ok());
         let first = pid(&endpoint).unwrap();
         let own = driver.pid();
@@ -330,14 +324,11 @@ while True:
     }
 
     #[tokio::test]
-    async fn the_driver_glides_its_cursor_in_one_millisecond() {
+    async fn the_driver_draws_its_cursor_and_glides_it_in_one_millisecond() {
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, true)
-            .await
-            .unwrap()
-            .unwrap();
+        let driver = Bundled::start(&exe, &endpoint).await.unwrap().unwrap();
         let argv = std::fs::read_to_string(format!("{endpoint}.argv")).unwrap_or_default();
         driver.stop().await;
         assert!(argv.contains("--glide-ms 1"), "{argv}");
@@ -345,28 +336,11 @@ while True:
     }
 
     #[tokio::test]
-    async fn the_driver_draws_no_agent_cursor_without_the_indicator() {
-        let dir = tempfile::tempdir().unwrap();
-        let exe = fake(dir.path(), FAKE).unwrap();
-        let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, false)
-            .await
-            .unwrap()
-            .unwrap();
-        let argv = std::fs::read_to_string(format!("{endpoint}.argv")).unwrap_or_default();
-        driver.stop().await;
-        assert!(argv.contains("--no-overlay"), "{argv}");
-    }
-
-    #[tokio::test]
     async fn a_stop_the_driver_never_answers_still_leaves_no_driver() {
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, true)
-            .await
-            .unwrap()
-            .unwrap();
+        let driver = Bundled::start(&exe, &endpoint).await.unwrap().unwrap();
         let server = pid(&endpoint).unwrap();
         std::fs::write(format!("{endpoint}.hang"), "").unwrap();
         driver.stop().await;
@@ -378,10 +352,7 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, true)
-            .await
-            .unwrap()
-            .unwrap();
+        let driver = Bundled::start(&exe, &endpoint).await.unwrap().unwrap();
         let first = pid(&endpoint).unwrap();
         std::fs::write(format!("{endpoint}.slow"), "").unwrap();
         std::fs::write(format!("{endpoint}.hang"), "").unwrap();
@@ -417,10 +388,7 @@ while True:
             tokio::time::sleep(POLL).await;
         }
         let stale = pid(&endpoint).unwrap();
-        let driver = Bundled::start(&exe, &endpoint, true)
-            .await
-            .unwrap()
-            .unwrap();
+        let driver = Bundled::start(&exe, &endpoint).await.unwrap().unwrap();
         let _ = left.wait();
         let stopped = gone(stale).await;
         let replaced = pid(&endpoint) != Some(stale) && server::connect(&endpoint).await.is_ok();
@@ -436,7 +404,7 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), "#!/bin/sh\nexit 3\n").unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let err = Bundled::start(&exe, &endpoint, true)
+        let err = Bundled::start(&exe, &endpoint)
             .await
             .err()
             .unwrap_or_default();
