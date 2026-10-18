@@ -43,7 +43,7 @@ test('a grounded check on a screen whose origin is left of zero crops around the
 function gray(w: number, h: number) {
   const chunk = (kind: string, data: Buffer) => {
     const head = Buffer.alloc(8), crc = Buffer.alloc(4); head.writeUInt32BE(data.length); head.write(kind, 4, 'ascii')
-    crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data])) >>> 0); return Buffer.concat([head, data, crc])
+    crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data]))); return Buffer.concat([head, data, crc])
   }
   const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 6
   const raw = Buffer.alloc(h * (w * 4 + 1), 128); for (let y = 0; y < h; y++) raw[y * (w * 4 + 1)] = 0

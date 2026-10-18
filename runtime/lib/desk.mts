@@ -98,7 +98,7 @@ export async function ask(prompt: string, images: Buffer | Buffer[] = []): Promi
 }
 
 /** The point, in desk coordinates, of a described element in a PNG of the desk rectangle `area`. */
-export async function ground(png: Buffer, target: string, area: { left?: number; top?: number; width: number; height: number }): Promise<[number, number]> {
+export async function ground(png: Buffer, target: string, area: Size): Promise<[number, number]> {
   const r = await model<Metered & { x: number; y: number }>('model_ground', { png_b64: png.toString('base64'), target, area })
   return [r.x, r.y]
 }
