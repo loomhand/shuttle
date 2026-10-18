@@ -600,12 +600,34 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             a.w.unwrap_or(f64::MAX / 4.0),
             a.h.unwrap_or(f64::MAX / 4.0),
         ];
-        let (w, h, png) = crop_png(&png, rect, factor)?;
+        let mask = if self.allow.is_open() {
+            None
+        } else {
+            Some(self.mask(factor).await?)
+        };
+        let (w, h, png) = crop_png(&png, rect, factor, mask.as_deref())?;
         Ok(Output {
             text: json!({"ok": true, "width": w, "height": h}).to_string(),
             image_b64: Some(B64.encode(&png)),
             ..Output::default()
         })
+    }
+
+    async fn mask(&self, factor: f64) -> Result<Vec<([f64; 4], bool)>, String> {
+        let k = self.scale().await? * factor;
+        let mut windows = self.on_screen().await?;
+        let frames = self.access.run(CALL_LIMIT, (), |b| b.frames()).await?;
+        windows.sort_by_key(|w| w["z_index"].as_i64().unwrap_or(i64::MIN));
+        Ok(windows
+            .into_iter()
+            .map(|w| {
+                let pid = w["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
+                (
+                    bounds(&w).map(|v| v * k),
+                    self.allow.admits(app_of(&frames, pid)),
+                )
+            })
+            .collect())
     }
 }
 
@@ -799,6 +821,7 @@ fn crop_png(
     png: &[u8],
     [x, y, w, h]: [f64; 4],
     factor: f64,
+    mask: Option<&[([f64; 4], bool)]>,
 ) -> Result<(u32, u32, Vec<u8>), String> {
     let mut dec = png::Decoder::new(std::io::Cursor::new(png));
     dec.set_transformations(png::Transformations::normalize_to_color8());
@@ -817,9 +840,15 @@ fn crop_png(
         return Err("the rectangle is off the screen".to_owned());
     }
     let (cw, ch) = (right - left, bottom - top);
+    let keep = mask.map(|m| keep_map(m, [left, top, right, bottom]));
     let mut rgb = Vec::with_capacity((cw * ch * 3) as usize);
     for row in top..bottom {
         for col in left..right {
+            let i = ((row - top) * cw + col - left) as usize;
+            if keep.as_ref().is_some_and(|k| !k[i]) {
+                rgb.extend([0; 3]);
+                continue;
+            }
             let at = (row as usize * info.width as usize + col as usize) * channels;
             let px = &buf[at..at + channels];
             match channels {
@@ -836,6 +865,27 @@ fn crop_png(
         .and_then(|mut w| w.write_image_data(&rgb))
         .map_err(|e| format!("encode PNG: {e}"))?;
     Ok((cw, ch, out))
+}
+
+fn keep_map(mask: &[([f64; 4], bool)], [left, top, right, bottom]: [u32; 4]) -> Vec<bool> {
+    let cw = (right - left) as usize;
+    let mut keep = vec![false; cw * (bottom - top) as usize];
+    for &([x, y, w, h], admitted) in mask {
+        let span = |a: f64, b: f64, min: u32, max: u32| {
+            let (a, b) = if admitted {
+                (a.ceil(), b.floor())
+            } else {
+                (a.floor(), b.ceil())
+            };
+            let clip = |v: f64| (v.clamp(f64::from(min), f64::from(max)) as u32 - min) as usize;
+            clip(a)..clip(b)
+        };
+        let cols = span(x, x + w, left, right);
+        for row in span(y, y + h, top, bottom) {
+            keep[row * cw + cols.start..row * cw + cols.end.max(cols.start)].fill(admitted);
+        }
+    }
+    keep
 }
 
 /// The US-layout keys that type `c`, shift first for a shifted character; none for a character Windows types as Unicode.
@@ -1114,11 +1164,12 @@ mod tests {
             px.extend([i, i, i, 255]);
         }
         enc.write_header().unwrap().write_image_data(&px).unwrap();
-        let (w, h, _) = crop_png(&png, [2.0, 0.0, 4.0, 4.0], 0.5).unwrap();
+        let (w, h, _) = crop_png(&png, [2.0, 0.0, 4.0, 4.0], 0.5, None).unwrap();
         assert_eq!((w, h), (2, 2));
-        let (w, h, _) = crop_png(&png, [0.0, 0.0, f64::MAX / 4.0, f64::MAX / 4.0], 1.0).unwrap();
+        let (w, h, _) =
+            crop_png(&png, [0.0, 0.0, f64::MAX / 4.0, f64::MAX / 4.0], 1.0, None).unwrap();
         assert_eq!((w, h), (4, 2));
-        assert!(crop_png(&png, [100.0, 0.0, 4.0, 4.0], 1.0).is_err());
+        assert!(crop_png(&png, [100.0, 0.0, 4.0, 4.0], 1.0, None).is_err());
     }
 
     struct Recorder(Arc<Mutex<Vec<(String, Value)>>>);
@@ -1549,9 +1600,34 @@ mod tests {
                     {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "bounds": {"x": 0.0, "y": 0.0, "width": 1000.0, "height": 1000.0}},
                     {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "bounds": {"x": 500.0, "y": 0.0, "width": 500.0, "height": 500.0}}
                 ]}}),
+                "get_desktop_state" => {
+                    let mut png = Vec::new();
+                    let mut enc = png::Encoder::new(&mut png, 10, 10);
+                    enc.set_color(png::ColorType::Rgb);
+                    enc.write_header()
+                        .unwrap()
+                        .write_image_data(&[255; 300])
+                        .unwrap();
+                    let mut v = json!({"structuredContent": {"screenshot_width": 10, "screenshot_original_width": 1000}});
+                    v["content"] = json!([{"type": "image", "data": B64.encode(&png)}]);
+                    v
+                }
                 _ => json!({}),
             })
         }
+    }
+
+    fn pixels(out: &Output) -> Vec<[u8; 3]> {
+        let png = B64.decode(out.image_b64.as_deref().unwrap()).unwrap();
+        let mut reader = png::Decoder::new(std::io::Cursor::new(png))
+            .read_info()
+            .unwrap();
+        let mut buf = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut buf).unwrap();
+        buf[..info.buffer_size()]
+            .chunks(3)
+            .map(|p| [p[0], p[1], p[2]])
+            .collect()
     }
 
     #[tokio::test]
@@ -1588,6 +1664,28 @@ mod tests {
             missed.contains("Untitled - Notepad") && !missed.contains("Inbox"),
             "{missed}"
         );
+    }
+
+    #[tokio::test]
+    async fn an_app_allowlist_blacks_out_the_screen_outside_its_windows_and_costs_nothing_without_one()
+     {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let open = Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Windows);
+        let all = pixels(&open.run("desk_shot", json!({})).await.unwrap());
+        assert!(all.iter().all(|p| *p == [255; 3]));
+        assert_eq!(*calls.lock().unwrap(), ["get_desktop_state"]);
+        let masked = Desk::new(|| Ok(Apps), Desktop(Arc::default()), Os::Windows)
+            .allow(vec!["notepad".into()]);
+        let shot = pixels(&masked.run("desk_shot", json!({})).await.unwrap());
+        assert_eq!((shot[2], shot[7], shot[97]), ([255; 3], [0; 3], [255; 3]));
+        let crop = masked
+            .run(
+                "desk_shot",
+                json!({"x": 600.0, "y": 0.0, "w": 400.0, "h": 400.0}),
+            )
+            .await
+            .unwrap();
+        assert!(pixels(&crop).iter().all(|p| *p == [0; 3]));
     }
 
     #[tokio::test]
