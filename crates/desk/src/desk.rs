@@ -21,6 +21,7 @@ use crate::keys::{Os, key_names, keystroke};
 use crate::model::{Access, Act, Extras, Frame, Node};
 use crate::press::{Press, plan_press};
 use crate::shot::crop_png;
+use crate::still::{Frame as StillFrame, Watch};
 use crate::worker::Worker;
 
 pub const TURN_WAIT: Duration = Duration::from_secs(15);
@@ -53,6 +54,7 @@ const STILL_TIMEOUT: Duration = Duration::from_millis(600);
 const STILL_MAX: Duration = Duration::from_secs(5);
 const STILL_HOLD: Duration = Duration::from_millis(40);
 const STILL_POLL: Duration = Duration::from_millis(10);
+const STILL_EDGE: u32 = 320;
 
 type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
 
@@ -203,7 +205,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 Some(args["id"].as_str().ok_or("no element id")?.to_owned())
             }
             "desk_key" | "desk_type" => None,
-            "desk_scroll" if args["x"].is_null() => None,
             _ => return Ok(()),
         };
         let allow = self.allow.clone();
@@ -502,7 +503,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.check_point(x, y, under.as_ref()).await
     }
 
-    /// Wheel notches at a screen point, or, without one, scroll keys to the front window.
+    /// Wheel notches at a screen point, or, without one, scroll keys to the app of the front window, the one the allowlist checks.
     async fn scroll(&self, a: ScrollArgs) -> Result<String, String> {
         let mut req =
             json!({"direction": a.direction, "amount": a.amount.unwrap_or(SCROLL_AMOUNT)});
@@ -514,15 +515,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 self.driver.call("scroll", desktop(req)).await?;
             }
             (None, None) => {
-                let mut front = self
-                    .on_screen()
+                let allow = self.allow.clone();
+                let pid = self
+                    .access
+                    .run(CALL_LIMIT, (), move |b| {
+                        allow.pick(b.frames()?, None, None).map(|f| f.pid)
+                    })
                     .await?
-                    .into_iter()
-                    .filter(|w| w["layer"] == 0)
-                    .max_by_key(|w| w["z_index"].as_i64().unwrap_or(i64::MIN))
-                    .ok_or("no window is in front to scroll")?;
-                req["pid"] = front["pid"].take();
-                req["window_id"] = front["window_id"].take();
+                    .ok_or("the front window has no process to scroll")?;
+                req["pid"] = pid.into();
                 self.driver.call("scroll", req).await?;
             }
             _ => return Err("scroll needs both x and y, or neither".to_owned()),
@@ -539,7 +540,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(OK.to_owned())
     }
 
-    /// Waits until the screen holds still for `hold_ms`, at most `timeout_ms`; says whether it changed meanwhile.
+    /// Waits until no block of the screen changes in a way that counts (see [`Watch`]) for `hold_ms`, at most `timeout_ms`; says whether one changed meanwhile.
     async fn still(&self, a: StillArgs) -> Result<String, String> {
         let limit = a
             .timeout_ms
@@ -547,36 +548,43 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .min(STILL_MAX);
         let hold = a.hold_ms.map_or(STILL_HOLD, Duration::from_millis);
         let started = Instant::now();
-        let mut last = self.screen_png().await?;
-        let mut since = Instant::now();
-        let mut changed = false;
+        let mut last = self.still_frame().await?;
+        let mut watch = Watch::default();
+        let (mut since, mut changed) = (Instant::now(), false);
         loop {
             let still = since.elapsed() >= hold;
             if still || started.elapsed() >= limit {
                 let waited = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                return Ok(json!({"still": still, "changed": changed, "ms": waited}).to_string());
+                return Ok(json!({"still": still, "changed": changed, "ms": waited, "volatile": watch.volatile()}).to_string());
             }
             tokio::time::sleep(STILL_POLL).await;
-            let now = self.screen_png().await?;
-            if now != last {
-                (changed, since, last) = (true, Instant::now(), now);
+            let now = self.still_frame().await?;
+            if watch.counts(&last, &now) {
+                (changed, since) = (true, Instant::now());
             }
+            last = now;
         }
     }
 
-    async fn screen_png(&self) -> Result<String, String> {
-        let mut v = self.driver.call("get_desktop_state", json!({})).await?;
-        let Value::Array(content) = v["content"].take() else {
-            return Err("the driver returned no screenshot".to_owned());
-        };
-        content
+    async fn still_frame(&self) -> Result<StillFrame, String> {
+        let v = self
+            .driver
+            .call(
+                "get_desktop_state",
+                json!({"max_image_dimension": STILL_EDGE}),
+            )
+            .await?;
+        let png = v["content"]
+            .as_array()
             .into_iter()
+            .flatten()
             .find(|c| c["type"] == "image")
-            .and_then(|mut c| match c["data"].take() {
-                Value::String(png) => Some(png),
-                _ => None,
-            })
-            .ok_or_else(|| "the driver returned no screenshot".to_owned())
+            .and_then(|c| c["data"].as_str())
+            .ok_or("the driver returned no screenshot")?;
+        StillFrame::decode(
+            &B64.decode(png)
+                .map_err(|e| format!("decode capture: {e}"))?,
+        )
     }
 
     async fn click_window(&self, req: Value, w: &Under) -> Result<(), String> {
@@ -2059,7 +2067,7 @@ pub(crate) mod tests {
             last(),
             (
                 "scroll".to_owned(),
-                json!({"direction": "up", "amount": 5, "pid": 8, "window_id": 2})
+                json!({"direction": "up", "amount": 5, "pid": 4})
             )
         );
         let half = desk
@@ -2108,6 +2116,11 @@ pub(crate) mod tests {
                 .iter()
                 .any(|t| t == "drag" || t == "scroll")
         );
+        let mail =
+            Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Windows).allow(&["mail".into()]);
+        assert!(refused(
+            mail.run("desk_scroll", json!({"direction": "down"})).await
+        ));
         desk.run("desk_drag", drag((200.0, 300.0))).await.unwrap();
         desk.run(
             "desk_scroll",
@@ -2119,41 +2132,67 @@ pub(crate) mod tests {
         assert!(done.contains(&"drag".to_owned()) && done.contains(&"scroll".to_owned()));
     }
 
-    struct Frames(Mutex<usize>, fn(usize) -> usize);
+    struct Frames(Mutex<usize>, fn(usize) -> Vec<(usize, u8)>);
 
     impl Input for Frames {
-        async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
-            assert_eq!(tool, "get_desktop_state");
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            assert_eq!(
+                (tool, &args),
+                ("get_desktop_state", &json!({"max_image_dimension": 320}))
+            );
             let mut n = self.0.lock().unwrap();
             *n += 1;
-            Ok(json!({"content": [{"type": "image", "data": format!("png-{}", (self.1)(*n))}]}))
+            let (w, h) = (32, 16);
+            let mut rgb = vec![0u8; w * h * 3];
+            for (block, tone) in (self.1)(*n) {
+                for y in 0..8 {
+                    for x in 0..8 {
+                        let at = ((y + block / 4 * 8) * w + x + block % 4 * 8) * 3;
+                        rgb[at..at + 3].fill(tone);
+                    }
+                }
+            }
+            let mut png = Vec::new();
+            let mut enc = png::Encoder::new(&mut png, w as u32, h as u32);
+            enc.set_color(png::ColorType::Rgb);
+            enc.write_header().unwrap().write_image_data(&rgb).unwrap();
+            Ok(json!({"content": [{"type": "image", "data": B64.encode(&png)}]}))
         }
     }
 
     #[tokio::test]
-    async fn still_answers_once_the_screen_holds_for_its_hold_and_says_whether_it_changed() {
-        let run = |frame: fn(usize) -> usize, args: Value| async move {
-            let desk = Desk::new(|| Ok(notepad()), Frames(Mutex::new(0), frame), Os::Mac);
+    async fn still_answers_once_the_screen_holds_and_a_churning_region_does_not_hold_it_back() {
+        let run = |frames: fn(usize) -> Vec<(usize, u8)>, args: Value| async move {
+            let desk = Desk::new(|| Ok(notepad()), Frames(Mutex::new(0), frames), Os::Mac);
             let out = desk.run("desk_still", args).await.unwrap();
             serde_json::from_str::<Value>(&out.text).unwrap()
         };
-        let calm = run(|_| 0, json!({"hold_ms": 30})).await;
-        assert_eq!(
-            (calm["still"].clone(), calm["changed"].clone()),
-            (json!(true), json!(false))
+        let pair = |v: &Value| (v["still"].clone(), v["changed"].clone());
+        let calm = run(|_| vec![], json!({"hold_ms": 30})).await;
+        assert_eq!(pair(&calm), (json!(true), json!(false)));
+        let settles = run(
+            |n| vec![(0, if n < 3 { 0 } else { 200 })],
+            json!({"hold_ms": 30}),
+        )
+        .await;
+        assert_eq!(pair(&settles), (json!(true), json!(true)));
+        let video = run(
+            |n| vec![(5, u8::try_from(n * 40 % 250).unwrap())],
+            json!({"hold_ms": 30, "timeout_ms": 2000}),
+        )
+        .await;
+        assert_eq!(pair(&video), (json!(true), json!(true)), "{video}");
+        assert_eq!(video["volatile"], 1, "{video}");
+        assert!(video["ms"].as_u64().unwrap() < 2000, "{video}");
+        let short = run(
+            |n| vec![(0, if n < 3 { 0 } else { 200 })],
+            json!({"hold_ms": 1000, "timeout_ms": 150}),
+        )
+        .await;
+        assert_eq!(pair(&short), (json!(false), json!(true)), "{short}");
+        assert!(
+            (150..1000).contains(&short["ms"].as_u64().unwrap()),
+            "{short}"
         );
-        let settles = run(|n| n.min(4), json!({"hold_ms": 30})).await;
-        assert_eq!(
-            (settles["still"].clone(), settles["changed"].clone()),
-            (json!(true), json!(true))
-        );
-        assert!(settles["ms"].as_u64().unwrap() >= 30, "{settles}");
-        let busy = run(|n| n, json!({"hold_ms": 30, "timeout_ms": 120})).await;
-        assert_eq!(
-            (busy["still"].clone(), busy["changed"].clone()),
-            (json!(false), json!(true))
-        );
-        let ms = busy["ms"].as_u64().unwrap();
-        assert!((120..1000).contains(&ms), "{busy}");
     }
 }
