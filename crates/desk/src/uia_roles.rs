@@ -1,5 +1,7 @@
 //! UIA control types as ARIA roles after W3C Core-AAM, and UIA properties as desk state names.
 
+use crate::model::{self, States};
+
 /// The UIA facts that decide an element's role.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Kind {
@@ -82,47 +84,22 @@ pub fn native(id: i32) -> &'static str {
 
 /// The desk states of an element of `role` with `f`.
 pub fn states(role: &str, f: Facts) -> Vec<&'static str> {
-    let mut out = Vec::new();
     let pressable = role == "button";
-    match f.toggle {
-        Some(1) if pressable => out.push("pressed"),
-        Some(1) => out.push("checked"),
-        _ => {}
-    }
-    if role == "textbox" && f.read_only == Some(false) {
-        out.push("editable");
-    }
-    if f.expand == Some(1) {
-        out.push("expanded");
-    }
-    if f.focusable {
-        out.push("focusable");
-    }
-    if f.focused {
-        out.push("focused");
-    }
-    if f.modal {
-        out.push("modal");
-    }
-    if f.selected == Some(true) {
-        out.push("selected");
-    }
-    if !f.offscreen {
-        out.push("showing");
-    }
-    if f.toggle.is_some() && !pressable {
-        out.push("checkable");
-    }
-    if f.read_only == Some(true) {
-        out.push("read-only");
-    }
-    if !f.enabled {
-        out.push("disabled");
-    }
-    if f.toggle == Some(2) {
-        out.push("mixed");
-    }
-    out
+    model::states(States {
+        checked: !pressable && f.toggle == Some(1),
+        pressed: pressable && f.toggle == Some(1),
+        mixed: f.toggle == Some(2),
+        checkable: !pressable && f.toggle.is_some(),
+        editable: role == "textbox" && f.read_only == Some(false),
+        expanded: f.expand == Some(1),
+        focusable: f.focusable,
+        focused: f.focused,
+        modal: f.modal,
+        selected: f.selected == Some(true),
+        shown: !f.offscreen,
+        read_only: f.read_only == Some(true),
+        disabled: !f.enabled,
+    })
 }
 
 #[cfg(test)]

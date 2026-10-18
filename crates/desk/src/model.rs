@@ -140,6 +140,23 @@ impl Named for Node {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct States {
+    pub checked: bool,
+    pub pressed: bool,
+    pub mixed: bool,
+    pub checkable: bool,
+    pub editable: bool,
+    pub expanded: bool,
+    pub focusable: bool,
+    pub focused: bool,
+    pub modal: bool,
+    pub selected: bool,
+    pub shown: bool,
+    pub read_only: bool,
+    pub disabled: bool,
+}
+
 /// The tree of one window with the time each phase took.
 #[derive(Debug, Default)]
 pub struct Tree {
@@ -225,6 +242,35 @@ pub fn is_active(role: &str) -> bool {
 /// Whether a node of `role` holds a value a caller reads.
 pub fn is_field(role: &str) -> bool {
     FIELD_ROLES.contains(&role)
+}
+
+pub fn states(s: States) -> Vec<&'static str> {
+    [
+        (s.checked, "checked"),
+        (s.pressed, "pressed"),
+        (s.editable, "editable"),
+        (s.expanded, "expanded"),
+        (s.focusable, "focusable"),
+        (s.focused, "focused"),
+        (s.modal, "modal"),
+        (s.selected, "selected"),
+        (s.shown, "showing"),
+        (s.checkable, "checkable"),
+        (s.read_only, "read-only"),
+        (s.disabled, "disabled"),
+        (s.mixed, "mixed"),
+    ]
+    .into_iter()
+    .filter_map(|(on, name)| on.then_some(name))
+    .collect()
+}
+
+pub fn format_number(v: f64) -> String {
+    if v.fract() == 0.0 && v.abs() < 1e15 {
+        format!("{v:.0}")
+    } else {
+        v.to_string()
+    }
 }
 
 pub fn place(
