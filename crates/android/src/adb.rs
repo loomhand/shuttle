@@ -303,13 +303,10 @@ impl Android {
     /// Pastes `text` into the focused field through the clipboard, which takes any Unicode, unlike key injection.
     pub(crate) async fn paste(&self, text: &str) -> Result<(), String> {
         let mut slot = self.control.lock().await;
-        if let Some(mut control) = slot.take()
-            && control.paste(text).await.is_ok()
-        {
-            *slot = Some(control);
-            return Ok(());
-        }
-        let mut control = self.open_control().await?;
+        let mut control = match slot.take() {
+            Some(control) if control.is_open() => control,
+            _ => self.open_control().await?,
+        };
         control.paste(text).await?;
         *slot = Some(control);
         Ok(())
@@ -507,6 +504,11 @@ struct Control {
 }
 
 impl Control {
+    /// Whether the server still holds the session; it sends nothing unasked, so anything readable is its end.
+    fn is_open(&self) -> bool {
+        matches!(self.stream.try_read(&mut [0; 1]), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+    }
+
     async fn paste(&mut self, text: &str) -> Result<(), String> {
         self.sequence += 1;
         self.stream
@@ -821,5 +823,66 @@ mod tests {
         );
         let mut other: &[u8] = &[0, 0, 0, 0, 2, b'h', b'i'];
         assert!(read_ack(&mut other, 7).await.is_err());
+    }
+
+    #[cfg(unix)]
+    async fn session(adb: &str) -> (Android, TcpStream) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (peer, _) = listener.accept().await.unwrap();
+        let android = Android::new(Device {
+            adb: adb.into(),
+            serial: None,
+            ui_jar: "/u.jar".into(),
+            scrcpy_jar: "/s.jar".into(),
+            su: "/su".into(),
+        });
+        *android.control.lock().await = Some(Control {
+            stream,
+            sequence: 0,
+            _server: Command::new("sleep")
+                .arg("30")
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap(),
+            _forward: Forward {
+                port: String::new(),
+                remove: None,
+            },
+        });
+        (android, peer)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_paste_sent_without_an_acknowledgement_fails_and_is_not_sent_again() {
+        let (android, mut peer) = session("/nonexistent/adb").await;
+        let device = tokio::spawn(async move {
+            let mut got = Vec::new();
+            let mut buf = [0; 64];
+            let n = peer.read(&mut buf).await.unwrap();
+            got.extend_from_slice(&buf[..n]);
+            drop(peer);
+            got
+        });
+        let err = android.paste("hi").await.unwrap_err();
+        assert!(err.contains("read scrcpy control"), "{err}");
+        assert_eq!(device.await.unwrap(), clipboard_message("hi", 1));
+        assert!(android.control.lock().await.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_session_the_server_closed_is_reopened_before_anything_is_sent() {
+        let (android, mut peer) = session("/nonexistent/adb").await;
+        peer.shutdown().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let err = android.paste("hi").await.unwrap_err();
+        assert!(err.contains("run adb"), "{err}");
+        let mut sent = Vec::new();
+        peer.read_to_end(&mut sent).await.unwrap();
+        assert!(sent.is_empty(), "{sent:?}");
     }
 }
