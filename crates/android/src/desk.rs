@@ -15,7 +15,7 @@ use desk_core::wire::Output;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::adb::{Android, SCREEN};
+use crate::adb::{Android, SCREEN, is_package};
 
 const APPLICATION: i64 = 1;
 const PID_BASE: u32 = 1 << 22;
@@ -851,12 +851,6 @@ async fn focus(android: &Android, a: WindowArgs) -> Result<String, String> {
     Ok(json!({"ok": true, "title": frame.title, "pid": frame.pid}).to_string())
 }
 
-fn is_package(s: &str) -> bool {
-    s.contains('.')
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
-}
-
 /// A PNG of a screen rectangle, the whole screen by default.
 async fn shot(android: &Android, a: ShotArgs) -> Result<Output, String> {
     let png = android.adb(&["exec-out", "screencap", "-p"]).await?;
@@ -1205,13 +1199,6 @@ mod tests {
             unescape("a&lt;b&gt;&quot;&apos;&#20320;&#x597D;&bogus"),
             "a<b>\"'你好&bogus"
         );
-    }
-
-    #[test]
-    fn only_dotted_names_are_packages() {
-        assert!(is_package("com.android.settings"));
-        assert!(!is_package("Settings"));
-        assert!(!is_package("Settings - com.android.settings"));
     }
 
     #[test]
