@@ -3,15 +3,32 @@
 use desk_core::wire::{Call, Output};
 use serde_json::{Value, json};
 
+use crate::plugins::Plugin;
 use crate::{NAME, VERSION, proxy};
+
+/// The built-in MCP tools, whose names no plugin may take.
+pub const NAMES: [&str; 5] = ["gui_plan", "script_run", "desk", "screenshot", "status"];
 
 pub const DESK_VERBS: [&str; 16] = [
     "windows", "wait", "snapshot", "find", "read", "press", "act", "at", "key", "type", "click",
     "focus", "close", "launch", "shot", "screen",
 ];
 
-/// The result of `tools/list`.
-pub fn list() -> Value {
+/// The result of `tools/list`: the built-in tools, then `plugins` with `script_run`'s arguments.
+pub fn list(plugins: &[Plugin]) -> Value {
+    let mut listed = builtins();
+    let script = listed["tools"][1]["inputSchema"].clone();
+    if let Some(tools) = listed["tools"].as_array_mut() {
+        tools.extend(plugins.iter().map(|p| {
+            let mut tool = json!({"name": p.name, "description": p.description});
+            tool["inputSchema"] = script.clone();
+            tool
+        }));
+    }
+    listed
+}
+
+fn builtins() -> Value {
     json!({"tools": [
         {
             "name": "gui_plan",
@@ -75,12 +92,17 @@ pub fn list() -> Value {
     ]})
 }
 
-/// Answers a `tools/call` of `name` with `args`: an MCP tool result, or `None` for an unknown tool.
-pub async fn call(name: &str, args: Value, endpoint: &str) -> Option<Value> {
+/// Answers a `tools/call` of `name` with `args`: an MCP tool result, or `None` for a tool that is neither built in nor one of `plugins`.
+pub async fn call(name: &str, args: Value, endpoint: &str, plugins: &[Plugin]) -> Option<Value> {
     if name == "status" {
         return Some(result(status().to_string(), false));
     }
-    let (tool, args) = match route(name, args)? {
+    let routed = if plugins.iter().any(|p| p.name == name) {
+        Some(Ok((name.to_owned(), absolute_script(args))))
+    } else {
+        route(name, args)
+    };
+    let (tool, args) = match routed? {
         Ok(routed) => routed,
         Err(e) => return Some(result(e, true)),
     };
@@ -159,7 +181,7 @@ mod tests {
 
     #[test]
     fn no_mcp_tool_reaches_the_safety_controls() {
-        let tools = list();
+        let tools = list(&[]);
         let names: Vec<&str> = tools["tools"]
             .as_array()
             .unwrap()
@@ -179,6 +201,30 @@ mod tests {
         }
         assert!(routed.len() > DESK_VERBS.len(), "{routed:?}");
         assert!(!routed.iter().any(|t| t.contains("safety")), "{routed:?}");
+    }
+
+    #[test]
+    fn the_built_in_names_are_the_listed_tools_and_plugins_follow_with_script_runs_arguments() {
+        let plugin = Plugin {
+            name: "demo_run".into(),
+            description: "Run a demo script.".into(),
+            bin: "/usr/bin/demo".into(),
+            resources: Vec::new(),
+        };
+        let listed = list(std::slice::from_ref(&plugin));
+        let names: Vec<&str> = listed["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert_eq!(names[..NAMES.len()], NAMES);
+        assert_eq!(names[NAMES.len()..], ["demo_run"]);
+        assert_eq!(
+            listed["tools"][5]["inputSchema"],
+            listed["tools"][1]["inputSchema"]
+        );
+        assert_eq!(listed["tools"][1]["name"], "script_run");
     }
 
     #[test]

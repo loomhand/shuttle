@@ -65,6 +65,12 @@ mod tests {
         let c = Config::load(f.path()).unwrap();
         assert_eq!(c.safety.apps, ["TextEdit", "notepad.exe"]);
         assert!(!c.tools.script_run);
+        assert_eq!(c.tools.plugins, None);
+        let dir_set = file("[tools]\nplugins = \"/etc/cocoonbox/tools.d\"\n");
+        assert_eq!(
+            Config::load(dir_set.path()).unwrap().tools.plugins,
+            Some("/etc/cocoonbox/tools.d".into())
+        );
         let ui = file(
             "[safety]\nkill_hotkey = \"ctrl+shift+k\"\nindicator = false\nconfirm = \"coordinate\"\n",
         );

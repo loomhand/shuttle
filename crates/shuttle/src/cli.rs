@@ -24,10 +24,10 @@ use crate::hotkey::{self, Hotkey};
 #[cfg(target_os = "macos")]
 use crate::mac as controls;
 use crate::runner::Runner;
-use crate::tools::DESK_VERBS;
+use crate::tools::{self, DESK_VERBS};
 #[cfg(windows)]
 use crate::win as controls;
-use crate::{NAME, VERSION, log, mcp};
+use crate::{NAME, VERSION, log, mcp, plugins};
 
 /// Runs the command in `args` (the program name excluded) and returns its exit code.
 pub fn run(args: &[String]) -> ExitCode {
@@ -41,10 +41,17 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         "mcp" => {
             let endpoint = desk_endpoint();
+            let path = default_path(NAME);
+            let config = Config::load(&path);
+            let listed = if config.as_ref().is_ok_and(|c| c.tools.script_run) {
+                plugins::configured(&config, &path, &tools::NAMES)
+            } else {
+                Vec::new()
+            };
             let stdin = tokio::io::BufReader::new(tokio::io::stdin());
             exit(block_on(
                 Builder::new_current_thread(),
-                mcp::serve(stdin, tokio::io::stdout(), &endpoint),
+                mcp::serve(stdin, tokio::io::stdout(), &endpoint, &listed),
             ))
         }
         "serve" => {
@@ -180,6 +187,7 @@ async fn serve(
         asker,
     };
     let overlay = !config.as_ref().is_ok_and(|c| !c.driver.overlay);
+    let plugins = plugins::configured(&config, &path, &tools::NAMES);
     let models = config.map(Models::new);
     let exe = std::env::current_exe()
         .and_then(std::fs::canonicalize)
@@ -202,12 +210,9 @@ async fn serve(
         path.with_file_name("flows"),
         key_vars,
     );
-    let daemon = Arc::new(Daemon::new(
-        server::native(driver, &apps),
-        models,
-        runner,
-        guard,
-    ));
+    let daemon = Arc::new(
+        Daemon::new(server::native(driver, &apps), models, runner, guard).with_plugins(plugins),
+    );
     #[cfg(any(target_os = "macos", windows))]
     ready(daemon.clone(), safety, hotkey);
     let served = tokio::select! {

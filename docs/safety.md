@@ -47,7 +47,7 @@ The screenshot mask is per window rectangle, not per pixel:
 
 ## Turning script_run off
 
-`script_run = false` under `[tools]` turns off the one tool that runs the agent's own code. `script_run` then answers how to turn it back on, and `gui_plan`, `desk` and `screenshot` keep working.
+`script_run = false` under `[tools]` turns off the one tool that runs the agent's own code, and the plugin tools of [wire.md](wire.md#plugins) with it: the MCP server lists none, and `script_run` and every plugin answer how to turn it back on. `gui_plan`, `desk` and `screenshot` keep working. While plugins run, their desk calls pass the same app allowlist, confirm and stop as any other.
 
 ## Input on macOS
 
