@@ -1,8 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 - 2026-10-18
 
-- **Fixes.** `install.sh` checks the new program before it replaces the installed one; `install.ps1` leaves no variables in the caller's PowerShell session; `gui_plan`'s outline note no longer names tools shuttle does not have; fewer window-list reads per plan step; the run log is capped.
+- **Fixes.**
+  - `install.sh` runs the new program before it replaces the installed one and stops when it does not start.
+  - `install.ps1` runs in its own script block, so `irm | iex` leaves no variables or preferences in the session. It refuses before it changes anything while a program from the install runs, takes every path literally (a `SHUTTLE_HOME` with brackets works), and trims a trailing separator from `SHUTTLE_HOME`.
+  - `gui_plan`'s outline note tells a backend node cap from a text cut and points to `desk snapshot` or `find`, not to tools shuttle does not have; an outline at exactly the text budget gets no note.
+  - `desk focus` fails on a window id that is not a number instead of sending a null id.
+- **Speed.** `gui_plan` reuses a window list where no desk action runs before the next read, and the desk skips work whose results it never uses.
+- The `gui_plan` run log starts over once it passes 1 MiB.
 
 ## 0.1.1 - 2026-10-18
 
