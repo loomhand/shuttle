@@ -3,9 +3,11 @@ import { spawn } from 'node:child_process'
 import { test } from 'node:test'
 
 import { toolhost } from './toolhost.mts'
+import { main } from '../lib/gui_plan.mts'
 
-test('an app step focuses the app\'s open window, by its process or the window list, instead of launching the app, and names an app that does not exist', { skip: process.platform !== 'linux' }, async () => {
+test('an app step focuses the app\'s open window, by its process or the window list, instead of launching the app, and names an app that does not exist', { skip: process.platform !== 'linux' }, async (t) => {
   const app = spawn('sleep', ['30'])
+  t.after(() => app.kill())
   const wins = [
     { id: '1', title: 'Terminal - user@box: ~', role: 'frame', pid: app.pid, active: false },
     { id: '2', title: 'notes.txt - Mousepad', role: 'frame', pid: process.pid, active: true },
@@ -26,21 +28,16 @@ test('an app step focuses the app\'s open window, by its process or the window l
     if (tool === 'desk_launch') return { text: `no app named "${String(args.app)}"`, error: true }
     return '{"ok":true}'
   })
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const own = await main({ steps: [{ app: 'sleep' }] })
-    assert.equal(own.ok, true, JSON.stringify(own))
-    assert.equal(own.window, 'Terminal - user@box: ~')
-    const java = await main({ steps: [{ app: 'GeoGebra' }] })
-    assert.equal(java.ok, true, JSON.stringify(java))
-    assert.ok(!calls.includes('desk_launch'), calls.join(' '))
-    const started = Date.now()
-    const missing = await main({ steps: [{ app: 'no-such-app-osw' }] })
-    assert.equal(missing.ok, false, JSON.stringify(missing))
-    assert.equal(missing.escalate?.reason, 'no app named "no-such-app-osw"')
-    assert.ok(Date.now() - started < 2000, `${Date.now() - started} ms`)
-  } finally {
-    app.kill()
-    server.close()
-  }
+  t.after(() => server.close())
+  const own = await main({ steps: [{ app: 'sleep' }] })
+  assert.equal(own.ok, true, JSON.stringify(own))
+  assert.equal(own.window, 'Terminal - user@box: ~')
+  const java = await main({ steps: [{ app: 'GeoGebra' }] })
+  assert.equal(java.ok, true, JSON.stringify(java))
+  assert.ok(!calls.includes('desk_launch'), calls.join(' '))
+  const started = Date.now()
+  const missing = await main({ steps: [{ app: 'no-such-app-osw' }] })
+  assert.equal(missing.ok, false, JSON.stringify(missing))
+  assert.equal(missing.escalate?.reason, 'no app named "no-such-app-osw"')
+  assert.ok(Date.now() - started < 2000, `${Date.now() - started} ms`)
 })

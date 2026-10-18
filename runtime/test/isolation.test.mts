@@ -5,8 +5,9 @@ import { homedir, tmpdir } from 'node:os'
 import { test } from 'node:test'
 
 import { toolhost } from './toolhost.mts'
+import { main } from '../lib/gui_plan.mts'
 
-test('a plan, a save and a reindex write flows, the index, the pending chain and git only under the test directory', async () => {
+test('a plan, a save and a reindex write flows, the index, the pending chain and git only under the test directory', async (t) => {
   const names = ['.runs.jsonl', '.pending.json', 'INDEX', 'mousepad.json', 'saved.json', '.git']
   const real = [`${homedir()}/workspace/flows`, '/workspace/flows'].flatMap((d) => names.map((n) => `${d}/${n}`))
   const stamp = () => real.map((f) => existsSync(f) ? statSync(f).mtimeMs : null)
@@ -17,16 +18,12 @@ test('a plan, a save and a reindex write flows, the index, the pending chain and
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, nodes: [], truncated: false })
     return '{"ok":true}'
   })
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const ran = await main({ steps: [{ app: 'Mousepad' }, { key: 'ctrl+s' }] })
-    assert.equal(ran.ok, true, JSON.stringify(ran))
-    const saved = await main({ save: 'saved' })
-    assert.equal(saved.ok, true, JSON.stringify(saved))
-    assert.equal((await main({ reindex: true })).ok, true)
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const ran = await main({ steps: [{ app: 'Mousepad' }, { key: 'ctrl+s' }] })
+  assert.equal(ran.ok, true, JSON.stringify(ran))
+  const saved = await main({ save: 'saved' })
+  assert.equal(saved.ok, true, JSON.stringify(saved))
+  assert.equal((await main({ reindex: true })).ok, true)
   const flows = process.env.SHUTTLE_FLOWS ?? ''
   assert.ok(flows.startsWith(tmpdir()), flows)
   for (const n of ['.runs.jsonl', '.pending.json', 'INDEX', 'saved.json']) assert.ok(existsSync(`${flows}/${n}`), n)

@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { toolhost } from './toolhost.mts'
+import { main } from '../lib/gui_plan.mts'
 
-test('a field named like the combobox it sits in is one target, and set needs no model to pick it', async () => {
+test('a field named like the combobox it sits in is one target, and set needs no model to pick it', async (t) => {
   const dialog = { id: '2', title: 'Save as', role: 'dialog', pid: process.pid, active: true }
   let value = ''; let selected = false
   const calls: string[] = []
@@ -22,13 +23,9 @@ test('a field named like the combobox it sits in is one target, and set needs no
     if (tool === 'desk_type') { value = selected ? String(args.text) : value + String(args.text); selected = false }
     return '{"ok":true}'
   })
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const r = await main({ steps: [{ set: 'File name:', value: 'a.txt' }] })
-    assert.equal(r.ok, true, JSON.stringify(r))
-    assert.equal(value, 'a.txt')
-    assert.ok(!calls.some((c) => c.startsWith('model_')), calls.join(' '))
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const r = await main({ steps: [{ set: 'File name:', value: 'a.txt' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(value, 'a.txt')
+  assert.ok(!calls.some((c) => c.startsWith('model_')), calls.join(' '))
 })

@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import type { Server } from 'node:net'
-import { after, before, test } from 'node:test'
-import { crc32, deflateSync, inflateSync } from 'node:zlib'
+import { after, before, beforeEach, test } from 'node:test'
+import { inflateSync } from 'node:zlib'
 
+import { BUILD, gray, toolhost, type Call, type Reply } from './toolhost.mts'
 import type { Size } from '../lib/desk.mts'
-import type { Result } from '../lib/gui_plan.mts'
-import { toolhost, type Call, type Reply } from './toolhost.mts'
+import { main, type Result } from '../lib/gui_plan.mts'
 
 type El = { ref: number; id: string; parent: number; depth: number; role: string; name: string; states: string[]; bounds?: number[] }
 type Spec = Omit<El, 'ref' | 'depth' | 'states'> & { states?: string[] }
@@ -24,7 +24,6 @@ const asked: { image: boolean }[] = []
 const looks: string[] = []
 const shades: number[] = []
 const prompts: string[] = []
-const text = 'typesafe/jev-1.14-20261014'
 const usage = { model: 'decider', input_tokens: 1, output_tokens: 1, cached_tokens: 0 }
 let shots = 0
 let tones: number[] = []
@@ -76,18 +75,9 @@ function decide({ state, questions, image }: Decide): Reply {
     const [choice] = Object.entries(probs).sort((a, b) => b[1] - a[1])[0] ?? ['none']
     answers[k] = q.type === 'noul' ? { probability: image ? p : yes } : { choice, confidence: probs[choice], probabilities: probs }
   }
-  return JSON.stringify({ answers, served: { model: 'decider', build: image ? build : text, id: null }, usage })
+  return JSON.stringify({ answers, served: { model: 'decider', build: image ? build : BUILD, id: null }, usage })
 }
 
-function gray(w: number, h: number, tone = 128) {
-  const chunk = (kind: string, data: Buffer) => {
-    const head = Buffer.alloc(8), crc = Buffer.alloc(4); head.writeUInt32BE(data.length); head.write(kind, 4, 'ascii')
-    crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data]))); return Buffer.concat([head, data, crc])
-  }
-  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 6
-  const raw = Buffer.alloc(h * (w * 4 + 1), tone); for (let y = 0; y < h; y++) raw[y * (w * 4 + 1)] = 0
-  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))])
-}
 function size(png: Buffer) {
   const [w, h] = [png.readUInt32BE(16), png.readUInt32BE(20)]
   const raw = inflateSync(png.subarray(41, 41 + png.readUInt32BE(33)))
@@ -96,8 +86,8 @@ function size(png: Buffer) {
   return `${w}x${h}${red ? ' ring' : ''}`
 }
 
-async function plan(target: string, tree: Spec[], probabilities: Record<string, number>, step: Record<string, string> = { click: target }): Promise<Result> {
-  const { main } = await screen(tree, probabilities)
+function plan(target: string, tree: Spec[], probabilities: Record<string, number>, step: Record<string, string> = { click: target }): Promise<Result> {
+  screen(tree, probabilities)
   return main({ steps: [step] })
 }
 
@@ -111,7 +101,7 @@ function lastStep(): RunStep | undefined {
   return (JSON.parse(runs.at(-1) ?? '') as { steps: RunStep[] }).steps[0]
 }
 
-async function screen(tree: Spec[], probabilities: Record<string, number>) {
+function screen(tree: Spec[], probabilities: Record<string, number>) {
   load(tree)
   pressed.length = 0
   clicked.length = 0
@@ -121,7 +111,6 @@ async function screen(tree: Spec[], probabilities: Record<string, number>) {
   shades.length = 0
   prompts.length = 0
   pick = probabilities
-  return import('../lib/gui_plan.mts')
 }
 
 before(async () => {
@@ -129,6 +118,9 @@ before(async () => {
 })
 after(() => {
   server?.close()
+})
+beforeEach(() => {
+  build = null; on = 0; looked = {}; pick = {}; under = null; yes = 0; tones = []; scale = 1
 })
 
 test('a click whose jev pick has a close runner-up escalates as ambiguous instead of pressing the pick', async () => {
@@ -219,13 +211,12 @@ test('a jev pick looks at the screenshot first, so of two links of the same name
     { id: '1.1/4', parent: 0, role: 'treeitem', name: 'Homework 5' },
     { id: '1.1/5', parent: 3, role: 'link', name: 'View' },
   ]
-  build = 'typesafe/jev-1.14-20261014'
+  build = BUILD
   looked = { r4: 0.93, r2: 0.04, none: 0.03 }
   const out = await plan('the View link for Homework 5', tree, { r2: 0.5, r4: 0.45, none: 0.05 })
   assert.equal(out.ok, true, JSON.stringify(out))
   assert.deepEqual(pressed, ['1.1/5'])
   assert.deepEqual(asked, [{ image: true }])
-  build = null
 })
 
 test('a jev pick on the screenshot that fails falls back to the pick on the text', async () => {
@@ -235,7 +226,6 @@ test('a jev pick on the screenshot that fails falls back to the pick on the text
     { id: '1.1/3', parent: 0, role: 'button', name: 'Apply to all' },
   ]
   looked = { r2: 0.95, r1: 0.03, none: 0.02 }
-  build = null
   const out = await plan('apply the settings to every row', tree, { r1: 0.92, r2: 0.05, none: 0.03 })
   assert.equal(out.ok, true, JSON.stringify(out))
   assert.deepEqual(pressed, ['1.1/2'])
@@ -244,7 +234,7 @@ test('a jev pick on the screenshot that fails falls back to the pick on the text
 
 test('a grounded click is taken when jev sees the target at the point in a crop, and without that answer when jev says the element under it is the target; the run log keeps the check and its score', async () => {
   const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
-  build = 'typesafe/jev-1.14-20261014'
+  build = BUILD
   on = 0.8
   const seen = await plan('the yellow star', tree, {})
   assert.equal(seen.ok, true, JSON.stringify(seen))
@@ -263,7 +253,6 @@ test('a grounded click is taken when jev sees the target at the point in a crop,
   assert.deepEqual(clicked, ['640,400'])
   assert.deepEqual(asked, [{ image: true }, { image: false }])
   assert.ok(atPids.length > 0 && atPids.every((p) => p === win.pid), JSON.stringify(atPids))
-  under = null
 })
 
 test('a jev pick on the screenshot needs no word of the target in the element\'s own name, which a pick on the text does', async () => {
@@ -272,7 +261,7 @@ test('a jev pick on the screenshot needs no word of the target in the element\'s
     { id: '1.1/2', parent: 0, role: 'combobox', name: 'Flat XML ODF Text Document (.fodt)' },
     { id: '1.1/3', parent: 0, role: 'button', name: 'Save' },
   ]
-  build = 'typesafe/jev-1.14-20261014'
+  build = BUILD
   looked = { r1: 0.97, r2: 0.02, none: 0.01 }
   const out = await plan('the file type dropdown', tree, { r1: 0.97, r2: 0.02, none: 0.01 })
   assert.equal(out.ok, true, JSON.stringify(out))
@@ -291,16 +280,19 @@ test('computer_act\'s target keeps the jev calls that answered it as served, fou
     { id: '1.1/3', parent: 0, role: 'button', name: 'Apply to all' },
   ]
   const calls = (out: Result) => out.served?.map((c) => `${c.image ? 'image' : 'text'} ${c.build}`)
-  build = 'typesafe/jev-1.14-20261014'
+  build = BUILD
   looked = { r2: 0.95, r1: 0.03, none: 0.02 }
-  const seen = await (await screen(tree, {})).main({ locate: { target: 'apply the settings to every row' } })
+  screen(tree, {})
+  const seen = await main({ locate: { target: 'apply the settings to every row' } })
   assert.equal(seen.found, true, JSON.stringify(seen))
-  assert.deepEqual(calls(seen), ['image typesafe/jev-1.14-20261014'])
+  assert.deepEqual(calls(seen), [`image ${BUILD}`])
   build = null
-  const none = await (await screen(tree, { none: 0.9, r1: 0.05, r2: 0.05 })).main({ locate: { target: 'apply the settings to every row' } })
+  screen(tree, { none: 0.9, r1: 0.05, r2: 0.05 })
+  const none = await main({ locate: { target: 'apply the settings to every row' } })
   assert.equal(none.found, false, JSON.stringify(none))
-  assert.deepEqual(calls(none), ['image null', 'text typesafe/jev-1.14-20261014'])
-  const named = await (await screen(tree, {})).main({ locate: { target: 'Apply to all' } })
+  assert.deepEqual(calls(none), ['image null', `text ${BUILD}`])
+  screen(tree, {})
+  const named = await main({ locate: { target: 'Apply to all' } })
   assert.equal(named.found, true, JSON.stringify(named))
   assert.equal(named.served, undefined)
 })
@@ -323,7 +315,6 @@ test('locate gives a LibreOffice toolbar or tab row element the menu bar height 
   ]
   const shift = async (tree: Spec[], target: string) => {
     load(tree)
-    const { main } = await import('../lib/gui_plan.mts')
     return (await main({ locate: { target } })).shift
   }
   assert.equal(await shift(frame(53, 92, 728), 'Bold'), 25)
@@ -334,7 +325,7 @@ test('locate gives a LibreOffice toolbar or tab row element the menu bar height 
 
 test('a grounded click the 640x400 crop refuses is checked on the small element\'s crop scaled up, then on the screen with a ring at the point, unless DESK_FULL_CHECK=off; the run log keeps each score and the path', async () => {
   const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
-  build = 'typesafe/jev-1.14-20261014'
+  build = BUILD
   on = [0.3, 0.7]
   const zoomed = await plan('the yellow star', tree, {})
   assert.equal(zoomed.ok, true, JSON.stringify(zoomed))
@@ -366,13 +357,11 @@ test('a grounded click the 640x400 crop refuses is checked on the small element\
   assert.equal(off.ok, false, JSON.stringify(off))
   assert.deepEqual(looks, ['640x400', '384x288'])
   assert.equal(lastStep()?.checked, 'jev-image+zoom')
-  build = null
-  on = 0
 })
 
 test('a grounded step checks fresh captures taken after grounding: the crop, then one screen capture that the zoom and ring are cut from', async () => {
   const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
-  build = 'typesafe/jev-1.14-20261014'
+  build = BUILD
   on = [0.3, 0.6, 0.96]
   tones = [60, 200, 200]
   const full = await plan('the yellow star', tree, {})
@@ -383,24 +372,18 @@ test('a grounded step checks fresh captures taken after grounding: the crop, the
   tones = [60, 200]
   await plan('the yellow star', tree, {})
   assert.deepEqual([shots, shades], [2, [200]])
-  tones = []
-  build = null
-  on = 0
 })
 
 test('a grounded check places the point in capture pixels on a 2x capture', async () => {
   const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
-  build = 'typesafe/jev-1.14-20261014'
+  build = BUILD
   on = [0.3, 0.6, 0.96]
   scale = 2
   const retina = await plan('the yellow star', tree, {})
-  scale = 1
   assert.equal(retina.ok, true, JSON.stringify(retina))
   assert.deepEqual(looks, ['1280x800', '384x288', '2560x1600 ring'])
   assert.match(prompts[0] ?? '', /pixel \(640, 400\)/)
   assert.match(prompts[2] ?? '', /2560x1600.*pixel \(1280, 800\)/)
-  build = null
-  on = 0
 })
 
 test('a click whose target is a name plus role words takes the showing button of that name over hidden menu entries, and a hidden menu entry when nothing showing matches', async () => {
@@ -459,7 +442,7 @@ test('a jev pick of an element whose role the target\'s own word rules out, a sp
     { id: '1.1/4', parent: 0, role: 'radio', name: 'Percent' },
     { id: '1.1/5', parent: 0, role: 'button', name: 'OK' },
   ]
-  build = 'typesafe/jev-1.14-20261014'
+  build = BUILD
   looked = { r1: 0.86, r2: 0.05, none: 0.09 }
   on = 0
   const plus = await plan('the plus button that increases the decimal places', tree, { r1: 0.86, none: 0.14 })
@@ -470,14 +453,14 @@ test('a jev pick of an element whose role the target\'s own word rules out, a sp
   const radio = await plan('the Percent radio button', tree, { r3: 0.95, none: 0.05 })
   assert.equal(radio.ok, true, JSON.stringify(radio))
   assert.deepEqual(pressed, ['1.1/4'])
-  build = null
 })
 
-test('a target the focused window lacks resolves in the panel or desktop window when it names the dock, panel, taskbar or desktop, and only then', { skip: process.platform !== 'linux' }, async () => {
+test('a target the focused window lacks resolves in the panel or desktop window when it names the dock, panel, taskbar or desktop, and only then', { skip: process.platform !== 'linux' }, async (t) => {
   const tree = [
     { id: '1.1/1', parent: -1, role: 'dialog', name: 'LibreOffice 24.2 Document Recovery' },
     { id: '1.1/2', parent: 0, role: 'button', name: 'Start' },
   ]
+  t.after(() => { shell.length = 0 })
   shell.push({
     win: { id: '1.5/2', title: '', role: 'window', pid: 533, active: false },
     nodes: [
@@ -486,17 +469,15 @@ test('a target the focused window lacks resolves in the panel or desktop window 
       { ref: 2, id: '1.5/22', parent: 0, depth: 1, role: 'togglebutton', name: 'Directory Menu', states: ['showing'], bounds: [744, 752, 48, 48] },
     ],
   })
-  try {
-    const dock = await (await screen(tree, {})).main({ locate: { target: 'the File Manager launcher in the bottom dock', press: true } })
-    assert.equal(dock.found, true, JSON.stringify(dock))
-    assert.deepEqual([dock.name, dock.window, dock.pid, dock.bounds], ['File Manager', '', 533, [592, 752, 48, 48]])
-    assert.deepEqual(pressed, ['1.5/21'])
-    const unnamed = await (await screen(tree, {})).main({ locate: { target: 'the File Manager launcher', press: true } })
-    assert.equal(unnamed.found, false, JSON.stringify(unnamed))
-    assert.deepEqual(pressed, [])
-  } finally {
-    shell.length = 0
-  }
+  screen(tree, {})
+  const dock = await main({ locate: { target: 'the File Manager launcher in the bottom dock', press: true } })
+  assert.equal(dock.found, true, JSON.stringify(dock))
+  assert.deepEqual([dock.name, dock.window, dock.pid, dock.bounds], ['File Manager', '', 533, [592, 752, 48, 48]])
+  assert.deepEqual(pressed, ['1.5/21'])
+  screen(tree, {})
+  const unnamed = await main({ locate: { target: 'the File Manager launcher', press: true } })
+  assert.equal(unnamed.found, false, JSON.stringify(unnamed))
+  assert.deepEqual(pressed, [])
 })
 
 test('an item of a list or tree grid is a target: a drawn layout tile wins over the hidden menu entries of the same name', async () => {
@@ -513,11 +494,11 @@ test('an item of a list or tree grid is a target: a drawn layout tile wins over 
   ]
   const bounds = (id: string) => [10 * tree.findIndex((n) => n.id === id), 10, 10, 10]
   for (const [target, id, how] of [['the Title Only layout', '1.4/6', 'ax'], ['the Title, Content layout in the Layouts panel', '1.4/5', 'ax'], ['Percent in the Category list', '1.4/8', 'jev(0.95)']] as const) {
-    const { main } = await screen(tree, { r7: 0.95, none: 0.05 })
+    screen(tree, { r7: 0.95, none: 0.05 })
     const out = await main({ locate: { target } })
     assert.deepEqual([out.found, out.how, out.bounds], [true, how, bounds(id)], `${target}: ${JSON.stringify(out)}`)
   }
-  const { main } = await screen(tree, { r8: 0.95, none: 0.05 })
+  screen(tree, { r8: 0.95, none: 0.05 })
   const loose = await main({ locate: { target: 'the Currency entry' } })
   assert.equal(loose.found, false, JSON.stringify(loose))
 })

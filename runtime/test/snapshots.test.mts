@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { toolhost } from './toolhost.mts'
+import { main } from '../lib/gui_plan.mts'
 
 const root = (role: string, name: string) => ({ ref: 0, id: '1/1', parent: -1, depth: 0, role, name, states: ['showing'] })
 
@@ -26,50 +27,38 @@ function desktop() {
   return { calls, answer }
 }
 
-test('a type step into a dialog that opened mid-plan reads the dialog once before typing', async () => {
+test('a type step into a dialog that opened mid-plan reads the dialog once before typing', async (t) => {
   const d = desktop()
   const server = await toolhost(d.answer)
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const r = await main({ steps: [{ key: 'f2' }, { type: 'b.txt' }] })
-    assert.equal(r.done, 2, JSON.stringify(r))
-    const between = d.calls.slice(d.calls.indexOf('desk_key'), d.calls.indexOf('desk_type'))
-    assert.equal(between.filter((t) => t === 'desk_snapshot').length, 1, between.join(' '))
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const r = await main({ steps: [{ key: 'f2' }, { type: 'b.txt' }] })
+  assert.equal(r.done, 2, JSON.stringify(r))
+  const between = d.calls.slice(d.calls.indexOf('desk_key'), d.calls.indexOf('desk_type'))
+  assert.equal(between.filter((t) => t === 'desk_snapshot').length, 1, between.join(' '))
 })
 
-test('a step in a dialog this plan already read reads no tree when its op needs none', async () => {
+test('a step in a dialog this plan already read reads no tree when its op needs none', async (t) => {
   const d = desktop()
   const server = await toolhost(d.answer)
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const r = await main({ steps: [{ key: 'f2' }, { type: 'b' }, { key: 'tab' }] })
-    assert.equal(r.done, 3, JSON.stringify(r))
-    const tab = d.calls.lastIndexOf('desk_key')
-    const step = d.calls.slice(d.calls.lastIndexOf('desk_type') + 1, tab)
-    assert.equal(step.filter((t) => t === 'desk_snapshot').length, 1, step.join(' '))
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const r = await main({ steps: [{ key: 'f2' }, { type: 'b' }, { key: 'tab' }] })
+  assert.equal(r.done, 3, JSON.stringify(r))
+  const tab = d.calls.lastIndexOf('desk_key')
+  const step = d.calls.slice(d.calls.lastIndexOf('desk_type') + 1, tab)
+  assert.equal(step.filter((t) => t === 'desk_snapshot').length, 1, step.join(' '))
 })
 
-test('a plan whose last step cannot open anything ends in a plain window without a tree read', async () => {
+test('a plan whose last step cannot open anything ends in a plain window without a tree read', async (t) => {
   const d = desktop()
   const server = await toolhost(d.answer)
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const r = await main({ steps: [{ wait: 'a.txt' }] })
-    assert.equal(r.ok, true, JSON.stringify(r))
-    assert.ok(!d.calls.includes('desk_snapshot'), d.calls.join(' '))
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const r = await main({ steps: [{ wait: 'a.txt' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.ok(!d.calls.includes('desk_snapshot'), d.calls.join(' '))
 })
 
 for (const shortcut of ['ctrl+shift+s', 'cmd+shift+s']) {
-  test(`a typed line after ${shortcut} waits for the file chooser it opens late, and takes it as a chooser`, async () => {
+  test(`a typed line after ${shortcut} waits for the file chooser it opens late, and takes it as a chooser`, async (t) => {
     const doc = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
     const dialog = { id: '2', title: 'Save As', role: 'dialog', pid: process.pid, active: true }
     const calls: string[] = []
@@ -89,19 +78,15 @@ for (const shortcut of ['ctrl+shift+s', 'cmd+shift+s']) {
       if (tool === 'desk_key' && /^return$/i.test(String(args.keys))) shown = false
       return '{"ok":true}'
     })
-    const { main } = await import('../lib/gui_plan.mts')
-    try {
-      const r = await main({ steps: [{ key: shortcut }, { type: 'b.txt\n' }] })
-      const typed = calls.slice(calls.indexOf(`key ${shortcut}`) + 1, calls.indexOf('desk_type'))
-      assert.ok(typed.some((c) => c.startsWith('key ')), `no select key before typing into the chooser: ${typed.join(' ')}`)
-      assert.equal(r.ok, true, JSON.stringify(r))
-    } finally {
-      server.close()
-    }
+    t.after(() => server.close())
+    const r = await main({ steps: [{ key: shortcut }, { type: 'b.txt\n' }] })
+    const typed = calls.slice(calls.indexOf(`key ${shortcut}`) + 1, calls.indexOf('desk_type'))
+    assert.ok(typed.some((c) => c.startsWith('key ')), `no select key before typing into the chooser: ${typed.join(' ')}`)
+    assert.equal(r.ok, true, JSON.stringify(r))
   })
 }
 
-test('a plan whose last key leaves its app blocked behind a dialog it cannot see escalates instead of passing', async () => {
+test('a plan whose last key leaves its app blocked behind a dialog it cannot see escalates instead of passing', async (t) => {
   const doc = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
   let blocked = false
   const server = await toolhost(({ tool, args }) => {
@@ -110,17 +95,13 @@ test('a plan whose last key leaves its app blocked behind a dialog it cannot see
     if (tool === 'desk_key' && args.keys === 'ctrl+e') blocked = true
     return '{"ok":true}'
   })
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const r = await main({ steps: [{ key: 'ctrl+e' }] })
-    assert.equal(r.ok, false, JSON.stringify(r))
-    assert.match(r.escalate?.reason ?? '', /answers no accessibility calls/)
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const r = await main({ steps: [{ key: 'ctrl+e' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /answers no accessibility calls/)
 })
 
-test('a click in a dialog whose controls show after the step read its bare root reads it again and finds the target', async () => {
+test('a click in a dialog whose controls show after the step read its bare root reads it again and finds the target', async (t) => {
   const doc = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
   const dialog = { id: '2', title: 'Confirm', role: 'dialog', pid: process.pid, active: true }
   let open = false
@@ -135,16 +116,12 @@ test('a click in a dialog whose controls show after the step read its bare root 
     if (tool === 'desk_press') { open = false; return '{"ok":true,"how":"click"}' }
     return '{"ok":true}'
   })
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const r = await main({ steps: [{ key: 'f2' }, { click: 'OK' }] })
-    assert.equal(r.ok, true, JSON.stringify(r))
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const r = await main({ steps: [{ key: 'f2' }, { click: 'OK' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
 })
 
-test('a window id the plan vetted names a new window when its title changes, which the step reads again', async () => {
+test('a window id the plan vetted names a new window when its title changes, which the step reads again', async (t) => {
   const doc = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: false }
   const front = { id: '2', title: 'Rename', role: 'dialog', pid: process.pid, active: false }
   const server = await toolhost(({ tool, args }) => {
@@ -154,16 +131,12 @@ test('a window id the plan vetted names a new window when its title changes, whi
     if (tool === 'desk_key' && args.keys === 'tab') front.title = 'Error'
     return '{"ok":true}'
   })
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const r = await main({ steps: [{ key: 'f2' }, { key: 'tab' }, { key: 'space' }] })
-    assert.match(r.escalate?.reason ?? '', /alert "Error" is in front/, JSON.stringify(r))
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const r = await main({ steps: [{ key: 'f2' }, { key: 'tab' }, { key: 'space' }] })
+  assert.match(r.escalate?.reason ?? '', /alert "Error" is in front/, JSON.stringify(r))
 })
 
-test('a typed line after a shortcut keeps waiting while no window is in front, as when the focus is between the app and the chooser it opens', async () => {
+test('a typed line after a shortcut keeps waiting while no window is in front, as when the focus is between the app and the chooser it opens', async (t) => {
   const doc = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
   const dialog = { id: '2', title: 'Save As', role: 'dialog', pid: process.pid, active: true }
   const calls: string[] = []
@@ -183,18 +156,14 @@ test('a typed line after a shortcut keeps waiting while no window is in front, a
     if (tool === 'desk_key' && /^return$/i.test(String(args.keys))) state = 'doc'
     return '{"ok":true}'
   })
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const r = await main({ steps: [{ key: 'ctrl+shift+s' }, { type: 'b.txt\n' }] })
-    const typed = calls.slice(calls.indexOf('key ctrl+shift+s') + 1, calls.indexOf('desk_type'))
-    assert.ok(typed.some((c) => c.startsWith('key ')), `no select key before typing into the chooser: ${typed.join(' ')}`)
-    assert.equal(r.ok, true, JSON.stringify(r))
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const r = await main({ steps: [{ key: 'ctrl+shift+s' }, { type: 'b.txt\n' }] })
+  const typed = calls.slice(calls.indexOf('key ctrl+shift+s') + 1, calls.indexOf('desk_type'))
+  assert.ok(typed.some((c) => c.startsWith('key ')), `no select key before typing into the chooser: ${typed.join(' ')}`)
+  assert.equal(r.ok, true, JSON.stringify(r))
 })
 
-test('a menu step asks for the menu bar and a click step does not', async () => {
+test('a menu step asks for the menu bar and a click step does not', async (t) => {
   const win = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
   const asked: unknown[] = []
   const nodes = [
@@ -210,21 +179,17 @@ test('a menu step asks for the menu bar and a click step does not', async () => 
     if (tool === 'desk_press') return '{"ok":true,"how":"click"}'
     return '{"ok":true}'
   })
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const click = await main({ steps: [{ click: 'OK' }] })
-    assert.equal(click.ok, true, JSON.stringify(click))
-    assert.ok(!asked.includes(true), JSON.stringify(asked))
-    asked.length = 0
-    const menu = await main({ steps: [{ menu: 'File > Save' }] })
-    assert.equal(menu.ok, true, JSON.stringify(menu))
-    assert.equal(asked[0], true, JSON.stringify(asked))
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const click = await main({ steps: [{ click: 'OK' }] })
+  assert.equal(click.ok, true, JSON.stringify(click))
+  assert.ok(!asked.includes(true), JSON.stringify(asked))
+  asked.length = 0
+  const menu = await main({ steps: [{ menu: 'File > Save' }] })
+  assert.equal(menu.ok, true, JSON.stringify(menu))
+  assert.equal(asked[0], true, JSON.stringify(asked))
 })
 
-test('a click on macOS whose target sits only in the menu bar reads the window again with its menu bar before any model call', { skip: process.platform !== 'darwin' }, async () => {
+test('a click on macOS whose target sits only in the menu bar reads the window again with its menu bar before any model call', { skip: process.platform !== 'darwin' }, async (t) => {
   const win = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
   const calls: string[] = []
   const server = await toolhost(({ tool, args }) => {
@@ -240,14 +205,10 @@ test('a click on macOS whose target sits only in the menu bar reads the window a
     }
     return '{"ok":true}'
   })
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const r = await main({ steps: [{ click: 'Settings…' }] })
-    assert.equal(r.ok, true, JSON.stringify(r))
-    assert.ok(!calls.some((c) => c.startsWith('model_') || c === 'desk_shot'), calls.join(' '))
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const r = await main({ steps: [{ click: 'Settings…' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.ok(!calls.some((c) => c.startsWith('model_') || c === 'desk_shot'), calls.join(' '))
 })
 
 function menuBar(item: { name: string; shortcut?: string; states?: string[] }) {
@@ -258,23 +219,19 @@ function menuBar(item: { name: string; shortcut?: string; states?: string[] }) {
   ]
 }
 
-test('a verify on macOS that finds its target only in the menu bar checks it there, instead of passing on the miss', { skip: process.platform !== 'darwin' }, async () => {
+test('a verify on macOS that finds its target only in the menu bar checks it there, instead of passing on the miss', { skip: process.platform !== 'darwin' }, async (t) => {
   const win = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
   const server = await toolhost(({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root('window', win.title), ...(args.menus ? menuBar({ name: 'Print' }) : [])] })
     return '{"ok":true}'
   })
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const r = await main({ steps: [{ verify: 'Print', enabled: false }] })
-    assert.match(r.escalate?.reason ?? '', /"Print" is enabled/, JSON.stringify(r))
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const r = await main({ steps: [{ verify: 'Print', enabled: false }] })
+  assert.match(r.escalate?.reason ?? '', /"Print" is enabled/, JSON.stringify(r))
 })
 
-test('a click on macOS that names a menu item exactly takes it over a window button whose name only contains it', { skip: process.platform !== 'darwin' }, async () => {
+test('a click on macOS that names a menu item exactly takes it over a window button whose name only contains it', { skip: process.platform !== 'darwin' }, async (t) => {
   const win = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
   const calls: string[] = []
   const server = await toolhost(({ tool, args }) => {
@@ -287,17 +244,13 @@ test('a click on macOS that names a menu item exactly takes it over a window but
     if (tool === 'desk_press') return '{"ok":true,"how":"click"}'
     return '{"ok":true}'
   })
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const r = await main({ steps: [{ click: 'Print' }] })
-    assert.equal(r.ok, true, JSON.stringify(r))
-    assert.ok(calls.includes('press 1/12') && !calls.includes('press 1/2') && !calls.some((c) => c.startsWith('key ')), calls.join(' '))
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const r = await main({ steps: [{ click: 'Print' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.ok(calls.includes('press 1/12') && !calls.includes('press 1/2') && !calls.some((c) => c.startsWith('key ')), calls.join(' '))
 })
 
-test('a click in a listed window that no longer answers escalates as unanswered and acts on nothing', async () => {
+test('a click in a listed window that no longer answers escalates as unanswered and acts on nothing', async (t) => {
   const win = { id: '1', title: 'Untitled', role: 'window', pid: process.pid, active: true }
   const calls: string[] = []
   const server = await toolhost(({ tool }) => {
@@ -306,12 +259,8 @@ test('a click in a listed window that no longer answers escalates as unanswered 
     if (tool === 'desk_snapshot') return { text: 'no accessibility answer within 500 ms from window "Untitled": it closed or its app is busy; take a new snapshot', error: true }
     return '{"ok":true}'
   })
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const r = await main({ steps: [{ click: 'Save' }] })
-    assert.match(r.escalate?.reason ?? '', /answers no accessibility calls/, JSON.stringify(r))
-    assert.ok(!calls.some((c) => ['desk_press', 'desk_click', 'desk_key', 'desk_type', 'desk_shot'].includes(c) || c.startsWith('model_')), calls.join(' '))
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const r = await main({ steps: [{ click: 'Save' }] })
+  assert.match(r.escalate?.reason ?? '', /answers no accessibility calls/, JSON.stringify(r))
+  assert.ok(!calls.some((c) => ['desk_press', 'desk_click', 'desk_key', 'desk_type', 'desk_shot'].includes(c) || c.startsWith('model_')), calls.join(' '))
 })

@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { toolhost } from './toolhost.mts'
+import { main } from '../lib/gui_plan.mts'
 
-test('an app step finds a running app by the app its windows name, whatever their titles', async () => {
+test('an app step finds a running app by the app its windows name, whatever their titles', async (t) => {
   const doc = { id: '1', title: 'Untitled', role: 'window', pid: process.pid, active: false, app: 'TextEdit' }
   const calls: string[] = []
   const server = await toolhost(({ tool, args }) => {
@@ -17,13 +18,9 @@ test('an app step finds a running app by the app its windows name, whatever thei
     if (tool === 'desk_snapshot') return JSON.stringify({ window: doc, nodes: [], truncated: false })
     return '{"ok":true}'
   })
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const r = await main({ steps: [{ app: 'TextEdit' }] })
-    assert.equal(r.ok, true, JSON.stringify(r))
-    assert.equal(r.window, 'Untitled')
-    assert.ok(!calls.includes('desk_launch'), calls.join(' '))
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const r = await main({ steps: [{ app: 'TextEdit' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.window, 'Untitled')
+  assert.ok(!calls.includes('desk_launch'), calls.join(' '))
 })

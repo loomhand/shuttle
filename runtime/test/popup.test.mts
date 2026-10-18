@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { toolhost } from './toolhost.mts'
+import { main as plan } from '../lib/gui_plan.mts'
 
-test('a click that opens a combo box\'s list leaves the next step in the dialog, whose tree holds the list\'s entries, also in a new plan', async () => {
+test('a click that opens a combo box\'s list leaves the next step in the dialog, whose tree holds the list\'s entries, also in a new plan', async (t) => {
   const wm = { id: '1.3/1', title: '', role: 'window', pid: 687, active: true }
   const main = { id: '1.14/117', title: 'Untitled 1 - Mousepad', role: 'window', pid: 889, active: false }
   const prefs = { id: '1.14/322', title: 'Mousepad Preferences', role: 'dialog', pid: 889, active: true }
@@ -28,19 +29,15 @@ test('a click that opens a combo box\'s list leaves the next step in the dialog,
     if (tool === 'desk_press') { pressed.push(String(args.id)); open = args.id === '1.14/400'; return '{"ok":true,"how":"click"}' }
     return '{"ok":true}'
   })
-  const { main: plan } = await import('../lib/gui_plan.mts')
-  try {
-    const both = await plan({ steps: [{ click: 'Insert Tabs' }, { click: 'Insert Spaces' }] })
-    assert.equal(both.ok, true, JSON.stringify(both))
-    assert.deepEqual(pressed, ['1.14/400', '1.14/403'])
-    assert.equal(both.window, 'Mousepad Preferences')
-    const left = await plan({ steps: [{ click: 'Insert Tabs' }] })
-    assert.equal(left.ok, true, JSON.stringify(left))
-    const next = await plan({ steps: [{ click: 'Insert Spaces' }] })
-    assert.equal(next.ok, true, JSON.stringify(next))
-    assert.deepEqual(pressed.slice(2), ['1.14/400', '1.14/403'])
-    assert.ok(snapped.every((w) => w === 'Mousepad Preferences'), snapped.join(' '))
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const both = await plan({ steps: [{ click: 'Insert Tabs' }, { click: 'Insert Spaces' }] })
+  assert.equal(both.ok, true, JSON.stringify(both))
+  assert.deepEqual(pressed, ['1.14/400', '1.14/403'])
+  assert.equal(both.window, 'Mousepad Preferences')
+  const left = await plan({ steps: [{ click: 'Insert Tabs' }] })
+  assert.equal(left.ok, true, JSON.stringify(left))
+  const next = await plan({ steps: [{ click: 'Insert Spaces' }] })
+  assert.equal(next.ok, true, JSON.stringify(next))
+  assert.deepEqual(pressed.slice(2), ['1.14/400', '1.14/403'])
+  assert.ok(snapped.every((w) => w === 'Mousepad Preferences'), snapped.join(' '))
 })

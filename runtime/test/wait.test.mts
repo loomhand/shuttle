@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { toolhost } from './toolhost.mts'
+import { main } from '../lib/gui_plan.mts'
 
 function retitled(onlyWaits = false) {
   const calls: string[] = []
@@ -19,32 +20,24 @@ function retitled(onlyWaits = false) {
   return { calls, answer }
 }
 
-test('a key that retitles the window late waits on the desk for the change instead of polling window lists', async () => {
+test('a key that retitles the window late waits on the desk for the change instead of polling window lists', async (t) => {
   const d = retitled(true)
   const server = await toolhost(d.answer)
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const r = await main({ steps: [{ key: 'ctrl+s' }] })
-    assert.equal(r.ok, true, JSON.stringify(r))
-    const after = d.calls.slice(d.calls.indexOf('desk_key'))
-    assert.equal(after.filter((c) => c.startsWith('wait')).at(-1), 'wait-new', d.calls.join(' '))
-    assert.equal(after.filter((c) => c === 'wait-new').length, 1, d.calls.join(' '))
-    assert.ok(after.filter((c) => c === 'desk_windows').length <= 3, d.calls.join(' '))
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const r = await main({ steps: [{ key: 'ctrl+s' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  const after = d.calls.slice(d.calls.indexOf('desk_key'))
+  assert.equal(after.filter((c) => c.startsWith('wait')).at(-1), 'wait-new', d.calls.join(' '))
+  assert.equal(after.filter((c) => c === 'wait-new').length, 1, d.calls.join(' '))
+  assert.ok(after.filter((c) => c === 'desk_windows').length <= 3, d.calls.join(' '))
 })
 
-test('a toolhost without desk_wait gets the window list polled instead', async () => {
+test('a toolhost without desk_wait gets the window list polled instead', async (t) => {
   const d = retitled()
   const server = await toolhost(d.answer, { wait: false })
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const r = await main({ steps: [{ key: 'ctrl+s' }] })
-    assert.equal(r.ok, true, JSON.stringify(r))
-    assert.equal(r.window, '*a.txt - Editor')
-    assert.equal(d.calls.filter((c) => c === 'desk_wait').length, 1, d.calls.join(' '))
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const r = await main({ steps: [{ key: 'ctrl+s' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.window, '*a.txt - Editor')
+  assert.equal(d.calls.filter((c) => c === 'desk_wait').length, 1, d.calls.join(' '))
 })

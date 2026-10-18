@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { toolhost } from './toolhost.mts'
+import { main } from '../lib/gui_plan.mts'
 
-test('set on a combo box without a text field picks the option from its list, does nothing when it is already chosen, and names the options when none matches', async () => {
+test('set on a combo box without a text field picks the option from its list, does nothing when it is already chosen, and names the options when none matches', async (t) => {
   const prefs = { id: '1.14/322', title: 'Mousepad Preferences', role: 'dialog', pid: 889, active: true }
   const list = { id: '1.14/537', title: '', role: 'window', pid: 889, active: true }
   let open = false
@@ -33,21 +34,17 @@ test('set on a combo box without a text field picks the option from its list, do
     }
     return '{"ok":true}'
   })
-  const { main } = await import('../lib/gui_plan.mts')
-  try {
-    const set = await main({ steps: [{ set: 'Insert Tabs', value: 'Insert Spaces' }] })
-    assert.equal(set.ok, true, JSON.stringify(set))
-    assert.deepEqual(pressed, ['1.14/400', '1.14/403'])
-    assert.equal(combo.name, 'Insert Spaces')
-    assert.deepEqual(typed, [])
-    const again = await main({ steps: [{ set: 'Insert Spaces', value: 'Insert Spaces' }] })
-    assert.equal(again.ok, true, JSON.stringify(again))
-    assert.equal(again.trace?.[0]?.noop, true, JSON.stringify(again))
-    assert.equal(pressed.length, 2)
-    const none = await main({ steps: [{ set: 'Insert Spaces', value: 'Insert Nothing' }] })
-    assert.equal(none.escalate?.reason, '"Insert Spaces" has no option "Insert Nothing"; its options: "Insert Tabs", "Insert Spaces"', JSON.stringify(none))
-    assert.equal(pressed.length, 2)
-  } finally {
-    server.close()
-  }
+  t.after(() => server.close())
+  const set = await main({ steps: [{ set: 'Insert Tabs', value: 'Insert Spaces' }] })
+  assert.equal(set.ok, true, JSON.stringify(set))
+  assert.deepEqual(pressed, ['1.14/400', '1.14/403'])
+  assert.equal(combo.name, 'Insert Spaces')
+  assert.deepEqual(typed, [])
+  const again = await main({ steps: [{ set: 'Insert Spaces', value: 'Insert Spaces' }] })
+  assert.equal(again.ok, true, JSON.stringify(again))
+  assert.equal(again.trace?.[0]?.noop, true, JSON.stringify(again))
+  assert.equal(pressed.length, 2)
+  const none = await main({ steps: [{ set: 'Insert Spaces', value: 'Insert Nothing' }] })
+  assert.equal(none.escalate?.reason, '"Insert Spaces" has no option "Insert Nothing"; its options: "Insert Tabs", "Insert Spaces"', JSON.stringify(none))
+  assert.equal(pressed.length, 2)
 })
