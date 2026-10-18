@@ -45,6 +45,25 @@ mod tests {
     }
 
     #[test]
+    fn the_safety_and_tools_tables_load_and_default_to_every_app_and_script_run_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Config::load(&dir.path().join("config.toml")).unwrap();
+        assert!(c.safety.apps.is_empty() && c.tools.script_run);
+        let f = file(
+            "[safety]\napps = [\"TextEdit\", \"notepad.exe\"]\n\n[tools]\nscript_run = false\n",
+        );
+        let c = Config::load(f.path()).unwrap();
+        assert_eq!(c.safety.apps, ["TextEdit", "notepad.exe"]);
+        assert!(!c.tools.script_run);
+        let later = file("[safety]\nkill_hotkey = \"ctrl+alt+cmd+escape\"\n");
+        assert!(
+            Config::load(later.path())
+                .unwrap_err()
+                .contains("kill_hotkey")
+        );
+    }
+
+    #[test]
     fn the_key_comes_from_the_file_else_from_its_variable() {
         let c = Config {
             api_key_env: "CARGO_PKG_NAME".to_owned(),
