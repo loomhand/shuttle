@@ -4,7 +4,9 @@ shuttle acts on your own desktop, with your accounts signed in. These controls l
 
 ## Kill switch
 
-A global hotkey stops shuttle at once: it kills the running `gui_plan` and `script_run` processes, cancels the desk calls in flight and halts. Every tool call then fails with `stopped by the user` until you run `cocoon-shuttle resume` or resume from the indicator.
+`cocoon-shuttle stop` stops shuttle at once: it kills the running `gui_plan` or `script_run` process with its process group, ends the desk and model calls in flight, and halts. Every tool call then fails with `stopped by the user` until you run `cocoon-shuttle resume`. The stop lives in the running daemon; a daemon that starts again starts running.
+
+A global hotkey for the same stop, and Resume from the indicator, come with the macOS controls below (not built yet):
 
 | OS | Default | Registered with |
 |---|---|---|
@@ -14,21 +16,27 @@ A global hotkey stops shuttle at once: it kills the running `gui_plan` and `scri
 
 Set `kill_hotkey` in [config.md](config.md) to change it. On Wayland a global hotkey depends on the compositor's GlobalShortcuts portal; where there is none, `cocoon-shuttle stop` from a terminal is the kill switch.
 
-## Indicator
+## Indicator (not built yet)
 
 While shuttle acts, a menu-bar item (macOS) or tray icon (Windows, Linux) shows it, and cua-driver draws its agent cursor where shuttle points. `indicator = false` turns both off.
 
-## Confirm mode
+## Confirm mode (not built yet)
 
 `confirm = "coordinate"` asks before every click at a screen point, the least predictable action. `confirm = "every"` asks before every step that changes something. The question is a native dialog on your screen; a step you decline fails with `declined by the user`.
 
 ## App allowlist
 
-`apps = ["TextEdit", "com.apple.Safari", "notepad.exe"]` limits the desk calls to windows of those apps, matched by app name, macOS bundle id or Windows executable. The daemon checks the window's process on every call, and the window under the point for a coordinate click. An empty list allows every app.
+`apps = ["TextEdit", "notepad.exe"]` under `[safety]` limits the desk calls to windows of those apps. A name matches the macOS app name or the Windows executable, case-insensitive and with or without `.exe`. The daemon checks the app on every desk call:
+- the window a call names, or the focused window when it names none;
+- the focused window for `key` and `type`;
+- the process of the element for `read`, `press` and `act`;
+- the window under the point for `click`.
+
+`windows` lists only the allowed apps' windows, and `launch` starts only an allowed app. `shot` and `screen` are not bound to a window and still show the whole screen. An empty list allows every app. Each check reads the window list once, which costs a few ms to a few hundred ms on macOS depending on the apps on screen.
 
 ## What these controls do not cover
 
-`script_run` runs JavaScript with your user's rights. The allowlist and the confirm mode bound the desk calls a script makes, not the script's own code, which can read files or start programs. If you do not want that, set `script_run = false`; `gui_plan`, `desk` and `screenshot` keep working.
+`script_run` runs JavaScript with your user's rights. The allowlist and the confirm mode bound the desk calls a script makes, not the script's own code, which can read files or start programs. If you do not want that, set `script_run = false` under `[tools]`; `script_run` then answers how to turn it back on, and `gui_plan`, `desk` and `screenshot` keep working.
 
 ## Input on macOS
 
