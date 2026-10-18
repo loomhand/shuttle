@@ -343,33 +343,41 @@ mod tests {
     }
 
     fn runner() -> Runner {
-        let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
-        Runner::new(
-            "node".into(),
-            runtime,
+        runner_at(
             "unused".into(),
             std::env::temp_dir().join("shuttle-test-flows"),
-            Vec::new(),
         )
+    }
+
+    fn runner_at(endpoint: String, flows: std::path::PathBuf) -> Runner {
+        let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
+        Runner::new("node".into(), runtime, endpoint, flows, Vec::new())
+    }
+
+    fn daemon<H: Handler>(desk: H, guard: Guard) -> Daemon<H> {
+        Daemon::new(desk, Ok(Models::new(Config::default())), runner(), guard)
+    }
+
+    fn held() -> (Asker, Arc<Mutex<Option<oneshot::Sender<bool>>>>) {
+        let pending = Arc::new(Mutex::new(None));
+        let held = pending.clone();
+        let asker: Asker = Arc::new(move |_| {
+            let (tx, rx) = oneshot::channel();
+            *held.lock().unwrap() = Some(tx);
+            rx
+        });
+        (asker, pending)
     }
 
     #[cfg(unix)]
     async fn served(wait: Duration) -> (Arc<Daemon<Keys>>, Keys, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = dir.path().join("d.sock").to_string_lossy().into_owned();
-        let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
         let keys = Keys::default();
-        let runner = Runner::new(
-            "node".into(),
-            runtime,
-            endpoint.clone(),
-            dir.path().join("flows"),
-            Vec::new(),
-        );
         let mut d = Daemon::new(
             keys.clone(),
             Ok(Models::new(Config::default())),
-            runner,
+            runner_at(endpoint.clone(), dir.path().join("flows")),
             Guard::default(),
         );
         d.wait = wait;
@@ -400,12 +408,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_ends_a_desk_call_in_flight() {
-        let d = Arc::new(Daemon::new(
-            Slow,
-            Ok(Models::new(Config::default())),
-            runner(),
-            Guard::default(),
-        ));
+        let d = Arc::new(daemon(Slow, Guard::default()));
         let calls = ["desk_click", "desk_wait"].map(|tool| {
             tokio::spawn({
                 let d = d.clone();
@@ -425,12 +428,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_desk_action_a_stop_ends_is_not_acting_after_resume() {
-        let d = Arc::new(Daemon::new(
-            Slow,
-            Ok(Models::new(Config::default())),
-            runner(),
-            Guard::default(),
-        ));
+        let d = Arc::new(daemon(Slow, Guard::default()));
         let action = tokio::spawn({
             let d = d.clone();
             let call = call("desk_click", json!({}));
@@ -500,12 +498,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_fails_every_call_and_ends_the_run_in_flight_until_resume() {
-        let d = Arc::new(Daemon::new(
-            Echo,
-            Ok(Models::new(Config::default())),
-            runner(),
-            Guard::default(),
-        ));
+        let d = Arc::new(daemon(Echo, Guard::default()));
         let slow = json!({"code": "export async function main() { await new Promise((r) => setTimeout(r, 20000)) }"});
         let run = tokio::spawn({
             let d = d.clone();
@@ -551,11 +544,9 @@ mod tests {
                 rx
             })
         };
-        let daemon = |confirm, asker: Option<Asker>| {
-            Daemon::new(
+        let guarded = |confirm, asker: Option<Asker>| {
+            daemon(
                 Echo,
-                Ok(Models::new(Config::default())),
-                runner(),
                 Guard {
                     confirm,
                     asker,
@@ -565,7 +556,7 @@ mod tests {
         };
         let click = || call("desk_click", json!({"x": 10, "y": 20}));
         let key = || call("desk_key", json!({"keys": "ctrl+s"}));
-        let no = daemon(Confirm::Coordinate, Some(asker(false, asked.clone())));
+        let no = guarded(Confirm::Coordinate, Some(asker(false, asked.clone())));
         assert_eq!(no.answer(click()).await.text, DECLINED);
         assert!(!no.answer(key()).await.is_error);
         assert!(!no.answer(call("desk_windows", json!({}))).await.is_error);
@@ -586,27 +577,19 @@ mod tests {
                 "Allow shuttle to click element \"4/5\"?"
             ]
         );
-        let yes = daemon(Confirm::Every, Some(asker(true, asked.clone())));
+        let yes = guarded(Confirm::Every, Some(asker(true, asked.clone())));
         assert!(!yes.answer(key()).await.is_error);
         assert!(asked.lock().unwrap().last().unwrap().contains("ctrl+s"));
-        let none = daemon(Confirm::Coordinate, None);
+        let none = guarded(Confirm::Coordinate, None);
         assert_eq!(none.answer(click()).await.text, NO_ASK);
         assert!(!none.acting() && !none.halted());
     }
 
     #[tokio::test]
     async fn an_action_queued_before_a_confirm_dialog_opens_is_refused_when_its_turn_comes() {
-        let pending = Arc::new(Mutex::new(None));
-        let held = pending.clone();
-        let asker: Asker = Arc::new(move |_| {
-            let (tx, rx) = oneshot::channel();
-            *held.lock().unwrap() = Some(tx);
-            rx
-        });
-        let d = Daemon::new(
+        let (asker, pending) = held();
+        let d = daemon(
             Typing,
-            Ok(Models::new(Config::default())),
-            runner(),
             Guard {
                 confirm: Confirm::Coordinate,
                 asker: Some(asker),
@@ -637,17 +620,9 @@ mod tests {
 
     #[tokio::test]
     async fn every_desk_call_fails_at_once_while_a_confirm_dialog_is_open() {
-        let pending = Arc::new(Mutex::new(None));
-        let held = pending.clone();
-        let asker: Asker = Arc::new(move |_| {
-            let (tx, rx) = oneshot::channel();
-            *held.lock().unwrap() = Some(tx);
-            rx
-        });
-        let d = Daemon::new(
+        let (asker, pending) = held();
+        let d = daemon(
             Echo,
-            Ok(Models::new(Config::default())),
-            runner(),
             Guard {
                 confirm: Confirm::Coordinate,
                 asker: Some(asker),
@@ -688,10 +663,8 @@ mod tests {
 
     #[tokio::test]
     async fn script_run_turned_off_answers_how_to_turn_it_on() {
-        let d = Daemon::new(
+        let d = daemon(
             Echo,
-            Ok(Models::new(Config::default())),
-            runner(),
             Guard {
                 script_run: false,
                 ..Guard::default()
@@ -708,12 +681,7 @@ mod tests {
 
     #[tokio::test]
     async fn script_run_goes_to_the_runner() {
-        let d = Daemon::new(
-            Echo,
-            Ok(Models::new(Config::default())),
-            runner(),
-            Guard::default(),
-        );
+        let d = daemon(Echo, Guard::default());
         let out = d
             .answer(call(
                 "script_run",
