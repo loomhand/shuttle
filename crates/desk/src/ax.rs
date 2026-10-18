@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::hash::{Hash, Hasher};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -77,13 +77,7 @@ pub struct Ax {
 impl Ax {
     /// The backend, once this process holds the Accessibility permission.
     pub fn open() -> Result<Self, String> {
-        let prompt = !PROMPTED.swap(true, Ordering::Relaxed);
-        let options = CFDictionary::from_CFType_pairs(&[(
-            CFString::from_static_string("AXTrustedCheckOptionPrompt"),
-            CFBoolean::from(prompt).as_CFType(),
-        )]);
-        // SAFETY: `options` is a live CFDictionary; the call reads this process's TCC state and, once, asks the user.
-        if !unsafe { AXIsProcessTrustedWithOptions(options.as_CFTypeRef()) } {
+        if !trusted(!PROMPTED.swap(true, Ordering::Relaxed)) {
             let exe = std::env::current_exe()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
@@ -91,12 +85,7 @@ impl Ax {
                 "no Accessibility permission for {exe}: allow it in System Settings > Privacy & Security > Accessibility"
             ));
         }
-        // SAFETY: the system-wide element is returned at +1 and wrapped once under the create rule.
-        let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
-        // SAFETY: `system` is a live AXUIElement for the duration of the call.
-        unsafe {
-            AXUIElementSetMessagingTimeout(system.as_CFTypeRef(), MESSAGING_TIMEOUT.as_secs_f32())
-        };
+        set_timeout(&system_wide());
         Ok(Self {
             names: names(ATTRS),
             app_names: names(APP_ATTRS),
@@ -203,8 +192,7 @@ impl Ax {
     }
 
     fn id_of(&mut self, el: &CFType) -> String {
-        // SAFETY: `el` is a live CF object for the duration of the call.
-        let hash = unsafe { CFHash(el.as_CFTypeRef()) };
+        let hash = hash_of(el);
         if let Some((_, id)) = self
             .hashes
             .get(&hash)
@@ -400,7 +388,7 @@ impl Access for Ax {
     }
 
     fn hint(&mut self) -> Option<u64> {
-        let mut h = std::hash::DefaultHasher::new();
+        let mut h = DefaultHasher::new();
         let (owner, window, name) = (
             CFString::from_static_string("kCGWindowOwnerPID"),
             CFString::from_static_string("kCGWindowNumber"),
@@ -419,18 +407,14 @@ impl Access for Ax {
 
     fn pid_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
         self.scale = display_scale();
-        // SAFETY: the system-wide element is returned at +1 and wrapped once under the create rule.
-        let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
-        Ok(hit(&system, x, y, self.scale)
+        Ok(hit(&system_wide(), x, y, self.scale)
             .and_then(|h| pid(&h))
             .and_then(|p| u32::try_from(p).ok()))
     }
 
     fn menu_at(&mut self, x: i32, y: i32) -> Result<Option<String>, String> {
         self.scale = display_scale();
-        // SAFETY: the system-wide element is returned at +1 and wrapped once under the create rule.
-        let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
-        Ok(hit(&system, x, y, self.scale)
+        Ok(hit(&system_wide(), x, y, self.scale)
             .filter(|h| {
                 attr(h, "AXRole")
                     .and_then(|v| v.downcast::<CFString>())
@@ -448,8 +432,8 @@ impl Access for Ax {
             Act::Select if string(attr(&el, "AXRole")) == "AXRadioButton" => {
                 perform(&el, "AXPress")
             }
-            Act::Select => set(&el, "AXSelected", CFBoolean::true_value().as_CFType()),
-            Act::Focus => set(&el, "AXFocused", CFBoolean::true_value().as_CFType()),
+            Act::Select => set_true(&el, "AXSelected"),
+            Act::Focus => set_true(&el, "AXFocused"),
         })
     }
 
@@ -672,8 +656,9 @@ fn perform(el: &CFType, action: &'static str) -> bool {
     }
 }
 
-fn set(el: &CFType, name: &'static str, value: CFType) -> bool {
+fn set_true(el: &CFType, name: &'static str) -> bool {
     let name = CFString::from_static_string(name);
+    let value = CFBoolean::true_value();
     // SAFETY: `el` is a live AXUIElement; `name` and `value` are live CF objects.
     unsafe {
         AXUIElementSetAttributeValue(
@@ -697,9 +682,32 @@ fn pid(el: &CFType) -> Option<i32> {
 fn application(p: i32) -> CFType {
     // SAFETY: the application element is returned at +1 and wrapped once under the create rule.
     let app = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateApplication(p)) };
-    // SAFETY: `app` is a live AXUIElement for the duration of the call.
-    unsafe { AXUIElementSetMessagingTimeout(app.as_CFTypeRef(), MESSAGING_TIMEOUT.as_secs_f32()) };
+    set_timeout(&app);
     app
+}
+
+fn system_wide() -> CFType {
+    // SAFETY: the system-wide element is returned at +1 and wrapped once under the create rule.
+    unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) }
+}
+
+fn set_timeout(el: &CFType) {
+    // SAFETY: `el` is a live AXUIElement for the duration of the call.
+    unsafe { AXUIElementSetMessagingTimeout(el.as_CFTypeRef(), MESSAGING_TIMEOUT.as_secs_f32()) };
+}
+
+fn trusted(prompt: bool) -> bool {
+    let options = CFDictionary::from_CFType_pairs(&[(
+        CFString::from_static_string("AXTrustedCheckOptionPrompt"),
+        CFBoolean::from(prompt).as_CFType(),
+    )]);
+    // SAFETY: `options` is a live CFDictionary; the call reads this process's TCC state and, once, asks the user.
+    unsafe { AXIsProcessTrustedWithOptions(options.as_CFTypeRef()) }
+}
+
+fn hash_of(el: &CFType) -> usize {
+    // SAFETY: `el` is a live CF object for the duration of the call.
+    unsafe { CFHash(el.as_CFTypeRef()) }
 }
 
 fn window_pids() -> Vec<i32> {
