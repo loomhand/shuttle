@@ -62,20 +62,14 @@ ask = "anthropic/claude-sonnet-5"
 
 `gui_plan` saves passing plans as flows in a `flows` directory next to `config.toml`, as one JSON file per flow, an `INDEX`, a run log `.runs.jsonl` and a git history of the changes when git is installed (on macOS, when the Command Line Tools are: the flow history never runs the `git` stub that would open their installer; git that a `script_run` script runs is that script's own call). Flows hold the values plans typed, so the directory is readable by its owner only (0700) and its files are created 0600.
 
-## Safety (P1, not built yet)
-
-Until the safety controls land, a file with these tables does not load, and every model call answers with that error; this is the planned shape:
+## Safety
 
 ```toml
 [safety]
-kill_hotkey = "ctrl+alt+cmd+escape"  # default; "ctrl+alt+shift+escape" on Windows and Linux
-indicator = true                     # the menu-bar/tray item and the cursor overlay while shuttle acts
-confirm = "off"                      # off | coordinate | every
-apps = []                            # app allowlist; empty allows every app
-user_idle_ms = 1500                  # how long you must be idle before a coordinate click
+apps = []          # app allowlist; empty allows every app
 
 [tools]
-script_run = true
+script_run = true  # false turns script_run off
 ```
 
-[safety.md](safety.md) describes each control.
+The safety controls live in this file, so while it fails to load every tool call answers with its error, desk calls included; only `cocoon-shuttle stop` and `resume` still work. `kill_hotkey`, `indicator` and `confirm` come with the macOS controls; until then a file that sets them does not load. [safety.md](safety.md) describes each control.
