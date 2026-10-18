@@ -40,7 +40,9 @@ for (const [step, key, title] of [[{ key: 'ctrl+o' }, 'ctrl+o', 'Open'], [{ key:
     const server = await toolhost(d.answer)
     t.after(() => server.close())
     const r = await main({ steps: [step] })
-    assert.ok(JSON.stringify(r).includes(title), JSON.stringify(r))
+    assert.equal(r.escalate?.window, title, JSON.stringify(r))
+    const act = d.calls.findLastIndex((c) => c.startsWith('key ') || c === 'desk_type')
+    assert.notEqual(d.calls.indexOf('wait', act), -1, d.calls.join(' '))
   })
 }
 
