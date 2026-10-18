@@ -32,8 +32,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, HSTRING, w};
 
 use crate::NAME;
-use crate::daemon::{Asker, Controls};
-use crate::hotkey::Hotkey;
+use crate::daemon::{Asker, Controls, Ui};
 
 const POLL: Duration = Duration::from_millis(250);
 const TRAY_MESSAGE: u32 = WM_APP + 1;
@@ -43,14 +42,6 @@ const RESUME: usize = 2;
 static SHOWN: OnceLock<Shown> = OnceLock::new();
 static TASKBAR_CREATED: OnceLock<u32> = OnceLock::new();
 static TRAY: AtomicIsize = AtomicIsize::new(0);
-
-/// What the controls show and how to reach the daemon.
-pub struct Ui {
-    pub controls: Arc<dyn Controls>,
-    pub hotkey: Hotkey,
-    pub hotkey_label: String,
-    pub indicator: bool,
-}
 
 /// Runs the controls on this thread until the process exits.
 pub fn run(ui: Ui) -> ! {

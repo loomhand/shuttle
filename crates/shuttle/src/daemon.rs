@@ -16,6 +16,8 @@ use shuttle_models::config::Confirm;
 use tokio::sync::oneshot;
 
 use crate::STOPPED;
+#[cfg(any(target_os = "macos", windows))]
+use crate::hotkey::Hotkey;
 use crate::runner::Runner;
 
 const BUSY: &str = "desk busy: another run or action is still going";
@@ -53,6 +55,15 @@ pub trait Controls: Send + Sync {
     fn halted(&self) -> bool;
     /// Whether a run or a desk action is in flight.
     fn acting(&self) -> bool;
+}
+
+/// What the controls show and how to reach the daemon.
+#[cfg(any(target_os = "macos", windows))]
+pub struct Ui {
+    pub controls: Arc<dyn Controls>,
+    pub hotkey: Hotkey,
+    pub hotkey_label: String,
+    pub indicator: bool,
 }
 
 /// Answers `model_*` calls with `models`, `gui_plan` and `script_run` with `runner`, and the rest with `desk`; `safety_stop` halts every call until `safety_resume`.
