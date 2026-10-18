@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use desk_core::args::{
-    ActArgs, AtArgs, ClickArgs, FindArgs, IdArgs, KeyArgs, LaunchArgs, ReadArgs, ShotArgs,
-    SnapArgs, TypeArgs, WaitArgs, WindowArgs, parse,
+    ActArgs, AtArgs, ClickArgs, DragArgs, FindArgs, IdArgs, KeyArgs, LaunchArgs, ReadArgs,
+    ScrollArgs, ShotArgs, SnapArgs, StillArgs, TypeArgs, WaitArgs, WindowArgs, parse,
 };
 use desk_core::text::{MAX_FOUND, NAME_CHARS, matches, ms, quote};
 use desk_core::wire::Output;
@@ -24,12 +24,14 @@ use crate::shot::crop_png;
 use crate::worker::Worker;
 
 pub const TURN_WAIT: Duration = Duration::from_secs(15);
-pub const ACTIONS: [&str; 8] = [
+pub const ACTIONS: [&str; 10] = [
     "desk_press",
     "desk_act",
     "desk_key",
     "desk_type",
     "desk_click",
+    "desk_scroll",
+    "desk_drag",
     "desk_focus",
     "desk_close",
     "desk_launch",
@@ -46,6 +48,11 @@ const NO_WINDOW_UNDER: &str =
 const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
 const WINDOW_NEVER_READ: &str = "window_never_read";
 const OK: &str = r#"{"ok":true}"#;
+const SCROLL_AMOUNT: u32 = 3;
+const STILL_TIMEOUT: Duration = Duration::from_millis(600);
+const STILL_MAX: Duration = Duration::from_secs(5);
+const STILL_HOLD: Duration = Duration::from_millis(40);
+const STILL_POLL: Duration = Duration::from_millis(10);
 
 type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
 
@@ -105,6 +112,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_key" => self.key(&parse::<KeyArgs>(args)?.keys).await?,
             "desk_type" => self.type_text(&parse::<TypeArgs>(args)?.text).await?,
             "desk_click" => self.click(parse(args)?).await?,
+            "desk_scroll" => self.scroll(parse(args)?).await?,
+            "desk_drag" => self.drag(parse(args)?).await?,
+            "desk_still" => self.still(parse(args)?).await?,
             "desk_focus" => self.focus(parse(args)?).await?,
             "desk_close" => self.close(parse(args)?, turn.clone()).await?,
             "desk_launch" => {
@@ -193,6 +203,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 Some(args["id"].as_str().ok_or("no element id")?.to_owned())
             }
             "desk_key" | "desk_type" => None,
+            "desk_scroll" if args["x"].is_null() => None,
             _ => return Ok(()),
         };
         let allow = self.allow.clone();
@@ -457,17 +468,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if !self.allow.is_open()
             && let Some((x, y)) = point
         {
-            let pid = u32::try_from(under.as_ref().ok_or(NO_WINDOW_UNDER)?.pid).ok();
-            let allow = self.allow.clone();
-            self.access
-                .run(CALL_LIMIT, (), move |b| {
-                    check_process(b, &allow, pid)?;
-                    match b.pid_at(x as i32, y as i32)? {
-                        Some(top) if Some(top) != pid => check_process(b, &allow, Some(top)),
-                        _ => Ok(()),
-                    }
-                })
-                .await?;
+            self.check_point(x, y, under.as_ref()).await?;
         }
         if self.os == Os::Mac
             && let Some(w) = under
@@ -476,6 +477,106 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
         self.driver.call("click", desktop(req)).await?;
         Ok(())
+    }
+
+    /// Refuses a point whose window, or the process on top there, the allowlist does not admit.
+    async fn check_point(&self, x: f64, y: f64, under: Option<&Under>) -> Result<(), String> {
+        let pid = u32::try_from(under.ok_or(NO_WINDOW_UNDER)?.pid).ok();
+        let allow = self.allow.clone();
+        self.access
+            .run(CALL_LIMIT, (), move |b| {
+                check_process(b, &allow, pid)?;
+                match b.pid_at(x as i32, y as i32)? {
+                    Some(top) if Some(top) != pid => check_process(b, &allow, Some(top)),
+                    _ => Ok(()),
+                }
+            })
+            .await
+    }
+
+    async fn admit_point(&self, x: f64, y: f64) -> Result<(), String> {
+        if self.allow.is_open() {
+            return Ok(());
+        }
+        let under = self.window_at(x, y).await?;
+        self.check_point(x, y, under.as_ref()).await
+    }
+
+    /// Wheel notches at a screen point, or, without one, scroll keys to the front window.
+    async fn scroll(&self, a: ScrollArgs) -> Result<String, String> {
+        let mut req =
+            json!({"direction": a.direction, "amount": a.amount.unwrap_or(SCROLL_AMOUNT)});
+        match (a.x, a.y) {
+            (Some(x), Some(y)) => {
+                self.admit_point(x, y).await?;
+                req["x"] = x.into();
+                req["y"] = y.into();
+                self.driver.call("scroll", desktop(req)).await?;
+            }
+            (None, None) => {
+                let mut front = self
+                    .on_screen()
+                    .await?
+                    .into_iter()
+                    .filter(|w| w["layer"] == 0)
+                    .max_by_key(|w| w["z_index"].as_i64().unwrap_or(i64::MIN))
+                    .ok_or("no window is in front to scroll")?;
+                req["pid"] = front["pid"].take();
+                req["window_id"] = front["window_id"].take();
+                self.driver.call("scroll", req).await?;
+            }
+            _ => return Err("scroll needs both x and y, or neither".to_owned()),
+        }
+        Ok(OK.to_owned())
+    }
+
+    /// A press-drag-release from (x, y) to (to_x, to_y) in desk coordinates.
+    async fn drag(&self, a: DragArgs) -> Result<String, String> {
+        self.admit_point(a.x, a.y).await?;
+        self.admit_point(a.to_x, a.to_y).await?;
+        let req = json!({"from_x": a.x, "from_y": a.y, "to_x": a.to_x, "to_y": a.to_y});
+        self.driver.call("drag", desktop(req)).await?;
+        Ok(OK.to_owned())
+    }
+
+    /// Waits until the screen holds still for `hold_ms`, at most `timeout_ms`; says whether it changed meanwhile.
+    async fn still(&self, a: StillArgs) -> Result<String, String> {
+        let limit = a
+            .timeout_ms
+            .map_or(STILL_TIMEOUT, Duration::from_millis)
+            .min(STILL_MAX);
+        let hold = a.hold_ms.map_or(STILL_HOLD, Duration::from_millis);
+        let started = Instant::now();
+        let mut last = self.screen_png().await?;
+        let mut since = Instant::now();
+        let mut changed = false;
+        loop {
+            let still = since.elapsed() >= hold;
+            if still || started.elapsed() >= limit {
+                let waited = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                return Ok(json!({"still": still, "changed": changed, "ms": waited}).to_string());
+            }
+            tokio::time::sleep(STILL_POLL).await;
+            let now = self.screen_png().await?;
+            if now != last {
+                (changed, since, last) = (true, Instant::now(), now);
+            }
+        }
+    }
+
+    async fn screen_png(&self) -> Result<String, String> {
+        let mut v = self.driver.call("get_desktop_state", json!({})).await?;
+        let Value::Array(content) = v["content"].take() else {
+            return Err("the driver returned no screenshot".to_owned());
+        };
+        content
+            .into_iter()
+            .find(|c| c["type"] == "image")
+            .and_then(|mut c| match c["data"].take() {
+                Value::String(png) => Some(png),
+                _ => None,
+            })
+            .ok_or_else(|| "the driver returned no screenshot".to_owned())
     }
 
     async fn click_window(&self, req: Value, w: &Under) -> Result<(), String> {
@@ -1915,5 +2016,144 @@ pub(crate) mod tests {
         assert_eq!(out["changed"], true);
         assert_eq!(lists(&desk).await, 2);
         assert!(took < WAIT_CHECK, "{took:?}");
+    }
+
+    struct Wheel(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for Wheel {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1},
+                    {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2},
+                    {"pid": 98, "window_id": 9, "layer": 25, "z_index": 9}
+                ]}}),
+                _ => json!({}),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_scroll_wheels_at_its_point_or_keys_the_front_window_and_a_drag_spans_two_points() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(notepad()), Wheel(calls.clone()), Os::Windows);
+        let last = || calls.lock().unwrap().last().cloned().unwrap();
+        desk.run(
+            "desk_scroll",
+            json!({"direction": "down", "x": 10.0, "y": 20.0}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            last(),
+            (
+                "scroll".to_owned(),
+                json!({"direction": "down", "amount": 3, "x": 10.0, "y": 20.0, "scope": "desktop"})
+            )
+        );
+        desk.run("desk_scroll", json!({"direction": "up", "amount": 5}))
+            .await
+            .unwrap();
+        assert_eq!(
+            last(),
+            (
+                "scroll".to_owned(),
+                json!({"direction": "up", "amount": 5, "pid": 8, "window_id": 2})
+            )
+        );
+        let half = desk
+            .run("desk_scroll", json!({"direction": "up", "x": 1.0}))
+            .await
+            .unwrap_err();
+        assert!(half.contains("both x and y"), "{half}");
+        desk.run(
+            "desk_drag",
+            json!({"x": 1.0, "y": 2.0, "to_x": 300.0, "to_y": 400.0}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            last(),
+            (
+                "drag".to_owned(),
+                json!({"from_x": 1.0, "from_y": 2.0, "to_x": 300.0, "to_y": 400.0, "scope": "desktop"})
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn an_app_allowlist_gates_both_ends_of_a_drag_and_the_point_of_a_scroll() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk =
+            Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Windows).allow(&["notepad".into()]);
+        let refused = |r: Result<Output, String>| {
+            r.err()
+                .is_some_and(|e| e.contains("not in the app allowlist"))
+        };
+        let drag = |to: (f64, f64)| json!({"x": 100.0, "y": 800.0, "to_x": to.0, "to_y": to.1});
+        assert!(refused(desk.run("desk_drag", drag((50.0, 950.0))).await));
+        assert!(refused(desk.run("desk_drag", drag((50.0, 600.0))).await));
+        assert!(refused(
+            desk.run(
+                "desk_scroll",
+                json!({"direction": "down", "x": 50.0, "y": 950.0})
+            )
+            .await
+        ));
+        assert!(
+            !calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|t| t == "drag" || t == "scroll")
+        );
+        desk.run("desk_drag", drag((200.0, 300.0))).await.unwrap();
+        desk.run(
+            "desk_scroll",
+            json!({"direction": "down", "x": 100.0, "y": 800.0}),
+        )
+        .await
+        .unwrap();
+        let done = calls.lock().unwrap().clone();
+        assert!(done.contains(&"drag".to_owned()) && done.contains(&"scroll".to_owned()));
+    }
+
+    struct Frames(Mutex<usize>, fn(usize) -> usize);
+
+    impl Input for Frames {
+        async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
+            assert_eq!(tool, "get_desktop_state");
+            let mut n = self.0.lock().unwrap();
+            *n += 1;
+            Ok(json!({"content": [{"type": "image", "data": format!("png-{}", (self.1)(*n))}]}))
+        }
+    }
+
+    #[tokio::test]
+    async fn still_answers_once_the_screen_holds_for_its_hold_and_says_whether_it_changed() {
+        let run = |frame: fn(usize) -> usize, args: Value| async move {
+            let desk = Desk::new(|| Ok(notepad()), Frames(Mutex::new(0), frame), Os::Mac);
+            let out = desk.run("desk_still", args).await.unwrap();
+            serde_json::from_str::<Value>(&out.text).unwrap()
+        };
+        let calm = run(|_| 0, json!({"hold_ms": 30})).await;
+        assert_eq!(
+            (calm["still"].clone(), calm["changed"].clone()),
+            (json!(true), json!(false))
+        );
+        let settles = run(|n| n.min(4), json!({"hold_ms": 30})).await;
+        assert_eq!(
+            (settles["still"].clone(), settles["changed"].clone()),
+            (json!(true), json!(true))
+        );
+        assert!(settles["ms"].as_u64().unwrap() >= 30, "{settles}");
+        let busy = run(|n| n, json!({"hold_ms": 30, "timeout_ms": 120})).await;
+        assert_eq!(
+            (busy["still"].clone(), busy["changed"].clone()),
+            (json!(false), json!(true))
+        );
+        let ms = busy["ms"].as_u64().unwrap();
+        assert!((120..1000).contains(&ms), "{busy}");
     }
 }

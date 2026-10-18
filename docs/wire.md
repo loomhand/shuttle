@@ -36,6 +36,9 @@ Desk calls name `desk_<verb>` tools:
 | `key` | `keys` (`ctrl+s`, `cmd+shift+t`, ...) | sends a key combination |
 | `type` | `text` | types text |
 | `click` | `x`, `y`, `button?`, `count?` | clicks a screen point |
+| `scroll` | `direction` (`up`, `down`, `left`, `right`), `amount?` (notches or key repeats, default 3, the driver caps it at 50), `x?`, `y?` | with `x` and `y`, wheel notches at that screen point, which scroll whatever is under it; without them, scroll keys to the front window. `x` without `y` is an error. The allowlist gates the window at the point, or the focused window |
+| `drag` | `x`, `y`, `to_x`, `to_y` | presses at (`x`, `y`), moves and releases at (`to_x`, `to_y`), in desk coordinates; the allowlist gates both ends |
+| `still` | `timeout_ms?` (default 600, at most 5000), `hold_ms?` (default 40) | `still`, `changed` and `ms`: answers once the screen has not changed for `hold_ms`, or after `timeout_ms` with `still: false`; `changed` says whether it changed during the wait. On macOS and Windows it compares full-screen captures from the driver, so each check costs one capture; it returns no pixels and watches the whole screen, whatever the allowlist |
 | `focus`, `close` | `window`, `pid?` | focuses or closes a window |
 | `launch` | `app` | starts an app |
 | `shot` | `x?`, `y?`, `w?`, `h?` | `width` and `height`, with the PNG of the screen or a rectangle in `image_b64` |

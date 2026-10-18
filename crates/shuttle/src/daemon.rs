@@ -160,7 +160,7 @@ impl<H: Handler> Daemon<H> {
         match self.guard.confirm {
             Confirm::Off => false,
             Confirm::Coordinate => match call.tool.as_str() {
-                "desk_click" | "desk_press" => true,
+                "desk_click" | "desk_press" | "desk_drag" => true,
                 "desk_act" => call.args["action"] == "click",
                 _ => false,
             },
@@ -282,6 +282,10 @@ fn question(call: &Call) -> String {
     let verb = call.tool.trim_start_matches("desk_");
     let what = match verb {
         "click" => format!("click at ({}, {})", call.args["x"], call.args["y"]),
+        "drag" => format!(
+            "drag from ({}, {}) to ({}, {})",
+            call.args["x"], call.args["y"], call.args["to_x"], call.args["to_y"]
+        ),
         "press" => format!("press element {}", call.args["id"]),
         "act" => format!(
             "{} element {}",
@@ -604,12 +608,17 @@ mod tests {
         );
         assert_eq!(no.answer(act("click")).await.text, DECLINED);
         assert!(!no.answer(act("action")).await.is_error);
+        let drag = call("desk_drag", json!({"x": 1, "y": 2, "to_x": 30, "to_y": 40}));
+        assert_eq!(no.answer(drag).await.text, DECLINED);
+        let scroll = call("desk_scroll", json!({"direction": "down", "x": 1, "y": 2}));
+        assert!(!no.answer(scroll).await.is_error);
         assert_eq!(
             *asked.lock().unwrap(),
             [
                 "Allow shuttle to click at (10, 20)?",
                 "Allow shuttle to press element \"4/5\"?",
-                "Allow shuttle to click element \"4/5\"?"
+                "Allow shuttle to click element \"4/5\"?",
+                "Allow shuttle to drag from (1, 2) to (30, 40)?"
             ]
         );
         let yes = guarded(Confirm::Every, Some(asker(true, asked.clone())));

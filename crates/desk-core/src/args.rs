@@ -80,6 +80,29 @@ pub struct ClickArgs {
 }
 
 #[derive(Deserialize)]
+pub struct ScrollArgs {
+    /// `up`, `down`, `left` or `right`.
+    pub direction: String,
+    pub amount: Option<u32>,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+}
+
+#[derive(Deserialize)]
+pub struct DragArgs {
+    pub x: f64,
+    pub y: f64,
+    pub to_x: f64,
+    pub to_y: f64,
+}
+
+#[derive(Deserialize)]
+pub struct StillArgs {
+    pub timeout_ms: Option<u64>,
+    pub hold_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
 pub struct WindowArgs {
     pub window: String,
     pub pid: Option<u32>,
