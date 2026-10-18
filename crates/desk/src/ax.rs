@@ -470,6 +470,28 @@ impl Access for Ax {
     }
 }
 
+/// One element's attributes from a batched read; an attribute it lacks stays empty.
+#[derive(Default)]
+struct Attrs {
+    role: String,
+    subrole: String,
+    title: String,
+    description: String,
+    help: String,
+    value: Option<CFType>,
+    enabled: Option<bool>,
+    focused: bool,
+    selected: bool,
+    expanded: Option<bool>,
+    pos: Option<(f64, f64)>,
+    size: Option<(f64, f64)>,
+    children: Vec<CFType>,
+    cmd_char: String,
+    cmd_modifiers: Option<i64>,
+    mark: String,
+    modal: bool,
+}
+
 #[repr(C)]
 #[derive(Default)]
 struct Pair {
@@ -508,28 +530,6 @@ unsafe extern "C" {
     fn CGDisplayModeGetPixelWidth(mode: *mut c_void) -> usize;
     fn CGDisplayModeGetWidth(mode: *mut c_void) -> usize;
     fn CGDisplayModeRelease(mode: *mut c_void);
-}
-
-/// One element's attributes from a batched read; an attribute it lacks stays empty.
-#[derive(Default)]
-struct Attrs {
-    role: String,
-    subrole: String,
-    title: String,
-    description: String,
-    help: String,
-    value: Option<CFType>,
-    enabled: Option<bool>,
-    focused: bool,
-    selected: bool,
-    expanded: Option<bool>,
-    pos: Option<(f64, f64)>,
-    size: Option<(f64, f64)>,
-    children: Vec<CFType>,
-    cmd_char: String,
-    cmd_modifiers: Option<i64>,
-    mark: String,
-    modal: bool,
 }
 
 fn attrs(names: &CFArray<CFString>, el: &CFType) -> Attrs {

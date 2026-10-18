@@ -128,18 +128,6 @@ pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<()
     }
 }
 
-#[cfg(windows)]
-fn pipe(
-    endpoint: &str,
-    first: bool,
-) -> Result<tokio::net::windows::named_pipe::NamedPipeServer, String> {
-    tokio::net::windows::named_pipe::ServerOptions::new()
-        .first_pipe_instance(first)
-        .reject_remote_clients(true)
-        .create(endpoint)
-        .map_err(|e| format!("create pipe {endpoint}: {e}"))
-}
-
 /// Sends one call to the endpoint and returns its output.
 pub async fn call(endpoint: &str, call: &Call) -> Result<Output, String> {
     let conn = connect(endpoint)
@@ -200,6 +188,18 @@ pub fn native(driver: String, apps: Vec<String>) -> impl Handler {
 #[cfg(not(any(windows, target_os = "macos")))]
 pub fn native(_: String, _: Vec<String>) -> impl Handler {
     NoDesk
+}
+
+#[cfg(windows)]
+fn pipe(
+    endpoint: &str,
+    first: bool,
+) -> Result<tokio::net::windows::named_pipe::NamedPipeServer, String> {
+    tokio::net::windows::named_pipe::ServerOptions::new()
+        .first_pipe_instance(first)
+        .reject_remote_clients(true)
+        .create(endpoint)
+        .map_err(|e| format!("create pipe {endpoint}: {e}"))
 }
 
 async fn handle<H: Handler, S: AsyncRead + AsyncWrite + Unpin>(handler: Arc<H>, mut stream: S) {

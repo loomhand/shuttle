@@ -691,15 +691,15 @@ fn shown() -> Vec<Shown> {
 
 fn owned(shown: &[Shown], root: usize) -> Vec<usize> {
     let mut owners = vec![shown[root].hwnd.0 as isize];
-    let mut owned = Vec::new();
+    let mut found = Vec::new();
     while let Some(owner) = owners.pop() {
         for i in (0..shown.len()).filter(|&i| shown[i].owner == owner) {
             owners.push(shown[i].hwnd.0 as isize);
-            owned.push(i);
+            found.push(i);
         }
     }
-    owned.reverse();
-    owned
+    found.reverse();
+    found
 }
 
 fn title(hwnd: HWND) -> String {
