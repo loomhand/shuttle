@@ -12,13 +12,13 @@ The toolchain is pinned in `rust-toolchain.toml`; the runner and daemon tests al
 
 The Windows code builds only for Windows; from another host, `cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings` checks it.
 
-The runtime is TypeScript that Node runs with its types stripped; `npm ci && npm run typecheck` in `runtime/` checks it and its tests with `strict` and `noUncheckedIndexedAccess`. The runtime tests run on Linux with the Node.js release the archives bundle; each test points `HOME` and `SHUTTLE_FLOWS` at its own temporary directory:
+The runtime is TypeScript that Node runs with its types stripped; `npm ci && npm run typecheck` in `runtime/` checks it and its tests with `strict` and `noUncheckedIndexedAccess`. The runtime tests run on Linux, macOS and Windows with the Node.js release the archives bundle; each test points `HOME` and `SHUTTLE_FLOWS` at its own temporary directory:
 
 ```sh
 node --test runtime/test/*.test.mts
 ```
 
-CI runs the Rust gates on Linux (x64), macOS (arm64, x64) and Windows (x64), and the runtime tests and shellcheck on Linux; Linux arm64 is covered by the release build and install jobs on tags.
+CI runs the Rust gates on Linux (x64), macOS (arm64, x64) and Windows (x64), the runtime typecheck and tests on Linux (x64), macOS (arm64) and Windows (x64), and shellcheck on Linux; Linux arm64 is covered by the release build and install jobs on tags.
 
 ## Release
 

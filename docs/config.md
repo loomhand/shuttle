@@ -15,16 +15,16 @@ shuttle calls models through one OpenAI-compatible endpoint with one key. The de
 
 1. Create a key at <https://openrouter.ai/settings/keys>.
 2. `export OPENROUTER_API_KEY=sk-or-...` in the environment the daemon starts from (on macOS, see [Keys](#keys)).
-3. Done: no configuration file is needed.
+3. Done: no configuration file is needed. Any OpenRouter key reaches every default model; the `decide` model, `typesafe/jev-1.14`, answers on OpenRouter's Decisions API, so its public model list shows it under `?output_modalities=decisions` and not in the default chat list.
 
 The desk runtime calls models in four roles, each a model name on that endpoint:
 
 | Role | Default model | What it does | Used by |
 |---|---|---|---|
-| `decide` | `typesafe/jev-1.14` | Picks one element from candidates, or answers a yes/no question, with probabilities, over text or a screenshot | `gui_plan` when a step's target matches more than one element; `desk.decide` and `desk.look` in scripts |
-| `verify` | the `decide` model | Checks a crop around a grounded point, within 5 s | `gui_plan` after a grounded click |
+| `decide` | `typesafe/jev-1.14` | Picks one element from candidates, or answers a yes/no question, with probabilities, over text | `gui_plan` window checks, `expect` steps, `find`, and the text pick when the screenshot pick fails; `desk.decide` in scripts |
+| `verify` | the `decide` model | Answers the same over a screenshot, within 5 s | `gui_plan` when a step's target matches more than one element, and its check after a grounded click; `desk.look` in scripts |
 | `ground` | `qwen/qwen3-vl-235b-a22b-instruct` | Returns the point of a described element in a screenshot, as `point_2d` from 0 to 1000 | `gui_plan` when the accessibility tree has no match; `desk.ground` |
-| `ask` | `anthropic/claude-sonnet-5` | Answers a free-form question about screenshots | `desk.ask` |
+| `ask` | `anthropic/claude-sonnet-5` | Answers a free-form question about screenshots | `gui_plan` `expect` steps the text check does not confirm, and toggle states the accessibility tree does not report; `desk.ask` |
 
 Every field is optional; this file spells out the defaults:
 
@@ -49,7 +49,7 @@ ask = "anthropic/claude-sonnet-5"
 
 ### `decide` without a decisions endpoint
 
-`gui_plan` was tuned against a decisions endpoint, which returns calibrated probabilities per answer. With `decide_api = "chat"`, shuttle asks the chat model for the same answers as JSON and reads the probabilities it writes. Those numbers are self-reported, not calibrated, and the plan executor's thresholds (a 0.7 bar for a pick, a 0.6 runner-up margin, 0.5 for a crop check) were set on calibrated ones. Expect more escalations and more wrong picks than with a decisions endpoint.
+`gui_plan` was tuned against a decisions endpoint, which returns calibrated probabilities per answer. With `decide_api = "chat"`, shuttle asks the chat model for the same answers as JSON and reads the probabilities it writes. Those numbers are self-reported, not calibrated, and the plan executor's thresholds (a 0.7 bar for a pick, 0.5 for a `set` field, a 0.6 runner-up margin, 0.5 to 0.95 for a crop check) were set on calibrated ones. Expect more escalations and more wrong picks than with a decisions endpoint.
 
 ## Keys
 
@@ -60,7 +60,7 @@ ask = "anthropic/claude-sonnet-5"
 
 ## Saved flows
 
-`gui_plan` saves passing plans as flows in a `flows` directory next to `config.toml`, as one JSON file per flow, an `INDEX`, a run log `.runs.jsonl` and a git history of the changes when git is installed (on macOS, when the Command Line Tools are: the flow history never runs the `git` stub that would open their installer; git that a `script_run` script runs is that script's own call). Flows hold the values plans typed, so the directory is readable by its owner only (0700) and its files are created 0600.
+`gui_plan` saves passing plans as flows in a `flows` directory next to `config.toml`, as one JSON file per flow, an `INDEX`, a run log `.runs.jsonl`, `.pending.json` (the steps of the last plans, which a later `save` stores) and a git history of the changes when git is installed (on macOS, when the Command Line Tools are: the flow history never runs the `git` stub that would open their installer; git that a `script_run` script runs is that script's own call). Flows hold the values plans typed, so the directory is readable by its owner only (0700) and its files are created 0600.
 
 ## Safety
 
@@ -68,7 +68,7 @@ ask = "anthropic/claude-sonnet-5"
 [safety]
 apps = []                             # app allowlist; empty allows every app
 kill_hotkey = "ctrl+alt+cmd+escape"   # ctrl+alt+shift+escape off macOS
-indicator = true                      # menu-bar item
+indicator = true                      # menu-bar item; tray icon on Windows
 confirm = "off"                       # "coordinate" or "every" asks first
 
 [tools]
