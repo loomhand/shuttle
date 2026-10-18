@@ -249,3 +249,27 @@ test('a click on macOS whose target sits only in the menu bar reads the window a
     server.close()
   }
 })
+
+function menuBar(item: { name: string; shortcut?: string; states?: string[] }) {
+  return [
+    { ref: 10, id: '1/10', parent: 0, depth: 1, role: 'menubar', name: '', states: ['showing'] },
+    { ref: 11, id: '1/11', parent: 10, depth: 2, role: 'menu', name: 'File', states: ['showing'], bounds: [0, 0, 30, 20] },
+    { ref: 12, id: '1/12', parent: 11, depth: 3, role: 'menuitem', name: item.name, states: item.states ?? [], ...(item.shortcut ? { shortcut: item.shortcut } : {}) },
+  ]
+}
+
+test('a verify on macOS that finds its target only in the menu bar checks it there, instead of passing on the miss', { skip: process.platform !== 'darwin' }, async () => {
+  const win = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
+  const server = await toolhost(({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root('window', win.title), ...(args.menus ? menuBar({ name: 'Print' }) : [])] })
+    return '{"ok":true}'
+  })
+  const { main } = await import('../lib/gui_plan.mts')
+  try {
+    const r = await main({ steps: [{ verify: 'Print', enabled: false }] })
+    assert.match(r.escalate?.reason ?? '', /"Print" is enabled/, JSON.stringify(r))
+  } finally {
+    server.close()
+  }
+})

@@ -810,7 +810,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     throw e
   }
   let nodes = parse(snap); tick('snap', t0)
-  const aim = s.click ?? s.check
+  const aim = s.verify ?? s.click ?? s.check
   if (OS === 'darwin' && !r.menus && aim !== undefined && !(await resolve(nodes, aim, targetRole(s), undefined, 0.7, s.fp, false))) nodes = parse(await snapOf(w, { ...r, menus: true }))
   if (s.expect) {
     const d = await decide({ window_title: w.title, contents: render(nodes, 60, false).slice(0, 4000) }, { ok: desk.yes(s.expect) })
@@ -821,7 +821,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     return
   }
   if (s.verify) {
-    const hit = await resolve(nodes, s.verify, s.role ?? (s.value !== undefined ? FIELDS : s.on !== undefined ? `${TOGGLES}|menuitem` : undefined), undefined, 0.7, s.fp)
+    const hit = await resolve(nodes, s.verify, targetRole(s), undefined, 0.7, s.fp)
     if (!hit) { if (s.on === false || s.enabled === false) return; throw new Surprise(`verify: no element matches "${s.verify}"`, await seen()) }
     rec.how = hit.how; rec.fp = fingerprint(nodes, hit)
     const bad: string[] = []
