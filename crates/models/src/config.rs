@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+pub const DEFAULT_KEY_ENV: &str = "OPENROUTER_API_KEY";
+
 const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_DECISIONS_URL: &str = "https://openrouter.ai/api/alpha/decisions";
-const DEFAULT_KEY_ENV: &str = "OPENROUTER_API_KEY";
 const DEFAULT_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_KILL_HOTKEY: &str = if cfg!(target_os = "macos") {
     "ctrl+alt+cmd+escape"

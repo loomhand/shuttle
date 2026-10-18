@@ -43,15 +43,8 @@ pub(crate) async fn decisions(
     let r: Judged = m
         .post(&m.config.decisions_url, model, &ask, timeout)
         .await?;
-    Ok(Decided {
-        answers: answers(model, r.answers, &args.questions)?,
-        served: Served {
-            model: model.to_owned(),
-            build: r.model,
-            id: r.id,
-        },
-        usage: Usage::of(model, &r.usage),
-    })
+    let usage = Usage::of(model, &r.usage);
+    decided(model, r.answers, &args.questions, r.model, r.id, usage)
 }
 
 /// Asks the chat model `model` the questions of `args` and reads its JSON answers.
@@ -69,14 +62,32 @@ pub(crate) async fn over_chat(
     ];
     parts.extend(Part::from_state(&args.state));
     let reply = chat::complete(m, model, &parts, MAX_TOKENS, timeout).await?;
+    decided(
+        model,
+        json_object(model, &reply.text)?,
+        &args.questions,
+        reply.build,
+        reply.id,
+        reply.usage,
+    )
+}
+
+fn decided(
+    model: &str,
+    given: Map<String, Value>,
+    questions: &Map<String, Value>,
+    build: Option<String>,
+    id: Option<String>,
+    usage: Usage,
+) -> Result<Decided, String> {
     Ok(Decided {
-        answers: answers(model, json_object(model, &reply.text)?, &args.questions)?,
+        answers: answers(model, given, questions)?,
         served: Served {
             model: model.to_owned(),
-            build: reply.build,
-            id: reply.id,
+            build,
+            id,
         },
-        usage: reply.usage,
+        usage,
     })
 }
 
@@ -102,7 +113,7 @@ fn answers(
     questions
         .iter()
         .map(|(k, q)| {
-            let Some(Value::Object(mut a)) = given.remove(k) else {
+            let Some((key, Value::Object(mut a))) = given.remove_entry(k) else {
                 return Err(format!("{model}: no answer for {k}"));
             };
             if q["type"] == "noul" {
@@ -110,7 +121,7 @@ fn answers(
                     .get("noul")
                     .and_then(Value::as_f64)
                     .ok_or_else(|| format!("{model}: {k} has no noul"))?;
-                return Ok((k.clone(), json!({"probability": p.clamp(0.0, 1.0)})));
+                return Ok((key, json!({"probability": p.clamp(0.0, 1.0)})));
             }
             let Some(Value::String(choice)) = a.remove("choice") else {
                 return Err(format!("{model}: {k} has no choice"));
@@ -128,7 +139,7 @@ fn answers(
                 ("confidence".to_owned(), confidence.into()),
                 ("probabilities".to_owned(), Value::Object(probabilities)),
             ]);
-            Ok((k.clone(), Value::Object(answer)))
+            Ok((key, Value::Object(answer)))
         })
         .collect()
 }
@@ -137,11 +148,14 @@ fn answers(
 mod tests {
     use super::*;
 
+    fn object(v: Value) -> Map<String, Value> {
+        serde_json::from_value(v).unwrap()
+    }
+
     fn questions() -> Map<String, Value> {
-        json!({"on": {"type": "noul", "instructions": "Is it on?"}, "pick": {"type": "choice", "instructions": "Which?", "criteria": {"r1": "a", "none": "b"}}})
-            .as_object()
-            .unwrap()
-            .clone()
+        object(
+            json!({"on": {"type": "noul", "instructions": "Is it on?"}, "pick": {"type": "choice", "instructions": "Which?", "criteria": {"r1": "a", "none": "b"}}}),
+        )
     }
 
     #[test]
@@ -157,21 +171,18 @@ mod tests {
 
     #[test]
     fn a_missing_or_partial_answer_is_an_error() {
-        let only_on = json!({"on": {"noul": 0.2}}).as_object().unwrap().clone();
+        let only_on = object(json!({"on": {"noul": 0.2}}));
         assert_eq!(
             answers("m", only_on, &questions()).unwrap_err(),
             "m: no answer for pick"
         );
         let no_probabilities =
-            json!({"on": {"noul": 0.2}, "pick": {"type": "choice", "choice": "r1"}})
-                .as_object()
-                .unwrap()
-                .clone();
+            object(json!({"on": {"noul": 0.2}, "pick": {"type": "choice", "choice": "r1"}}));
         assert_eq!(
             answers("m", no_probabilities, &questions()).unwrap_err(),
             "m: pick has no probabilities"
         );
-        let no_noul = json!({"on": {"type": "noul"}}).as_object().unwrap().clone();
+        let no_noul = object(json!({"on": {"type": "noul"}}));
         assert_eq!(
             answers("m", no_noul, &questions()).unwrap_err(),
             "m: on has no noul"

@@ -92,7 +92,7 @@ mod tests {
     }
 
     fn questions(v: Value) -> Map<String, Value> {
-        v.as_object().unwrap().clone()
+        serde_json::from_value(v).unwrap()
     }
 
     #[tokio::test]
@@ -219,7 +219,7 @@ mod tests {
         let seen = seen.lock().unwrap();
         assert_eq!(seen[0].path, "/v1/chat/completions");
         assert_eq!(seen[0].header("authorization"), None);
-        let content = seen[0].json()["messages"][0]["content"].clone();
+        let content = seen[0].json()["messages"][0]["content"].take();
         assert!(
             content[0]["text"].as_str().unwrap().contains("\"on\""),
             "{content}"
