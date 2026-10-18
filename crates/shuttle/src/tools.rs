@@ -5,9 +5,9 @@ use serde_json::{Value, json};
 
 use crate::{NAME, VERSION, proxy};
 
-pub const DESK_VERBS: [&str; 15] = [
-    "windows", "snapshot", "find", "read", "press", "act", "at", "key", "type", "click", "focus",
-    "close", "launch", "shot", "screen",
+pub const DESK_VERBS: [&str; 16] = [
+    "windows", "wait", "snapshot", "find", "read", "press", "act", "at", "key", "type", "click",
+    "focus", "close", "launch", "shot", "screen",
 ];
 
 /// The result of `tools/list`.
@@ -44,7 +44,7 @@ pub fn list() -> Value {
         },
         {
             "name": "desk",
-            "description": "One desk call on this desktop: list windows, snapshot or search a window's accessibility tree, read, press or act on an element, send keys, type, click, focus, close or launch, or crop the screen.",
+            "description": "One desk call on this desktop: list windows or wait for them to change, snapshot or search a window's accessibility tree, read, press or act on an element, send keys, type, click, focus, close or launch, or crop the screen.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -180,5 +180,23 @@ mod tests {
         }
         assert!(routed.len() > DESK_VERBS.len(), "{routed:?}");
         assert!(!routed.iter().any(|t| t.contains("safety")), "{routed:?}");
+    }
+
+    #[test]
+    fn the_desk_tool_takes_every_verb_the_desk_answers() {
+        let answered: Vec<&str> = include_str!("../../desk/src/desk.rs")
+            .lines()
+            .filter(|l| l.contains("=> self."))
+            .filter_map(|l| l.trim().strip_prefix("\"desk_")?.split_once('"'))
+            .map(|(verb, _)| verb)
+            .collect();
+        assert!(answered.contains(&"windows"), "{answered:?}");
+        for verb in answered {
+            assert!(DESK_VERBS.contains(&verb), "{verb}");
+            assert!(
+                matches!(route("desk", json!({"verb": verb})), Some(Ok(_))),
+                "{verb}"
+            );
+        }
     }
 }
