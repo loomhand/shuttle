@@ -72,6 +72,12 @@ impl Config {
                 .map_or(0, |at| text[..at.start].matches('\n').count() + 1);
             format!("{} line {line}: {}", path.display(), e.message())
         })?;
+        if config.decide_build.as_deref() == Some("") {
+            return Err(format!(
+                "{}: decide_build is empty; remove it to take any build",
+                path.display()
+            ));
+        }
         if config.api_key.is_some() {
             owner_only(path)?;
         }
