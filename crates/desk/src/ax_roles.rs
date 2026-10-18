@@ -1,5 +1,7 @@
 //! macOS AX roles as ARIA roles after W3C Core-AAM, and AX attributes as desk state names.
 
+use crate::model::{self, States};
+
 /// The AX facts that decide an element's role.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Kind<'a> {
@@ -79,42 +81,21 @@ pub fn role(k: Kind) -> Option<&'static str> {
 
 /// The desk states of an element of `role` with `f`.
 pub fn states(role: &str, f: Facts) -> Vec<&'static str> {
-    let mut out = Vec::new();
     let toggle = matches!(role, "checkbox" | "switch" | "radio" | "menuitemcheckbox");
-    let pressable = role == "button" && f.value.is_some();
-    match f.value {
-        Some(1) if toggle => out.push("checked"),
-        Some(1) if pressable => out.push("pressed"),
-        _ => {}
-    }
-    if f.editable {
-        out.push("editable");
-    }
-    if f.expanded == Some(true) {
-        out.push("expanded");
-    }
-    if f.focused {
-        out.push("focused");
-    }
-    if f.modal {
-        out.push("modal");
-    }
-    if f.selected {
-        out.push("selected");
-    }
-    if f.shown {
-        out.push("showing");
-    }
-    if toggle {
-        out.push("checkable");
-    }
-    if !f.enabled {
-        out.push("disabled");
-    }
-    if toggle && f.value == Some(2) {
-        out.push("mixed");
-    }
-    out
+    model::states(States {
+        checked: toggle && f.value == Some(1),
+        pressed: role == "button" && f.value == Some(1),
+        mixed: toggle && f.value == Some(2),
+        checkable: toggle,
+        editable: f.editable,
+        expanded: f.expanded == Some(true),
+        focused: f.focused,
+        modal: f.modal,
+        selected: f.selected,
+        shown: f.shown,
+        disabled: !f.enabled,
+        ..States::default()
+    })
 }
 
 #[cfg(test)]

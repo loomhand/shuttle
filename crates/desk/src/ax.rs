@@ -16,8 +16,8 @@ use core_foundation::string::{CFString, CFStringRef};
 use crate::ax_roles::{self, Facts, Kind};
 use crate::keys::ax_combo;
 use crate::model::{
-    Access, Act, Extras, Frame, MAX_DEPTH, MAX_IDS, MAX_NODES, Node, Tree, VALUE_CHARS, is_active,
-    lookup, place,
+    Access, Act, Extras, Frame, MAX_DEPTH, MAX_IDS, MAX_NODES, Node, Tree, VALUE_CHARS,
+    format_number, is_active, lookup, place,
 };
 
 const WALK_BUDGET: Duration = Duration::from_secs(4);
@@ -766,12 +766,8 @@ fn text(v: &CFType, chars: usize) -> String {
     if let Some(s) = v.downcast::<CFString>() {
         return s.to_string().chars().take(chars).collect();
     }
-    match v.downcast::<CFNumber>() {
-        Some(n) => match (n.to_i64(), n.to_f64()) {
-            (Some(i), Some(f)) if f.fract() == 0.0 => i.to_string(),
-            (_, Some(f)) => f.to_string(),
-            _ => String::new(),
-        },
-        None => String::new(),
-    }
+    v.downcast::<CFNumber>()
+        .and_then(|n| n.to_f64())
+        .map(format_number)
+        .unwrap_or_default()
 }

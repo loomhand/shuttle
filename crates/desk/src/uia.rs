@@ -29,8 +29,8 @@ use windows::core::{BOOL, PWSTR};
 
 use crate::keys::{Os, uia_combo};
 use crate::model::{
-    Access, Act, Extras, Frame, MAX_DEPTH, MAX_IDS, MAX_NODES, Node, Tree, VALUE_CHARS, is_active,
-    lookup, place,
+    Access, Act, Extras, Frame, MAX_DEPTH, MAX_IDS, MAX_NODES, Node, Tree, VALUE_CHARS,
+    format_number, is_active, lookup, place,
 };
 use crate::uia_roles::{self, Facts, Kind};
 
@@ -829,14 +829,6 @@ fn runtime_id(el: &IUIAutomationElement) -> Result<String, String> {
         }
         let _ = SafeArrayDestroy(ids);
         Ok(id)
-    }
-}
-
-fn format_number(v: f64) -> String {
-    if v.fract() == 0.0 && v.abs() < 1e15 {
-        format!("{v:.0}")
-    } else {
-        v.to_string()
     }
 }
 
