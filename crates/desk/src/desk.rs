@@ -518,9 +518,16 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     self.driver.call("scroll", req).await?;
                     return Ok(OK.to_owned());
                 }
-                let scale = self.scale().await?;
                 let [bx, by, bw, bh] = bounds(&target);
-                ((bx + bw / 2.0) * scale, (by + bh / 2.0) * scale)
+                let (x, y) = (bx + bw / 2.0, by + bh / 2.0);
+                let under = self.window_at(x, y).await?;
+                if under.is_none_or(|u| {
+                    (Some(u.pid), Some(u.id))
+                        != (target["pid"].as_i64(), target["window_id"].as_i64())
+                }) {
+                    return Err("another window covers the front window's center".to_owned());
+                }
+                (x, y)
             }
             _ => return Err("scroll needs both x and y, or neither".to_owned()),
         };
@@ -663,6 +670,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn scale(&self) -> Result<f64, String> {
+        if self.os == Os::Windows {
+            return Ok(1.0);
+        }
         let v = self.driver.call("get_screen_size", json!({})).await?;
         Ok(v["structuredContent"]["scale_factor"]
             .as_f64()
@@ -2103,9 +2113,37 @@ pub(crate) mod tests {
             calls.lock().unwrap().last().cloned().unwrap(),
             (
                 "scroll".to_owned(),
-                json!({"direction": "down", "amount": 3, "x": 400.0, "y": 900.0, "scope": "desktop"})
+                json!({"direction": "down", "amount": 3, "x": 200.0, "y": 450.0, "scope": "desktop"})
             )
         );
+    }
+
+    struct Covered(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for Covered {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "bounds": {"x": 0.0, "y": 0.0, "width": 400.0, "height": 300.0}},
+                    {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "title": "Inbox", "bounds": {"x": 150.0, "y": 100.0, "width": 100.0, "height": 100.0}}
+                ]}}),
+                _ => json!({}),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pointless_windows_scroll_refuses_a_front_window_another_window_covers() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Covered(calls.clone()), Os::Windows)
+            .allow(&["notepad".into(), "mail".into()]);
+        let err = desk
+            .run("desk_scroll", json!({"direction": "down"}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("covers the front window's center"), "{err}");
+        assert!(!calls.lock().unwrap().iter().any(|(t, _)| t == "scroll"));
     }
 
     #[tokio::test]
@@ -2137,7 +2175,7 @@ pub(crate) mod tests {
             last(),
             (
                 "scroll".to_owned(),
-                json!({"direction": "up", "amount": 5, "x": 400.0, "y": 900.0, "scope": "desktop"})
+                json!({"direction": "up", "amount": 5, "x": 200.0, "y": 450.0, "scope": "desktop"})
             )
         );
         Desk::new(
@@ -2165,7 +2203,7 @@ pub(crate) mod tests {
             last(),
             (
                 "scroll".to_owned(),
-                json!({"direction": "down", "amount": 3, "x": 400.0, "y": 300.0, "scope": "desktop"})
+                json!({"direction": "down", "amount": 3, "x": 200.0, "y": 150.0, "scope": "desktop"})
             )
         );
         let half = desk
