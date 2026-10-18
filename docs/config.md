@@ -1,6 +1,6 @@
 # Configuration
 
-The daemon reads this file when it starts. After an edit, quit it (`pkill -f 'cocoon-shuttle serve'`; Windows: end `cocoon-shuttle.exe` in Task Manager) and the next tool call starts it with the new settings.
+The daemon reads this file when it starts. After an edit, quit it (`pkill -f 'cocoon-shuttle serve'`; Windows: end `cocoon-shuttle.exe` in Task Manager) and the next tool call other than `status` starts it with the new settings.
 
 shuttle reads one TOML file:
 
@@ -75,4 +75,4 @@ confirm = "off"                       # "coordinate" or "every" asks first
 script_run = true                     # false turns script_run off
 ```
 
-The safety controls live in this file, so while it fails to load every tool call answers with its error, desk calls included; only `cocoon-shuttle stop` and `resume` still work. `kill_hotkey` takes modifiers (`ctrl`, `alt`, `shift`, `cmd`, which is the Windows key on Windows) and one key (a letter, a digit, `f1`–`f12`, `escape`, `space`, `return` or `tab`); on macOS and Windows a value that does not parse fails the file like any other error. [safety.md](safety.md) describes each control. They are guard rails for the `desk`, `screenshot` and `gui_plan` tools that hold only with `script_run = false`: a `script_run` script is your own user's code and can change or bypass them, as [safety.md](safety.md#what-these-controls-are) explains.
+The safety controls live in this file, so while it fails to load every tool call except `status` answers with its error, desk calls included; only `cocoon-shuttle stop` and `resume` still work. `kill_hotkey` takes modifiers (`ctrl`, `alt`, `shift`, `cmd`, which is the Windows key on Windows) and one key (a letter, a digit, `f1`–`f12`, `escape`, `space`, `return` or `tab`); on macOS and Windows a value that does not parse fails the file like any other error. [safety.md](safety.md) describes each control. They are guard rails for the `desk`, `screenshot` and `gui_plan` tools that hold only with `script_run = false`: a `script_run` script is your own user's code and can change or bypass them, as [safety.md](safety.md#what-these-controls-are) explains.

@@ -4,18 +4,18 @@
 
 The first usable release: shuttle drives the desktop on macOS and Windows.
 
-- **Daemon.** `cocoon-shuttle mcp` starts `cocoon-shuttle serve` on first use (on macOS from `Cocoon Shuttle.app`, so the permissions go to the app). The daemon runs the bundled cua-driver on a socket of its own, restarts it when it exits and stops it with itself; desk actions run one at a time.
-- **Tools.** `desk` (windows, wait, snapshot, find, read, press, act, at, key, type, click, focus, close, launch, shot, screen), `screenshot`, `gui_plan` and `script_run` now run on macOS (AX) and Windows (UI Automation). `gui_plan` runs whole GUI plans, saves passing ones as flows and replays them; `script_run` runs a module on the bundled Node with the desk API. On Linux the tools answer that there is no desk backend yet (P3).
+- **Daemon.** `cocoon-shuttle mcp` starts `cocoon-shuttle serve` on the first tool call other than `status`, which the MCP server answers itself (on macOS from `Cocoon Shuttle.app`, so the permissions go to the app). The daemon runs the bundled cua-driver on a socket of its own, restarts it when it exits and stops it with itself; desk actions run one at a time.
+- **Tools.** `desk` (windows, wait, snapshot, find, read, press, act, at, key, type, click, focus, close, launch, shot, screen), `screenshot`, `gui_plan` and `script_run` now run on macOS (AX) and Windows (UI Automation). `gui_plan` runs whole GUI plans, saves passing ones as flows and replays them; `script_run` runs a module on the bundled Node with the desk API. On Linux the `desk` and `screenshot` tools and the desk calls of a plan or script answer that there is no desk backend yet (P3); `script_run` and model calls run.
 - **Models, bring your own key.** One OpenAI-compatible endpoint and key, OpenRouter by default: chat completions for `ask`, `ground` and `decide` over chat, and the decisions endpoint for `decide` and `verify`. The key comes from `config.toml` or an environment variable; scripts run without it in their environment.
 - **Safety controls on macOS and Windows.**
   - `cocoon-shuttle stop` / `resume`, a global kill hotkey (⌃⌥⌘⎋ on macOS, Ctrl+Alt+Shift+Esc on Windows) and the indicator's Stop and Resume. Stop kills the running plan or script and ends the calls in flight; no MCP tool or plan step can resume.
   - An indicator: a menu-bar item on macOS, a tray icon on Windows.
   - Confirm mode: `confirm = "coordinate"` asks before a click at a point, `"every"` before every desk action. While a dialog is open, every other desk call fails.
   - An app allowlist (`[safety] apps`) that checks every desk call by window, element and point, and blacks out other apps in screenshots.
-  - `[tools] script_run = false`; a `config.toml` that fails to load fails every call.
+  - `[tools] script_run = false`; a `config.toml` that fails to load fails every tool call except `status`.
   - These are guard rails for tool use, not a sandbox; they hold only with `script_run = false`. [docs/safety.md](docs/safety.md) lists the limits.
 - **Speed.** Batched macOS window lists, process-scoped window reads, the menu bar only in snapshots that need it, a plan step that reuses the plan's snapshot, a window wait in the daemon (`desk wait`) instead of polling, a 1 ms cursor glide, and a grounded click that takes at most 3 screen captures.
-- **Bundled:** cua-driver v0.36.0-loomhand.3 and Node.js 24.22.0, both checked by sha256 at build time.
+- **Bundled:** cua-driver v0.36.0-loomhand.4 and Node.js 24.22.0, both checked by sha256 at build time.
 - **Docs:** a first-time setup in [docs/install.md](docs/install.md) (install, macOS permissions, your key, the safety settings to start with), and the status of every platform.
 
 ## 0.0.1 - 2026-10-17
