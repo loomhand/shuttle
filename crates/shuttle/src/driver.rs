@@ -66,9 +66,8 @@ struct Running {
 #[cfg(unix)]
 impl Drop for Running {
     fn drop(&mut self) {
-        if let Some(pid) = self.group.and_then(|g| libc::pid_t::try_from(g).ok()) {
-            // SAFETY: kill takes no pointers; the negative pid names the process group the driver leads.
-            unsafe { libc::kill(-pid, libc::SIGKILL) };
+        if let Some(g) = self.group {
+            crate::runner::kill_group(g);
         }
     }
 }

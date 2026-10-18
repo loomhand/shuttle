@@ -210,6 +210,14 @@ struct ScriptArgs {
     timeout_s: Option<u64>,
 }
 
+#[cfg(unix)]
+pub(crate) fn kill_group(pid: u32) {
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        // SAFETY: kill takes no pointers; the negative pid names the process group the child leads.
+        unsafe { libc::kill(-pid, libc::SIGKILL) };
+    }
+}
+
 fn scratch() -> Result<tempfile::TempDir, String> {
     #[cfg(unix)]
     let made = tempfile::Builder::new()
@@ -243,14 +251,6 @@ async fn capture(mut r: impl AsyncRead + Unpin, into: Captured) {
 fn text(captured: &Captured) -> String {
     let bytes = std::mem::take(&mut *captured.lock().unwrap_or_else(PoisonError::into_inner));
     String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
-}
-
-#[cfg(unix)]
-fn kill_group(pid: u32) {
-    if let Ok(pid) = libc::pid_t::try_from(pid) {
-        // SAFETY: kill takes no pointers; the negative pid names the process group the child leads.
-        unsafe { libc::kill(-pid, libc::SIGKILL) };
-    }
 }
 
 #[cfg(test)]
