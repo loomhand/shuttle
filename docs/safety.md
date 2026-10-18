@@ -1,6 +1,6 @@
 # Safety
 
-shuttle acts on your own desktop, with your accounts signed in. These controls land in P1 (macOS), P2 (Windows) and P3 (Linux). The released v0.0.1 runs no desktop action; `main` (unreleased) already acts on the desktop as a developer preview, without any of them.
+shuttle acts on your own desktop, with your accounts signed in. The controls below are built on macOS (P1) and Windows (P2); Linux gets them in P3, together with its desk backend.
 
 ## What these controls are
 

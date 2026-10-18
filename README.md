@@ -8,15 +8,15 @@ shuttle is part of [loomhand](https://github.com/loomhand). It takes its desk co
 
 ## Status
 
-**v0.0.1, the latest release, is a skeleton**: it installs, answers MCP on stdio and lists its five tools; only `status` runs. **`main`, not yet released,** adds the daemon, desk control on macOS and Windows (`desk`, `screenshot`, `gui_plan`, `script_run`, a developer preview that runs the bundled cua-driver) and bring-your-own-key models; the safety controls are not built yet. The tools that act on the desktop land per platform:
+**v0.1.0 is the first usable release.** On macOS and Windows the daemon drives the desktop through the bundled cua-driver (`desk`, `screenshot`, `gui_plan`, `script_run`), calls models with your own key, and has its safety controls: kill switch and hotkey, indicator, confirm mode and app allowlist. On Linux shuttle installs and answers MCP; its desk backend comes in P3.
 
 | Phase | What | State |
 |---|---|---|
 | P0 | Workspace, CI, release archives, installers, MCP skeleton | done in v0.0.1 |
-| P1 | macOS: daemon in `Cocoon Shuttle.app`, desk tools, `gui_plan`, `script_run`, BYOK models, safety controls | on `main` except the safety controls; unreleased |
-| P2 | Windows: the same over UI Automation | desk control on `main` as a developer preview; the safety controls and acceptance planned |
+| P1 | macOS: daemon in `Cocoon Shuttle.app`, desk tools, `gui_plan`, `script_run`, BYOK models, safety controls | done in v0.1.0 |
+| P2 | Windows: the same over UI Automation, with its safety controls | done in v0.1.0 |
 | P3 | Linux: the same over AT-SPI on X11 | planned |
-| P4 | cocoonbox depends on shuttle's crates and runtime | planned |
+| P4 | cocoonbox depends on shuttle's crates and runtime | next |
 
 [docs/platforms.md](docs/platforms.md) has the detail per OS.
 
@@ -34,7 +34,7 @@ Windows (PowerShell):
 irm https://github.com/loomhand/shuttle/releases/latest/download/install.ps1 | iex
 ```
 
-The installers check the archive against the release's `SHA256SUMS`. The binaries are not code-signed; [docs/install.md](docs/install.md) covers macOS Gatekeeper and permissions, Windows SmartScreen, manual installs, provenance checks and uninstalling.
+The installers check the archive against the release's `SHA256SUMS`. The binaries are not code-signed; [docs/install.md](docs/install.md) walks through a first-time setup (permissions, your key, the safety settings to start with) and covers macOS Gatekeeper, Windows SmartScreen, manual installs, provenance checks and uninstalling.
 
 ## Use it from an agent
 
@@ -68,12 +68,12 @@ Cursor (`~/.cursor/mcp.json`):
 
 ## Safety
 
-shuttle drives your real machine. From P1 it has a global kill-switch hotkey (macOS ⌃⌥⌘⎋, Windows and Linux Ctrl+Alt+Shift+Esc), a visible indicator while it acts, an optional per-step confirm mode and an app allowlist. `script_run` executes code with your user's rights; the allowlist bounds desk calls, not that code, and `script_run` can be turned off. [docs/safety.md](docs/safety.md) also describes how input works on macOS, where there is only one pointer.
+shuttle drives your real machine. On macOS and Windows it has `cocoon-shuttle stop`, a global kill hotkey (macOS ⌃⌥⌘⎋, Windows Ctrl+Alt+Shift+Esc), a menu-bar item or tray icon that shows it acting or stopped, an optional confirm mode that asks before a click at a point or before every action, and an app allowlist that also blacks out other apps in screenshots. These are guard rails for tool use, not a sandbox: `script_run` runs code with your user's rights, so they hold only with `script_run = false`. Linux gets them in P3. [docs/safety.md](docs/safety.md) has the detail and the limits, and how input works on macOS, where there is only one pointer.
 
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md): processes, components and the dependency plan with cocoonbox
-- [docs/config.md](docs/config.md): the model configuration (bring your own key)
+- [docs/config.md](docs/config.md): the model configuration (bring your own key) and the safety settings
 - [docs/safety.md](docs/safety.md): kill switch, indicator, confirm mode, allowlist, input per OS
 - [docs/platforms.md](docs/platforms.md): what exists per OS and the permissions each needs
 - [docs/install.md](docs/install.md): installers, verification, manual install, uninstall
