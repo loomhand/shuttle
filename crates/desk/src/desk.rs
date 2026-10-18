@@ -37,6 +37,9 @@ pub const ACTIONS: [&str; 8] = [
 const CALL_LIMIT: Duration = Duration::from_secs(3);
 const TREE_LIMIT: Duration = Duration::from_secs(10);
 const READ_CHARS: usize = 64 << 10;
+const OVERLAY_TITLE: &str = "Cua.AgentCursorOverlay";
+const NO_WINDOW_UNDER: &str =
+    "no window under the point, and the app allowlist admits only windows";
 
 type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
 
@@ -49,7 +52,7 @@ pub struct Desk<B, D> {
     turn_wait: Duration,
     scale: OnceLock<f64>,
     read: std::sync::Mutex<Option<Read>>,
-    apps: Vec<String>,
+    allow: Allow,
 }
 
 impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
@@ -63,13 +66,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             turn_wait: TURN_WAIT,
             scale: OnceLock::new(),
             read: std::sync::Mutex::new(None),
-            apps: Vec::new(),
+            allow: Allow::default(),
         }
     }
 
     /// Limits the desk calls to windows of `apps`, matched by app name or executable, case-insensitive; empty allows every app.
     pub fn allow(mut self, apps: Vec<String>) -> Self {
-        self.apps = apps.iter().map(|a| app_key(a)).collect();
+        self.allow = Allow(apps.iter().map(|a| app_key(a)).collect());
         self
     }
 
@@ -83,7 +86,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         } else {
             None
         };
-        if !self.apps.is_empty() {
+        if !self.allow.is_open() {
             self.admit(tool, &args).await?;
         }
         let text = match tool {
@@ -116,71 +119,30 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn windows(&self) -> Result<String, String> {
         let mut frames = self.access.run(CALL_LIMIT, (), |a| a.frames()).await?;
-        frames.retain(|f| self.admits(f.app.as_deref()));
+        frames.retain(|f| self.allow.admits(f.app.as_deref()));
         frames.sort_by_key(|f| !f.active);
         serde_json::to_string(&frames).map_err(|e| format!("encode windows: {e}"))
     }
 
     async fn admit(&self, tool: &str, args: &Value) -> Result<(), String> {
-        let window = args["window"].as_str().map(str::to_owned);
-        let pid = args["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
-        let id = args["id"].as_str().map(str::to_owned);
         let target = match tool {
-            "desk_windows" | "desk_shot" | "desk_screen" => return Ok(()),
-            "desk_launch" => {
-                let app = args["app"].as_str().unwrap_or_default();
-                return if self.admits(Some(app)) {
-                    Ok(())
-                } else {
-                    Err(refused(app))
-                };
-            }
-            "desk_click" => {
-                let (x, y) = (args["x"].as_f64(), args["y"].as_f64());
-                let (Some(x), Some(y)) = (x, y) else {
-                    return Err("click needs x and y".to_owned());
-                };
-                let under = self.window_at(x, y).await?;
-                let under = under.ok_or(
-                    "no window under the point, and the app allowlist admits only windows",
-                )?;
-                Target::Pid(u32::try_from(under.pid).ok())
-            }
+            "desk_launch" => return self.allow.check(args["app"].as_str()),
             "desk_read" | "desk_press" | "desk_act" => {
-                let id = id.ok_or("no element id")?;
-                Target::Pid(
-                    self.access
-                        .run(CALL_LIMIT, (), move |b| b.pid_of(&id))
-                        .await?,
-                )
+                Target::Element(args["id"].as_str().ok_or("no element id")?.to_owned())
             }
-            "desk_key" | "desk_type" => Target::Window(None, None),
-            _ => Target::Window(window, pid),
+            "desk_key" | "desk_type" => Target::Focused,
+            _ => return Ok(()),
         };
-        let app = self
-            .access
-            .run(CALL_LIMIT, (), move |b| {
-                let frames = b.frames()?;
-                Ok(match target {
-                    Target::Pid(pid) => frames
-                        .into_iter()
-                        .find(|f| pid.is_some() && f.pid == pid)
-                        .and_then(|f| f.app),
-                    Target::Window(window, pid) => {
-                        window::pick(frames, window.as_deref(), pid)?.app
-                    }
-                })
+        let allow = self.allow.clone();
+        self.access
+            .run(CALL_LIMIT, (), move |b| match target {
+                Target::Element(id) => {
+                    let pid = b.pid_of(&id)?;
+                    allow.check_pid(&b.frames()?, pid)
+                }
+                Target::Focused => allow.pick(b.frames()?, None, None).map(drop),
             })
-            .await?;
-        if self.admits(app.as_deref()) {
-            Ok(())
-        } else {
-            Err(refused(app.as_deref().unwrap_or("an unknown app")))
-        }
-    }
-
-    fn admits(&self, app: Option<&str>) -> bool {
-        self.apps.is_empty() || app.is_some_and(|a| self.apps.contains(&app_key(a)))
+            .await
     }
 
     async fn snapshot(&self, a: SnapArgs) -> Result<String, String> {
@@ -192,10 +154,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             menus: a.menus,
         };
         let (window, pid) = (a.window, a.pid);
+        let allow = self.allow.clone();
         let (tree, found) = self
             .access
             .run(TREE_LIMIT, (), move |b| {
-                let frame = window::pick(b.frames()?, window.as_deref(), pid)?;
+                let frame = allow.pick(b.frames()?, window.as_deref(), pid)?;
                 let found = started.elapsed().as_micros();
                 Ok((b.tree(&frame, extras)?, found))
             })
@@ -232,10 +195,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             menus: true,
         };
         let (window, pid) = (a.window, a.pid);
+        let allow = self.allow.clone();
         let tree = self
             .access
             .run(TREE_LIMIT, (), move |b| {
-                let frame = window::pick(b.frames()?, window.as_deref(), pid)?;
+                let frame = allow.pick(b.frames()?, window.as_deref(), pid)?;
                 b.tree(&frame, extras)
             })
             .await?;
@@ -308,12 +272,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn at(&self, a: AtArgs) -> Result<String, String> {
+        let allow = self.allow.clone();
         self.access
             .run(CALL_LIMIT, (), move |b| {
-                let frame = window::pick(b.frames()?, a.window.as_deref(), a.pid)?;
+                let frames = b.frames()?;
+                let frame = allow.pick(frames.clone(), a.window.as_deref(), a.pid)?;
                 let Some(hit) = b.at(&frame.id, a.x, a.y)? else {
                     return Ok(json!({"found": null, "window": frame}).to_string());
                 };
+                if !allow.is_open() {
+                    let pid = b.pid_of(&hit)?;
+                    allow.check_pid(&frames, pid)?;
+                }
                 let node = b.node(&hit, Extras::default(), 0)?;
                 let path: Vec<Value> = b
                     .ancestors(&hit)?
@@ -332,9 +302,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn close(&self, a: WindowArgs, turn: Option<Turn>) -> Result<String, String> {
+        let allow = self.allow.clone();
         self.access
             .run(CALL_LIMIT, turn, move |b| {
-                let frame = window::pick(b.frames()?, Some(&a.window), a.pid)?;
+                let frame = allow.pick(b.frames()?, Some(&a.window), a.pid)?;
                 b.close(&frame)?;
                 Ok(json!({"ok": true, "title": frame.title}).to_string())
             })
@@ -399,24 +370,50 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn click_at(&self, req: Value) -> Result<(), String> {
+        let point = req["x"].as_f64().zip(req["y"].as_f64());
         if self.os == Os::Mac
-            && let (Some(x), Some(y)) = (req["x"].as_f64(), req["y"].as_f64())
+            && let Some((x, y)) = point
         {
             let (px, py) = (x as i32, y as i32);
+            let allow = self.allow.clone();
             let pressed = self
                 .access
-                .run(CALL_LIMIT, (), move |b| match b.menu_at(px, py)? {
-                    Some(item) if b.act(&item, Act::Action)? => Ok(true),
-                    Some(item) => Err(format!("menu item {item} took no action")),
-                    None => Ok(false),
+                .run(CALL_LIMIT, (), move |b| {
+                    let Some(item) = b.menu_at(px, py)? else {
+                        return Ok(false);
+                    };
+                    if !allow.is_open() {
+                        let pid = b.pid_of(&item)?;
+                        allow.check_pid(&b.frames()?, pid)?;
+                    }
+                    if b.act(&item, Act::Action)? {
+                        Ok(true)
+                    } else {
+                        Err(format!("menu item {item} took no action"))
+                    }
                 })
                 .await?;
             if pressed {
                 return Ok(());
             }
-            if let Some(w) = self.window_at(x, y).await? {
-                return self.click_window(req, &w).await;
+        }
+        let under = match point {
+            Some((x, y)) if self.os == Os::Mac || !self.allow.is_open() => {
+                self.window_at(x, y).await?
             }
+            _ => None,
+        };
+        if !self.allow.is_open() {
+            let pid = u32::try_from(under.as_ref().ok_or(NO_WINDOW_UNDER)?.pid).ok();
+            let allow = self.allow.clone();
+            self.access
+                .run(CALL_LIMIT, (), move |b| allow.check_pid(&b.frames()?, pid))
+                .await?;
+        }
+        if self.os == Os::Mac
+            && let Some(w) = under
+        {
+            return self.click_window(req, &w).await;
         }
         self.driver.call("click", desktop(req)).await?;
         Ok(())
@@ -465,30 +462,23 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(())
     }
 
+    async fn scale(&self) -> Result<f64, String> {
+        if let Some(s) = self.scale.get() {
+            return Ok(*s);
+        }
+        let v = self.driver.call("get_screen_size", json!({})).await?;
+        let s = v["structuredContent"]["scale_factor"]
+            .as_f64()
+            .unwrap_or(1.0);
+        Ok(*self.scale.get_or_init(|| s))
+    }
+
     async fn window_at(&self, x: f64, y: f64) -> Result<Option<Under>, String> {
-        let scale = match self.scale.get() {
-            Some(s) => *s,
-            None => {
-                let v = self.driver.call("get_screen_size", json!({})).await?;
-                let s = v["structuredContent"]["scale_factor"]
-                    .as_f64()
-                    .unwrap_or(1.0);
-                *self.scale.get_or_init(|| s)
-            }
-        };
-        let listed = self
-            .driver
-            .call("list_windows", json!({"on_screen_only": true}))
-            .await?;
+        let scale = self.scale().await?;
+        let listed = self.on_screen().await?;
         let point = (x / scale, y / scale);
-        let bounds = |w: &Value| {
-            let b = &w["bounds"];
-            ["x", "y", "width", "height"].map(|k| b[k].as_f64().unwrap_or(0.0))
-        };
-        let top = listed["structuredContent"]["windows"]
-            .as_array()
-            .into_iter()
-            .flatten()
+        let top = listed
+            .iter()
             .filter(|w| w["layer"] == 0)
             .filter(|w| {
                 let [bx, by, bw, bh] = bounds(w);
@@ -503,6 +493,22 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 point,
             })
         }))
+    }
+
+    async fn on_screen(&self) -> Result<Vec<Value>, String> {
+        let mut listed = self
+            .driver
+            .call("list_windows", json!({"on_screen_only": true}))
+            .await?;
+        let Value::Array(mut windows) = listed["structuredContent"]["windows"].take() else {
+            return Ok(Vec::new());
+        };
+        windows.retain(|w| {
+            !w["title"]
+                .as_str()
+                .is_some_and(|t| t.starts_with(OVERLAY_TITLE))
+        });
+        Ok(windows)
     }
 
     async fn pixels(&self, w: &Under) -> Result<Option<(f64, f64)>, String> {
@@ -546,7 +552,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn focus(&self, a: WindowArgs) -> Result<String, String> {
         let listed = self.driver.call("list_windows", json!({})).await?;
-        let windows: Vec<Frame> = listed["structuredContent"]["windows"]
+        let mut windows: Vec<Frame> = listed["structuredContent"]["windows"]
             .as_array()
             .into_iter()
             .flatten()
@@ -558,7 +564,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 ..Frame::default()
             })
             .collect();
-        let w = window::pick(windows, Some(&a.window), a.pid)?;
+        if !self.allow.is_open() {
+            let frames = self.access.run(CALL_LIMIT, (), |b| b.frames()).await?;
+            for w in &mut windows {
+                w.app = app_of(&frames, w.pid).map(str::to_owned);
+            }
+        }
+        let w = self.allow.pick(windows, Some(&a.window), a.pid)?;
         let window_id: Value = serde_json::from_str(&w.id).unwrap_or(Value::Null);
         self.driver
             .call(
@@ -600,9 +612,52 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 }
 
+#[derive(Clone, Default)]
+struct Allow(Arc<[String]>);
+
+impl Allow {
+    fn is_open(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn admits(&self, app: Option<&str>) -> bool {
+        self.is_open() || app.is_some_and(|a| self.0.contains(&app_key(a)))
+    }
+
+    fn check(&self, app: Option<&str>) -> Result<(), String> {
+        if self.admits(app) {
+            Ok(())
+        } else {
+            Err(refused(app.unwrap_or("an unknown app")))
+        }
+    }
+
+    fn check_pid(&self, frames: &[Frame], pid: Option<u32>) -> Result<(), String> {
+        if self.is_open() {
+            return Ok(());
+        }
+        self.check(app_of(frames, pid))
+    }
+
+    fn pick(
+        &self,
+        mut frames: Vec<Frame>,
+        want: Option<&str>,
+        pid: Option<u32>,
+    ) -> Result<Frame, String> {
+        if want.is_none() || self.is_open() {
+            let frame = window::pick(frames, want, pid)?;
+            self.check(frame.app.as_deref())?;
+            return Ok(frame);
+        }
+        frames.retain(|f| self.admits(f.app.as_deref()));
+        window::pick(frames, want, pid)
+    }
+}
+
 enum Target {
-    Pid(Option<u32>),
-    Window(Option<String>, Option<u32>),
+    Element(String),
+    Focused,
 }
 
 struct Under {
@@ -631,6 +686,18 @@ enum Press {
 fn app_key(app: &str) -> String {
     let app = app.to_lowercase();
     app.strip_suffix(".exe").map(str::to_owned).unwrap_or(app)
+}
+
+fn app_of(frames: &[Frame], pid: Option<u32>) -> Option<&str> {
+    frames
+        .iter()
+        .find(|f| pid.is_some() && f.pid == pid)
+        .and_then(|f| f.app.as_deref())
+}
+
+fn bounds(w: &Value) -> [f64; 4] {
+    let b = &w["bounds"];
+    ["x", "y", "width", "height"].map(|k| b[k].as_f64().unwrap_or(0.0))
 }
 
 fn refused(app: &str) -> String {
@@ -1406,15 +1473,28 @@ mod tests {
         }
 
         fn node(&mut self, id: &str, _: Extras, _: usize) -> Result<Node, String> {
-            Err(format!("no node {id}"))
+            match id {
+                "4/5" => Ok(Node {
+                    id: id.into(),
+                    role: "button",
+                    states: vec!["showing"],
+                    bounds: Some([680, 190, 40, 20]),
+                    ..Node::default()
+                }),
+                _ => Err(format!("no node {id}")),
+            }
         }
 
         fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
             Ok(Vec::new())
         }
 
-        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
-            Ok(None)
+        fn at(&mut self, _: &str, x: i32, y: i32) -> Result<Option<String>, String> {
+            Ok(((x, y) == (5, 5)).then(|| "8/3".into()))
+        }
+
+        fn menu_at(&mut self, x: i32, y: i32) -> Result<Option<String>, String> {
+            Ok(((x, y) == (100, 800)).then(|| "8/9".into()))
         }
 
         fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
@@ -1448,9 +1528,11 @@ mod tests {
                 .await
                 .is_ok()
         );
-        assert!(refused(
-            desk.run("desk_snapshot", json!({"window": "Inbox"})).await
-        ));
+        assert!(
+            desk.run("desk_snapshot", json!({"window": "Inbox"}))
+                .await
+                .is_err_and(|e| e.ends_with("windows: [\"Untitled - Notepad\"]"))
+        );
         assert!(refused(desk.run("desk_press", json!({"id": "8/5"})).await));
         assert!(!refused(desk.run("desk_press", json!({"id": "4/5"})).await));
         assert!(refused(
@@ -1471,6 +1553,59 @@ mod tests {
             mail.run("desk_key", json!({"keys": "ctrl+s"})).await
         ));
         assert!(refused(mail.run("desk_type", json!({"text": "x"})).await));
+    }
+
+    struct Desktop(Arc<Mutex<Vec<String>>>);
+
+    impl Input for Desktop {
+        async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push(tool.to_owned());
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 99, "window_id": 3, "layer": 0, "z_index": 3, "title": "Cua.AgentCursorOverlay.default", "bounds": {"x": 0.0, "y": 0.0, "width": 1000.0, "height": 1000.0}},
+                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "bounds": {"x": 0.0, "y": 0.0, "width": 1000.0, "height": 1000.0}},
+                    {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "bounds": {"x": 500.0, "y": 0.0, "width": 500.0, "height": 500.0}}
+                ]}}),
+                _ => json!({}),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn an_app_allowlist_gates_every_point_and_element_a_call_reaches() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk =
+            Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Mac).allow(vec!["notepad".into()]);
+        let refused = |r: Result<Output, String>| {
+            r.err()
+                .is_some_and(|e| e.contains("not in the app allowlist"))
+        };
+        assert!(refused(desk.run("desk_at", json!({"x": 5, "y": 5})).await));
+        assert!(refused(
+            desk.run("desk_act", json!({"id": "4/5", "action": "click"}))
+                .await
+        ));
+        assert!(refused(
+            desk.run("desk_click", json!({"x": 100.0, "y": 800.0}))
+                .await
+        ));
+        assert!(!calls.lock().unwrap().iter().any(|t| t == "click"));
+        let windows = Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Windows)
+            .allow(vec!["notepad".into()]);
+        windows
+            .run("desk_click", json!({"x": 100.0, "y": 800.0}))
+            .await
+            .unwrap();
+        assert!(calls.lock().unwrap().iter().any(|t| t == "click"));
+        let missed = desk
+            .run("desk_snapshot", json!({"window": "Nope"}))
+            .await
+            .unwrap_err();
+        assert!(
+            missed.contains("Untitled - Notepad") && !missed.contains("Inbox"),
+            "{missed}"
+        );
     }
 
     #[tokio::test]
