@@ -221,7 +221,7 @@ impl Android {
     /// Starts component `app`, or the launcher activity of package `app`; its component.
     pub(crate) async fn launch(&self, app: &str) -> Result<String, String> {
         if is_component(app) {
-            self.adb(&["shell", "am", "start", "-W", "-n", app]).await?;
+            self.start(app).await?;
             return Ok(app.to_owned());
         }
         if !is_package(app) {
@@ -244,9 +244,22 @@ impl Android {
         let component = launcher(&String::from_utf8_lossy(&out), app)
             .filter(|c| is_component(c))
             .ok_or_else(|| format!("launch {app}: no launcher activity"))?;
-        self.adb(&["shell", "am", "start", "-W", "-n", &component])
-            .await?;
+        self.start(&component).await?;
         Ok(component)
+    }
+
+    /// Starts activity `component`, quoted so the device shell keeps a nested class's `$`.
+    async fn start(&self, component: &str) -> Result<(), String> {
+        self.adb(&[
+            "shell",
+            "am",
+            "start",
+            "-W",
+            "-n",
+            &format!("'{component}'"),
+        ])
+        .await
+        .map(drop)
     }
 
     pub(crate) async fn tap(&self, (x, y): (i32, i32)) -> Result<(), String> {
@@ -583,7 +596,9 @@ fn is_component(s: &str) -> bool {
         && !class.is_empty()
         && class.split('.').all(|part| {
             part.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
-                && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
         })
 }
 
@@ -664,6 +679,7 @@ mod tests {
         for ok in [
             "org.fossify.math/.activities.SplashActivity.Green",
             "com.android.settings/com.android.settings.Settings",
+            "com.example/.Main$Launcher",
         ] {
             assert!(is_component(ok), "{ok}");
         }
@@ -671,7 +687,8 @@ mod tests {
             "com.x/",
             "com.x/.",
             "com.x/.Main;reboot",
-            "com.x/.Main$Inner",
+            "com.x/.Main'x",
+            "com.x/.$Main",
             "com.x/.Main other",
             "x/.Main",
             "com.x",
@@ -693,6 +710,33 @@ mod tests {
         assert!(err.contains("not an Android package"), "{err}");
         let err = android.launch("com.x").await.unwrap_err();
         assert!(err.contains("run adb"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_component_reaches_the_device_shell_quoted() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("shuttle-adb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let adb = dir.join("adb");
+        let argv = dir.join("argv");
+        std::fs::write(
+            &adb,
+            format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n", argv.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let android = Android::new(Device {
+            adb,
+            serial: None,
+            ui_jar: "/u.jar".into(),
+            scrcpy_jar: "/s.jar".into(),
+            su: "/su".into(),
+        });
+        android.launch("com.example/.Main$Launcher").await.unwrap();
+        let args = std::fs::read_to_string(&argv).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(args.lines().last(), Some("'com.example/.Main$Launcher'"));
     }
 
     #[test]
