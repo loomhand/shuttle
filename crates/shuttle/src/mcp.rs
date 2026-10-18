@@ -30,10 +30,8 @@ where
         let Some(reply) = answer(&line, endpoint).await else {
             continue;
         };
-        let mut body = serde_json::to_vec(&reply).map_err(|e| format!("encode reply: {e}"))?;
-        body.push(b'\n');
         output
-            .write_all(&body)
+            .write_all(format!("{reply}\n").as_bytes())
             .await
             .map_err(|e| format!("write stdout: {e}"))?;
         output
