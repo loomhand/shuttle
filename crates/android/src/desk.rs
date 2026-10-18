@@ -28,6 +28,7 @@ const SCROLL_TRIES: u32 = 6;
 const SCROLL_MS: &str = "600";
 const SCROLL_SETTLE: Duration = Duration::from_millis(400);
 const MIN_SPAN: i32 = 8;
+const MIN_SWIPE: i32 = 48;
 
 /// One element of a window as the desk and computer_state show it.
 #[derive(Debug)]
@@ -154,6 +155,19 @@ impl Frame {
         open.into_iter()
             .filter(|(a, b)| b - a >= MIN_SPAN)
             .max_by_key(|(a, b)| b - a)
+    }
+
+    fn swipe(&self, [sx, sy, sw, sh]: [i32; 4], target: i32) -> Option<(i32, i32, i32)> {
+        let x = sx + sw / 2;
+        let (top, bottom) = self
+            .span(x, sy, sy + sh)
+            .filter(|(top, bottom)| bottom - top >= MIN_SWIPE)?;
+        let (low, high) = (top + (bottom - top) * 3 / 4, top + (bottom - top) / 4);
+        Some(if target >= top + (bottom - top) / 2 {
+            (x, low, high)
+        } else {
+            (x, high, low)
+        })
     }
 }
 
@@ -741,16 +755,9 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
         let Some([sx, sy, sw, sh]) = node.scroller else {
             break;
         };
-        let cx = sx + sw / 2;
-        let (top, bottom) = frame
-            .span(cx, sy, sy + sh)
+        let (cx, from, to) = frame
+            .swipe([sx, sy, sw, sh], node.bounds[1])
             .ok_or_else(|| format!("element {id} is off the screen, and its list is covered"))?;
-        let (low, high) = (top + (bottom - top) * 3 / 4, top + (bottom - top) / 4);
-        let (from, to) = if node.bounds[1] >= top + (bottom - top) / 2 {
-            (low, high)
-        } else {
-            (high, low)
-        };
         android
             .input(&[
                 "swipe",
@@ -1014,6 +1021,43 @@ mod tests {
             closed[0].span(360, 760, 820),
             Some((760, 820)),
             "a refreshed frame without the keyboard"
+        );
+    }
+
+    #[test]
+    fn a_list_swipe_runs_in_its_open_band_and_needs_room() {
+        let bar = |id, kind, layer, bounds| WindowInfo {
+            id,
+            kind,
+            title: String::new(),
+            package: "com.android.systemui".into(),
+            active: false,
+            focused: false,
+            layer,
+            bounds,
+        };
+        let phone = frames_of(vec![
+            bar(5, 3, 2, [0, 1184, 720, 1280]),
+            window([0, 0, 720, 1280]),
+        ]);
+        assert_eq!(
+            phone[0].swipe([0, 600, 720, 680], 1224),
+            Some((360, 1038, 746))
+        );
+        assert_eq!(
+            phone[0].swipe([0, 600, 720, 680], 610),
+            Some((360, 746, 1038))
+        );
+        let typing = frames_of(vec![
+            bar(9, 2, 3, [0, 0, 720, 1000]),
+            bar(5, 3, 2, [0, 1008, 720, 1280]),
+            window([0, 0, 720, 1280]),
+        ]);
+        assert_eq!(typing[0].span(360, 600, 1280), Some((1000, 1008)));
+        assert_eq!(
+            typing[0].swipe([0, 600, 720, 680], 1224),
+            None,
+            "an 8 px band is no swipe"
         );
     }
 
