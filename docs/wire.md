@@ -40,7 +40,7 @@ Desk calls name `desk_<verb>` tools:
 | `drag` | `x`, `y`, `to_x`, `to_y` | presses at (`x`, `y`), moves and releases at (`to_x`, `to_y`), in desk coordinates; the allowlist gates both ends |
 | `still` | `timeout_ms?` (default 600, at most 5000), `hold_ms?` (default 40) | `still`, `changed`, `ms` and `volatile`: answers once no 8-pixel block of a 320-pixel capture has changed in a way that counts for `hold_ms`, or after `timeout_ms` with `still: false`; `changed` says whether one did during the wait. A change counts when a pixel moves by more than 24 in a channel and the block is not volatile: a block that changed through three or more contents during the wait (a clock, a spinner, a video) stops counting, and one that went back to a content it showed (a caret) counts only with new contents; `volatile` counts those blocks. `timeout_ms` is a polling deadline, checked between captures, so a slow capture can carry the answer past it. Each check costs one driver capture on macOS and Windows; it returns no pixels and watches the whole screen, whatever the allowlist |
 | `focus`, `close` | `window`, `pid?` | focuses or closes a window |
-| `launch` | `app` | starts an app |
+| `launch` | `app` | starts an app; on Linux the result also carries `scoped`, false when the app stays in the daemon's cgroup |
 | `shot` | `x?`, `y?`, `w?`, `h?`, `path?` (Linux) | `width` and `height`, with the PNG of the screen or a rectangle in `image_b64`; on Linux, read over MIT-SHM unless the driver's cursor overlay shows or MIT-SHM is out of reach, the text also carries `png_b64`, or with `path` the PNG goes to that file and the text carries `path` |
 | `screen` | | `width` and `height` in pixels |
 
