@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 - 2026-10-18
+
+- **Fixes.** The Windows binary links the C runtime statically, so it starts on a Windows without the Visual C++ Redistributable (v0.1.0 exited with STATUS_DLL_NOT_FOUND, 0xC0000135); `install.ps1` fails when the installed program does not start.
+
 ## 0.1.0 - 2026-10-18
 
 The first usable release: shuttle drives the desktop on macOS and Windows.
