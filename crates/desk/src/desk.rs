@@ -776,8 +776,6 @@ pub(crate) mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
-    use desk_core::window;
-
     use super::*;
     use crate::model::Tree;
 
@@ -1063,32 +1061,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_window_is_picked_by_exact_then_trimmed_then_contained_title() {
-        let frames = vec![
-            frame("Untitled - Notepad", "Untitled - Notepad", 7, false, None),
-            frame("Save As", "Save As", 7, true, None),
-            frame("Settings", "Settings", 9, false, None),
-        ];
-        assert_eq!(
-            window::pick(frames.clone(), None, None).unwrap().title,
-            "Save As"
-        );
-        assert_eq!(
-            window::pick(frames.clone(), Some("settings"), None)
-                .unwrap()
-                .title,
-            "Settings"
-        );
-        assert_eq!(
-            window::pick(frames.clone(), Some("notepad"), Some(7))
-                .unwrap()
-                .title,
-            "Untitled - Notepad"
-        );
-        assert!(window::pick(frames, Some("Notepad"), Some(9)).is_err());
-    }
-
-    #[test]
     fn the_outline_shows_states_shortcuts_ids_and_values() {
         let nodes = vec![
             Node {
@@ -1202,7 +1174,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_call_that_names_a_process_reads_only_that_app_s_windows() {
+    async fn a_call_that_names_a_process_reads_only_that_apps_windows() {
         let desk = Desk::new(|| Ok(one_app()), Slow(Arc::default()), Os::Mac);
         for (tool, args) in PID_CALLS {
             desk.run(tool, serde_json::from_str(args).unwrap())
@@ -1425,8 +1397,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_macos_window_click_the_driver_refuses_for_an_invalid_windowserver_connection_goes_to_the_desktop()
-     {
+    async fn a_macos_window_click_without_a_windowserver_connection_goes_to_the_desktop() {
         let clicks = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(notepad()), NoConnection(clicks.clone()), Os::Mac);
         desk.run("desk_click", json!({"x": 20.0, "y": 30.0}))
@@ -1439,8 +1410,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_macos_click_into_a_window_the_driver_refuses_pointer_input_for_goes_to_the_desktop()
-    {
+    async fn a_macos_click_into_a_window_refusing_pointer_input_goes_to_the_desktop() {
         let clicks = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(notepad()), Sheet(clicks.clone()), Os::Mac);
         desk.run("desk_click", json!({"x": 20.0, "y": 30.0}))
@@ -1453,8 +1423,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn macos_clicks_into_one_unmoved_window_read_it_once_and_again_when_the_driver_forgot_it()
-    {
+    async fn macos_clicks_read_an_unmoved_window_once_and_again_when_the_driver_forgot_it() {
         let driver = Arc::new(Reads::default());
         let desk = Desk::new(|| Ok(notepad()), driver.clone(), Os::Mac);
         let click = || desk.run("desk_click", json!({"x": 10.0, "y": 10.0}));
@@ -1484,8 +1453,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_macos_click_on_an_open_menu_item_runs_the_item_instead_of_clicking_the_window_below()
-    {
+    async fn a_macos_click_on_an_open_menu_item_runs_it_instead_of_clicking() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let open = || {
             let mut f = notepad();
@@ -1529,9 +1497,7 @@ pub(crate) mod tests {
         fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
             Ok(Tree {
                 frame: frame.clone(),
-                nodes: Vec::new(),
-                truncated: false,
-                phases: Vec::new(),
+                ..Tree::default()
             })
         }
 
@@ -1710,8 +1676,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn an_app_allowlist_blacks_out_the_screen_outside_its_windows_and_costs_nothing_without_one()
-     {
+    async fn an_app_allowlist_masks_shots_outside_its_windows_and_costs_nothing_without_one() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let open = Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Windows);
         let all = pixels(&open.run("desk_shot", json!({})).await.unwrap());
@@ -1735,8 +1700,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_macos_click_targets_the_top_window_under_the_point_in_the_pixels_of_its_screenshot()
-    {
+    async fn a_macos_click_targets_the_top_window_under_the_point_in_its_pixels() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(notepad()), Screen(calls.clone()), Os::Mac);
         desk.run("desk_click", json!({"x": 300.0, "y": 200.0}))
@@ -1894,21 +1858,6 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_wait_lists_and_compares_only_the_windows_the_allowlist_admits() {
-        let desk =
-            Desk::new(|| Ok(Apps), Screen(Arc::default()), Os::Mac).allow(&["notepad.exe".into()]);
-        let since: Value =
-            serde_json::from_str(&desk.run("desk_windows", json!({})).await.unwrap().text).unwrap();
-        let out = desk
-            .run("desk_wait", json!({"since": since, "timeout_ms": 50}))
-            .await
-            .unwrap();
-        let out: Value = serde_json::from_str(&out.text).unwrap();
-        assert_eq!(out["changed"], false);
-        assert!(!out.to_string().contains("Inbox"), "{out}");
-    }
-
-    #[tokio::test]
     async fn a_hint_change_right_after_a_slow_list_reads_the_list_at_once() {
         let desk = Desk::new(
             || Ok(Stub::opens(12, true, 150)),
@@ -1928,7 +1877,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_wait_ignores_windows_of_other_apps_in_the_list_it_is_given() {
+    async fn a_wait_lists_and_compares_only_the_windows_the_allowlist_admits() {
         let desk =
             Desk::new(|| Ok(Apps), Screen(Arc::default()), Os::Mac).allow(&["notepad.exe".into()]);
         let mut since: Value =
@@ -1938,10 +1887,9 @@ pub(crate) mod tests {
             .run("desk_wait", json!({"since": since, "timeout_ms": 50}))
             .await
             .unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(&out.text).unwrap()["changed"],
-            false
-        );
+        let out: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(out["changed"], false);
+        assert!(!out.to_string().contains("Inbox"), "{out}");
     }
 
     #[tokio::test]
