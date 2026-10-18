@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::hash::{Hash, Hasher};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, WPARAM};
@@ -36,9 +36,6 @@ use crate::uia_roles::{self, Facts, Kind};
 
 const CACHE_TRIES: u32 = 3;
 const CACHE_RETRY: Duration = Duration::from_millis(40);
-const WINDOW: i32 = 50032;
-const MENU: i32 = 50009;
-const LEAF: i32 = 3;
 const TITLE_CHARS: usize = 512;
 const PROPS: [UIA_PROPERTY_ID; 24] = [
     UIA_ControlTypePropertyId,
@@ -164,7 +161,9 @@ impl Uia {
             toggles: r.toggles,
             selects: r.selected.is_some(),
             dialog: r.dialog || r.modal,
-            submenu: r.expand.is_some_and(|e| e != LEAF),
+            submenu: r
+                .expand
+                .is_some_and(|e| e != ExpandCollapseState_LeafNode.0),
         };
         let mapped = uia_roles::role(kind);
         let role = mapped.unwrap_or("generic");
@@ -262,13 +261,15 @@ impl Uia {
             .filter(|s| s.owner == hwnd.0 as isize)
             .any(|s| {
                 self.top_of(s)
-                    .is_some_and(|t| t.control_type == WINDOW && t.dialog)
+                    .is_some_and(|t| t.control_type == UIA_WindowControlTypeId.0 && t.dialog)
             })
     }
 
     fn frame_of(&mut self, s: &Shown, foreground: HWND) -> Option<Frame> {
         let (dialog, app, el) = match self.top_of(s)? {
-            t if t.control_type == WINDOW => (t.dialog, t.app.clone(), t.el.clone()),
+            t if t.control_type == UIA_WindowControlTypeId.0 => {
+                (t.dialog, t.app.clone(), t.el.clone())
+            }
             _ => return None,
         };
         Some(Frame {
@@ -285,16 +286,15 @@ impl Uia {
 
 impl Access for Uia {
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
-        // SAFETY: GetForegroundWindow takes no arguments.
-        let foreground = unsafe { GetForegroundWindow() };
+        let front = foreground();
         let (shown, roots) = self.roots();
         let mut frames = Vec::new();
         for i in roots {
-            let Some(top) = self.frame_of(&shown[i], foreground) else {
+            let Some(top) = self.frame_of(&shown[i], front) else {
                 continue;
             };
             for o in owned(&shown, i) {
-                frames.extend(self.frame_of(&shown[o], foreground));
+                frames.extend(self.frame_of(&shown[o], front));
             }
             frames.push(top);
         }
@@ -302,9 +302,8 @@ impl Access for Uia {
     }
 
     fn hint(&mut self) -> Option<u64> {
-        let mut h = std::hash::DefaultHasher::new();
-        // SAFETY: GetForegroundWindow takes no arguments.
-        (unsafe { GetForegroundWindow() }.0 as isize).hash(&mut h);
+        let mut h = DefaultHasher::new();
+        (foreground().0 as isize).hash(&mut h);
         for s in shown() {
             (s.hwnd.0 as isize, s.owner, s.pid, title(s.hwnd)).hash(&mut h);
         }
@@ -336,7 +335,7 @@ impl Access for Uia {
             .filter(|&i| Some(shown[i].pid) == frame.pid)
         {
             let el = match self.top_of(&shown[i]) {
-                Some(t) if t.control_type == MENU => t.el.clone(),
+                Some(t) if t.control_type == UIA_MenuControlTypeId.0 => t.el.clone(),
                 _ => continue,
             };
             menus.extend(self.cached(&el, &self.subtree).ok());
@@ -385,9 +384,8 @@ impl Access for Uia {
         let mut at = self.element(id)?;
         while chain.len() < MAX_DEPTH {
             // SAFETY: `walker`, `at` and the root are live UIA objects of this thread.
-            let parent = match unsafe { walker.GetParentElement(&at) } {
-                Ok(p) => p,
-                Err(_) => break,
+            let Ok(parent) = (unsafe { walker.GetParentElement(&at) }) else {
+                break;
             };
             // SAFETY: `self.auto`, `parent` and `self.root` are live UIA objects of this thread.
             if unsafe { self.auto.CompareElements(&parent, &self.root) }
@@ -403,41 +401,33 @@ impl Access for Uia {
     }
 
     fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
-        let el = self.element(id)?;
-        // SAFETY: `el` is a live UIA element of this thread.
-        Ok(unsafe { el.CurrentProcessId() }
-            .ok()
-            .and_then(|p| u32::try_from(p).ok()))
+        Ok(process_id(&self.element(id)?))
     }
 
     fn pid_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
-        // SAFETY: `self.auto` is a live IUIAutomation of this thread; the hit is a live element of it.
-        Ok(unsafe { self.auto.ElementFromPoint(POINT { x, y }) }
-            .ok()
-            .and_then(|hit| unsafe { hit.CurrentProcessId() }.ok())
-            .and_then(|p| u32::try_from(p).ok()))
+        Ok(element_at(&self.auto, x, y).and_then(|hit| process_id(&hit)))
     }
 
     fn at(&mut self, _: &str, x: i32, y: i32) -> Result<Option<String>, String> {
-        // SAFETY: `self.auto` is a live IUIAutomation of this thread.
-        match unsafe { self.auto.ElementFromPoint(POINT { x, y }) } {
-            Ok(hit) => self.id_of(&hit).map(Some),
-            Err(_) => Ok(None),
-        }
+        element_at(&self.auto, x, y)
+            .map(|hit| self.id_of(&hit))
+            .transpose()
     }
 
     fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
         let el = self.element(id)?;
         // SAFETY: `el` is a live UIA element of this thread; each pattern comes from it.
         let done = unsafe {
+            let select = || {
+                el.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                    UIA_SelectionItemPatternId,
+                )
+                .and_then(|p| p.Select())
+                .is_ok()
+            };
             match act {
                 Act::Focus => el.SetFocus().is_ok(),
-                Act::Select => el
-                    .GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
-                        UIA_SelectionItemPatternId,
-                    )
-                    .and_then(|p| p.Select())
-                    .is_ok(),
+                Act::Select => select(),
                 Act::Action => {
                     el.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
                         .and_then(|p| p.Invoke())
@@ -459,12 +449,7 @@ impl Access for Uia {
                                 }
                             })
                             .is_ok()
-                        || el
-                            .GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
-                                UIA_SelectionItemPatternId,
-                            )
-                            .and_then(|p| p.Select())
-                            .is_ok()
+                        || select()
                         || el
                             .GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(
                                 UIA_LegacyIAccessiblePatternId,
@@ -671,8 +656,13 @@ fn shown() -> Vec<Shown> {
             // SAFETY: the window calls take a handle and write at most the 4 bytes of `cloaked`.
             unsafe {
                 IsWindowVisible(hwnd).as_bool()
-                    && (DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, (&raw mut cloaked).cast(), 4)
-                        .is_err()
+                    && (DwmGetWindowAttribute(
+                        hwnd,
+                        DWMWA_CLOAKED,
+                        (&raw mut cloaked).cast(),
+                        size_of::<u32>() as u32,
+                    )
+                    .is_err()
                         || cloaked == 0)
             }
         })
@@ -708,6 +698,23 @@ fn title(hwnd: HWND) -> String {
     String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0)])
 }
 
+fn foreground() -> HWND {
+    // SAFETY: GetForegroundWindow takes no arguments.
+    unsafe { GetForegroundWindow() }
+}
+
+fn element_at(auto: &IUIAutomation, x: i32, y: i32) -> Option<IUIAutomationElement> {
+    // SAFETY: `auto` is a live IUIAutomation of this thread.
+    unsafe { auto.ElementFromPoint(POINT { x, y }) }.ok()
+}
+
+fn process_id(el: &IUIAutomationElement) -> Option<u32> {
+    // SAFETY: `el` is a live UIA element of this thread.
+    unsafe { el.CurrentProcessId() }
+        .ok()
+        .and_then(|p| u32::try_from(p).ok())
+}
+
 fn exe_name(pid: u32) -> Option<String> {
     // SAFETY: OpenProcess takes a pid; the handle it returns is closed below.
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
@@ -741,7 +748,7 @@ fn document_text(el: &IUIAutomationElement, chars: usize) -> Option<String> {
 }
 
 fn owned_dialog(el: &IUIAutomationElement) -> bool {
-    if raw_control_type(el) != WINDOW {
+    if raw_control_type(el) != UIA_WindowControlTypeId.0 {
         return false;
     }
     let flag = |p| matches!(value(el, p), Val::Bool(true));
@@ -775,7 +782,7 @@ fn value(el: &IUIAutomationElement, p: UIA_PROPERTY_ID) -> Val {
 
 fn menus_in(kids: &[IUIAutomationElement], out: &mut Vec<IUIAutomationElement>) {
     for child in kids {
-        if raw_control_type(child) == MENU {
+        if raw_control_type(child) == UIA_MenuControlTypeId.0 {
             out.push(child.clone());
         }
         menus_in(&children(child), out);
