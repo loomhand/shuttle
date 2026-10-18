@@ -430,6 +430,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
             let line = line.trim_end_matches('\r');
             if self.os == Os::Linux {
+                if line.is_empty() || xtest(line).await {
+                    continue;
+                }
                 for run in text_runs(line) {
                     self.driver
                         .call("type_text", desktop(json!({"text": run})))
@@ -962,6 +965,20 @@ fn live(frame: Frame) -> Result<Frame, String> {
         ));
     }
     Ok(frame)
+}
+
+/// Whether XTest typed `line` on the core keyboard, which holds every character of it; else the driver types it.
+#[cfg(target_os = "linux")]
+async fn xtest(line: &str) -> bool {
+    let line = line.to_owned();
+    tokio::task::spawn_blocking(move || crate::xtest::type_mapped(&line))
+        .await
+        .is_ok_and(|typed| typed.unwrap_or(false))
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn xtest(_: &str) -> bool {
+    false
 }
 
 /// Runs of `text` with at most [`RUN_CHARS`] distinct non-ASCII characters; the Linux driver binds a spare keycode to each for the call and has fewer than 20 to lend.
