@@ -72,4 +72,4 @@ apps = []          # app allowlist; empty allows every app
 script_run = true  # false turns script_run off
 ```
 
-The safety controls live in this file, so while it fails to load every tool call answers with its error, desk calls included; only `cocoon-shuttle stop` and `resume` still work. `kill_hotkey`, `indicator` and `confirm` come with the macOS controls; until then a file that sets them does not load. [safety.md](safety.md) describes each control.
+The safety controls live in this file, so while it fails to load every tool call answers with its error, desk calls included; only `cocoon-shuttle stop` and `resume` still work. `kill_hotkey`, `indicator` and `confirm` come with the macOS controls; until then a file that sets them does not load. [safety.md](safety.md) describes each control. They are guard rails for the `desk`, `screenshot` and `gui_plan` tools that hold only with `script_run = false`: a `script_run` script is your own user's code and can change or bypass them, as [safety.md](safety.md#what-these-controls-are) explains.
