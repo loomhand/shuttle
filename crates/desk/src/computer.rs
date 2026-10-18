@@ -2491,7 +2491,15 @@ mod tests {
         let bin = dir.path().join("soffice.bin");
         std::fs::copy("/bin/sleep", &bin).unwrap();
         let mut office = std::process::Command::new(&bin).arg("30").spawn().unwrap();
-        assert!(libreoffice(office.id().into()));
+        let pid = office.id().into();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !libreoffice(pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            libreoffice(pid),
+            "the soffice.bin copy never showed in /proc/{pid}/comm"
+        );
         assert!(!libreoffice(std::process::id().into()));
         office.kill().unwrap();
         office.wait().unwrap();
