@@ -8,7 +8,7 @@ shuttle is part of [loomhand](https://github.com/loomhand). It takes its desk co
 
 ## Status
 
-**v0.1.1 is the current release.** On macOS and Windows the daemon drives the desktop through the bundled cua-driver (`desk`, `screenshot`, `gui_plan`, `script_run`), calls models with your own key, and has its safety controls: kill switch and hotkey, indicator, confirm mode and app allowlist. On Linux shuttle installs and answers MCP; its desk backend comes in P3. v0.1.0's Windows build needs the Visual C++ Redistributable; v0.1.1 does not.
+**v0.1.2 is the current release.** On macOS and Windows the daemon drives the desktop through the bundled cua-driver (`desk`, `screenshot`, `gui_plan`, `script_run`), calls models with your own key, and has its safety controls: kill switch and hotkey, indicator, confirm mode and app allowlist. On Linux shuttle installs and answers MCP; its desk backend comes in P3. v0.1.0's Windows build needs the Visual C++ Redistributable; later releases do not.
 
 | Phase | What | State |
 |---|---|---|
