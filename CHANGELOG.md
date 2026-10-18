@@ -15,6 +15,9 @@ The first usable release: shuttle drives the desktop on macOS and Windows.
   - `[tools] script_run = false`; a `config.toml` that fails to load fails every tool call except `status`.
   - These are guard rails for tool use, not a sandbox; they hold only with `script_run = false`. [docs/safety.md](docs/safety.md) lists the limits.
 - **Speed.** Batched macOS window lists, process-scoped window reads, the menu bar only in snapshots that need it, a plan step that reuses the plan's snapshot, a window wait in the daemon (`desk wait`) instead of polling, a 1 ms cursor glide, and a grounded click that takes at most 3 screen captures.
+  - A plan whose last step is a shift key, an arrow in a plain window, or typing without a newline ends without the end-of-plan window wait.
+  - The macOS window list skips the bundled cua-driver's own windows instead of reading them.
+- **Fixes.** On Windows a dialog inside its window's tree, such as Notepad's unsaved-changes prompt, shows in `desk snapshot` and `find` and can be pressed; before, the walk skipped it.
 - **Bundled:** cua-driver v0.36.0-loomhand.4 and Node.js 24.22.0, both checked by sha256 at build time.
 - **Docs:** a first-time setup in [docs/install.md](docs/install.md) (install, macOS permissions, your key, the safety settings to start with), and the status of every platform.
 
