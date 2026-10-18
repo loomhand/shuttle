@@ -117,8 +117,10 @@ impl<H: Handler> Daemon<H> {
             if self.asking.swap(true, Ordering::AcqRel) {
                 return Output::error(CONFIRM_OPEN);
             }
-            let _open = Asking(&self.asking);
-            if !ask(question(&call)).await.unwrap_or(false) {
+            let open = Asking(&self.asking);
+            let allowed = ask(question(&call)).await.unwrap_or(false);
+            drop(open);
+            if !allowed {
                 return Output::error(DECLINED);
             }
         }
@@ -144,10 +146,16 @@ impl<H: Handler> Daemon<H> {
         if self.running().as_deref() == Some(call.agent_id.as_str()) {
             return self.desk.answer(call).await;
         }
-        match tokio::time::timeout(self.wait, self.turn.lock()).await {
-            Ok(_turn) => self.desk.answer(call).await,
-            Err(_) => Output::error(BUSY),
+        let Ok(_turn) = tokio::time::timeout(self.wait, self.turn.lock()).await else {
+            return Output::error(BUSY);
+        };
+        if *self.halted.borrow() {
+            return Output::error(STOPPED);
         }
+        if self.asking.load(Ordering::Acquire) {
+            return Output::error(CONFIRM_OPEN);
+        }
+        self.desk.answer(call).await
     }
 
     fn stop(&self, stopped: bool) -> Output {
@@ -482,6 +490,63 @@ mod tests {
         let none = daemon(Confirm::Coordinate, None);
         assert_eq!(none.answer(click()).await.text, NO_ASK);
         assert!(!none.acting() && !none.halted());
+    }
+
+    struct Typing;
+
+    impl Handler for Typing {
+        async fn answer(&self, call: Call) -> Output {
+            if call.tool == "desk_type" {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            Output::text(format!("desk answered {}", call.tool))
+        }
+    }
+
+    #[tokio::test]
+    async fn an_action_queued_before_a_confirm_dialog_opens_is_refused_when_its_turn_comes() {
+        let pending = Arc::new(Mutex::new(None));
+        let held = pending.clone();
+        let asker: Asker = Arc::new(move |_| {
+            let (tx, rx) = oneshot::channel();
+            *held.lock().unwrap() = Some(tx);
+            rx
+        });
+        let d = Daemon::new(
+            Typing,
+            Ok(Models::new(Config::default())),
+            runner(),
+            Guard {
+                confirm: Confirm::Coordinate,
+                asker: Some(asker),
+                ..Guard::default()
+            },
+        );
+        let call = |tool: &str, args: Value| Call {
+            agent_id: String::new(),
+            tool: tool.into(),
+            args,
+        };
+        let pause = |ms| tokio::time::sleep(Duration::from_millis(ms));
+        let (typed, queued, asked) = tokio::join!(
+            d.answer(call("desk_type", json!({"text": "a"}))),
+            async {
+                pause(50).await;
+                d.answer(call("desk_key", json!({"keys": "return"}))).await
+            },
+            async {
+                pause(100).await;
+                let out = d.answer(call("desk_click", json!({"x": 1, "y": 2})));
+                let answer = async {
+                    pause(400).await;
+                    let _ = pending.lock().unwrap().take().unwrap().send(false);
+                };
+                tokio::join!(out, answer).0
+            }
+        );
+        assert_eq!(typed.text, "desk answered desk_type");
+        assert_eq!(queued.text, CONFIRM_OPEN);
+        assert_eq!(asked.text, DECLINED);
     }
 
     #[tokio::test]
