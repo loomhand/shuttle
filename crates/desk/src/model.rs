@@ -190,6 +190,9 @@ pub trait Access {
     fn menu_at(&mut self, _x: i32, _y: i32) -> Result<Option<String>, String> {
         Ok(None)
     }
+    fn pid_at(&mut self, _x: i32, _y: i32) -> Result<Option<u32>, String> {
+        Ok(None)
+    }
     /// The process of the element `id`, none when the backend cannot tell.
     fn pid_of(&mut self, _id: &str) -> Result<Option<u32>, String> {
         Ok(None)

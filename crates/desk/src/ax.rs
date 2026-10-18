@@ -332,6 +332,14 @@ impl Access for Ax {
         Ok(pid(&self.element(id)?).and_then(|p| u32::try_from(p).ok()))
     }
 
+    fn pid_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
+        // SAFETY: the system-wide element is returned at +1 and wrapped once under the create rule.
+        let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
+        Ok(hit(&system, x, y, self.scale)
+            .and_then(|h| pid(&h))
+            .and_then(|p| u32::try_from(p).ok()))
+    }
+
     fn menu_at(&mut self, x: i32, y: i32) -> Result<Option<String>, String> {
         // SAFETY: the system-wide element is returned at +1 and wrapped once under the create rule.
         let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
