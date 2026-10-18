@@ -238,6 +238,7 @@ impl Access for Ax {
         self.hung.retain(|_, at| at.elapsed() < HUNG_SKIP);
         let pids = window_pids();
         self.last.retain(|p, _| pids.contains(p));
+        self.slow.retain(|p, _| pids.contains(p));
         for p in pids {
             if self.hung.contains_key(&p) {
                 continue;
