@@ -74,7 +74,8 @@ indicator = true                      # menu-bar item; tray icon on Windows
 confirm = "off"                       # "coordinate" or "every" asks first
 
 [tools]
-script_run = true                     # false turns script_run off
+script_run = true                     # false turns script_run off, and the plugin tools with it
+# plugins = "/etc/cocoonbox/tools.d"  # plugin directory; default tools.d next to this file
 
 [driver]
 overlay = true                        # false: no agent cursor; no effect on macOS

@@ -18,6 +18,7 @@ use tokio::sync::oneshot;
 use crate::STOPPED;
 #[cfg(any(target_os = "macos", windows))]
 use crate::hotkey::Hotkey;
+use crate::plugins::Plugin;
 use crate::runner::Runner;
 
 const BUSY: &str = "desk busy: another run or action is still going";
@@ -67,12 +68,13 @@ pub struct Ui {
     pub indicator: bool,
 }
 
-/// Answers `model_*` calls with `models`, `gui_plan` and `script_run` with `runner`, and the rest with `desk`; `safety_stop` halts every call until `safety_resume`.
+/// Answers `model_*` calls with `models`, `gui_plan`, `script_run` and plugin tools with `runner`, and the rest with `desk`; `safety_stop` halts every call until `safety_resume`.
 pub struct Daemon<H> {
     desk: H,
     models: Result<Models, String>,
     runner: Runner,
     guard: Guard,
+    plugins: Vec<Plugin>,
     halted: tokio::sync::watch::Sender<bool>,
     actions: AtomicUsize,
     asking: AtomicBool,
@@ -91,6 +93,7 @@ impl<H: Handler> Daemon<H> {
             models,
             runner,
             guard,
+            plugins: Vec::new(),
             halted: tokio::sync::watch::Sender::new(false),
             actions: AtomicUsize::new(0),
             asking: AtomicBool::new(false),
@@ -102,8 +105,20 @@ impl<H: Handler> Daemon<H> {
         }
     }
 
+    /// Adds the plugin tools, which run only while `script_run` is on.
+    #[must_use]
+    pub fn with_plugins(mut self, plugins: Vec<Plugin>) -> Self {
+        self.plugins = plugins;
+        self
+    }
+
+    fn plugin(&self, tool: &str) -> Option<&Plugin> {
+        self.plugins.iter().find(|p| p.name == tool)
+    }
+
     async fn run(&self, tool: &str, args: Value) -> Result<String, String> {
-        if tool == "script_run" && !self.guard.script_run {
+        let plugin = self.plugin(tool);
+        if (tool == "script_run" || plugin.is_some()) && !self.guard.script_run {
             return Err(SCRIPT_RUN_OFF.to_owned());
         }
         let _turn = tokio::time::timeout(self.wait, self.turn.lock())
@@ -112,10 +127,10 @@ impl<H: Handler> Daemon<H> {
         let n = self.runs.fetch_add(1, Ordering::Relaxed);
         let agent = format!("run-{:x}-{n}", self.nonce);
         *self.running() = Some(agent.clone());
-        let report = if tool == "gui_plan" {
-            self.runner.plan(args, &agent).await
-        } else {
-            self.runner.script(args, &agent).await
+        let report = match plugin {
+            Some(p) => self.runner.plugin(&p.bin, args, &agent).await,
+            None if tool == "gui_plan" => self.runner.plan(args, &agent).await,
+            None => self.runner.script(args, &agent).await,
         };
         *self.running() = None;
         Ok(report?.to_string())
@@ -207,9 +222,10 @@ impl<H: Handler> Handler for Daemon<H> {
         if call.tool.starts_with("desk_") && self.asking.load(Ordering::Acquire) {
             return Output::error(CONFIRM_OPEN);
         }
-        if let t @ ("gui_plan" | "script_run") = call.tool.as_str() {
+        let tool = call.tool.as_str();
+        if tool == "gui_plan" || tool == "script_run" || self.plugin(tool).is_some() {
             return self
-                .run(t, call.args)
+                .run(tool, call.args)
                 .await
                 .map_or_else(Output::error, Output::text);
         }
@@ -370,8 +386,25 @@ mod tests {
         (asker, pending)
     }
 
+    fn demo(bin: std::path::PathBuf) -> Plugin {
+        Plugin {
+            name: "demo_run".into(),
+            description: "Run a demo script.".into(),
+            bin,
+            resources: Vec::new(),
+        }
+    }
+
     #[cfg(unix)]
     async fn served(wait: Duration) -> (Arc<Daemon<Keys>>, Keys, tempfile::TempDir) {
+        served_with(wait, Vec::new()).await
+    }
+
+    #[cfg(unix)]
+    async fn served_with(
+        wait: Duration,
+        plugins: Vec<Plugin>,
+    ) -> (Arc<Daemon<Keys>>, Keys, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = dir.path().join("d.sock").to_string_lossy().into_owned();
         let keys = Keys::default();
@@ -380,7 +413,8 @@ mod tests {
             Ok(Models::new(Config::default())),
             runner_at(endpoint.clone(), dir.path().join("flows")),
             Guard::default(),
-        );
+        )
+        .with_plugins(plugins);
         d.wait = wait;
         let d = Arc::new(d);
         tokio::spawn({
@@ -735,5 +769,52 @@ mod tests {
         let report: Value = serde_json::from_str(&ran.text).unwrap();
         assert!(report.get("error").is_none(), "{report}");
         assert_eq!(*keys.0.lock().unwrap(), ["a"]);
+    }
+
+    #[tokio::test]
+    async fn with_script_run_off_a_plugin_answers_how_to_turn_it_on() {
+        let d = daemon(
+            Echo,
+            Guard {
+                script_run: false,
+                ..Guard::default()
+            },
+        )
+        .with_plugins(vec![demo("/usr/bin/demo".into())]);
+        let out = d
+            .answer(call(
+                "demo_run",
+                json!({"code": "export function main() { return 1 }"}),
+            ))
+            .await;
+        assert_eq!((out.is_error, out.text.as_str()), (true, SCRIPT_RUN_OFF));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_plugin_runs_on_its_own_program_and_its_desk_calls_reach_the_desk() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let bins = tempfile::tempdir().unwrap();
+        let bin = bins.path().join("demo-bin");
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\necho \"$@\" > \"$0.argv\"\nexec node \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (d, keys, _dir) = served_with(Duration::from_secs(10), vec![demo(bin.clone())]).await;
+        let out = d
+            .answer(Call {
+                agent_id: "agent".into(),
+                tool: "demo_run".into(),
+                args: json!({"code": "export async function main() { await desk.key('p'); return 'plugin' }"}),
+            })
+            .await;
+        let report: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(report["result"], "plugin", "{report}");
+        assert_eq!(*keys.0.lock().unwrap(), ["p"]);
+        let argv = std::fs::read_to_string(bins.path().join("demo-bin.argv")).unwrap();
+        assert!(argv.contains("entry."), "{argv}");
     }
 }

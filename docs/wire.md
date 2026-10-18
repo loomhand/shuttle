@@ -45,6 +45,26 @@ Desk calls name `desk_<verb>` tools:
 
 `script_run` (`code` or an absolute `script` path, which the MCP server resolves against the agent's working directory; `params`, default `{}`; `timeout_s` up to 110, default 90) runs one module on the bundled Node, with the desk API as the global `desk`, and answers `{result, logs, stderr, exit_code?, duration_ms, error?: {kind, message}}` (no `exit_code` after a timeout or a stop): `kind` is `import` (the module or the desk API failed to load), `no_main` (the module exports no `main` function), `exception` (`main` threw; `message` is the stack), `timeout`, `stopped` (the user stopped shuttle) or `exit` (Node exited without saying why). `gui_plan` runs the runtime's plan executor with its arguments and answers the plan's result. Both run with `TOOLHOST_SOCKET` naming the daemon's endpoint, `SHUTTLE_AGENT` naming the run (the runtime sends it as `agent_id`, so the run's own desk actions pass while it owns the desk) and without the model key variables (`OPENROUTER_API_KEY` and the configured `api_key_env`); logs and stderr keep their first 32 KiB. While `config.toml` fails to load, every call except `safety_stop` and `safety_resume` answers with its error, since the key variable and the safety controls are in it. `safety_stop` and `safety_resume` (no arguments, what `cocoon-shuttle stop` and `resume` send) halt every call, ending the run and the desk and model calls in flight, and lift the halt; no MCP tool and no runtime call sends them.
 
+## Plugins
+
+A plugin adds one tool that runs scripts with `script_run`'s contract and its own program in place of Node. This section is the schema's source of truth; cocoonbox's `/etc/cocoonbox/tools.d` files use the same one.
+
+- **Where.** One `*.json` file per tool in the plugin directory: `tools.d` next to `config.toml`, or the directory `[tools] plugins` names ([config.md](config.md)). The daemon reads it when it starts and the MCP server when an agent starts it, in file-name order.
+- **Spec.** `{"name": string, "description": string, "bin": string, "resources"?: [{"uri": string, "path": string, "mime": string, "description": string}]}`, and no other field.
+  - `name` matches `^[a-z][a-z0-9_]*_run$` and is no built-in tool (`gui_plan`, `script_run`, `desk`, `screenshot`, `status`) and no earlier file's name.
+  - `description` is at most 2048 characters.
+  - `bin` and each resource `path` are absolute.
+  - A file that breaks any rule, does not parse or holds an unknown field is skipped whole, with one log line naming the file and the reason; no part of it loads.
+- **Calls.** The tool takes `script_run`'s arguments and answers its report. The daemon runs `bin` exactly as it runs Node for `script_run`: the runtime's entry module as the one argument, the same `TOOLHOST_SOCKET`, `SHUTTLE_SCRIPT`, `SHUTTLE_RUN`, `SHUTTLE_FLOWS` and `SHUTTLE_AGENT`, the result and error files in `SHUTTLE_RUN`, the same timeout, stop and output caps, and no model key variables. A desk call the program makes on `TOOLHOST_SOCKET` goes through the same app allowlist, confirm mode and stop as every other desk call.
+- **Switch.** `script_run = false` turns the plugins off with it: the MCP server lists none, and a call answers as `script_run` does.
+- **MCP.** `tools/list` lists each plugin after the built-in tools, with `script_run`'s input schema. The resources of every plugin are listed by `resources/list` (`uri`, the file name as `name`, `mime` as `mimeType`, `description`) and served as text by `resources/read`; `initialize` names the `resources` capability when there is one.
+
+A neutral example, `tools.d/demo.json`:
+
+```json
+{"name": "demo_run", "description": "Run a demo script.", "bin": "/usr/local/bin/demo-runner", "resources": [{"uri": "demo://GUIDE.md", "path": "/usr/local/share/demo/GUIDE.md", "mime": "text/markdown", "description": "The demo guide"}]}
+```
+
 ## Model calls
 
 The daemon answers these with the models of [config.md](config.md) (`crates/models`), so a script calls a model without holding a key. Each reply carries `usage`: `{model, input_tokens, output_tokens, cached_tokens}`.

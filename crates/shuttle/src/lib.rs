@@ -8,6 +8,7 @@ pub mod hotkey;
 #[cfg(target_os = "macos")]
 pub mod mac;
 pub mod mcp;
+pub mod plugins;
 pub mod proxy;
 pub mod runner;
 pub mod tools;

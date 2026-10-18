@@ -158,16 +158,20 @@ pub enum Confirm {
     Every,
 }
 
-/// The tools a user can turn off.
+/// The tools a user can turn off, and the directory of plugin tools (default: `tools.d` next to the config file).
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Tools {
     pub script_run: bool,
+    pub plugins: Option<PathBuf>,
 }
 
 impl Default for Tools {
     fn default() -> Self {
-        Self { script_run: true }
+        Self {
+            script_run: true,
+            plugins: None,
+        }
     }
 }
 

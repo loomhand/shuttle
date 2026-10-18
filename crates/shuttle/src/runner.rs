@@ -64,6 +64,15 @@ impl Runner {
 
     /// `script_run` for `agent`: one module, `code` or the absolute file `script`; its `main(params)` value comes back as `result`.
     pub async fn script(&self, args: Value, agent: &str) -> Result<Value, String> {
+        self.script_on(&self.node, args, agent).await
+    }
+
+    /// A plugin tool's run for `agent`: `script_run`'s contract with the plugin's program `bin` in place of Node.
+    pub async fn plugin(&self, bin: &Path, args: Value, agent: &str) -> Result<Value, String> {
+        self.script_on(bin, args, agent).await
+    }
+
+    async fn script_on(&self, program: &Path, args: Value, agent: &str) -> Result<Value, String> {
         let a: ScriptArgs = parse(args)?;
         let scratch = scratch()?;
         let script = match (a.code, a.script) {
@@ -81,8 +90,15 @@ impl Runner {
             _ => return Err("pass code or script".to_owned()),
         };
         let params = a.params.unwrap_or_else(|| json!({}));
-        self.run(&script, &params, a.timeout_s, scratch.path(), agent)
-            .await
+        self.run(
+            program,
+            &script,
+            &params,
+            a.timeout_s,
+            scratch.path(),
+            agent,
+        )
+        .await
     }
 
     /// `gui_plan` for `agent`: the plan executor of the runtime with `args`; its result comes back as is.
@@ -91,6 +107,7 @@ impl Runner {
         let scratch = scratch()?;
         let mut report = self
             .run(
+                &self.node,
                 &self.module("gui_plan"),
                 &args,
                 timeout_s,
@@ -106,6 +123,7 @@ impl Runner {
 
     async fn run(
         &self,
+        program: &Path,
         script: &Path,
         params: &Value,
         timeout_s: Option<u64>,
@@ -118,7 +136,7 @@ impl Runner {
         let timeout =
             Duration::from_secs(timeout_s.unwrap_or(DEFAULT_TIMEOUT_S).min(MAX_TIMEOUT_S));
         let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
-        let mut cmd = Command::new(&self.node);
+        let mut cmd = Command::new(program);
         cmd.arg(self.module("entry"))
             .current_dir(home.map_or_else(|| scratch.to_path_buf(), PathBuf::from))
             .env("TOOLHOST_SOCKET", &self.endpoint)
@@ -138,7 +156,7 @@ impl Runner {
         let started = Instant::now();
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("start {}: {e}", self.node.display()))?;
+            .map_err(|e| format!("start {}: {e}", program.display()))?;
         let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
             return Err("the script's pipes are missing".to_owned());
         };
@@ -188,7 +206,7 @@ impl Runner {
                     report["error"] = thrown
                         .ok()
                         .and_then(|raw| serde_json::from_slice(&raw).ok())
-                        .unwrap_or_else(|| json!({"kind": "exit", "message": format!("node exited with {status}")}));
+                        .unwrap_or_else(|| json!({"kind": "exit", "message": format!("{} exited with {status}", program.file_name().unwrap_or_default().to_string_lossy())}));
                 }
             }
         }
