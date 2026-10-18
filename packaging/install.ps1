@@ -32,6 +32,8 @@
 
         $Old = "$InstallDir.old"
         $New = "$InstallDir.new"
+        $Running = Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like "$InstallDir\*" -or $_.ExecutablePath -like "$Old\*" }
+        if ($Running) { throw "close the running $Name first ($(($Running.Name | Sort-Object -Unique) -join ', ')); nothing was changed" }
         New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir) | Out-Null
         if ((Test-Path $Old) -and -not (Test-Path $InstallDir)) { Move-Item $Old $InstallDir }
         if (Test-Path $New) { Remove-Item -Recurse -Force $New }
