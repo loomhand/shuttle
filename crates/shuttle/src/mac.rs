@@ -30,10 +30,12 @@ pub fn run(ui: Ui) -> ! {
     let mtm = MainThreadMarker::new().expect("the macOS controls run on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-    register(ui.hotkey, Arc::clone(&ui.controls));
+    if let Some(hotkey) = ui.hotkey {
+        register(hotkey, Arc::clone(&ui.controls));
+    }
     let _indicator = ui
         .indicator
-        .then(|| indicator(mtm, &ui.controls, &ui.hotkey_label));
+        .then(|| indicator(mtm, &ui.controls, &ui.stop_label));
     app.run();
     std::process::exit(0)
 }
@@ -114,7 +116,7 @@ struct Indicator {
     _timer: Retained<NSTimer>,
 }
 
-fn indicator(mtm: MainThreadMarker, controls: &Arc<dyn Controls>, hotkey: &str) -> Indicator {
+fn indicator(mtm: MainThreadMarker, controls: &Arc<dyn Controls>, stop: &str) -> Indicator {
     let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
     let target = Target::new(
         mtm,
@@ -125,7 +127,7 @@ fn indicator(mtm: MainThreadMarker, controls: &Arc<dyn Controls>, hotkey: &str) 
     );
     let menu = NSMenu::new(mtm);
     for (title, action) in [
-        (format!("Stop ({hotkey})"), sel!(stop:)),
+        (stop.to_owned(), sel!(stop:)),
         ("Resume".to_owned(), sel!(resume:)),
     ] {
         // SAFETY: the item is a fresh NSMenuItem; the action names a method `Target` defines.

@@ -67,7 +67,7 @@ ask = "anthropic/claude-sonnet-5"
 ```toml
 [safety]
 apps = []                             # app allowlist; empty allows every app
-kill_hotkey = "ctrl+alt+cmd+escape"   # ctrl+alt+shift+escape off macOS
+kill_hotkey = "ctrl+alt+cmd+escape"   # ctrl+alt+shift+escape off macOS; "off" registers none
 indicator = true                      # menu-bar item; tray icon on Windows
 confirm = "off"                       # "coordinate" or "every" asks first
 
@@ -75,4 +75,4 @@ confirm = "off"                       # "coordinate" or "every" asks first
 script_run = true                     # false turns script_run off
 ```
 
-The safety controls live in this file, so while it fails to load every tool call except `status` answers with its error, desk calls included; only `cocoon-shuttle stop` and `resume` still work. `kill_hotkey` takes modifiers (`ctrl`, `alt`, `shift`, `cmd`, which is the Windows key on Windows) and one key (a letter, a digit, `f1`–`f12`, `escape`, `space`, `return` or `tab`); on macOS and Windows a value that does not parse fails the file like any other error. [safety.md](safety.md) describes each control. They are guard rails for the `desk`, `screenshot` and `gui_plan` tools that hold only with `script_run = false`: a `script_run` script is your own user's code and can change or bypass them, as [safety.md](safety.md#what-these-controls-are) explains.
+The safety controls live in this file, so while it fails to load every tool call except `status` answers with its error, desk calls included; only `cocoon-shuttle stop` and `resume` still work. `kill_hotkey` takes modifiers (`ctrl`, `alt`, `shift`, `cmd`, which is the Windows key on Windows) and one key (a letter, a digit, `f1`–`f12`, `escape`, `space`, `return` or `tab`), or is `off` for no global hotkey; on macOS and Windows a value that does not parse fails the file like any other error. [safety.md](safety.md) describes each control. They are guard rails for the `desk`, `screenshot` and `gui_plan` tools that hold only with `script_run = false`: a `script_run` script is your own user's code and can change or bypass them, as [safety.md](safety.md#what-these-controls-are) explains.

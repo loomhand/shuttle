@@ -46,7 +46,7 @@ static TRAY: AtomicIsize = AtomicIsize::new(0);
 pub fn run(ui: Ui) -> ! {
     let shown = SHOWN.get_or_init(|| Shown {
         controls: Arc::clone(&ui.controls),
-        stop_label: format!("Stop ({})", ui.hotkey_label),
+        stop_label: ui.stop_label.clone(),
         title: Mutex::new(""),
     });
     // SAFETY: the window class and window live until the process exits; `procedure` reads only `SHOWN`, set above.
@@ -86,12 +86,14 @@ pub fn run(ui: Ui) -> ! {
             }
         }
     };
-    let modifiers = HOT_KEY_MODIFIERS(ui.hotkey.modifiers) | MOD_NOREPEAT;
-    // SAFETY: `window` is this thread's window; the hotkey id is unique to it.
-    if let Err(e) = unsafe { RegisterHotKey(Some(window), 1, modifiers, ui.hotkey.code) } {
-        log(format_args!(
-            "the kill hotkey did not register: {e}; cocoon-shuttle stop still works"
-        ));
+    if let Some(hotkey) = ui.hotkey {
+        let modifiers = HOT_KEY_MODIFIERS(hotkey.modifiers) | MOD_NOREPEAT;
+        // SAFETY: `window` is this thread's window; the hotkey id is unique to it.
+        if let Err(e) = unsafe { RegisterHotKey(Some(window), 1, modifiers, hotkey.code) } {
+            log(format_args!(
+                "the kill hotkey did not register: {e}; cocoon-shuttle stop still works"
+            ));
+        }
     }
     if ui.indicator {
         // SAFETY: the message name is a static string.

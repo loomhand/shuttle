@@ -113,11 +113,14 @@ fn send(call: &Call, what: impl Display) -> ExitCode {
 fn controls_serve(endpoint: String) -> ExitCode {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let ready = move |controls, safety: Safety, hotkey| {
+        let ready = move |controls, safety: Safety, hotkey: Option<Hotkey>| {
             let _ = tx.send(Ui {
                 controls,
                 hotkey,
-                hotkey_label: safety.kill_hotkey,
+                stop_label: match hotkey {
+                    Some(_) => format!("Stop ({})", safety.kill_hotkey),
+                    None => "Stop".to_owned(),
+                },
                 indicator: safety.indicator,
             });
         };
@@ -143,7 +146,11 @@ fn controls_serve(endpoint: String) -> ExitCode {
 async fn serve(
     endpoint: &str,
     asker: Option<Asker>,
-    #[cfg(any(target_os = "macos", windows))] ready: impl FnOnce(Arc<dyn Controls>, Safety, Hotkey),
+    #[cfg(any(target_os = "macos", windows))] ready: impl FnOnce(
+        Arc<dyn Controls>,
+        Safety,
+        Option<Hotkey>,
+    ),
 ) -> Result<(), String> {
     let path = default_path(NAME);
     let mut config = Config::load(&path);
