@@ -27,7 +27,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, PWSTR};
 
-use crate::keys::{Os, uia_combo};
+use crate::keys::uia_combo;
 use crate::model::{
     Access, Act, Extras, Frame, MAX_DEPTH, MAX_IDS, MAX_NODES, Node, Tree, VALUE_CHARS,
     format_number, is_active, lookup, place,
@@ -163,9 +163,10 @@ impl Uia {
             control_type: r.control_type,
             named: !r.name.is_empty(),
             toggles: r.toggles,
-            selects: r.selected.is_some(),
-            dialog: r.dialog || r.modal,
+            selects: r.facts.selected.is_some(),
+            dialog: r.dialog || r.facts.modal,
             submenu: r
+                .facts
                 .expand
                 .is_some_and(|e| e != ExpandCollapseState_LeafNode.0),
         };
@@ -185,12 +186,12 @@ impl Uia {
                 .is_none()
                 .then(|| uia_roles::native(r.control_type).to_owned()),
             name: r.name.trim_end().to_owned(),
-            description: r.help.clone(),
-            states: uia_roles::states(role, r.facts()),
+            description: std::mem::take(&mut r.help),
+            states: uia_roles::states(role, r.facts),
             value,
-            shortcut: uia_combo(&r.accel, Os::Windows),
-            mnemonic: uia_combo(&r.access, Os::Windows),
-            bounds: (extras.bounds && !r.offscreen && w > 0 && h > 0 && is_active(role))
+            shortcut: uia_combo(&r.accel),
+            mnemonic: uia_combo(&r.access),
+            bounds: (extras.bounds && !r.facts.offscreen && w > 0 && h > 0 && is_active(role))
                 .then_some([x, y, w, h]),
             ..Node::default()
         })
@@ -233,7 +234,7 @@ impl Uia {
             let top = Top {
                 pid: s.pid,
                 control_type: r.control_type,
-                dialog: r.dialog || r.modal,
+                dialog: r.dialog || r.facts.modal,
                 app: exe_name(s.pid),
                 el,
             };
@@ -506,38 +507,14 @@ struct Raw {
     control_type: i32,
     name: String,
     help: String,
-    enabled: bool,
-    focused: bool,
-    focusable: bool,
-    offscreen: bool,
     bounds: [i32; 4],
     accel: String,
     access: String,
-    toggle: Option<i32>,
-    expand: Option<i32>,
-    selected: Option<bool>,
     value: Option<String>,
-    read_only: Option<bool>,
     range: Option<f64>,
-    modal: bool,
     dialog: bool,
     toggles: bool,
-}
-
-impl Raw {
-    fn facts(&self) -> Facts {
-        Facts {
-            enabled: self.enabled,
-            focused: self.focused,
-            focusable: self.focusable,
-            offscreen: self.offscreen,
-            modal: self.modal,
-            read_only: self.read_only,
-            toggle: self.toggle,
-            expand: self.expand,
-            selected: self.selected,
-        }
-    }
+    facts: Facts,
 }
 
 enum Val {
@@ -599,10 +576,6 @@ fn raw(el: &IUIAutomationElement, extras: Extras) -> Raw {
         control_type: raw_control_type(el),
         name: text(UIA_NamePropertyId),
         help: text(UIA_HelpTextPropertyId),
-        enabled: boolean(UIA_IsEnabledPropertyId).unwrap_or(true),
-        focused: boolean(UIA_HasKeyboardFocusPropertyId).unwrap_or(false),
-        focusable: boolean(UIA_IsKeyboardFocusablePropertyId).unwrap_or(false),
-        offscreen: boolean(UIA_IsOffscreenPropertyId).unwrap_or(false),
         bounds: [
             rect.left,
             rect.top,
@@ -619,29 +592,35 @@ fn raw(el: &IUIAutomationElement, extras: Extras) -> Raw {
         } else {
             String::new()
         },
-        toggle: toggles
-            .then(|| int(UIA_ToggleToggleStatePropertyId))
-            .flatten(),
-        expand: expands
-            .then(|| int(UIA_ExpandCollapseExpandCollapseStatePropertyId))
-            .flatten(),
-        selected: selects
-            .then(|| boolean(UIA_SelectionItemIsSelectedPropertyId))
-            .flatten(),
         value: match (values && extras.values).then(|| value(el, UIA_ValueValuePropertyId)) {
             Some(Val::Text(s)) => Some(s),
             _ => None,
         },
-        read_only: values
-            .then(|| boolean(UIA_ValueIsReadOnlyPropertyId))
-            .flatten(),
         range: match (ranges && extras.values).then(|| value(el, UIA_RangeValueValuePropertyId)) {
             Some(Val::Real(f)) => Some(f),
             _ => None,
         },
-        modal: window && boolean(UIA_WindowIsModalPropertyId).unwrap_or(false),
         dialog: boolean(UIA_IsDialogPropertyId).unwrap_or(false),
         toggles,
+        facts: Facts {
+            enabled: boolean(UIA_IsEnabledPropertyId).unwrap_or(true),
+            focused: boolean(UIA_HasKeyboardFocusPropertyId).unwrap_or(false),
+            focusable: boolean(UIA_IsKeyboardFocusablePropertyId).unwrap_or(false),
+            offscreen: boolean(UIA_IsOffscreenPropertyId).unwrap_or(false),
+            modal: window && boolean(UIA_WindowIsModalPropertyId).unwrap_or(false),
+            read_only: values
+                .then(|| boolean(UIA_ValueIsReadOnlyPropertyId))
+                .flatten(),
+            toggle: toggles
+                .then(|| int(UIA_ToggleToggleStatePropertyId))
+                .flatten(),
+            expand: expands
+                .then(|| int(UIA_ExpandCollapseExpandCollapseStatePropertyId))
+                .flatten(),
+            selected: selects
+                .then(|| boolean(UIA_SelectionItemIsSelectedPropertyId))
+                .flatten(),
+        },
     }
 }
 

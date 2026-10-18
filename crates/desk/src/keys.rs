@@ -29,12 +29,12 @@ pub fn key_names(combo: &str, os: Os) -> Result<Vec<String>, String> {
 }
 
 /// A UIA AcceleratorKey or AccessKey such as `Ctrl+Shift+S` as `ctrl+shift+s`; none when empty.
-pub fn uia_combo(text: &str, os: Os) -> Option<String> {
+pub fn uia_combo(text: &str) -> Option<String> {
     let text = text.trim();
     if text.is_empty() {
         return None;
     }
-    key_names(text, os).ok().map(|k| k.join("+"))
+    key_names(text, Os::Windows).ok().map(|k| k.join("+"))
 }
 
 /// A macOS menu shortcut from AXMenuItemCmdChar and AXMenuItemCmdModifiers as `cmd+shift+s`.
@@ -108,14 +108,11 @@ mod tests {
 
     #[test]
     fn uia_keys_become_desk_combinations() {
-        assert_eq!(
-            uia_combo("Ctrl+Shift+S", Os::Windows).as_deref(),
-            Some("ctrl+shift+s")
-        );
-        assert_eq!(uia_combo("Alt+F", Os::Windows).as_deref(), Some("alt+f"));
-        assert_eq!(uia_combo("F5", Os::Windows).as_deref(), Some("f5"));
-        assert_eq!(uia_combo(" ", Os::Windows), None);
-        assert_eq!(uia_combo("Ctrl+", Os::Windows), None);
+        assert_eq!(uia_combo("Ctrl+Shift+S").as_deref(), Some("ctrl+shift+s"));
+        assert_eq!(uia_combo("Alt+F").as_deref(), Some("alt+f"));
+        assert_eq!(uia_combo("F5").as_deref(), Some("f5"));
+        assert_eq!(uia_combo(" "), None);
+        assert_eq!(uia_combo("Ctrl+"), None);
     }
 
     #[test]

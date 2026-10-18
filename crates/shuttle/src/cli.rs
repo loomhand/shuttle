@@ -195,7 +195,7 @@ async fn serve(
         key_vars,
     );
     let daemon = Arc::new(Daemon::new(
-        server::native(driver, apps),
+        server::native(driver, &apps),
         models,
         runner,
         guard,
