@@ -42,11 +42,6 @@ impl Allow {
     }
 }
 
-pub(crate) enum Target {
-    Element(String),
-    Focused,
-}
-
 pub(crate) fn app_key(app: &str) -> String {
     let mut key = app.to_lowercase();
     if key.ends_with(".exe") {

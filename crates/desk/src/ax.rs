@@ -427,11 +427,7 @@ impl Access for Ax {
 
     fn menu_at(&mut self, x: i32, y: i32) -> Result<Option<String>, String> {
         Ok(hit(&system_wide(), x, y, display_scale())
-            .filter(|h| {
-                attr(h, "AXRole")
-                    .and_then(|v| v.downcast::<CFString>())
-                    .is_some_and(|r| r == CFString::from_static_string("AXMenuItem"))
-            })
+            .filter(|h| string(attr(h, "AXRole")) == "AXMenuItem")
             .map(|h| self.id_of(&h)))
     }
 

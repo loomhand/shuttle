@@ -15,7 +15,7 @@ use desk_core::text::{MAX_FOUND, NAME_CHARS, matches, ms, quote};
 use desk_core::wire::Output;
 use serde_json::{Map, Value, json};
 
-use crate::allow::{Allow, Target, app_key, app_of};
+use crate::allow::{Allow, app_key, app_of};
 use crate::driver::{Input, WINDOW_SESSION, desktop, text_of};
 use crate::keys::{Os, key_names, keystroke};
 use crate::model::{Access, Act, Extras, Frame, Node};
@@ -75,7 +75,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     /// Limits the desk calls to windows of `apps`, matched by app name or executable, case-insensitive; empty allows every app.
-    pub fn allow(mut self, apps: Vec<String>) -> Self {
+    pub fn allow(mut self, apps: &[String]) -> Self {
         self.allow = Allow(apps.iter().map(|a| app_key(a)).collect());
         self
     }
@@ -187,22 +187,22 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn admit(&self, tool: &str, args: &Value) -> Result<(), String> {
-        let target = match tool {
+        let id = match tool {
             "desk_launch" => return self.allow.check(args["app"].as_str()),
             "desk_read" | "desk_press" | "desk_act" => {
-                Target::Element(args["id"].as_str().ok_or("no element id")?.to_owned())
+                Some(args["id"].as_str().ok_or("no element id")?.to_owned())
             }
-            "desk_key" | "desk_type" => Target::Focused,
+            "desk_key" | "desk_type" => None,
             _ => return Ok(()),
         };
         let allow = self.allow.clone();
         self.access
-            .run(CALL_LIMIT, (), move |b| match target {
-                Target::Element(id) => {
+            .run(CALL_LIMIT, (), move |b| match id {
+                Some(id) => {
                     let pid = b.pid_of(&id)?;
                     check_process(b, &allow, pid)
                 }
-                Target::Focused => allow.pick(b.frames()?, None, None).map(drop),
+                None => allow.pick(b.frames()?, None, None).map(drop),
             })
             .await
     }
@@ -1212,8 +1212,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn with_an_allowlist_a_call_that_names_a_process_still_reads_every_window() {
-        let desk = Desk::new(|| Ok(one_app()), Slow(Arc::default()), Os::Mac)
-            .allow(vec!["Notepad".into()]);
+        let desk =
+            Desk::new(|| Ok(one_app()), Slow(Arc::default()), Os::Mac).allow(&["Notepad".into()]);
         for (tool, args) in PID_CALLS {
             let err = desk
                 .run(tool, serde_json::from_str(args).unwrap())
@@ -1577,8 +1577,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn an_app_allowlist_hides_and_refuses_the_windows_of_other_apps() {
-        let desk = Desk::new(|| Ok(Apps), Screen(Arc::default()), Os::Mac)
-            .allow(vec!["NOTEPAD.EXE".into()]);
+        let desk =
+            Desk::new(|| Ok(Apps), Screen(Arc::default()), Os::Mac).allow(&["NOTEPAD.EXE".into()]);
         let refused = |r: Result<Output, String>| {
             r.err()
                 .is_some_and(|e| e.contains("not in the app allowlist"))
@@ -1612,8 +1612,7 @@ pub(crate) mod tests {
                 .await
                 .is_ok()
         );
-        let mail =
-            Desk::new(|| Ok(Apps), Screen(Arc::default()), Os::Mac).allow(vec!["mail".into()]);
+        let mail = Desk::new(|| Ok(Apps), Screen(Arc::default()), Os::Mac).allow(&["mail".into()]);
         assert!(refused(
             mail.run("desk_key", json!({"keys": "ctrl+s"})).await
         ));
@@ -1666,7 +1665,7 @@ pub(crate) mod tests {
     async fn an_app_allowlist_gates_every_point_and_element_a_call_reaches() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk =
-            Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Mac).allow(vec!["notepad".into()]);
+            Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Mac).allow(&["notepad".into()]);
         let refused = |r: Result<Output, String>| {
             r.err()
                 .is_some_and(|e| e.contains("not in the app allowlist"))
@@ -1681,8 +1680,8 @@ pub(crate) mod tests {
                 .await
         ));
         assert!(!calls.lock().unwrap().iter().any(|t| t == "click"));
-        let windows = Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Windows)
-            .allow(vec!["notepad".into()]);
+        let windows =
+            Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Windows).allow(&["notepad".into()]);
         windows
             .run("desk_click", json!({"x": 100.0, "y": 800.0}))
             .await
@@ -1716,8 +1715,8 @@ pub(crate) mod tests {
         let all = pixels(&open.run("desk_shot", json!({})).await.unwrap());
         assert!(all.iter().all(|p| *p == [255; 3]));
         assert_eq!(*calls.lock().unwrap(), ["get_desktop_state"]);
-        let masked = Desk::new(|| Ok(Apps), Desktop(Arc::default()), Os::Windows)
-            .allow(vec!["notepad".into()]);
+        let masked =
+            Desk::new(|| Ok(Apps), Desktop(Arc::default()), Os::Windows).allow(&["notepad".into()]);
         let shot = pixels(&masked.run("desk_shot", json!({})).await.unwrap());
         assert_eq!(
             (shot[2], shot[7], shot[97], shot[90]),
@@ -1894,8 +1893,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_wait_lists_and_compares_only_the_windows_the_allowlist_admits() {
-        let desk = Desk::new(|| Ok(Apps), Screen(Arc::default()), Os::Mac)
-            .allow(vec!["notepad.exe".into()]);
+        let desk =
+            Desk::new(|| Ok(Apps), Screen(Arc::default()), Os::Mac).allow(&["notepad.exe".into()]);
         let since: Value =
             serde_json::from_str(&desk.run("desk_windows", json!({})).await.unwrap().text).unwrap();
         let out = desk
@@ -1928,8 +1927,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_wait_ignores_windows_of_other_apps_in_the_list_it_is_given() {
-        let desk = Desk::new(|| Ok(Apps), Screen(Arc::default()), Os::Mac)
-            .allow(vec!["notepad.exe".into()]);
+        let desk =
+            Desk::new(|| Ok(Apps), Screen(Arc::default()), Os::Mac).allow(&["notepad.exe".into()]);
         let mut since: Value =
             serde_json::from_str(&desk.run("desk_windows", json!({})).await.unwrap().text).unwrap();
         since.as_array_mut().unwrap().push(json!({"id": "8/1", "title": "Inbox", "role": "window", "pid": 8, "active": false, "app": "Mail"}));
