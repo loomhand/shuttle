@@ -55,6 +55,8 @@ pub struct Frame {
     pub active: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+    #[serde(skip)]
+    pub stale: bool,
 }
 
 impl Window for Frame {
