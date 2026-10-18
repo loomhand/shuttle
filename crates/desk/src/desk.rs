@@ -9,7 +9,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use desk_core::args::{
     ActArgs, AtArgs, ClickArgs, FindArgs, IdArgs, KeyArgs, LaunchArgs, ReadArgs, ShotArgs,
-    SnapArgs, TypeArgs, WindowArgs, parse,
+    SnapArgs, TypeArgs, WaitArgs, WindowArgs, parse,
 };
 use desk_core::press::{MENU_POLL, MENU_POLLS, SELECTED_ROLES};
 use desk_core::text::{MAX_FOUND, NAME_CHARS, matches, ms, quote};
@@ -37,6 +37,9 @@ pub const ACTIONS: [&str; 8] = [
 const CALL_LIMIT: Duration = Duration::from_secs(3);
 const TREE_LIMIT: Duration = Duration::from_secs(10);
 const READ_CHARS: usize = 64 << 10;
+const WAIT_MAX: Duration = Duration::from_secs(5);
+const WAIT_POLL: Duration = Duration::from_millis(10);
+const WAIT_CHECK: Duration = Duration::from_millis(100);
 const NO_WINDOW_UNDER: &str =
     "no window under the point, and the app allowlist admits only windows";
 const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
@@ -91,6 +94,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
         let text = match tool {
             "desk_windows" => self.windows().await?,
+            "desk_wait" => self.wait(parse(args)?).await?,
             "desk_snapshot" => self.snapshot(parse(args)?).await?,
             "desk_find" => self.find(parse(args)?).await?,
             "desk_read" => self.read(parse(args)?).await?,
@@ -118,10 +122,49 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn windows(&self) -> Result<String, String> {
-        let mut frames = self.access.run(CALL_LIMIT, (), |a| a.frames()).await?;
-        frames.retain(|f| self.allow.admits(f.app.as_deref()));
-        frames.sort_by_key(|f| !f.active);
+        let frames = self.listed().await?;
         serde_json::to_string(&frames).map_err(|e| format!("encode windows: {e}"))
+    }
+
+    async fn listed(&self) -> Result<Vec<Frame>, String> {
+        let allow = self.allow.clone();
+        self.access
+            .run(CALL_LIMIT, (), move |b| {
+                let mut frames = b.frames()?;
+                frames.retain(|f| allow.admits(f.app.as_deref()));
+                frames.sort_by_key(|f| !f.active);
+                Ok(frames)
+            })
+            .await
+    }
+
+    /// Waits until the window list differs from `since`; time spent reading lists does not count against `timeout_ms`, as in a poll loop.
+    async fn wait(&self, a: WaitArgs) -> Result<String, String> {
+        let limit = Duration::from_millis(a.timeout_ms);
+        let started = Instant::now();
+        let (mut listing, mut last) = (Duration::ZERO, Duration::ZERO);
+        let mut hint = self.access.run(CALL_LIMIT, (), |b| Ok(b.hint())).await?;
+        let mut checked = Instant::now();
+        loop {
+            tokio::time::sleep(WAIT_POLL).await;
+            let now = self.access.run(CALL_LIMIT, (), |b| Ok(b.hint())).await?;
+            let t = started.elapsed();
+            let over = t >= WAIT_MAX || t.saturating_sub(listing) >= limit;
+            let rested = checked.elapsed();
+            if !over && (rested < last || (now.is_some() && now == hint && rested < WAIT_CHECK)) {
+                continue;
+            }
+            hint = now;
+            let at = Instant::now();
+            let frames = self.listed().await?;
+            last = at.elapsed();
+            listing += last;
+            checked = Instant::now();
+            let same = serde_json::to_value(&frames).is_ok_and(|v| v == a.since);
+            if !same || over {
+                return Ok(json!({"changed": !same, "windows": frames}).to_string());
+            }
+        }
     }
 
     async fn admit(&self, tool: &str, args: &Value) -> Result<(), String> {
@@ -2013,6 +2056,208 @@ mod tests {
             serde_json::from_str::<Value>(&out.text).unwrap(),
             json!([{"id": "w", "title": "Untitled - Notepad", "role": "window", "pid": 4, "active": true, "app": "Notepad"}])
         );
+    }
+
+    #[derive(Default)]
+    struct Opens {
+        at: usize,
+        hinted: bool,
+        list_ms: u64,
+        t: usize,
+        lists: usize,
+    }
+
+    impl Opens {
+        fn new(at: usize, hinted: bool, list_ms: u64) -> Self {
+            Self {
+                at,
+                hinted,
+                list_ms,
+                ..Self::default()
+            }
+        }
+    }
+
+    impl Access for Opens {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            self.lists += 1;
+            std::thread::sleep(Duration::from_millis(self.list_ms));
+            if !self.hinted {
+                self.t += 1;
+            }
+            let frame = |id: &str, title: &str, active: bool| Frame {
+                id: id.into(),
+                title: title.into(),
+                role: "window",
+                pid: Some(4),
+                active,
+                app: None,
+                stale: false,
+            };
+            Ok(if self.t >= self.at {
+                vec![
+                    frame("save", "Save", true),
+                    frame("main", "Untitled", false),
+                ]
+            } else {
+                vec![frame("main", "Untitled", true)]
+            })
+        }
+
+        fn hint(&mut self) -> Option<u64> {
+            self.hinted.then(|| {
+                self.t += 1;
+                u64::from(self.t >= self.at)
+            })
+        }
+
+        fn tree(&mut self, _: &Frame, _: Extras) -> Result<Tree, String> {
+            Err("no tree".into())
+        }
+
+        fn node(&mut self, _: &str, _: Extras, _: usize) -> Result<Node, String> {
+            Err("no node".into())
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Ok(false)
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    async fn wait_on<B: Access + 'static>(
+        desk: &Desk<B, Slow>,
+        timeout_ms: u64,
+    ) -> (Value, Duration) {
+        let since: Value =
+            serde_json::from_str(&desk.run("desk_windows", json!({})).await.unwrap().text).unwrap();
+        let started = Instant::now();
+        let out = desk
+            .run(
+                "desk_wait",
+                json!({"since": since, "timeout_ms": timeout_ms}),
+            )
+            .await
+            .unwrap();
+        (serde_json::from_str(&out.text).unwrap(), started.elapsed())
+    }
+
+    async fn lists(desk: &Desk<Opens, Slow>) -> usize {
+        desk.access
+            .run(CALL_LIMIT, (), |b| Ok(b.lists))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_wait_returns_the_new_window_list_once_a_window_opens() {
+        let desk = Desk::new(
+            || Ok(Opens::new(3, false, 0)),
+            Slow(Arc::default()),
+            Os::Mac,
+        );
+        let (out, _) = wait_on(&desk, 2000).await;
+        assert_eq!(out["changed"], true);
+        assert_eq!(out["windows"][0]["title"], "Save");
+        assert_eq!(lists(&desk).await, 3);
+    }
+
+    #[tokio::test]
+    async fn a_wait_without_a_change_returns_the_same_list_at_its_timeout() {
+        let desk = Desk::new(
+            || Ok(Opens::new(usize::MAX, false, 0)),
+            Slow(Arc::default()),
+            Os::Mac,
+        );
+        let (out, took) = wait_on(&desk, 150).await;
+        assert_eq!(out["changed"], false);
+        assert_eq!(out["windows"][0]["title"], "Untitled");
+        assert!(took >= Duration::from_millis(150), "{took:?}");
+    }
+
+    #[tokio::test]
+    async fn slow_window_lists_stretch_a_wait_like_a_poll_loop() {
+        let desk = Desk::new(
+            || Ok(Opens::new(usize::MAX, false, 40)),
+            Slow(Arc::default()),
+            Os::Mac,
+        );
+        let (out, took) = wait_on(&desk, 100).await;
+        assert_eq!(out["changed"], false);
+        let waited = lists(&desk).await as u64 - 1;
+        assert!(
+            waited >= 2 && took >= Duration::from_millis(100 + 40 * waited),
+            "{took:?} {waited}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wait_ended_early_frees_the_desk_at_once() {
+        let desk = Arc::new(Desk::new(
+            || Ok(Opens::new(usize::MAX, true, 0)),
+            Slow(Arc::default()),
+            Os::Mac,
+        ));
+        let wait = tokio::spawn({
+            let desk = desk.clone();
+            async move { wait_on(&desk, 5000).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        wait.abort();
+        let started = Instant::now();
+        desk.run("desk_windows", json!({})).await.unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wait_lists_and_compares_only_the_windows_the_allowlist_admits() {
+        let desk = Desk::new(|| Ok(Apps), Screen(Arc::default()), Os::Mac)
+            .allow(vec!["notepad.exe".into()]);
+        let since: Value =
+            serde_json::from_str(&desk.run("desk_windows", json!({})).await.unwrap().text).unwrap();
+        let out = desk
+            .run("desk_wait", json!({"since": since, "timeout_ms": 50}))
+            .await
+            .unwrap();
+        let out: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(out["changed"], false);
+        assert!(!out.to_string().contains("Inbox"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_steady_hint_spares_full_window_lists() {
+        let desk = Desk::new(
+            || Ok(Opens::new(usize::MAX, true, 0)),
+            Slow(Arc::default()),
+            Os::Mac,
+        );
+        let (out, _) = wait_on(&desk, 350).await;
+        assert_eq!(out["changed"], false);
+        assert!(lists(&desk).await <= 5);
+    }
+
+    #[tokio::test]
+    async fn a_hint_change_reads_the_window_list_at_once() {
+        let desk = Desk::new(|| Ok(Opens::new(3, true, 0)), Slow(Arc::default()), Os::Mac);
+        let (out, took) = wait_on(&desk, 2000).await;
+        assert_eq!(out["changed"], true);
+        assert_eq!(lists(&desk).await, 2);
+        assert!(took < WAIT_CHECK, "{took:?}");
     }
 
     #[test]

@@ -190,6 +190,10 @@ pub trait Access {
             .filter(|f| f.pid == Some(pid))
             .collect())
     }
+    /// A cheap fingerprint of the windows on screen that changes when windows open, close or retitle; `None` when the backend has none.
+    fn hint(&mut self) -> Option<u64> {
+        None
+    }
     /// The listed elements of `frame` in preorder.
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String>;
     /// One element read live; a value has at most `chars` characters.

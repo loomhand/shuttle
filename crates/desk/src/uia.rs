@@ -1,6 +1,7 @@
 //! The Windows desk backend: Win32 top-level windows and window trees from one cached UIA request; ids are runtime ids.
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, WPARAM};
@@ -307,6 +308,16 @@ impl Access for Uia {
             frames.push(top);
         }
         Ok(frames)
+    }
+
+    fn hint(&mut self) -> Option<u64> {
+        let mut h = std::hash::DefaultHasher::new();
+        // SAFETY: GetForegroundWindow takes no arguments.
+        (unsafe { GetForegroundWindow() }.0 as isize).hash(&mut h);
+        for s in shown() {
+            (s.hwnd.0 as isize, s.owner, s.pid, title(s.hwnd)).hash(&mut h);
+        }
+        Some(h.finish())
     }
 
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {

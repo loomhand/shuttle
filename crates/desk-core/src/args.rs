@@ -20,6 +20,14 @@ pub struct SnapArgs {
 }
 
 #[derive(Deserialize)]
+pub struct WaitArgs {
+    /// The window list as `desk_windows` gave it.
+    #[serde(default)]
+    pub since: Value,
+    pub timeout_ms: u64,
+}
+
+#[derive(Deserialize)]
 pub struct FindArgs {
     pub name: String,
     pub role: Option<String>,
