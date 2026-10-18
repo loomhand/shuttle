@@ -9,6 +9,11 @@ const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_DECISIONS_URL: &str = "https://openrouter.ai/api/alpha/decisions";
 const DEFAULT_KEY_ENV: &str = "OPENROUTER_API_KEY";
 const DEFAULT_TIMEOUT_MS: u64 = 60_000;
+const DEFAULT_KILL_HOTKEY: &str = if cfg!(target_os = "macos") {
+    "ctrl+alt+cmd+escape"
+} else {
+    "ctrl+alt+shift+escape"
+};
 
 const DEFAULT_DECIDE: &str = "typesafe/jev-1.14";
 const DEFAULT_GROUND: &str = "qwen/qwen3-vl-235b-a22b-instruct";
@@ -109,10 +114,36 @@ impl Default for Roles {
 }
 
 /// The safety controls: `apps` limits the desk calls to windows of those apps, matched by app name or executable; empty allows every app.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Safety {
     pub apps: Vec<String>,
+    /// The global key combination that stops shuttle, such as `ctrl+alt+cmd+escape`.
+    pub kill_hotkey: String,
+    /// The menu-bar item and the agent cursor while shuttle acts.
+    pub indicator: bool,
+    pub confirm: Confirm,
+}
+
+impl Default for Safety {
+    fn default() -> Self {
+        Self {
+            apps: Vec::new(),
+            kill_hotkey: DEFAULT_KILL_HOTKEY.to_owned(),
+            indicator: true,
+            confirm: Confirm::default(),
+        }
+    }
+}
+
+/// Which desk actions ask the user first: none, clicks at a screen point, or every action.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Confirm {
+    #[default]
+    Off,
+    Coordinate,
+    Every,
 }
 
 /// The tools a user can turn off.
