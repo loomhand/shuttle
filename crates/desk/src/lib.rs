@@ -16,3 +16,4 @@ pub mod worker;
 mod allow;
 mod press;
 mod shot;
+mod still;
