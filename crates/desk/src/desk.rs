@@ -200,7 +200,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .run(CALL_LIMIT, (), move |b| match target {
                 Target::Element(id) => {
                     let pid = b.pid_of(&id)?;
-                    allow.check_pid(&pid.map_or(Ok(Vec::new()), |p| b.frames_of(p))?, pid)
+                    check_process(b, &allow, pid)
                 }
                 Target::Focused => allow.pick(b.frames()?, None, None).map(drop),
             })
@@ -345,7 +345,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 };
                 if let Some(frames) = &kept {
                     let pid = b.pid_of(&hit)?;
-                    allow.check_pid(frames, pid)?;
+                    allow.check(app_of(frames, pid))?;
                 }
                 let node = b.node(&hit, Extras::default(), 0)?;
                 let path: Vec<Value> = b
@@ -435,7 +435,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     };
                     if !allow.is_open() {
                         let pid = b.pid_of(&item)?;
-                        allow.check_pid(&pid.map_or(Ok(Vec::new()), |p| b.frames_of(p))?, pid)?;
+                        check_process(b, &allow, pid)?;
                     }
                     if b.act(&item, Act::Action)? {
                         Ok(true)
@@ -461,11 +461,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let allow = self.allow.clone();
             self.access
                 .run(CALL_LIMIT, (), move |b| {
-                    let frames = b.frames()?;
-                    allow.check_pid(&frames, pid)?;
+                    check_process(b, &allow, pid)?;
                     match b.pid_at(x as i32, y as i32)? {
-                        Some(top) => allow.check_pid(&frames, Some(top)),
-                        None => Ok(()),
+                        Some(top) if Some(top) != pid => check_process(b, &allow, Some(top)),
+                        _ => Ok(()),
                     }
                 })
                 .await?;
@@ -709,6 +708,11 @@ fn frames<B: Access>(b: &mut B, pid: Option<u32>, allow: &Allow) -> Result<Vec<F
         Some(p) if allow.is_open() => b.frames_of(p),
         _ => b.frames(),
     }
+}
+
+fn check_process<B: Access>(b: &mut B, allow: &Allow, pid: Option<u32>) -> Result<(), String> {
+    let frames = pid.map_or(Ok(Vec::new()), |p| b.frames_of(p))?;
+    allow.check(app_of(&frames, pid))
 }
 
 fn live(frame: Frame) -> Result<Frame, String> {

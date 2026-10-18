@@ -68,7 +68,6 @@ pub struct Ax {
     names: CFArray<CFString>,
     app_names: CFArray<CFString>,
     frame_names: CFArray<CFString>,
-    scale: f64,
     ids: HashMap<String, CFType>,
     hashes: HashMap<usize, Vec<(CFType, String)>>,
     next: u64,
@@ -76,7 +75,6 @@ pub struct Ax {
     slow: HashMap<i32, Instant>,
     last: HashMap<i32, Vec<Frame>>,
     driver: Option<PathBuf>,
-    drivers: HashMap<i32, bool>,
 }
 
 impl Ax {
@@ -95,7 +93,6 @@ impl Ax {
             names: names(ATTRS),
             app_names: names(APP_ATTRS),
             frame_names: names(FRAME_ATTRS),
-            scale: display_scale(),
             ids: HashMap::new(),
             hashes: HashMap::new(),
             next: 0,
@@ -106,7 +103,6 @@ impl Ax {
                 .and_then(std::fs::canonicalize)
                 .ok()
                 .map(|e| e.with_file_name("cua-driver")),
-            drivers: HashMap::new(),
         })
     }
 
@@ -115,18 +111,10 @@ impl Ax {
         self.hung.retain(|_, at| at.elapsed() < HUNG_SKIP);
         self.last.retain(|p, _| pids.contains(p));
         self.slow.retain(|p, _| pids.contains(p));
-        self.drivers.retain(|p, _| pids.contains(p));
-        pids.into_iter().filter(|&p| !self.is_driver(p)).collect()
-    }
-
-    fn is_driver(&mut self, pid: i32) -> bool {
-        let Some(driver) = &self.driver else {
-            return false;
-        };
-        *self
-            .drivers
-            .entry(pid)
-            .or_insert_with(|| exe_path(pid).as_ref() == Some(driver))
+        let driver = self.driver.as_ref();
+        pids.into_iter()
+            .filter(|&p| driver.is_none_or(|d| exe_path(p).as_ref() != Some(d)))
+            .collect()
     }
 
     fn app_frames(&mut self, pids: impl IntoIterator<Item = i32>) -> Vec<Frame> {
@@ -239,7 +227,14 @@ impl Ax {
         lookup(&self.ids, id)
     }
 
-    fn node_of(&mut self, el: &CFType, a: &Attrs, extras: Extras, chars: usize) -> Node {
+    fn node_of(
+        &mut self,
+        el: &CFType,
+        a: &Attrs,
+        extras: Extras,
+        chars: usize,
+        scale: f64,
+    ) -> Node {
         let named = !a.title.is_empty() || !a.description.is_empty();
         let kind = Kind {
             role: &a.role,
@@ -276,7 +271,7 @@ impl Ax {
             .map_or("", |n| n.as_str());
         let bounds = match (a.pos, a.size) {
             (Some((x, y)), Some((w, h))) if extras.bounds && shown && is_active(role) => {
-                Some([x, y, w, h].map(|v| (v * self.scale).round() as i32))
+                Some([x, y, w, h].map(|v| (v * scale).round() as i32))
             }
             _ => None,
         };
@@ -309,7 +304,7 @@ impl Ax {
             return false;
         }
         let a = attrs(&self.names, el);
-        let node = self.node_of(el, &a, w.extras, VALUE_CHARS);
+        let node = self.node_of(el, &a, w.extras, VALUE_CHARS, w.scale);
         let (parent, depth) = place(&mut w.nodes, node, parent, depth);
         w.path.push(el.clone());
         let mut truncated = false;
@@ -336,7 +331,6 @@ impl Access for Ax {
     }
 
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
-        self.scale = display_scale();
         let started = Instant::now();
         let deadline = started + WALK_BUDGET;
         let el = self.element(&frame.id)?;
@@ -349,6 +343,7 @@ impl Access for Ax {
         }
         let mut w = Walk {
             extras,
+            scale: display_scale(),
             deadline,
             nodes: Vec::new(),
             path: Vec::new(),
@@ -375,13 +370,12 @@ impl Access for Ax {
     }
 
     fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String> {
-        self.scale = display_scale();
         let el = self.element(id)?;
         let a = attrs(&self.names, &el);
         if a.role.is_empty() {
             return Err(format!("element {id} is gone"));
         }
-        Ok(self.node_of(&el, &a, extras, chars))
+        Ok(self.node_of(&el, &a, extras, chars, display_scale()))
     }
 
     fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
@@ -402,10 +396,9 @@ impl Access for Ax {
     }
 
     fn at(&mut self, window: &str, x: i32, y: i32) -> Result<Option<String>, String> {
-        self.scale = display_scale();
         let w = self.element(window)?;
         let app = application(pid(&w).ok_or("the window has no process")?);
-        Ok(hit(&app, x, y, self.scale).map(|h| self.id_of(&h)))
+        Ok(hit(&app, x, y, display_scale()).map(|h| self.id_of(&h)))
     }
 
     fn hint(&mut self) -> Option<u64> {
@@ -427,15 +420,13 @@ impl Access for Ax {
     }
 
     fn pid_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
-        self.scale = display_scale();
-        Ok(hit(&system_wide(), x, y, self.scale)
+        Ok(hit(&system_wide(), x, y, display_scale())
             .and_then(|h| pid(&h))
             .and_then(|p| u32::try_from(p).ok()))
     }
 
     fn menu_at(&mut self, x: i32, y: i32) -> Result<Option<String>, String> {
-        self.scale = display_scale();
-        Ok(hit(&system_wide(), x, y, self.scale)
+        Ok(hit(&system_wide(), x, y, display_scale())
             .filter(|h| {
                 attr(h, "AXRole")
                     .and_then(|v| v.downcast::<CFString>())
@@ -471,6 +462,7 @@ impl Access for Ax {
 
 struct Walk {
     extras: Extras,
+    scale: f64,
     deadline: Instant,
     nodes: Vec<Node>,
     path: Vec<CFType>,
