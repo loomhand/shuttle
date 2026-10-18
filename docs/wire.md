@@ -26,7 +26,7 @@ Desk calls name `desk_<verb>` tools:
 | Verb | Arguments | Result |
 |---|---|---|
 | `windows` | | the top-level windows: `id`, `title`, `role`, `pid`, `active`, and `app` (the app's name on macOS, the executable on Windows) when the OS says; cocoonbox's Linux toolhost also gives `modal`/`blocks` for dialogs. Optional fields are left out when unknown, so older readers of the wire are unaffected |
-| `snapshot` | `window?`, `pid?`, `keys?`, `menus?`, `bounds?`, `text?`, `max_chars?` (with `text`); `id?` on the Linux toolhost | a window's tree as nodes (`ref`, `id`, `parent`, `depth`, `role`, `name`, `states`, ...), or an outline with `text`; on macOS the app's menu bar comes with a window only with `menus`, and other backends ignore it |
+| `snapshot` | `window?`, `pid?`, `keys?`, `menus?`, `bounds?`, `text?`, `max_chars?` (with `text`); `id?` on the Linux toolhost | a window's tree as nodes (`ref`, `id`, `parent`, `depth`, `role`, `name`, `states`, ...), or an outline with `text`; on macOS the app's menu bar comes with a window only with `menus` (omitted or false: no app menu bar in the snapshot), and other backends ignore it |
 | `find` | `name`, `role?`, `window?`, `pid?` | the window and the nodes whose name matches |
 | `read` | `id`, `text?` | one node with its value and text |
 | `press` | `id` | presses a node: select a tab or row, open the menus above a hidden menu entry, click a menu node's centre, click another node's centre when a hit test there finds it, else run its default action; a Windows menu entry runs its action |
