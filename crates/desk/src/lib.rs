@@ -17,6 +17,8 @@ pub mod uia;
 pub mod uia_roles;
 pub mod worker;
 #[cfg(target_os = "linux")]
+pub mod xshm;
+#[cfg(target_os = "linux")]
 pub mod xtest;
 
 mod allow;
