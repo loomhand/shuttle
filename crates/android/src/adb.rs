@@ -38,6 +38,8 @@ const ACK_TIMEOUT: Duration = Duration::from_secs(2);
 const DEVICE_UI_JAR: &str = "/data/local/tmp/cb-ui.jar";
 const UI_TIMEOUT: Duration = Duration::from_secs(10);
 const UI_END: &str = "<<end>>";
+const UI_STDERR_KEEP: usize = 4096;
+const UI_EXIT_WAIT: Duration = Duration::from_secs(2);
 const KEYCODES: [(&str, u32); 26] = [
     ("return", 66),
     ("enter", 66),
@@ -404,18 +406,33 @@ impl Android {
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| format!("run UI server: {e}"))?;
         let stdin = child.stdin.take().ok_or("take UI server stdin")?;
         let mut stdout = BufReader::new(child.stdout.take().ok_or("take UI server stdout")?);
+        let stderr = child.stderr.take().ok_or("take UI server stderr")?;
         let mut ready = String::new();
         tokio::time::timeout(UI_TIMEOUT, stdout.read_line(&mut ready))
             .await
             .map_err(|_| "UI server start timed out".to_owned())?
             .map_err(|e| format!("read UI server: {e}"))?;
         if ready.trim() != "ready" {
-            return Err(format!("UI server said {:?}", ready.trim()));
+            let status = match tokio::time::timeout(UI_EXIT_WAIT, child.wait()).await {
+                Ok(Ok(status)) => status.to_string(),
+                _ => {
+                    let _ = child.start_kill();
+                    "still running".to_owned()
+                }
+            };
+            let tail = tokio::time::timeout(UI_EXIT_WAIT, tail(stderr, UI_STDERR_KEEP))
+                .await
+                .unwrap_or_default();
+            return Err(format!(
+                "UI server said {:?} and {status}: {}",
+                ready.trim(),
+                String::from_utf8_lossy(&tail).trim()
+            ));
         }
         Ok(UiServer {
             _child: child,
@@ -485,6 +502,21 @@ impl Android {
 }
 
 /// The image's UI server (`image/android/ui`) in Android, one answer per request line; dropping it stops the server.
+async fn tail(mut reader: impl AsyncRead + Unpin, keep: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut chunk = [0; 4096];
+    while let Ok(n) = reader.read(&mut chunk).await {
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&chunk[..n]);
+        if out.len() > keep {
+            out.drain(..out.len() - keep);
+        }
+    }
+    out
+}
+
 struct UiServer {
     _child: Child,
     stdin: ChildStdin,
@@ -829,6 +861,34 @@ mod tests {
         let args = std::fs::read_to_string(&argv).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(args.lines().last(), Some("'com.example/.Main$Launcher'"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_ui_server_that_dies_before_ready_reports_its_exit_and_stderr_tail() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("shuttle-adb-ui-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let adb = dir.join("adb");
+        std::fs::write(
+            &adb,
+            "#!/bin/sh\ncase \"$*\" in\n*app_process*)\n  i=0\n  while [ $i -lt 600 ]; do echo \"noise $i\" >&2; i=$((i+1)); done\n  echo 'ClassNotFoundException: cb.Ui' >&2\n  exit 3;;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let android = Android::new(Device {
+            adb,
+            serial: None,
+            ui_jar: "/u.jar".into(),
+            scrcpy_jar: "/s.jar".into(),
+            su: None,
+        });
+        let err = android.windows().await.unwrap_err();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(err.contains("exit status: 3"), "{err}");
+        assert!(err.ends_with("ClassNotFoundException: cb.Ui"), "{err}");
+        assert!(!err.contains("noise 0\n"), "only the tail is kept: {err}");
+        assert!(err.len() < UI_STDERR_KEEP + 100, "{}", err.len());
     }
 
     #[tokio::test]
