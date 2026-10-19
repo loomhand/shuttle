@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use desk_core::wire::{Call, Output, read_body, read_frame, tool_of, write_frame};
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 use crate::desk::Desk;
 use crate::driver::Input;
@@ -42,14 +42,13 @@ pub trait Handler: Send + Sync + 'static {
         false
     }
 
-    /// Serves the connection of a call of `tool` that [`Handler::splices`] names; `body` is the call's frame body as read, which it zeroizes.
+    /// Serves the connection of a call of `tool` that [`Handler::splices`] names; `body` is the call's frame body as read.
     fn splice(
         &self,
         _tool: &str,
-        mut body: Vec<u8>,
+        _body: Zeroizing<Vec<u8>>,
         _stream: Accepted,
     ) -> impl Future<Output = ()> + Send {
-        body.zeroize();
         async {}
     }
 }
@@ -245,16 +244,14 @@ fn pipe(
 
 async fn handle<H: Handler>(handler: Arc<H>, mut stream: Accepted) {
     let call = match read_body(&mut stream).await {
-        Ok(mut body) => {
+        Ok(body) => {
             if handler.splicing()
                 && let Some(tool) = tool_of(&body).filter(|t| handler.splices(t))
             {
                 let tool = tool.into_owned();
                 return handler.splice(&tool, body, stream).await;
             }
-            let decoded = serde_json::from_slice::<Call>(&body);
-            body.zeroize();
-            decoded.map_err(|e| format!("decode frame: {e}"))
+            serde_json::from_slice::<Call>(&body).map_err(|e| format!("decode frame: {e}"))
         }
         Err(e) => Err(e),
     };
