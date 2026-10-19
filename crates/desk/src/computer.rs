@@ -232,10 +232,24 @@ impl Computer {
         let session = session_of(&args);
         if args.get("actions").is_some() {
             let list: ActList = parse(args)?;
+            self.pin(&session, list.scale)?;
             return self.act_list(&session, list).await;
         }
         let a: ActArgs = parse(args)?;
+        self.pin(&session, a.scale)?;
         self.act_one(&session, a).await
+    }
+
+    /// Maps `session`'s x,y by `scale` when the caller names the screenshot it saw.
+    fn pin(&self, session: &str, scale: Option<f64>) -> Result<(), String> {
+        let Some(k) = scale else {
+            return Ok(());
+        };
+        if !(k.is_finite() && k > 0.0) {
+            return Err(format!("scale {k} is not a positive number"));
+        }
+        self.scales().insert(session.to_owned(), k);
+        Ok(())
     }
 
     /// Runs the actions in order, each settled, stops at the first failure and returns the last screenshot;
@@ -1682,6 +1696,9 @@ struct ActArgs {
     foreground: bool,
     #[serde(default)]
     max_edge: Option<u32>,
+    /// Screen pixels per pixel of the screenshot the caller saw, in place of the session's latest.
+    #[serde(default)]
+    scale: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -1695,6 +1712,8 @@ struct ActList {
     actions: Vec<ActArgs>,
     #[serde(default)]
     max_edge: Option<u32>,
+    #[serde(default)]
+    scale: Option<f64>,
 }
 
 struct Window {
@@ -2561,6 +2580,27 @@ mod tests {
                 (200.0, 60.0),
                 (220.0, 60.0)
             ]
+        );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_pinned_scale_maps_an_action_and_every_action_of_a_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, clicks, driver) = scaling_driver(dir.path());
+        let cua = cua(&socket);
+        let click = |x: f64| json!({"action": "click", "x": x, "y": 40.0});
+        cua.state(json!({"max_edge": 640})).await.unwrap();
+        let mut one = click(100.0);
+        one["scale"] = 1.0.into();
+        cua.act(one).await.unwrap();
+        let list = json!({"actions": [click(100.0), click(130.0)], "max_edge": 640, "scale": 1.25});
+        cua.act(list).await.unwrap();
+        let bad = cua.act(json!({"action": "click", "x": 1.0, "y": 1.0, "scale": 0.0}));
+        assert_eq!(bad.await.unwrap_err(), "scale 0 is not a positive number");
+        assert_eq!(
+            *clicks.lock().unwrap(),
+            [(100.0, 40.0), (125.0, 50.0), (162.5, 50.0)]
         );
         driver.abort();
     }
