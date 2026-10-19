@@ -72,8 +72,6 @@ pub struct Grabber {
     net_wm_name: Atom,
     utf8: Atom,
     net_active: Atom,
-    shell: Mutex<Shell>,
-    resized: AtomicBool,
     net_clients: Atom,
     net_workarea: Atom,
     type_dock: Atom,
@@ -86,6 +84,8 @@ pub struct Grabber {
     state_hidden: Atom,
     net_wm_type: Atom,
     type_dialog: Atom,
+    shell: Mutex<Shell>,
+    resized: AtomicBool,
 }
 
 // SAFETY: the segment is private to this Grabber and only read through `&self` after a reply.
@@ -191,8 +191,6 @@ impl Grabber {
             net_wm_name,
             utf8,
             net_active,
-            shell: Mutex::new(Shell::default()),
-            resized: AtomicBool::new(false),
             net_clients,
             net_workarea,
             type_dock,
@@ -205,6 +203,8 @@ impl Grabber {
             state_hidden,
             net_wm_type,
             type_dialog,
+            shell: Mutex::new(Shell::default()),
+            resized: AtomicBool::new(false),
         };
         attached?;
         grabber.refresh();
