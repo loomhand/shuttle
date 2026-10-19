@@ -37,6 +37,7 @@ const ACK_CLIPBOARD: u8 = 1;
 const ACK_TIMEOUT: Duration = Duration::from_secs(2);
 const DEVICE_UI_JAR: &str = "/data/local/tmp/cb-ui.jar";
 const UI_TIMEOUT: Duration = Duration::from_secs(10);
+const STATE_TRIES: u32 = 2;
 const UI_END: &str = "<<end>>";
 const UI_STDERR_KEEP: usize = 4096;
 const UI_EXIT_WAIT: Duration = Duration::from_secs(2);
@@ -118,9 +119,19 @@ impl Android {
     /// The UI elements of the screen, [index] for computer_act, and a screenshot.
     pub async fn state(&self, args: Value) -> Result<Output, String> {
         let args: StateArgs = parse(args)?;
-        let (xml, shot, front) = tokio::join!(self.tree(None), self.look(), desk::front(self));
-        let front = front?;
-        let mut elements = desk::elements(&xml?, &front);
+        let mut tries = 0;
+        let (xml, shot, front) = loop {
+            let (xml, shot, front) = tokio::join!(self.tree(None), self.look(), desk::front(self));
+            let (xml, front) = (xml?, front?);
+            if desk::same_window(&xml, &front) {
+                break (xml, shot, front);
+            }
+            tries += 1;
+            if tries == STATE_TRIES {
+                return Err("the screen is changing; call computer_state again".to_owned());
+            }
+        };
+        let mut elements = desk::elements(&xml, &front);
         if let Some(q) = args.query.as_deref().map(str::to_lowercase) {
             elements.retain(|e| e.mentions(&q));
         }
@@ -371,6 +382,11 @@ impl Android {
             (saved.map(|s| s.window.clone()).unwrap_or_default(), point)
         };
         let front = desk::front(self).await?;
+        if window.is_empty() || front.window().is_empty() {
+            return Err(
+                "the window list is unavailable; use x,y or call computer_state again".to_owned(),
+            );
+        }
         if front.window() != window {
             return Err("the screen changed since computer_state; call it again".to_owned());
         }
@@ -1013,26 +1029,47 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn an_indexed_point_is_refused_once_the_screen_it_came_from_changed() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("shuttle-adb-point-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let adb = dir.join("adb");
-        std::fs::write(
-            &adb,
-            "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*app_process*) echo ready; while read l; do cat \"$DIR/windows.json\"; echo; echo '<<end>>'; done;;\nesac\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let windows = |extra: &str| {
+    struct Fake {
+        dir: PathBuf,
+        android: Android,
+    }
+
+    #[cfg(unix)]
+    impl Fake {
+        fn new(tag: &str) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let dir =
+                std::env::temp_dir().join(format!("shuttle-adb-{tag}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let adb = dir.join("adb");
+            std::fs::write(
+                &adb,
+                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*screencap*) printf png;;\n*app_process*)\n  echo ready\n  while read l; do\n    case \"$l\" in\n      windows) cat \"$DIR/windows.json\";;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let android = Android::new(Device {
+                adb,
+                serial: None,
+                ui_jar: "/u.jar".into(),
+                scrcpy_jar: "/s.jar".into(),
+                su: None,
+            });
+            Self { dir, android }
+        }
+
+        fn put(&self, name: &str, text: &str) {
+            std::fs::write(self.dir.join(name), text).unwrap();
+        }
+
+        fn windows(&self, layout: &str) {
             let app = |active| {
                 format!(
                     r#"{{"id":7,"type":1,"layer":0,"title":"Settings","package":"com.android.settings","active":{active},"focused":{active},"bounds":[0,0,720,1280]}}"#
                 )
             };
             let bar = r#"{"id":5,"type":3,"layer":2,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[0,1184,720,1280]}"#;
-            let list = match extra {
+            let list = match layout {
                 "shade" => format!(
                     r#"[{bar},{{"id":9,"type":3,"layer":4,"title":"Shade","package":"com.android.systemui","active":true,"focused":true,"bounds":[0,0,720,1280]}},{}]"#,
                     app(false)
@@ -1041,49 +1078,130 @@ mod tests {
                     r#"[{{"id":8,"type":2,"layer":3,"title":"","package":"com.android.inputmethod.latin","active":false,"focused":false,"bounds":[0,700,720,1184]}},{bar},{}]"#,
                     app(true)
                 ),
+                "none" => "[]".to_owned(),
                 _ => format!("[{bar},{}]", app(true)),
             };
-            std::fs::write(dir.join("windows.json"), list).unwrap();
-        };
-        windows("");
-        let android = Android::new(Device {
-            adb,
-            serial: None,
-            ui_jar: "/u.jar".into(),
-            scrcpy_jar: "/s.jar".into(),
-            su: None,
-        });
-        android.points.lock().await.insert(
+            self.put("windows.json", &list);
+        }
+
+        fn dump(&self, name: &str, window: &str) {
+            let attr = if window.is_empty() {
+                String::new()
+            } else {
+                format!(" window=\"{window}\"")
+            };
+            self.put(
+                name,
+                &format!(
+                    r#"<hierarchy{attr}><node text="OK" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" depth="1" path="0.0" bounds="[100,200][300,300]" /></hierarchy>"#
+                ),
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Fake {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn tap_element(session: &str, element: usize) -> ActArgs {
+        serde_json::from_value(
+            serde_json::json!({"session": session, "action": "tap", "element": element}),
+        )
+        .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_indexed_point_is_refused_once_the_screen_it_came_from_changed() {
+        let fake = Fake::new("point");
+        fake.windows("");
+        fake.android.points.lock().await.insert(
             "s".into(),
             Saved {
                 window: "7".into(),
                 points: vec![(360, 760)],
             },
         );
-        let act: ActArgs = serde_json::from_value(
-            serde_json::json!({"session": "s", "action": "tap", "element": 0}),
-        )
-        .unwrap();
-        assert_eq!(android.point(&act).await, Ok(Some((360, 760))));
-        windows("keyboard");
+        let act = tap_element("s", 0);
+        assert_eq!(fake.android.point(&act).await, Ok(Some((360, 760))));
+        fake.windows("keyboard");
         assert_eq!(
-            android.point(&act).await,
+            fake.android.point(&act).await,
             Err("element [0] is covered now; call computer_state again".to_owned())
         );
-        windows("shade");
+        fake.windows("shade");
         assert_eq!(
-            android.point(&act).await,
+            fake.android.point(&act).await,
             Err("the screen changed since computer_state; call it again".to_owned())
         );
-        windows("");
-        assert_eq!(android.point(&act).await, Ok(Some((360, 760))));
+        fake.windows("");
+        assert_eq!(fake.android.point(&act).await, Ok(Some((360, 760))));
         let explicit: ActArgs = serde_json::from_value(
             serde_json::json!({"session": "s", "action": "tap", "x": 360.0, "y": 760.0}),
         )
         .unwrap();
-        windows("shade");
-        assert_eq!(android.point(&explicit).await, Ok(Some((360, 760))));
-        std::fs::remove_dir_all(&dir).unwrap();
+        fake.windows("shade");
+        assert_eq!(fake.android.point(&explicit).await, Ok(Some((360, 760))));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_indexed_point_is_refused_when_either_window_id_is_unknown() {
+        let fake = Fake::new("unknown");
+        let unavailable = "the window list is unavailable; use x,y or call computer_state again";
+        fake.windows("none");
+        fake.android.points.lock().await.insert(
+            "known".into(),
+            Saved {
+                window: "7".into(),
+                points: vec![(360, 760)],
+            },
+        );
+        fake.android.points.lock().await.insert(
+            "unknown".into(),
+            Saved {
+                window: String::new(),
+                points: vec![(360, 760)],
+            },
+        );
+        assert_eq!(
+            fake.android.point(&tap_element("known", 0)).await,
+            Err(unavailable.to_owned()),
+            "no window is listed now"
+        );
+        fake.windows("");
+        assert_eq!(
+            fake.android.point(&tap_element("unknown", 0)).await,
+            Err(unavailable.to_owned()),
+            "no window was listed at the state"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn computer_state_retries_a_tree_of_another_window_once_then_refuses() {
+        let fake = Fake::new("state");
+        fake.windows("");
+        fake.dump("dump.xml", "7");
+        fake.dump("dump-first.xml", "9");
+        let out = fake.android.state(serde_json::json!({})).await.unwrap();
+        assert_eq!(out.text, "[0] button \"OK\" at 200,250");
+        assert_eq!(
+            fake.android
+                .points
+                .lock()
+                .await
+                .get("")
+                .map(|s| s.window.as_str()),
+            Some("7")
+        );
+        fake.dump("dump.xml", "9");
+        fake.dump("dump-first.xml", "9");
+        let err = fake.android.state(serde_json::json!({})).await.unwrap_err();
+        assert_eq!(err, "the screen is changing; call computer_state again");
     }
 
     #[tokio::test]

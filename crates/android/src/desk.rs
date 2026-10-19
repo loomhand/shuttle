@@ -347,6 +347,11 @@ pub(crate) fn elements(xml: &str, frame: &Frame) -> Vec<Node> {
         .collect()
 }
 
+/// Whether a dump is of the window `front`; a dump without a window id, or a front frame without one, is not told apart.
+pub(crate) fn same_window(xml: &str, front: &Frame) -> bool {
+    front.window().is_empty() || attribute(xml, "window").is_none_or(|w| w == front.window())
+}
+
 /// The front window with the system windows over it; with none listed, a bare frame of the screen.
 pub(crate) async fn front(android: &Android) -> Result<Frame, String> {
     let frames = frames(android).await?;
@@ -1138,6 +1143,16 @@ mod tests {
             Some((760, 820)),
             "a refreshed frame without the keyboard"
         );
+    }
+
+    #[test]
+    fn a_dump_is_told_from_the_front_window_by_its_id() {
+        let front = frames_of(vec![window([0, 0, 720, 1280])], REDROID).remove(0);
+        assert_eq!(front.window(), "7");
+        assert!(same_window(r#"<hierarchy window="7"><node />"#, &front));
+        assert!(!same_window(r#"<hierarchy window="9"><node />"#, &front));
+        assert!(same_window("<hierarchy><node />", &front));
+        assert!(same_window(r#"<hierarchy window="9">"#, &Frame::default()));
     }
 
     #[test]

@@ -3,6 +3,7 @@ package android.view.accessibility;
 import android.graphics.Rect;
 
 public class AccessibilityNodeInfo {
+    public int getWindowId() { throw new RuntimeException(); }
     public int getChildCount() { throw new RuntimeException(); }
     public AccessibilityNodeInfo getChild(int i) { throw new RuntimeException(); }
     public CharSequence getText() { throw new RuntimeException(); }
