@@ -170,6 +170,13 @@ impl Frame {
             .max_by_key(|(a, b)| b - a)
     }
 
+    /// Whether a system window covers screen point `(x, y)`.
+    pub(crate) fn covered(&self, (x, y): (i32, i32)) -> bool {
+        self.covers
+            .iter()
+            .any(|&[cx, cy, cw, ch]| (cx..cx + cw).contains(&x) && (cy..cy + ch).contains(&y))
+    }
+
     /// The part of element `n` a tap reaches: its shown part, less what a bar or keyboard covers at its middle column.
     fn reach(&self, n: &Node) -> Option<[i32; 4]> {
         let [x, y, w, h] = n.shown(self.screen).filter(|_| n.visible)?;
@@ -1127,6 +1134,40 @@ mod tests {
             Some((760, 820)),
             "a refreshed frame without the keyboard"
         );
+    }
+
+    #[test]
+    fn a_saved_point_is_covered_once_the_keyboard_is_up() {
+        let bar = |id, kind, layer, bounds| WindowInfo {
+            id,
+            kind,
+            title: String::new(),
+            package: "com.android.systemui".into(),
+            active: false,
+            focused: false,
+            layer,
+            bounds,
+        };
+        let closed = frames_of(
+            vec![
+                bar(5, 3, 2, [0, 1184, 720, 1280]),
+                window([0, 0, 720, 1280]),
+            ],
+            REDROID,
+        );
+        let typing = frames_of(
+            vec![
+                bar(9, 2, 3, [0, 700, 720, 1184]),
+                bar(5, 3, 2, [0, 1184, 720, 1280]),
+                window([0, 0, 720, 1280]),
+            ],
+            REDROID,
+        );
+        assert!(!closed[0].covered((360, 760)));
+        assert!(typing[0].covered((360, 760)));
+        assert!(typing[0].covered((360, 1200)));
+        assert!(!typing[0].covered((360, 699)));
+        assert!(!typing[0].covered((720, 760)));
     }
 
     #[test]
