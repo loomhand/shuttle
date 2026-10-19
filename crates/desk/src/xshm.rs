@@ -527,10 +527,8 @@ impl Grabber {
             .unwrap_or_default()
     }
 
-    /// Whether keys sent to the focused window reach `window` of `pid`: it is the active window and holds
-    /// the input focus, no popup of another client is on the screen, the keyboard is not grabbed unless
-    /// by a popup of `pid`, and the core keyboard is the only master, since Chrome drops core keyboard
-    /// input while another one exists.
+    /// Whether keys sent to the focus reach `window` of `pid`: it is active and focused, no other client's popup shows, no grab
+    /// but a popup of `pid` holds the keyboard, and the core keyboard is the only master, since Chrome drops core input while another exists.
     pub fn keyboard(&self, window: Window, pid: u32) -> Result<bool, String> {
         if self.active() != Some(window) || self.masters() != Some(1) {
             return Ok(false);

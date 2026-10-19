@@ -661,10 +661,8 @@ impl Computer {
         })
     }
 
-    /// The screen before an input action: its pixels and block hashes over MIT-SHM with what
-    /// each block did before it, else a thumbnail from a probe driver session of its own, which leaves
-    /// the capture context of the action's session as it was. A commit action `a` (see [`commits`])
-    /// in Chrome may load a page.
+    /// The screen before an input action: MIT-SHM pixels and block hashes with each block's past, else a thumbnail
+    /// from a probe session that leaves the action session's capture context alone. A commit action `a` (see [`commits`]) in Chrome may load a page.
     async fn before_input(&self, a: Option<&ActArgs>) -> Option<Before> {
         let commit = a.is_some_and(commits);
         if let Some((pixels, blocks, windows, active, page, wait)) = self.shm(|g| {
@@ -1195,9 +1193,8 @@ impl Computer {
         self.request(session, "press_key", req).await
     }
 
-    /// A driver session of its own for the pid-addressed input `req`, ended by [`Self::end_once`] right
-    /// after: the virtual master keyboard the driver makes for it would outlive the call, and while one
-    /// exists Chrome drops core keyboard input, from XTest and VNC alike.
+    /// A one-call driver session for the pid-addressed input `req`, ended by [`Self::end_once`]: its virtual master
+    /// keyboard would outlive the call, and while one exists Chrome drops core keyboard input from XTest and VNC.
     fn once(&self, req: &Value) -> Option<Owned> {
         req.get("pid").is_some().then(|| self.own("input"))
     }
@@ -1232,14 +1229,8 @@ impl Computer {
         web && self.element_pixel(session, index, false).await.is_some()
     }
 
-    /// The screen point at which a pixel click reaches element `index` of `session`'s snapshot, which
-    /// skips the driver's 270 ms accessibility click and, for a push button or menu item, the app's
-    /// accessibility dispatch, where a modal dialog it opens deadlocks the app on the first key. The
-    /// element looks as it did in the snapshot, and the top window at its centre is the snapshot's
-    /// window while that is active and nothing grabs the pointer, or a popup of the same app around a
-    /// menu or list row. A `menu` to open need not look as it did, since it showed open then. A
-    /// LibreOffice element outside a menu has none, since its toolbar extents can sit a menu bar's height
-    /// above the drawn control.
+    /// The point where a pixel click reaches element `index` of `session`'s snapshot, skipping the driver's 270 ms click and an AT-SPI dispatch a modal dialog deadlocks;
+    /// none unless it looks as in the snapshot (a `menu` to open need not) under its active window or an own popup, and none for LibreOffice outside menus.
     async fn element_pixel(&self, session: &str, index: i64, menu: bool) -> Option<(f64, f64)> {
         let last = self.last.lock().await;
         let snap = last.get(session)?;
@@ -1274,9 +1265,8 @@ impl Computer {
         reached.unwrap_or(false).then_some((cx, cy))
     }
 
-    /// For menu item `index` of `session`'s snapshot while no popup of its app is open, opens the
-    /// menus that hold it, outermost first, with pixel clicks, and returns the point at which a pixel
-    /// click then reaches the item.
+    /// Opens the menus that hold menu item `index` of `session`'s snapshot, outermost first, with pixel clicks while no
+    /// popup of its app is open, and returns the item's click point.
     async fn open_menus(&self, session: &str, index: i64) -> Option<(f64, f64)> {
         let (pid, menus) = {
             let last = self.last.lock().await;
@@ -1312,10 +1302,8 @@ impl Computer {
         self.poll_pixel(session, index, false).await
     }
 
-    /// For a push button or menu item of `session`'s snapshot that is not on the screen, in a GTK app
-    /// and outside a web page, whose accessibility action would deadlock the app if it opened a modal
-    /// dialog: the point of the menu bar item of the same name, opened in its menu, else an error;
-    /// `None` for any other element.
+    /// The menu bar twin's point for an off-screen push button or menu item of a GTK app outside a web page, whose
+    /// AT-SPI action can deadlock on a modal dialog; an error when none is found, `None` for any other element.
     async fn hidden_press(&self, session: &str, index: i64) -> Result<Option<(f64, f64)>, String> {
         let (pid, window_id, name, button, menus) = {
             let last = self.last.lock().await;

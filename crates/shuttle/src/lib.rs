@@ -31,7 +31,7 @@ pub(crate) fn log(line: impl Display) {
     let _ = writeln!(std::io::stderr(), "{NAME}: {line}");
 }
 
-/// Kills the processes of the group `pid` leads that are still in this process's cgroup, sparing the apps the desk moved into scopes of their own.
+/// Kills the processes of the group `group` leads that are still in this process's cgroup, sparing the apps the desk moved into scopes of their own.
 #[cfg(target_os = "linux")]
 pub(crate) fn kill_unscoped(group: u32) {
     let cgroup = |p: &str| std::fs::read_to_string(format!("/proc/{p}/cgroup")).ok();

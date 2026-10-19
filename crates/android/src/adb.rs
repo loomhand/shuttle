@@ -370,9 +370,8 @@ impl Android {
         Ok(typed)
     }
 
-    /// Pastes `text` into the focused field through the clipboard, which takes any Unicode, unlike key injection: scrcpy sets the
-    /// clipboard, and the UI server presses the paste key and answers once the focused window has handled it: false when the
-    /// device refused the key, which then reached no window.
+    /// Pastes `text` into the focused field through the clipboard, which takes any Unicode: scrcpy sets it and the UI server
+    /// presses the paste key; false when the device refused the key, which then reached no window.
     pub(crate) async fn paste(&self, text: &str) -> Result<bool, String> {
         {
             let mut slot = self.control.lock().await;
