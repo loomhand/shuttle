@@ -14,7 +14,7 @@ One wire connects `cocoon-shuttle mcp` to the daemon, the runtime (`desk.mts`) t
 
 ## Framing
 
-- **One call per connection.** The client writes one frame and reads one frame. Closing the connection does not cancel a call the daemon has read: it runs to its end, and its reply is dropped. A call of a [service plugin](#service-plugins)'s tool is the exception: after its first frame the connection belongs to the service.
+- **One call per connection.** The client writes one frame and reads one frame, and keeps its side of the connection open until the reply: closing it, or shutting down its write side, cancels a call the daemon answers itself. A cancelled run is stopped as by `safety_stop` (its process group killed on macOS and Linux, the Node process on Windows) and its turn is free at once; a desk action the driver or the accessibility API has already started finishes on its own, as after a stop. A call of a [service plugin](#service-plugins)'s tool is the exception: after its first frame the connection belongs to the service, and a client that closes its side half-closes the connection toward the service instead of cancelling.
 - **Frame:** a big-endian u32 length, then that many bytes of JSON. A frame over 64 MiB is refused.
 - **Request:** `{"agent_id": string, "tool": string, "args": object}`; `agent_id` defaults to `""` and `args` to `null`.
 - **Response:** `{"text": string, "is_error": bool, "image_b64"?: string, "secrets"?: [[field, value]]}`. `text` holds the result, JSON for the desk verbs; `image_b64` is a PNG when the call took one; `secrets` carries card fields a host typed from a file (cocoonbox), and shuttle never sends it. A failure is `is_error: true` with the reason in `text`, never a closed connection.

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use desk_core::wire::{Call, Output, read_body, read_frame, tool_of, write_frame};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use zeroize::Zeroizing;
 
 #[cfg(target_os = "linux")]
@@ -474,7 +475,16 @@ async fn handle<H: Handler>(handler: Arc<H>, mut stream: Accepted) {
     let out = match call {
         Ok(call) => match refusal(handler.as_ref(), &call.tool, &stream) {
             Some(refused) => refused,
-            None => handler.answer(call).await,
+            None => {
+                let (mut rx, tx) = tokio::io::split(stream);
+                tokio::select! {
+                    out = handler.answer(call) => {
+                        stream = rx.unsplit(tx);
+                        out
+                    }
+                    () = closed(&mut rx) => return,
+                }
+            }
         },
         Err(e) => Output::error(e),
     };
@@ -485,6 +495,16 @@ async fn handle<H: Handler>(handler: Arc<H>, mut stream: Accepted) {
 fn refusal<H: Handler, P: Peer>(handler: &H, tool: &str, peer: &P) -> Option<Output> {
     (handler.owner_only(tool) && !peer.is_owner())
         .then(|| Output::error(format!("{tool}: only the daemon's own user can send it")))
+}
+
+/// Returns once the client closes its side of the connection; bytes it sends after its call are ignored.
+async fn closed<R: AsyncRead + Unpin>(rx: &mut R) {
+    let mut buf = [0; 64];
+    while let Ok(n) = rx.read(&mut buf).await {
+        if n == 0 {
+            return;
+        }
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -720,6 +740,105 @@ mod tests {
         .await
         .unwrap();
         assert_eq!((out.is_error, out.text.as_str()), (false, "halt answered"));
+        server.abort();
+    }
+
+    struct Endless(Arc<std::sync::atomic::AtomicBool>);
+
+    struct Dropped(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl Handler for Endless {
+        async fn answer(&self, _: Call) -> Output {
+            let _dropped = Dropped(self.0.clone());
+            std::future::pending::<()>().await;
+            Output::text(String::new())
+        }
+    }
+
+    struct Spliced;
+
+    impl Handler for Spliced {
+        async fn answer(&self, _: Call) -> Output {
+            std::future::pending::<Output>().await
+        }
+
+        fn splicing(&self) -> bool {
+            true
+        }
+
+        fn splices(&self, tool: &str) -> bool {
+            tool == "svc"
+        }
+
+        async fn splice(&self, _: &str, _: Zeroizing<Vec<u8>>, mut stream: Accepted) {
+            use tokio::io::AsyncWriteExt;
+
+            let mut upload = Vec::new();
+            let _ = stream.read_to_end(&mut upload).await;
+            let _ = stream.write_all(&upload).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_spliced_call_takes_a_client_half_close_as_the_end_of_its_upload_not_a_cancel() {
+        use tokio::io::AsyncWriteExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let server = tokio::spawn(serve(Arc::new(Spliced), bind(&endpoint).await.unwrap()));
+        let mut conn = connect(&endpoint).await.unwrap();
+        let ask = Call {
+            agent_id: String::new(),
+            tool: "svc".into(),
+            args: Value::Null,
+        };
+        write_frame(&mut conn, &ask).await.unwrap();
+        conn.write_all(b"upload").await.unwrap();
+        conn.shutdown().await.unwrap();
+        let mut back = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            conn.read_to_end(&mut back),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(back, b"upload");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_client_that_closes_its_connection_cancels_its_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let server = tokio::spawn(serve(
+            Arc::new(Endless(cancelled.clone())),
+            bind(&endpoint).await.unwrap(),
+        ));
+        let mut conn = connect(&endpoint).await.unwrap();
+        let ask = Call {
+            agent_id: String::new(),
+            tool: "wait".into(),
+            args: Value::Null,
+        };
+        write_frame(&mut conn, &ask).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!cancelled.load(std::sync::atomic::Ordering::SeqCst));
+        drop(conn);
+        for _ in 0..100 {
+            if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(cancelled.load(std::sync::atomic::Ordering::SeqCst));
         server.abort();
     }
 

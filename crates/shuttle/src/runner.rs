@@ -157,6 +157,8 @@ impl Runner {
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("start {}: {e}", program.display()))?;
+        #[cfg(unix)]
+        let mut group = Group(child.id());
         let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
             return Err("the script's pipes are missing".to_owned());
         };
@@ -170,6 +172,10 @@ impl Runner {
             s = tokio::time::timeout(timeout, child.wait()) => s.map_err(|_| Ended::Timeout),
             _ = stopped.wait_for(|s| *s) => Err(Ended::Stopped),
         };
+        #[cfg(unix)]
+        {
+            group.0 = None;
+        }
         if status.is_err() {
             #[cfg(unix)]
             if let Some(pid) = child.id() {
@@ -239,6 +245,19 @@ struct ScriptArgs {
 enum Ended {
     Timeout,
     Stopped,
+}
+
+/// A run's process group, killed when the run is dropped before it ends, as when its client closes the connection.
+#[cfg(unix)]
+struct Group(Option<u32>);
+
+#[cfg(unix)]
+impl Drop for Group {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            crate::kill_group(pid);
+        }
+    }
 }
 
 fn scratch() -> Result<tempfile::TempDir, String> {
