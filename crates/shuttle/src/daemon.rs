@@ -243,6 +243,10 @@ impl<H: Handler> Daemon<H> {
 }
 
 impl<H: Handler> Handler for Daemon<H> {
+    fn owner_only(&self, tool: &str) -> bool {
+        matches!(tool, "safety_stop" | "safety_resume")
+    }
+
     async fn answer(&self, call: Call) -> Output {
         match call.tool.as_str() {
             "safety_stop" => return self.stop(true),
@@ -577,6 +581,13 @@ mod tests {
         let out = d.answer(call("desk_click", json!({}))).await;
         assert_eq!((out.is_error, out.text.as_str()), (true, BUSY));
         act.abort();
+    }
+
+    #[test]
+    fn only_the_stop_and_resume_are_kept_to_the_daemons_own_user() {
+        let d = daemon(Slow, Guard::default());
+        assert!(d.owner_only("safety_stop") && d.owner_only("safety_resume"));
+        assert!(!d.owner_only("desk_click") && !d.owner_only("script_run"));
     }
 
     #[tokio::test]

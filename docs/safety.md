@@ -50,10 +50,9 @@ The screenshot mask is per window rectangle, not per pixel:
 `[daemon] socket_group` ([config.md](config.md#daemon-endpoint)) lets every member of that group call the daemon as you do:
 - every desk verb, on your desktop and with your signed-in apps;
 - `gui_plan` and, with `script_run` on, `script_run` and the plugin tools, which run as your user;
-- the model calls on your key, which stays in the daemon but pays for theirs;
-- `safety_stop` and `safety_resume`, so a member can lift a stop you set.
+- the model calls on your key, which stays in the daemon but pays for theirs.
 
-The app allowlist and the confirm mode apply to their calls as to yours. Give the group only to accounts you would let use your desktop; `script_run = false` keeps them to the desk tools.
+The stop stays yours: the daemon reads the user of each connection's peer and answers `safety_stop` and `safety_resume` only from its own user, so no member can lift a stop you set or set one. The app allowlist and the confirm mode apply to their calls as to yours. Give the group only to accounts you would let use your desktop; `script_run = false` keeps them to the desk tools.
 
 ## Turning script_run off
 
