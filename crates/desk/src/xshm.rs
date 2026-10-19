@@ -7,12 +7,13 @@ use std::sync::Mutex;
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
 use x11rb::protocol::ErrorKind;
+use x11rb::protocol::Event;
 use x11rb::protocol::shape::{ConnectionExt as _, SK};
 use x11rb::protocol::shm::ConnectionExt as _;
 use x11rb::protocol::xinput::{ConnectionExt as _, DeviceType};
 use x11rb::protocol::xproto::{
-    Atom, AtomEnum, ConnectionExt as _, EventMask, GrabMode, GrabStatus, ImageFormat, ImageOrder,
-    MapState, Window, WindowClass,
+    Atom, AtomEnum, ChangeWindowAttributesAux, ConnectionExt as _, EventMask, GrabMode, GrabStatus,
+    ImageFormat, ImageOrder, MapState, Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 
@@ -116,6 +117,11 @@ impl Grabber {
             .map_err(|e| format!("MIT-SHM: {e}"))?
             .reply()
             .map_err(|e| format!("MIT-SHM: {e}"))?;
+        conn.change_window_attributes(
+            root,
+            &ChangeWindowAttributesAux::new().event_mask(EventMask::STRUCTURE_NOTIFY),
+        )
+        .map_err(|e| format!("watch the root window: {e}"))?;
         let seg = conn.generate_id().map_err(|e| format!("X id: {e}"))?;
         let _ = conn.xinput_xi_query_version(2, 2).map(|c| c.reply());
         let [
@@ -294,15 +300,13 @@ impl Grabber {
         self.image([0, 0, self.width.into(), self.height.into()])
     }
 
-    /// Whether the root window still has the size the segment was made for; a RandR change makes it stale.
-    pub fn current(&self) -> Result<bool, String> {
-        let g = self
-            .conn
-            .get_geometry(self.root)
-            .map_err(|e| format!("root geometry: {e}"))?
-            .reply()
-            .map_err(|e| format!("root geometry: {e}"))?;
-        Ok((g.width, g.height) == (self.width, self.height))
+    /// Whether the root window still has the size the segment was made for, by the root configure events a RandR change sends; no round trip.
+    pub fn current(&self) -> bool {
+        let mut current = true;
+        while let Ok(Some(event)) = self.conn.poll_for_event() {
+            current &= !resized(&event, (self.width, self.height));
+        }
+        current
     }
 
     /// The root window's width and height.
@@ -876,11 +880,30 @@ fn alive<T>(reply: Result<T, ReplyError>, what: &str) -> Result<Option<T>, Strin
     }
 }
 
+/// Whether `event` reconfigures the watched root window to a size other than `size`.
+fn resized(event: &Event, size: (u16, u16)) -> bool {
+    matches!(event, Event::ConfigureNotify(c) if (c.width, c.height) != size)
+}
+
 #[cfg(test)]
 mod tests {
     use x11rb::x11_utils::X11Error;
 
     use super::*;
+
+    #[test]
+    fn a_root_configure_to_another_size_is_a_resize_and_the_same_size_is_not() {
+        let configure = |width, height| {
+            Event::ConfigureNotify(x11rb::protocol::xproto::ConfigureNotifyEvent {
+                width,
+                height,
+                ..Default::default()
+            })
+        };
+        assert!(resized(&configure(1920, 1080), (1280, 800)));
+        assert!(!resized(&configure(1280, 800), (1280, 800)));
+        assert!(!resized(&Event::MapNotify(Default::default()), (1280, 800)));
+    }
 
     fn x11_error(error_kind: ErrorKind) -> ReplyError {
         ReplyError::X11Error(X11Error {
