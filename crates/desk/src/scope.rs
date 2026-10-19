@@ -117,8 +117,8 @@ mod tests {
     fn unit_names_are_valid_systemd_scopes() {
         assert_eq!(unit_name("mousepad", 42), "app-desk-mousepad-42.scope");
         assert_eq!(
-            unit_name("/usr/local/bin/cocoonbox-chrome", 7),
-            "app-desk-cocoonbox-chrome-7.scope"
+            unit_name("/usr/local/bin/my-chrome", 7),
+            "app-desk-my-chrome-7.scope"
         );
         assert_eq!(
             unit_name("Google Chrome", 1),

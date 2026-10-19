@@ -1,4 +1,4 @@
-//! The screen-still wait's block model, ported from cocoonbox's settle: a block that keeps changing during the wait, like a clock, a spinner or a video, stops counting, a block toggling between two contents, like a caret, counts only with new contents, and a faint change does not count.
+//! The screen-still wait's block model: a block that keeps changing during the wait, like a clock, a spinner or a video, stops counting, a block toggling between two contents, like a caret, counts only with new contents, and a faint change does not count.
 
 const BLOCK: usize = 8;
 const VISIBLE_STEP: u8 = 24;

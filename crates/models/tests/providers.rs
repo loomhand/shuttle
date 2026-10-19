@@ -96,7 +96,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_bodies_match_what_cocoonbox_desk_mts_sends() {
+    async fn request_bodies_match_what_desk_mts_sends() {
         let reply = json!({
             "choices": [{"message": {"content": "{\"point_2d\": [500, 250]}"}}],
             "answers": {"pick": {"type": "choice", "choice": "r1", "confidence": 0.9, "probabilities": {"r1": 0.9, "none": 0.1}}}

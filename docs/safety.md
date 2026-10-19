@@ -22,7 +22,7 @@ Set `kill_hotkey` in [config.md](config.md) to change it, or to `off` to registe
 
 ## Indicator
 
-On macOS a menu-bar item shows `Shuttle`, `● Shuttle` while a desk action or a run is in progress, and `■ Shuttle stopped` after a stop; its menu has Stop and Resume. `indicator = false` hides the menu-bar item. cua-driver draws its agent cursor where shuttle points either way, since macOS needs its overlay to track the front window; on Windows `[driver] overlay = false` in [config.md](config.md) turns the cursor off. On Windows a notification-area icon shows the same three states, as the stock application, information and error icons with the tooltip `Shuttle`, `Shuttle acting` or `Shuttle stopped`; a click opens its Stop and Resume menu. Windows 11 puts a new icon under the ^ overflow until you drag it onto the taskbar. `indicator = false` hides it. The Linux tray icon comes in P3.
+On macOS a menu-bar item shows `Shuttle`, `● Shuttle` while a desk action or a run is in progress, and `■ Shuttle stopped` after a stop; its menu has Stop and Resume. `indicator = false` hides the menu-bar item. cua-driver draws its agent cursor where shuttle points either way, since macOS needs its overlay to track the front window; on Windows `[driver] overlay = false` in [config.md](config.md) turns the cursor off. On Windows a notification-area icon shows the same three states, as the stock application, information and error icons with the tooltip `Shuttle`, `Shuttle acting` or `Shuttle stopped`; a click opens its Stop and Resume menu. Windows 11 puts a new icon under the ^ overflow until you drag it onto the taskbar. `indicator = false` hides it. Linux has no tray icon yet.
 
 ## Confirm mode
 
