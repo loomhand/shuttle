@@ -829,11 +829,12 @@ fn launcher(out: &str, app: &str) -> Option<String> {
 
 /// Pastes `line` through `paste` into the field `focus` names and checks the field shows it; again while the field did not change.
 ///
-/// It waits, within a second, for an editable node with input focus in the focused window, under `at` when given, and takes its text.
-/// After a paste it asks `focus` at once and then every 10 ms, at most 300 ms, until that text ends with the line's last 16 characters.
-/// Some(true) is a paste that shows. Some(false) is one that does not: the text changed otherwise (a filter or a format), and is not
-/// pasted again, or it stayed the same through every paste started within 1.5 s of the call. None is a paste it does not check:
-/// no such field (a web view), or a password field, which a second paste would double.
+/// It waits, within a second, for an editable node with input focus in the focused window, under `at` when given, and takes its text;
+/// an error when the focused field lies outside `at`. After a paste it asks `focus` at once and then every 10 ms, at most 300 ms,
+/// until that text changed and ends with the line's last 16 characters. Some(true) is a paste that shows. Some(false) is one that
+/// does not: the text stayed the same through every paste started within 1.5 s of the call. None is a paste it does not check: no
+/// such field (a web view), a password field, which a second paste would double, or text that changed otherwise (an insert inside
+/// the text, a filter or a format), which is not pasted again.
 async fn type_with<F, Ff, P, Pf>(
     line: &str,
     at: Option<(i32, i32)>,
@@ -852,7 +853,17 @@ where
     let before = loop {
         match focus().await? {
             Some(f) if usable(&f) => break Some(f),
-            _ if tokio::time::Instant::now() >= end => break None,
+            other if tokio::time::Instant::now() >= end => {
+                if let (Some((x, y)), Some(f)) = (at, other)
+                    && f.editable
+                    && f.window
+                {
+                    return Err(format!(
+                        "the field at ({x},{y}) has no input focus; another field does"
+                    ));
+                }
+                break None;
+            }
             _ => tokio::time::sleep(TYPE_FOCUS_POLL).await,
         }
     };
@@ -865,7 +876,9 @@ where
         let deadline = tokio::time::Instant::now() + VERIFY_WAIT;
         let now = loop {
             let f = focus().await?.filter(usable);
-            if f.as_ref().is_some_and(|f| f.ends_with(line)) {
+            if f.as_ref()
+                .is_some_and(|f| !f.same_text(&before) && f.ends_with(line))
+            {
                 return Ok(Some(true));
             }
             if tokio::time::Instant::now() >= deadline {
@@ -873,7 +886,10 @@ where
             }
             tokio::time::sleep(VERIFY_POLL).await;
         };
-        if !now.is_some_and(|f| f.same_text(&before)) || start.elapsed() >= TYPE_DEADLINE {
+        if !now.is_some_and(|f| f.same_text(&before)) {
+            return Ok(None);
+        }
+        if start.elapsed() >= TYPE_DEADLINE {
             return Ok(Some(false));
         }
     }
@@ -1562,12 +1578,19 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_field_that_changed_otherwise_is_not_pasted_again() {
-        assert_eq!(typed("abc", None, "", &["ABC"]).await, (Some(false), 1));
+    async fn a_field_that_already_ends_with_the_line_shows_the_paste_only_once_it_changes() {
+        assert_eq!(typed("bc", None, "abc", &["abc"]).await, (Some(false), 5));
+        assert_eq!(typed("bc", None, "abc", &["abcbc"]).await, (Some(true), 1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_field_that_changed_otherwise_is_unverified_and_not_pasted_again() {
+        assert_eq!(typed("abc", None, "", &["ABC"]).await, (None, 1));
         assert_eq!(
             typed("5551234567", None, "", &["(555) 123-4567"]).await,
-            (Some(false), 1)
+            (None, 1)
         );
+        assert_eq!(typed("x", None, "abc", &["axbc"]).await, (None, 1));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1604,9 +1627,45 @@ mod tests {
             typed("abc", Some((360, 136)), "", &["abc"]).await,
             (Some(true), 1)
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_type_after_a_tap_beside_the_focused_field_fails_without_a_paste() {
+        let pastes = std::cell::Cell::new(0);
+        let err = type_with(
+            "abc",
+            Some((360, 350)),
+            || async { Ok(Some(field(""))) },
+            || {
+                pastes.set(pastes.get() + 1);
+                async { Ok(()) }
+            },
+        )
+        .await
+        .unwrap_err();
         assert_eq!(
-            typed("abc", Some((360, 350)), "", &["abc"]).await,
-            (None, 1)
+            (err.as_str(), pastes.get()),
+            (
+                "the field at (360,350) has no input focus; another field does",
+                0
+            )
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_type_after_a_tap_with_no_accessible_field_gets_one_unverified_paste() {
+        let pastes = std::cell::Cell::new(0);
+        let out = type_with(
+            "abc",
+            Some((360, 350)),
+            || async { Ok(None) },
+            || {
+                pastes.set(pastes.get() + 1);
+                async { Ok(()) }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!((out, pastes.get()), (None, 1));
     }
 }
