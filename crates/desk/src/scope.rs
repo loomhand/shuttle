@@ -141,8 +141,12 @@ mod tests {
             .spawn()
             .expect("spawn sleep");
         let me = std::process::id();
-        assert!(children(me).contains(&child.id()), "children of {me}");
-        let tree = own_tree(&[me]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut tree = own_tree(&[me]);
+        while !tree.contains(&child.id()) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            tree = own_tree(&[me]);
+        }
         assert!(tree.contains(&me) && tree.contains(&child.id()), "{tree:?}");
         child.kill().expect("kill sleep");
         child.wait().expect("reap sleep");

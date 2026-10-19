@@ -215,7 +215,7 @@ mod tests {
     fn only_a_soffice_bin_process_counts_as_libreoffice() {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("soffice.bin");
-        std::fs::copy("/bin/sleep", &bin).unwrap();
+        std::os::unix::fs::symlink("/bin/sleep", &bin).unwrap();
         let mut office = std::process::Command::new(&bin).arg("30").spawn().unwrap();
         let pid = office.id();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
