@@ -26,6 +26,15 @@ use crate::still::{Frame as StillFrame, Watch};
 use crate::worker::Worker;
 
 pub const TURN_WAIT: Duration = Duration::from_secs(15);
+/// The verbs a vision agent drives the screen with, which the Linux X11 desk answers.
+pub const COMPUTER_VERBS: [&str; 6] = [
+    "desk_computer_state",
+    "desk_computer_act",
+    "desk_computer_end",
+    "desk_computer_scale",
+    "desk_look",
+    "desk_title_at",
+];
 pub const ACTIONS: [&str; 10] = [
     "desk_press",
     "desk_act",
@@ -158,6 +167,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_screen" => {
                 let v = self.driver.call("get_screen_size", json!({})).await?;
                 v["structuredContent"].to_string()
+            }
+            t if COMPUTER_VERBS.contains(&t) => {
+                return Err(format!(
+                    "{t}: not on this OS yet: the computer verbs run on Linux X11"
+                ));
             }
             other => return Err(format!("unknown desk tool {other}")),
         };
