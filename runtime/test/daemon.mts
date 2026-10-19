@@ -15,14 +15,14 @@ export const endpoint = (dir: string): string => process.platform === 'win32' ? 
 export type Call = { tool: string; args: Record<string, unknown> }
 export type Reply = string | { text: string; error?: boolean; image?: string }
 
-export async function daemon(t: { after(fn: () => void): void }, answer: (c: Call) => Reply, o: { wait?: boolean } = {}): Promise<void> {
+export async function daemon(t: { after(fn: () => void): void }, answer: (c: Call) => Reply): Promise<void> {
   const server = createServer((s) => {
     let buf = Buffer.alloc(0)
     s.on('data', async (d: Buffer) => {
       buf = Buffer.concat([buf, d])
       if (buf.length < 4 || buf.length < 4 + buf.readUInt32BE(0)) return
       const c = JSON.parse(buf.subarray(4).toString()) as Call
-      const r = c.tool === 'desk_wait' && o.wait !== false ? await wait(answer, c.args) : answer(c)
+      const r = c.tool === 'desk_wait' ? await wait(answer, c.args) : answer(c)
       const body = Buffer.from(JSON.stringify(typeof r === 'string' ? { text: r, is_error: false } : { text: r.text, is_error: r.error ?? false, image_b64: r.image }))
       const head = Buffer.alloc(4)
       head.writeUInt32BE(body.length)
