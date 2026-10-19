@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { toolhost } from './toolhost.mts'
+import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 const root = (role: string, name: string) => ({ ref: 0, id: '1/1', parent: -1, depth: 0, role, name, states: ['showing'] })
 
 test('a plan with a malformed step or an unfilled param makes no desk call', async (t) => {
   const calls: string[] = []
-  await toolhost(t, ({ tool }) => { calls.push(tool); return '[]' })
+  await daemon(t, ({ tool }) => { calls.push(tool); return '[]' })
   const two = await main({ steps: [{ click: 'OK', key: 'Return' }] })
   assert.match(two.escalate?.reason ?? '', /needs exactly one op/)
   const gap = await main({ steps: [{ type: '{{name}}' }] })
@@ -19,7 +19,7 @@ test('a plan with a malformed step or an unfilled param makes no desk call', asy
 test('a check that does not flip traces the state it found, not the one it wanted', async (t) => {
   const win = { id: '1', title: 'Preferences', role: 'dialog', pid: process.pid, active: true }
   const box = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Wrap lines', states: ['showing'], bounds: [10, 10, 20, 20] }
-  await toolhost(t, ({ tool }) => {
+  await daemon(t, ({ tool }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root('dialog', 'Preferences'), box] })
     if (tool === 'desk_read') return JSON.stringify(box)
@@ -37,7 +37,7 @@ test('a check on a tri-state box acts again past the mixed state to the state it
   let at = 2
   let presses = 0
   const box = () => ({ ref: 1, id: '1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Read-only', states: ['showing', ...(cycle[at] ?? [])], bounds: [10, 10, 20, 20] })
-  await toolhost(t, ({ tool }) => {
+  await daemon(t, ({ tool }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root('dialog', 'Properties'), box()] })
     if (tool === 'desk_read') return JSON.stringify(box())
@@ -55,7 +55,7 @@ test('a check on a tri-state box acts again past the mixed state to the state it
 test('close on a window that answers no accessibility call escalates even when its app has no other window', async (t) => {
   const win = { id: '1', title: 'Exporting', role: 'dialog', pid: process.pid, active: true }
   const calls: string[] = []
-  await toolhost(t, ({ tool }) => {
+  await daemon(t, ({ tool }) => {
     calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return { text: 'no accessibility answer within 10000 ms; the app may hang', error: true }
@@ -73,7 +73,7 @@ test('typing a Windows path into a dialog field finds it in the outline, backsla
   const doc = { id: '1', title: 'a.txt - Notepad', role: 'window', pid: process.pid, active: false }
   const dialog = { id: '2', title: 'Open', role: 'dialog', pid: process.pid, active: true }
   let value = ''
-  await toolhost(t, ({ tool, args }) => {
+  await daemon(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify([doc, dialog])
     if (tool === 'desk_snapshot') {
       const field = { ref: 1, id: '2/2', parent: 0, depth: 1, role: 'textbox', name: 'File name:', states: ['showing', 'focused'], bounds: [10, 10, 100, 20], value }
@@ -90,7 +90,7 @@ test('typing a Windows path into a dialog field finds it in the outline, backsla
 test('a press the desk reports as not done fails the step', async (t) => {
   const win = { id: '1', title: 'Preferences', role: 'dialog', pid: process.pid, active: true }
   const button = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'Apply', states: ['showing'], bounds: [10, 10, 60, 20] }
-  await toolhost(t, ({ tool }) => {
+  await daemon(t, ({ tool }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root('dialog', 'Preferences'), button] })
     if (tool === 'desk_press') return '{"ok":false,"how":"action"}'

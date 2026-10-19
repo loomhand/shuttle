@@ -1,5 +1,4 @@
-//! The desk calls: snapshots and element actions through the OS backend, input, windows, launch and
-//! capture through cua-driver; the same verbs and JSON as the Linux toolhost.
+//! The desk calls: snapshots and element actions through the OS backend; input, windows, launch and capture through cua-driver.
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -1849,7 +1848,7 @@ pub(crate) mod tests {
                 .env("SHUTTLE_SCRIPT", runtime.join("gui_plan.mts"))
                 .env("SHUTTLE_RUN", dir.path())
                 .env("SHUTTLE_FLOWS", dir.path().join("flows"))
-                .env("TOOLHOST_SOCKET", &endpoint)
+                .env("SHUTTLE_SOCKET", &endpoint)
                 .env("HOME", dir.path());
             let status = tokio::task::spawn_blocking(move || node.status())
                 .await

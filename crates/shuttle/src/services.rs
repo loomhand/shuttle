@@ -103,7 +103,7 @@ impl Proc {
         cmd.args(&self.args)
             .current_dir(home)
             .env(SOCKET_VAR, &self.socket)
-            .env("TOOLHOST_SOCKET", &self.desk)
+            .env("SHUTTLE_SOCKET", &self.desk)
             .stdin(Stdio::null())
             .kill_on_drop(true);
         for var in &self.key_vars {
@@ -309,7 +309,7 @@ class Conn(socketserver.StreamRequestHandler):
         if tool == "demo_echo":
             with open(os.path.join(state, "frame"), "wb") as f:
                 f.write(raw)
-            env = {k: os.environ.get(k) for k in ("TOOLHOST_SOCKET", "CARGO_PKG_NAME")}
+            env = {k: os.environ.get(k) for k in ("SHUTTLE_SOCKET", "CARGO_PKG_NAME")}
             reply(self.wfile, json.dumps({"agent_id": call["agent_id"], "args": call["args"], "env": env}))
         elif tool == "demo_stream":
             reply(self.wfile, "started")
@@ -492,7 +492,7 @@ server.serve_forever()
         let got: Value = serde_json::from_str(&out.text).unwrap();
         assert_eq!(std::fs::read(s.state("frame")).unwrap(), raw);
         assert_eq!(got["agent_id"], "agent-7");
-        assert_eq!(got["env"]["TOOLHOST_SOCKET"], s.endpoint.as_str());
+        assert_eq!(got["env"]["SHUTTLE_SOCKET"], s.endpoint.as_str());
         assert_eq!(got["env"]["CARGO_PKG_NAME"], Value::Null);
         let dir = std::fs::metadata(s.dir.path().join(DIR)).unwrap();
         assert_eq!(dir.permissions().mode() & 0o777, 0o700);

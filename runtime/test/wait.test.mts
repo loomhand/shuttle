@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { toolhost } from './toolhost.mts'
+import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 function retitled(onlyWaits = false) {
@@ -22,7 +22,7 @@ function retitled(onlyWaits = false) {
 
 test('a key that retitles the window late waits on the desk for the change instead of polling window lists', async (t) => {
   const d = retitled(true)
-  await toolhost(t, d.answer)
+  await daemon(t, d.answer)
   const r = await main({ steps: [{ key: 'ctrl+s' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   const after = d.calls.slice(d.calls.indexOf('desk_key'))
@@ -31,9 +31,9 @@ test('a key that retitles the window late waits on the desk for the change inste
   assert.ok(after.filter((c) => c === 'desk_windows').length <= 3, d.calls.join(' '))
 })
 
-test('a toolhost without desk_wait gets the window list polled instead', async (t) => {
+test('a daemon without desk_wait gets the window list polled instead', async (t) => {
   const d = retitled()
-  await toolhost(t, d.answer, { wait: false })
+  await daemon(t, d.answer, { wait: false })
   const r = await main({ steps: [{ key: 'ctrl+s' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(r.window, '*a.txt - Editor')

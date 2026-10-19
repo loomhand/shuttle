@@ -62,7 +62,7 @@ The daemon reads the user of each connection's peer and answers `safety_stop` an
 
 A [service plugin](wire.md#service-plugins) is a program you install in the plugin directory; the daemon runs it as your user and hands it the calls of its tools. Installing it is what turns it on: `script_run = false` does not turn it off, so that the tools it serves keep working where scripts are off.
 - **Stop.** `cocoon-shuttle stop` refuses new calls of its tools and closes every one in flight. The service itself keeps running, and work it started for a call, such as a shell command, is its own to end when the connection closes; shuttle does not end it.
-- **App allowlist and confirm.** They do not cover what a service does itself, such as reading files or running commands. Only the desk calls it makes on `TOOLHOST_SOCKET` pass them, as any other desk call.
+- **App allowlist and confirm.** They do not cover what a service does itself, such as reading files or running commands. Only the desk calls it makes on `SHUTTLE_SOCKET` pass them, as any other desk call.
 - **Reach.** Its socket is in a directory only your user reaches (0700), so a call reaches it only through the daemon, with the stop applied.
 
 ## Input on macOS

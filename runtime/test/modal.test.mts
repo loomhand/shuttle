@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { toolhost } from './toolhost.mts'
+import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 test('a step in a window whose app holds a modal dialog the screen does not show escalates with its title and types nothing', async (t) => {
@@ -13,7 +13,7 @@ test('a step in a window whose app holds a modal dialog the screen does not show
   const calls: string[] = []
   const [doc, dialog, terminal] = wins
   assert.ok(doc && dialog && terminal)
-  await toolhost(t, ({ tool }) => {
+  await daemon(t, ({ tool }) => {
     calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify(wins)
     if (tool === 'desk_snapshot') return JSON.stringify({ window: doc, nodes: [], truncated: false })

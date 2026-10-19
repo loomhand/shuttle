@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **`SHUTTLE_SOCKET` everywhere.** The daemon hands its endpoint to `script_run`, `gui_plan`, plugins and services in `SHUTTLE_SOCKET`, the variable the binary already reads, in place of `TOOLHOST_SOCKET`: a plugin or service that read `TOOLHOST_SOCKET` reads `SHUTTLE_SOCKET` now.
 - **Android taps against system windows.** `computer_state` keeps tap points clear of the system windows over the app, as `press` does:
   - a list row under the navigation bar or the keyboard is tapped in its open part, and one fully covered is left out;
   - an indexed `computer_act` reads the windows again and refuses, with `call computer_state again`, when the window the state came from is no longer in front (the notification shade is open, say), a system window now covers the element's saved point (a keyboard raised since), or the window list is unavailable; explicit `x`,`y` are not checked;

@@ -894,7 +894,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_socket_answers_desk_calls_with_toolhost_frames() {
+    async fn the_socket_answers_desk_calls_with_desk_frames() {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
         let desk = Arc::new(Desk::new(|| Ok(Stub::default()), NoDriver, Os::Mac));

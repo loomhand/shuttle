@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { toolhost } from './toolhost.mts'
+import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 test('an app step the allowlist refuses escalates without starting the app', async (t) => {
-  await toolhost(t, ({ tool }) => {
+  await daemon(t, ({ tool }) => {
     if (tool === 'desk_windows') return '[]'
     if (tool === 'desk_focus') return { text: 'no window "shuttle-no-such-app"', error: true }
     if (tool === 'desk_launch') return { text: 'shuttle-no-such-app is not in the app allowlist ([safety] apps in config.toml)', error: true }
@@ -18,7 +18,7 @@ test('an app step the allowlist refuses escalates without starting the app', asy
 
 test('an app step whose launch the user declines escalates with the desk\'s reason and waits for no window', async (t) => {
   const calls: string[] = []
-  await toolhost(t, ({ tool }) => {
+  await daemon(t, ({ tool }) => {
     calls.push(tool)
     if (tool === 'desk_windows') return '[]'
     if (tool === 'desk_focus') return { text: 'no window "notepad"', error: true }

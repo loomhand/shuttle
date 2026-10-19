@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { toolhost } from './toolhost.mts'
+import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 const win = { id: '1', title: 'Untitled', role: 'window', pid: process.pid, active: true }
@@ -18,7 +18,7 @@ for (const [name, step] of [
 ] as const) {
   test(name, { skip: process.platform !== 'darwin' }, async (t) => {
     const calls: { tool: string; args: Record<string, unknown> }[] = []
-    await toolhost(t, ({ tool, args }) => {
+    await daemon(t, ({ tool, args }) => {
       calls.push({ tool, args })
       if (tool === 'desk_windows') return JSON.stringify([win])
       if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes })

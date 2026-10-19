@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { toolhost } from './toolhost.mts'
+import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 const win = { id: '1', title: 'Big - Editor', role: 'window', pid: process.pid, active: true }
@@ -9,7 +9,7 @@ const win = { id: '1', title: 'Big - Editor', role: 'window', pid: process.pid, 
 function escalation(t: { after(fn: () => void): void }, truncated: boolean, buttons: number) {
   const nodes = [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: win.title, states: ['showing', 'active'] }]
   for (let i = 1; i <= buttons; i++) nodes.push({ ref: i, id: `1/${i + 1}`, parent: 0, depth: 1, role: 'button', name: `Toolbar action number ${i}`, states: ['showing'] })
-  return toolhost(t, ({ tool }) => {
+  return daemon(t, ({ tool }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated, nodes })
     return '{"ok":true}'

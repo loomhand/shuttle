@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { toolhost } from './toolhost.mts'
+import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 test('a step that typed into an empty field stops when its app was launched and reopened its last document', async (t) => {
   let launched = false
   const typed: string[] = []
   const win = { id: '1', title: 'alice.txt - Mousepad', role: 'frame', pid: process.pid, active: true }
-  await toolhost(t, ({ tool, args }) => {
+  await daemon(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify(launched ? [win] : [])
     if (tool === 'desk_focus') return launched ? JSON.stringify({ ok: true, title: win.title, pid: win.pid }) : { text: 'no such window', error: true }
     if (tool === 'desk_launch') launched = true

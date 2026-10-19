@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { toolhost } from './toolhost.mts'
+import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 test('set passes only when the field reads exactly the value it typed, and an empty value presses delete to clear the field', async (t) => {
@@ -9,7 +9,7 @@ test('set passes only when the field reads exactly the value it typed, and an em
   let value = 'Bob'; let selected = false; let selects = false; let readsAfterTyping = true; let typed = false
   const keys: string[] = []
   const field = () => ({ ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Name', states: ['showing'], bounds: [10, 10, 100, 20], value })
-  await toolhost(t, ({ tool, args }) => {
+  await daemon(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'dialog', name: 'Contact', states: ['showing'] }, field()] })
     if (tool === 'desk_read') return typed && !readsAfterTyping ? { text: 'no accessibility answer', error: true } : JSON.stringify(field())
@@ -44,7 +44,7 @@ test('set sends no key when the field takes no focus, so another field keeps its
   const win = { id: '1', title: 'Contact', role: 'dialog', pid: process.pid, active: true }
   const calls: string[] = []
   const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Name', states: ['showing'], bounds: [10, 10, 100, 20], value: 'Bob' }
-  await toolhost(t, ({ tool }) => {
+  await daemon(t, ({ tool }) => {
     calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'dialog', name: 'Contact', states: ['showing'] }, field] })
