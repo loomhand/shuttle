@@ -230,11 +230,13 @@ async fn serve(
     let exe = std::env::current_exe()
         .and_then(std::fs::canonicalize)
         .map_err(|e| format!("locate this program: {e}"))?;
-    let listener = server::bind(endpoint).await?;
     #[cfg(unix)]
-    if let Some(group) = &group {
-        server::share(&listener, group)?;
-    }
+    let listener = match &group {
+        Some(group) => server::bind_for(endpoint, group).await?,
+        None => server::bind(endpoint).await?,
+    };
+    #[cfg(windows)]
+    let listener = server::bind(endpoint).await?;
     let services = Services::start(&plugins.services, endpoint, &key_vars)?;
     let own = driver::endpoint(endpoint);
     let bundled = if local {

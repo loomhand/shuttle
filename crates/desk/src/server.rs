@@ -114,11 +114,25 @@ pub struct Listener {
 /// Takes the unix socket `endpoint`, readable by its user only, once no other daemon holds its lock.
 #[cfg(unix)]
 pub async fn bind(endpoint: &str) -> Result<Listener, String> {
+    bind_at(endpoint, None)
+}
+
+/// Takes the unix socket `endpoint` like [`bind`], open to the members of `group`, a group name or number: mode 0660, owned by that group. Its directory must belong to this user and be writable by no one else.
+#[cfg(unix)]
+pub async fn bind_for(endpoint: &str, group: &str) -> Result<Listener, String> {
+    bind_at(endpoint, Some(gid(group)?))
+}
+
+#[cfg(unix)]
+fn bind_at(endpoint: &str, gid: Option<u32>) -> Result<Listener, String> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
     let path = std::path::Path::new(endpoint);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        if gid.is_some() {
+            private_dir(dir)?;
+        }
     }
     let lock_path = format!("{endpoint}.lock");
     let lock = std::fs::OpenOptions::new()
@@ -135,11 +149,19 @@ pub async fn bind(endpoint: &str) -> Result<Listener, String> {
         }
         Err(std::fs::TryLockError::Error(e)) => return Err(format!("lock {lock_path}: {e}")),
     }
-    let _ = std::fs::remove_file(path);
+    let staged = format!("{endpoint}.new");
+    let _ = std::fs::remove_file(&staged);
     let socket =
-        tokio::net::UnixListener::bind(path).map_err(|e| format!("bind {endpoint}: {e}"))?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| format!("chmod {endpoint}: {e}"))?;
+        tokio::net::UnixListener::bind(&staged).map_err(|e| format!("bind {staged}: {e}"))?;
+    if let Some(gid) = gid {
+        std::os::unix::fs::lchown(&staged, None, Some(gid))
+            .map_err(|e| format!("give {staged} to group {gid}: {e}"))?;
+    }
+    socket_at(&staged)?;
+    let mode = if gid.is_some() { 0o660 } else { 0o600 };
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(mode))
+        .map_err(|e| format!("chmod {staged}: {e}"))?;
+    std::fs::rename(&staged, path).map_err(|e| format!("move {staged} to {endpoint}: {e}"))?;
     Ok(Listener {
         socket,
         _lock: lock,
@@ -147,17 +169,37 @@ pub async fn bind(endpoint: &str) -> Result<Listener, String> {
     })
 }
 
-/// Opens the unix socket of `listener` to the members of `group`, a group name or number: mode 0660, owned by that group.
+/// Refuses a socket directory that is not this user's or that its group or others can write, where a member could swap the socket.
 #[cfg(unix)]
-pub fn share(listener: &Listener, group: &str) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
+fn private_dir(dir: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
 
-    let gid = gid(group)?;
-    let path = std::path::Path::new(&listener.endpoint);
-    std::os::unix::fs::chown(path, None, Some(gid))
-        .map_err(|e| format!("give {} to group {group}: {e}", listener.endpoint))?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))
-        .map_err(|e| format!("chmod {}: {e}", listener.endpoint))
+    let meta = std::fs::metadata(dir).map_err(|e| format!("stat {}: {e}", dir.display()))?;
+    // SAFETY: geteuid takes no arguments and always succeeds.
+    let own = unsafe { libc::geteuid() };
+    if meta.uid() != own || meta.mode() & 0o022 != 0 {
+        return Err(format!(
+            "socket_group needs {} owned by this user (uid {own}) and writable by no one else; it is uid {} mode {:o}",
+            dir.display(),
+            meta.uid(),
+            meta.mode() & 0o7777
+        ));
+    }
+    Ok(())
+}
+
+/// Refuses `path` unless it is a socket itself, not a link to one.
+#[cfg(unix)]
+fn socket_at(path: &str) -> Result<(), String> {
+    use std::os::unix::fs::FileTypeExt;
+
+    let kind = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("stat {path}: {e}"))?
+        .file_type();
+    if !kind.is_socket() {
+        return Err(format!("{path} is not the socket just bound"));
+    }
+    Ok(())
 }
 
 /// Serves `handler` at `listener`.
@@ -424,16 +466,54 @@ mod tests {
     async fn a_shared_socket_is_0660_and_owned_by_the_group_and_a_private_one_0600() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-        let dir = tempfile::tempdir().unwrap();
-        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
-        let listener = bind(&endpoint).await.unwrap();
         let mode = |p: &str| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let private = tempfile::tempdir().unwrap();
+        let endpoint = private
+            .path()
+            .join("desk.sock")
+            .to_string_lossy()
+            .into_owned();
+        let _listener = bind(&endpoint).await.unwrap();
         assert_eq!(mode(&endpoint), 0o600);
-        let own = std::fs::metadata(dir.path()).unwrap().gid();
-        share(&listener, &own.to_string()).unwrap();
+        let shared = tempfile::tempdir().unwrap();
+        let endpoint = shared
+            .path()
+            .join("desk.sock")
+            .to_string_lossy()
+            .into_owned();
+        let own = std::fs::metadata(shared.path()).unwrap().gid();
+        let _listener = bind_for(&endpoint, &own.to_string()).await.unwrap();
         assert_eq!(mode(&endpoint), 0o660);
         assert_eq!(std::fs::metadata(&endpoint).unwrap().gid(), own);
         assert_eq!(mode(&format!("{endpoint}.lock")), 0o600);
+        assert!(!std::path::Path::new(&format!("{endpoint}.new")).exists());
+    }
+
+    #[tokio::test]
+    async fn a_shared_socket_in_a_directory_its_group_can_write_is_refused() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o770)).unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let own = std::fs::metadata(dir.path()).unwrap().gid();
+        let err = bind_for(&endpoint, &own.to_string()).await.err().unwrap();
+        assert!(
+            err.contains("writable by no one else") && err.contains("mode 770"),
+            "{err}"
+        );
+        assert!(!std::path::Path::new(&endpoint).exists());
+    }
+
+    #[test]
+    fn a_link_where_the_socket_was_bound_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.toml");
+        std::fs::write(&target, "").unwrap();
+        let link = dir.path().join("desk.sock.new");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let err = socket_at(&link.to_string_lossy()).unwrap_err();
+        assert!(err.contains("is not the socket just bound"), "{err}");
     }
 
     struct Guarded;
