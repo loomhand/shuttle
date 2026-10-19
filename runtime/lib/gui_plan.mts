@@ -67,6 +67,7 @@ const TREE_CUT = '\n(this accessibility read stopped before the end of the windo
 const SHELL_BY_OS: Partial<Record<NodeJS.Platform, RegExp>> = { linux: /^(Desktop|xfce4-panel)$/, win32: /^Program Manager$/ }
 const SHELL_WINDOWS = SHELL_BY_OS[OS] ?? /(?!)/
 const SHELL_TARGET = /\b(dock|panel|taskbar|desktop)\b/i
+const ANDROID_PACKAGE = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/
 const CHOOSER_BY_OS: Partial<Record<NodeJS.Platform, RegExp>> = { linux: /File Chooser Widget/, win32: /^\s*- (combobox|textbox) "File name:?"/m, darwin: /^\s*- text "Save As:"/m }
 const CHOOSER = CHOOSER_BY_OS[OS] ?? /(?!)/
 const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
@@ -717,7 +718,9 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const name = norm(s.title ?? s.app); const word = !s.title && /^[\w.-]+$/.test(s.app)
     const entries = word ? entryNames(s.app) : []
     const app = norm(s.app)
-    const own = (w: Win) => norm(w.title).includes(name) || (!s.title && !!w.app && norm(w.app).includes(app)) || (word && (norm(w.title).includes(name.replace(/-/g, ' ')) || ownedBy(w.pid, name) || entries.some((e) => norm(w.title).includes(e))))
+    const pkg = !s.title && ANDROID_PACKAGE.test(s.app)
+    const titled = (w: Win) => pkg ? w.title === s.app || w.title.endsWith(` - ${s.app}`) : norm(w.title).includes(name)
+    const own = (w: Win) => titled(w) || (!s.title && !!w.app && norm(w.app).includes(app)) || (word && ((!pkg && norm(w.title).includes(name.replace(/-/g, ' '))) || ownedBy(w.pid, name) || entries.some((e) => norm(w.title).includes(e))))
     const has = async () => { const ws = await desk.windows(); return ws.find(own) ?? (launched ? ws.find((w) => w.title && !before.has(w.title)) : undefined) }
     let w = ws.find(own)
     const listed = !w && word ? await desk.focus(s.app).catch(() => null) : null
