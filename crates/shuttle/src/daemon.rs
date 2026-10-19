@@ -143,7 +143,12 @@ impl<H: Handler> Daemon<H> {
             None => self.runner.script(args, &agent).await,
         };
         *self.running() = None;
-        Ok(report?.to_string())
+        let report = report?;
+        if report["error"].is_null() {
+            Ok(report.to_string())
+        } else {
+            Err(report.to_string())
+        }
     }
 
     async fn act(&self, call: Call) -> Output {
@@ -796,6 +801,21 @@ mod tests {
             .await;
         let report: Value = serde_json::from_str(&out.text).unwrap();
         assert_eq!(report["result"], 42, "{report}");
+    }
+
+    #[tokio::test]
+    async fn a_run_whose_report_carries_an_error_is_an_error_with_the_whole_report() {
+        let d = daemon(Echo, Guard::default());
+        let out = d
+            .answer(call(
+                "script_run",
+                json!({"code": "export function main() { console.log('before'); throw new Error('boom') }"}),
+            ))
+            .await;
+        assert!(out.is_error, "{}", out.text);
+        let report: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(report["error"]["kind"], "exception", "{report}");
+        assert!(report["logs"].to_string().contains("before"), "{report}");
     }
 
     #[cfg(unix)]

@@ -15,6 +15,8 @@
 
   Tested on redroid 16; a stock phone is untested.
 
+- **Run errors.** A `script_run` or plugin report that carries `error` now answers `is_error: true`, with the whole report (logs, stderr) as its text, through the daemon and the MCP server alike; before, a failed run looked like a success to the client.
+
 ## 0.1.3 - 2026-10-19
 
 - **Desk verbs.** `scroll` (wheel notches at a point, or scroll keys to the front app window; on Windows a wheel at that window's center), `drag` (from one point to another; both ends pass the app allowlist, and `confirm = "coordinate"` asks first) and `still` (waits until the screen stops changing, ignoring blocks that keep changing, such as a clock or a caret; `timeout_ms` is a polling deadline, at most 5 s).
