@@ -1,12 +1,12 @@
 //! cua-driver client: one line of JSON each way over its daemon socket, a named pipe on Windows.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 pub const WINDOW_SESSION: &str = "desk-window";
@@ -72,26 +72,18 @@ impl Driver {
         &self.endpoint
     }
 
-    /// Waits out [`CLICK_SPACING`] after a click within [`CLICK_DISTANCE`] of this one, so two clicks never make a double click.
-    pub(crate) async fn space_click(&self, (x, y): (f64, f64)) {
-        let wait = self
-            .last_click()
+    /// Runs `click` at `(x, y)` once [`CLICK_SPACING`] has passed since a click within [`CLICK_DISTANCE`] of it, and records it before the next click may check, so two clicks never make a double click.
+    pub(crate) async fn spaced<T>(&self, (x, y): (f64, f64), click: impl Future<Output = T>) -> T {
+        let mut last = self.last_click.lock().await;
+        let wait = last
             .filter(|(_, lx, ly)| (x - lx).hypot(y - ly) <= CLICK_DISTANCE)
             .map(|(at, _, _)| CLICK_SPACING.saturating_sub(at.elapsed()));
         if let Some(wait) = wait {
             tokio::time::sleep(wait).await;
         }
-    }
-
-    /// Records a click at `point`, which the next nearby click waits out.
-    pub(crate) fn clicked(&self, (x, y): (f64, f64)) {
-        *self.last_click() = Some((Instant::now(), x, y));
-    }
-
-    fn last_click(&self) -> std::sync::MutexGuard<'_, Option<(Instant, f64, f64)>> {
-        self.last_click
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        let done = click.await;
+        *last = Some((Instant::now(), x, y));
+        done
     }
 
     pub(crate) async fn send(&self, tool: &str, args: &Value) -> Result<Value, String> {
@@ -141,13 +133,10 @@ impl Input for Driver {
             let point = (tool == "click")
                 .then(|| args["x"].as_f64().zip(args["y"].as_f64()))
                 .flatten();
-            if let Some(point) = point {
-                self.space_click(point).await;
-            }
-            let done = self.send(tool, &args).await;
-            if let Some(point) = point {
-                self.clicked(point);
-            }
+            let done = match point {
+                Some(point) => self.spaced(point, self.send(tool, &args)).await,
+                None => self.send(tool, &args).await,
+            };
             let _ = self.send("end_session", &json!({"session": once})).await;
             return done;
         }
@@ -323,16 +312,27 @@ mod tests {
         assert_ne!(sessions[0], sessions[2]);
     }
 
-    #[cfg(target_os = "linux")]
     #[tokio::test(start_paused = true)]
     async fn a_click_near_the_last_one_waits_out_the_spacing() {
         let d = Driver::new(String::new());
-        *d.last_click() = Some((Instant::now(), 100.0, 100.0));
+        d.spaced((100.0, 100.0), async {}).await;
         let started = Instant::now();
-        d.space_click((110.0, 100.0)).await;
+        d.spaced((110.0, 100.0), async {}).await;
         assert_eq!(started.elapsed(), CLICK_SPACING);
         let started = Instant::now();
-        d.space_click((300.0, 100.0)).await;
+        d.spaced((300.0, 100.0), async {}).await;
         assert_eq!(started.elapsed(), Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn two_near_clicks_at_once_are_spaced_by_the_second_waiting_for_the_first() {
+        let d = Driver::new(String::new());
+        let started = Instant::now();
+        let slow = async { tokio::time::sleep(Duration::from_millis(50)).await };
+        tokio::join!(
+            d.spaced((100.0, 100.0), slow),
+            d.spaced((104.0, 100.0), async {})
+        );
+        assert_eq!(started.elapsed(), Duration::from_millis(50) + CLICK_SPACING);
     }
 }
