@@ -860,17 +860,8 @@ fn launcher(out: &str, app: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Pastes `line` through `paste` into the field `focus` names and checks the field shows it; again while the field did not
-/// change.
-///
-/// It waits, within a second, for an editable node with input focus in the focused window, under `at` when given, and takes its
-/// text live; an error when the focused field lies outside `at`. After a paste it asks `focus` at once and then every 10 ms, at
-/// most 300 ms, until that text changed and ends with the line's last 16 characters, and reads it live once when the window
-/// ends; a cached answer shows the paste only once it differs from the cached text at the snapshot. A paste key the device
-/// refused reached no window, so it is pressed again at once. Some(true) is a paste that shows. Some(false) is one that does
-/// not: the text stayed the same through every paste started within 1.5 s of the call. An error when no key was delivered by
-/// then. None is a paste it does not check: no such field (a web view), a password field, which a second paste would double, or
-/// text that changed otherwise (an insert inside the text, a filter or a format), which is not pasted again.
+/// Pastes `line` into the field `focus` names, pasting again while the field's text did not change: Some(true) when it shows, Some(false) when the text stayed the same for 1.5 s.
+/// None is a paste it does not check (no field, a password field, or text that changed otherwise); an error when no paste key was delivered or the field under `at` has no focus.
 async fn type_with<F, Ff, P, Pf>(
     line: &str,
     at: Option<(i32, i32)>,
