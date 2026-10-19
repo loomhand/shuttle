@@ -166,6 +166,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 let app = parse::<LaunchArgs>(args)?.app;
                 let v = self.driver.call("launch_app", json!({"name": app})).await?;
                 let mut out = json!({"ok": true, "launched": text_of(&v)});
+                if let Some(s) = v["structuredContent"].get("self_activation_suppressed") {
+                    out["suppressed"] = s.clone();
+                }
                 if self.os == Os::Linux {
                     out["scoped"] = adopt(v).await.into();
                 }
@@ -1711,6 +1714,9 @@ pub(crate) mod tests {
             self.0.lock().unwrap().push(tool.to_owned());
             Ok(match tool {
                 "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
+                "launch_app" => {
+                    json!({"content": [{"type": "text", "text": "Launched TextEdit (pid 7) in background."}], "structuredContent": {"pid": 7, "self_activation_suppressed": true}})
+                }
                 "list_windows" => json!({"structuredContent": {"windows": [
                     {"pid": 98, "window_id": 4, "layer": 0, "z_index": 4, "title": "Cua.AgentCursorOverlay.default", "bounds": {"x": 0.0, "y": 900.0, "width": 100.0, "height": 100.0}},
                     {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "bounds": {"x": 0.0, "y": 0.0, "width": 1000.0, "height": 1000.0}},
@@ -1731,6 +1737,18 @@ pub(crate) mod tests {
                 _ => json!({}),
             })
         }
+    }
+
+    #[tokio::test]
+    async fn a_launch_passes_on_whether_the_driver_handed_the_front_back() {
+        let desk = Desk::new(|| Ok(Apps), Desktop(Arc::default()), Os::Mac);
+        let out = desk
+            .run("desk_launch", json!({"app": "TextEdit"}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(v["suppressed"], true, "{v}");
+        assert_eq!(v["launched"], "Launched TextEdit (pid 7) in background.");
     }
 
     fn pixels(out: &Output) -> Vec<[u8; 3]> {
