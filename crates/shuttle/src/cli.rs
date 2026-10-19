@@ -252,7 +252,7 @@ async fn serve(
     );
     let desk = match android {
         Some(settings) => Desks::Android(Box::new(android::device(settings))),
-        None => Desks::Native(server::native(driver, &apps)),
+        None => Desks::Native(server::native(driver, &apps, overlay)),
     };
     let daemon = Arc::new(
         Daemon::new(desk, models, runner, guard)

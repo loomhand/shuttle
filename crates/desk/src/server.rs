@@ -209,25 +209,27 @@ pub async fn exchange(mut conn: Conn, call: &Call) -> Result<Output, String> {
 
 /// This OS's desk: its accessibility tree, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
 #[cfg(target_os = "macos")]
-pub fn native(driver: String, apps: &[String]) -> impl Handler {
+pub fn native(driver: String, apps: &[String], _overlay: bool) -> impl Handler {
     use crate::{ax::Ax, driver::Driver, keys::Os};
     Desk::new(Ax::open, Driver::new(driver), Os::Mac).allow(apps)
 }
 
 /// This OS's desk: its accessibility tree, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
 #[cfg(windows)]
-pub fn native(driver: String, apps: &[String]) -> impl Handler {
+pub fn native(driver: String, apps: &[String], _overlay: bool) -> impl Handler {
     use crate::{driver::Driver, keys::Os, uia::Uia};
     Desk::new(Uia::open, Driver::new(driver), Os::Windows).allow(apps)
 }
 
-/// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
+/// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty; `overlay` says whether that driver may show its cursor overlay.
 #[cfg(target_os = "linux")]
-pub fn native(driver: String, apps: &[String]) -> impl Handler {
+pub fn native(driver: String, apps: &[String], overlay: bool) -> impl Handler {
     use crate::{computer::Computer, driver::Driver, keys::Os, spi::Spi};
     let driver = Arc::new(Driver::new(driver));
     Linux {
-        desk: Desk::new(Spi::open, Arc::clone(&driver), Os::Linux).allow(apps),
+        desk: Desk::new(Spi::open, Arc::clone(&driver), Os::Linux)
+            .allow(apps)
+            .overlay(overlay),
         computer: Computer::new(driver),
         open: apps.is_empty(),
     }
@@ -260,7 +262,7 @@ impl Handler for Linux {
 
 /// This OS's desk: none yet.
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
-pub fn native(_: String, _: &[String]) -> impl Handler {
+pub fn native(_: String, _: &[String], _: bool) -> impl Handler {
     NoDesk
 }
 
@@ -421,7 +423,7 @@ mod tests {
             tool: tool.into(),
             args,
         };
-        let open = native("/nonexistent/driver.sock".into(), &[]);
+        let open = native("/nonexistent/driver.sock".into(), &[], false);
         let title = open
             .answer(ask("desk_title_at", json!({"x": 10, "y": 10})))
             .await;
@@ -431,7 +433,11 @@ mod tests {
         );
         let scale = open.answer(ask("desk_computer_scale", json!({}))).await;
         assert_eq!(scale.text, r#"{"scale":1.0}"#);
-        let listed = native("/nonexistent/driver.sock".into(), &["mousepad".to_owned()]);
+        let listed = native(
+            "/nonexistent/driver.sock".into(),
+            &["mousepad".to_owned()],
+            false,
+        );
         for tool in COMPUTER_VERBS {
             let out = listed.answer(ask(tool, json!({}))).await;
             assert_eq!(
