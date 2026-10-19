@@ -1471,14 +1471,14 @@ impl Computer {
             (Some(x), Some(y)) if name == "click" => Some((x, y)),
             _ => None,
         };
-        if let Some(point) = point {
-            self.driver.space_click(point).await;
-        }
-        let result = self.call(session, name, args).await;
-        if let Some((x, y)) = point {
-            self.driver.clicked((x, y));
-        }
-        let result = result?;
+        let result = match point {
+            Some(point) => {
+                self.driver
+                    .spaced(point, self.call(session, name, args))
+                    .await
+            }
+            None => self.call(session, name, args).await,
+        }?;
         if result["isError"] == true {
             return Err(format!("{name}: {}", content_text(&result)));
         }
