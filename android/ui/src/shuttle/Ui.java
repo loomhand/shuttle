@@ -1,4 +1,4 @@
-package cb;
+package shuttle;
 
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.UiAutomation;
@@ -46,7 +46,7 @@ public final class Ui {
 
     public static void main(String[] args) throws Exception {
         Looper.prepareMainLooper();
-        HandlerThread thread = new HandlerThread("cb-ui");
+        HandlerThread thread = new HandlerThread("shuttle-ui");
         thread.start();
         UiAutomation ui = new UiAutomation(thread.getLooper(), new UiAutomationConnection());
         ui.connect(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);

@@ -12,6 +12,6 @@ curl -fsSL --retry 3 --retry-connrefused "$R8_URL" -o "$tmp/r8.jar"
 echo "$R8_SHA256  $tmp/r8.jar" | sha256sum -c --quiet -
 mapfile -t stubs < <(find "$SRC/stubs" -name '*.java')
 javac -nowarn --release 11 -d "$tmp/stubs" "${stubs[@]}"
-javac -nowarn --release 11 -cp "$tmp/stubs" -d "$tmp/classes" "$SRC/src/cb/Ui.java"
-java -cp "$tmp/r8.jar" com.android.tools.r8.D8 --min-api 30 --output "$tmp/cb-ui.jar" "$tmp/classes/cb/Ui.class"
-install -D -m 0644 "$tmp/cb-ui.jar" "$OUT"
+javac -nowarn --release 11 -cp "$tmp/stubs" -d "$tmp/classes" "$SRC/src/shuttle/Ui.java"
+java -cp "$tmp/r8.jar" com.android.tools.r8.D8 --min-api 30 --output "$tmp/shuttle-ui.jar" "$tmp/classes/shuttle/Ui.class"
+install -D -m 0644 "$tmp/shuttle-ui.jar" "$OUT"

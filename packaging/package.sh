@@ -64,7 +64,7 @@ linux-*)
 	install -m 0755 "$BIN" "$dir/$NAME"
 	install -m 0755 "$cua/cua-driver" "$cua/cua-cursor-theme" "$node/bin/node" "$dir/"
 	cp -R "$cua/wayland-helper" "$dir/wayland-helper"
-	install -D -m 0644 "${UI_JAR:?set UI_JAR to the jar android/ui/build.sh builds}" "$dir/android/cb-ui.jar"
+	install -D -m 0644 "${UI_JAR:?set UI_JAR to the jar android/ui/build.sh builds}" "$dir/android/shuttle-ui.jar"
 	runtime "$node/bin/node" "$dir/runtime"
 	licenses "$dir/licenses" "$node" "$cua"
 	tar -czf "$archive.tar.gz" -C "$stage" "$NAME"
