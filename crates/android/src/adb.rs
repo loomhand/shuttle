@@ -1106,6 +1106,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn tap_element(session: &str, element: usize) -> ActArgs {
         serde_json::from_value(
             serde_json::json!({"session": session, "action": "tap", "element": element}),
