@@ -1,5 +1,7 @@
 //! The toolhost wire: one big-endian u32 length and a JSON body each way, one call per connection.
 
+use std::borrow::Cow;
+
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -50,6 +52,12 @@ impl Output {
     }
 }
 
+#[derive(Deserialize)]
+struct Head<'a> {
+    #[serde(borrow)]
+    tool: Cow<'a, str>,
+}
+
 /// Writes `msg` as a big-endian u32 length followed by JSON.
 pub async fn write_frame<W, T>(w: &mut W, msg: &T) -> Result<(), String>
 where
@@ -97,6 +105,11 @@ pub async fn read_body<R: AsyncRead + Unpin>(r: &mut R) -> Result<Vec<u8>, Strin
     Ok(body)
 }
 
+/// The `tool` of a call frame `body`, read without decoding the rest of it.
+pub fn tool_of(body: &[u8]) -> Option<Cow<'_, str>> {
+    serde_json::from_slice::<Head>(body).ok().map(|h| h.tool)
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -122,6 +135,14 @@ mod tests {
         let (mut a, mut b) = tokio::io::duplex(64);
         a.write_all(&u32::MAX.to_be_bytes()).await.unwrap();
         assert!(read_frame::<_, Output>(&mut b).await.is_err());
+    }
+
+    #[test]
+    fn the_tool_of_a_frame_comes_without_its_arguments() {
+        let body = br#"{"agent_id": "a", "args": {"data": "x"}, "tool": "upload"}"#;
+        assert_eq!(tool_of(body).as_deref(), Some("upload"));
+        assert_eq!(tool_of(br#"{"tool": "a\u0062"}"#).as_deref(), Some("ab"));
+        assert_eq!(tool_of(b"{"), None);
     }
 
     #[test]

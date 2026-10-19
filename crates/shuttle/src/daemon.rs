@@ -271,17 +271,20 @@ impl<H: Handler> Handler for Daemon<H> {
         }
     }
 
+    fn splicing(&self) -> bool {
+        !self.services.is_empty()
+    }
+
     fn splices(&self, tool: &str) -> bool {
         self.services.contains_key(tool)
     }
 
     // a stop drops the splice without a reply, since the client may be inside a stream of its own frames
-    async fn splice(&self, call: Call, body: Vec<u8>, mut stream: Accepted) {
+    async fn splice(&self, tool: &str, body: Vec<u8>, mut stream: Accepted) {
         let body = Zeroizing::new(body);
-        let Some(socket) = self.services.get(&call.tool) else {
+        let Some(socket) = self.services.get(tool) else {
             return;
         };
-        drop(call);
         let refused = if *self.halted.borrow() {
             Some(STOPPED.to_owned())
         } else {
