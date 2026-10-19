@@ -55,6 +55,32 @@ pub trait Handler: Send + Sync + 'static {
     ) -> impl Future<Output = ()> + Send {
         async {}
     }
+
+    /// Whether `tool` answers only a caller that runs as this process's user.
+    fn owner_only(&self, _tool: &str) -> bool {
+        false
+    }
+}
+
+/// A connection, which can say whether its peer runs as this process's user.
+trait Peer {
+    fn is_owner(&self) -> bool;
+}
+
+#[cfg(unix)]
+impl Peer for tokio::net::UnixStream {
+    fn is_owner(&self) -> bool {
+        // SAFETY: geteuid takes no arguments and always succeeds.
+        let own = unsafe { libc::geteuid() };
+        self.peer_cred().is_ok_and(|c| c.uid() == own)
+    }
+}
+
+#[cfg(windows)]
+impl Peer for tokio::net::windows::named_pipe::NamedPipeServer {
+    fn is_owner(&self) -> bool {
+        true
+    }
 }
 
 impl<B: Access + 'static, D: Input + Send + Sync + 'static> Handler for Desk<B, D> {
@@ -338,10 +364,19 @@ async fn handle<H: Handler>(handler: Arc<H>, mut stream: Accepted) {
         Err(e) => Err(e),
     };
     let out = match call {
-        Ok(call) => handler.answer(call).await,
+        Ok(call) => match refusal(handler.as_ref(), &call.tool, &stream) {
+            Some(refused) => refused,
+            None => handler.answer(call).await,
+        },
         Err(e) => Output::error(e),
     };
     let _ = write_frame(&mut stream, &out).await;
+}
+
+/// The refusal of a call of `tool` that only this process's user may send, when `peer` runs as another user.
+fn refusal<H: Handler, P: Peer>(handler: &H, tool: &str, peer: &P) -> Option<Output> {
+    (handler.owner_only(tool) && !peer.is_owner())
+        .then(|| Output::error(format!("{tool}: only the daemon's own user can send it")))
 }
 
 #[cfg(all(test, unix))]
@@ -399,6 +434,54 @@ mod tests {
         assert_eq!(mode(&endpoint), 0o660);
         assert_eq!(std::fs::metadata(&endpoint).unwrap().gid(), own);
         assert_eq!(mode(&format!("{endpoint}.lock")), 0o600);
+    }
+
+    struct Guarded;
+
+    impl Handler for Guarded {
+        async fn answer(&self, call: Call) -> Output {
+            Output::text(format!("{} answered", call.tool))
+        }
+
+        fn owner_only(&self, tool: &str) -> bool {
+            tool == "halt"
+        }
+    }
+
+    struct Foreign;
+
+    impl Peer for Foreign {
+        fn is_owner(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn an_owner_only_call_from_another_user_is_refused_and_the_rest_answered() {
+        let refused = refusal(&Guarded, "halt", &Foreign).unwrap();
+        assert!(refused.is_error);
+        assert_eq!(refused.text, "halt: only the daemon's own user can send it");
+        assert!(refusal(&Guarded, "look", &Foreign).is_none());
+    }
+
+    #[tokio::test]
+    async fn an_owner_only_call_over_the_socket_from_this_user_is_answered() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let listener = bind(&endpoint).await.unwrap();
+        let server = tokio::spawn(serve(Arc::new(Guarded), listener));
+        let out = answer(
+            &endpoint,
+            &Call {
+                agent_id: String::new(),
+                tool: "halt".into(),
+                args: Value::Null,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!((out.is_error, out.text.as_str()), (false, "halt answered"));
+        server.abort();
     }
 
     #[test]
