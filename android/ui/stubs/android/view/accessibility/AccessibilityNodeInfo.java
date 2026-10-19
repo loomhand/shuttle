@@ -4,6 +4,7 @@ import android.graphics.Rect;
 
 public class AccessibilityNodeInfo {
     public int getWindowId() { throw new RuntimeException(); }
+    public static final int FOCUS_INPUT = 1;
     public int getChildCount() { throw new RuntimeException(); }
     public AccessibilityNodeInfo getChild(int i) { throw new RuntimeException(); }
     public CharSequence getText() { throw new RuntimeException(); }
@@ -24,4 +25,6 @@ public class AccessibilityNodeInfo {
     public boolean isShowingHintText() { throw new RuntimeException(); }
     public CharSequence getHintText() { throw new RuntimeException(); }
     public CharSequence getPackageName() { throw new RuntimeException(); }
+    public boolean isPassword() { throw new RuntimeException(); }
+    public AccessibilityWindowInfo getWindow() { throw new RuntimeException(); }
 }

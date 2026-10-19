@@ -13,6 +13,7 @@ public class UiAutomation {
     public void disconnect() { throw new RuntimeException(); }
     public void waitForIdle(long idle, long timeout) throws java.util.concurrent.TimeoutException { throw new RuntimeException(); }
     public AccessibilityNodeInfo getRootInActiveWindow() { throw new RuntimeException(); }
+    public AccessibilityNodeInfo findFocus(int focus) { throw new RuntimeException(); }
     public List<AccessibilityWindowInfo> getWindows() { throw new RuntimeException(); }
     public AccessibilityServiceInfo getServiceInfo() { throw new RuntimeException(); }
     public void setServiceInfo(AccessibilityServiceInfo info) { throw new RuntimeException(); }

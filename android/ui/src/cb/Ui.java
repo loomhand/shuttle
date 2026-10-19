@@ -18,14 +18,16 @@ import java.util.List;
 
 /**
  * Serves the accessibility tree from a resident app_process, one answer per stdin line, each ended by a line
- * "<<end>>": "windows" lists the interactive windows as JSON, "dump" the active window and "dump ID" window ID
- * as uiautomator-style nodes with their depth and child-index path.
+ * "<<end>>": "windows" lists the interactive windows as JSON; "focus" the node with input focus as JSON (or null):
+ * editable, password, whether its window has focus, and its text's length, hash and last 32 code points; "dump" the
+ * active window and "dump ID" window ID as uiautomator-style nodes with their depth and child-index path.
  */
 public final class Ui {
     private static final int MAX_DEPTH = 64;
     private static final long IDLE_MS = 100;
     private static final long IDLE_TIMEOUT_MS = 1000;
     private static final String END = "<<end>>";
+    private static final int TAIL = 32;
     private static final int OUT_BUFFER = 1 << 20;
 
     public static void main(String[] args) throws Exception {
@@ -49,6 +51,8 @@ public final class Ui {
             try {
                 if (line.equals("windows")) {
                     out.println(windows(ui));
+                } else if (line.equals("focus")) {
+                    out.println(focus(ui));
                 } else {
                     idle(ui);
                     out.println(dump(ui, line.startsWith("dump ") ? line.substring(5).trim() : ""));
@@ -93,6 +97,25 @@ public final class Ui {
                 .append(r.right).append(',').append(r.bottom).append("]}");
         }
         return sb.append(']').toString();
+    }
+
+    private static String focus(UiAutomation ui) {
+        AccessibilityNodeInfo f = ui.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+        if (f == null) {
+            return "null";
+        }
+        Rect r = new Rect();
+        f.getBoundsInScreen(r);
+        AccessibilityWindowInfo w = f.getWindow();
+        CharSequence value = f.isShowingHintText() ? null : f.getText();
+        String text = value == null ? "" : value.toString();
+        int n = text.codePointCount(0, text.length());
+        String tail = text.substring(text.offsetByCodePoints(0, Math.max(0, n - TAIL)));
+        return "{\"editable\":" + f.isEditable() + ",\"password\":" + f.isPassword()
+            + ",\"window\":" + (w != null && w.isFocused()) + ",\"len\":" + text.length()
+            + ",\"hash\":" + text.hashCode() + ",\"tail\":" + json(tail) + ",\"class\":" + json(f.getClassName())
+            + ",\"package\":" + json(f.getPackageName()) + ",\"bounds\":[" + r.left + ',' + r.top + ','
+            + r.right + ',' + r.bottom + "]}";
     }
 
     private static String dump(UiAutomation ui, String id) {
