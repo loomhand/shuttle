@@ -50,10 +50,10 @@ test('an app step for a package launches it when only a package it prefixes has 
   const settings = { id: '9', title: 'Settings - com.android.settings', role: 'frame', pid: 6289366, active: true }
   let launched = false
   const calls: string[] = []
-  await toolhost(t, ({ tool, args }) => {
+  await toolhost(t, ({ tool }) => {
     calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify(launched ? [{ ...suggestions, active: false }, settings] : [suggestions])
-    if (tool === 'desk_focus') return args.window === settings.title && launched ? JSON.stringify({ ok: true, title: settings.title, pid: settings.pid }) : { text: `no window "${String(args.window)}"`, error: true }
+    if (tool === 'desk_focus') return { text: 'no window "com.android.settings"', error: true }
     if (tool === 'desk_launch') { launched = true; return JSON.stringify({ ok: true, launched: 'com.android.settings/.Settings' }) }
     if (tool === 'desk_snapshot') return JSON.stringify({ window: settings, nodes: [], truncated: false })
     return '{"ok":true}'
@@ -84,7 +84,7 @@ test('an app step for a name that is no package still takes a window whose title
   assert.ok(!calls.includes('desk_launch'), calls.join(' '))
 })
 
-test('an app step brings a window it launched to the front even when it reads active, since a background launch can hand the front back to the previous app', async (t) => {
+test('an app step brings a window it launched to the front when the driver handed the front back during the launch, even when the window reads active', async (t) => {
   const doc = { id: '1', title: 'Untitled', role: 'window', pid: process.pid, active: true, app: 'TextEdit' }
   let launched = false
   const focused: unknown[] = []
@@ -95,11 +95,32 @@ test('an app step brings a window it launched to the front even when it reads ac
       focused.push(args.window)
       return JSON.stringify({ ok: true, title: doc.title, pid: doc.pid })
     }
-    if (tool === 'desk_launch') { launched = true; return JSON.stringify({ ok: true, launched: 'TextEdit' }) }
+    if (tool === 'desk_launch') { launched = true; return JSON.stringify({ ok: true, launched: 'Launched TextEdit in background.', suppressed: true }) }
     if (tool === 'desk_snapshot') return JSON.stringify({ window: doc, nodes: [], truncated: false })
     return '{"ok":true}'
   })
   const r = await main({ steps: [{ app: 'TextEdit' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(focused, ['Untitled'])
+})
+
+test('an app step leaves an active window as it is when the launch reports no hand-back or the app was already open', async (t) => {
+  const doc = { id: '1', title: 'Untitled - Notepad', role: 'window', pid: process.pid, active: true, app: 'Notepad' }
+  let launched = false
+  const focused: unknown[] = []
+  await toolhost(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify(launched ? [doc] : [])
+    if (tool === 'desk_focus') {
+      if (launched) focused.push(args.window)
+      return launched ? JSON.stringify({ ok: true, title: doc.title, pid: doc.pid }) : { text: `no window "${String(args.window)}"`, error: true }
+    }
+    if (tool === 'desk_launch') { launched = true; return JSON.stringify({ ok: true, launched: 'notepad' }) }
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: doc, nodes: [], truncated: false })
+    return '{"ok":true}'
+  })
+  const fresh = await main({ steps: [{ app: 'Notepad' }] })
+  assert.equal(fresh.ok, true, JSON.stringify(fresh))
+  const open = await main({ steps: [{ app: 'Notepad' }] })
+  assert.equal(open.ok, true, JSON.stringify(open))
+  assert.deepEqual(focused, [])
 })
