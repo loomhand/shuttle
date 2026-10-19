@@ -453,7 +453,12 @@ impl Android {
         format!(
             "UI server said {said:?} and {status}: {}\n{}",
             String::from_utf8_lossy(&tail).trim(),
-            cause.map_or_else(|| "see adb logcat".to_owned(), |c| format!("abort: {c}"))
+            cause.map_or_else(
+                || "see adb logcat".to_owned(),
+                |c| format!(
+                    "last cb.Ui abort in the crash log (may be from an earlier start): {c}"
+                )
+            )
         )
     }
 
@@ -531,7 +536,7 @@ fn abort_cause(log: &str) -> Option<String> {
                 .rev()
                 .find(|&i| abort.is_char_boundary(i))
                 .unwrap_or(0);
-            cause = Some(abort[..end].to_owned());
+            cause = Some(abort[..end].to_owned()).filter(|c| !c.is_empty());
         }
     }
     cause
@@ -925,16 +930,17 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn failing_ui_server(log: &str) -> String {
+    async fn failing_ui_server(log: &str, stderr: &str, status: u8) -> String {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!(
-            "shuttle-adb-ui-{}-{}",
+            "shuttle-adb-ui-{}-{}-{}-{status}",
             std::process::id(),
-            log.len()
+            log.len(),
+            stderr.len()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let adb = dir.join("adb");
-        std::fs::write(&adb, "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*logcat*) cat \"$DIR/crash.log\";;\n*app_process*) echo 'Aborted (core dumped)' >&2; exit 134;;\nesac\n").unwrap();
+        std::fs::write(&adb, format!("#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*logcat*) cat \"$DIR/crash.log\";;\n*app_process*) echo '{stderr}' >&2; exit {status};;\nesac\n")).unwrap();
         std::fs::write(dir.join("crash.log"), log).unwrap();
         std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755)).unwrap();
         let android = Android::new(Device {
@@ -952,19 +958,35 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_ui_server_that_aborts_before_ready_reports_its_exit_stderr_and_cause() {
-        let err = failing_ui_server(CRASH_LOG).await;
+        let err = failing_ui_server(CRASH_LOG, "Aborted (core dumped)", 134).await;
         assert_eq!(
             err,
-            "UI server said \"\" and exit status: 134: Aborted (core dumped)\nabort: No pending exception expected: java.lang.ClassNotFoundException: cb.Ui"
+            "UI server said \"\" and exit status: 134: Aborted (core dumped)\nlast cb.Ui abort in the crash log (may be from an earlier start): No pending exception expected: java.lang.ClassNotFoundException: cb.Ui"
         );
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn a_failed_start_with_no_abort_in_the_log_points_to_logcat() {
-        let err = failing_ui_server("").await;
+        let err = failing_ui_server("", "Aborted (core dumped)", 134).await;
         assert!(err.ends_with("\nsee adb logcat"), "{err}");
         assert!(err.contains("exit status: 134"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stale_abort_is_labelled_when_this_start_failed_another_way() {
+        let err = failing_ui_server(CRASH_LOG, "adb: device offline", 1).await;
+        assert_eq!(
+            err,
+            "UI server said \"\" and exit status: 1: adb: device offline\nlast cb.Ui abort in the crash log (may be from an earlier start): No pending exception expected: java.lang.ClassNotFoundException: cb.Ui"
+        );
+    }
+
+    #[test]
+    fn an_empty_abort_message_is_no_cause() {
+        let log = "F DEBUG   : Cmdline: app_process / cb.Ui\nF DEBUG   : Abort message: ''\n";
+        assert_eq!(abort_cause(log), None);
     }
 
     #[tokio::test]
