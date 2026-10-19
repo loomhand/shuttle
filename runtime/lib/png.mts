@@ -43,7 +43,7 @@ export function ring({ w, h, type, bpp, px }: Image, cx: number, cy: number, r: 
   return png(w, h, type, bpp, px)
 }
 
-export function png(w: number, h: number, type: number, bpp: number, px: Buffer) {
+export function png(w: number, h: number, type: number, bpp: number, px: Buffer): Buffer {
   const chunk = (kind: string, data: Buffer) => {
     const head = Buffer.alloc(8), crc = Buffer.alloc(4); head.writeUInt32BE(data.length); head.write(kind, 4, 'ascii')
     crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data]))); return Buffer.concat([head, data, crc])
