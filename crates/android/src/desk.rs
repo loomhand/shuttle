@@ -927,18 +927,14 @@ async fn shot(android: &Android, a: ShotArgs) -> Result<Output, String> {
         a.h.unwrap_or(f64::from(h)),
     ];
     let (w, h, png) = crop(&png, rect)?;
-    let image = B64.encode(&png);
     let mut out = json!({"ok": true, "width": w, "height": h});
-    match a.path {
-        Some(path) => {
-            write_bytes(std::path::Path::new(&path), &png).await?;
-            out["path"] = path.into();
-        }
-        None => out["png_b64"] = image.clone().into(),
+    if let Some(path) = a.path {
+        write_bytes(std::path::Path::new(&path), &png).await?;
+        out["path"] = path.into();
     }
     Ok(Output {
         text: out.to_string(),
-        image_b64: Some(image),
+        image_b64: Some(B64.encode(&png)),
         ..Output::default()
     })
 }
