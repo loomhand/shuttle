@@ -36,7 +36,6 @@ const CONNECT_PAUSE: Duration = Duration::from_millis(100);
 const ACK_CLIPBOARD: u8 = 1;
 const ACK_TIMEOUT: Duration = Duration::from_secs(2);
 const DEVICE_UI_JAR: &str = "/data/local/tmp/cb-ui.jar";
-const UIAUTOMATOR_JAR: &str = "/system/framework/uiautomator.jar";
 const UI_TIMEOUT: Duration = Duration::from_secs(10);
 const UI_END: &str = "<<end>>";
 const KEYCODES: [(&str, u32); 26] = [
@@ -398,7 +397,7 @@ impl Android {
         let mut cmd = self.command();
         cmd.args([
             "shell",
-            &format!("CLASSPATH={UIAUTOMATOR_JAR}:{DEVICE_UI_JAR}"),
+            &format!("CLASSPATH={DEVICE_UI_JAR}"),
             "app_process",
             "/",
             "cb.Ui",
@@ -416,9 +415,6 @@ impl Android {
             .map_err(|_| "UI server start timed out".to_owned())?
             .map_err(|e| format!("read UI server: {e}"))?;
         if ready.trim() != "ready" {
-            if self.adb(&["shell", "ls", UIAUTOMATOR_JAR]).await.is_err() {
-                return Err(format!("UI server: the device has no {UIAUTOMATOR_JAR}"));
-            }
             return Err(format!("UI server said {:?}", ready.trim()));
         }
         Ok(UiServer {
