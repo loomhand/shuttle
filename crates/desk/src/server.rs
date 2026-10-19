@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use desk_core::wire::{Call, Output, read_body, read_frame, write_frame};
+use desk_core::wire::{Call, Output, read_body, read_frame, tool_of, write_frame};
 use zeroize::Zeroize;
 
 use crate::desk::Desk;
@@ -32,15 +32,20 @@ pub trait Handler: Send + Sync + 'static {
     /// Answers `call`; a failure is an error output, never a dropped connection.
     fn answer(&self, call: Call) -> impl Future<Output = Output> + Send;
 
+    /// Whether some tool takes its whole connection through [`Handler::splice`], which costs every call a read of its tool.
+    fn splicing(&self) -> bool {
+        false
+    }
+
     /// Whether a call of `tool` takes its whole connection through [`Handler::splice`] instead of one answer.
     fn splices(&self, _tool: &str) -> bool {
         false
     }
 
-    /// Serves the connection of a call that [`Handler::splices`] names; `body` is the call's frame body as read, which it zeroizes.
+    /// Serves the connection of a call of `tool` that [`Handler::splices`] names; `body` is the call's frame body as read, which it zeroizes.
     fn splice(
         &self,
-        _call: Call,
+        _tool: &str,
         mut body: Vec<u8>,
         _stream: Accepted,
     ) -> impl Future<Output = ()> + Send {
@@ -240,15 +245,17 @@ fn pipe(
 
 async fn handle<H: Handler>(handler: Arc<H>, mut stream: Accepted) {
     let call = match read_body(&mut stream).await {
-        Ok(mut body) => match serde_json::from_slice::<Call>(&body) {
-            Ok(call) if handler.splices(&call.tool) => {
-                return handler.splice(call, body, stream).await;
+        Ok(mut body) => {
+            if handler.splicing()
+                && let Some(tool) = tool_of(&body).filter(|t| handler.splices(t))
+            {
+                let tool = tool.into_owned();
+                return handler.splice(&tool, body, stream).await;
             }
-            decoded => {
-                body.zeroize();
-                decoded.map_err(|e| format!("decode frame: {e}"))
-            }
-        },
+            let decoded = serde_json::from_slice::<Call>(&body);
+            body.zeroize();
+            decoded.map_err(|e| format!("decode frame: {e}"))
+        }
         Err(e) => Err(e),
     };
     let out = match call {
