@@ -715,7 +715,7 @@ impl Grabber {
     fn drain(&self) {
         let mut changed = false;
         while let Ok(Some(event)) = self.conn.poll_for_event() {
-            if resized(&event, (self.width, self.height)) {
+            if resized(&event, self.root, (self.width, self.height)) {
                 self.resized.store(true, Ordering::Relaxed);
             }
             changed |= match &event {
@@ -979,9 +979,9 @@ fn alive<T>(reply: Result<T, ReplyError>, what: &str) -> Result<Option<T>, Strin
     }
 }
 
-/// Whether `event` reconfigures the watched root window to a size other than `size`.
-fn resized(event: &Event, size: (u16, u16)) -> bool {
-    matches!(event, Event::ConfigureNotify(c) if (c.width, c.height) != size)
+/// Whether `event` reconfigures the root window `root` to a size other than `size`.
+fn resized(event: &Event, root: Window, size: (u16, u16)) -> bool {
+    matches!(event, Event::ConfigureNotify(c) if c.window == root && (c.width, c.height) != size)
 }
 
 #[cfg(test)]
@@ -991,17 +991,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_root_configure_to_another_size_is_a_resize_and_the_same_size_is_not() {
-        let configure = |width, height| {
+    fn a_root_configure_to_another_size_is_a_resize_and_a_dock_configure_is_not() {
+        let configure = |window, width, height| {
             Event::ConfigureNotify(x11rb::protocol::xproto::ConfigureNotifyEvent {
+                window,
                 width,
                 height,
                 ..Default::default()
             })
         };
-        assert!(resized(&configure(1920, 1080), (1280, 800)));
-        assert!(!resized(&configure(1280, 800), (1280, 800)));
-        assert!(!resized(&Event::MapNotify(Default::default()), (1280, 800)));
+        assert!(resized(&configure(1, 1920, 1080), 1, (1280, 800)));
+        assert!(!resized(&configure(1, 1280, 800), 1, (1280, 800)));
+        assert!(!resized(&configure(7, 306, 49), 1, (1280, 800)));
+        assert!(!resized(
+            &Event::MapNotify(Default::default()),
+            1,
+            (1280, 800)
+        ));
     }
 
     fn x11_error(error_kind: ErrorKind) -> ReplyError {
