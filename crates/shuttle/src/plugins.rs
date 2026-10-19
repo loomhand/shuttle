@@ -46,16 +46,6 @@ pub struct Plugin {
     pub resources: Vec<Resource>,
 }
 
-/// A file the plugin serves as an MCP resource.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Resource {
-    pub uri: String,
-    pub path: PathBuf,
-    pub mime: String,
-    pub description: String,
-}
-
 impl Plugin {
     fn check(&self, builtins: &[&str]) -> Result<(), String> {
         if !is_name(&self.name) {
@@ -76,6 +66,16 @@ impl Plugin {
         }
         Ok(())
     }
+}
+
+/// A file the plugin serves as an MCP resource.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Resource {
+    pub uri: String,
+    pub path: PathBuf,
+    pub mime: String,
+    pub description: String,
 }
 
 /// A long-lived program that serves `tools` on the socket the daemon names in `SHUTTLE_SERVICE_SOCKET`.
