@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.7 - 2026-10-20
 
 - **Android UI server name.** The UI server is the class `shuttle.Ui` in `shuttle-ui.jar`: the linux archives carry it as `android/shuttle-ui.jar`, which an `[android]` section without `ui_jar` takes, and the device copies are `/data/local/tmp/shuttle-ui.jar` and `/data/local/tmp/shuttle-scrcpy.jar`. A configured `ui_jar` keeps working whatever its file name.
 - **Smaller UI server answers.** The dump no longer carries `resource-id`, `package` or `depth` per node, and the focus answer no `class` or `package`; the daemon read none of them.
