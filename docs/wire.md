@@ -14,7 +14,7 @@ One wire connects `cocoon-shuttle mcp` to the daemon, the runtime (`desk.mts`) t
 
 ## Framing
 
-- **One call per connection.** The client writes one frame and reads one frame. Closing the connection does not cancel a call the daemon has read: it runs to its end, and its reply is dropped.
+- **One call per connection.** The client writes one frame and reads one frame. Closing the connection does not cancel a call the daemon has read: it runs to its end, and its reply is dropped. A call of a [service plugin](#service-plugins)'s tool is the exception: after its first frame the connection belongs to the service.
 - **Frame:** a big-endian u32 length, then that many bytes of JSON. A frame over 64 MiB is refused.
 - **Request:** `{"agent_id": string, "tool": string, "args": object}`; `agent_id` defaults to `""` and `args` to `null`.
 - **Response:** `{"text": string, "is_error": bool, "image_b64"?: string, "secrets"?: [[field, value]]}`. `text` holds the result, JSON for the desk verbs; `image_b64` is a PNG when the call took one; `secrets` carries card fields a host typed from a file (cocoonbox), and shuttle never sends it. A failure is `is_error: true` with the reason in `text`, never a closed connection.
@@ -66,6 +66,37 @@ A neutral example, `tools.d/demo.json`:
 
 ```json
 {"name": "demo_run", "description": "Run a demo script.", "bin": "/usr/local/bin/demo-runner", "resources": [{"uri": "demo://GUIDE.md", "path": "/usr/local/share/demo/GUIDE.md", "mime": "text/markdown", "description": "The demo guide"}]}
+```
+
+## Service plugins
+
+A service plugin is a long-lived program that serves its own tools on the desk wire. The daemon runs it as its child and hands it the connection of every call of one of its tools. This section is the schema's source of truth.
+
+- **Where.** A `*.json` file in the plugin directory with a `service` key is a service; any other file is a plugin of [Plugins](#plugins). The same file-name order applies, and the daemon and the MCP server read the directory as for plugins.
+- **Spec.** `{"service": string, "bin": string, "args"?: [string], "tools": [{"name": string, "description": string, "input_schema": object, "mcp"?: bool}]}`, and no other field, in the file or in a tool.
+  - `service` matches `^[a-z][a-z0-9_]*$`, is at most 32 characters and is no earlier file's service.
+  - `bin` is absolute; `args` defaults to none.
+  - `tools` holds at least one tool. Each `name` matches `^[a-z][a-z0-9_]*$` and is at most 64 characters. It is no built-in tool (`gui_plan`, `script_run`, `desk`, `screenshot`, `status`), starts with none of `desk_`, `model_` and `safety_`, does not end in `_run`, which plugins take, and is no other tool of this file or an earlier service.
+  - `description` is at most 2048 characters; `input_schema` is a JSON Schema whose `type` is `object`.
+  - `mcp`, default `true`, lists the tool on MCP; with `false` the tool is reached on the desk wire only, which suits a tool that streams frames.
+  - A file that breaks any rule is skipped whole, with one log line. Windows has no service plugins yet: a service file is skipped there, and the log line says so.
+- **Process.** The daemon starts `bin` with `args` when it starts, in your home directory, in a process group of its own, with:
+  - `SHUTTLE_SERVICE_SOCKET`: the unix socket to listen on, `services/<service>.sock` beside the daemon's endpoint, in a directory of mode 0700 that only your user reaches;
+  - `TOOLHOST_SOCKET`: the daemon's endpoint, for the service's own desk calls, which pass the same app allowlist, confirm and stop as any other;
+  - no model key variables (`OPENROUTER_API_KEY` and the configured `api_key_env`).
+  When the service exits, the daemon kills the rest of its process group (on Linux, all but the apps the desk moved into scopes of their own) and starts it again after 1 s, doubling the wait on each exit up to 30 s; a service that ran 30 s or more starts again after 1 s. When the daemon exits, it sends the service SIGTERM, waits 3 s, then kills its group.
+- **Calls.** The daemon reads a call's first frame. When its `tool` names a service tool, it connects to that service's socket, waiting up to 10 s while the service starts, writes the frame exactly as it read it, and then copies bytes both ways. Nothing after the first frame is parsed, and no frame size or deadline applies. When the client closes its end, the daemon closes the service's input and still passes on what the service sends, until the service closes its end. A call no service listens for within 10 s, or that the daemon cannot write, answers with an error frame.
+  - A service call takes no desk turn: it runs alongside runs and desk actions.
+  - Work a service starts for a call, such as a shell command, is the service's to end when its connection closes; shuttle does not end it.
+- **Stop.** `safety_stop` refuses new service calls with `stopped by the user` and closes every connection in flight, without a reply, since its client may be inside a stream of its own frames. The service keeps running, and `safety_resume` lets calls through again.
+- **Switch.** Installing a service file is what turns the service on: `script_run = false` turns plugins off but leaves services running, listed and reached.
+- **MCP.** `tools/list` lists each service tool with `mcp` true after the plugins, with its own `input_schema`. `tools/call` sends one frame and reads one response frame through the daemon, so a tool the MCP server lists answers one response frame.
+- **Cost.** A desk call pays one lookup in the service tool table, and nothing when no service is installed. A service call pays one unix-socket connect and the copy through a 64 KiB buffer each way; a microbench (`cargo test -p shuttle --release splice_cost -- --ignored --nocapture`) measures it.
+
+A neutral example, `tools.d/notes.json`:
+
+```json
+{"service": "notes", "bin": "/usr/local/bin/notes-service", "args": ["--serve"], "tools": [{"name": "notes_read", "description": "Read a note.", "input_schema": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]}}, {"name": "notes_watch", "description": "Stream note changes.", "input_schema": {"type": "object"}, "mcp": false}]}
 ```
 
 ## Model calls

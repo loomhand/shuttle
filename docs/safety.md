@@ -4,7 +4,7 @@ shuttle acts on your own desktop, with your accounts signed in. The controls bel
 
 ## What these controls are
 
-The kill switch, the app allowlist and the confirm mode are guard rails for an agent that means well and reaches for the wrong app or acts at the wrong time. They bound the `desk`, `screenshot` and `gui_plan` tools. They are not a sandbox: with `script_run` on, which is the default, a script is your own user's code, and it can resume a stopped daemon, edit `config.toml`, restart the daemon or start programs, and no check inside shuttle stops it. The guard rails hold only with `script_run = false` under `[tools]`.
+The kill switch, the app allowlist and the confirm mode are guard rails for an agent that means well and reaches for the wrong app or acts at the wrong time. They bound the `desk`, `screenshot` and `gui_plan` tools. They are not a sandbox: with `script_run` on, which is the default, a script is your own user's code, and it can resume a stopped daemon, edit `config.toml`, restart the daemon or start programs, and no check inside shuttle stops it. A [service plugin](#service-plugins) is your own user's code in the same way. The guard rails hold only with `script_run = false` under `[tools]` and no service plugin installed.
 
 ## Kill switch
 
@@ -47,7 +47,14 @@ The screenshot mask is per window rectangle, not per pixel:
 
 ## Turning script_run off
 
-`script_run = false` under `[tools]` turns off the one tool that runs the agent's own code, and the plugin tools of [wire.md](wire.md#plugins) with it: the MCP server lists none, and `script_run` and every plugin answer how to turn it back on. `gui_plan`, `desk` and `screenshot` keep working. While plugins run, their desk calls pass the same app allowlist, confirm and stop as any other.
+`script_run = false` under `[tools]` turns off the one tool that runs the agent's own code, and the plugin tools of [wire.md](wire.md#plugins) with it: the MCP server lists none, and `script_run` and every plugin answer how to turn it back on. `gui_plan`, `desk` and `screenshot` keep working, and so do [service plugins](#service-plugins). While plugins run, their desk calls pass the same app allowlist, confirm and stop as any other.
+
+## Service plugins
+
+A [service plugin](wire.md#service-plugins) is a program you install in the plugin directory; the daemon runs it as your user and hands it the calls of its tools. Installing it is what turns it on: `script_run = false` does not turn it off, so that the tools it serves keep working where scripts are off.
+- **Stop.** `cocoon-shuttle stop` refuses new calls of its tools and closes every one in flight. The service itself keeps running, and work it started for a call, such as a shell command, is its own to end when the connection closes; shuttle does not end it.
+- **App allowlist and confirm.** They do not cover what a service does itself, such as reading files or running commands. Only the desk calls it makes on `TOOLHOST_SOCKET` pass them, as any other desk call.
+- **Reach.** Its socket is in a directory only your user reaches (0700), so a call reaches it only through the daemon, with the stop applied.
 
 ## Input on macOS
 

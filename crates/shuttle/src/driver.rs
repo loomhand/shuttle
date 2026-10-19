@@ -62,10 +62,21 @@ impl Bundled {
     }
 }
 
-struct Running {
-    child: Child,
+/// A child that leads its own process group, whose other members die with it.
+pub(crate) struct Running {
+    pub(crate) child: Child,
     #[cfg(unix)]
     group: Option<u32>,
+}
+
+impl Running {
+    pub(crate) fn new(child: Child) -> Self {
+        Self {
+            #[cfg(unix)]
+            group: child.id(),
+            child,
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -101,14 +112,10 @@ impl Proc {
             .kill_on_drop(true);
         #[cfg(unix)]
         cmd.process_group(0);
-        let child = cmd
+        let mut running = cmd
             .spawn()
+            .map(Running::new)
             .map_err(|e| format!("start {}: {e}", self.bin.display()))?;
-        let mut running = Running {
-            #[cfg(unix)]
-            group: child.id(),
-            child,
-        };
         let mut waited = Duration::ZERO;
         while server::connect(&self.endpoint).await.is_err() {
             if let Ok(Some(status)) = running.child.try_wait() {

@@ -74,6 +74,14 @@ where
     R: AsyncRead + Unpin,
     T: DeserializeOwned,
 {
+    let mut body = read_body(r).await?;
+    let msg = serde_json::from_slice(&body);
+    body.zeroize();
+    msg.map_err(|e| format!("decode frame: {e}"))
+}
+
+/// Reads the JSON body of one frame as bytes, which the caller zeroizes.
+pub async fn read_body<R: AsyncRead + Unpin>(r: &mut R) -> Result<Vec<u8>, String> {
     let mut len = [0u8; 4];
     r.read_exact(&mut len)
         .await
@@ -86,9 +94,7 @@ where
     r.read_exact(&mut body)
         .await
         .map_err(|e| format!("read frame body: {e}"))?;
-    let msg = serde_json::from_slice(&body);
-    body.zeroize();
-    msg.map_err(|e| format!("decode frame: {e}"))
+    Ok(body)
 }
 
 #[cfg(test)]

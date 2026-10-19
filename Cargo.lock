@@ -1197,6 +1197,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "windows",
+ "zeroize",
 ]
 
 [[package]]
@@ -1228,6 +1229,7 @@ dependencies = [
  "windows",
  "x11rb",
  "zbus",
+ "zeroize",
 ]
 
 [[package]]

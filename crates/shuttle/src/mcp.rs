@@ -1,9 +1,9 @@
-//! The MCP server on stdio: newline-delimited JSON-RPC 2.0 with the tools of `tools` and the resources of the plugins.
+//! The MCP server on stdio: newline-delimited JSON-RPC 2.0 with the tools of `tools` and the resources of the script plugins.
 
 use serde_json::{Map, Value, json};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::plugins::Plugin;
+use crate::plugins::Plugins;
 use crate::{NAME, VERSION, tools};
 
 const PROTOCOL_VERSIONS: [&str; 3] = ["2025-11-25", "2025-06-18", "2025-03-26"];
@@ -18,7 +18,7 @@ pub async fn serve<R, W>(
     input: R,
     mut output: W,
     endpoint: &str,
-    plugins: &[Plugin],
+    plugins: &Plugins,
 ) -> Result<(), String>
 where
     R: AsyncBufRead + Unpin,
@@ -48,7 +48,7 @@ where
     Ok(())
 }
 
-async fn answer(line: &str, endpoint: &str, plugins: &[Plugin]) -> Option<Value> {
+async fn answer(line: &str, endpoint: &str, plugins: &Plugins) -> Option<Value> {
     let mut msg: Map<String, Value> = match serde_json::from_str(line) {
         Ok(m) => m,
         Err(e) => {
@@ -83,7 +83,7 @@ async fn answer(line: &str, endpoint: &str, plugins: &[Plugin]) -> Option<Value>
     Some(reply(id, result))
 }
 
-fn initialize(params: &Value, plugins: &[Plugin]) -> Value {
+fn initialize(params: &Value, plugins: &Plugins) -> Value {
     let asked = params["protocolVersion"].as_str().unwrap_or_default();
     let version = PROTOCOL_VERSIONS
         .into_iter()
@@ -95,14 +95,15 @@ fn initialize(params: &Value, plugins: &[Plugin]) -> Value {
         "serverInfo": {"name": NAME, "version": VERSION},
         "instructions": INSTRUCTIONS,
     });
-    if plugins.iter().any(|p| !p.resources.is_empty()) {
+    if plugins.runs.iter().any(|p| !p.resources.is_empty()) {
         out["capabilities"]["resources"] = json!({});
     }
     out
 }
 
-fn resources(plugins: &[Plugin]) -> Value {
+fn resources(plugins: &Plugins) -> Value {
     let listed: Vec<Value> = plugins
+        .runs
         .iter()
         .flat_map(|p| &p.resources)
         .map(|r| {
@@ -113,9 +114,10 @@ fn resources(plugins: &[Plugin]) -> Value {
     json!({"resources": listed})
 }
 
-async fn read(params: &Value, plugins: &[Plugin]) -> Result<Value, (i64, String)> {
+async fn read(params: &Value, plugins: &Plugins) -> Result<Value, (i64, String)> {
     let uri = params["uri"].as_str().unwrap_or_default();
     let r = plugins
+        .runs
         .iter()
         .flat_map(|p| &p.resources)
         .find(|r| r.uri == uri)
@@ -152,10 +154,10 @@ mod tests {
     use super::*;
 
     async fn session(lines: &[Value], endpoint: &str) -> Vec<Value> {
-        session_with(lines, endpoint, &[]).await
+        session_with(lines, endpoint, &Plugins::default()).await
     }
 
-    async fn session_with(lines: &[Value], endpoint: &str, plugins: &[Plugin]) -> Vec<Value> {
+    async fn session_with(lines: &[Value], endpoint: &str, plugins: &Plugins) -> Vec<Value> {
         exchange_with(
             &lines.iter().map(|l| format!("{l}\n")).collect::<String>(),
             endpoint,
@@ -165,10 +167,10 @@ mod tests {
     }
 
     async fn exchange(input: &str, endpoint: &str) -> Vec<Value> {
-        exchange_with(input, endpoint, &[]).await
+        exchange_with(input, endpoint, &Plugins::default()).await
     }
 
-    async fn exchange_with(input: &str, endpoint: &str, plugins: &[Plugin]) -> Vec<Value> {
+    async fn exchange_with(input: &str, endpoint: &str, plugins: &Plugins) -> Vec<Value> {
         let mut output = Vec::new();
         serve(input.as_bytes(), &mut output, endpoint, plugins)
             .await
@@ -312,7 +314,7 @@ mod tests {
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
         let guide = dir.path().join("GUIDE.md");
         std::fs::write(&guide, "# Demo guide").unwrap();
-        let plugin: Plugin = serde_json::from_value(json!({
+        let plugin: crate::plugins::Plugin = serde_json::from_value(json!({
             "name": "demo_run",
             "description": "Run a demo script.",
             "bin": "/usr/bin/demo",
@@ -337,7 +339,11 @@ mod tests {
             json!({"jsonrpc": "2.0", "id": 5, "method": "resources/read", "params": {"uri": "demo://GUIDE.md"}}),
             json!({"jsonrpc": "2.0", "id": 6, "method": "resources/read", "params": {"uri": "demo://other"}}),
         ];
-        let out = session_with(&lines, &endpoint, std::slice::from_ref(&plugin)).await;
+        let plugins = Plugins {
+            runs: vec![plugin],
+            services: Vec::new(),
+        };
+        let out = session_with(&lines, &endpoint, &plugins).await;
         let without = session(&lines[..3], &endpoint).await;
         daemon.abort();
         assert_eq!(out[0]["result"]["capabilities"]["resources"], json!({}));

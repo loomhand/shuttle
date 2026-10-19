@@ -12,6 +12,7 @@ pub mod mcp;
 pub mod plugins;
 pub mod proxy;
 pub mod runner;
+pub mod services;
 pub mod tools;
 #[cfg(windows)]
 pub mod win;
@@ -58,6 +59,14 @@ pub(crate) fn kill_unscoped(group: u32) {
             // SAFETY: kill takes no pointers; `pid` names one process of the group.
             unsafe { libc::kill(pid, libc::SIGKILL) };
         }
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn term(pid: u32) {
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        // SAFETY: kill takes no pointers; `pid` names the child this daemon started.
+        unsafe { libc::kill(pid, libc::SIGTERM) };
     }
 }
 
