@@ -38,6 +38,7 @@ const ACK_CLIPBOARD: u8 = 1;
 const ACK_TIMEOUT: Duration = Duration::from_secs(2);
 const PASTE_TIMEOUT: Duration = Duration::from_secs(5);
 const DIAGNOSE_TIMEOUT: Duration = Duration::from_secs(1);
+const NOT_INJECTED: &str = "the paste key was not injected";
 const TYPE_WAIT: Duration = Duration::from_secs(1);
 const TYPE_DEADLINE: Duration = Duration::from_millis(1500);
 const TYPE_FOCUS_POLL: Duration = Duration::from_millis(20);
@@ -333,7 +334,8 @@ impl Android {
         self.served("windows").await
     }
 
-    /// Types `text` into the focused field, the first line under `at` when given: each line pasted and checked (see [`type_with`]), Return between lines.
+    /// Types `text` into the focused field, the first line under `at` when given: each line pasted and checked (see
+    /// [`type_with`]), Return between lines.
     pub(crate) async fn type_text(
         &self,
         text: &str,
@@ -369,8 +371,9 @@ impl Android {
     }
 
     /// Pastes `text` into the focused field through the clipboard, which takes any Unicode, unlike key injection: scrcpy sets the
-    /// clipboard, and the UI server presses the paste key and answers once the focused window has handled it.
-    pub(crate) async fn paste(&self, text: &str) -> Result<(), String> {
+    /// clipboard, and the UI server presses the paste key and answers once the focused window has handled it: false when the
+    /// device refused the key, which then reached no window.
+    pub(crate) async fn paste(&self, text: &str) -> Result<bool, String> {
         {
             let mut slot = self.control.lock().await;
             let mut control = match slot.take() {
@@ -381,9 +384,7 @@ impl Android {
             *slot = Some(control);
         }
         match tokio::time::timeout(PASTE_TIMEOUT, self.served("paste")).await {
-            Ok(Ok(answer)) if answer.trim() == "true" => Ok(()),
-            Ok(Ok(_)) => Err("the paste key was not injected".to_owned()),
-            Ok(Err(e)) => Err(e),
+            Ok(answer) => answer.map(|a| a.trim() == "true"),
             Err(_) => Err(format!(
                 "{} did not handle the paste key within {} s; the paste may still land, so check the field before typing again",
                 self.focused_window().await,
@@ -859,15 +860,17 @@ fn launcher(out: &str, app: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Pastes `line` through `paste` into the field `focus` names and checks the field shows it; again while the field did not change.
+/// Pastes `line` through `paste` into the field `focus` names and checks the field shows it; again while the field did not
+/// change.
 ///
-/// It waits, within a second, for an editable node with input focus in the focused window, under `at` when given, and takes its text
-/// live; an error when the focused field lies outside `at`. After a paste it asks `focus` at once and then every 10 ms, at most
-/// 300 ms, until that text changed and ends with the line's last 16 characters, and reads it live once when the window ends; a cached answer shows the paste only once it differs from the cached text at the
-/// snapshot. Some(true) is a paste that shows. Some(false) is one that
-/// does not: the text stayed the same through every paste started within 1.5 s of the call. None is a paste it does not check: no
-/// such field (a web view), a password field, which a second paste would double, or text that changed otherwise (an insert inside
-/// the text, a filter or a format), which is not pasted again.
+/// It waits, within a second, for an editable node with input focus in the focused window, under `at` when given, and takes its
+/// text live; an error when the focused field lies outside `at`. After a paste it asks `focus` at once and then every 10 ms, at
+/// most 300 ms, until that text changed and ends with the line's last 16 characters, and reads it live once when the window
+/// ends; a cached answer shows the paste only once it differs from the cached text at the snapshot. A paste key the device
+/// refused reached no window, so it is pressed again at once. Some(true) is a paste that shows. Some(false) is one that does
+/// not: the text stayed the same through every paste started within 1.5 s of the call. An error when no key was delivered by
+/// then. None is a paste it does not check: no such field (a web view), a password field, which a second paste would double, or
+/// text that changed otherwise (an insert inside the text, a filter or a format), which is not pasted again.
 async fn type_with<F, Ff, P, Pf>(
     line: &str,
     at: Option<(i32, i32)>,
@@ -878,7 +881,7 @@ where
     F: FnMut(bool) -> Ff,
     Ff: Future<Output = Result<Option<Focus>, String>>,
     P: FnMut() -> Pf,
-    Pf: Future<Output = Result<(), String>>,
+    Pf: Future<Output = Result<bool, String>>,
 {
     let usable = |f: &Focus| f.editable && f.window && at.is_none_or(|p| f.holds(p));
     let start = tokio::time::Instant::now();
@@ -904,25 +907,33 @@ where
         tokio::time::sleep(TYPE_FOCUS_POLL).await;
     };
     let Some((before, cached)) = before.filter(|(f, _)| !f.password) else {
-        paste().await?;
-        return Ok(None);
+        return if paste().await? {
+            Ok(None)
+        } else {
+            Err(NOT_INJECTED.to_owned())
+        };
     };
     let shows = |f: &Focus| !f.same_text(&before) && f.ends_with(line);
+    let mut delivered = false;
     loop {
-        paste().await?;
-        let deadline = tokio::time::Instant::now() + VERIFY_WAIT;
-        loop {
-            if focus(false)
-                .await?
-                .filter(usable)
-                .is_some_and(|f| cached.as_ref().is_none_or(|c| !f.same_text(c)) && shows(&f))
-            {
-                return Ok(Some(true));
+        if paste().await? {
+            delivered = true;
+            let deadline = tokio::time::Instant::now() + VERIFY_WAIT;
+            loop {
+                if focus(false)
+                    .await?
+                    .filter(usable)
+                    .is_some_and(|f| cached.as_ref().is_none_or(|c| !f.same_text(c)) && shows(&f))
+                {
+                    return Ok(Some(true));
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    break;
+                }
+                tokio::time::sleep(VERIFY_POLL).await;
             }
-            if tokio::time::Instant::now() >= deadline {
-                break;
-            }
-            tokio::time::sleep(VERIFY_POLL).await;
+        } else {
+            tokio::time::sleep(TYPE_FOCUS_POLL).await;
         }
         let now = focus(true).await?.filter(usable);
         if now.as_ref().is_some_and(shows) {
@@ -932,7 +943,11 @@ where
             return Ok(None);
         }
         if start.elapsed() >= TYPE_DEADLINE {
-            return Ok(Some(false));
+            return if delivered {
+                Ok(Some(false))
+            } else {
+                Err(NOT_INJECTED.to_owned())
+            };
         }
     }
 }
@@ -973,7 +988,8 @@ fn wm_size(out: &str) -> Option<(i32, i32)> {
     size("Override size:").or_else(|| size("Physical size:"))
 }
 
-/// A scrcpy SET_CLIPBOARD message that sets the clipboard to `text`, without scrcpy's own paste key, and asks for an acknowledgement of `sequence`.
+/// A scrcpy SET_CLIPBOARD message that sets the clipboard to `text`, without scrcpy's own paste key, and asks for an
+/// acknowledgement of `sequence`.
 fn clipboard_message(text: &str, sequence: u64) -> Vec<u8> {
     let mut msg = Vec::with_capacity(14 + text.len());
     msg.push(SET_CLIPBOARD);
@@ -1534,7 +1550,11 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn paste_through(android: &Android, mut peer: TcpStream, mut ui: Command) -> String {
+    async fn paste_through(
+        android: &Android,
+        mut peer: TcpStream,
+        mut ui: Command,
+    ) -> Result<bool, String> {
         let mut ack = vec![ACK_CLIPBOARD];
         ack.extend_from_slice(&1u64.to_be_bytes());
         peer.write_all(&ack).await.unwrap();
@@ -1554,9 +1574,9 @@ mod tests {
             stdout: BufReader::new(ui.stdout.take().unwrap()),
             _child: ui,
         });
-        let err = android.paste("hi").await.unwrap_err();
+        let pasted = android.paste("hi").await;
         assert_eq!(device.await.unwrap().0, clipboard_message("hi", 1));
-        err
+        pasted
     }
 
     #[cfg(unix)]
@@ -1567,21 +1587,18 @@ mod tests {
         hung.arg("30");
         assert_eq!(
             paste_through(&android, peer, hung).await,
-            "the focused window did not handle the paste key within 5 s; the paste may still land, so check the field before typing again"
+            Err("the focused window did not handle the paste key within 5 s; the paste may still land, so check the field before typing again".to_owned())
         );
         assert!(android.ui.lock().await.is_none());
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_paste_key_the_device_did_not_inject_fails() {
+    async fn a_paste_key_the_device_refused_answers_not_delivered() {
         let (android, peer) = session("/nonexistent/adb").await;
         let mut refused = Command::new("sh");
         refused.args(["-c", "read l; printf 'false\\n<<end>>\\n'; sleep 30"]);
-        assert_eq!(
-            paste_through(&android, peer, refused).await,
-            "the paste key was not injected"
-        );
+        assert_eq!(paste_through(&android, peer, refused).await, Ok(false));
     }
 
     #[cfg(unix)]
@@ -1596,6 +1613,45 @@ mod tests {
         assert_eq!(android.focused_window().await, "the focused window");
         assert!(started.elapsed() < ADB_TIMEOUT);
         std::fs::remove_file(&adb).unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_paste_key_is_pressed_again_until_one_is_delivered() {
+        let pastes = std::cell::Cell::new(0);
+        let out = type_with(
+            "abc",
+            None,
+            |_| {
+                let f = field(if pastes.get() < 2 { "" } else { "abc" });
+                async move { Ok(Some(f)) }
+            },
+            || {
+                pastes.set(pastes.get() + 1);
+                let delivered = pastes.get() > 1;
+                async move { Ok(delivered) }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!((out, pastes.get()), (Some(true), 2));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn paste_keys_refused_until_the_deadline_fail_as_not_injected() {
+        let pastes = std::cell::Cell::new(0);
+        let err = type_with(
+            "abc",
+            None,
+            |_| async { Ok(Some(field(""))) },
+            || {
+                pastes.set(pastes.get() + 1);
+                async { Ok(false) }
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, NOT_INJECTED);
+        assert!(pastes.get() > 2);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1662,7 +1718,7 @@ mod tests {
             },
             || {
                 pastes.set(pastes.get() + 1);
-                async { Ok(()) }
+                async { Ok(true) }
             },
         )
         .await
@@ -1720,7 +1776,7 @@ mod tests {
             },
             || {
                 pastes.set(pastes.get() + 1);
-                async { Ok(()) }
+                async { Ok(true) }
             },
         )
         .await
@@ -1740,7 +1796,7 @@ mod tests {
             },
             || {
                 pastes.set(pastes.get() + 1);
-                async { Ok(()) }
+                async { Ok(true) }
             },
         )
         .await
@@ -1778,14 +1834,14 @@ mod tests {
             },
             || {
                 pastes.set(pastes.get() + 1);
-                async { Ok(()) }
+                async { Ok(true) }
             },
         )
         .await
         .unwrap();
         assert_eq!((password, pastes.get()), (None, 1));
         let started = tokio::time::Instant::now();
-        let none = type_with("abc", None, |_| async { Ok(None) }, || async { Ok(()) })
+        let none = type_with("abc", None, |_| async { Ok(None) }, || async { Ok(true) })
             .await
             .unwrap();
         assert_eq!(none, None);
@@ -1809,7 +1865,7 @@ mod tests {
             |_| async { Ok(Some(field(""))) },
             || {
                 pastes.set(pastes.get() + 1);
-                async { Ok(()) }
+                async { Ok(true) }
             },
         )
         .await
@@ -1832,7 +1888,7 @@ mod tests {
             |_| async { Ok(None) },
             || {
                 pastes.set(pastes.get() + 1);
-                async { Ok(()) }
+                async { Ok(true) }
             },
         )
         .await
