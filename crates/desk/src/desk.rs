@@ -934,13 +934,20 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let window_id: i64 =
             w.id.parse()
                 .map_err(|_| format!("window id {:?} is not a number", w.id))?;
-        self.driver
+        let v = self
+            .driver
             .call(
                 "bring_to_front",
                 json!({"pid": w.pid, "window_id": window_id}),
             )
             .await?;
-        Ok(json!({"ok": true, "title": w.title, "pid": w.pid}).to_string())
+        let mut out = json!({"ok": true, "title": w.title, "pid": w.pid});
+        let done = &v["structuredContent"];
+        if let Some(path) = done.get("path") {
+            out["path"] = path.clone();
+            out["front"] = done["observed"]["workspace_frontmost_pid"].clone();
+        }
+        Ok(out.to_string())
     }
 
     async fn shot(&self, a: ShotArgs) -> Result<Output, String> {
@@ -1809,6 +1816,9 @@ pub(crate) mod tests {
                 "list_windows" => json!({"structuredContent": {"windows": [
                     {"pid": 7, "window_id": 9, "title": "Untitled", "app_name": "TextEdit"}
                 ]}}),
+                "bring_to_front" => json!({"structuredContent": {
+                    "path": "already_front", "observed": {"workspace_frontmost_pid": 3}
+                }}),
                 _ => json!({}),
             })
         }
@@ -1855,6 +1865,12 @@ pub(crate) mod tests {
                 calls.iter().any(|c| c == "bring_to_front"),
                 focused,
                 "{os:?}: {calls:?} {result}"
+            );
+            let runs = std::fs::read_to_string(dir.path().join("flows/.runs.jsonl")).unwrap();
+            assert_eq!(
+                runs.contains(r#""focused":"already_front front 3""#),
+                focused,
+                "{os:?}: {runs}"
             );
         }
     }
