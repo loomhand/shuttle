@@ -67,8 +67,12 @@ impl Driver {
         Ok(())
     }
 
+    pub(crate) fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
     /// Waits out [`CLICK_SPACING`] after a click within [`CLICK_DISTANCE`] of this one, so two clicks never make a double click.
-    async fn space_click(&self, (x, y): (f64, f64)) {
+    pub(crate) async fn space_click(&self, (x, y): (f64, f64)) {
         let wait = self
             .last_click()
             .filter(|(_, lx, ly)| (x - lx).hypot(y - ly) <= CLICK_DISTANCE)
@@ -76,6 +80,11 @@ impl Driver {
         if let Some(wait) = wait {
             tokio::time::sleep(wait).await;
         }
+    }
+
+    /// Records a click at `point`, which the next nearby click waits out.
+    pub(crate) fn clicked(&self, (x, y): (f64, f64)) {
+        *self.last_click() = Some((Instant::now(), x, y));
     }
 
     fn last_click(&self) -> std::sync::MutexGuard<'_, Option<(Instant, f64, f64)>> {
@@ -135,8 +144,8 @@ impl Input for Driver {
                 self.space_click(point).await;
             }
             let done = self.send(tool, &args).await;
-            if let Some((x, y)) = point {
-                *self.last_click() = Some((Instant::now(), x, y));
+            if let Some(point) = point {
+                self.clicked(point);
             }
             let _ = self.send("end_session", &json!({"session": once})).await;
             return done;
