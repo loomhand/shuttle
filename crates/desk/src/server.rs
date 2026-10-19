@@ -187,42 +187,67 @@ fn bind_at(endpoint: &str, gid: Option<u32>) -> Result<Listener, String> {
     })
 }
 
-/// Refuses a socket directory that is a link, that is not this user's, or that its group or others can write, and any directory above it that others can write without the sticky bit: from any of them a member could swap the socket.
+/// Refuses a socket directory that is not this user's or that its group or others can write, a link anywhere on its path, and any directory above it owned by another user or writable by others without the sticky bit: from any of them a member could swap the socket.
 #[cfg(unix)]
 fn private_dir(dir: &std::path::Path) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
 
-    let stat = |d: &std::path::Path| {
-        std::fs::symlink_metadata(d).map_err(|e| format!("stat {}: {e}", d.display()))
-    };
-    let meta = stat(dir)?;
-    if meta.file_type().is_symlink() {
+    // SAFETY: geteuid takes no arguments and always succeeds.
+    let own = unsafe { libc::geteuid() };
+    private_path(dir, own, |d| {
+        std::fs::symlink_metadata(d).map(|m| Entry {
+            uid: m.uid(),
+            mode: m.mode(),
+            link: m.file_type().is_symlink(),
+        })
+    })
+}
+
+/// One path component as `lstat` sees it.
+#[cfg(unix)]
+struct Entry {
+    uid: u32,
+    mode: u32,
+    link: bool,
+}
+
+/// [`private_dir`] for the user `own`, with `stat` reading each component of `dir` as given, links included.
+#[cfg(unix)]
+fn private_path(
+    dir: &std::path::Path,
+    own: u32,
+    stat: impl Fn(&std::path::Path) -> std::io::Result<Entry>,
+) -> Result<(), String> {
+    if !dir.is_absolute() {
         return Err(format!(
-            "socket_group needs {} to be a directory, not a link",
+            "socket_group needs an absolute endpoint; {} is relative",
             dir.display()
         ));
     }
-    // SAFETY: geteuid takes no arguments and always succeeds.
-    let own = unsafe { libc::geteuid() };
-    if meta.uid() != own || meta.mode() & 0o022 != 0 {
-        return Err(format!(
-            "socket_group needs {} owned by this user (uid {own}) and writable by no one else; it is uid {} mode {:o}",
-            dir.display(),
-            meta.uid(),
-            meta.mode() & 0o7777
-        ));
-    }
-    let real = std::fs::canonicalize(dir).map_err(|e| format!("resolve {}: {e}", dir.display()))?;
-    for above in real.ancestors().skip(1) {
-        let mode = std::fs::metadata(above)
-            .map_err(|e| format!("stat {}: {e}", above.display()))?
-            .mode();
-        if mode & 0o022 != 0 && mode & 0o1000 == 0 {
+    for (i, d) in dir.ancestors().enumerate() {
+        let e = stat(d).map_err(|e| format!("stat {}: {e}", d.display()))?;
+        if e.link {
             return Err(format!(
-                "socket_group needs every directory above {} writable by no one else or sticky; {} is mode {:o}",
+                "socket_group needs a path without links; {} is a link",
+                d.display()
+            ));
+        }
+        let writable = e.mode & 0o022 != 0;
+        if i == 0 && (e.uid != own || writable) {
+            return Err(format!(
+                "socket_group needs {} owned by this user (uid {own}) and writable by no one else; it is uid {} mode {:o}",
+                d.display(),
+                e.uid,
+                e.mode & 0o7777
+            ));
+        }
+        if i > 0 && ((e.uid != 0 && e.uid != own) || (writable && e.mode & 0o1000 == 0)) {
+            return Err(format!(
+                "socket_group needs every directory above {} owned by root or this user and writable by no one else unless sticky; {} is uid {} mode {:o}",
                 dir.display(),
-                above.display(),
-                mode & 0o7777
+                d.display(),
+                e.uid,
+                e.mode & 0o7777
             ));
         }
     }
@@ -517,8 +542,8 @@ mod tests {
         let _listener = bind(&endpoint).await.unwrap();
         assert_eq!(mode(&endpoint), 0o600);
         let shared = tempfile::tempdir().unwrap();
-        let endpoint = shared
-            .path()
+        let endpoint = real(&shared)
+            .unwrap()
             .join("desk.sock")
             .to_string_lossy()
             .into_owned();
@@ -536,7 +561,11 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o770)).unwrap();
-        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let endpoint = real(&dir)
+            .unwrap()
+            .join("desk.sock")
+            .to_string_lossy()
+            .into_owned();
         let own = std::fs::metadata(dir.path()).unwrap().gid();
         let err = bind_for(&endpoint, &own.to_string()).await.err().unwrap();
         assert!(
@@ -551,7 +580,7 @@ mod tests {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
         let top = tempfile::tempdir().unwrap();
-        let parent = top.path().join("shared");
+        let parent = real(&top).unwrap().join("shared");
         let dir = parent.join("sock");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o750)).unwrap();
@@ -567,20 +596,57 @@ mod tests {
         let _listener = bind_for(&endpoint, &own).await.unwrap();
     }
 
+    fn real(dir: &tempfile::TempDir) -> std::io::Result<std::path::PathBuf> {
+        std::fs::canonicalize(dir.path())
+    }
+
     #[tokio::test]
-    async fn a_shared_socket_in_a_linked_directory_is_refused() {
+    async fn a_shared_socket_with_a_link_in_its_path_is_refused() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
         let top = tempfile::tempdir().unwrap();
-        let real = top.path().join("real");
-        std::fs::create_dir(&real).unwrap();
-        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let link = top.path().join("link");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-        let own = std::fs::metadata(&real).unwrap().gid().to_string();
-        let endpoint = link.join("desk.sock").to_string_lossy().into_owned();
-        let err = bind_for(&endpoint, &own).await.err().unwrap();
-        assert!(err.contains("not a link"), "{err}");
+        let target = real(&top).unwrap().join("target");
+        std::fs::create_dir_all(target.join("sock")).unwrap();
+        std::fs::set_permissions(target.join("sock"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        let own = std::fs::metadata(&target).unwrap().gid().to_string();
+        let link = real(&top).unwrap().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let below = link
+            .join("sock")
+            .join("desk.sock")
+            .to_string_lossy()
+            .into_owned();
+        let err = bind_for(&below, &own).await.err().unwrap();
+        assert!(err.contains("is a link") && err.contains("link"), "{err}");
+        let leaf = real(&top).unwrap().join("leaf");
+        std::os::unix::fs::symlink(target.join("sock"), &leaf).unwrap();
+        let at = leaf.join("desk.sock").to_string_lossy().into_owned();
+        let err = bind_for(&at, &own).await.err().unwrap();
+        assert!(err.contains("is a link"), "{err}");
+    }
+
+    #[test]
+    fn a_directory_above_owned_by_another_user_is_refused() {
+        let tree = |other: u32| {
+            move |p: &std::path::Path| {
+                let (uid, mode) = match p.to_str().unwrap() {
+                    "/" | "/home" => (0, 0o755),
+                    "/home/other" => (other, 0o755),
+                    _ => (1000, 0o700),
+                };
+                Ok(Entry {
+                    uid,
+                    mode,
+                    link: false,
+                })
+            }
+        };
+        let dir = std::path::Path::new("/home/other/sock");
+        let err = private_path(dir, 1000, tree(1001)).unwrap_err();
+        assert!(err.contains("/home/other is uid 1001"), "{err}");
+        assert_eq!(private_path(dir, 1000, tree(1000)), Ok(()));
+        assert!(private_path(std::path::Path::new("run/x"), 1000, tree(1000)).is_err());
     }
 
     #[tokio::test]
