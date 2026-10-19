@@ -7,6 +7,7 @@
   - an indexed `computer_act` reads the windows again and refuses, with `call computer_state again`, when the window the state came from is no longer in front (the notification shade is open, say), a system window now covers the element's saved point (a keyboard raised since), or the window list is unavailable; explicit `x`,`y` are not checked;
   - the UI server's dump carries its window's id, and `computer_state` retries once when the tree and the front window differ, then answers `the screen is changing`; a dump without an id (an older `ui_jar`) is not compared.
 - **Android type.** A type on a device pastes line by line with Return between lines, in `desk type` and `computer_act` alike, and reads each line back from the focused field: a field that did not change is pasted again within 1.5 s; one that changed otherwise (an insert inside its text, a format), a password field and a web view get one unchecked paste; a `computer_act` type whose tap left another field focused fails without a paste; `desk type` answers `typed` true, false or null. scrcpy only sets the clipboard: the UI server presses the paste key and waits until the focused window has handled it, and a window that does not within 5 s fails the type with its name.
+- **Bundled:** cua-driver v0.36.0-loomhand.6 (was .5). On macOS a fast relaunch no longer reports an app as already in front while another app is, so the focus after a launch brings it to the front.
 
 ## 0.1.5 - 2026-10-19
 
