@@ -1,10 +1,14 @@
 //! The daemon's desk on an Android device: the adb backend in place of this desktop's accessibility tree.
 
+use std::path::{Path, PathBuf};
+
 use desk_core::wire::{Call, Output};
 use shuttle_android::adb::{Android, Device};
 use shuttle_android::desk;
 use shuttle_desk::server::Handler;
 use shuttle_models::config::AndroidSettings;
+
+const BUNDLED_JAR: &str = "android/cb-ui.jar";
 
 /// The desk a daemon serves: this desktop's, or an Android device's when the config names one.
 pub enum Desks<N> {
@@ -21,15 +25,31 @@ impl<N: Handler> Handler for Desks<N> {
     }
 }
 
-/// The Android device of `settings`.
-pub fn device(settings: AndroidSettings) -> Android {
-    Android::new(Device {
+/// The Android device of `settings`, with its UI server jar from [`ui_jar`].
+pub fn device(settings: AndroidSettings, exe: &Path) -> Result<Android, String> {
+    Ok(Android::new(Device {
+        ui_jar: ui_jar(settings.ui_jar, exe)?,
         adb: settings.adb,
         serial: settings.serial,
-        ui_jar: settings.ui_jar,
         scrcpy_jar: settings.scrcpy_jar,
         su: settings.su,
-    })
+    }))
+}
+
+/// The UI server jar: the configured one, else the one the archive installs beside the program `exe`.
+pub fn ui_jar(configured: Option<PathBuf>, exe: &Path) -> Result<PathBuf, String> {
+    if let Some(jar) = configured {
+        return Ok(jar);
+    }
+    let bundled = exe.parent().unwrap_or(Path::new(".")).join(BUNDLED_JAR);
+    if bundled.is_file() {
+        Ok(bundled)
+    } else {
+        Err(format!(
+            "[android] sets no ui_jar, and there is no {} beside the program",
+            bundled.display()
+        ))
+    }
 }
 
 /// Whether the daemon starts this desktop's own driver, indicator and stop hotkey: never for an Android device.
@@ -56,11 +76,27 @@ mod tests {
         let settings = AndroidSettings {
             adb: "adb".into(),
             serial: Some("127.0.0.1:5555".to_owned()),
-            ui_jar: "/u.jar".into(),
+            ui_jar: Some("/u.jar".into()),
             scrcpy_jar: "/s.jar".into(),
             su: None,
         };
         assert!(!local_controls(Some(&settings)));
         assert!(local_controls(None));
+    }
+
+    #[test]
+    fn an_unset_ui_jar_is_the_bundled_one_and_a_set_one_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("cocoon-shuttle");
+        let err = ui_jar(None, &exe).unwrap_err();
+        assert!(err.contains("sets no ui_jar"), "{err}");
+        let bundled = dir.path().join("android/cb-ui.jar");
+        std::fs::create_dir_all(bundled.parent().unwrap()).unwrap();
+        std::fs::write(&bundled, b"dex").unwrap();
+        assert_eq!(ui_jar(None, &exe).unwrap(), bundled);
+        assert_eq!(
+            ui_jar(Some("/u.jar".into()), &exe).unwrap(),
+            PathBuf::from("/u.jar")
+        );
     }
 }

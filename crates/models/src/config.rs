@@ -204,7 +204,7 @@ pub struct AndroidSettings {
     #[serde(default = "adb")]
     pub adb: PathBuf,
     pub serial: Option<String>,
-    pub ui_jar: PathBuf,
+    pub ui_jar: Option<PathBuf>,
     pub scrcpy_jar: PathBuf,
     pub su: Option<PathBuf>,
 }
