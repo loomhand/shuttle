@@ -50,7 +50,7 @@ impl Spi {
 
 impl Access for Spi {
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
-        Ok(self.listed()?.iter().map(frame).collect())
+        Ok(self.listed()?.into_iter().map(frame).collect())
     }
 
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
@@ -66,7 +66,7 @@ impl Access for Spi {
             .block_on(self.atspi.tree(window, spi_extras(extras)))?;
         Ok(Tree {
             frame: frame.clone(),
-            nodes: t.nodes.iter().map(node).collect(),
+            nodes: t.nodes.into_iter().map(node).collect(),
             truncated: t.truncated,
             phases: t.phases,
         })
@@ -87,7 +87,7 @@ impl Access for Spi {
         let n = self
             .rt
             .block_on(self.atspi.node(&obj, spi_extras(extras), chars))?;
-        Ok(node(&n))
+        Ok(node(n))
     }
 
     fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
@@ -149,10 +149,9 @@ impl Access for Spi {
     }
 }
 
-fn frame(f: &atspi::Frame) -> Frame {
+fn frame(f: atspi::Frame) -> Frame {
     Frame {
         id: f.obj.id(),
-        title: f.name.clone(),
         role: atspi::role_name(f.role, true),
         pid: f.pid,
         active: f.active(),
@@ -162,10 +161,11 @@ fn frame(f: &atspi::Frame) -> Frame {
         stale: false,
         unlisted: !FRAME_ROLES.contains(&f.role),
         framed: f.role != WINDOW_ROLE,
+        title: f.name,
     }
 }
 
-fn node(n: &atspi::Node) -> Node {
+fn node(n: atspi::Node) -> Node {
     let (mnemonic, shortcut) = n.keys.as_deref().map_or((None, None), atspi::key_combos);
     Node {
         id: n.obj.as_ref().map(Obj::id).unwrap_or_default(),
@@ -173,14 +173,14 @@ fn node(n: &atspi::Node) -> Node {
         depth: n.depth,
         role: n.role(),
         native_role: n.native_role().map(str::to_owned),
-        name: n.name.clone(),
-        description: n.description.clone(),
         states: n.state_names(),
-        value: n.value.clone(),
         shortcut,
         mnemonic,
-        keys: n.keys.clone(),
         bounds: n.bounds,
+        name: n.name,
+        description: n.description,
+        value: n.value,
+        keys: n.keys,
     }
 }
 
@@ -449,7 +449,7 @@ mod tests {
             bounds: Some([1, 2, 3, 4]),
             ..atspi::Node::default()
         };
-        let m = node(&n);
+        let m = node(n);
         assert_eq!(m.id, "1.17/5");
         assert_eq!(m.role, "button");
         assert_eq!(m.states, vec!["showing", "visible"]);
@@ -495,14 +495,14 @@ mod tests {
             states: 1 << 1,
             pid: Some(42),
         };
-        let m = frame(&f);
+        let m = frame(f.clone());
         assert_eq!(
             (m.id.as_str(), m.title.as_str(), m.role, m.pid, m.active),
             ("1.17/5", "Untitled - Mousepad", "window", Some(42), true)
         );
         assert!(!m.unlisted && m.framed);
         let own = std::process::id();
-        let mine = frame(&atspi::Frame {
+        let mine = frame(atspi::Frame {
             role: 69,
             pid: Some(own),
             ..f

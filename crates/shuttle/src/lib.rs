@@ -49,8 +49,8 @@ pub(crate) fn kill_unscoped(group: u32) {
         };
         let in_group = std::fs::read_to_string(format!("/proc/{p}/stat")).is_ok_and(|stat| {
             stat.rsplit_once(')')
-                .and_then(|(_, rest)| rest.split_whitespace().nth(2))
-                .is_some_and(|g| g == group.to_string())
+                .and_then(|(_, rest)| rest.split_whitespace().nth(2)?.parse::<u32>().ok())
+                == Some(group)
         });
         if in_group
             && cgroup(p) == own

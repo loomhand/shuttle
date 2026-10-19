@@ -154,7 +154,7 @@ impl<H: Handler> Daemon<H> {
         let n = self.runs.fetch_add(1, Ordering::Relaxed);
         let agent = format!("run-{:x}-{n}", self.nonce);
         *self.running() = Some(agent.clone());
-        let _running = Running(&self.running, agent.clone());
+        let _running = Running(&self.running, &agent);
         let report = match plugin {
             Some(p) => self.runner.plugin(&p.bin, args, &agent).await,
             None if tool == "gui_plan" => self.runner.plan(args, &agent).await,
@@ -340,7 +340,7 @@ impl Drop for Asking<'_> {
     }
 }
 
-struct Running<'a>(&'a Mutex<Option<String>>, String);
+struct Running<'a>(&'a Mutex<Option<String>>, &'a str);
 
 impl Drop for Running<'_> {
     fn drop(&mut self) {
@@ -348,7 +348,7 @@ impl Drop for Running<'_> {
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if running.as_deref() == Some(self.1.as_str()) {
+        if running.as_deref() == Some(self.1) {
             *running = None;
         }
     }
