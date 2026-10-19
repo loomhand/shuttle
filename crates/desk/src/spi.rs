@@ -32,15 +32,9 @@ impl Spi {
         })
     }
 
-    /// `read` on the grabber, opened on first use and again once the screen size changed, and dropped after a failure so the next read opens it again; none when MIT-SHM is out of reach.
-    fn shm<T>(&mut self, read: impl FnOnce(&Grabber) -> Result<T, String>) -> Option<T> {
-        let g = match self.grabber.take() {
-            Some(g) if g.current().unwrap_or(false) => g,
-            _ => Grabber::open().ok()?,
-        };
-        let out = read(&g).ok()?;
-        self.grabber = Some(g);
-        Some(out)
+    /// `read` on the grabber; none when MIT-SHM is out of reach.
+    fn shm<T>(&mut self, read: impl Fn(&Grabber) -> Result<T, String>) -> Option<T> {
+        reuse(&mut self.grabber, Grabber::open, Grabber::current, read)
     }
 
     fn listed(&self) -> Result<Vec<atspi::Frame>, String> {
@@ -293,10 +287,68 @@ fn spi_extras(e: Extras) -> atspi::Extras {
     }
 }
 
+/// `read` on the grabber in `slot`, opened on first use and again after a screen change; a failed read opens it once more and retries, and a second failure leaves the slot empty.
+fn reuse<G, T>(
+    slot: &mut Option<G>,
+    open: impl Fn() -> Result<G, String>,
+    current: impl Fn(&G) -> bool,
+    read: impl Fn(&G) -> Result<T, String>,
+) -> Option<T> {
+    let g = match slot.take() {
+        Some(g) if current(&g) => g,
+        _ => open().ok()?,
+    };
+    let (g, out) = match read(&g) {
+        Ok(out) => (g, out),
+        Err(_) => {
+            let g = open().ok()?;
+            let out = read(&g).ok()?;
+            (g, out)
+        }
+    };
+    *slot = Some(g);
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    struct Seg {
+        id: usize,
+        size: (u16, u16),
+    }
+
+    #[test]
+    fn a_resize_or_a_failed_read_opens_a_new_segment_and_a_current_one_is_kept() {
+        let screen = std::cell::Cell::new((1280, 800));
+        let opened = std::cell::Cell::new(0);
+        let fail = std::cell::Cell::new(false);
+        let open = || {
+            opened.set(opened.get() + 1);
+            Ok(Seg {
+                id: opened.get(),
+                size: screen.get(),
+            })
+        };
+        let current = |g: &Seg| g.size == screen.get();
+        let read = |g: &Seg| {
+            if fail.replace(false) {
+                Err("BadMatch".to_owned())
+            } else {
+                Ok(g.id)
+            }
+        };
+        let mut slot = None;
+        assert_eq!(reuse(&mut slot, open, current, read), Some(1));
+        assert_eq!(reuse(&mut slot, open, current, read), Some(1));
+        screen.set((1920, 1080));
+        assert_eq!(reuse(&mut slot, open, current, read), Some(2));
+        assert_eq!(reuse(&mut slot, open, current, read), Some(2));
+        fail.set(true);
+        assert_eq!(reuse(&mut slot, open, current, read), Some(3));
+        assert_eq!(opened.get(), 3);
+    }
     #[test]
     fn a_node_keeps_the_atspi_states_role_and_raw_key_binding() {
         let n = atspi::Node {
