@@ -714,7 +714,7 @@ async function cropState(n: Node) {
 async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.app) {
     const ws = await desk.windows(); const before = new Set(ws.map((w) => w.title))
-    let launched = false; let demoted = false
+    let launched = false; let background = false
     const name = norm(s.title ?? s.app); const word = !s.title && /^[\w.-]+$/.test(s.app)
     const entries = word ? entryNames(s.app) : []
     const app = norm(s.app)
@@ -727,13 +727,13 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (listed) { known.add(listed.title); rec.window = lastSeen = listed.title; return }
     if (!w) {
       const t0 = Date.now(); launched = true
-      demoted = (await desk.launch(s.app)).suppressed !== undefined
+      background = (await desk.launch(s.app)).background === true
       for (const end = Date.now() + 8000; !(w = await has()); await sleep(50)) {
         if (Date.now() > end) throw new Surprise(`app "${s.app}" has no window`, await seen())
       }
       tick('launch', t0)
     }
-    if (demoted || !w.active) await desk.focus(w.title, w.pid); known.add(w.title); rec.window = lastSeen = w.title; await windowFor(w.title); return
+    if (background || !w.active) await desk.focus(w.title, w.pid); known.add(w.title); rec.window = lastSeen = w.title; await windowFor(w.title); return
   }
   if (s.type !== undefined) {
     const nl = s.type.endsWith('\n'); const ws = await current(nl ? OPENING : SETTLE); const w = focusedIn(ws); const t0 = Date.now()
