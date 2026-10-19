@@ -31,3 +31,30 @@ for (const [name, step] of [
     assert.ok(!calls.some((c) => c.tool === 'desk_key'), JSON.stringify(calls.filter((c) => c.tool === 'desk_key')))
   })
 }
+
+test('on macOS a menu toggle reads its mark after opening its menus, so a stale closed-menu mark neither skips nor repeats the press', { skip: process.platform !== 'darwin' }, async (t) => {
+  let on = false
+  const pressed: string[] = []
+  const tree = () => [
+    { ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: 'Untitled', states: ['showing'] },
+    { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'menubar', name: '', states: ['showing'] },
+    { ref: 2, id: '1/3', parent: 1, depth: 2, role: 'menu', name: 'Edit', states: ['showing'], bounds: [100, 0, 40, 20] },
+    { ref: 3, id: '1/4', parent: 2, depth: 3, role: 'menu', name: 'Spelling and Grammar', states: [] },
+    { ref: 4, id: '1/5', parent: 3, depth: 4, role: 'menuitemcheckbox', name: 'Check Spelling While Typing', states: on ? ['checked'] : [] },
+  ]
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: tree() })
+    if (tool === 'desk_read') return JSON.stringify({ ...tree()[4], states: ['checked'] })
+    if (tool === 'desk_press') { pressed.push(String(args.id)); if (args.id === '1/5') on = !on; return '{"ok":true,"how":"action"}' }
+    return '{"ok":true}'
+  })
+  const step = { menu: 'Edit > Spelling and Grammar > Check Spelling While Typing', on: true }
+  const first = await main({ steps: [step] })
+  assert.equal(first.ok, true, JSON.stringify(first))
+  assert.equal(on, true)
+  const again = await main({ steps: [step] })
+  assert.equal(again.ok, true, JSON.stringify(again))
+  assert.equal(on, true)
+  assert.equal(pressed.filter((id) => id === '1/5').length, 1, pressed.join(' '))
+})
