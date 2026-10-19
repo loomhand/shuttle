@@ -33,7 +33,7 @@ Windows (PowerShell):
 irm https://github.com/loomhand/shuttle/releases/latest/download/install.ps1 | iex
 ```
 
-The installers check the archive against the release's `SHA256SUMS`. The binaries are not code-signed; [docs/install.md](docs/install.md) walks through a first-time setup (permissions, your key, the safety settings to start with) and covers macOS Gatekeeper, Windows SmartScreen, manual installs, provenance checks and uninstalling.
+The installers check the archive against the release's `SHA256SUMS`. The binaries are not code-signed; [docs/install.md](docs/install.md) walks through a first-time setup (permissions, your key, the safety settings to start with) and covers manual installs, provenance checks and uninstalling; [docs/platforms.md](docs/platforms.md) covers macOS Gatekeeper and Windows SmartScreen.
 
 ## Use it from an agent
 
