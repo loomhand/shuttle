@@ -2,10 +2,12 @@ package cb;
 
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.UiAutomation;
+import android.app.UiAutomationConnection;
 import android.graphics.Rect;
+import android.os.HandlerThread;
+import android.os.Looper;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
-import com.android.uiautomator.core.UiAutomationShellWrapper;
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.FileDescriptor;
@@ -27,12 +29,14 @@ public final class Ui {
     private static final int OUT_BUFFER = 1 << 20;
 
     public static void main(String[] args) throws Exception {
-        UiAutomationShellWrapper wrapper = new UiAutomationShellWrapper();
-        wrapper.connect();
-        wrapper.setCompressedLayoutHierarchy(false);
-        UiAutomation ui = wrapper.getUiAutomation();
+        Looper.prepareMainLooper();
+        HandlerThread thread = new HandlerThread("cb-ui");
+        thread.start();
+        UiAutomation ui = new UiAutomation(thread.getLooper(), new UiAutomationConnection());
+        ui.connect(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);
         AccessibilityServiceInfo info = ui.getServiceInfo();
-        info.flags |= AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS;
+        info.flags |= AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+                | AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS;
         ui.setServiceInfo(info);
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in, "UTF-8"));
         PrintStream out = new PrintStream(
@@ -55,7 +59,8 @@ public final class Ui {
             out.println(END);
             out.flush();
         }
-        wrapper.disconnect();
+        ui.disconnect();
+        thread.quit();
     }
 
     private static void idle(UiAutomation ui) {
