@@ -3,6 +3,11 @@ package cb;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.UiAutomation;
 import android.graphics.Rect;
+import android.os.SystemClock;
+import android.view.InputDevice;
+import android.view.InputEvent;
+import android.view.KeyCharacterMap;
+import android.view.KeyEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 import com.android.uiautomator.core.UiAutomationShellWrapper;
@@ -12,13 +17,16 @@ import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
+import java.lang.reflect.Method;
 import java.util.List;
 
 /**
  * Serves the accessibility tree from a resident app_process, one answer per stdin line, each ended by a line
  * "<<end>>": "windows" lists the interactive windows as JSON; "focus" the node with input focus as JSON (or null):
- * editable, password, whether its window has focus, and its text's length, hash and last 32 code points; "dump" the
- * active window and "dump ID" window ID as uiautomator-style nodes with their depth and child-index path.
+ * editable, password, whether its window has focus, and its text's length, hash and last 32 code points; "focus live"
+ * the same, refreshed from the app rather than the accessibility cache; "paste" presses the paste key and answers once
+ * the focused window has handled its down event (true) or the injection failed (false); "dump" the active window and
+ * "dump ID" window ID as uiautomator-style nodes with their depth and child-index path.
  */
 public final class Ui {
     private static final int MAX_DEPTH = 64;
@@ -27,6 +35,11 @@ public final class Ui {
     private static final String END = "<<end>>";
     private static final int TAIL = 32;
     private static final int OUT_BUFFER = 1 << 20;
+    private static final int INJECT_ASYNC = 0;
+    private static final int INJECT_WAIT_FOR_FINISH = 2;
+
+    private static Object inputManager;
+    private static Method injectInputEvent;
 
     public static void main(String[] args) throws Exception {
         UiAutomationShellWrapper wrapper = new UiAutomationShellWrapper();
@@ -47,8 +60,10 @@ public final class Ui {
             try {
                 if (line.equals("windows")) {
                     out.println(windows(ui));
-                } else if (line.equals("focus")) {
-                    out.println(focus(ui));
+                } else if (line.equals("focus") || line.equals("focus live")) {
+                    out.println(focus(ui, line.equals("focus live")));
+                } else if (line.equals("paste")) {
+                    out.println(paste());
                 } else {
                     idle(ui);
                     out.println(dump(ui, line.startsWith("dump ") ? line.substring(5).trim() : ""));
@@ -94,9 +109,9 @@ public final class Ui {
         return sb.append(']').toString();
     }
 
-    private static String focus(UiAutomation ui) {
+    private static String focus(UiAutomation ui, boolean live) {
         AccessibilityNodeInfo f = ui.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
-        if (f == null) {
+        if (f == null || live && !f.refresh()) {
             return "null";
         }
         Rect r = new Rect();
@@ -111,6 +126,31 @@ public final class Ui {
             + ",\"hash\":" + text.hashCode() + ",\"tail\":" + json(tail) + ",\"class\":" + json(f.getClassName())
             + ",\"package\":" + json(f.getPackageName()) + ",\"bounds\":[" + r.left + ',' + r.top + ','
             + r.right + ',' + r.bottom + "]}";
+    }
+
+    private static boolean paste() throws ReflectiveOperationException {
+        if (inputManager == null) {
+            Class<?> c;
+            try {
+                c = Class.forName("android.hardware.input.InputManagerGlobal");
+            } catch (ClassNotFoundException e) {
+                c = Class.forName("android.hardware.input.InputManager");
+            }
+            injectInputEvent = c.getMethod("injectInputEvent", InputEvent.class, int.class);
+            inputManager = c.getMethod("getInstance").invoke(null);
+        }
+        long now = SystemClock.uptimeMillis();
+        return inject(pasteKey(now, KeyEvent.ACTION_DOWN), INJECT_WAIT_FOR_FINISH)
+            && inject(pasteKey(now, KeyEvent.ACTION_UP), INJECT_ASYNC);
+    }
+
+    private static KeyEvent pasteKey(long now, int action) {
+        return new KeyEvent(now, now, action, KeyEvent.KEYCODE_PASTE, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0,
+            InputDevice.SOURCE_KEYBOARD);
+    }
+
+    private static boolean inject(KeyEvent key, int mode) throws ReflectiveOperationException {
+        return (Boolean) injectInputEvent.invoke(inputManager, key, mode);
     }
 
     private static String dump(UiAutomation ui, String id) {

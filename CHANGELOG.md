@@ -10,7 +10,7 @@
   - unix only: Windows skips service files with a log line.
 - **Android over adb.** With an `[android]` section ([docs/config.md](docs/config.md#android-over-adb)), the daemon drives one Android device instead of the desktop. The device is reached from a Linux or macOS host, and the `shuttle-android` crate holds the backend:
   - the desk verbs answer from the device's UiAutomation tree, through a UI server the daemon pushes and runs under `app_process`;
-  - input goes through `adb shell input`, screenshots through `screencap`, and text through a scrcpy clipboard paste;
+  - input goes through `adb shell input`, screenshots through `screencap`, and text through the clipboard: scrcpy sets it, and the UI server presses the paste key and waits until the focused window has handled it; a window that does not within 5 s fails the type with its name;
   - a type pastes line by line with Return between lines, in `desk type` and `computer_act` alike, and reads each line back from the focused field: a field that did not change is pasted again within 1.5 s; one that changed otherwise (an insert inside its text, a format), a password field and a web view get one unchecked paste; a `computer_act` type whose tap left another field focused fails without a paste; `desk type` answers `typed` true, false or null;
   - `scroll`, `drag` and `still` answer `unknown desk tool`;
   - the daemon starts no cua-driver, indicator or stop hotkey;

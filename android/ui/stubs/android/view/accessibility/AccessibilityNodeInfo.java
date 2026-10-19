@@ -25,5 +25,6 @@ public class AccessibilityNodeInfo {
     public CharSequence getHintText() { throw new RuntimeException(); }
     public CharSequence getPackageName() { throw new RuntimeException(); }
     public boolean isPassword() { throw new RuntimeException(); }
+    public boolean refresh() { throw new RuntimeException(); }
     public AccessibilityWindowInfo getWindow() { throw new RuntimeException(); }
 }

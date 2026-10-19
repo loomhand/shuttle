@@ -36,6 +36,7 @@ const CONNECT_TRIES: u32 = 50;
 const CONNECT_PAUSE: Duration = Duration::from_millis(100);
 const ACK_CLIPBOARD: u8 = 1;
 const ACK_TIMEOUT: Duration = Duration::from_secs(2);
+const PASTE_TIMEOUT: Duration = Duration::from_secs(5);
 const TYPE_WAIT: Duration = Duration::from_secs(1);
 const TYPE_DEADLINE: Duration = Duration::from_millis(1500);
 const TYPE_FOCUS_POLL: Duration = Duration::from_millis(20);
@@ -331,8 +332,10 @@ impl Android {
             let shown = type_with(
                 line,
                 at.filter(|_| i == 0),
-                || async {
-                    let answer = self.served("focus").await?;
+                |live| async move {
+                    let answer = self
+                        .served(if live { "focus live" } else { "focus" })
+                        .await?;
                     serde_json::from_str(answer.trim()).map_err(|e| format!("decode focus: {e}"))
                 },
                 || self.paste(line),
@@ -347,16 +350,38 @@ impl Android {
         Ok(typed)
     }
 
-    /// Pastes `text` into the focused field through the clipboard, which takes any Unicode, unlike key injection.
+    /// Pastes `text` into the focused field through the clipboard, which takes any Unicode, unlike key injection: scrcpy sets the
+    /// clipboard, and the UI server presses the paste key and answers once the focused window has handled it.
     pub(crate) async fn paste(&self, text: &str) -> Result<(), String> {
-        let mut slot = self.control.lock().await;
-        let mut control = match slot.take() {
-            Some(control) if control.is_open() => control,
-            _ => self.open_control().await?,
-        };
-        control.paste(text).await?;
-        *slot = Some(control);
-        Ok(())
+        {
+            let mut slot = self.control.lock().await;
+            let mut control = match slot.take() {
+                Some(control) if control.is_open() => control,
+                _ => self.open_control().await?,
+            };
+            control.set_clipboard(text).await?;
+            *slot = Some(control);
+        }
+        match tokio::time::timeout(PASTE_TIMEOUT, self.served("paste")).await {
+            Ok(answer) => answer.map(drop),
+            Err(_) => Err(format!(
+                "{} did not handle the paste key within {} s",
+                self.focused_window().await,
+                PASTE_TIMEOUT.as_secs()
+            )),
+        }
+    }
+
+    /// The window `dumpsys window` names as focused, for an error about it.
+    async fn focused_window(&self) -> String {
+        let out = self
+            .adb(&["shell", "dumpsys", "window", "displays"])
+            .await
+            .unwrap_or_default();
+        String::from_utf8_lossy(&out)
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("mCurrentFocus="))
+            .map_or_else(|| "the focused window".to_owned(), str::to_owned)
     }
 
     /// The screen size `wm size` reports, read once per device.
@@ -580,7 +605,7 @@ impl Control {
         matches!(self.stream.try_read(&mut [0; 1]), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
     }
 
-    async fn paste(&mut self, text: &str) -> Result<(), String> {
+    async fn set_clipboard(&mut self, text: &str) -> Result<(), String> {
         self.sequence += 1;
         self.stream
             .write_all(&clipboard_message(text, self.sequence))
@@ -727,9 +752,10 @@ fn launcher(out: &str, app: &str) -> Option<String> {
 
 /// Pastes `line` through `paste` into the field `focus` names and checks the field shows it; again while the field did not change.
 ///
-/// It waits, within a second, for an editable node with input focus in the focused window, under `at` when given, and takes its text;
-/// an error when the focused field lies outside `at`. After a paste it asks `focus` at once and then every 10 ms, at most 300 ms,
-/// until that text changed and ends with the line's last 16 characters. Some(true) is a paste that shows. Some(false) is one that
+/// It waits, within a second, for an editable node with input focus in the focused window, under `at` when given, and takes its text
+/// live; an error when the focused field lies outside `at`. After a paste it asks `focus` at once and then every 10 ms, at most
+/// 300 ms, until that text changed and ends with the line's last 16 characters, and reads it live once when the window ends; a cached answer shows the paste only once it differs from the cached text at the
+/// snapshot. Some(true) is a paste that shows. Some(false) is one that
 /// does not: the text stayed the same through every paste started within 1.5 s of the call. None is a paste it does not check: no
 /// such field (a web view), a password field, which a second paste would double, or text that changed otherwise (an insert inside
 /// the text, a filter or a format), which is not pasted again.
@@ -740,7 +766,7 @@ async fn type_with<F, Ff, P, Pf>(
     mut paste: P,
 ) -> Result<Option<bool>, String>
 where
-    F: FnMut() -> Ff,
+    F: FnMut(bool) -> Ff,
     Ff: Future<Output = Result<Option<Focus>, String>>,
     P: FnMut() -> Pf,
     Pf: Future<Output = Result<(), String>>,
@@ -749,41 +775,50 @@ where
     let start = tokio::time::Instant::now();
     let end = start + TYPE_WAIT;
     let before = loop {
-        match focus().await? {
-            Some(f) if usable(&f) => break Some(f),
-            other if tokio::time::Instant::now() >= end => {
-                if let (Some((x, y)), Some(f)) = (at, other)
-                    && f.editable
-                    && f.window
-                {
-                    return Err(format!(
-                        "the field at ({x},{y}) has no input focus; another field does"
-                    ));
-                }
-                break None;
-            }
-            _ => tokio::time::sleep(TYPE_FOCUS_POLL).await,
+        let cached = focus(false).await?;
+        if cached.as_ref().is_some_and(usable)
+            && let Some(f) = focus(true).await?.filter(usable)
+        {
+            break Some((f, cached));
         }
+        if tokio::time::Instant::now() >= end {
+            if let (Some((x, y)), Some(f)) = (at, cached)
+                && f.editable
+                && f.window
+            {
+                return Err(format!(
+                    "the field at ({x},{y}) has no input focus; another field does"
+                ));
+            }
+            break None;
+        }
+        tokio::time::sleep(TYPE_FOCUS_POLL).await;
     };
-    let Some(before) = before.filter(|f| !f.password) else {
+    let Some((before, cached)) = before.filter(|(f, _)| !f.password) else {
         paste().await?;
         return Ok(None);
     };
+    let shows = |f: &Focus| !f.same_text(&before) && f.ends_with(line);
     loop {
         paste().await?;
         let deadline = tokio::time::Instant::now() + VERIFY_WAIT;
-        let now = loop {
-            let f = focus().await?.filter(usable);
-            if f.as_ref()
-                .is_some_and(|f| !f.same_text(&before) && f.ends_with(line))
+        loop {
+            if focus(false)
+                .await?
+                .filter(usable)
+                .is_some_and(|f| cached.as_ref().is_none_or(|c| !f.same_text(c)) && shows(&f))
             {
                 return Ok(Some(true));
             }
             if tokio::time::Instant::now() >= deadline {
-                break f;
+                break;
             }
             tokio::time::sleep(VERIFY_POLL).await;
-        };
+        }
+        let now = focus(true).await?.filter(usable);
+        if now.as_ref().is_some_and(shows) {
+            return Ok(Some(true));
+        }
         if !now.is_some_and(|f| f.same_text(&before)) {
             return Ok(None);
         }
@@ -829,12 +864,12 @@ fn wm_size(out: &str) -> Option<(i32, i32)> {
     size("Override size:").or_else(|| size("Physical size:"))
 }
 
-/// A scrcpy SET_CLIPBOARD message that pastes `text` and asks for an acknowledgement of `sequence`.
+/// A scrcpy SET_CLIPBOARD message that sets the clipboard to `text`, without scrcpy's own paste key, and asks for an acknowledgement of `sequence`.
 fn clipboard_message(text: &str, sequence: u64) -> Vec<u8> {
     let mut msg = Vec::with_capacity(14 + text.len());
     msg.push(SET_CLIPBOARD);
     msg.extend_from_slice(&sequence.to_be_bytes());
-    msg.push(1);
+    msg.push(0);
     msg.extend_from_slice(&(text.len() as u32).to_be_bytes());
     msg.extend_from_slice(text.as_bytes());
     msg
@@ -1033,11 +1068,11 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_message_is_scrcpy_set_clipboard_with_paste() {
+    fn clipboard_message_is_scrcpy_set_clipboard_without_its_paste_key() {
         let msg = clipboard_message("你好", 7);
         assert_eq!(msg[0], 9);
         assert_eq!(&msg[1..9], &7u64.to_be_bytes());
-        assert_eq!(msg[9], 1);
+        assert_eq!(msg[9], 0);
         assert_eq!(&msg[10..14], &6u32.to_be_bytes());
         assert_eq!(&msg[14..], "你好".as_bytes());
     }
@@ -1120,6 +1155,39 @@ mod tests {
         assert!(sent.is_empty(), "{sent:?}");
     }
 
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn a_paste_key_the_window_does_not_handle_fails_in_time_and_drops_the_ui_server() {
+        let (android, mut peer) = session("/nonexistent/adb").await;
+        let mut ack = vec![ACK_CLIPBOARD];
+        ack.extend_from_slice(&1u64.to_be_bytes());
+        peer.write_all(&ack).await.unwrap();
+        let device = tokio::spawn(async move {
+            let mut buf = [0; 64];
+            let n = peer.read(&mut buf).await.unwrap();
+            (buf[..n].to_vec(), peer)
+        });
+        let mut hung = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        *android.ui.lock().await = Some(UiServer {
+            stdin: hung.stdin.take().unwrap(),
+            stdout: BufReader::new(hung.stdout.take().unwrap()),
+            _child: hung,
+        });
+        let err = android.paste("hi").await.unwrap_err();
+        assert_eq!(
+            err,
+            "the focused window did not handle the paste key within 5 s"
+        );
+        assert_eq!(device.await.unwrap().0, clipboard_message("hi", 1));
+        assert!(android.ui.lock().await.is_none());
+    }
+
     #[test]
     fn the_screen_is_the_override_size_before_the_physical_one() {
         assert_eq!(wm_size("Physical size: 720x1280\n"), Some((720, 1280)));
@@ -1154,7 +1222,7 @@ mod tests {
         let out = type_with(
             line,
             at,
-            || {
+            |_| {
                 let text = match pastes.get() {
                     0 => before,
                     n => after[(n - 1).min(after.len() - 1)],
@@ -1207,6 +1275,50 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_lagging_cached_answer_is_read_live_before_a_repeat() {
+        let pastes = std::cell::Cell::new(0);
+        let out = type_with(
+            "abc",
+            None,
+            |live| {
+                let f = match (live, pastes.get()) {
+                    (false, _) => field("x"),
+                    (true, 0) => field(""),
+                    (true, _) => field("abc"),
+                };
+                async move { Ok(Some(f)) }
+            },
+            || {
+                pastes.set(pastes.get() + 1);
+                async { Ok(()) }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!((out, pastes.get()), (Some(true), 1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cached_answer_that_still_shows_older_text_is_no_proof_of_the_paste() {
+        let pastes = std::cell::Cell::new(0);
+        let out = type_with(
+            "abc",
+            None,
+            |live| {
+                let f = field(if live { "" } else { "abc" });
+                async move { Ok(Some(f)) }
+            },
+            || {
+                pastes.set(pastes.get() + 1);
+                async { Ok(()) }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!((out, pastes.get()), (Some(false), 5));
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_field_that_already_ends_with_the_line_shows_the_paste_only_once_it_changes() {
         assert_eq!(typed("bc", None, "abc", &["abc"]).await, (Some(false), 5));
         assert_eq!(typed("bc", None, "abc", &["abcbc"]).await, (Some(true), 1));
@@ -1228,7 +1340,7 @@ mod tests {
         let password = type_with(
             "secret",
             None,
-            || async {
+            |_| async {
                 Ok(Some(Focus {
                     password: true,
                     ..field("")
@@ -1243,7 +1355,7 @@ mod tests {
         .unwrap();
         assert_eq!((password, pastes.get()), (None, 1));
         let started = tokio::time::Instant::now();
-        let none = type_with("abc", None, || async { Ok(None) }, || async { Ok(()) })
+        let none = type_with("abc", None, |_| async { Ok(None) }, || async { Ok(()) })
             .await
             .unwrap();
         assert_eq!(none, None);
@@ -1264,7 +1376,7 @@ mod tests {
         let err = type_with(
             "abc",
             Some((360, 350)),
-            || async { Ok(Some(field(""))) },
+            |_| async { Ok(Some(field(""))) },
             || {
                 pastes.set(pastes.get() + 1);
                 async { Ok(()) }
@@ -1287,7 +1399,7 @@ mod tests {
         let out = type_with(
             "abc",
             Some((360, 350)),
-            || async { Ok(None) },
+            |_| async { Ok(None) },
             || {
                 pastes.set(pastes.get() + 1);
                 async { Ok(()) }
