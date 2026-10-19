@@ -22,6 +22,7 @@
   The linux archives carry the UI server as `android/cb-ui.jar`, built in the release from `android/ui` with a pinned JDK and checked byte for byte across two builds; an `[android]` section without `ui_jar` takes that jar.
 
   Tested on redroid 16; a stock phone is untested.
+- **Shared endpoint.** `[daemon] socket_group` opens the daemon's unix socket to one group's members (mode 0660, owned by the group) on macOS and Linux; unset, it stays 0600. Every member can then use the daemon as its user does ([docs/safety.md](docs/safety.md#a-shared-endpoint)). The Windows pipe stays with its user, and the setting fails the file there.
 
 - **Run errors.** A `script_run` or plugin report that carries `error` now answers `is_error: true`, with the whole report (logs, stderr) as its text, through the daemon and the MCP server alike; before, a failed run looked like a success to the client.
 

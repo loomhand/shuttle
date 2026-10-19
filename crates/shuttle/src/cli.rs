@@ -219,6 +219,11 @@ async fn serve(
         asker,
     };
     let overlay = !config.as_ref().is_ok_and(|c| !c.driver.overlay);
+    #[cfg(unix)]
+    let group = config
+        .as_mut()
+        .ok()
+        .and_then(|c| c.daemon.socket_group.take());
     let plugins = plugins::configured(&config, &path, &tools::NAMES);
     let routes = services::routes(&plugins.services, endpoint);
     let models = config.map(Models::new);
@@ -226,6 +231,10 @@ async fn serve(
         .and_then(std::fs::canonicalize)
         .map_err(|e| format!("locate this program: {e}"))?;
     let listener = server::bind(endpoint).await?;
+    #[cfg(unix)]
+    if let Some(group) = &group {
+        server::share(&listener, group)?;
+    }
     let services = Services::start(&plugins.services, endpoint, &key_vars)?;
     let own = driver::endpoint(endpoint);
     let bundled = if local {

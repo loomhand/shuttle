@@ -142,6 +142,31 @@ mod tests {
     }
 
     #[test]
+    fn a_daemon_section_names_the_socket_group_and_an_empty_one_is_refused() {
+        assert!(
+            Config::load(file("").path())
+                .unwrap()
+                .daemon
+                .socket_group
+                .is_none()
+        );
+        let shared = file("[daemon]\nsocket_group = \"agents\"\n");
+        let loaded = Config::load(shared.path());
+        if cfg!(windows) {
+            assert!(loaded.unwrap_err().contains("unix socket"));
+        } else {
+            assert_eq!(
+                loaded.unwrap().daemon.socket_group.as_deref(),
+                Some("agents")
+            );
+        }
+        let err = Config::load(file("[daemon]\nsocket_group = \"\"\n").path()).unwrap_err();
+        assert!(err.contains("socket_group is empty"), "{err}");
+        let err = Config::load(file("[daemon]\nsocket_mode = 438\n").path()).unwrap_err();
+        assert!(err.contains("socket_mode"), "{err}");
+    }
+
+    #[test]
     fn the_config_path_is_per_program() {
         assert!(default_path("cocoon-shuttle").ends_with("cocoon-shuttle/config.toml"));
     }
