@@ -1,6 +1,5 @@
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { win32 } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { isDeepStrictEqual } from 'node:util'
@@ -33,7 +32,7 @@ type Trace = { i: number; op?: string; how?: string; ms?: number; was?: 'on' | '
 export type Result = { ok?: boolean; done?: number; ms?: number; trace?: Trace[]; escalate?: Escalation; served?: desk.Served[]; [key: string]: unknown }
 
 const OS = process.platform
-const FLOWS = process.env.SHUTTLE_FLOWS || (OS === 'linux' ? '/workspace/flows' : `${homedir()}/workspace/flows`)
+const FLOWS = process.env.SHUTTLE_FLOWS ?? ''
 const LOG = `${FLOWS}/.runs.jsonl`
 const LOG_MAX = 1024 * 1024
 const INDEX = `${FLOWS}/INDEX`
@@ -87,6 +86,7 @@ export async function main(p: Params): Promise<Result> {
 
 async function perform(p: Params): Promise<Result> {
   const t0 = Date.now()
+  if (!FLOWS) return { ok: false, error: 'SHUTTLE_FLOWS names no flows directory' }
   try { flowsDir() } catch {}
   if (p.reindex) { repo(); writeIndex(); git('add', '-A'); git('commit', '-q', '-m', 'sync from the flow library'); return { ok: true } }
   if (p.find) return await find(p.find)
