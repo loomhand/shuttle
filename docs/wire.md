@@ -46,7 +46,7 @@ Desk calls name `desk_<verb>` tools:
 
 ## Computer calls
 
-A vision agent drives the screen with these, by screenshot pixels and element indexes rather than desk ids. The Linux X11 desk answers them; on macOS and Windows each answers `VERB: not on this OS yet: the computer verbs run on Linux X11`, and an Android device answers its own `computer_state`, `computer_act`, `computer_end` and `look`. With an app allowlist they are refused, since they see and click the whole screen. `session` names the driver session whose elements and screenshot scale a call uses, `computer` by default; a host ends it with `desk_computer_end`.
+A vision agent drives the screen with these, by screenshot pixels and element indexes rather than desk ids. The Linux X11 desk answers them; on macOS and Windows each answers `VERB: not on this OS yet: the computer verbs run on Linux X11`, and an Android device answers its own `computer_state`, `computer_act`, `computer_end` and `look`. With an app allowlist they are refused, since they see and click the whole screen. `session` names the driver session whose elements and screenshot scale a call uses; without it, a call uses the caller's own, named after its `agent_id`. A host ends a session with `desk_computer_end`. The driver refuses an ended name for good, so a caller's next call without `session` opens a session under a new name.
 
 | Verb | Arguments | Result |
 |---|---|---|

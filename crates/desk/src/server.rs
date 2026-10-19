@@ -252,7 +252,7 @@ impl Handler for Linux {
             return Output::error(format!("{tool}: {ALLOWLIST_REFUSED}"));
         }
         self.computer
-            .run(tool, call.args)
+            .run(&call.agent_id, tool, call.args)
             .await
             .unwrap_or_else(Output::error)
     }

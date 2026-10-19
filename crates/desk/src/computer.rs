@@ -95,6 +95,8 @@ pub struct Computer {
     /// The screen blocks that change while no action runs, which the settle ignores.
     volatile: Volatile,
     ids: AtomicU64,
+    /// Per caller, how many times its default session was ended, which names its next one.
+    defaults: std::sync::Mutex<HashMap<String, u64>>,
 }
 
 impl Computer {
@@ -110,15 +112,27 @@ impl Computer {
             last_scale: std::sync::Mutex::new(1.0),
             volatile: Volatile::start(),
             ids: AtomicU64::new(0),
+            defaults: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
-    /// Answers the computer verb `tool`.
-    pub async fn run(&self, tool: &str, args: Value) -> Result<Output, String> {
+    /// Answers the computer verb `tool` of caller `agent`, whose default session is its own.
+    pub async fn run(&self, agent: &str, tool: &str, mut args: Value) -> Result<Output, String> {
+        let default =
+            !matches!(tool, "desk_look" | "desk_title_at") && !args["session"].is_string();
+        if default {
+            args["session"] = self.default_session(agent).into();
+        }
         match tool {
             "desk_computer_state" => self.state(args).await,
             "desk_computer_act" => self.act(args).await,
-            "desk_computer_end" => self.end(args).await.map(Output::text),
+            "desk_computer_end" => {
+                let ended = self.end(args).await;
+                if default {
+                    *lock(&self.defaults).entry(agent.to_owned()).or_default() += 1;
+                }
+                ended.map(Output::text)
+            }
             "desk_look" => self.look(&args).await,
             "desk_computer_scale" => {
                 let scale = self.scale_of(&session_of(&args));
@@ -851,6 +865,23 @@ impl Computer {
         }
         self.shm(|g| Ok(self.window_report(g, &windows, &seen, active, focus, scale)))
             .unwrap_or_default()
+    }
+
+    /// The session of `agent` when its call names none; a new name once it was ended, since the driver refuses an ended one.
+    fn default_session(&self, agent: &str) -> String {
+        let mut name = DEFAULT_SESSION.to_owned();
+        if !agent.is_empty() {
+            name.push('-');
+            name.extend(
+                agent
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }),
+            );
+        }
+        match lock(&self.defaults).get(agent) {
+            Some(n) => format!("{name}-{n}"),
+            None => name,
+        }
     }
 
     /// A driver session of its own for one step, named uniquely in this process.
@@ -2829,6 +2860,90 @@ mod tests {
             assert!(Instant::now() < deadline, "{:?}", ended.lock().unwrap());
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn callers_without_a_session_get_their_own_and_an_ended_default_is_named_anew() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let sessions = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+        let log = std::sync::Arc::clone(&sessions);
+        let driver = tokio::spawn(async move {
+            let mut ended = Vec::<String>::new();
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let name = req["name"].as_str().unwrap_or_default().to_owned();
+                let session = req["args"]["session"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                log.lock().unwrap().push((name.clone(), session.clone()));
+                let reply = if ended.contains(&session) {
+                    json!({"ok": false, "error": format!("session {session} ended")})
+                } else if name == "end_session" {
+                    ended.push(session);
+                    json!({"ok": true, "result": {}})
+                } else if name == "list_windows" {
+                    json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Mousepad", "title": "notes", "bounds": {"x": 0, "y": 0, "width": 800, "height": 600}, "z_index": 1}]}}})
+                } else if name == "get_window_state" {
+                    json!({"ok": true, "result": {"structuredContent": {"elements": [{"element_index": 0, "element_token": "t0", "role": "push button", "label": "OK"}]}}})
+                } else {
+                    json!({"ok": true, "result": {"structuredContent": {}}})
+                };
+                let mut out = reply.to_string().into_bytes();
+                out.push(b'\n');
+                reader.into_inner().write_all(&out).await.unwrap();
+            }
+        });
+        let cua = cua(&socket);
+        let state = |agent: &'static str| cua.run(agent, "desk_computer_state", json!({}));
+        state("a").await.unwrap();
+        let other = cua
+            .run(
+                "b:c",
+                "desk_computer_act",
+                json!({"action": "key", "key": "x"}),
+            )
+            .await;
+        assert!(!other.unwrap().is_error);
+        let foreign = cua
+            .run(
+                "b:c",
+                "desk_computer_act",
+                json!({"action": "click", "element": 0}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(foreign, "no element list yet; call computer_state first");
+        let own = cua.run(
+            "a",
+            "desk_computer_act",
+            json!({"action": "click", "element": 0}),
+        );
+        assert!(!own.await.unwrap().is_error);
+        cua.run("a", "desk_computer_end", Value::Null)
+            .await
+            .unwrap();
+        let again = state("a").await.unwrap();
+        assert!(!again.is_error, "{}", again.text);
+        let named: Vec<String> = sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(n, _)| n == "list_windows" || n == "end_session")
+            .map(|(_, s)| s.clone())
+            .filter(|s| s.starts_with("computer"))
+            .collect();
+        assert_eq!(
+            named,
+            ["computer-a", "computer-b-c", "computer-a", "computer-a-1"]
+        );
         driver.abort();
     }
 
