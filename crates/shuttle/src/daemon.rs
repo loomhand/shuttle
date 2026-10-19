@@ -918,6 +918,50 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_closed_connection_kills_its_run_with_its_children_and_frees_the_turn() {
+        let (d, _keys, dir) = served(Duration::from_secs(10)).await;
+        let endpoint = dir.path().join("d.sock").to_string_lossy().into_owned();
+        let pid_file = dir.path().join("child.pid");
+        let code = format!(
+            "import {{ spawn }} from 'node:child_process'; import {{ writeFileSync }} from 'node:fs'; export async function main() {{ const c = spawn('sleep', ['30']); writeFileSync({:?}, String(c.pid)); await new Promise((r) => setTimeout(r, 30000)) }}",
+            pid_file.to_string_lossy()
+        );
+        let mut conn = shuttle_desk::server::connect(&endpoint).await.unwrap();
+        desk_core::wire::write_frame(&mut conn, &script(&code))
+            .await
+            .unwrap();
+        let mut child = None;
+        for _ in 0..200 {
+            if let Ok(pid) = std::fs::read_to_string(&pid_file) {
+                child = pid.trim().parse::<i32>().ok();
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let child = child.expect("the run started its child");
+        drop(conn);
+        let started = std::time::Instant::now();
+        // SAFETY: kill with signal 0 only checks that the process exists.
+        while unsafe { libc::kill(child, 0) } == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "the run's child outlived the closed connection"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let next = tokio::time::timeout(
+            Duration::from_secs(5),
+            d.answer(script("export function main() { return 7 }")),
+        )
+        .await
+        .expect("the turn stayed held after the connection closed");
+        let report: Value = serde_json::from_str(&next.text).unwrap();
+        assert_eq!(report["result"], 7, "{report}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn two_runs_at_once_never_interleave_their_actions() {
         let (d, keys, _dir) = served(Duration::from_secs(10)).await;
         let code = |a: &str, b: &str| {
