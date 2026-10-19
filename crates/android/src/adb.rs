@@ -1136,7 +1136,7 @@ mod tests {
     const CRASH_LOG: &str = "10-19 08:01:40.100  3200  3200 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:40.100  3200  3200 F DEBUG   : Abort message: 'not ours'\n10-19 08:01:50.777  3318  3318 F DEBUG   : Cmdline: app_process / shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : pid: 3308, tid: 3308, name: main  >>> app_process <<<\n10-19 08:01:50.777  3318  3318 F DEBUG   : Abort message: 'No pending exception expected: java.lang.ClassNotFoundException: shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : (Throwable with empty stack trace)'\n10-19 08:01:51.000  3330  3330 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:51.000  3330  3330 F DEBUG   : Abort message: 'later, not ours'\n";
 
     #[test]
-    fn the_abort_cause_is_the_last_one_of_a_cb_ui_process() {
+    fn the_abort_cause_is_the_last_one_of_a_ui_server_process() {
         assert_eq!(
             abort_cause(CRASH_LOG).as_deref(),
             Some("No pending exception expected: java.lang.ClassNotFoundException: shuttle.Ui")
