@@ -248,6 +248,10 @@ pub trait Access {
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String>;
     /// One element read live; a value has at most `chars` characters.
     fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String>;
+    /// The id of the focused element of `frame`, if one is.
+    fn focused(&mut self, frame: &Frame) -> Result<Option<String>, String> {
+        focused_by_tree(self, frame)
+    }
     /// The ids above `id`, from its top-level window down to its parent.
     fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String>;
     /// The deepest element of the window `window` under the screen pixel `(x, y)`.
@@ -340,9 +344,90 @@ pub fn lookup<T: Clone>(ids: &HashMap<String, T>, id: &str) -> Result<T, String>
         .ok_or_else(|| format!("unknown element id {id:?}: take a new snapshot"))
 }
 
+/// The id of the first element of `frame`'s tree in the focused state, from one whole tree read.
+pub fn focused_by_tree<B: Access + ?Sized>(
+    b: &mut B,
+    frame: &Frame,
+) -> Result<Option<String>, String> {
+    Ok(b.tree(frame, Extras::default())?
+        .nodes
+        .into_iter()
+        .find(|n| n.has("focused"))
+        .map(|n| n.id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Focus {
+        matched: Option<String>,
+        trees: usize,
+    }
+
+    impl Access for Focus {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            Ok(Vec::new())
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            self.trees += 1;
+            let node = |id: &str, states: Vec<&'static str>| Node {
+                id: id.into(),
+                states,
+                ..Node::default()
+            };
+            Ok(Tree {
+                frame: frame.clone(),
+                nodes: vec![node("w", vec!["active"]), node("field", vec!["focused"])],
+                ..Tree::default()
+            })
+        }
+
+        fn node(&mut self, _: &str, _: Extras, _: usize) -> Result<Node, String> {
+            Err("unused".into())
+        }
+
+        fn focused(&mut self, frame: &Frame) -> Result<Option<String>, String> {
+            match self.matched.clone() {
+                Some(id) => Ok(Some(id)),
+                None => focused_by_tree(self, frame),
+            }
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Err("unused".into())
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Err("unused".into())
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Err("unused".into())
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Err("unused".into())
+        }
+    }
+
+    #[test]
+    fn a_match_names_the_focused_element_without_a_tree_read_and_no_match_falls_back_to_one() {
+        let frame = Frame::default();
+        let mut matched = Focus {
+            matched: Some("field".into()),
+            trees: 0,
+        };
+        assert_eq!(matched.focused(&frame), Ok(Some("field".into())));
+        assert_eq!(matched.trees, 0);
+        let mut unmatched = Focus {
+            matched: None,
+            trees: 0,
+        };
+        assert_eq!(unmatched.focused(&frame), Ok(Some("field".into())));
+        assert_eq!(unmatched.trees, 1);
+    }
 
     #[test]
     fn node_json_leaves_out_empty_fields() {

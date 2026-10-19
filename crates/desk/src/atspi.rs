@@ -22,6 +22,9 @@ const ACCESSIBLE: &str = "org.a11y.atspi.Accessible";
 const ACTION: &str = "org.a11y.atspi.Action";
 const COMPONENT: &str = "org.a11y.atspi.Component";
 const TEXT: &str = "org.a11y.atspi.Text";
+const COLLECTION: &str = "org.a11y.atspi.Collection";
+const MATCH_ALL: i32 = 1;
+const SORT_CANONICAL: u32 = 1;
 const VALUE: &str = "org.a11y.atspi.Value";
 const SELECTION: &str = "org.a11y.atspi.Selection";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
@@ -683,6 +686,15 @@ impl Atspi {
         })
     }
 
+    /// The first descendant of `obj` in the focused state, by one Collection match in its app; none when nothing matches or the app does not serve Collection.
+    pub async fn focused_in(&self, obj: &Obj) -> Option<Obj> {
+        let found: Vec<(String, OwnedObjectPath)> = self
+            .call(obj, COLLECTION, "GetMatches", &focused_rule())
+            .await
+            .ok()?;
+        found.into_iter().next().map(Obj::of)
+    }
+
     /// The text of a text node, at most `max` characters, else the current value of a value node.
     pub async fn value(&self, obj: &Obj, ifaces: u8, max: i32) -> Result<String, String> {
         if ifaces & IF_TEXT != 0 {
@@ -1210,6 +1222,38 @@ fn format_number(v: f64) -> String {
 }
 
 /// The first object an AT-SPI relation set names as the label of its owner.
+/// The Collection.GetMatches arguments for the first descendant in the focused state, in tree order: a rule on the state alone, canonical order, one match, descending.
+#[allow(clippy::type_complexity)]
+fn focused_rule() -> (
+    (
+        Vec<i32>,
+        i32,
+        HashMap<String, String>,
+        i32,
+        Vec<i32>,
+        i32,
+        Vec<String>,
+        i32,
+        bool,
+    ),
+    u32,
+    i32,
+    bool,
+) {
+    let rule = (
+        vec![1 << FOCUSED, 0],
+        MATCH_ALL,
+        HashMap::new(),
+        MATCH_ALL,
+        Vec::new(),
+        MATCH_ALL,
+        Vec::new(),
+        MATCH_ALL,
+        false,
+    );
+    (rule, SORT_CANONICAL, 1, true)
+}
+
 fn labelled_by(set: Vec<(u32, Vec<(String, OwnedObjectPath)>)>) -> Option<Obj> {
     set.into_iter()
         .find(|(kind, _)| *kind == LABELLED_BY)?
@@ -1238,6 +1282,34 @@ mod tests {
         assert!(answered.is_empty() && !Atspi::new().is_hung(":9.98"));
     }
 
+    #[test]
+    fn the_focused_match_asks_collection_for_one_focused_descendant_in_tree_order() {
+        use zbus::zvariant::Type as _;
+
+        let args = focused_rule();
+        assert_eq!(
+            <(
+                (
+                    Vec<i32>,
+                    i32,
+                    HashMap<String, String>,
+                    i32,
+                    Vec<i32>,
+                    i32,
+                    Vec<String>,
+                    i32,
+                    bool
+                ),
+                u32,
+                i32,
+                bool
+            )>::SIGNATURE
+                .to_string(),
+            "((aiia{ss}iaiiasib)uib)"
+        );
+        assert_eq!(args.0.0, [1 << 12, 0]);
+        assert_eq!((args.1, args.2, args.3), (1, 1, true));
+    }
     #[test]
     fn an_id_round_trips_to_its_object() {
         let gtk = Obj {
