@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Service plugins.** A plugin-directory file with a `service` key names a long-lived program and the tools it serves, each with its own input schema ([docs/wire.md](docs/wire.md#service-plugins)):
+  - the daemon starts it with itself in a process group of its own, hands it a socket in a 0700 directory beside its endpoint (`SHUTTLE_SERVICE_SOCKET`), and starts it again with a backoff from 1 s to 30 s when it exits;
+  - for a call of one of its tools, the daemon reads the first frame, writes it unchanged to the service's socket and copies bytes both ways until the service closes, with no desk turn and no deadline; about 20 µs added per call at p50 on an Apple M2 Max;
+  - `cocoon-shuttle mcp` lists its tools with their schemas, except those with `mcp: false`, and forwards their calls;
+  - a stop refuses new calls and closes those in flight, and the service keeps running; `script_run = false` does not turn services off, so the guard rails hold only with no service installed ([docs/safety.md](docs/safety.md#service-plugins));
+  - unix only: Windows skips service files with a log line.
 - **Android over adb.** With an `[android]` section ([docs/config.md](docs/config.md#android-over-adb)), the daemon drives one Android device instead of the desktop. The device is reached from a Linux or macOS host, and the `shuttle-android` crate holds the backend:
   - the desk verbs answer from the device's UiAutomation tree, through a UI server the daemon pushes and runs under `app_process`;
   - input goes through `adb shell input`, screenshots through `screencap`, and text through a scrcpy clipboard paste;

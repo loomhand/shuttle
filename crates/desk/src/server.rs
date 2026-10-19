@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use desk_core::wire::{Call, Output, read_frame, write_frame};
-use tokio::io::{AsyncRead, AsyncWrite};
+use desk_core::wire::{Call, Output, read_body, read_frame, write_frame};
+use zeroize::Zeroize;
 
 use crate::desk::Desk;
 use crate::driver::Input;
@@ -20,11 +20,33 @@ pub type Conn = tokio::net::UnixStream;
 /// One client connection to an endpoint.
 #[cfg(windows)]
 pub type Conn = tokio::net::windows::named_pipe::NamedPipeClient;
+/// One connection an endpoint accepted.
+#[cfg(unix)]
+pub type Accepted = tokio::net::UnixStream;
+/// One connection an endpoint accepted.
+#[cfg(windows)]
+pub type Accepted = tokio::net::windows::named_pipe::NamedPipeServer;
 
 /// What answers the calls of an endpoint.
 pub trait Handler: Send + Sync + 'static {
     /// Answers `call`; a failure is an error output, never a dropped connection.
     fn answer(&self, call: Call) -> impl Future<Output = Output> + Send;
+
+    /// Whether a call of `tool` takes its whole connection through [`Handler::splice`] instead of one answer.
+    fn splices(&self, _tool: &str) -> bool {
+        false
+    }
+
+    /// Serves the connection of a call that [`Handler::splices`] names; `body` is the call's frame body as read, which it zeroizes.
+    fn splice(
+        &self,
+        _call: Call,
+        mut body: Vec<u8>,
+        _stream: Accepted,
+    ) -> impl Future<Output = ()> + Send {
+        body.zeroize();
+        async {}
+    }
 }
 
 impl<B: Access + 'static, D: Input + Send + Sync + 'static> Handler for Desk<B, D> {
@@ -216,8 +238,20 @@ fn pipe(
         .map_err(|e| format!("create pipe {endpoint}: {e}"))
 }
 
-async fn handle<H: Handler, S: AsyncRead + AsyncWrite + Unpin>(handler: Arc<H>, mut stream: S) {
-    let out = match read_frame::<_, Call>(&mut stream).await {
+async fn handle<H: Handler>(handler: Arc<H>, mut stream: Accepted) {
+    let call = match read_body(&mut stream).await {
+        Ok(mut body) => match serde_json::from_slice::<Call>(&body) {
+            Ok(call) if handler.splices(&call.tool) => {
+                return handler.splice(call, body, stream).await;
+            }
+            decoded => {
+                body.zeroize();
+                decoded.map_err(|e| format!("decode frame: {e}"))
+            }
+        },
+        Err(e) => Err(e),
+    };
+    let out = match call {
         Ok(call) => handler.answer(call).await,
         Err(e) => Output::error(e),
     };

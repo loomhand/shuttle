@@ -1,25 +1,28 @@
 //! The daemon's handler: model calls with the configured providers, scripts and plans on the runtime, desk calls by this OS's desk.
 
+use std::collections::HashMap;
 use std::hash::{BuildHasher, RandomState};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use desk_core::args::parse;
-use desk_core::wire::{Call, Output};
+use desk_core::wire::{Call, Output, write_frame};
 use serde::Serialize;
 use serde_json::Value;
 use shuttle_desk::desk::{ACTIONS, TURN_WAIT};
-use shuttle_desk::server::Handler;
+use shuttle_desk::server::{Accepted, Handler};
 use shuttle_models::Models;
 use shuttle_models::config::Confirm;
 use tokio::sync::oneshot;
+use zeroize::Zeroizing;
 
 use crate::STOPPED;
 #[cfg(any(target_os = "macos", windows))]
 use crate::hotkey::Hotkey;
 use crate::plugins::Plugin;
 use crate::runner::Runner;
+use crate::services;
 
 const BUSY: &str = "desk busy: another run or action is still going";
 const SCRIPT_RUN_OFF: &str =
@@ -78,13 +81,14 @@ pub struct Ui {
     pub indicator: bool,
 }
 
-/// Answers `model_*` calls with `models`, `gui_plan`, `script_run` and plugin tools with `runner`, and the rest with `desk`; `safety_stop` halts every call until `safety_resume`.
+/// Answers `model_*` calls with `models`, `gui_plan`, `script_run` and plugin tools with `runner`, splices service tools to their services, and answers the rest with `desk`; `safety_stop` halts every call until `safety_resume`.
 pub struct Daemon<H> {
     desk: H,
     models: Result<Models, String>,
     runner: Runner,
     guard: Guard,
     plugins: Vec<Plugin>,
+    services: HashMap<String, String>,
     halted: tokio::sync::watch::Sender<bool>,
     actions: AtomicUsize,
     asking: AtomicBool,
@@ -104,6 +108,7 @@ impl<H: Handler> Daemon<H> {
             runner,
             guard,
             plugins: Vec::new(),
+            services: HashMap::new(),
             halted: tokio::sync::watch::Sender::new(false),
             actions: AtomicUsize::new(0),
             asking: AtomicBool::new(false),
@@ -119,6 +124,13 @@ impl<H: Handler> Daemon<H> {
     #[must_use]
     pub fn with_plugins(mut self, plugins: Vec<Plugin>) -> Self {
         self.plugins = plugins;
+        self
+    }
+
+    /// Adds the service tools, by name, with the socket of their service.
+    #[must_use]
+    pub fn with_services(mut self, services: HashMap<String, String>) -> Self {
+        self.services = services;
         self
     }
 
@@ -256,6 +268,31 @@ impl<H: Handler> Handler for Daemon<H> {
         tokio::select! {
             out = out => out,
             _ = halted.wait_for(|h| *h) => Output::error(STOPPED),
+        }
+    }
+
+    fn splices(&self, tool: &str) -> bool {
+        self.services.contains_key(tool)
+    }
+
+    // a stop drops the splice without a reply, since the client may be inside a stream of its own frames
+    async fn splice(&self, call: Call, body: Vec<u8>, mut stream: Accepted) {
+        let body = Zeroizing::new(body);
+        let Some(socket) = self.services.get(&call.tool) else {
+            return;
+        };
+        drop(call);
+        let refused = if *self.halted.borrow() {
+            Some(STOPPED.to_owned())
+        } else {
+            let mut halted = self.halted.subscribe();
+            tokio::select! {
+                routed = services::route(socket, body, &mut stream) => routed.err(),
+                _ = halted.wait_for(|h| *h) => None,
+            }
+        };
+        if let Some(e) = refused {
+            let _ = write_frame(&mut stream, &Output::error(e)).await;
         }
     }
 }

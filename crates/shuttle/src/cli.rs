@@ -28,6 +28,7 @@ use crate::hotkey::{self, Hotkey};
 #[cfg(target_os = "macos")]
 use crate::mac as controls;
 use crate::runner::Runner;
+use crate::services::{self, Services};
 use crate::tools::{self, DESK_VERBS};
 #[cfg(windows)]
 use crate::win as controls;
@@ -47,11 +48,10 @@ pub fn run(args: &[String]) -> ExitCode {
             let endpoint = desk_endpoint();
             let path = default_path(NAME);
             let config = Config::load(&path);
-            let listed = if config.as_ref().is_ok_and(|c| c.tools.script_run) {
-                plugins::configured(&config, &path, &tools::NAMES)
-            } else {
-                Vec::new()
-            };
+            let mut listed = plugins::configured(&config, &path, &tools::NAMES);
+            if !config.as_ref().is_ok_and(|c| c.tools.script_run) {
+                listed.runs.clear();
+            }
             let stdin = tokio::io::BufReader::new(tokio::io::stdin());
             exit(block_on(
                 Builder::new_current_thread(),
@@ -220,11 +220,13 @@ async fn serve(
     };
     let overlay = !config.as_ref().is_ok_and(|c| !c.driver.overlay);
     let plugins = plugins::configured(&config, &path, &tools::NAMES);
+    let routes = services::routes(&plugins.services, endpoint);
     let models = config.map(Models::new);
     let exe = std::env::current_exe()
         .and_then(std::fs::canonicalize)
         .map_err(|e| format!("locate this program: {e}"))?;
     let listener = server::bind(endpoint).await?;
+    let services = Services::start(&plugins.services, endpoint, &key_vars)?;
     let own = driver::endpoint(endpoint);
     let bundled = if local {
         Bundled::start(&exe, &own, overlay).await?
@@ -252,13 +254,18 @@ async fn serve(
         Some(settings) => Desks::Android(Box::new(android::device(settings))),
         None => Desks::Native(server::native(driver, &apps)),
     };
-    let daemon = Arc::new(Daemon::new(desk, models, runner, guard).with_plugins(plugins));
+    let daemon = Arc::new(
+        Daemon::new(desk, models, runner, guard)
+            .with_plugins(plugins.runs)
+            .with_services(routes),
+    );
     #[cfg(any(target_os = "macos", windows))]
     ready(daemon.clone(), safety, hotkey.filter(|_| local));
     let served = tokio::select! {
         r = server::serve(daemon, listener) => r,
         () = shutdown() => Ok(()),
     };
+    services.stop().await;
     if let Some(b) = bundled {
         b.stop().await;
     }

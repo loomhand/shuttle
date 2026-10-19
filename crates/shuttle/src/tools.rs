@@ -3,7 +3,7 @@
 use desk_core::wire::{Call, Output};
 use serde_json::{Value, json};
 
-use crate::plugins::Plugin;
+use crate::plugins::Plugins;
 use crate::{NAME, VERSION, proxy};
 
 /// The built-in MCP tools, whose names no plugin may take.
@@ -14,16 +14,24 @@ pub const DESK_VERBS: [&str; 19] = [
     "scroll", "drag", "still", "focus", "close", "launch", "shot", "screen",
 ];
 
-/// The result of `tools/list`: the built-in tools, then `plugins` with `script_run`'s arguments.
-pub fn list(plugins: &[Plugin]) -> Value {
+/// The result of `tools/list`: the built-in tools, the script plugins with `script_run`'s arguments, then the service tools the MCP server lists, with their own.
+pub fn list(plugins: &Plugins) -> Value {
     let mut listed = builtins();
     let script = listed["tools"][1]["inputSchema"].clone();
     if let Some(tools) = listed["tools"].as_array_mut() {
-        tools.extend(plugins.iter().map(|p| {
+        tools.extend(plugins.runs.iter().map(|p| {
             let mut tool = json!({"name": p.name, "description": p.description});
             tool["inputSchema"] = script.clone();
             tool
         }));
+        tools.extend(
+            plugins
+                .services
+                .iter()
+                .flat_map(|s| &s.tools)
+                .filter(|t| t.mcp)
+                .map(|t| json!({"name": t.name, "description": t.description, "inputSchema": t.input_schema})),
+        );
     }
     listed
 }
@@ -93,12 +101,14 @@ fn builtins() -> Value {
 }
 
 /// Answers a `tools/call` of `name` with `args`: an MCP tool result, or `None` for a tool that is neither built in nor one of `plugins`.
-pub async fn call(name: &str, args: Value, endpoint: &str, plugins: &[Plugin]) -> Option<Value> {
+pub async fn call(name: &str, args: Value, endpoint: &str, plugins: &Plugins) -> Option<Value> {
     if name == "status" {
         return Some(result(status().to_string(), false));
     }
-    let routed = if plugins.iter().any(|p| p.name == name) {
+    let routed = if plugins.runs.iter().any(|p| p.name == name) {
         Some(Ok((name.to_owned(), absolute_script(args))))
+    } else if plugins.lists(name) {
+        Some(Ok((name.to_owned(), args)))
     } else {
         route(name, args)
     };
@@ -178,10 +188,11 @@ fn result(text: String, is_error: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugins::Plugin;
 
     #[test]
     fn no_mcp_tool_reaches_the_safety_controls() {
-        let tools = list(&[]);
+        let tools = list(&Plugins::default());
         let names: Vec<&str> = tools["tools"]
             .as_array()
             .unwrap()
@@ -205,13 +216,16 @@ mod tests {
 
     #[test]
     fn the_built_in_names_are_the_listed_tools_and_plugins_follow_with_script_runs_arguments() {
-        let plugin = Plugin {
-            name: "demo_run".into(),
-            description: "Run a demo script.".into(),
-            bin: "/usr/bin/demo".into(),
-            resources: Vec::new(),
+        let plugins = Plugins {
+            runs: vec![Plugin {
+                name: "demo_run".into(),
+                description: "Run a demo script.".into(),
+                bin: "/usr/bin/demo".into(),
+                resources: Vec::new(),
+            }],
+            services: Vec::new(),
         };
-        let listed = list(std::slice::from_ref(&plugin));
+        let listed = list(&plugins);
         let names: Vec<&str> = listed["tools"]
             .as_array()
             .unwrap()
@@ -225,6 +239,36 @@ mod tests {
             listed["tools"][1]["inputSchema"]
         );
         assert_eq!(listed["tools"][1]["name"], "script_run");
+    }
+
+    #[tokio::test]
+    async fn a_service_tool_is_listed_with_its_own_schema_unless_it_is_for_the_wire_only() {
+        let plugins = Plugins {
+            runs: Vec::new(),
+            services: vec![
+                serde_json::from_value(json!({
+                    "service": "demo",
+                    "bin": "/usr/bin/demo",
+                    "tools": [
+                        {"name": "demo_echo", "description": "Echo.", "input_schema": {"type": "object", "properties": {"say": {"type": "string"}}}},
+                        {"name": "demo_stream", "description": "Stream.", "input_schema": {"type": "object"}, "mcp": false}
+                    ]
+                }))
+                .unwrap(),
+            ],
+        };
+        let listed = list(&plugins);
+        let tools = listed["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), NAMES.len() + 1);
+        assert_eq!(
+            tools[NAMES.len()],
+            json!({"name": "demo_echo", "description": "Echo.", "inputSchema": {"type": "object", "properties": {"say": {"type": "string"}}}})
+        );
+        assert!(
+            call("demo_stream", json!({}), "unused", &plugins)
+                .await
+                .is_none()
+        );
     }
 
     #[test]

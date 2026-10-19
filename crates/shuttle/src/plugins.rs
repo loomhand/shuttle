@@ -1,16 +1,38 @@
-//! Script tools that a directory adds as JSON files: each runs with `script_run`'s contract and its own program in place of Node.
+//! Tools that a directory adds as JSON files: script tools that run with `script_run`'s contract and their own program in place of Node, and services, long-lived programs that serve their own tools.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use shuttle_models::config::Config;
 
 use crate::log;
 
 const MAX_DESCRIPTION: usize = 2048;
+const MAX_SERVICE_NAME: usize = 32;
+const MAX_TOOL_NAME: usize = 64;
 const SUFFIX: &str = "_run";
 const DIR: &str = "tools.d";
+const SERVICE_KEY: &str = "service";
+const RESERVED: [&str; 3] = ["desk_", "model_", "safety_"];
+
+/// The plugins of one directory: the script tools and the services.
+#[derive(Debug, Default)]
+pub struct Plugins {
+    pub runs: Vec<Plugin>,
+    pub services: Vec<Service>,
+}
+
+impl Plugins {
+    /// Whether the MCP server lists the service tool `name`.
+    pub fn lists(&self, name: &str) -> bool {
+        self.services
+            .iter()
+            .flat_map(|s| &s.tools)
+            .any(|t| t.mcp && t.name == name)
+    }
+}
 
 /// One plugin tool, as its JSON file spells it.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -42,9 +64,7 @@ impl Plugin {
         if builtins.contains(&self.name.as_str()) {
             return Err(format!("name {} is a built-in tool", self.name));
         }
-        if self.description.chars().count() > MAX_DESCRIPTION {
-            return Err(format!("description over {MAX_DESCRIPTION} characters"));
-        }
+        check_description(&self.description)?;
         if !self.bin.is_absolute() {
             return Err(format!("bin {} is not absolute", self.bin.display()));
         }
@@ -58,10 +78,86 @@ impl Plugin {
     }
 }
 
+/// A long-lived program that serves `tools` on the socket the daemon names in `SHUTTLE_SERVICE_SOCKET`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Service {
+    pub service: String,
+    pub bin: PathBuf,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub tools: Vec<ServiceTool>,
+}
+
+impl Service {
+    fn check(&self, builtins: &[&str]) -> Result<(), String> {
+        if cfg!(windows) {
+            return Err("service plugins need a unix socket: not on Windows yet".to_owned());
+        }
+        if !is_word(&self.service) || self.service.len() > MAX_SERVICE_NAME {
+            return Err(format!(
+                "service {:?} is not ^[a-z][a-z0-9_]*$ of at most {MAX_SERVICE_NAME} characters",
+                self.service
+            ));
+        }
+        if !self.bin.is_absolute() {
+            return Err(format!("bin {} is not absolute", self.bin.display()));
+        }
+        if self.tools.is_empty() {
+            return Err("no tools".to_owned());
+        }
+        for (i, t) in self.tools.iter().enumerate() {
+            t.check(builtins)?;
+            if self.tools[..i].iter().any(|u| u.name == t.name) {
+                return Err(format!("tool {} is named twice", t.name));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One tool a service serves; `mcp = false` routes it on the desk wire only.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceTool {
+    pub name: String,
+    pub description: String,
+    pub input_schema: Value,
+    #[serde(default = "listed")]
+    pub mcp: bool,
+}
+
+impl ServiceTool {
+    fn check(&self, builtins: &[&str]) -> Result<(), String> {
+        let name = self.name.as_str();
+        if !is_word(name) || name.len() > MAX_TOOL_NAME {
+            return Err(format!(
+                "tool {name:?} is not ^[a-z][a-z0-9_]*$ of at most {MAX_TOOL_NAME} characters"
+            ));
+        }
+        if builtins.contains(&name) {
+            return Err(format!("tool {name} is a built-in tool"));
+        }
+        if let Some(p) = RESERVED.iter().find(|p| name.starts_with(*p)) {
+            return Err(format!("tool {name} takes the reserved prefix {p}"));
+        }
+        if name.ends_with(SUFFIX) {
+            return Err(format!(
+                "tool {name} ends in {SUFFIX}, which script tools take"
+            ));
+        }
+        check_description(&self.description)?;
+        if self.input_schema["type"] != "object" {
+            return Err(format!("tool {name}: input_schema is not an object schema"));
+        }
+        Ok(())
+    }
+}
+
 /// The plugins of the configuration at `path`: from `[tools] plugins`, relative to the file's directory, else `tools.d` beside it; none while it fails to load.
-pub fn configured(config: &Result<Config, String>, path: &Path, builtins: &[&str]) -> Vec<Plugin> {
+pub fn configured(config: &Result<Config, String>, path: &Path, builtins: &[&str]) -> Plugins {
     let Ok(c) = config else {
-        return Vec::new();
+        return Plugins::default();
     };
     let dir = path.with_file_name(c.tools.plugins.as_deref().unwrap_or(Path::new(DIR)));
     load(&dir, builtins)
@@ -69,18 +165,14 @@ pub fn configured(config: &Result<Config, String>, path: &Path, builtins: &[&str
 
 /// Whether `name` has a plugin tool's form: `^[a-z][a-z0-9_]*_run$`.
 pub fn is_name(name: &str) -> bool {
-    name.len() > SUFFIX.len()
-        && name.ends_with(SUFFIX)
-        && name.starts_with(|c: char| c.is_ascii_lowercase())
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    name.len() > SUFFIX.len() && name.ends_with(SUFFIX) && is_word(name)
 }
 
-/// Reads the `*.json` plugins in `dir` in file-name order; a missing directory has none, and a file that breaks a rule, names a built-in tool or repeats a name is skipped whole with one log line.
-pub fn load(dir: &Path, builtins: &[&str]) -> Vec<Plugin> {
+/// Reads the `*.json` plugins in `dir` in file-name order: a file with a `service` key is a service, any other a script tool. A missing directory has none, and a file that breaks a rule, names a built-in tool or repeats a name is skipped whole with one log line.
+pub fn load(dir: &Path, builtins: &[&str]) -> Plugins {
+    let mut plugins = Plugins::default();
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
+        return plugins;
     };
     let mut files: Vec<PathBuf> = entries
         .flatten()
@@ -88,29 +180,67 @@ pub fn load(dir: &Path, builtins: &[&str]) -> Vec<Plugin> {
         .filter(|p| p.extension().is_some_and(|x| x == "json"))
         .collect();
     files.sort();
-    let mut plugins: Vec<Plugin> = Vec::new();
     for file in files {
-        let plugin = std::fs::read(&file)
-            .map_err(|e| e.to_string())
-            .and_then(|raw| serde_json::from_slice::<Plugin>(&raw).map_err(|e| e.to_string()))
-            .and_then(|p| p.check(builtins).map(|()| p))
-            .and_then(|p| {
-                if plugins.iter().any(|q| q.name == p.name) {
-                    Err(format!("name {} is taken", p.name))
-                } else {
-                    Ok(p)
-                }
-            });
-        match plugin {
-            Ok(p) => plugins.push(p),
-            Err(e) => log(format_args!("plugins: skip {}: {e}", file.display())),
+        if let Err(e) = add(&mut plugins, &file, builtins) {
+            log(format_args!("plugins: skip {}: {e}", file.display()));
         }
     }
     plugins
 }
 
+fn add(plugins: &mut Plugins, file: &Path, builtins: &[&str]) -> Result<(), String> {
+    let raw = std::fs::read(file).map_err(|e| e.to_string())?;
+    let spec: Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+    if spec.get(SERVICE_KEY).is_none() {
+        let p: Plugin = serde_json::from_value(spec).map_err(|e| e.to_string())?;
+        p.check(builtins)?;
+        if plugins.runs.iter().any(|q| q.name == p.name) {
+            return Err(format!("name {} is taken", p.name));
+        }
+        plugins.runs.push(p);
+        return Ok(());
+    }
+    let s: Service = serde_json::from_value(spec).map_err(|e| e.to_string())?;
+    s.check(builtins)?;
+    if plugins.services.iter().any(|t| t.service == s.service) {
+        return Err(format!("service {} is taken", s.service));
+    }
+    let taken = |name: &str| {
+        plugins
+            .services
+            .iter()
+            .flat_map(|t| &t.tools)
+            .any(|t| t.name == name)
+    };
+    if let Some(t) = s.tools.iter().find(|t| taken(&t.name)) {
+        return Err(format!("tool {} is taken", t.name));
+    }
+    plugins.services.push(s);
+    Ok(())
+}
+
+fn is_word(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+fn check_description(description: &str) -> Result<(), String> {
+    if description.chars().count() > MAX_DESCRIPTION {
+        return Err(format!("description over {MAX_DESCRIPTION} characters"));
+    }
+    Ok(())
+}
+
+fn listed() -> bool {
+    true
+}
+
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     const BUILTINS: [&str; 2] = ["script_run", "gui_plan"];
@@ -179,11 +309,12 @@ mod tests {
                 "x".repeat(MAX_DESCRIPTION + 1)
             ),
         );
-        let got = load(d, &BUILTINS);
+        let got = load(d, &BUILTINS).runs;
         let names: Vec<&str> = got.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["alpha_run", "beta_run"]);
         assert_eq!(got[0].resources[0].uri, "demo://a/GUIDE.md");
-        assert!(load(&d.join("missing"), &BUILTINS).is_empty());
+        let missing = load(&d.join("missing"), &BUILTINS);
+        assert!(missing.runs.is_empty() && missing.services.is_empty());
     }
 
     #[test]
@@ -202,6 +333,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         let names = |config: &Result<Config, String>| -> Vec<String> {
             configured(config, &path, &BUILTINS)
+                .runs
                 .into_iter()
                 .map(|p| p.name)
                 .collect()
@@ -214,6 +346,93 @@ mod tests {
         relative.tools.plugins = Some("elsewhere".into());
         assert_eq!(names(&Ok(relative)), ["other_run"]);
         assert!(names(&Err("broken".into())).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_service_file_loads_its_tools_and_a_broken_rule_or_a_taken_name_skips_it_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let tool = |name: &str| json!({"name": name, "description": "d", "input_schema": {"type": "object"}});
+        let service = |name: &str, tools: Value| {
+            json!({"service": name, "bin": "/usr/bin/s", "tools": tools}).to_string()
+        };
+        write(
+            d,
+            "10-run.json",
+            r#"{"name": "alpha_run", "description": "a", "bin": "/usr/bin/a"}"#,
+        );
+        let mut files = json!({"service": "files", "bin": "/usr/bin/f", "args": ["--serve"], "tools": [tool("read_file"), tool("exec")]});
+        files["tools"][1]["mcp"] = false.into();
+        write(d, "20-files.json", &files.to_string());
+        let mut bad_schema = tool("other");
+        bad_schema["input_schema"] = json!({"type": "string"});
+        let mut camel = tool("camel");
+        camel["inputSchema"] = json!({"type": "object"});
+        for (file, body) in [
+            (
+                "21-same-service.json",
+                service("files", json!([tool("other")])),
+            ),
+            (
+                "22-taken-tool.json",
+                service("other", json!([tool("read_file")])),
+            ),
+            (
+                "23-builtin.json",
+                service("other", json!([tool("gui_plan")])),
+            ),
+            (
+                "24-reserved.json",
+                service("other", json!([tool("desk_files")])),
+            ),
+            (
+                "25-run-suffix.json",
+                service("other", json!([tool("other_run")])),
+            ),
+            ("26-schema.json", service("other", json!([bad_schema]))),
+            ("27-no-tools.json", service("other", json!([]))),
+            (
+                "28-twice.json",
+                service("other", json!([tool("x"), tool("x")])),
+            ),
+            ("29-unknown-field.json", service("other", json!([camel]))),
+            ("30-bad-name.json", service("Other", json!([tool("other")]))),
+            (
+                "31-relative.json",
+                json!({"service": "other", "bin": "bin/s", "tools": [tool("other")]}).to_string(),
+            ),
+        ] {
+            write(d, file, &body);
+        }
+        write(
+            d,
+            "40-browser.json",
+            &service("browser", json!([tool("browser_open")])),
+        );
+        let got = load(d, &BUILTINS);
+        let names: Vec<&str> = got.services.iter().map(|s| s.service.as_str()).collect();
+        assert_eq!(names, ["files", "browser"]);
+        assert_eq!(got.runs.len(), 1);
+        let files = &got.services[0];
+        assert_eq!(files.args, ["--serve"]);
+        let tools: Vec<(&str, bool)> = files
+            .tools
+            .iter()
+            .map(|t| (t.name.as_str(), t.mcp))
+            .collect();
+        assert_eq!(tools, [("read_file", true), ("exec", false)]);
+        assert!(got.lists("read_file"));
+        assert!(!got.lists("exec"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_service_file_is_skipped_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = json!({"service": "files", "bin": "/usr/bin/f", "tools": [{"name": "read_file", "description": "d", "input_schema": {"type": "object"}}]});
+        write(dir.path(), "files.json", &spec.to_string());
+        assert!(load(dir.path(), &BUILTINS).services.is_empty());
     }
 
     #[test]
