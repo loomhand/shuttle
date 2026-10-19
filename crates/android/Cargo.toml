@@ -17,6 +17,7 @@ shuttle-desk-core = { path = "../desk-core" }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "sync", "time"] }
 
 [dev-dependencies]
+tempfile = "3"
 tokio = { version = "1", features = ["rt", "test-util"] }
 
 [lints]

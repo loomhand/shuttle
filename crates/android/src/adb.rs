@@ -663,12 +663,12 @@ async fn tail(mut reader: impl AsyncRead + Unpin, keep: usize) -> Vec<u8> {
     out
 }
 
-/// The image's UI server (`image/android/ui`) in Android, one answer per request line; dropping it stops the server.
 struct Saved {
     window: String,
     points: Vec<(i32, i32)>,
 }
 
+/// The UI server (`android/ui`) on the device, one answer per request line; dropping it stops the server.
 struct UiServer {
     _child: Child,
     stdin: ChildStdin,
@@ -1121,10 +1121,9 @@ mod tests {
     #[tokio::test]
     async fn a_component_reaches_the_device_shell_quoted() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("shuttle-adb-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let adb = dir.join("adb");
-        let argv = dir.join("argv");
+        let dir = tempfile::tempdir().unwrap();
+        let adb = dir.path().join("adb");
+        let argv = dir.path().join("argv");
         std::fs::write(
             &adb,
             format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n", argv.display()),
@@ -1140,7 +1139,6 @@ mod tests {
         });
         android.launch("com.example/.Main$Launcher").await.unwrap();
         let args = std::fs::read_to_string(&argv).unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(args.lines().last(), Some("'com.example/.Main$Launcher'"));
     }
 
@@ -1172,16 +1170,10 @@ mod tests {
     #[cfg(unix)]
     async fn failing_ui_server(log: &str, stderr: &str, status: u8) -> String {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!(
-            "shuttle-adb-ui-{}-{}-{}-{status}",
-            std::process::id(),
-            log.len(),
-            stderr.len()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let adb = dir.join("adb");
+        let dir = tempfile::tempdir().unwrap();
+        let adb = dir.path().join("adb");
         std::fs::write(&adb, format!("#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*logcat*) cat \"$DIR/crash.log\";;\n*app_process*) echo '{stderr}' >&2; exit {status};;\nesac\n")).unwrap();
-        std::fs::write(dir.join("crash.log"), log).unwrap();
+        std::fs::write(dir.path().join("crash.log"), log).unwrap();
         std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755)).unwrap();
         let android = Android::new(Device {
             adb,
@@ -1190,9 +1182,7 @@ mod tests {
             scrcpy_jar: "/s.jar".into(),
             su: None,
         });
-        let err = android.windows().await.unwrap_err();
-        std::fs::remove_dir_all(&dir).unwrap();
-        err
+        android.windows().await.unwrap_err()
     }
 
     #[cfg(unix)]
@@ -1231,18 +1221,16 @@ mod tests {
 
     #[cfg(unix)]
     struct Fake {
-        dir: PathBuf,
+        dir: tempfile::TempDir,
         android: Android,
     }
 
     #[cfg(unix)]
     impl Fake {
-        fn new(tag: &str) -> Self {
+        fn new() -> Self {
             use std::os::unix::fs::PermissionsExt;
-            let dir =
-                std::env::temp_dir().join(format!("shuttle-adb-{tag}-{}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
-            let adb = dir.join("adb");
+            let dir = tempfile::tempdir().unwrap();
+            let adb = dir.path().join("adb");
             std::fs::write(
                 &adb,
                 "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*screencap*) printf png;;\n*app_process*)\n  echo ready\n  while read l; do\n    case \"$l\" in\n      windows) cat \"$DIR/windows.json\";;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
@@ -1260,7 +1248,7 @@ mod tests {
         }
 
         fn put(&self, name: &str, text: &str) {
-            std::fs::write(self.dir.join(name), text).unwrap();
+            std::fs::write(self.dir.path().join(name), text).unwrap();
         }
 
         fn windows(&self, layout: &str) {
@@ -1301,13 +1289,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    impl Drop for Fake {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
-    }
-
-    #[cfg(unix)]
     fn tap_element(session: &str, element: usize) -> ActArgs {
         serde_json::from_value(
             serde_json::json!({"session": session, "action": "tap", "element": element}),
@@ -1318,7 +1299,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn an_indexed_point_is_refused_once_the_screen_it_came_from_changed() {
-        let fake = Fake::new("point");
+        let fake = Fake::new();
         fake.windows("");
         fake.android.points.lock().await.insert(
             "s".into(),
@@ -1352,7 +1333,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn an_indexed_point_is_refused_when_either_window_id_is_unknown() {
-        let fake = Fake::new("unknown");
+        let fake = Fake::new();
         let unavailable = "the window list is unavailable; use x,y or call computer_state again";
         fake.windows("none");
         fake.android.points.lock().await.insert(
@@ -1385,7 +1366,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn computer_state_retries_a_tree_of_another_window_once_then_refuses() {
-        let fake = Fake::new("state");
+        let fake = Fake::new();
         fake.windows("");
         fake.dump("dump.xml", "7");
         fake.dump("dump-first.xml", "9");
@@ -1604,7 +1585,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test(start_paused = true)]
     async fn the_focused_window_diagnostic_gives_up_after_a_second() {
-        let adb = std::env::temp_dir().join(format!("shuttle-hung-adb-{}", std::process::id()));
+        let dir = tempfile::tempdir().unwrap();
+        let adb = dir.path().join("adb");
         std::fs::write(&adb, "#!/bin/sh\nexec sleep 30\n").unwrap();
         std::fs::set_permissions(&adb, std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .unwrap();
@@ -1612,7 +1594,6 @@ mod tests {
         let started = tokio::time::Instant::now();
         assert_eq!(android.focused_window().await, "the focused window");
         assert!(started.elapsed() < ADB_TIMEOUT);
-        std::fs::remove_file(&adb).unwrap();
     }
 
     #[tokio::test(start_paused = true)]

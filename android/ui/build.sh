@@ -8,7 +8,7 @@ R8_SHA256=3502f087388ce95bbf5254555927f09385dc2636873964d0bd53f3eaf4fb49ad
 SRC="$(cd "$(dirname "$0")" && pwd)"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-curl -fsSL "$R8_URL" -o "$tmp/r8.jar"
+curl -fsSL --retry 3 --retry-connrefused "$R8_URL" -o "$tmp/r8.jar"
 echo "$R8_SHA256  $tmp/r8.jar" | sha256sum -c --quiet -
 mapfile -t stubs < <(find "$SRC/stubs" -name '*.java')
 javac -nowarn --release 11 -d "$tmp/stubs" "${stubs[@]}"
