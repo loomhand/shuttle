@@ -24,7 +24,7 @@
   - `desk computer_act` is a desk action: `confirm` and the turn apply to it;
   - `launch` takes only package and component names;
   - an `[android]` section with a nonempty `[safety] apps` fails to load, since the device desk enforces no allowlist yet.
-  - the screen size comes from `wm size`, read once (restart the daemon after an override), in its natural orientation: a portrait phone turned sideways gets swapped `screen` axes, the portrait default `shot` crop, full-screen windows listed as dialogs, and portrait-sized scrolls and list swipes, while taps and swipes at absolute points pass through; `su` is optional, and without it the paste runs as adb's shell uid, which takes the upstream scrcpy server; a device without `uiautomator.jar` says so.
+  - the screen size comes from `wm size`, read once (restart the daemon after an override), in its natural orientation: a portrait phone turned sideways gets swapped `screen` axes, the portrait default `shot` crop, full-screen windows listed as dialogs, and portrait-sized scrolls and list swipes, while taps and swipes at absolute points pass through; `su` is optional, and without it the paste runs as adb's shell uid, which takes the upstream scrcpy server.
   - an element is tapped in the middle of its part inside the lists that scroll it and the screen, so a row half under an app's own toolbar is tapped where it shows; a row clipped away is off the screen: `computer_state` leaves it out and `press` scrolls to it;
   - the UI server connects UiAutomation with `FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES`, so accessibility services the user enabled stay bound while it runs; before, Android unbound all of them for the whole session.
 
