@@ -9,7 +9,7 @@ use x11rb::protocol::xproto::{AtomEnum, ClientMessageEvent, ConnectionExt as _, 
 
 use crate::atspi::{self, Atspi, Obj};
 use crate::model::{Access, Act, Capture, Extras, Frame, Modal, Node, Tree, focused_by_tree};
-use crate::xshm::Grabber;
+use crate::xshm::{Grabber, clip};
 
 const FRAME_ROLES: [u32; 5] = [2, 16, 19, 23, WINDOW_ROLE];
 const WINDOW_ROLE: u32 = 69;
@@ -83,7 +83,6 @@ impl Access for Spi {
 
     fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String> {
         let obj = Obj::parse(id)?;
-        let chars = i32::try_from(chars).unwrap_or(i32::MAX);
         let n = self
             .rt
             .block_on(self.atspi.node(&obj, spi_extras(extras), chars))?;
@@ -127,21 +126,15 @@ impl Access for Spi {
             return Ok(None);
         }
         let clipped = clip(rect, size).ok_or("the rectangle is off the screen")?;
-        let rgb = self.shm(|g| g.region(clipped.map(|v| i32::try_from(v).unwrap_or(i32::MAX))));
-        Ok(rgb.map(|rgb| Capture { rect: clipped, rgb }))
+        let rgb = self.shm(|g| g.region(clipped));
+        Ok(rgb.map(|rgb| Capture {
+            rect: clipped.map(i32::unsigned_abs),
+            rgb,
+        }))
     }
 
     fn modals(&mut self) -> Vec<Modal> {
-        self.shm(Grabber::modals)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|m| Modal {
-                title: m.title,
-                pid: m.pid,
-                owner: m.owner,
-                place: m.place,
-            })
-            .collect()
+        self.shm(Grabber::modals).unwrap_or_default()
     }
 
     fn close(&mut self, frame: &Frame) -> Result<(), String> {
@@ -285,15 +278,6 @@ fn app(pid: u32) -> Option<String> {
     let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
     let name = exe.file_name()?.to_string_lossy();
     Some(name.trim_end_matches(" (deleted)").to_owned()).filter(|n| !n.is_empty())
-}
-
-/// The screen rectangle `[x, y, w, h]` clipped to a `width` by `height` screen in whole pixels, left and top down, right and bottom up; none when nothing is left.
-fn clip([x, y, w, h]: [f64; 4], (width, height): (usize, usize)) -> Option<[u32; 4]> {
-    let (width, height) = (width as f64, height as f64);
-    let (left, top) = (x.max(0.0).floor(), y.max(0.0).floor());
-    let (right, bottom) = ((x + w).min(width).ceil(), (y + h).min(height).ceil());
-    (right > left && bottom > top)
-        .then(|| [left, top, right - left, bottom - top].map(|v| v as u32))
 }
 
 fn spi_extras(e: Extras) -> atspi::Extras {
@@ -476,19 +460,6 @@ mod tests {
         let twins = vec![(1, "Save As".to_owned()), (2, "Save As".to_owned())];
         let err = pick_window(&twins, "Save As").unwrap_err();
         assert!(err.contains("2 windows"), "{err}");
-    }
-
-    #[test]
-    fn a_capture_rectangle_clips_to_the_screen_in_whole_pixels() {
-        assert_eq!(
-            clip([10.5, 20.2, 30.1, 40.0], (1280, 800)),
-            Some([10, 20, 31, 41])
-        );
-        assert_eq!(
-            clip([0.0, 0.0, f64::MAX / 4.0, f64::MAX / 4.0], (1280, 800)),
-            Some([0, 0, 1280, 800])
-        );
-        assert_eq!(clip([1300.0, 0.0, 10.0, 10.0], (1280, 800)), None);
     }
 
     #[test]

@@ -17,6 +17,8 @@ use x11rb::protocol::xproto::{
 };
 use x11rb::rust_connection::RustConnection;
 
+use crate::model::Modal;
+
 const OVERLAY_NAME: &[u8] = b"Cua.AgentCursorOverlay";
 const BLOCK: usize = 16;
 const HASH_MUL: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -48,16 +50,6 @@ impl Placement {
     pub fn holds(&self, [x, y, w, h]: [i32; 4]) -> bool {
         self.contains(x, y) && self.contains(x + w - 1, y + h - 1)
     }
-}
-
-/// A modal dialog that is open where the screen does not show it.
-pub struct Modal {
-    pub title: String,
-    pub pid: Option<u32>,
-    /// The title of the window it blocks, which it is transient for.
-    pub owner: String,
-    /// `hidden`, `off the screen` or `behind "TITLE"`.
-    pub place: String,
 }
 
 /// One X connection and one shared segment the size of the root window.
@@ -929,6 +921,15 @@ pub fn visible(a: &[u8], b: &[u8], width: usize, height: usize, block: usize, st
     })
 }
 
+/// The screen rectangle `[x, y, w, h]` clipped to a `width` by `height` screen in whole pixels, left and top down, right and bottom up; none when nothing is left.
+pub fn clip([x, y, w, h]: [f64; 4], (width, height): (usize, usize)) -> Option<[i32; 4]> {
+    let (width, height) = (width as f64, height as f64);
+    let (left, top) = (x.max(0.0).floor(), y.max(0.0).floor());
+    let (right, bottom) = ((x + w).min(width).ceil(), (y + h).min(height).ceil());
+    (right > left && bottom > top)
+        .then(|| [left, top, right - left, bottom - top].map(|v| v as i32))
+}
+
 /// Which 16-pixel squares of a `width` by `height` screen, row-major, a dock rectangle of `docks` (`[x, y, w, h]`) overlaps.
 fn dock_mask(docks: &[[i32; 4]], (width, height): (usize, usize)) -> Vec<bool> {
     let columns = width.div_ceil(BLOCK);
@@ -1070,6 +1071,20 @@ mod tests {
         assert_eq!(masked(49), (30..50).collect::<Vec<_>>());
         assert_eq!(mask.iter().filter(|m| **m).count(), 2 * columns + 4 * 20);
         assert!(dock_mask(&[], (1280, 800)).iter().all(|m| !m));
+    }
+
+    #[test]
+    fn a_rectangle_clips_to_the_screen_in_whole_pixels() {
+        assert_eq!(
+            clip([10.5, 20.2, 30.1, 40.0], (1280, 800)),
+            Some([10, 20, 31, 41])
+        );
+        assert_eq!(
+            clip([0.0, 0.0, f64::MAX / 4.0, f64::MAX / 4.0], (1280, 800)),
+            Some([0, 0, 1280, 800])
+        );
+        assert_eq!(clip([-1.5, 0.5, 3.0, 9.0], (4, 2)), Some([0, 0, 2, 2]));
+        assert_eq!(clip([1300.0, 0.0, 10.0, 10.0], (1280, 800)), None);
     }
 
     #[test]

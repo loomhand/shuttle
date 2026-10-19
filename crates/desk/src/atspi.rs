@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use zbus::Connection;
 use zbus::zvariant::{DynamicType, OwnedObjectPath, OwnedValue};
 
-use crate::model::{format_number, is_active, is_field};
+use crate::model::{MAX_DEPTH, MAX_NODES, VALUE_CHARS, format_number, is_active, is_field};
 
 const BUS_NAME: &str = "org.a11y.Bus";
 const BUS_PATH: &str = "/org/a11y/bus";
@@ -35,11 +35,8 @@ const DBUS_PATH: &str = "/org/freedesktop/DBus";
 const CALL_TIMEOUT: Duration = Duration::from_secs(3);
 const HUNG_FOR: Duration = Duration::from_secs(10);
 const APP_FRAMES: Duration = Duration::from_millis(500);
-const MAX_NODES: usize = 2500;
-const MAX_DEPTH: usize = 64;
 const MANAGED_KIDS: i32 = 200;
 const LIST_ROLES: [u32; 4] = [31, 55, 65, 66];
-const VALUE_CHARS: i32 = 200;
 const SCREEN: u32 = 0;
 const IF_ACTION: u8 = 1;
 const IF_COMPONENT: u8 = 2;
@@ -649,7 +646,7 @@ impl Atspi {
     }
 
     /// The node's live role, name and states, with the reads `extras` asks for; a value has at most `chars` characters.
-    pub async fn node(&self, obj: &Obj, extras: Extras, chars: i32) -> Result<Node, String> {
+    pub async fn node(&self, obj: &Obj, extras: Extras, chars: usize) -> Result<Node, String> {
         let r = self.raw(obj).await?;
         let (value, bounds, keys) = tokio::join!(
             async {
@@ -698,8 +695,9 @@ impl Atspi {
     }
 
     /// The text of a text node, at most `max` characters, else the current value of a value node.
-    pub async fn value(&self, obj: &Obj, ifaces: u8, max: i32) -> Result<String, String> {
+    pub async fn value(&self, obj: &Obj, ifaces: u8, max: usize) -> Result<String, String> {
         if ifaces & IF_TEXT != 0 {
+            let max = i32::try_from(max).unwrap_or(i32::MAX);
             return self.call(obj, TEXT, "GetText", &(0i32, max)).await;
         }
         if ifaces & IF_VALUE != 0 {
