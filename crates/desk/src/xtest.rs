@@ -2,11 +2,11 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use x11rb::connection::Connection as _;
+use x11rb::connection::{Connection as _, RequestConnection as _};
 use x11rb::cookie::VoidCookie;
 use x11rb::protocol::xkb::{ConnectionExt as _, ID};
 use x11rb::protocol::xproto::{ConnectionExt as _, KEY_PRESS_EVENT, KEY_RELEASE_EVENT, ModMask};
-use x11rb::protocol::xtest::ConnectionExt as _;
+use x11rb::protocol::xtest::{self, ConnectionExt as _};
 use x11rb::rust_connection::RustConnection;
 
 const SHIFT_L: u32 = 0xffe1;
@@ -20,17 +20,15 @@ pub fn type_mapped(text: &str, stop: &AtomicBool) -> Result<bool, String> {
     let Ok((conn, n)) = x11rb::connect(None) else {
         return Ok(false);
     };
-    if !plain(&conn).unwrap_or(false) {
-        return Ok(false);
-    }
     let setup = conn.setup();
     let root = setup.roots[n].root;
     let (min, max) = (setup.min_keycode, setup.max_keycode);
-    let Some(map) = conn
-        .get_keyboard_mapping(min, max - min + 1)
-        .ok()
-        .and_then(|c| c.reply().ok())
-    else {
+    let _ = conn.prefetch_extension_information(xtest::X11_EXTENSION_NAME);
+    let map = conn.get_keyboard_mapping(min, max - min + 1);
+    if !plain(&conn).unwrap_or(false) {
+        return Ok(false);
+    }
+    let Some(map) = map.ok().and_then(|c| c.reply().ok()) else {
         return Ok(false);
     };
     let per = usize::from(map.keysyms_per_keycode.max(1));
@@ -100,17 +98,14 @@ pub fn type_mapped(text: &str, stop: &AtomicBool) -> Result<bool, String> {
 fn plain(conn: &RustConnection) -> Result<bool, String> {
     let ext = conn
         .xkb_use_extension(1, 0)
-        .map_err(|e| format!("XKB: {e}"))?
-        .reply()
         .map_err(|e| format!("XKB: {e}"))?;
-    if !ext.supported {
-        return Ok(false);
-    }
     let state = conn
         .xkb_get_state(ID::USE_CORE_KBD.into())
-        .map_err(|e| format!("XKB: {e}"))?
-        .reply()
         .map_err(|e| format!("XKB: {e}"))?;
+    if !ext.reply().map_err(|e| format!("XKB: {e}"))?.supported {
+        return Ok(false);
+    }
+    let state = state.reply().map_err(|e| format!("XKB: {e}"))?;
     Ok(u8::from(state.group) == 0 && !state.locked_mods.intersects(ModMask::LOCK | ModMask::SHIFT))
 }
 
