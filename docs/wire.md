@@ -91,7 +91,7 @@ A service plugin is a long-lived program that serves its own tools on the desk w
 - **Stop.** `safety_stop` refuses new service calls with `stopped by the user` and closes every connection in flight, without a reply, since its client may be inside a stream of its own frames. The service keeps running, and `safety_resume` lets calls through again.
 - **Switch.** Installing a service file is what turns the service on: `script_run = false` turns plugins off but leaves services running, listed and reached.
 - **MCP.** `tools/list` lists each service tool with `mcp` true after the plugins, with its own `input_schema`. `tools/call` sends one frame and reads one response frame through the daemon, so a tool the MCP server lists answers one response frame.
-- **Cost.** A desk call pays one lookup in the service tool table, and nothing when no service is installed. A service call pays one unix-socket connect and the copy through a 64 KiB buffer each way; a microbench (`cargo test -p shuttle --release splice_cost -- --ignored --nocapture`) measures it.
+- **Cost.** A desk call pays nothing when no service is installed. With one installed, every call that is not spliced pays a read of its `tool` before its full decode, 104 to 150 ns on a 74-byte desk frame (Apple M2 Max), and one lookup in the service tool table. A service call pays one unix-socket connect and the copy through a 64 KiB buffer each way; a microbench (`cargo test -p shuttle --release splice_cost -- --ignored --nocapture`) measures it.
 
 A neutral example, `tools.d/notes.json`:
 
