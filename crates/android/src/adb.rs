@@ -114,8 +114,9 @@ impl Android {
     /// The UI elements of the screen, [index] for computer_act, and a screenshot.
     pub async fn state(&self, args: Value) -> Result<Output, String> {
         let args: StateArgs = parse(args)?;
+        let screen = self.screen().await?;
         let (xml, shot) = tokio::join!(self.tree(None), self.look());
-        let mut elements = desk::elements(&xml?);
+        let mut elements = desk::elements(&xml?, screen);
         if let Some(q) = args.query.as_deref().map(str::to_lowercase) {
             elements.retain(|e| e.mentions(&q));
         }
