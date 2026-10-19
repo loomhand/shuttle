@@ -154,13 +154,12 @@ impl<H: Handler> Daemon<H> {
         let n = self.runs.fetch_add(1, Ordering::Relaxed);
         let agent = format!("run-{:x}-{n}", self.nonce);
         *self.running() = Some(agent.clone());
+        let _running = Running(&self.running, agent.clone());
         let report = match plugin {
             Some(p) => self.runner.plugin(&p.bin, args, &agent).await,
             None if tool == "gui_plan" => self.runner.plan(args, &agent).await,
             None => self.runner.script(args, &agent).await,
-        };
-        *self.running() = None;
-        let report = report?;
+        }?;
         if report["error"].is_null() {
             Ok(report.to_string())
         } else {
@@ -338,6 +337,20 @@ struct Asking<'a>(&'a AtomicBool);
 impl Drop for Asking<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
+    }
+}
+
+struct Running<'a>(&'a Mutex<Option<String>>, String);
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        let mut running = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if running.as_deref() == Some(self.1.as_str()) {
+            *running = None;
+        }
     }
 }
 
@@ -886,6 +899,31 @@ mod tests {
             ))
             .await;
         assert_eq!((out.is_error, out.text.as_str()), (true, SCRIPT_RUN_OFF));
+    }
+
+    #[tokio::test]
+    async fn a_run_dropped_mid_flight_is_no_longer_acting() {
+        let d = Arc::new(daemon(Echo, Guard::default()));
+        let run = tokio::spawn({
+            let d = d.clone();
+            async move {
+                d.answer(call(
+                    "script_run",
+                    json!({"code": "export async function main() { await new Promise((r) => setTimeout(r, 30000)) }"}),
+                ))
+                .await
+            }
+        });
+        for _ in 0..200 {
+            if d.acting() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(d.acting());
+        run.abort();
+        let _ = run.await;
+        assert!(!d.acting());
     }
 
     #[tokio::test]
