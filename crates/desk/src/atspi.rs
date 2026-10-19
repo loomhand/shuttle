@@ -1221,7 +1221,6 @@ fn format_number(v: f64) -> String {
     }
 }
 
-/// The first object an AT-SPI relation set names as the label of its owner.
 /// The Collection.GetMatches arguments for the first descendant in the focused state, in tree order: a rule on the state alone, canonical order, one match, descending.
 #[allow(clippy::type_complexity)]
 fn focused_rule() -> (
@@ -1254,6 +1253,7 @@ fn focused_rule() -> (
     (rule, SORT_CANONICAL, 1, true)
 }
 
+/// The first object an AT-SPI relation set names as the label of its owner.
 fn labelled_by(set: Vec<(u32, Vec<(String, OwnedObjectPath)>)>) -> Option<Obj> {
     set.into_iter()
         .find(|(kind, _)| *kind == LABELLED_BY)?
