@@ -717,21 +717,8 @@ impl Computer {
         }
     }
 
-    /// Waits after an input action until the screen differs from `before` and held still, at most
-    /// [`NO_CHANGE`] for a change, [`SETTLE`] after a launch, a commit in Chrome or without
-    /// MIT-SHM, [`COMMIT_FIRST`] after a confirm, and [`SETTLE`] after it, so an effect that shows
-    /// late, like a Save As dialog closing, is still in the frame; a flash that reverts, like a
-    /// pressed button, is no change. Without `before`, the fixed [`SETTLE`]. Over MIT-SHM the
-    /// screen is split into 16-pixel blocks whose new contents count (see [`Block`]): a block that
-    /// kept changing before the action, like a clock, a spinner or a video, never counts; a caret
-    /// counts only with contents it did not blink between; and a block back at its contents from
-    /// before toggles from then on (see [`Shown`]). The screen differs once a counting block has a
-    /// pixel more than [`VISIBLE_STEP`] off its value from before, so a faint hover fade is not the
-    /// effect; any change of a counting block restarts the hold. The hold is [`STILL_FOR`], or
-    /// [`WINDOW_STILL_FOR`] once a window maps, unmaps or moves or the focus moves; after a commit
-    /// in Chrome it is [`COMMIT_STILL_FOR`], at most [`COMMIT_SETTLE`] once the screen changed, so
-    /// a page that loads over the network or adds content from timers is in the frame. Returns
-    /// lines naming the windows the action opened, closed or brought to the front.
+    /// Waits until the screen differs from `before` and holds still, within the wait [`Before`] carries; blocks that churn or toggle (see [`Block`], [`Shown`]) and changes under [`VISIBLE_STEP`] do not count.
+    /// Returns lines naming the windows the action opened, closed or brought to the front.
     async fn settle(&self, before: Option<Before>, scale: f64) -> String {
         let Some(Before {
             probe,
