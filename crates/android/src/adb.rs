@@ -215,11 +215,10 @@ impl Android {
         Ok(out)
     }
 
-    /// Forgets the element centres of a session.
+    /// Forgets the element centres of a session, the default one when none is named.
     pub async fn end(&self, args: &Value) -> Result<String, String> {
-        if let Some(session) = args["session"].as_str() {
-            self.points.lock().await.remove(session);
-        }
+        let session = args["session"].as_str().unwrap_or_default();
+        self.points.lock().await.remove(session);
         Ok("ended".to_owned())
     }
 
@@ -859,6 +858,35 @@ mod tests {
         let points = android.points.lock().await;
         assert!(!points.contains_key("cu-1"));
         assert_eq!(points.get("cu-2"), Some(&vec![(30, 40)]));
+    }
+
+    #[tokio::test]
+    async fn an_end_without_a_session_forgets_the_default_one_and_ends_are_idempotent() {
+        let android = Android::new(Device {
+            adb: "/nonexistent/adb".into(),
+            serial: None,
+            ui_jar: "/u.jar".into(),
+            scrcpy_jar: "/s.jar".into(),
+            su: None,
+        });
+        {
+            let mut points = android.points.lock().await;
+            points.insert(String::new(), vec![(10, 20)]);
+            points.insert("cu-2".into(), vec![(30, 40)]);
+        }
+        let end = |args| {
+            let android = &android;
+            async move { android.end(&args).await.unwrap() }
+        };
+        assert_eq!(end(serde_json::json!({})).await, "ended");
+        assert!(!android.points.lock().await.contains_key(""));
+        assert_eq!(
+            end(serde_json::json!({"session": "unknown"})).await,
+            "ended"
+        );
+        assert_eq!(end(serde_json::json!({"session": "cu-2"})).await, "ended");
+        assert_eq!(end(serde_json::json!({"session": "cu-2"})).await, "ended");
+        assert!(android.points.lock().await.is_empty());
     }
 
     #[test]
