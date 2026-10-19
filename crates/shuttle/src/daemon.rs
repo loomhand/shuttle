@@ -32,11 +32,14 @@ const NO_ASK: &str = "confirm needs the menu-bar controls, which this OS does no
 const CONFIRM_OPEN: &str = "a confirm dialog is open: answer it first";
 const QUESTION_CHARS: usize = 200;
 const COMPUTER_ACT: &str = "desk_computer_act";
-const POINTER_ACTIONS: [&str; 7] = [
+const POINTER_ACTIONS: [&str; 10] = [
     "tap",
     "click",
+    "left_click",
     "double_tap",
     "double_click",
+    "right_click",
+    "triple_click",
     "long_press",
     "swipe",
     "drag",
@@ -186,9 +189,10 @@ impl<H: Handler> Daemon<H> {
             Confirm::Coordinate => match call.tool.as_str() {
                 "desk_click" | "desk_press" | "desk_drag" => true,
                 "desk_act" => call.args["action"] == "click",
-                COMPUTER_ACT => call.args["action"]
-                    .as_str()
-                    .is_some_and(|a| POINTER_ACTIONS.contains(&a)),
+                COMPUTER_ACT => match call.args["actions"].as_array() {
+                    Some(list) => list.iter().any(points),
+                    None => points(&call.args),
+                },
                 _ => false,
             },
             Confirm::Every => true,
@@ -354,17 +358,37 @@ fn question(call: &Call) -> String {
             "type {} characters",
             call.args["text"].as_str().map_or(0, |t| t.chars().count())
         ),
-        "computer_act" => {
-            let action = call.args["action"].as_str().unwrap_or("act");
-            match call.args.get("element") {
-                Some(element) => format!("{action} element [{element}]"),
-                None => format!("{action} at ({}, {})", call.args["x"], call.args["y"]),
-            }
-        }
+        "computer_act" => match call.args["actions"].as_array() {
+            Some(list) => format!(
+                "run {} actions: {}",
+                list.len(),
+                list.iter().map(step).collect::<Vec<_>>().join(", ")
+            ),
+            None => step(&call.args),
+        },
         _ => format!("{verb} {}", call.args),
     };
     let what: String = what.chars().take(QUESTION_CHARS).collect();
     format!("Allow shuttle to {what}?")
+}
+
+/// Whether the computer action `a` can end in a click at a screen point: a pointer action, or typing at an element or a point, which clicks it first.
+fn points(a: &Value) -> bool {
+    let action = a["action"].as_str().unwrap_or_default();
+    POINTER_ACTIONS.contains(&action)
+        || (action == "type" && (a.get("element").is_some() || a.get("x").is_some()))
+}
+
+/// One computer action as the confirm question names it.
+fn step(a: &Value) -> String {
+    let action = a["action"].as_str().unwrap_or("act");
+    if let Some(element) = a.get("element") {
+        format!("{action} element [{element}]")
+    } else if a.get("x").is_some() {
+        format!("{action} at ({}, {})", a["x"], a["y"])
+    } else {
+        action.to_owned()
+    }
 }
 
 fn encode<T: Serialize>(v: &T) -> Result<String, String> {
@@ -717,6 +741,20 @@ mod tests {
                 .await
                 .is_error
         );
+        for asked in [
+            json!({"action": "right_click", "x": 7, "y": 8}),
+            json!({"action": "triple_click", "element": 4}),
+            json!({"action": "type", "text": "a", "x": 1, "y": 2}),
+            json!({"actions": [{"action": "key", "key": "ctrl+l"}, {"action": "left_click", "x": 3, "y": 4}]}),
+        ] {
+            assert_eq!(no.answer(computer(asked)).await.text, DECLINED);
+        }
+        for passed in [
+            json!({"action": "type", "text": "a"}),
+            json!({"actions": [{"action": "key", "key": "ctrl+l"}, {"action": "scroll", "direction": "down"}]}),
+        ] {
+            assert!(!no.answer(computer(passed)).await.is_error);
+        }
         assert_eq!(
             *asked.lock().unwrap(),
             [
@@ -725,7 +763,11 @@ mod tests {
                 "Allow shuttle to click element \"4/5\"?",
                 "Allow shuttle to drag from (1, 2) to (30, 40)?",
                 "Allow shuttle to tap at (5, 6)?",
-                "Allow shuttle to swipe element [3]?"
+                "Allow shuttle to swipe element [3]?",
+                "Allow shuttle to right_click at (7, 8)?",
+                "Allow shuttle to triple_click element [4]?",
+                "Allow shuttle to type at (1, 2)?",
+                "Allow shuttle to run 2 actions: key, left_click at (3, 4)?"
             ]
         );
         let yes = guarded(Confirm::Every, Some(asker(true, asked.clone())));
