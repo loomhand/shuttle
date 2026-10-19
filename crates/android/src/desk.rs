@@ -170,6 +170,10 @@ impl Frame {
             .max_by_key(|(a, b)| b - a)
     }
 
+    pub(crate) fn window(&self) -> &str {
+        &self.id
+    }
+
     /// Whether a system window covers screen point `(x, y)`.
     pub(crate) fn covered(&self, (x, y): (i32, i32)) -> bool {
         self.covers
