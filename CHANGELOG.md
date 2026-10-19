@@ -18,6 +18,7 @@
   - `launch` takes only package and component names;
   - an `[android]` section with a nonempty `[safety] apps` fails to load, since the device desk enforces no allowlist yet.
   - the screen size comes from `wm size`, read once (restart the daemon after an override), in its natural orientation: a portrait phone turned sideways gets swapped `screen` axes, the portrait default `shot` crop, full-screen windows listed as dialogs, and portrait-sized scrolls and list swipes, while taps and swipes at absolute points pass through; `su` is optional, and without it the paste runs as adb's shell uid, which takes the upstream scrcpy server; a device without `uiautomator.jar` says so.
+  - an element is tapped in the middle of its part inside its scrolling list and the screen, so a row half under an app's own toolbar is tapped where it shows; a row clipped away is off the screen: `computer_state` leaves it out and `press` scrolls to it;
 
   The linux archives carry the UI server as `android/cb-ui.jar`, built in the release from `android/ui` with a pinned JDK and checked byte for byte across two builds; an `[android]` section without `ui_jar` takes that jar.
 

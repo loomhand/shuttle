@@ -67,6 +67,18 @@ impl Node {
         (x + w / 2, y + h / 2)
     }
 
+    /// The part of the element that shows: its bounds cut to its list and the screen; none when nothing shows.
+    fn shown(&self, (screen_w, screen_h): (i32, i32)) -> Option<[i32; 4]> {
+        let [x, y, w, h] = self.bounds;
+        let (mut left, mut top) = (x.max(0), y.max(0));
+        let (mut right, mut bottom) = ((x + w).min(screen_w), (y + h).min(screen_h));
+        if let Some([sx, sy, sw, sh]) = self.scroller {
+            (left, top) = (left.max(sx), top.max(sy));
+            (right, bottom) = (right.min(sx + sw), bottom.min(sy + sh));
+        }
+        (right > left && bottom > top).then_some([left, top, right - left, bottom - top])
+    }
+
     /// Whether the name, description or value contains lowercase `q`, ignoring their case.
     pub(crate) fn mentions(&self, q: &str) -> bool {
         [
@@ -156,6 +168,14 @@ impl Frame {
         open.into_iter()
             .filter(|(a, b)| b - a >= MIN_SPAN)
             .max_by_key(|(a, b)| b - a)
+    }
+
+    /// Where a tap reaches element `n`: the middle of its shown part that no bar or keyboard covers.
+    fn tap_at(&self, n: &Node) -> Option<(i32, i32)> {
+        let [x, y, w, h] = n.shown(self.screen).filter(|_| n.visible)?;
+        let x = x + w / 2;
+        let (top, bottom) = self.span(x, y, y + h)?;
+        Some((x, (top + bottom) / 2))
     }
 
     fn swipe(&self, [sx, sy, sw, sh]: [i32; 4], target: i32) -> Option<(i32, i32, i32)> {
@@ -297,12 +317,18 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
     Ok(Output::text(text))
 }
 
-/// The shown elements of a UI server dump.
-pub(crate) fn elements(xml: &str) -> Vec<Node> {
+/// The shown elements of a UI server dump on a `screen`, each with the bounds of its shown part.
+pub(crate) fn elements(xml: &str, screen: (i32, i32)) -> Vec<Node> {
     nodes(&Frame::default(), &raws(xml))
         .into_iter()
         .skip(1)
         .filter(|n| n.visible)
+        .filter_map(|n| {
+            Some(Node {
+                bounds: n.shown(screen)?,
+                ..n
+            })
+        })
         .collect()
 }
 
@@ -747,14 +773,7 @@ async fn read(android: &Android, a: ReadArgs) -> Result<String, String> {
 async fn press(android: &Android, id: &str) -> Result<String, String> {
     let (mut frame, mut node) = node(android, id).await?;
     for _ in 0..SCROLL_TRIES {
-        let [x, y, w, h] = node.bounds;
-        let x = x + w / 2;
-        if node.visible
-            && w > 0
-            && h > 0
-            && let Some((top, bottom)) = frame.span(x, y, y + h)
-        {
-            let y = (top + bottom) / 2;
+        if let Some((x, y)) = frame.tap_at(&node) {
             android.tap((x, y)).await?;
             return Ok(json!({"ok": true, "how": "click", "x": x, "y": y}).to_string());
         }
@@ -1189,7 +1208,7 @@ mod tests {
 
     #[test]
     fn computer_state_lists_the_shown_elements() {
-        let lines: Vec<String> = elements(DUMP)
+        let lines: Vec<String> = elements(DUMP, REDROID)
             .iter()
             .enumerate()
             .map(|(i, e)| e.line(i))
@@ -1202,8 +1221,80 @@ mod tests {
                 "[2] textbox \"Search…\" at 360,140 disabled focused",
             ]
         );
-        let shown = elements(DUMP);
+        let shown = elements(DUMP, REDROID);
         assert!(shown[0].mentions("dark") && !shown[0].mentions("search"));
+    }
+
+    fn row(path: &str, scrollable: bool, bounds: &str) -> String {
+        format!(
+            r#"<node text="{path}" resource-id="" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="{scrollable}" visible="true" depth="1" path="{path}" bounds="{bounds}" />"#
+        )
+    }
+
+    /// A list at y 200..1184 under a toolbar, with a row cut by the toolbar edge, one in full and one below the list.
+    fn list_dump() -> String {
+        format!(
+            "<hierarchy>{}{}{}{}</hierarchy>",
+            row("0.0", true, "[0,200][720,1184]"),
+            row("0.0.0", false, "[0,100][720,260]"),
+            row("0.0.1", false, "[0,260][720,420]"),
+            row("0.0.2", false, "[0,1200][720,1360]"),
+        )
+    }
+
+    fn tap_of(frame: &Frame, dump: &str, name: &str) -> Option<(i32, i32)> {
+        let nodes = nodes(frame, &raws(dump));
+        frame.tap_at(nodes.iter().find(|n| n.name == name).unwrap())
+    }
+
+    #[test]
+    fn a_tap_on_a_row_under_the_toolbar_lands_in_its_shown_part() {
+        let frame = settings();
+        let dump = list_dump();
+        assert_eq!(
+            tap_of(&frame, &dump, "0.0.0"),
+            Some((360, 230)),
+            "the raw centre y 180 is the toolbar's"
+        );
+        assert_eq!(
+            tap_of(&frame, &dump, "0.0.1"),
+            Some((360, 340)),
+            "a row in full is tapped at its centre"
+        );
+        assert_eq!(
+            tap_of(&frame, &dump, "0.0.2"),
+            None,
+            "a row clipped away is off the screen"
+        );
+    }
+
+    #[test]
+    fn computer_state_points_into_the_shown_part_and_drops_clipped_rows() {
+        let lines: Vec<String> = elements(&list_dump(), REDROID)
+            .iter()
+            .enumerate()
+            .map(|(i, e)| e.line(i))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "[0] button \"0.0\" at 360,692",
+                "[1] button \"0.0.0\" at 360,230",
+                "[2] button \"0.0.1\" at 360,340",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_row_without_a_list_is_cut_to_the_screen_only() {
+        let dump = format!(
+            "<hierarchy>{}{}</hierarchy>",
+            row("0.0", false, "[0,1200][720,1360]"),
+            row("0.1", false, "[0,1300][720,1400]"),
+        );
+        let frame = settings();
+        assert_eq!(tap_of(&frame, &dump, "0.0"), Some((360, 1240)));
+        assert_eq!(tap_of(&frame, &dump, "0.1"), None);
     }
 
     #[test]
