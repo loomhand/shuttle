@@ -297,11 +297,15 @@ fn reuse<G, T>(
 ) -> Option<T> {
     let g = match slot.take() {
         Some(g) if current(&g) => g,
-        _ => open().ok()?,
+        stale => {
+            drop(stale);
+            open().ok()?
+        }
     };
     let (g, out) = match read(&g) {
         Ok(out) => (g, out),
         Err(_) => {
+            drop(g);
             let g = open().ok()?;
             let out = read(&g).ok()?;
             (g, out)
@@ -350,6 +354,45 @@ mod tests {
         assert_eq!(reuse(&mut slot, open, current, read), Some(3));
         assert_eq!(opened.get(), 3);
     }
+
+    struct Logged(usize, std::rc::Rc<std::cell::RefCell<Vec<String>>>);
+
+    impl Drop for Logged {
+        fn drop(&mut self) {
+            self.1.borrow_mut().push(format!("drop {}", self.0));
+        }
+    }
+
+    #[test]
+    fn a_stale_or_failed_segment_is_released_before_its_replacement_opens() {
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let opened = std::cell::Cell::new(0);
+        let (stale, fail) = (std::cell::Cell::new(false), std::cell::Cell::new(false));
+        let open = || {
+            opened.set(opened.get() + 1);
+            log.borrow_mut().push(format!("open {}", opened.get()));
+            Ok(Logged(opened.get(), log.clone()))
+        };
+        let current = |_: &Logged| !stale.replace(false);
+        let read = |g: &Logged| {
+            if fail.replace(false) {
+                Err("BadAlloc".to_owned())
+            } else {
+                Ok(g.0)
+            }
+        };
+        let mut slot = None;
+        assert_eq!(reuse(&mut slot, open, current, read), Some(1));
+        stale.set(true);
+        assert_eq!(reuse(&mut slot, open, current, read), Some(2));
+        fail.set(true);
+        assert_eq!(reuse(&mut slot, open, current, read), Some(3));
+        assert_eq!(
+            *log.borrow(),
+            ["open 1", "drop 1", "open 2", "drop 2", "open 3"]
+        );
+    }
+
     #[test]
     fn a_node_keeps_the_atspi_states_role_and_raw_key_binding() {
         let n = atspi::Node {
