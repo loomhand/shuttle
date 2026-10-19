@@ -1,7 +1,8 @@
 # Changelog
 
-## 0.1.4 - 2026-10-19
+## 0.1.5 - 2026-10-19
 
+- **v0.1.4 is void:** its binaries report 0.1.3, since its version bump was missing. This release carries v0.1.4's changes, listed here, and the Android fixes below.
 - **Linux desktop.** On X11 the daemon drives the desktop itself ([docs/platforms.md](docs/platforms.md#linux)):
   - the desk verbs answer from AT-SPI trees, read in parallel, with input through the bundled cua-driver, which the Linux daemon requires;
   - typing goes through XTest for printable ASCII on a plain keyboard map, and other text goes through the driver;
@@ -34,6 +35,7 @@
 - **Shared endpoint.** `[daemon] socket_group` opens the daemon's unix socket to one group's members (mode 0660, owned by the group) on macOS and Linux; unset, it stays 0600. Every member can then use the daemon as its user does ([docs/safety.md](docs/safety.md#a-shared-endpoint)). The Windows pipe stays with its user, and the setting fails the file there.
 - **Run errors.** A `script_run` or plugin report that carries `error` now answers `is_error: true`, with the whole report (logs, stderr) as its text, through the daemon and the MCP server alike; before, a failed run looked like a success to the client.
 - **Cancel on close.** A client that closes its connection to the daemon cancels the call it carried: a run's process group is killed as on a stop and the turn frees at once, so an interrupted agent no longer leaves a plan holding the turn for up to 110 s. A client must keep its side open until the reply ([docs/wire.md](docs/wire.md#framing)).
+- **Android fixes.** A tap lands in the part of an element that its scrolling lists and the screen show, so a row under an app's toolbar or a carousel row inside a list no longer taps the bar over it. Other accessibility services stay bound while the UI server runs.
 
 ## 0.1.3 - 2026-10-19
 
