@@ -11,6 +11,13 @@ use crate::desk::Desk;
 use crate::driver::Input;
 use crate::model::Access;
 
+#[cfg(unix)]
+const BACKLOG: u32 = 1024;
+#[cfg(target_os = "linux")]
+const SUN_PATH: usize = 108;
+#[cfg(all(unix, not(target_os = "linux")))]
+const SUN_PATH: usize = 104;
+
 #[cfg(target_os = "linux")]
 const ALLOWLIST_REFUSED: &str = "the computer verbs see and click the whole screen, which an app allowlist does not bound: empty [safety] apps in config.toml to use them";
 #[cfg(windows)]
@@ -149,10 +156,18 @@ fn bind_at(endpoint: &str, gid: Option<u32>) -> Result<Listener, String> {
         }
         Err(std::fs::TryLockError::Error(e)) => return Err(format!("lock {lock_path}: {e}")),
     }
-    let staged = format!("{endpoint}.new");
+    let staged = format!("{endpoint}.n");
+    if staged.len() >= SUN_PATH {
+        return Err(format!(
+            "{endpoint}: a unix socket path holds at most {} bytes; set SHUTTLE_SOCKET to a shorter path",
+            SUN_PATH - 3
+        ));
+    }
     let _ = std::fs::remove_file(&staged);
-    let socket =
-        tokio::net::UnixListener::bind(&staged).map_err(|e| format!("bind {staged}: {e}"))?;
+    let unbound = tokio::net::UnixSocket::new_stream().map_err(|e| format!("socket: {e}"))?;
+    unbound
+        .bind(&staged)
+        .map_err(|e| format!("bind {staged}: {e}"))?;
     if let Some(gid) = gid {
         std::os::unix::fs::lchown(&staged, None, Some(gid))
             .map_err(|e| format!("give {staged} to group {gid}: {e}"))?;
@@ -161,6 +176,9 @@ fn bind_at(endpoint: &str, gid: Option<u32>) -> Result<Listener, String> {
     let mode = if gid.is_some() { 0o660 } else { 0o600 };
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(mode))
         .map_err(|e| format!("chmod {staged}: {e}"))?;
+    let socket = unbound
+        .listen(BACKLOG)
+        .map_err(|e| format!("listen {staged}: {e}"))?;
     std::fs::rename(&staged, path).map_err(|e| format!("move {staged} to {endpoint}: {e}"))?;
     Ok(Listener {
         socket,
@@ -169,12 +187,21 @@ fn bind_at(endpoint: &str, gid: Option<u32>) -> Result<Listener, String> {
     })
 }
 
-/// Refuses a socket directory that is not this user's or that its group or others can write, where a member could swap the socket.
+/// Refuses a socket directory that is a link, that is not this user's, or that its group or others can write, and any directory above it that others can write without the sticky bit: from any of them a member could swap the socket.
 #[cfg(unix)]
 fn private_dir(dir: &std::path::Path) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
 
-    let meta = std::fs::metadata(dir).map_err(|e| format!("stat {}: {e}", dir.display()))?;
+    let stat = |d: &std::path::Path| {
+        std::fs::symlink_metadata(d).map_err(|e| format!("stat {}: {e}", d.display()))
+    };
+    let meta = stat(dir)?;
+    if meta.file_type().is_symlink() {
+        return Err(format!(
+            "socket_group needs {} to be a directory, not a link",
+            dir.display()
+        ));
+    }
     // SAFETY: geteuid takes no arguments and always succeeds.
     let own = unsafe { libc::geteuid() };
     if meta.uid() != own || meta.mode() & 0o022 != 0 {
@@ -184,6 +211,20 @@ fn private_dir(dir: &std::path::Path) -> Result<(), String> {
             meta.uid(),
             meta.mode() & 0o7777
         ));
+    }
+    let real = std::fs::canonicalize(dir).map_err(|e| format!("resolve {}: {e}", dir.display()))?;
+    for above in real.ancestors().skip(1) {
+        let mode = std::fs::metadata(above)
+            .map_err(|e| format!("stat {}: {e}", above.display()))?
+            .mode();
+        if mode & 0o022 != 0 && mode & 0o1000 == 0 {
+            return Err(format!(
+                "socket_group needs every directory above {} writable by no one else or sticky; {} is mode {:o}",
+                dir.display(),
+                above.display(),
+                mode & 0o7777
+            ));
+        }
     }
     Ok(())
 }
@@ -486,7 +527,7 @@ mod tests {
         assert_eq!(mode(&endpoint), 0o660);
         assert_eq!(std::fs::metadata(&endpoint).unwrap().gid(), own);
         assert_eq!(mode(&format!("{endpoint}.lock")), 0o600);
-        assert!(!std::path::Path::new(&format!("{endpoint}.new")).exists());
+        assert!(!std::path::Path::new(&format!("{endpoint}.n")).exists());
     }
 
     #[tokio::test]
@@ -505,12 +546,64 @@ mod tests {
         assert!(!std::path::Path::new(&endpoint).exists());
     }
 
+    #[tokio::test]
+    async fn a_shared_socket_under_a_writable_parent_is_refused_unless_the_parent_is_sticky() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let top = tempfile::tempdir().unwrap();
+        let parent = top.path().join("shared");
+        let dir = parent.join("sock");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o750)).unwrap();
+        let own = std::fs::metadata(&dir).unwrap().gid().to_string();
+        let endpoint = dir.join("desk.sock").to_string_lossy().into_owned();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o770)).unwrap();
+        let err = bind_for(&endpoint, &own).await.err().unwrap();
+        assert!(
+            err.contains("every directory above") && err.contains("mode 770"),
+            "{err}"
+        );
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        let _listener = bind_for(&endpoint, &own).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_shared_socket_in_a_linked_directory_is_refused() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let top = tempfile::tempdir().unwrap();
+        let real = top.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let link = top.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let own = std::fs::metadata(&real).unwrap().gid().to_string();
+        let endpoint = link.join("desk.sock").to_string_lossy().into_owned();
+        let err = bind_for(&endpoint, &own).await.err().unwrap();
+        assert!(err.contains("not a link"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_endpoint_too_long_for_a_unix_socket_names_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir
+            .path()
+            .join("d".repeat(SUN_PATH))
+            .to_string_lossy()
+            .into_owned();
+        let err = bind(&endpoint).await.err().unwrap();
+        assert!(
+            err.contains(&format!("at most {} bytes", SUN_PATH - 3)),
+            "{err}"
+        );
+    }
+
     #[test]
     fn a_link_where_the_socket_was_bound_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("config.toml");
         std::fs::write(&target, "").unwrap();
-        let link = dir.path().join("desk.sock.new");
+        let link = dir.path().join("desk.sock.n");
         std::os::unix::fs::symlink(&target, &link).unwrap();
         let err = socket_at(&link.to_string_lossy()).unwrap_err();
         assert!(err.contains("is not the socket just bound"), "{err}");
