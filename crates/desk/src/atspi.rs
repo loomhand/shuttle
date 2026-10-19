@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use zbus::Connection;
 use zbus::zvariant::{DynamicType, OwnedObjectPath, OwnedValue};
 
-use crate::model::{format_number, is_field};
+use crate::model::{format_number, is_active, is_field};
 
 const BUS_NAME: &str = "org.a11y.Bus";
 const BUS_PATH: &str = "/org/a11y/bus";
@@ -975,30 +975,6 @@ pub fn key_combos(binding: &str) -> (Option<String>, Option<String>) {
     let mnemonic = parts.next().and_then(gtk_combo);
     let shortcut = parts.nth(1).and_then(gtk_combo);
     (mnemonic, shortcut)
-}
-
-/// Whether a caller can act on a node of this role.
-fn is_active(role: &str) -> bool {
-    matches!(
-        role,
-        "button"
-            | "checkbox"
-            | "menuitem"
-            | "menu"
-            | "tab"
-            | "textbox"
-            | "spinbutton"
-            | "slider"
-            | "combobox"
-            | "radio"
-            | "link"
-            | "option"
-            | "listitem"
-            | "treeitem"
-            | "menuitemcheckbox"
-            | "menuitemradio"
-            | "cell"
-    )
 }
 
 fn aria_role(role: u32, named: bool) -> Option<&'static str> {
