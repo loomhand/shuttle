@@ -106,7 +106,11 @@ public final class Ui {
                 }
             }
         }
-        StringBuilder sb = new StringBuilder("<hierarchy>");
+        StringBuilder sb = new StringBuilder("<hierarchy");
+        if (root != null) {
+            sb.append(" window=\"").append(root.getWindowId()).append('"');
+        }
+        sb.append('>');
         if (root != null) {
             node(root, sb, 0, "0");
         }
