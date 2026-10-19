@@ -13,7 +13,7 @@ const SHIFT_L: u32 = 0xffe1;
 const TAB: u32 = 0xff09;
 
 /// Types `text` with the keyboard map's own keycodes; false, typing nothing, when a character or modifier state needs the
-/// driver or X is unreachable. Once `stop` is set no further key goes out, and an error leaves no key held.
+/// driver or X is unreachable. Once `stop` is set no further key goes out, and an error releases the held keys while X answers.
 pub fn type_mapped(text: &str, stop: &AtomicBool) -> Result<bool, String> {
     let Ok((conn, n)) = x11rb::connect(None) else {
         return Ok(false);
