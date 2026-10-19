@@ -1,6 +1,6 @@
 # Desk wire
 
-One wire connects `cocoon-shuttle mcp` to the daemon, the runtime (`desk.mts`) to the daemon, and the CLI (`cocoon-shuttle desk VERB`) to the daemon. It is the toolhost wire of cocoonbox, implemented once in `desk_core::wire`, so the runtime runs unchanged in both.
+One wire connects `cocoon-shuttle mcp` to the daemon, the runtime (`desk.mts`) to the daemon, and the CLI (`cocoon-shuttle desk VERB`) to the daemon. It is implemented once in `desk_core::wire`.
 
 ## Endpoint
 
@@ -17,7 +17,7 @@ One wire connects `cocoon-shuttle mcp` to the daemon, the runtime (`desk.mts`) t
 - **One call per connection.** The client writes one frame and reads one frame, and keeps its side of the connection open until the reply: closing it, or shutting down its write side, cancels a call the daemon answers itself. A cancelled run is stopped as by `safety_stop` (its process group killed on macOS and Linux, the Node process on Windows) and its turn is free at once; a desk action the driver or the accessibility API has already started finishes on its own, as after a stop. A call of a [service plugin](#service-plugins)'s tool is the exception: after its first frame the connection belongs to the service, and a client that closes its side half-closes the connection toward the service instead of cancelling.
 - **Frame:** a big-endian u32 length, then that many bytes of JSON. A frame over 64 MiB is refused.
 - **Request:** `{"agent_id": string, "tool": string, "args": object}`; `agent_id` defaults to `""` and `args` to `null`.
-- **Response:** `{"text": string, "is_error": bool, "image_b64"?: string, "secrets"?: [[field, value]]}`. `text` holds the result, JSON for the desk verbs; `image_b64` is a PNG when the call took one; `secrets` carries card fields a host typed from a file (cocoonbox), and shuttle never sends it. A failure is `is_error: true` with the reason in `text`, never a closed connection.
+- **Response:** `{"text": string, "is_error": bool, "image_b64"?: string, "secrets"?: [[field, value]]}`. `text` holds the result, JSON for the desk verbs; `image_b64` is a PNG when the call took one; `secrets` carries (field, value) pairs that a host embedding the wire must scrub from what it relays; shuttle never sends it. A failure is `is_error: true` with the reason in `text`, never a closed connection.
 
 ## Desk calls
 
@@ -63,7 +63,7 @@ A vision agent drives the screen with these, by screenshot pixels and element in
 
 ## Plugins
 
-A plugin adds one tool that runs scripts with `script_run`'s contract and its own program in place of Node. This section is the schema's source of truth; cocoonbox's `/etc/cocoonbox/tools.d` files use the same one.
+A plugin adds one tool that runs scripts with `script_run`'s contract and its own program in place of Node. This section is the schema's source of truth.
 
 - **Where.** One `*.json` file per tool in the plugin directory: `tools.d` next to `config.toml`, or the directory `[tools] plugins` names ([config.md](config.md)). The daemon reads it when it starts and the MCP server when an agent starts it, in file-name order.
 - **Spec.** `{"name": string, "description": string, "bin": string, "resources"?: [{"uri": string, "path": string, "mime": string, "description": string}]}`, and no other field.

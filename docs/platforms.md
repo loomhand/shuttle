@@ -36,5 +36,5 @@ Every platform installs and runs `cocoon-shuttle mcp`. On macOS and Windows, the
 ## Android over adb
 
 - **adb mode.** The daemon drives one Android device that adb reaches, from a Linux or macOS host, when the configuration has an `[android]` section ([config.md](config.md#android-over-adb)): the device's UiAutomation tree through a UI server it pushes and runs under `app_process`, input through `adb shell input`, screenshots through `screencap`, and text through a scrcpy clipboard paste. The `shuttle-android` crate holds it.
-- **Tested** on redroid 16 in a cocoonbox Android box, at 720x1280, with adb root and also without it: without root the UI server and the upstream scrcpy server's paste run as the shell uid, as on a stock phone. A stock phone itself is untested.
+- **Tested** on redroid 16 in a container, at 720x1280, with adb root and also without it: without root the UI server and the upstream scrcpy server's paste run as the shell uid, as on a stock phone. A stock phone itself is untested.
 - **One accessibility client.** Android lets one UiAutomation client run at a time, so `uiautomator dump` or a second shuttle on the same device stops the UI server; the next desk call starts it again.

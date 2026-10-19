@@ -8,7 +8,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-The toolchain is pinned in `rust-toolchain.toml`; the runner and daemon tests also run `node` from `PATH` (Node.js 22.18 or later, for type stripping). The unit tests drive fake accessibility backends, a fake cua-driver and in-memory MCP sessions: none reads a real accessibility tree or sends input, so they are safe on the machine you work on. Anything that drives a real desktop runs in a virtual machine or a CI runner, never on a developer's own session.
+The toolchain is pinned in `rust-toolchain.toml`; the runner and daemon tests also run `node` from `PATH` (Node.js 24, the release the archives bundle, for type stripping). The unit tests drive fake accessibility backends, a fake cua-driver and in-memory MCP sessions: none reads a real accessibility tree or sends input, so they are safe on the machine you work on. Anything that drives a real desktop runs in a virtual machine or a CI runner, never on a developer's own session.
 
 The Windows code builds only for Windows; from another host, `cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings` checks it.
 
