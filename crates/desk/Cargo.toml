@@ -35,6 +35,8 @@ core-foundation = "0.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+image-webp = "0.2.4"
+jpeg-encoder = "0.7.1"
 tokio = { version = "1", features = ["macros"] }
 libc = "0.2"
 x11rb = { version = "0.14", features = ["shm", "shape", "xinput", "xkb", "xtest"] }

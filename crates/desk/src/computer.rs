@@ -1,4 +1,6 @@
-//! cua-driver client: line-delimited JSON over its unix socket.
+//! The computer verbs on Linux X11: `desk_computer_state`, `desk_computer_act`, `desk_computer_end` and `desk_look` for a vision
+//! agent, with the settle, the window report and the press guards of the cocoonbox toolhost they come from, over cua-driver's
+//! line-delimited JSON in named driver sessions.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -63,7 +65,7 @@ const MAX_WAIT_SECS: f64 = 10.0;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECT_RETRY: Duration = Duration::from_millis(250);
 const CONNECT_WAIT: Duration = Duration::from_secs(10);
-const DEFAULT_SESSION: &str = "cocoonbox";
+const DEFAULT_SESSION: &str = "computer";
 const SKIPPED: &str = "had no keycode";
 const RUN_CHARS: usize = 8;
 const WM_WAIT: Duration = Duration::from_secs(10);
@@ -77,8 +79,8 @@ const RETRIED: [&str; 4] = [
     "end_session",
 ];
 
-/// Screen executor client; remembers the element tokens of the latest window state.
-pub struct Cua {
+/// The computer verbs' state: the element tokens of each session's latest window state and the scale of its latest screenshot.
+pub struct Computer {
     driver: Arc<Driver>,
     last: Mutex<HashMap<String, Snapshot>>,
     input: Mutex<()>,
@@ -95,7 +97,7 @@ pub struct Cua {
     ids: AtomicU64,
 }
 
-impl Cua {
+impl Computer {
     /// Creates a client of `driver`'s daemon, whose click spacing it shares.
     pub fn new(driver: Arc<Driver>) -> Self {
         Self {
@@ -111,8 +113,29 @@ impl Cua {
         }
     }
 
+    /// Answers the computer verb `tool`.
+    pub async fn run(&self, tool: &str, args: Value) -> Result<Output, String> {
+        match tool {
+            "desk_computer_state" => self.state(args).await,
+            "desk_computer_act" => self.act(args).await,
+            "desk_computer_end" => self.end(args).await.map(Output::text),
+            "desk_look" => self.look(&args).await,
+            "desk_computer_scale" => {
+                let scale = self.scale_of(&session_of(&args));
+                Ok(Output::text(json!({"scale": scale}).to_string()))
+            }
+            "desk_title_at" => {
+                let a: PointArgs = parse(args)?;
+                Ok(Output::text(
+                    json!({"title": self.title_at(a.x, a.y)}).to_string(),
+                ))
+            }
+            other => Err(format!("unknown computer verb {other}")),
+        }
+    }
+
     /// `computer_state`: window list, accessibility elements and a desktop screenshot.
-    pub async fn state(&self, args: Value) -> Result<Output, String> {
+    async fn state(&self, args: Value) -> Result<Output, String> {
         self.touch();
         let session = session_of(&args);
         let a: StateArgs = parse(args)?;
@@ -204,7 +227,7 @@ impl Cua {
     }
 
     /// `computer_act`: one input action, or a list of `actions`, followed by a fresh desktop screenshot.
-    pub async fn act(&self, args: Value) -> Result<Output, String> {
+    async fn act(&self, args: Value) -> Result<Output, String> {
         self.touch();
         let session = session_of(&args);
         if args.get("actions").is_some() {
@@ -325,7 +348,7 @@ impl Cua {
 
     /// `screenshot`: the whole desktop, or `region`, a part of it at full resolution, with the image's
     /// size and input tokens in the text.
-    pub async fn look(&self, args: &Value) -> Result<Output, String> {
+    async fn look(&self, args: &Value) -> Result<Output, String> {
         let max_edge = args["max_edge"]
             .as_u64()
             .and_then(|e| u32::try_from(e).ok());
@@ -386,12 +409,12 @@ impl Cua {
     }
 
     /// The modal dialogs that are open where the screen does not show them.
-    pub fn modals(&self) -> Vec<Modal> {
+    fn modals(&self) -> Vec<Modal> {
         self.shm(Grabber::modals).unwrap_or_default()
     }
 
     /// Base64 PNG of the whole desktop, scaled so its long edge is at most `max_edge`.
-    pub async fn screenshot(
+    async fn screenshot(
         &self,
         session: &str,
         max_edge: Option<u32>,
@@ -401,7 +424,7 @@ impl Cua {
     }
 
     /// Screenshot in a one-shot driver session that is ended right away.
-    pub async fn screenshot_once(&self, max_edge: Option<u32>) -> Result<Option<String>, String> {
+    async fn screenshot_once(&self, max_edge: Option<u32>) -> Result<Option<String>, String> {
         let session = self.own("shot");
         let shot = self.screenshot(session.name(), max_edge).await;
         self.scales().remove(session.name());
@@ -410,7 +433,7 @@ impl Cua {
     }
 
     /// Ends a driver session, releasing its input devices.
-    pub async fn end(&self, args: Value) -> Result<String, String> {
+    async fn end(&self, args: Value) -> Result<String, String> {
         let session = session_of(&args);
         self.request(&session, "end_session", json!({})).await?;
         self.last.lock().await.remove(&session);
@@ -1386,14 +1409,9 @@ impl Cua {
     }
 
     /// Whether the screen point `(x, y)` shows a window title: a desktop panel or a window manager's title bar.
-    pub fn title_at(&self, x: f64, y: f64) -> bool {
+    fn title_at(&self, x: f64, y: f64) -> bool {
         self.shm(|g| g.title_at(x.round() as i32, y.round() as i32))
             .unwrap_or(false)
-    }
-
-    /// Screen pixels per pixel of the last screenshot of the session `args` name, so a screen point maps to it.
-    pub fn screenshot_scale(&self, args: &Value) -> f64 {
-        self.scale_of(&session_of(args))
     }
 
     /// The screen rectangle `[x, y, w, h]` clipped to the screen, and its RGB rows over MIT-SHM.
@@ -1664,6 +1682,12 @@ struct ActArgs {
     foreground: bool,
     #[serde(default)]
     max_edge: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct PointArgs {
+    x: f64,
+    y: f64,
 }
 
 #[derive(Deserialize)]
@@ -2194,9 +2218,10 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
+    use crate::driver::CLICK_SPACING;
 
-    fn cua(socket: &Path) -> Cua {
-        Cua::new(Arc::new(Driver::new(socket.to_string_lossy().into_owned())))
+    fn cua(socket: &Path) -> Computer {
+        Computer::new(Arc::new(Driver::new(socket.to_string_lossy().into_owned())))
     }
 
     #[cfg(target_os = "linux")]

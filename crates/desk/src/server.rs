@@ -5,10 +5,14 @@ use std::sync::Arc;
 use desk_core::wire::{Call, Output, read_body, read_frame, tool_of, write_frame};
 use zeroize::Zeroizing;
 
+#[cfg(target_os = "linux")]
+use crate::desk::COMPUTER_VERBS;
 use crate::desk::Desk;
 use crate::driver::Input;
 use crate::model::Access;
 
+#[cfg(target_os = "linux")]
+const ALLOWLIST_REFUSED: &str = "the computer verbs see and click the whole screen, which an app allowlist does not bound: empty [safety] apps in config.toml to use them";
 #[cfg(windows)]
 const PIPE_BUSY: i32 = 231;
 #[cfg(windows)]
@@ -217,11 +221,41 @@ pub fn native(driver: String, apps: &[String]) -> impl Handler {
     Desk::new(Uia::open, Driver::new(driver), Os::Windows).allow(apps)
 }
 
-/// This OS's desk: its accessibility tree, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
+/// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
 #[cfg(target_os = "linux")]
 pub fn native(driver: String, apps: &[String]) -> impl Handler {
-    use crate::{driver::Driver, keys::Os, spi::Spi};
-    Desk::new(Spi::open, Driver::new(driver), Os::Linux).allow(apps)
+    use crate::{computer::Computer, driver::Driver, keys::Os, spi::Spi};
+    let driver = Arc::new(Driver::new(driver));
+    Linux {
+        desk: Desk::new(Spi::open, Arc::clone(&driver), Os::Linux).allow(apps),
+        computer: Computer::new(driver),
+        open: apps.is_empty(),
+    }
+}
+
+/// The Linux X11 desk: the desk verbs and, with no app allowlist, the computer verbs.
+#[cfg(target_os = "linux")]
+struct Linux {
+    desk: Desk<crate::spi::Spi, Arc<crate::driver::Driver>>,
+    computer: crate::computer::Computer,
+    open: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl Handler for Linux {
+    async fn answer(&self, call: Call) -> Output {
+        let tool = call.tool.as_str();
+        if !COMPUTER_VERBS.contains(&tool) {
+            return self.desk.answer(call).await;
+        }
+        if !self.open {
+            return Output::error(format!("{tool}: {ALLOWLIST_REFUSED}"));
+        }
+        self.computer
+            .run(tool, call.args)
+            .await
+            .unwrap_or_else(Output::error)
+    }
 }
 
 /// This OS's desk: none yet.
@@ -368,6 +402,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(key.text, "hotkey: no driver");
+        let look = call(&endpoint, &ask("desk_look", json!({}))).await.unwrap();
+        assert_eq!(
+            (look.is_error, look.text.as_str()),
+            (
+                true,
+                "desk_look: not on this OS yet: the computer verbs run on Linux X11"
+            )
+        );
         server.abort();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn the_linux_desk_answers_the_computer_verbs_unless_an_app_allowlist_is_set() {
+        let ask = |tool: &str, args: Value| Call {
+            agent_id: "desk".into(),
+            tool: tool.into(),
+            args,
+        };
+        let open = native("/nonexistent/driver.sock".into(), &[]);
+        let title = open
+            .answer(ask("desk_title_at", json!({"x": 10, "y": 10})))
+            .await;
+        assert_eq!(
+            (title.is_error, title.text.as_str()),
+            (false, r#"{"title":false}"#)
+        );
+        let scale = open.answer(ask("desk_computer_scale", json!({}))).await;
+        assert_eq!(scale.text, r#"{"scale":1.0}"#);
+        let listed = native("/nonexistent/driver.sock".into(), &["mousepad".to_owned()]);
+        for tool in COMPUTER_VERBS {
+            let out = listed.answer(ask(tool, json!({}))).await;
+            assert_eq!(
+                (out.is_error, out.text),
+                (true, format!("{tool}: {ALLOWLIST_REFUSED}"))
+            );
+        }
+        let other = listed.answer(ask("shell", json!({}))).await;
+        assert_eq!(other.text, "unknown desk tool shell");
     }
 }

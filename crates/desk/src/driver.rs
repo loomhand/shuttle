@@ -10,11 +10,11 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::time::Instant;
 
 pub const WINDOW_SESSION: &str = "desk-window";
+pub(crate) const CLICK_SPACING: Duration = Duration::from_millis(500);
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SESSION: &str = "desk";
 const ENDED: &str = "session has ended";
-const CLICK_SPACING: Duration = Duration::from_millis(500);
 const CLICK_DISTANCE: f64 = 16.0;
 
 /// The driver calls the desk makes: input, windows, launch and capture.
@@ -67,6 +67,7 @@ impl Driver {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) fn endpoint(&self) -> &str {
         &self.endpoint
     }
@@ -164,6 +165,12 @@ impl Input for Driver {
             }
             done => done,
         }
+    }
+}
+
+impl Input for std::sync::Arc<Driver> {
+    fn call(&self, tool: &str, args: Value) -> impl Future<Output = Result<Value, String>> + Send {
+        Driver::call(self, tool, args)
     }
 }
 

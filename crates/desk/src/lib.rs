@@ -1,10 +1,12 @@
-//! The desk verbs on macOS and Windows: the toolhost wire's desk calls over each OS's accessibility tree, input through cua-driver.
+//! The desk verbs on macOS, Windows and Linux: the toolhost wire's desk calls over each OS's accessibility tree, input through cua-driver, and on Linux the computer verbs.
 
 #[cfg(target_os = "linux")]
 pub mod atspi;
 #[cfg(target_os = "macos")]
 pub mod ax;
 pub mod ax_roles;
+#[cfg(target_os = "linux")]
+pub mod computer;
 pub mod desk;
 pub mod driver;
 pub mod keys;
@@ -27,3 +29,5 @@ mod allow;
 mod press;
 mod shot;
 mod still;
+#[cfg(target_os = "linux")]
+mod volatile;
