@@ -251,7 +251,7 @@ async fn serve(
         key_vars,
     );
     let desk = match android {
-        Some(settings) => Desks::Android(Box::new(android::device(settings))),
+        Some(settings) => Desks::Android(Box::new(android::device(settings, &exe)?)),
         None => Desks::Native(server::native(driver, &apps)),
     };
     let daemon = Arc::new(
