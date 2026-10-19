@@ -224,7 +224,7 @@ mod tests {
         }
         assert!(
             libreoffice(pid),
-            "the soffice.bin copy never showed in /proc/{pid}/comm"
+            "the soffice.bin link never showed in /proc/{pid}/comm"
         );
         assert!(!libreoffice(std::process::id()));
         office.kill().unwrap();
