@@ -17,12 +17,16 @@ use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 use desk_core::args::parse;
+use desk_core::press::{MENU_POLL, MENU_POLLS};
 use desk_core::wire::Output;
 
-use crate::driver::Driver;
+use crate::desk::text_runs;
+use crate::driver::{Driver, image_of, text_of};
 use crate::keys::{Os, key_names};
+use crate::press::libreoffice;
 use crate::server::Conn;
-use crate::volatile::{Block, Shown, Volatile};
+use crate::still::Block;
+use crate::volatile::{Shown, Volatile};
 use crate::xshm::{self, Grabber, Modal, Placement, SHELL_APPS};
 
 const STATE_ELEMENTS: u64 = 300;
@@ -53,8 +57,6 @@ const POPUP_ROWS: [&str; 6] = [
     "option",
 ];
 const PRESSED: [&str; 2] = ["push button", "menu item"];
-const MENU_POLL: Duration = Duration::from_millis(30);
-const MENU_POLLS: u32 = 10;
 const JPEG_QUALITY: u8 = 80;
 const DEFAULT_EDGE: u32 = 1024;
 const PIXELS_PER_TOKEN: u32 = 750;
@@ -66,7 +68,6 @@ const CONNECT_RETRY: Duration = Duration::from_millis(250);
 const CONNECT_WAIT: Duration = Duration::from_secs(10);
 const DEFAULT_SESSION: &str = "computer";
 const SKIPPED: &str = "had no keycode";
-const RUN_CHARS: usize = 8;
 const WM_WAIT: Duration = Duration::from_secs(10);
 const WM_POLL: Duration = Duration::from_millis(100);
 const NO_TEXT_TARGET: &str =
@@ -355,7 +356,7 @@ impl Computer {
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         let (text, is_error) = match result {
-            Ok(v) => (shot_points(&content_text(&v), k) + &changes, false),
+            Ok(v) => (shot_points(&text_of(&v), k) + &changes, false),
             Err(e) => (e, true),
         };
         Ok(Output {
@@ -500,7 +501,7 @@ impl Computer {
             .as_f64()
             .filter(|s| *s > 0.0)
             .unwrap_or(1.0);
-        let mut image = content_image(&v);
+        let mut image = image_of(&v).map(str::to_owned);
         if let Some(smaller) = image.as_deref().and_then(shrink) {
             image = Some(smaller);
         }
@@ -512,8 +513,7 @@ impl Computer {
         Ok((image, scale, None))
     }
 
-    /// Types text with non-ASCII characters or at a point, which a click focuses first; in calls of at most
-    /// [`RUN_CHARS`] distinct non-ASCII characters.
+    /// Types text with non-ASCII characters or at a point, which a click focuses first, in the calls [`text_runs`] cuts.
     async fn type_mixed(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
         let full = a.text.as_deref().unwrap_or_default();
         let input = self.input.lock().await;
@@ -567,9 +567,9 @@ impl Computer {
                 .call(once.as_ref().map_or(session, Owned::name), "type_text", req)
                 .await
             {
-                Ok(v) if v["isError"] == true || content_text(&v).contains(SKIPPED) => {
+                Ok(v) if v["isError"] == true || text_of(&v).contains(SKIPPED) => {
                     typed += landed(run, &v);
-                    failure = Some(format!("type_text: {}", content_text(&v)));
+                    failure = Some(format!("type_text: {}", text_of(&v)));
                 }
                 Ok(_) => typed += run.chars().count(),
                 Err(e) => failure = Some(e),
@@ -625,7 +625,7 @@ impl Computer {
                 .request(session, "launch_app", json!({"name": app}))
                 .await
             {
-                Ok(v) => Ok(content_text(&v)),
+                Ok(v) => Ok(text_of(&v)),
                 Err(e) => match self.app_windows(session, app).await?.first() {
                     Some(w) => Ok(format!(
                         "{app} is running as window {} \"{}\" (pid {}); the launcher reported: {e}",
@@ -963,7 +963,7 @@ impl Computer {
         };
         let edge = json!({"max_image_dimension": STILL_EDGE});
         let v = self.request(probe, "get_desktop_state", edge).await.ok()?;
-        let data = B64.decode(content_image(&v)?).ok()?;
+        let data = B64.decode(image_of(&v)?).ok()?;
         Some(decode_png(&data)?.1)
     }
 
@@ -1253,7 +1253,10 @@ impl Computer {
         let last = self.last.lock().await;
         let snap = last.get(session)?;
         let (element, screen) = (snap.elements.get(&index)?, snap.screen.as_ref()?);
-        if !menu && !element.role.starts_with("menu") && libreoffice(snap.pid) {
+        if !menu
+            && !element.role.starts_with("menu")
+            && u32::try_from(snap.pid).is_ok_and(libreoffice)
+        {
             return None;
         }
         let [x, y, w, h] = element.frame?;
@@ -1506,7 +1509,7 @@ impl Computer {
             None => self.call(session, name, args).await,
         }?;
         if result["isError"] == true {
-            return Err(format!("{name}: {}", content_text(&result)));
+            return Err(format!("{name}: {}", text_of(&result)));
         }
         if name == "launch_app" {
             crate::desk::adopt(result.clone()).await;
@@ -1767,26 +1770,6 @@ fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Splits text into runs with at most [`RUN_CHARS`] distinct non-ASCII characters; the driver's
-/// virtual-keyboard route binds a spare keycode to each of them for the call and has fewer than 20 to lend.
-fn text_runs(text: &str) -> Vec<&str> {
-    let (mut runs, mut start, mut seen) = (Vec::new(), 0, Vec::new());
-    for (i, c) in text.char_indices() {
-        if c.is_ascii() || seen.contains(&c) {
-            continue;
-        }
-        if seen.len() == RUN_CHARS {
-            runs.push(&text[start..i]);
-            (start, seen) = (i, Vec::new());
-        }
-        seen.push(c);
-    }
-    if start < text.len() {
-        runs.push(&text[start..]);
-    }
-    runs
-}
-
 fn before_newline(text: &str) -> Option<&str> {
     text.strip_suffix(['\n', '\r']).filter(|t| !t.is_empty())
 }
@@ -1797,7 +1780,7 @@ fn landed(run: &str, result: &Value) -> usize {
     if let Some(skipped) = result["structuredContent"]["skipped_characters"].as_str() {
         return run.chars().count().saturating_sub(skipped.chars().count());
     }
-    content_text(result)
+    text_of(result)
         .split("typed ")
         .nth(1)
         .and_then(|t| t.split(' ').next())
@@ -1876,18 +1859,10 @@ fn modal_line(m: &Modal) -> String {
 }
 
 fn confirms(a: &ActArgs) -> bool {
-    let keys = match a.action.as_str() {
-        "type" => return a.text.as_deref().is_some_and(|t| t.ends_with(['\n', '\r'])),
-        "key" => a.key.clone().into_iter().collect(),
-        "hotkey" => a
-            .keys
-            .clone()
-            .map(|k| vec![k.join("+")])
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    };
-    keys.iter()
-        .any(|k| ["return", "enter", "kp_enter"].contains(&k.to_lowercase().as_str()))
+    if a.action == "type" {
+        return a.text.as_deref().is_some_and(|t| t.ends_with(['\n', '\r']));
+    }
+    combo(a).is_some_and(|k| ["return", "enter", "kp_enter"].contains(&k.as_str()))
 }
 
 /// `label` without case, mnemonic underscores, a trailing ellipsis or colon, and extra spaces, so a
@@ -1899,12 +1874,6 @@ fn label_key(label: &str) -> String {
         .trim_end_matches(['.', '\u{2026}', ':'])
         .trim_end()
         .to_owned()
-}
-
-/// Whether `pid` runs LibreOffice, whose toolbar extents can sit a menu bar's height above the drawn controls.
-fn libreoffice(pid: i64) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/comm"))
-        .is_ok_and(|c| c.trim_end() == "soffice.bin")
 }
 
 /// Whether process `pid` has GTK loaded.
@@ -1928,21 +1897,22 @@ fn clicks_left(a: &ActArgs) -> bool {
 
 /// Whether `a` may commit a page load: a left click, Return or a navigation key, or text ending in a newline.
 fn commits(a: &ActArgs) -> bool {
-    let keys = match a.action.as_str() {
-        "type" => return a.text.as_deref().is_some_and(|t| t.ends_with(['\n', '\r'])),
+    match a.action.as_str() {
+        "type" => a.text.as_deref().is_some_and(|t| t.ends_with(['\n', '\r'])),
         "click" | "double_click" | "triple_click" => {
-            return a.button.as_deref().is_none_or(|b| b == "left");
+            a.button.as_deref().is_none_or(|b| b == "left")
         }
-        "key" => a.key.clone().into_iter().collect(),
-        "hotkey" => a
-            .keys
-            .clone()
-            .map(|k| vec![k.join("+")])
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    };
-    keys.iter()
-        .any(|k| COMMIT_KEYS.contains(&k.to_lowercase().as_str()))
+        _ => combo(a).is_some_and(|k| COMMIT_KEYS.contains(&k.as_str())),
+    }
+}
+
+/// The lowercase combination a `key` or `hotkey` action presses.
+fn combo(a: &ActArgs) -> Option<String> {
+    match a.action.as_str() {
+        "key" => a.key.as_deref().map(str::to_lowercase),
+        "hotkey" => a.keys.as_ref().map(|k| k.join("+").to_lowercase()),
+        _ => None,
+    }
 }
 
 fn session_of(args: &Value) -> String {
@@ -2042,7 +2012,7 @@ fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
         tree.push_str("[element list truncated; pass query to narrow it]\n");
     }
     if tree.is_empty() {
-        tree = content_text(result);
+        tree = text_of(result);
     }
     (tree, by_index)
 }
@@ -2135,30 +2105,6 @@ fn shot_points(text: &str, scale: f64) -> String {
     }
     out.push_str(rest);
     out
-}
-
-fn content_text(result: &Value) -> String {
-    let mut text = String::new();
-    for c in result["content"].as_array().into_iter().flatten() {
-        if c["type"] == "text"
-            && let Some(t) = c["text"].as_str()
-        {
-            if !text.is_empty() {
-                text.push('\n');
-            }
-            text.push_str(t);
-        }
-    }
-    text
-}
-
-fn content_image(result: &Value) -> Option<String> {
-    result["content"]
-        .as_array()?
-        .iter()
-        .find(|c| c["type"] == "image")
-        .and_then(|c| c["data"].as_str())
-        .map(str::to_owned)
 }
 
 /// The opaque RGBA PNG `b64` re-encoded at the same size by [`encode`]; `None` when that is not smaller.
@@ -2276,27 +2222,6 @@ mod tests {
 
     fn cua(socket: &Path) -> Computer {
         Computer::new(Arc::new(Driver::new(socket.to_string_lossy().into_owned())))
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn only_a_soffice_bin_process_counts_as_libreoffice() {
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("soffice.bin");
-        std::fs::copy("/bin/sleep", &bin).unwrap();
-        let mut office = std::process::Command::new(&bin).arg("30").spawn().unwrap();
-        let pid = office.id().into();
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while !libreoffice(pid) && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(
-            libreoffice(pid),
-            "the soffice.bin copy never showed in /proc/{pid}/comm"
-        );
-        assert!(!libreoffice(std::process::id().into()));
-        office.kill().unwrap();
-        office.wait().unwrap();
     }
 
     #[tokio::test]
@@ -3331,20 +3256,5 @@ mod tests {
         assert_eq!(label_key("Go to..."), "go to");
         assert_eq!(label_key("Find and Replace..."), "find and replace");
         assert_ne!(label_key("Save"), label_key("Save As..."));
-    }
-
-    #[test]
-    fn text_runs_hold_at_most_eight_distinct_non_ascii_characters() {
-        assert_eq!(
-            text_runs("MCP — 你好 café 🙂! 一二三四五六七八九十"),
-            ["MCP — 你好 café 🙂! 一二三", "四五六七八九十"]
-        );
-        assert_eq!(
-            text_runs("你你你你你你你你你你好"),
-            ["你你你你你你你你你你好"]
-        );
-        assert_eq!(text_runs("plain"), ["plain"]);
-        assert_eq!(text_runs("é"), ["é"]);
-        assert!(text_runs("").is_empty());
     }
 }

@@ -11,6 +11,8 @@ use tokio::sync::Mutex;
 use zbus::Connection;
 use zbus::zvariant::{DynamicType, OwnedObjectPath, OwnedValue};
 
+use crate::model::{format_number, is_field};
+
 const BUS_NAME: &str = "org.a11y.Bus";
 const BUS_PATH: &str = "/org/a11y/bus";
 const REGISTRY: &str = "org.a11y.atspi.Registry";
@@ -976,7 +978,7 @@ pub fn key_combos(binding: &str) -> (Option<String>, Option<String>) {
 }
 
 /// Whether a caller can act on a node of this role.
-pub fn is_active(role: &str) -> bool {
+fn is_active(role: &str) -> bool {
     matches!(
         role,
         "button"
@@ -996,14 +998,6 @@ pub fn is_active(role: &str) -> bool {
             | "menuitemcheckbox"
             | "menuitemradio"
             | "cell"
-    )
-}
-
-/// Whether a node of this role holds a value a caller reads.
-pub fn is_field(role: &str) -> bool {
-    matches!(
-        role,
-        "textbox" | "spinbutton" | "slider" | "combobox" | "progressbar"
     )
 }
 
@@ -1213,14 +1207,6 @@ fn iface_bits(names: &[String]) -> u8 {
     })
 }
 
-fn format_number(v: f64) -> String {
-    if v.fract() == 0.0 && v.abs() < 1e15 {
-        format!("{v:.0}")
-    } else {
-        v.to_string()
-    }
-}
-
 /// The Collection.GetMatches arguments for the first descendant in the focused state, in tree order: a rule on the state alone, canonical order, one match, descending.
 #[allow(clippy::type_complexity)]
 fn focused_rule() -> (
@@ -1310,6 +1296,7 @@ mod tests {
         assert_eq!(args.0.0, [1 << 12, 0]);
         assert_eq!((args.1, args.2, args.3), (1, 1, true));
     }
+
     #[test]
     fn an_id_round_trips_to_its_object() {
         let gtk = Obj {

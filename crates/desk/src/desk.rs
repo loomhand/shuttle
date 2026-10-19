@@ -16,7 +16,7 @@ use desk_core::wire::Output;
 use serde_json::{Map, Value, json};
 
 use crate::allow::{Allow, app_key, app_of};
-use crate::driver::{Input, WINDOW_SESSION, desktop, text_of};
+use crate::driver::{Input, WINDOW_SESSION, desktop, image_of, text_of};
 use crate::keys::{Os, key_names, keystroke};
 use crate::model::{Access, Act, Capture, Extras, Frame, Node};
 use crate::press::{Press, plan_press};
@@ -759,13 +759,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 json!({"max_image_dimension": STILL_EDGE}),
             )
             .await?;
-        let png = v["content"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|c| c["type"] == "image")
-            .and_then(|c| c["data"].as_str())
-            .ok_or("the driver returned no screenshot")?;
+        let png = image_of(&v).ok_or("the driver returned no screenshot")?;
         StillFrame::decode(
             &B64.decode(png)
                 .map_err(|e| format!("decode capture: {e}"))?,
@@ -965,13 +959,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return self.captured(c, a.path).await;
         }
         let v = self.driver.call("get_desktop_state", json!({})).await?;
-        let png = v["content"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|c| c["type"] == "image")
-            .and_then(|c| c["data"].as_str())
-            .ok_or("the driver returned no screenshot")?;
+        let png = image_of(&v).ok_or("the driver returned no screenshot")?;
         let png = B64
             .decode(png)
             .map_err(|e| format!("decode screenshot: {e}"))?;
@@ -1107,7 +1095,7 @@ impl Drop for Cancel {
 }
 
 /// Runs of `text` with at most [`RUN_CHARS`] distinct non-ASCII characters; the Linux driver binds a spare keycode to each for the call and has fewer than 20 to lend.
-fn text_runs(text: &str) -> Vec<&str> {
+pub(crate) fn text_runs(text: &str) -> Vec<&str> {
     let (mut runs, mut start, mut seen) = (Vec::new(), 0, Vec::new());
     for (i, c) in text.char_indices() {
         if c.is_ascii() || seen.contains(&c) {
@@ -2228,6 +2216,15 @@ pub(crate) mod tests {
     fn a_run_repeats_a_character_freely_and_the_typed_tail_is_the_last_line_end() {
         assert_eq!(text_runs("éé abc é"), ["éé abc é"]);
         assert_eq!(text_runs(""), Vec::<&str>::new());
+        assert_eq!(
+            text_runs("MCP — 你好 café 🙂! 一二三四五六七八九十"),
+            ["MCP — 你好 café 🙂! 一二三", "四五六七八九十"]
+        );
+        assert_eq!(
+            text_runs("你你你你你你你你你你好"),
+            ["你你你你你你你你你你好"]
+        );
+        assert_eq!(text_runs("plain"), ["plain"]);
         assert_eq!(typed_tail("x\r\nhello").as_deref(), Some("hello"));
         assert_eq!(typed_tail("line\n"), None);
         assert_eq!(

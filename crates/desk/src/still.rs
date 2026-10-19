@@ -24,7 +24,7 @@ impl Block {
         }
     }
 
-    fn of(contents: impl Iterator<Item = u64>) -> Self {
+    pub(crate) fn of(contents: impl Iterator<Item = u64>) -> Self {
         let mut runs: Vec<u64> = Vec::new();
         for h in contents {
             if runs.last() != Some(&h) {
