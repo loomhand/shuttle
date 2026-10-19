@@ -537,15 +537,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 .access
                 .run(CALL_LIMIT, (), move |b| {
                     let frame = allow.pick(b.frames()?, None, None)?;
-                    let tree = b.tree(&frame, Extras::default())?;
-                    Ok(tree.nodes.into_iter().find(|n| n.has("focused")))
+                    b.focused(&frame)
                 })
                 .await?;
-            let Some(node) = focused else {
+            let Some(focused) = focused else {
                 return Ok(());
             };
             loop {
-                let (id, tail) = (node.id.clone(), tail.clone());
+                let (id, tail) = (focused.clone(), tail.clone());
                 let values = Extras {
                     values: true,
                     ..Extras::default()
