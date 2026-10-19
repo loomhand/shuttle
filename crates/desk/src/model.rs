@@ -267,8 +267,8 @@ pub trait Access {
     fn act(&mut self, id: &str, act: Act) -> Result<bool, String>;
     /// Asks the window to close as its close button does.
     fn close(&mut self, frame: &Frame) -> Result<(), String>;
-    /// The screen rectangle `[x, y, w, h]` clipped to the screen, read by the backend itself; none when the driver captures.
-    fn capture(&mut self, _rect: [f64; 4]) -> Result<Option<Capture>, String> {
+    /// The screen rectangle `[x, y, w, h]` clipped to the screen, read by the backend itself; none when the driver captures, as it does while its cursor overlay shows, which the backend looks for only when `overlay` says the driver may show one.
+    fn capture(&mut self, _rect: [f64; 4], _overlay: bool) -> Result<Option<Capture>, String> {
         Ok(None)
     }
     /// The modal dialogs the screen does not show.

@@ -107,11 +107,12 @@ impl Access for Spi {
         })
     }
 
-    fn capture(&mut self, rect: [f64; 4]) -> Result<Option<Capture>, String> {
-        let Some((size, overlay)) = self.shm(|g| Ok((g.size(), g.overlay_shown()?))) else {
+    fn capture(&mut self, rect: [f64; 4], overlay: bool) -> Result<Option<Capture>, String> {
+        let Some((size, shown)) = self.shm(|g| Ok((g.size(), overlay && g.overlay_shown()?)))
+        else {
             return Ok(None);
         };
-        if overlay {
+        if shown {
             return Ok(None);
         }
         let clipped = clip(rect, size).ok_or("the rectangle is off the screen")?;
