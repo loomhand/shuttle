@@ -549,7 +549,7 @@ impl Atspi {
             }
             let mut next = Vec::new();
             for o in frontier {
-                let mut sorted = cached.get(&o).cloned().unwrap_or_default();
+                let mut sorted = cached.remove(&o).unwrap_or_default();
                 sorted.sort_by_key(|(i, _)| *i);
                 let sorted = sorted.into_iter().map(|(_, c)| c);
                 let list: Vec<Obj> = match listed.remove(&o) {
