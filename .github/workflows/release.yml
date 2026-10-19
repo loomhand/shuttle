@@ -14,10 +14,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.1
 
-      - name: Build the UI server jar
+      - name: JDK
+        uses: actions/setup-java@v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21.0.12+101
+
+      - name: Build the UI server jar twice
         run: |
           bash android/ui/build.sh cb-ui.jar
+          bash android/ui/build.sh "$RUNNER_TEMP/again.jar"
           unzip -l cb-ui.jar | grep -q classes.dex
+          sha256sum cb-ui.jar "$RUNNER_TEMP/again.jar"
+          cmp cb-ui.jar "$RUNNER_TEMP/again.jar"
 
       - name: Upload
         uses: actions/upload-artifact@v7.0.2
