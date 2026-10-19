@@ -166,8 +166,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 let app = parse::<LaunchArgs>(args)?.app;
                 let v = self.driver.call("launch_app", json!({"name": app})).await?;
                 let mut out = json!({"ok": true, "launched": text_of(&v)});
-                if let Some(s) = v["structuredContent"].get("self_activation_suppressed") {
-                    out["suppressed"] = s.clone();
+                if self.os == Os::Mac {
+                    out["background"] = true.into();
                 }
                 if self.os == Os::Linux {
                     out["scoped"] = adopt(v).await.into();
@@ -1715,7 +1715,7 @@ pub(crate) mod tests {
             Ok(match tool {
                 "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
                 "launch_app" => {
-                    json!({"content": [{"type": "text", "text": "Launched TextEdit (pid 7) in background."}], "structuredContent": {"pid": 7, "self_activation_suppressed": true}})
+                    json!({"content": [{"type": "text", "text": "Launched TextEdit (pid 7) in background."}]})
                 }
                 "list_windows" => json!({"structuredContent": {"windows": [
                     {"pid": 98, "window_id": 4, "layer": 0, "z_index": 4, "title": "Cua.AgentCursorOverlay.default", "bounds": {"x": 0.0, "y": 900.0, "width": 100.0, "height": 100.0}},
@@ -1740,15 +1740,123 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_launch_passes_on_whether_the_driver_handed_the_front_back() {
-        let desk = Desk::new(|| Ok(Apps), Desktop(Arc::default()), Os::Mac);
-        let out = desk
-            .run("desk_launch", json!({"app": "TextEdit"}))
-            .await
+    async fn only_a_macos_launch_reports_that_it_stays_in_the_background() {
+        for (os, background) in [(Os::Mac, true), (Os::Windows, false)] {
+            let desk = Desk::new(|| Ok(Apps), Desktop(Arc::default()), os);
+            let out = desk
+                .run("desk_launch", json!({"app": "TextEdit"}))
+                .await
+                .unwrap();
+            let v: Value = serde_json::from_str(&out.text).unwrap();
+            assert_eq!(v["background"] == true, background, "{os:?} {v}");
+            assert_eq!(v["launched"], "Launched TextEdit (pid 7) in background.");
+        }
+    }
+
+    static LAUNCHED: AtomicBool = AtomicBool::new(false);
+
+    struct Launched;
+
+    impl Access for Launched {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            Ok(if LAUNCHED.load(Ordering::SeqCst) {
+                vec![frame("7/1", "Untitled", 7, true, Some("TextEdit"))]
+            } else {
+                Vec::new()
+            })
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            Ok(Tree {
+                frame: frame.clone(),
+                nodes: Vec::new(),
+                truncated: false,
+                phases: Vec::new(),
+            })
+        }
+
+        fn node(&mut self, id: &str, _: Extras, _: usize) -> Result<Node, String> {
+            Err(format!("element {id} is gone"))
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Ok(false)
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct Launcher(Arc<Mutex<Vec<String>>>);
+
+    impl Input for Launcher {
+        async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push(tool.to_owned());
+            Ok(match tool {
+                "launch_app" => {
+                    LAUNCHED.store(true, Ordering::SeqCst);
+                    json!({"content": [{"type": "text", "text": "Launched TextEdit (pid 7) in background."}]})
+                }
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 7, "window_id": 9, "title": "Untitled", "app_name": "TextEdit"}
+                ]}}),
+                _ => json!({}),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_plan_focuses_a_window_it_launched_on_a_macos_desk_only() {
+        let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
+        for (os, focused) in [(Os::Mac, true), (Os::Windows, false)] {
+            LAUNCHED.store(false, Ordering::SeqCst);
+            let dir = tempfile::tempdir().unwrap();
+            let endpoint = if cfg!(windows) {
+                format!(r"\\.\pipe\shuttle-launch-{os:?}-{}", std::process::id())
+            } else {
+                dir.path().join("desk.sock").to_string_lossy().into_owned()
+            };
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(Launched), Launcher(calls.clone()), os);
+            let listener = crate::server::bind(&endpoint).await.unwrap();
+            let served = tokio::spawn(crate::server::serve(Arc::new(desk), listener));
+            std::fs::write(
+                dir.path().join("params.json"),
+                json!({"steps": [{"app": "TextEdit"}]}).to_string(),
+            )
             .unwrap();
-        let v: Value = serde_json::from_str(&out.text).unwrap();
-        assert_eq!(v["suppressed"], true, "{v}");
-        assert_eq!(v["launched"], "Launched TextEdit (pid 7) in background.");
+            let mut node = std::process::Command::new("node");
+            node.arg(runtime.join("entry.mts"))
+                .env("SHUTTLE_SCRIPT", runtime.join("gui_plan.mts"))
+                .env("SHUTTLE_RUN", dir.path())
+                .env("SHUTTLE_FLOWS", dir.path().join("flows"))
+                .env("TOOLHOST_SOCKET", &endpoint)
+                .env("HOME", dir.path());
+            let status = tokio::task::spawn_blocking(move || node.status())
+                .await
+                .unwrap()
+                .unwrap();
+            served.abort();
+            let result = std::fs::read_to_string(dir.path().join("result.json"))
+                .or_else(|_| std::fs::read_to_string(dir.path().join("error.json")))
+                .unwrap();
+            assert!(status.success(), "{os:?}: {result}");
+            let calls = calls.lock().unwrap().clone();
+            assert_eq!(
+                calls.iter().any(|c| c == "bring_to_front"),
+                focused,
+                "{os:?}: {calls:?} {result}"
+            );
+        }
     }
 
     fn pixels(out: &Output) -> Vec<[u8; 3]> {
