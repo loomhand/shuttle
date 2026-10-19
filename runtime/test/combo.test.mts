@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { toolhost } from './toolhost.mts'
+import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 test('set on a combo box without a text field picks the option from its list, does nothing when it is already chosen, and names the options when none matches', async (t) => {
@@ -20,7 +20,7 @@ test('set on a combo box without a text field picks the option from its list, do
   const typed: string[] = []
   const combo = nodes[1]
   assert.ok(combo)
-  await toolhost(t, ({ tool, args }) => {
+  await daemon(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify(open ? [list, { ...prefs, active: false }] : [prefs])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: prefs, nodes: now(), truncated: false })
     if (tool === 'desk_read') return JSON.stringify(now().find((n) => n.id === args.id))

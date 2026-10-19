@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { homedir, tmpdir } from 'node:os'
 import { test } from 'node:test'
 
-import { toolhost } from './toolhost.mts'
+import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 test('a plan, a save and a reindex write flows, the index, the pending chain and git only under the test directory', async (t) => {
@@ -13,7 +13,7 @@ test('a plan, a save and a reindex write flows, the index, the pending chain and
   const stamp = () => real.map((f) => existsSync(f) ? statSync(f).mtimeMs : null)
   const before = stamp()
   const win = { id: '1', title: 'notes.txt - Mousepad', role: 'frame', pid: process.pid, active: true }
-  await toolhost(t, ({ tool }) => {
+  await daemon(t, ({ tool }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, nodes: [], truncated: false })
     return '{"ok":true}'
@@ -38,7 +38,7 @@ test('a plan, a save and a reindex write flows, the index, the pending chain and
 
 test('the run log starts over once it passes 1 MiB', async (t) => {
   const win = { id: '1', title: 'notes.txt - Mousepad', role: 'frame', pid: process.pid, active: true }
-  await toolhost(t, ({ tool }) => tool === 'desk_windows' ? JSON.stringify([win]) : '{"ok":true}')
+  await daemon(t, ({ tool }) => tool === 'desk_windows' ? JSON.stringify([win]) : '{"ok":true}')
   const flows = process.env.SHUTTLE_FLOWS ?? ''
   mkdirSync(flows, { recursive: true })
   writeFileSync(`${flows}/.runs.jsonl`, `${'x'.repeat(1024 * 1024)}\n`)

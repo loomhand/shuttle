@@ -1,4 +1,4 @@
-//! The toolhost wire: one big-endian u32 length and a JSON body each way, one call per connection.
+//! The desk wire: one big-endian u32 length and a JSON body each way, one call per connection.
 
 use std::borrow::Cow;
 
@@ -21,7 +21,7 @@ pub struct Call {
     pub args: Value,
 }
 
-/// A tool result; `image_b64` is a screenshot, `secrets` the (field, value) card fields a host typed from a file.
+/// A tool result; `image_b64` is a screenshot, `secrets` the (field, value) pairs a host must scrub from what it relays.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Output {
     pub text: String,

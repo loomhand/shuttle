@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { test } from 'node:test'
 
-import { toolhost } from './toolhost.mts'
+import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 test('an app step focuses the app\'s open window, by its process or the window list, instead of launching the app, and names an app that does not exist', { skip: process.platform !== 'linux' }, async (t) => {
@@ -14,7 +14,7 @@ test('an app step focuses the app\'s open window, by its process or the window l
   ]
   const listed = ['GeoGebra Classic 5']
   const calls: string[] = []
-  await toolhost(t, ({ tool, args }) => {
+  await daemon(t, ({ tool, args }) => {
     calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify([...wins].sort((a, b) => Number(b.active) - Number(a.active)))
     if (tool === 'desk_snapshot') return JSON.stringify({ window: wins.find((w) => w.active), nodes: [], truncated: false })

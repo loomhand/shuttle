@@ -1,4 +1,4 @@
-//! The desk core every desk host shares: the toolhost wire, the desk call arguments and the window and name matching.
+//! The desk core every desk host shares: the desk wire, the desk call arguments and the window and name matching.
 
 pub mod args;
 pub mod press;

@@ -110,8 +110,8 @@ async function request<T>(tool: string, args: Record<string, unknown>): Promise<
 
 function exchange(tool: string, args: Record<string, unknown>): Promise<Output> {
   return new Promise((resolve, reject) => {
-    const socket = process.env.TOOLHOST_SOCKET
-    if (!socket) return reject(new Error('TOOLHOST_SOCKET names no toolhost socket'))
+    const socket = process.env.SHUTTLE_SOCKET
+    if (!socket) return reject(new Error('SHUTTLE_SOCKET names no daemon endpoint'))
     const s = createConnection(socket)
     const body = Buffer.from(JSON.stringify({ agent_id: process.env.SHUTTLE_AGENT ?? 'desk', tool, args }))
     const head = Buffer.alloc(4)
@@ -128,7 +128,7 @@ function exchange(tool: string, args: Record<string, unknown>): Promise<Output> 
       if (out.is_error) return reject(new Error(out.text))
       resolve(out)
     })
-    s.on('end', () => reject(new Error(`${tool}: the toolhost closed the connection mid-frame`)))
+    s.on('end', () => reject(new Error(`${tool}: the daemon closed the connection mid-frame`)))
     s.on('error', reject)
   })
 }

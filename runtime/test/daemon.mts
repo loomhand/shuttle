@@ -10,12 +10,12 @@ const FLOWS = `${mkdtempSync(`${tmpdir()}/flows-`)}/flows`
 
 process.env.SHUTTLE_FLOWS = FLOWS
 
-export const endpoint = (dir: string): string => process.platform === 'win32' ? `\\\\.\\pipe\\${dir.replace(/[\\/:]/g, '-')}` : `${dir}/toolhost.sock`
+export const endpoint = (dir: string): string => process.platform === 'win32' ? `\\\\.\\pipe\\${dir.replace(/[\\/:]/g, '-')}` : `${dir}/daemon.sock`
 
 export type Call = { tool: string; args: Record<string, unknown> }
 export type Reply = string | { text: string; error?: boolean; image?: string }
 
-export async function toolhost(t: { after(fn: () => void): void }, answer: (c: Call) => Reply, o: { wait?: boolean } = {}): Promise<void> {
+export async function daemon(t: { after(fn: () => void): void }, answer: (c: Call) => Reply, o: { wait?: boolean } = {}): Promise<void> {
   const server = createServer((s) => {
     let buf = Buffer.alloc(0)
     s.on('data', async (d: Buffer) => {
@@ -29,10 +29,10 @@ export async function toolhost(t: { after(fn: () => void): void }, answer: (c: C
       s.end(Buffer.concat([head, body]))
     })
   })
-  const dir = mkdtempSync(`${tmpdir()}/toolhost-`)
+  const dir = mkdtempSync(`${tmpdir()}/daemon-`)
   await new Promise<void>((r) => server.listen(endpoint(dir), r))
   t.after(() => server.close())
-  Object.assign(process.env, { TOOLHOST_SOCKET: endpoint(dir), HOME: dir, USERPROFILE: dir })
+  Object.assign(process.env, { SHUTTLE_SOCKET: endpoint(dir), HOME: dir, USERPROFILE: dir })
 }
 
 export function gray(w: number, h: number, tone = 128): Buffer {

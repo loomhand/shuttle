@@ -2,11 +2,11 @@ import assert from 'node:assert/strict'
 import { chmodSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { test } from 'node:test'
 
-import { toolhost } from './toolhost.mts'
+import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 test('a flows directory an older version left readable by others turns 0700 on a find or a replay', { skip: process.platform === 'win32' }, async (t) => {
-  await toolhost(t, () => '[]')
+  await daemon(t, () => '[]')
   const flows = process.env.SHUTTLE_FLOWS ?? ''
   mkdirSync(flows, { recursive: true })
   writeFileSync(`${flows}/old.json`, '{}')

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
 
-import { toolhost } from './toolhost.mts'
+import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 type Shown = { title: string; role: string }
@@ -25,7 +25,7 @@ function editor(opens: Record<string, Shown> = {}, start: Shown = { title: 'a.tx
 for (const step of [{ key: 'down' }, { key: 'shift+a' }, { type: 'abc' }]) {
   test(`a plan that ends with ${JSON.stringify(step)}, which opens no window, skips the end-of-plan wait`, async (t) => {
     const d = editor()
-    await toolhost(t, d.answer)
+    await daemon(t, d.answer)
     const r = await main({ steps: [step] })
     assert.equal(r.ok, true, JSON.stringify(r))
     const act = d.calls.findLastIndex((c) => c.startsWith('key ') || c === 'desk_type')
@@ -36,7 +36,7 @@ for (const step of [{ key: 'down' }, { key: 'shift+a' }, { type: 'abc' }]) {
 for (const [step, key, title] of [[{ key: 'ctrl+o' }, 'ctrl+o', 'Open'], [{ key: 'alt+f4' }, 'alt+f4', 'Save changes?'], [{ type: 'a\nb' }, 'Return', 'Confirm'], [{ key: 'tab' }, 'tab', 'Invalid value'], [{ key: 'shift+tab' }, 'shift+tab', 'Invalid value']] as const) {
   test(`a plan that ends with ${JSON.stringify(step)} still waits for the dialog it opens late and reports it`, async (t) => {
     const d = editor({ [key]: { title, role: 'dialog' } })
-    await toolhost(t, d.answer)
+    await daemon(t, d.answer)
     const r = await main({ steps: [step] })
     assert.equal(r.escalate?.window, title, JSON.stringify(r))
     const act = d.calls.findLastIndex((c) => c.startsWith('key ') || c === 'desk_type')
@@ -50,7 +50,7 @@ for (const [key, start, opened] of [
 ] as const) {
   test(`a plan that ends with ${key} in front of a ${start.role} still waits for the ${opened.role} it opens late`, async (t) => {
     const d = editor({ [key]: opened }, start)
-    await toolhost(t, d.answer)
+    await daemon(t, d.answer)
     const r = await main({ steps: [{ key }] })
     assert.ok(JSON.stringify(r).includes(opened.title), JSON.stringify(r))
   })
@@ -58,7 +58,7 @@ for (const [key, start, opened] of [
 
 test('a popup that opens late after an arrow in a plain window is in front for a plan that starts after it', async (t) => {
   const d = editor({ down: { title: 'Suggestions', role: 'list' } })
-  await toolhost(t, d.answer)
+  await daemon(t, d.answer)
   assert.equal((await main({ steps: [{ key: 'down' }] })).ok, true)
   await sleep(300)
   await main({ steps: [{ key: 'escape' }] })

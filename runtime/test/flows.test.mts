@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
-import { toolhost } from './toolhost.mts'
+import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 const notepad = { id: '1', title: 'a.txt - Notepad', role: 'window', pid: process.pid, active: true }
@@ -14,7 +14,7 @@ const answer = (wins: () => object[]) => ({ tool }: { tool: string }) => {
 const flow = (name: string) => JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/${name}.json`, 'utf8')) as { params: Record<string, string>; steps: Record<string, unknown>[] }
 
 test('Windows paths: :base takes the file name, and a saved flow templates a title that holds a typed path\'s file name', async (t) => {
-  await toolhost(t, answer(() => [notepad]))
+  await daemon(t, answer(() => [notepad]))
   const waited = await main({ steps: [{ wait: '{{file:base}} - Notepad', timeout_ms: 300 }], params: { file: 'C:\\x\\a.txt' } })
   assert.equal(waited.ok, true, JSON.stringify(waited))
   const saved = await main({ steps: [{ app: 'Notepad' }, { type: 'C:\\x\\a.txt' }, { wait: 'a.txt - Notepad' }] })
@@ -26,7 +26,7 @@ test('save renames the last flow without git and keeps the params it is given', 
   const path = process.env.PATH
   process.env.PATH = ''
   t.after(() => { process.env.PATH = path })
-  await toolhost(t, answer(() => [notepad]))
+  await daemon(t, answer(() => [notepad]))
   const first = await main({ steps: [{ app: 'Notepad' }, { type: 'hello' }] })
   assert.equal(first.saved, 'notepad', JSON.stringify(first))
   const renamed = await main({ save: 'mine', params: { extra: 'x' } })
@@ -38,7 +38,7 @@ test('save renames the last flow without git and keeps the params it is given', 
 test('a chain that ends in an untitled window keeps that window\'s process', { skip: process.platform !== 'darwin' }, async (t) => {
   const popup = { id: '9', title: '', role: 'dialog', pid: 4242, active: true }
   let keyed = false
-  await toolhost(t, (c) => {
+  await daemon(t, (c) => {
     if (c.tool === 'desk_key') keyed = true
     return answer(() => keyed ? [{ ...notepad, active: false }, popup] : [notepad])(c)
   })

@@ -2,7 +2,7 @@ import { crc32, deflateSync, inflateSync } from 'node:zlib'
 
 export type Image = { w: number; h: number; type: number; bpp: number; px: Buffer }
 
-// 8-bit RGB or RGBA PNGs, as the toolhost writes them
+// 8-bit RGB or RGBA PNGs, as the daemon writes them
 export function unpng(buf: Buffer): Image {
   const idat: Buffer[] = []; let w = 0, h = 0, type = 0
   for (let p = 8; p < buf.length; p += 12 + buf.readUInt32BE(p)) {

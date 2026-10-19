@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { BUILD, gray, toolhost } from './toolhost.mts'
+import { BUILD, gray, daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 type Part = string | { image_url?: { url: string } }
@@ -12,7 +12,7 @@ test('a grounded check on a screen whose origin is left of zero crops around the
   const prompts: string[] = []
   const clicked: string[] = []
   const shots: Record<string, unknown>[] = []
-  await toolhost(t, ({ tool, args }) => {
+  await daemon(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, nodes: [{ ref: 0, id: '1.1/1', parent: -1, depth: 0, role: 'frame', name: 'Portal', states: ['showing'], bounds: [0, 0, 10, 10] }], truncated: false })
     if (tool === 'desk_screen') return '{"left":-1280,"top":0,"width":2560,"height":800}'

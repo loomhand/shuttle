@@ -139,7 +139,7 @@ impl Runner {
         let mut cmd = Command::new(program);
         cmd.arg(self.module("entry"))
             .current_dir(home.map_or_else(|| scratch.to_path_buf(), PathBuf::from))
-            .env("TOOLHOST_SOCKET", &self.endpoint)
+            .env("SHUTTLE_SOCKET", &self.endpoint)
             .env("SHUTTLE_SCRIPT", script)
             .env("SHUTTLE_RUN", scratch)
             .env("SHUTTLE_FLOWS", &self.flows)
@@ -305,7 +305,7 @@ mod tests {
         std::fs::write(dir.join("desk.mts"), "export const here = true\n").unwrap();
         std::fs::write(
             dir.join("gui_plan.mts"),
-            "export async function main(p) { return { ok: true, steps: p.steps.length, socket: process.env.TOOLHOST_SOCKET, home: process.env.HOME === undefined && process.env.CARGO_PKG_NAME === undefined } }\n",
+            "export async function main(p) { return { ok: true, steps: p.steps.length, socket: process.env.SHUTTLE_SOCKET, home: process.env.HOME === undefined && process.env.CARGO_PKG_NAME === undefined } }\n",
         )
         .unwrap();
         Runner::new(

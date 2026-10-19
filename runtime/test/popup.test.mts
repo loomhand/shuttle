@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { toolhost } from './toolhost.mts'
+import { daemon } from './daemon.mts'
 import { main as plan } from '../lib/gui_plan.mts'
 
 test('a click that opens a combo box\'s list leaves the next step in the dialog, whose tree holds the list\'s entries, also in a new plan', async (t) => {
@@ -19,7 +19,7 @@ test('a click that opens a combo box\'s list leaves the next step in the dialog,
   ]
   const pressed: string[] = []
   const snapped: string[] = []
-  await toolhost(t, ({ tool, args }) => {
+  await daemon(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify(open ? [wm, list, main, { ...prefs, active: false }] : [wm, main, prefs])
     if (tool === 'desk_snapshot') {
       snapped.push(String(args.window))

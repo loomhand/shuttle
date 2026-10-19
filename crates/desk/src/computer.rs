@@ -1,6 +1,5 @@
 //! The computer verbs on Linux X11: `desk_computer_state`, `desk_computer_act`, `desk_computer_end` and `desk_look` for a vision
-//! agent, with the settle, the window report and the press guards of the cocoonbox toolhost they come from, over cua-driver's
-//! line-delimited JSON in named driver sessions.
+//! agent, with the settle, the window report and the press guards, over cua-driver's line-delimited JSON in named driver sessions.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;

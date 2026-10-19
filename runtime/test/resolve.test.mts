@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { after, beforeEach, test } from 'node:test'
 
-import { BUILD, gray, toolhost, type Call, type Reply } from './toolhost.mts'
+import { BUILD, gray, daemon, type Call, type Reply } from './daemon.mts'
 import type { Size } from '../lib/desk.mts'
 import { main, type Result } from '../lib/gui_plan.mts'
 import { unpng } from '../lib/png.mts'
@@ -110,7 +110,7 @@ function screen(tree: Spec[], probabilities: Record<string, number>) {
   pick = probabilities
 }
 
-await toolhost({ after }, answer)
+await daemon({ after }, answer)
 beforeEach(() => {
   build = null; on = 0; looked = {}; pick = {}; under = null; yes = 0; tones = []; scale = 1
 })

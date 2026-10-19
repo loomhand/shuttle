@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test, type TestContext } from 'node:test'
 
-import { toolhost } from './toolhost.mts'
+import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 async function saveAs(t: TestContext, o: { openAfter?: number; filledAfter?: number; frontless?: boolean }) {
@@ -11,7 +11,7 @@ async function saveAs(t: TestContext, o: { openAfter?: number; filledAfter?: num
   const open = () => pressed > 0 && Date.now() - pressed > (o.openAfter ?? -1) && !saved
   const filled = () => Date.now() - pressed > (o.filledAfter ?? -1)
   const field = () => ({ ref: 1, id: '2/2', parent: 0, depth: 1, role: 'textbox', name: 'File name:', states: ['showing', 'focused'], bounds: [10, 10, 100, 20], value })
-  await toolhost(t, ({ tool, args }) => {
+  await daemon(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify(open() ? [{ ...doc, active: false }, dialog] : [{ ...doc, active: !o.frontless || pressed === 0 }])
     if (tool === 'desk_snapshot' && args.window === 'Save as') return JSON.stringify({ window: dialog, truncated: false, nodes: [{ ref: 0, id: '2/1', parent: -1, depth: 0, role: 'dialog', name: 'Save as', states: ['showing'] }, ...(filled() ? [field()] : [])] })
     if (tool === 'desk_snapshot') return JSON.stringify({ window: doc, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }, { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'Save as', states: ['showing'], bounds: [10, 10, 60, 20] }] })

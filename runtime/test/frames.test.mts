@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
 
-import { endpoint } from './toolhost.mts'
+import { endpoint } from './daemon.mts'
 import * as desk from '../lib/desk.mts'
 
 test('a reply split over several writes arrives whole, and a connection closed mid-frame rejects', async (t) => {
@@ -24,7 +24,7 @@ test('a reply split over several writes arrives whole, and a connection closed m
   const socket = endpoint(mkdtempSync(`${tmpdir()}/frames-`))
   await new Promise<void>((r) => server.listen(socket, r))
   t.after(() => server.close())
-  process.env.TOOLHOST_SOCKET = socket
+  process.env.SHUTTLE_SOCKET = socket
   assert.deepEqual(await desk.call('screen'), { width: 1280, height: 800 })
   whole = false
   await assert.rejects(desk.call('screen'), /closed the connection mid-frame/)

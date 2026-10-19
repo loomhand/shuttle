@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import { test } from 'node:test'
 
-import { toolhost } from './toolhost.mts'
+import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 import * as desk from '../lib/desk.mts'
 
@@ -11,7 +11,7 @@ test('no gui_plan step and no desk API call reaches the daemon\'s safety control
   const node = (id: string, role: string, name: string, depth = 1) => ({ ref: Number(id), id, parent: depth ? 0 : -1, depth, role, name, states: ['showing'], bounds: [10, 10, 20, 20] })
   const nodes = [node('0', 'window', win.title, 0), node('1', 'button', 'OK'), node('2', 'checkbox', 'Wrap'), node('3', 'textbox', 'Name'), node('4', 'menu', 'File'), node('5', 'menuitem', 'Save', 2)]
   const tools = new Set<string>()
-  await toolhost(t, ({ tool, args }) => {
+  await daemon(t, ({ tool, args }) => {
     tools.add(tool)
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, nodes, truncated: false })

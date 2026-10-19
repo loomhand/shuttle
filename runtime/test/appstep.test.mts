@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { toolhost } from './toolhost.mts'
+import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 test('an app step finds a running app by the app its windows name, whatever their titles', async (t) => {
   const doc = { id: '1', title: 'Untitled', role: 'window', pid: process.pid, active: false, app: 'TextEdit' }
   const calls: string[] = []
-  await toolhost(t, ({ tool, args }) => {
+  await daemon(t, ({ tool, args }) => {
     calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify([doc])
     if (tool === 'desk_focus') {
@@ -28,7 +28,7 @@ test('an app step for a package takes the window that ends in its package, not o
   const suggestions = { id: '7', title: 'Settings Suggestions - com.android.settings.intelligence', role: 'frame', pid: 4562183, active: true }
   const settings = { id: '9', title: 'Settings - com.android.settings', role: 'frame', pid: 6289366, active: false }
   const calls: string[] = []
-  await toolhost(t, ({ tool, args }) => {
+  await daemon(t, ({ tool, args }) => {
     calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify([suggestions, settings])
     if (tool === 'desk_focus') {
@@ -50,7 +50,7 @@ test('an app step for a package launches it when only a package it prefixes has 
   const settings = { id: '9', title: 'Settings - com.android.settings', role: 'frame', pid: 6289366, active: true }
   let launched = false
   const calls: string[] = []
-  await toolhost(t, ({ tool }) => {
+  await daemon(t, ({ tool }) => {
     calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify(launched ? [{ ...suggestions, active: false }, settings] : [suggestions])
     if (tool === 'desk_focus') return { text: 'no window "com.android.settings"', error: true }
@@ -67,7 +67,7 @@ test('an app step for a package launches it when only a package it prefixes has 
 test('an app step for a name that is no package still takes a window whose title contains it', async (t) => {
   const doc = { id: '1', title: 'notes.txt - Notes Editor', role: 'window', pid: process.pid, active: false }
   const calls: string[] = []
-  await toolhost(t, ({ tool, args }) => {
+  await daemon(t, ({ tool, args }) => {
     calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify([doc])
     if (tool === 'desk_focus') {
@@ -88,7 +88,7 @@ test('an app step brings a window it launched in the background to the front, ev
   const doc = { id: '1', title: 'Untitled', role: 'window', pid: process.pid, active: true, app: 'TextEdit' }
   let launched = false
   const focused: unknown[] = []
-  await toolhost(t, ({ tool, args }) => {
+  await daemon(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify(launched ? [doc] : [])
     if (tool === 'desk_focus') {
       if (!launched) return { text: `no window "${String(args.window)}"`, error: true }
@@ -108,7 +108,7 @@ test('an app step leaves an active window as it is when the launch stays in fron
   const doc = { id: '1', title: 'Untitled - Notepad', role: 'window', pid: process.pid, active: true, app: 'Notepad' }
   let launched = false
   const focused: unknown[] = []
-  await toolhost(t, ({ tool, args }) => {
+  await daemon(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify(launched ? [doc] : [])
     if (tool === 'desk_focus') {
       if (launched) focused.push(args.window)
