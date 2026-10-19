@@ -1,6 +1,7 @@
 //! Screenshot, UI elements and input on an Android device through adb, with text pasted by a scrcpy control session.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -35,6 +36,12 @@ const CONNECT_TRIES: u32 = 50;
 const CONNECT_PAUSE: Duration = Duration::from_millis(100);
 const ACK_CLIPBOARD: u8 = 1;
 const ACK_TIMEOUT: Duration = Duration::from_secs(2);
+const TYPE_WAIT: Duration = Duration::from_secs(1);
+const TYPE_DEADLINE: Duration = Duration::from_millis(1500);
+const TYPE_FOCUS_POLL: Duration = Duration::from_millis(20);
+const VERIFY_WAIT: Duration = Duration::from_millis(300);
+const VERIFY_POLL: Duration = Duration::from_millis(10);
+const VERIFY_TAIL: usize = 16;
 const DEVICE_UI_JAR: &str = "/data/local/tmp/cb-ui.jar";
 const UI_TIMEOUT: Duration = Duration::from_secs(10);
 const STATE_TRIES: u32 = 2;
@@ -207,8 +214,14 @@ impl Android {
                 if let Some(p) = point {
                     self.tap(p).await?;
                 }
-                self.paste(text).await?;
-                format!("typed {} characters", text.chars().count())
+                let chars = text.chars().count();
+                match self.type_text(text, point).await? {
+                    Some(true) => format!("typed {chars} characters"),
+                    Some(false) => {
+                        format!("pasted {chars} characters; the field does not show them")
+                    }
+                    None => format!("pasted {chars} characters, unverified"),
+                }
             }
             "key" => {
                 let key = args.key.as_deref().ok_or("key needs key")?;
@@ -316,6 +329,39 @@ impl Android {
     /// The interactive windows as the UI server lists them, as JSON.
     pub(crate) async fn windows(&self) -> Result<String, String> {
         self.served("windows").await
+    }
+
+    /// Types `text` into the focused field, the first line under `at` when given: each line pasted and checked (see [`type_with`]), Return between lines.
+    pub(crate) async fn type_text(
+        &self,
+        text: &str,
+        at: Option<(i32, i32)>,
+    ) -> Result<Option<bool>, String> {
+        let mut typed = Some(true);
+        for (i, line) in text.split('\n').enumerate() {
+            if i > 0 {
+                self.keys("return").await?;
+            }
+            if line.is_empty() {
+                continue;
+            }
+            let shown = type_with(
+                line,
+                at.filter(|_| i == 0),
+                || async {
+                    let answer = self.served("focus").await?;
+                    serde_json::from_str(answer.trim()).map_err(|e| format!("decode focus: {e}"))
+                },
+                || self.paste(line),
+            )
+            .await?;
+            typed = match (typed, shown) {
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                (None, _) | (_, None) => None,
+                _ => Some(true),
+            };
+        }
+        Ok(typed)
     }
 
     /// Pastes `text` into the focused field through the clipboard, which takes any Unicode, unlike key injection.
@@ -676,6 +722,35 @@ impl Drop for Forward {
     }
 }
 
+/// The node with input focus, as the UI server's `focus` names it: its text is a length, a hash and its last 32 code points.
+#[derive(Debug, Default, Deserialize)]
+struct Focus {
+    editable: bool,
+    password: bool,
+    window: bool,
+    bounds: [i32; 4],
+    len: usize,
+    hash: i32,
+    tail: String,
+}
+
+impl Focus {
+    fn holds(&self, (x, y): (i32, i32)) -> bool {
+        let [left, top, right, bottom] = self.bounds;
+        (left..right).contains(&x) && (top..bottom).contains(&y)
+    }
+
+    fn same_text(&self, other: &Self) -> bool {
+        self.len == other.len && self.hash == other.hash && self.tail == other.tail
+    }
+
+    fn ends_with(&self, line: &str) -> bool {
+        let n = line.chars().count();
+        let tail: String = line.chars().skip(n.saturating_sub(VERIFY_TAIL)).collect();
+        self.tail.ends_with(&tail)
+    }
+}
+
 #[derive(Deserialize)]
 struct StateArgs {
     #[serde(default)]
@@ -750,6 +825,58 @@ fn launcher(out: &str, app: &str) -> Option<String> {
         .map(str::trim)
         .find(|l| l.starts_with(&prefix))
         .map(str::to_owned)
+}
+
+/// Pastes `line` through `paste` into the field `focus` names and checks the field shows it; again while the field did not change.
+///
+/// It waits, within a second, for an editable node with input focus in the focused window, under `at` when given, and takes its text.
+/// After a paste it asks `focus` at once and then every 10 ms, at most 300 ms, until that text ends with the line's last 16 characters.
+/// Some(true) is a paste that shows. Some(false) is one that does not: the text changed otherwise (a filter or a format), and is not
+/// pasted again, or it stayed the same through every paste started within 1.5 s of the call. None is a paste it does not check:
+/// no such field (a web view), or a password field, which a second paste would double.
+async fn type_with<F, Ff, P, Pf>(
+    line: &str,
+    at: Option<(i32, i32)>,
+    mut focus: F,
+    mut paste: P,
+) -> Result<Option<bool>, String>
+where
+    F: FnMut() -> Ff,
+    Ff: Future<Output = Result<Option<Focus>, String>>,
+    P: FnMut() -> Pf,
+    Pf: Future<Output = Result<(), String>>,
+{
+    let usable = |f: &Focus| f.editable && f.window && at.is_none_or(|p| f.holds(p));
+    let start = tokio::time::Instant::now();
+    let end = start + TYPE_WAIT;
+    let before = loop {
+        match focus().await? {
+            Some(f) if usable(&f) => break Some(f),
+            _ if tokio::time::Instant::now() >= end => break None,
+            _ => tokio::time::sleep(TYPE_FOCUS_POLL).await,
+        }
+    };
+    let Some(before) = before.filter(|f| !f.password) else {
+        paste().await?;
+        return Ok(None);
+    };
+    loop {
+        paste().await?;
+        let deadline = tokio::time::Instant::now() + VERIFY_WAIT;
+        let now = loop {
+            let f = focus().await?.filter(usable);
+            if f.as_ref().is_some_and(|f| f.ends_with(line)) {
+                return Ok(Some(true));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break f;
+            }
+            tokio::time::sleep(VERIFY_POLL).await;
+        };
+        if !now.is_some_and(|f| f.same_text(&before)) || start.elapsed() >= TYPE_DEADLINE {
+            return Ok(Some(false));
+        }
+    }
 }
 
 /// Whether `s` is an Android package name, such as `com.android.settings`, which a device shell takes as it is.
@@ -1357,5 +1484,129 @@ mod tests {
         );
         assert_eq!(wm_size("Physical size: ?\n"), None);
         assert_eq!(wm_size(""), None);
+    }
+
+    fn field(text: &str) -> Focus {
+        let n = text.chars().count();
+        Focus {
+            editable: true,
+            window: true,
+            bounds: [100, 80, 620, 180],
+            len: text.encode_utf16().count(),
+            hash: text.len() as i32,
+            tail: text.chars().skip(n.saturating_sub(32)).collect(),
+            ..Focus::default()
+        }
+    }
+
+    async fn typed(
+        line: &str,
+        at: Option<(i32, i32)>,
+        before: &str,
+        after: &[&str],
+    ) -> (Option<bool>, usize) {
+        let pastes = std::cell::Cell::new(0);
+        let out = type_with(
+            line,
+            at,
+            || {
+                let text = match pastes.get() {
+                    0 => before,
+                    n => after[(n - 1).min(after.len() - 1)],
+                };
+                let f = field(text);
+                async move { Ok(Some(f)) }
+            },
+            || {
+                pastes.set(pastes.get() + 1);
+                async { Ok(()) }
+            },
+        )
+        .await
+        .unwrap();
+        (out, pastes.get())
+    }
+
+    #[test]
+    fn the_ui_servers_focus_answer_decodes_and_null_is_no_focus() {
+        let f: Option<Focus> = serde_json::from_str(
+            r#"{"editable":true,"password":false,"window":true,"len":6,"hash":-1,"tail":"ab 你好","class":"android.widget.EditText","package":"com.android.settings","bounds":[100,80,620,180]}"#,
+        )
+        .unwrap();
+        let f = f.unwrap();
+        assert!(f.editable && f.window && !f.password && f.holds((360, 136)));
+        assert!(
+            !f.holds((360, 180))
+                && f.ends_with("你好")
+                && f.ends_with("b 你好")
+                && !f.ends_with("x ab 你好")
+        );
+        let none: Option<Focus> = serde_json::from_str("null").unwrap();
+        assert!(none.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_type_that_shows_is_pasted_once_and_verified() {
+        assert_eq!(typed("你好", None, "", &["你好"]).await, (Some(true), 1));
+        assert_eq!(typed("abc", None, "x ", &["x abc"]).await, (Some(true), 1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_paste_that_left_the_field_unchanged_is_pasted_again_until_the_deadline() {
+        assert_eq!(typed("abc", None, "", &["", "abc"]).await, (Some(true), 2));
+        assert_eq!(
+            typed("abc", None, "", &["", "", "abc"]).await,
+            (Some(true), 3)
+        );
+        assert_eq!(typed("abc", None, "", &[""]).await, (Some(false), 5));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_field_that_changed_otherwise_is_not_pasted_again() {
+        assert_eq!(typed("abc", None, "", &["ABC"]).await, (Some(false), 1));
+        assert_eq!(
+            typed("5551234567", None, "", &["(555) 123-4567"]).await,
+            (Some(false), 1)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_password_field_or_no_field_gets_one_unverified_paste() {
+        let pastes = std::cell::Cell::new(0);
+        let password = type_with(
+            "secret",
+            None,
+            || async {
+                Ok(Some(Focus {
+                    password: true,
+                    ..field("")
+                }))
+            },
+            || {
+                pastes.set(pastes.get() + 1);
+                async { Ok(()) }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!((password, pastes.get()), (None, 1));
+        let started = tokio::time::Instant::now();
+        let none = type_with("abc", None, || async { Ok(None) }, || async { Ok(()) })
+            .await
+            .unwrap();
+        assert_eq!(none, None);
+        assert!(started.elapsed() >= TYPE_WAIT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_type_after_a_tap_checks_the_field_under_the_tap() {
+        assert_eq!(
+            typed("abc", Some((360, 136)), "", &["abc"]).await,
+            (Some(true), 1)
+        );
+        assert_eq!(
+            typed("abc", Some((360, 350)), "", &["abc"]).await,
+            (None, 1)
+        );
     }
 }
