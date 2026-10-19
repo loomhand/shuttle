@@ -280,8 +280,7 @@ impl<H: Handler> Handler for Daemon<H> {
     }
 
     // a stop drops the splice without a reply, since the client may be inside a stream of its own frames
-    async fn splice(&self, tool: &str, body: Vec<u8>, mut stream: Accepted) {
-        let body = Zeroizing::new(body);
+    async fn splice(&self, tool: &str, body: Zeroizing<Vec<u8>>, mut stream: Accepted) {
         let Some(socket) = self.services.get(tool) else {
             return;
         };

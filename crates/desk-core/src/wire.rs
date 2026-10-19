@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// The largest frame either side reads.
 pub const MAX_FRAME: usize = 64 << 20;
@@ -82,14 +82,12 @@ where
     R: AsyncRead + Unpin,
     T: DeserializeOwned,
 {
-    let mut body = read_body(r).await?;
-    let msg = serde_json::from_slice(&body);
-    body.zeroize();
-    msg.map_err(|e| format!("decode frame: {e}"))
+    let body = read_body(r).await?;
+    serde_json::from_slice(&body).map_err(|e| format!("decode frame: {e}"))
 }
 
-/// Reads the JSON body of one frame as bytes, which the caller zeroizes.
-pub async fn read_body<R: AsyncRead + Unpin>(r: &mut R) -> Result<Vec<u8>, String> {
+/// Reads the JSON body of one frame as bytes, zeroized when dropped.
+pub async fn read_body<R: AsyncRead + Unpin>(r: &mut R) -> Result<Zeroizing<Vec<u8>>, String> {
     let mut len = [0u8; 4];
     r.read_exact(&mut len)
         .await
@@ -98,7 +96,7 @@ pub async fn read_body<R: AsyncRead + Unpin>(r: &mut R) -> Result<Vec<u8>, Strin
     if len > MAX_FRAME {
         return Err(format!("frame of {len} bytes exceeds {MAX_FRAME}"));
     }
-    let mut body = vec![0u8; len];
+    let mut body = Zeroizing::new(vec![0u8; len]);
     r.read_exact(&mut body)
         .await
         .map_err(|e| format!("read frame body: {e}"))?;
