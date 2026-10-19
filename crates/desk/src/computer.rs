@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -12,14 +12,15 @@ use base64::engine::general_purpose::STANDARD as B64;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 use desk_core::args::parse;
 use desk_core::wire::Output;
 
+use crate::driver::Driver;
 use crate::keys::{Os, key_names};
+use crate::server::Conn;
 use crate::volatile::{Block, Shown, Volatile};
 use crate::xshm::{self, Grabber, Modal, Placement, SHELL_APPS};
 
@@ -38,8 +39,6 @@ const WINDOW_STILL_FOR: Duration = Duration::from_millis(150);
 const COMMIT_STILL_FOR: Duration = Duration::from_millis(400);
 const COMMIT_FIRST: Duration = Duration::from_millis(1500);
 const RETURN_GAP: Duration = Duration::from_millis(300);
-const CLICK_SPACING: Duration = Duration::from_millis(500);
-const CLICK_DISTANCE: f64 = 16.0;
 const STILL_EDGE: u32 = 160;
 const STILL_TOLERANCE: u8 = 48;
 const VISIBLE_STEP: u8 = 24;
@@ -80,7 +79,7 @@ const RETRIED: [&str; 4] = [
 
 /// Screen executor client; remembers the element tokens of the latest window state.
 pub struct Cua {
-    socket: PathBuf,
+    driver: Arc<Driver>,
     last: Mutex<HashMap<String, Snapshot>>,
     input: Mutex<()>,
     /// The MIT-SHM grabber, opened on first use and again after a failure.
@@ -93,15 +92,14 @@ pub struct Cua {
     last_scale: std::sync::Mutex<f64>,
     /// The screen blocks that change while no action runs, which the settle ignores.
     volatile: Volatile,
-    last_click: std::sync::Mutex<Option<(Instant, f64, f64)>>,
     ids: AtomicU64,
 }
 
 impl Cua {
-    /// Creates a client for the driver socket at `socket`.
-    pub fn new(socket: PathBuf) -> Self {
+    /// Creates a client of `driver`'s daemon, whose click spacing it shares.
+    pub fn new(driver: Arc<Driver>) -> Self {
         Self {
-            socket,
+            driver,
             last: Mutex::new(HashMap::new()),
             input: Mutex::new(()),
             grabber: std::sync::Mutex::new(None),
@@ -109,7 +107,6 @@ impl Cua {
             scales: std::sync::Mutex::new(HashMap::new()),
             last_scale: std::sync::Mutex::new(1.0),
             volatile: Volatile::start(),
-            last_click: std::sync::Mutex::new(None),
             ids: AtomicU64::new(0),
         }
     }
@@ -1430,11 +1427,11 @@ impl Cua {
             _ => None,
         };
         if let Some(point) = point {
-            self.space_click(point).await;
+            self.driver.space_click(point).await;
         }
         let result = self.call(session, name, args).await;
         if let Some((x, y)) = point {
-            *self.last_click() = Some((Instant::now(), x, y));
+            self.driver.clicked((x, y));
         }
         let result = result?;
         if result["isError"] == true {
@@ -1444,21 +1441,6 @@ impl Cua {
             crate::desk::adopt(result.clone()).await;
         }
         Ok(result)
-    }
-
-    async fn space_click(&self, (x, y): (f64, f64)) {
-        let last = *self.last_click();
-        let wait = last
-            .filter(|(_, lx, ly)| (x - lx).hypot(y - ly) <= CLICK_DISTANCE)
-            .map(|(at, _, _)| CLICK_SPACING.saturating_sub(at.elapsed()))
-            .filter(|w| !w.is_zero());
-        if let Some(wait) = wait {
-            tokio::time::sleep(wait).await;
-        }
-    }
-
-    fn last_click(&self) -> std::sync::MutexGuard<'_, Option<(Instant, f64, f64)>> {
-        lock(&self.last_click)
     }
 
     /// One driver call; a result the driver marks isError comes back as is.
@@ -1506,10 +1488,10 @@ impl Cua {
     }
 
     /// Connects to the driver, waiting out the restart that each desktop session start triggers.
-    async fn connect(&self) -> Result<UnixStream, String> {
+    async fn connect(&self) -> Result<Conn, String> {
         let deadline = tokio::time::Instant::now() + CONNECT_WAIT;
         loop {
-            match UnixStream::connect(&self.socket).await {
+            match crate::server::connect(self.driver.endpoint()).await {
                 Ok(stream) => return Ok(stream),
                 Err(e)
                     if matches!(e.kind(), ErrorKind::ConnectionRefused | ErrorKind::NotFound)
@@ -1518,7 +1500,10 @@ impl Cua {
                     tokio::time::sleep(CONNECT_RETRY).await;
                 }
                 Err(e) => {
-                    return Err(format!("connect cua-driver {}: {e}", self.socket.display()));
+                    return Err(format!(
+                        "connect cua-driver {}: {e}",
+                        self.driver.endpoint()
+                    ));
                 }
             }
         }
@@ -2163,7 +2148,13 @@ fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use super::*;
+
+    fn cua(socket: &Path) -> Cua {
+        Cua::new(Arc::new(Driver::new(socket.to_string_lossy().into_owned())))
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -2204,7 +2195,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let cua = Cua::new(socket);
+        let cua = cua(&socket);
         let out = cua.request("s", "list_windows", json!({})).await;
         assert!(out.is_ok(), "{out:?}");
         driver.await.unwrap();
@@ -2228,7 +2219,7 @@ mod tests {
                     .unwrap();
             }
         });
-        let cua = Cua::new(socket);
+        let cua = cua(&socket);
         let click = |x: f64| json!({"x": x, "y": 300.0});
         cua.request("s", "click", click(300.0)).await.unwrap();
         let start = Instant::now();
@@ -2266,9 +2257,7 @@ mod tests {
         let socket = dir.path().join("cua.sock");
         let driver = tokio::spawn(closing_then_answering_driver(socket.clone()));
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let out = Cua::new(socket)
-            .request("s", "list_windows", json!({}))
-            .await;
+        let out = cua(&socket).request("s", "list_windows", json!({})).await;
         assert!(out.is_ok(), "{out:?}");
         assert_eq!(driver.await.unwrap(), ["list_windows", "list_windows"]);
     }
@@ -2279,7 +2268,7 @@ mod tests {
         let socket = dir.path().join("cua.sock");
         let driver = tokio::spawn(closing_then_answering_driver(socket.clone()));
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let out = Cua::new(socket).request("s", "click", json!({})).await;
+        let out = cua(&socket).request("s", "click", json!({})).await;
         assert!(out.unwrap_err().starts_with("decode cua-driver reply"));
         driver.abort();
     }
@@ -2309,7 +2298,7 @@ mod tests {
                     .unwrap();
             }
         });
-        let cua = Cua::new(socket);
+        let cua = cua(&socket);
         let out = cua
             .act(json!({"action": "key", "key": "escape"}))
             .await
@@ -2398,7 +2387,7 @@ mod tests {
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         calls.lock().unwrap().clear();
-        let cua = Cua::new(socket.clone());
+        let cua = cua(&socket);
         let out = cua
             .act(json!({"action": "type", "text": "hello", "x": 10, "y": 20}))
             .await
@@ -2431,7 +2420,7 @@ mod tests {
         let driver = window_driver(&socket, &calls, usize::MAX);
         let text = "一二三四五六七八九十百千万亿甲乙丙丁戊己";
         calls.lock().unwrap().clear();
-        let cua = Cua::new(socket.clone());
+        let cua = cua(&socket);
         let out = cua
             .act(json!({"action": "type", "text": text, "foreground": true}))
             .await
@@ -2487,7 +2476,7 @@ mod tests {
                 reader.into_inner().write_all(&out).await.unwrap();
             }
         });
-        let cua = Cua::new(socket);
+        let cua = cua(&socket);
         let click = |x: f64| json!({"action": "click", "x": x, "y": 30.0});
         cua.state(json!({"max_edge": 0})).await.unwrap();
         let first = json!({"actions": [click(100.0), click(110.0), click(120.0)], "max_edge": 640});
@@ -2512,7 +2501,7 @@ mod tests {
     async fn a_session_without_its_own_screenshot_maps_by_the_latest_one_of_any_session() {
         let dir = tempfile::tempdir().unwrap();
         let (socket, clicks, driver) = scaling_driver(dir.path());
-        let cua = Cua::new(socket);
+        let cua = cua(&socket);
         let click =
             |session: &str| json!({"action": "click", "x": 100.0, "y": 40.0, "session": session});
         cua.screenshot_once(None).await.unwrap();
@@ -2540,7 +2529,7 @@ mod tests {
     async fn a_read_share_screenshot_leaves_the_scale_of_other_sessions_alone() {
         let dir = tempfile::tempdir().unwrap();
         let (socket, clicks, driver) = scaling_driver(dir.path());
-        let cua = Cua::new(socket);
+        let cua = cua(&socket);
         let click =
             |session: &str| json!({"action": "click", "x": 100.0, "y": 40.0, "session": session});
         cua.state(json!({"session": "owner", "max_edge": 640}))
@@ -2637,7 +2626,7 @@ mod tests {
                 reader.into_inner().write_all(&out).await.unwrap();
             }
         });
-        let cua = Cua::new(socket);
+        let cua = cua(&socket);
         let state = cua.state(json!({})).await.unwrap();
         assert!(
             state.text.contains("\"notes\" at (80,40) 512x384"),
