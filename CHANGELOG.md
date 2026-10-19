@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Android UI server name.** The UI server is the class `shuttle.Ui` in `shuttle-ui.jar`: the linux archives carry it as `android/shuttle-ui.jar`, which an `[android]` section without `ui_jar` takes, and the device copies are `/data/local/tmp/shuttle-ui.jar` and `/data/local/tmp/shuttle-scrcpy.jar`. A configured `ui_jar` keeps working whatever its file name.
+
 ## 0.1.6 - 2026-10-19
 
 - **Windows tree items.** On Windows `press` clicks a tree item at its centre when a hit test reaches it, and selects it only when the item is off screen or covered: File Explorer's navigation pane on some Windows 11 builds selects an item on UI Automation Select without opening it.

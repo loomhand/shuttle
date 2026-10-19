@@ -8,7 +8,7 @@ use shuttle_android::desk;
 use shuttle_desk::server::Handler;
 use shuttle_models::config::AndroidSettings;
 
-const BUNDLED_JAR: &str = "android/cb-ui.jar";
+const BUNDLED_JAR: &str = "android/shuttle-ui.jar";
 
 /// The desk a daemon serves: this desktop's, or an Android device's when the config names one.
 pub enum Desks<N> {
@@ -116,7 +116,7 @@ mod tests {
         let exe = dir.path().join("cocoon-shuttle");
         let err = ui_jar(None, &exe).unwrap_err();
         assert!(err.contains("sets no ui_jar"), "{err}");
-        let bundled = dir.path().join("android/cb-ui.jar");
+        let bundled = dir.path().join("android/shuttle-ui.jar");
         std::fs::create_dir_all(bundled.parent().unwrap()).unwrap();
         std::fs::write(&bundled, b"dex").unwrap();
         assert_eq!(ui_jar(None, &exe).unwrap(), bundled);

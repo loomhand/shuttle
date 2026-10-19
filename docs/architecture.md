@@ -36,7 +36,7 @@ shuttle is thin and embeddable: it sends each model call once, non-streaming, to
 | `crates/desk-core` (`shuttle-desk-core`, lib `desk_core`) | The desk wire, the desk call arguments and the pure window and name matching every desk backend shares |
 | `crates/desk` (`shuttle-desk`) | The desk verbs over the macOS AX, Windows UIA and Linux AT-SPI trees, the cua-driver client, and on Linux XTest typing, MIT-SHM capture and launch scopes |
 | `crates/android` (`shuttle-android`) | The desk verbs on an Android device over adb: the UI server's element trees, input, screencap and a scrcpy paste |
-| `android/ui` | The UI server the Android desk pushes to the device and runs under `app_process`, built into `cb-ui.jar` |
+| `android/ui` | The UI server the Android desk pushes to the device and runs under `app_process`, built into `shuttle-ui.jar` |
 | `crates/models` (`shuttle-models`) | The model calls: chat completions and decisions over one OpenAI-compatible endpoint, a model name per role; usable as a library with a `Config` value |
 | `crates/shuttle` | The `cocoon-shuttle` binary: the MCP proxy (`mcp`), the daemon with its script runner and service plugins (`serve`), `desk VERB`, `stop` and `resume`, and the safety controls (kill hotkey, indicator, confirm dialog) |
 | `runtime/lib` | `desk.mts` (the desk API for scripts) and `gui_plan.mts` (the plan executor, flows and replays) |

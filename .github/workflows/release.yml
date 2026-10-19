@@ -37,17 +37,17 @@ jobs:
 
       - name: Build the UI server jar twice
         run: |
-          bash android/ui/build.sh cb-ui.jar
+          bash android/ui/build.sh shuttle-ui.jar
           bash android/ui/build.sh "$RUNNER_TEMP/again.jar"
-          unzip -l cb-ui.jar | grep -q classes.dex
-          sha256sum cb-ui.jar "$RUNNER_TEMP/again.jar"
-          cmp cb-ui.jar "$RUNNER_TEMP/again.jar"
+          unzip -l shuttle-ui.jar | grep -q classes.dex
+          sha256sum shuttle-ui.jar "$RUNNER_TEMP/again.jar"
+          cmp shuttle-ui.jar "$RUNNER_TEMP/again.jar"
 
       - name: Upload
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: cb-ui-jar
-          path: cb-ui.jar
+          name: shuttle-ui-jar
+          path: shuttle-ui.jar
 
   build:
     needs: ui-jar
@@ -105,13 +105,13 @@ jobs:
         if: startsWith(matrix.platform, 'linux-')
         uses: actions/download-artifact@v8.0.2
         with:
-          name: cb-ui-jar
+          name: shuttle-ui-jar
           path: ui
 
       - name: Package
         shell: bash
         env:
-          UI_JAR: ui/cb-ui.jar
+          UI_JAR: ui/shuttle-ui.jar
         run: packaging/package.sh ${{ matrix.platform }} target/${{ matrix.target }}/release "$GITHUB_REF_NAME" dist
 
       - name: No Visual C++ runtime imports

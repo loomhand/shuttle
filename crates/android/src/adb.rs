@@ -27,7 +27,7 @@ const MAX_ELEMENTS: usize = 200;
 const LONG_PRESS_MS: u32 = 800;
 const SWIPE_MS: u32 = 300;
 const SCROLL_FRACTION: i32 = 3;
-const DEVICE_JAR: &str = "/data/local/tmp/cb-scrcpy.jar";
+const DEVICE_JAR: &str = "/data/local/tmp/shuttle-scrcpy.jar";
 const DEVICE_SU: &str = "/data/local/tmp/su1000";
 const SCRCPY_VERSION: &str = "4.1";
 const SCRCPY_SCID: &str = "0cb0c11b";
@@ -45,7 +45,7 @@ const TYPE_FOCUS_POLL: Duration = Duration::from_millis(20);
 const VERIFY_WAIT: Duration = Duration::from_millis(300);
 const VERIFY_POLL: Duration = Duration::from_millis(10);
 const VERIFY_TAIL: usize = 16;
-const DEVICE_UI_JAR: &str = "/data/local/tmp/cb-ui.jar";
+const DEVICE_UI_JAR: &str = "/data/local/tmp/shuttle-ui.jar";
 const UI_TIMEOUT: Duration = Duration::from_secs(10);
 const STATE_TRIES: u32 = 2;
 const UI_END: &str = "<<end>>";
@@ -504,14 +504,14 @@ impl Android {
     async fn start_ui(&self) -> Result<UiServer, String> {
         self.adb(&["push", &self.device.ui_jar.to_string_lossy(), DEVICE_UI_JAR])
             .await?;
-        let _ = self.adb(&["shell", "pkill", "-f", "cb.Ui"]).await;
+        let _ = self.adb(&["shell", "pkill", "-f", "shuttle.Ui"]).await;
         let mut cmd = self.command();
         cmd.args([
             "shell",
             &format!("CLASSPATH={DEVICE_UI_JAR}"),
             "app_process",
             "/",
-            "cb.Ui",
+            "shuttle.Ui",
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -562,7 +562,7 @@ impl Android {
             cause.map_or_else(
                 || "see adb logcat".to_owned(),
                 |c| format!(
-                    "last cb.Ui abort in the crash log (may be from an earlier start): {c}"
+                    "last shuttle.Ui abort in the crash log (may be from an earlier start): {c}"
                 )
             )
         )
@@ -633,7 +633,7 @@ fn abort_cause(log: &str) -> Option<String> {
     let mut cause = None;
     for line in log.lines() {
         if let Some((_, cmdline)) = line.split_once("Cmdline: ") {
-            ui = cmdline.trim().ends_with("cb.Ui");
+            ui = cmdline.trim().ends_with("shuttle.Ui");
         } else if let Some((_, abort)) = line.split_once("Abort message: ")
             && ui
         {
@@ -1133,17 +1133,17 @@ mod tests {
         assert_eq!(args.lines().last(), Some("'com.example/.Main$Launcher'"));
     }
 
-    const CRASH_LOG: &str = "10-19 08:01:40.100  3200  3200 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:40.100  3200  3200 F DEBUG   : Abort message: 'not ours'\n10-19 08:01:50.777  3318  3318 F DEBUG   : Cmdline: app_process / cb.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : pid: 3308, tid: 3308, name: main  >>> app_process <<<\n10-19 08:01:50.777  3318  3318 F DEBUG   : Abort message: 'No pending exception expected: java.lang.ClassNotFoundException: cb.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : (Throwable with empty stack trace)'\n10-19 08:01:51.000  3330  3330 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:51.000  3330  3330 F DEBUG   : Abort message: 'later, not ours'\n";
+    const CRASH_LOG: &str = "10-19 08:01:40.100  3200  3200 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:40.100  3200  3200 F DEBUG   : Abort message: 'not ours'\n10-19 08:01:50.777  3318  3318 F DEBUG   : Cmdline: app_process / shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : pid: 3308, tid: 3308, name: main  >>> app_process <<<\n10-19 08:01:50.777  3318  3318 F DEBUG   : Abort message: 'No pending exception expected: java.lang.ClassNotFoundException: shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : (Throwable with empty stack trace)'\n10-19 08:01:51.000  3330  3330 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:51.000  3330  3330 F DEBUG   : Abort message: 'later, not ours'\n";
 
     #[test]
     fn the_abort_cause_is_the_last_one_of_a_cb_ui_process() {
         assert_eq!(
             abort_cause(CRASH_LOG).as_deref(),
-            Some("No pending exception expected: java.lang.ClassNotFoundException: cb.Ui")
+            Some("No pending exception expected: java.lang.ClassNotFoundException: shuttle.Ui")
         );
         assert_eq!(abort_cause(""), None);
         let long = format!(
-            "F DEBUG   : Cmdline: app_process / cb.Ui\nF DEBUG   : Abort message: '{}'\n",
+            "F DEBUG   : Cmdline: app_process / shuttle.Ui\nF DEBUG   : Abort message: '{}'\n",
             "é".repeat(400)
         );
         let cause = abort_cause(&long).unwrap();
@@ -1182,7 +1182,7 @@ mod tests {
         let err = failing_ui_server(CRASH_LOG, "Aborted (core dumped)", 134).await;
         assert_eq!(
             err,
-            "UI server said \"\" and exit status: 134: Aborted (core dumped)\nlast cb.Ui abort in the crash log (may be from an earlier start): No pending exception expected: java.lang.ClassNotFoundException: cb.Ui"
+            "UI server said \"\" and exit status: 134: Aborted (core dumped)\nlast shuttle.Ui abort in the crash log (may be from an earlier start): No pending exception expected: java.lang.ClassNotFoundException: shuttle.Ui"
         );
     }
 
@@ -1200,13 +1200,13 @@ mod tests {
         let err = failing_ui_server(CRASH_LOG, "adb: device offline", 1).await;
         assert_eq!(
             err,
-            "UI server said \"\" and exit status: 1: adb: device offline\nlast cb.Ui abort in the crash log (may be from an earlier start): No pending exception expected: java.lang.ClassNotFoundException: cb.Ui"
+            "UI server said \"\" and exit status: 1: adb: device offline\nlast shuttle.Ui abort in the crash log (may be from an earlier start): No pending exception expected: java.lang.ClassNotFoundException: shuttle.Ui"
         );
     }
 
     #[test]
     fn an_empty_abort_message_is_no_cause() {
-        let log = "F DEBUG   : Cmdline: app_process / cb.Ui\nF DEBUG   : Abort message: ''\n";
+        let log = "F DEBUG   : Cmdline: app_process / shuttle.Ui\nF DEBUG   : Abort message: ''\n";
         assert_eq!(abort_cause(log), None);
     }
 
