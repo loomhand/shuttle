@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Builds one release archive from the cocoon-shuttle binary in a cargo release directory, the runtime, and cua-driver and Node from packaging/pins.
+# Builds one release archive from the cocoon-shuttle binary in a cargo release directory, the runtime, and cua-driver and Node from packaging/pins;
+# a linux archive also carries the Android UI server jar that UI_JAR names (android/ui/build.sh builds it).
 set -euo pipefail
 
 NAME=cocoon-shuttle
@@ -63,6 +64,7 @@ linux-*)
 	install -m 0755 "$BIN" "$dir/$NAME"
 	install -m 0755 "$cua/cua-driver" "$cua/cua-cursor-theme" "$node/bin/node" "$dir/"
 	cp -R "$cua/wayland-helper" "$dir/wayland-helper"
+	install -D -m 0644 "${UI_JAR:?set UI_JAR to the jar android/ui/build.sh builds}" "$dir/android/cb-ui.jar"
 	runtime "$node/bin/node" "$dir/runtime"
 	licenses "$dir/licenses" "$node" "$cua"
 	tar -czf "$archive.tar.gz" -C "$stage" "$NAME"
