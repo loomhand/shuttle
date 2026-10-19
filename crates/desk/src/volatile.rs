@@ -85,9 +85,8 @@ impl Volatile {
         self.shared.wake.notify_one();
     }
 
-    /// Marks an action begun and returns what each block did over the samples of the last [`WINDOW`]
-    /// and `now`, the hashes just before the action, and in the pauses before earlier actions kept
-    /// in [`State::pauses`].
+    /// Marks an action begun and returns what each block did in the last [`WINDOW`] of samples, in `now` (the hashes
+    /// just before the action) and in the kept [`State::pauses`].
     pub fn begin(&self, now: &[u64]) -> Vec<Block> {
         let mut s = self.shared.lock();
         s.actions += 1;
