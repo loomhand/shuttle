@@ -638,10 +638,7 @@ fn abort_cause(log: &str) -> Option<String> {
             && ui
         {
             let abort = abort.trim().trim_start_matches('\'').trim_end_matches('\'');
-            let end = (0..=UI_ABORT_KEEP.min(abort.len()))
-                .rev()
-                .find(|&i| abort.is_char_boundary(i))
-                .unwrap_or(0);
+            let end = abort.floor_char_boundary(UI_ABORT_KEEP);
             cause = Some(abort[..end].to_owned()).filter(|c| !c.is_empty());
         }
     }
