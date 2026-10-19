@@ -1,7 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.1.4 - 2026-10-19
 
+- **Linux desktop.** On X11 the daemon drives the desktop itself ([docs/platforms.md](docs/platforms.md#linux)):
+  - the desk verbs answer from AT-SPI trees, read in parallel, with input through the bundled cua-driver, which the Linux daemon requires;
+  - typing goes through XTest for printable ASCII on a plain keyboard map, and other text goes through the driver;
+  - shots read the screen over MIT-SHM, and `windows` names a modal dialog the screen does not show;
+  - `close` asks the window manager; launched apps move into systemd user scopes that outlive the daemon, and the launch result says `scoped`;
+  - `desk computer_state`, `computer_act`, `computer_end`, `look`, `computer_scale` and `title_at` answer on Linux, refused under an app allowlist;
+  - the hotkey, indicator and confirm dialog are not built on Linux yet.
 - **Service plugins.** A plugin-directory file with a `service` key names a long-lived program and the tools it serves, each with its own input schema ([docs/wire.md](docs/wire.md#service-plugins)):
   - the daemon starts it with itself in a process group of its own, hands it a socket in a 0700 directory beside its endpoint (`SHUTTLE_SERVICE_SOCKET`), and starts it again with a backoff from 1 s to 30 s when it exits;
   - for a call of one of its tools, the daemon reads the first frame, writes it unchanged to the service's socket and copies bytes both ways until the service closes, with no desk turn and no deadline; about 20 µs added per call at p50 on an Apple M2 Max;
@@ -23,7 +30,6 @@
 
   Tested on redroid 16; a stock phone is untested.
 - **Shared endpoint.** `[daemon] socket_group` opens the daemon's unix socket to one group's members (mode 0660, owned by the group) on macOS and Linux; unset, it stays 0600. Every member can then use the daemon as its user does ([docs/safety.md](docs/safety.md#a-shared-endpoint)). The Windows pipe stays with its user, and the setting fails the file there.
-
 - **Run errors.** A `script_run` or plugin report that carries `error` now answers `is_error: true`, with the whole report (logs, stderr) as its text, through the daemon and the MCP server alike; before, a failed run looked like a success to the client.
 - **Cancel on close.** A client that closes its connection to the daemon cancels the call it carried: a run's process group is killed as on a stop and the turn frees at once, so an interrupted agent no longer leaves a plan holding the turn for up to 110 s. A client must keep its side open until the reply ([docs/wire.md](docs/wire.md#framing)).
 
