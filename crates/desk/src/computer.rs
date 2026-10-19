@@ -85,37 +85,31 @@ pub struct Cua {
     socket: PathBuf,
     last: Mutex<HashMap<String, Snapshot>>,
     input: Mutex<()>,
-    /// A box that runs GUI plans: settles on a still screen, recompresses screenshots and runs action lists.
-    plans: bool,
-    /// The MIT-SHM grabber of a box that runs GUI plans, opened on first use and again after a failure.
+    /// The MIT-SHM grabber, opened on first use and again after a failure.
     grabber: std::sync::Mutex<Option<Grabber>>,
     /// Titles of the windows an action opened, to name them when they close.
     titles: std::sync::Mutex<HashMap<u32, String>>,
-    /// Per session, screen pixels per image pixel of the last screenshot returned with plans.
+    /// Per session, screen pixels per image pixel of the last screenshot.
     scales: std::sync::Mutex<HashMap<String, f64>>,
-    /// With plans, screen pixels per image pixel of the latest screenshot of any session, one-shot included.
+    /// Screen pixels per image pixel of the latest screenshot of any session, one-shot included.
     last_scale: std::sync::Mutex<f64>,
-    /// Per session on cbdesk, screen pixels per image pixel of the driver's last capture, which maps its desktop x,y.
-    driver_scales: std::sync::Mutex<HashMap<String, f64>>,
-    /// With plans, the screen blocks that change while no action runs, which the settle ignores.
-    volatile: Option<Volatile>,
+    /// The screen blocks that change while no action runs, which the settle ignores.
+    volatile: Volatile,
     last_click: std::sync::Mutex<Option<(Instant, f64, f64)>>,
 }
 
 impl Cua {
-    /// Creates a client for the driver socket at `socket`; `plans` turns on the behaviour of a box that runs GUI plans.
-    pub fn new(socket: PathBuf, plans: bool) -> Self {
+    /// Creates a client for the driver socket at `socket`.
+    pub fn new(socket: PathBuf) -> Self {
         Self {
             socket,
             last: Mutex::new(HashMap::new()),
             input: Mutex::new(()),
-            plans,
             grabber: std::sync::Mutex::new(None),
             titles: std::sync::Mutex::new(HashMap::new()),
             scales: std::sync::Mutex::new(HashMap::new()),
             last_scale: std::sync::Mutex::new(1.0),
-            driver_scales: std::sync::Mutex::new(HashMap::new()),
-            volatile: plans.then(Volatile::start),
+            volatile: Volatile::start(),
             last_click: std::sync::Mutex::new(None),
         }
     }
@@ -164,9 +158,9 @@ impl Cua {
             timing::mark("elements");
         }
         // the capture comes last: a later get_window_state replaces the session's pixel-click context
-        let (image_b64, scale, mut screen) =
+        let (image_b64, scale, screen) =
             self.capture(&session, a.max_edge, a.workspace_only).await?;
-        let k = if self.plans { scale } else { 1.0 };
+        let k = scale;
         let mut head = String::from("Windows (frontmost first):\n");
         for w in &listed {
             let _ = writeln!(
@@ -187,14 +181,6 @@ impl Cua {
         }
         text.insert_str(0, &head);
         if let Some((pid, window_id, state)) = elements {
-            if screen.is_none() && !self.plans {
-                screen = self.shm(Grabber::rgb).map(|(width, height, rgb)| Screen {
-                    width,
-                    height,
-                    rgb,
-                });
-                timing::mark("grab");
-            }
             let (tree, elements) = element_tree(&state, scale);
             let _ = writeln!(
                 text,
@@ -211,9 +197,7 @@ impl Cua {
                 },
             );
         }
-        if self.plans
-            && let Some(b64) = &image_b64
-        {
+        if let Some(b64) = &image_b64 {
             let _ = write!(text, "\nScreenshot: {}", weigh(b64));
         }
         Ok(Output {
@@ -224,11 +208,11 @@ impl Cua {
         })
     }
 
-    /// `computer_act` of agent `owner`: one input action followed by a fresh desktop screenshot; with plans also a list of `actions`.
+    /// `computer_act` of agent `owner`: one input action, or a list of `actions`, followed by a fresh desktop screenshot.
     pub async fn act(&self, browser: &Browser, owner: &str, args: Value) -> Result<Output, String> {
         self.touch();
         let session = session_of(&args);
-        if self.plans && args.get("actions").is_some() {
+        if args.get("actions").is_some() {
             let list: ActList = rpc::parse(args)?;
             return self.act_list(browser, owner, &session, list).await;
         }
@@ -352,15 +336,13 @@ impl Cua {
     }
 
     async fn act_input(&self, session: &str, mut a: ActArgs) -> Result<Output, String> {
-        if self.plans && a.action == "left_click" {
+        if a.action == "left_click" {
             "click".clone_into(&mut a.action);
         }
-        if self.plans {
-            driver_keys(&mut a)?;
-            let screen = self.shm(|g| Ok(g.size()));
-            if let Some(e) = screen.and_then(|s| off_screen(&a, s, self.scale_of(session))) {
-                return Err(e);
-            }
+        driver_keys(&mut a)?;
+        let screen = self.shm(|g| Ok(g.size()));
+        if let Some(e) = screen.and_then(|s| off_screen(&a, s, self.scale_of(session))) {
+            return Err(e);
         }
         timing::note("action", &a.action);
         if a.action == "wait" {
@@ -407,11 +389,7 @@ impl Cua {
         }
         self.end_once(once).await;
         timing::mark("act");
-        let k = if self.plans {
-            self.scale_of(session)
-        } else {
-            1.0
-        };
+        let k = self.scale_of(session);
         let changes = self.settle(before, k).await;
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
@@ -427,17 +405,15 @@ impl Cua {
         })
     }
 
-    /// `screenshot`: the whole desktop; with plans also `region`, a part of it at full resolution, and
-    /// the image's size and input tokens in the text.
+    /// `screenshot`: the whole desktop, or `region`, a part of it at full resolution, with the image's
+    /// size and input tokens in the text.
     pub async fn look(&self, args: &Value) -> Result<Output, String> {
         let max_edge = args["max_edge"]
             .as_u64()
             .and_then(|e| u32::try_from(e).ok());
         let session = args["session"].as_str();
         let shared = args["workspace_only"] == true;
-        if self.plans
-            && let Some(region) = args.get("region").filter(|r| !r.is_null())
-        {
+        if let Some(region) = args.get("region").filter(|r| !r.is_null()) {
             return self.zoom(session, region, max_edge);
         }
         let image_b64 = match session {
@@ -448,8 +424,7 @@ impl Cua {
             None => self.screenshot_once(max_edge).await?,
         };
         let text = match &image_b64 {
-            Some(b64) if self.plans => format!("screenshot of the whole screen: {}", weigh(b64)),
-            Some(_) => "screenshot of the whole screen".to_owned(),
+            Some(b64) => format!("screenshot of the whole screen: {}", weigh(b64)),
             None => "no screenshot returned".to_owned(),
         };
         Ok(Output {
@@ -492,19 +467,13 @@ impl Cua {
         })
     }
 
-    /// With plans, the modal dialogs that are open where the screen does not show them.
+    /// The modal dialogs that are open where the screen does not show them.
     pub fn modals(&self) -> Vec<Modal> {
-        if !self.plans {
-            return Vec::new();
-        }
         self.shm(Grabber::modals).unwrap_or_default()
     }
 
-    /// With plans, the titles of the desktop's app windows.
+    /// The titles of the desktop's app windows.
     pub fn window_titles(&self) -> Vec<String> {
-        if !self.plans {
-            return Vec::new();
-        }
         self.shm(Grabber::client_titles).unwrap_or_default()
     }
 
@@ -523,7 +492,6 @@ impl Cua {
         let session = crate::new_id("shot");
         let shot = self.screenshot(&session, max_edge).await;
         self.scales().remove(&session);
-        self.driver_scales().remove(&session);
         self.request(&session, "end_session", json!({})).await?;
         timing::mark("end");
         shot
@@ -535,7 +503,6 @@ impl Cua {
         self.request(&session, "end_session", json!({})).await?;
         self.last.lock().await.remove(&session);
         self.scales().remove(&session);
-        self.driver_scales().remove(&session);
         Ok(format!("ended session {session}"))
     }
 
@@ -547,11 +514,10 @@ impl Cua {
         max_edge: Option<u32>,
         shared: bool,
     ) -> Result<(Option<String>, f64, Option<Screen>), String> {
-        let max_edge = max_edge.or(self.plans.then_some(DEFAULT_EDGE));
-        if self.plans
-            && let Some((w, h, rgb)) = self
-                .shm(|g| (!g.overlay_shown()?).then(|| g.rgb()).transpose())
-                .flatten()
+        let max_edge = max_edge.or(Some(DEFAULT_EDGE));
+        if let Some((w, h, rgb)) = self
+            .shm(|g| (!g.overlay_shown()?).then(|| g.rgb()).transpose())
+            .flatten()
         {
             timing::mark("grab");
             let image = match max_edge {
@@ -584,25 +550,21 @@ impl Cua {
             .filter(|s| *s > 0.0)
             .unwrap_or(1.0);
         let mut image = content_image(&v);
-        if self.plans {
-            if let Some(smaller) = image.as_deref().and_then(shrink) {
-                image = Some(smaller);
-            }
-            self.keep_scale(session, scale, shared);
-            // the driver rescales later desktop clicks by its last capture; a full-size one keeps it at 1
-            if scale != 1.0 {
-                let _ = self.request(session, "get_desktop_state", json!({})).await;
-                timing::mark("rescale");
-            }
-        } else {
-            self.driver_scales().insert(session.to_owned(), scale);
+        if let Some(smaller) = image.as_deref().and_then(shrink) {
+            image = Some(smaller);
+        }
+        self.keep_scale(session, scale, shared);
+        // the driver rescales later desktop clicks by its last capture; a full-size one keeps it at 1
+        if scale != 1.0 {
+            let _ = self.request(session, "get_desktop_state", json!({})).await;
+            timing::mark("rescale");
         }
         timing::note("image_bytes", image.as_ref().map_or(0, |b| b.len() / 4 * 3));
         Ok((image, scale, None))
     }
 
-    /// Types text with non-ASCII characters or at a point, which a click focuses first; on cbdesk and on the
-    /// pid route of a box with plans, in calls of at most [`RUN_CHARS`] distinct non-ASCII characters.
+    /// Types text with non-ASCII characters or at a point, which a click focuses first; in calls of at most
+    /// [`RUN_CHARS`] distinct non-ASCII characters.
     async fn type_mixed(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
         let full = a.text.as_deref().unwrap_or_default();
         let input = self.input.lock().await;
@@ -680,14 +642,8 @@ impl Cua {
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         let total = full.chars().count();
-        let summary = if self.plans {
-            format!("typed {typed} of {total} characters; verify on the screenshot{changes}")
-        } else {
-            format!(
-                "typed {typed} of {total} characters in {} calls (at most {RUN_CHARS} distinct non-ASCII characters per call); verify on the screenshot{changes}",
-                runs.len()
-            )
-        };
+        let summary =
+            format!("typed {typed} of {total} characters; verify on the screenshot{changes}");
         Ok(Output {
             text: match &failure {
                 Some(e) => format!("{summary}; stopped: {e}"),
@@ -699,8 +655,8 @@ impl Cua {
         })
     }
 
-    /// Launches an app, or brings its existing window to the front when it already runs. With plans, Chrome by
-    /// any name is the window of `owner` in the browser tools' Chrome, so they and `type_from_file` see it.
+    /// Launches an app, or brings its existing window to the front when it already runs. Chrome by any name
+    /// is the window of `owner` in the browser tools' Chrome, so they and `type_from_file` see it.
     async fn launch(
         &self,
         browser: &Browser,
@@ -711,7 +667,7 @@ impl Cua {
         let app = required(&a.app, "app")?;
         let input = self.input.lock().await;
         let before = self.before_input(None).await;
-        let launched = if self.plans && is_chrome(app) {
+        let launched = if is_chrome(app) {
             browser
                 .run(owner, "browser_show", Value::Null)
                 .await
@@ -775,14 +731,11 @@ impl Cua {
         })
     }
 
-    /// With plans, the screen before an input action: its pixels and block hashes over MIT-SHM with what
+    /// The screen before an input action: its pixels and block hashes over MIT-SHM with what
     /// each block did before it, else a thumbnail from a probe driver session of its own, which leaves
     /// the capture context of the action's session as it was. A commit action `a` (see [`commits`])
     /// in Chrome may load a page.
     async fn before_input(&self, a: Option<&ActArgs>) -> Option<Before> {
-        if !self.plans {
-            return None;
-        }
         let commit = a.is_some_and(commits);
         if let Some((pixels, blocks, windows, active, page, wait)) = self.shm(|g| {
             let active = g.active();
@@ -802,11 +755,7 @@ impl Cua {
             };
             Ok((pixels, blocks, g.mapped()?, active, page, wait))
         }) {
-            let volatile = self
-                .volatile
-                .as_ref()
-                .map(|v| v.begin(&blocks))
-                .unwrap_or_default();
+            let volatile = self.volatile.begin(&blocks);
             timing::mark("probe");
             timing::note(
                 "volatile",
@@ -976,15 +925,11 @@ impl Cua {
     }
 
     fn touch(&self) {
-        if let Some(v) = &self.volatile {
-            v.touch();
-        }
+        self.volatile.touch();
     }
 
     fn end_volatile(&self) {
-        if let Some(v) = &self.volatile {
-            v.end();
-        }
+        self.volatile.end();
     }
 
     /// The windows that opened, closed or moved between `before` and `after`, and a new front window.
@@ -1085,19 +1030,10 @@ impl Cua {
         }
     }
 
-    /// Screen pixels per pixel of the last screenshot `session`, else any session, returned with plans, so its x,y map to the screen.
+    /// Screen pixels per pixel of the last screenshot of `session`, else of any session, so its x,y map to the screen.
     fn scale_of(&self, session: &str) -> f64 {
         let own = self.scales().get(session).copied();
         own.unwrap_or_else(|| *self.last_scale())
-    }
-
-    fn driver_scales(&self) -> std::sync::MutexGuard<'_, HashMap<String, f64>> {
-        crate::lock(&self.driver_scales)
-    }
-
-    /// The factor by which the driver maps `session`'s desktop x,y; a screen pixel divided by it lands on itself.
-    fn driver_scale(&self, session: &str) -> f64 {
-        self.driver_scales().get(session).copied().unwrap_or(1.0)
     }
 
     /// Runs `read` on the MIT-SHM grabber, opening it when needed; `None` when it is unavailable or fails.
@@ -1179,10 +1115,12 @@ impl Cua {
         a: &ActArgs,
     ) -> Result<(&'static str, Value), String> {
         let desktop = json!({"kind": "desktop", "display_id": "primary"});
-        let clicks = matches!(a.action.as_str(), "click" | "double_click" | "right_click")
-            || (self.plans && a.action == "triple_click");
+        let clicks = matches!(
+            a.action.as_str(),
+            "click" | "double_click" | "right_click" | "triple_click"
+        );
         let pixel = match a.element {
-            Some(index) if clicks && !a.foreground && (self.plans || presses(a)) => {
+            Some(index) if clicks && !a.foreground => {
                 match self.element_pixel(session, index, false).await {
                     None if presses(a) => match self.open_menus(session, index).await {
                         None => self.hidden_press(session, index).await?,
@@ -1195,7 +1133,7 @@ impl Cua {
         };
         let mut req = json!({});
         let tool = match a.action.as_str() {
-            "triple_click" if self.plans => {
+            "triple_click" => {
                 req["count"] = 3.into();
                 "click"
             }
@@ -1253,9 +1191,8 @@ impl Cua {
         };
         if let Some((x, y)) = pixel {
             timing::note("route", "pixel");
-            let k = self.driver_scale(session);
-            req["x"] = (x / k).into();
-            req["y"] = (y / k).into();
+            req["x"] = x.into();
+            req["y"] = y.into();
             req["target"] = desktop;
         } else if let Some(index) = a.element {
             let last = self.last.lock().await;
@@ -1333,13 +1270,13 @@ impl Cua {
         }
     }
 
-    /// With plans, whether keys for `window` of `pid` can go to the desktop, which skips the driver's
+    /// Whether keys for `window` of `pid` can go to the desktop, which skips the driver's
     /// 220 ms focus guard: the window is active and holds the input focus, and no popup of another app is open.
     fn keyboard(&self, pid: i64, window: i64) -> bool {
         let (Ok(pid), Ok(window)) = (u32::try_from(pid), u32::try_from(window)) else {
             return false;
         };
-        self.plans && self.shm(|g| g.keyboard(window, pid)).unwrap_or(false)
+        self.shm(|g| g.keyboard(window, pid)).unwrap_or(false)
     }
 
     /// Whether `a` types into a web page element of `session`'s snapshot that a pixel click can focus.
@@ -1357,23 +1294,19 @@ impl Cua {
         web && self.element_pixel(session, index, false).await.is_some()
     }
 
-    /// The screen point at which a pixel click reaches element `index` of `session`'s snapshot, on
-    /// cbdesk only for a push button or menu item outside a web page, whose accessibility action runs
-    /// its handler inside the app's accessibility dispatch, where a modal dialog it opens deadlocks the
-    /// app on the first key; with plans it also skips the driver's 270 ms accessibility click. The
+    /// The screen point at which a pixel click reaches element `index` of `session`'s snapshot, which
+    /// skips the driver's 270 ms accessibility click and, for a push button or menu item, the app's
+    /// accessibility dispatch, where a modal dialog it opens deadlocks the app on the first key. The
     /// element looks as it did in the snapshot, and the top window at its centre is the snapshot's
     /// window while that is active and nothing grabs the pointer, or a popup of the same app around a
-    /// menu or list row. A `menu` to open need not look as it did, since it showed open then. With plans,
-    /// a LibreOffice element outside a menu has none, since its toolbar extents can sit a menu bar's height
+    /// menu or list row. A `menu` to open need not look as it did, since it showed open then. A
+    /// LibreOffice element outside a menu has none, since its toolbar extents can sit a menu bar's height
     /// above the drawn control.
     async fn element_pixel(&self, session: &str, index: i64, menu: bool) -> Option<(f64, f64)> {
         let last = self.last.lock().await;
         let snap = last.get(session)?;
         let (element, screen) = (snap.elements.get(&index)?, snap.screen.as_ref()?);
-        if !self.plans && !menu && (element.web || !PRESSED.contains(&element.role.as_str())) {
-            return None;
-        }
-        if self.plans && !menu && !element.role.starts_with("menu") && libreoffice(snap.pid) {
+        if !menu && !element.role.starts_with("menu") && libreoffice(snap.pid) {
             return None;
         }
         let [x, y, w, h] = element.frame?;
@@ -1669,7 +1602,7 @@ impl Cua {
 
     async fn request(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
         let point = match (args["x"].as_f64(), args["y"].as_f64()) {
-            (Some(x), Some(y)) if self.plans && name == "click" => Some((x, y)),
+            (Some(x), Some(y)) if name == "click" => Some((x, y)),
             _ => None,
         };
         if let Some(point) = point {
@@ -1683,8 +1616,7 @@ impl Cua {
         if result["isError"] == true {
             return Err(format!("{name}: {}", content_text(&result)));
         }
-        if self.plans
-            && name == "launch_app"
+        if name == "launch_app"
             && let Err(e) = scope::adopt(&result).await
         {
             eprintln!("toolhost: scope the launch: {e}");
@@ -1815,7 +1747,7 @@ struct Snapshot {
     pid: i64,
     window_id: Option<i64>,
     elements: HashMap<i64, Element>,
-    /// With plans, the screen when the elements were read, to tell whether one has moved since.
+    /// The screen when the elements were read, to tell whether one has moved since.
     screen: Option<Screen>,
 }
 
@@ -2523,7 +2455,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let cua = Cua::new(socket, false);
+        let cua = Cua::new(socket);
         let out = cua.request("s", "list_windows", json!({})).await;
         assert!(out.is_ok(), "{out:?}");
         driver.await.unwrap();
@@ -2547,7 +2479,7 @@ mod tests {
                     .unwrap();
             }
         });
-        let cua = Cua::new(socket, true);
+        let cua = Cua::new(socket);
         let click = |x: f64| json!({"x": x, "y": 300.0});
         cua.request("s", "click", click(300.0)).await.unwrap();
         let start = Instant::now();
@@ -2585,7 +2517,7 @@ mod tests {
         let socket = dir.path().join("cua.sock");
         let driver = tokio::spawn(closing_then_answering_driver(socket.clone()));
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let out = Cua::new(socket, false)
+        let out = Cua::new(socket)
             .request("s", "list_windows", json!({}))
             .await;
         assert!(out.is_ok(), "{out:?}");
@@ -2598,9 +2530,7 @@ mod tests {
         let socket = dir.path().join("cua.sock");
         let driver = tokio::spawn(closing_then_answering_driver(socket.clone()));
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let out = Cua::new(socket, false)
-            .request("s", "click", json!({}))
-            .await;
+        let out = Cua::new(socket).request("s", "click", json!({})).await;
         assert!(out.unwrap_err().starts_with("decode cua-driver reply"));
         driver.abort();
     }
@@ -2630,14 +2560,20 @@ mod tests {
                     .unwrap();
             }
         });
-        let cua = Cua::new(socket, false);
+        let cua = Cua::new(socket);
         let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
         let out = cua
             .act(&browser, "ag", json!({"action": "key", "key": "escape"}))
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.text);
-        let pressed = calls.lock().unwrap()[1].clone();
+        let pressed = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == "press_key")
+            .cloned()
+            .unwrap();
         assert_eq!(pressed["name"], "press_key");
         assert_eq!(
             pressed["args"]["target"],
@@ -2764,35 +2700,33 @@ mod tests {
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
-        for plans in [false, true] {
-            calls.lock().unwrap().clear();
-            let cua = Cua::new(socket.clone(), plans);
-            let out = cua
-                .act(
-                    &browser,
-                    "ag",
-                    json!({"action": "type", "text": "hello", "x": 10, "y": 20}),
-                )
-                .await
-                .unwrap();
-            assert!(!out.is_error, "{}", out.text);
-            let calls = calls.lock().unwrap();
-            let input: Vec<&Value> = calls
-                .iter()
-                .filter(|c| c["name"] == "click" || c["name"] == "type_text")
-                .collect();
-            assert_eq!(input.len(), 2, "{input:?}");
-            assert_eq!(input[0]["name"], "click");
-            assert_eq!(
-                (
-                    input[0]["args"]["x"].as_f64(),
-                    input[0]["args"]["y"].as_f64()
-                ),
-                (Some(10.0), Some(20.0))
-            );
-            assert_eq!(input[1]["args"]["text"], "hello");
-            assert!(input[1]["args"].get("x").is_none(), "{}", input[1]);
-        }
+        calls.lock().unwrap().clear();
+        let cua = Cua::new(socket.clone());
+        let out = cua
+            .act(
+                &browser,
+                "ag",
+                json!({"action": "type", "text": "hello", "x": 10, "y": 20}),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        let calls = calls.lock().unwrap();
+        let input: Vec<&Value> = calls
+            .iter()
+            .filter(|c| c["name"] == "click" || c["name"] == "type_text")
+            .collect();
+        assert_eq!(input.len(), 2, "{input:?}");
+        assert_eq!(input[0]["name"], "click");
+        assert_eq!(
+            (
+                input[0]["args"]["x"].as_f64(),
+                input[0]["args"]["y"].as_f64()
+            ),
+            (Some(10.0), Some(20.0))
+        );
+        assert_eq!(input[1]["args"]["text"], "hello");
+        assert!(input[1]["args"].get("x").is_none(), "{}", input[1]);
         driver.abort();
     }
 
@@ -2804,28 +2738,26 @@ mod tests {
         let driver = window_driver(&socket, &calls, usize::MAX);
         let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
         let text = "一二三四五六七八九十百千万亿甲乙丙丁戊己";
-        for plans in [false, true] {
-            calls.lock().unwrap().clear();
-            let cua = Cua::new(socket.clone(), plans);
-            let out = cua
-                .act(
-                    &browser,
-                    "ag",
-                    json!({"action": "type", "text": text, "foreground": true}),
-                )
-                .await
-                .unwrap();
-            assert!(!out.is_error, "{}", out.text);
-            let calls = calls.lock().unwrap();
-            let runs: Vec<&str> = calls
-                .iter()
-                .filter(|c| c["name"] == "type_text")
-                .map(|c| c["args"]["text"].as_str().unwrap())
-                .collect();
-            assert_eq!(runs.len(), 3, "{plans}: {runs:?}");
-            assert!(runs.iter().all(|r| r.chars().count() <= 8), "{runs:?}");
-            assert_eq!(runs.concat(), text);
-        }
+        calls.lock().unwrap().clear();
+        let cua = Cua::new(socket.clone());
+        let out = cua
+            .act(
+                &browser,
+                "ag",
+                json!({"action": "type", "text": text, "foreground": true}),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        let calls = calls.lock().unwrap();
+        let runs: Vec<&str> = calls
+            .iter()
+            .filter(|c| c["name"] == "type_text")
+            .map(|c| c["args"]["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(runs.len(), 3, "{runs:?}");
+        assert!(runs.iter().all(|r| r.chars().count() <= 8), "{runs:?}");
+        assert_eq!(runs.concat(), text);
         driver.abort();
     }
 
@@ -2848,7 +2780,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), port, false);
         let launch = |app: &str| json!({"action": "launch_app", "app": app});
-        let plans = Cua::new(socket.clone(), true);
+        let plans = Cua::new(socket);
         for app in [
             "google-chrome",
             "Google Chrome",
@@ -2867,11 +2799,7 @@ mod tests {
         }
         assert!(launches().is_empty(), "{:?}", launches());
         plans.act(&browser, "ag", launch("mousepad")).await.unwrap();
-        Cua::new(socket, false)
-            .act(&browser, "ag", launch("google-chrome"))
-            .await
-            .unwrap();
-        assert_eq!(launches(), ["launch_app", "bring_to_front"]);
+        assert_eq!(launches(), ["launch_app"]);
         driver.abort();
     }
 
@@ -2913,7 +2841,7 @@ mod tests {
                 reader.into_inner().write_all(&out).await.unwrap();
             }
         });
-        let cua = Cua::new(socket, true);
+        let cua = Cua::new(socket);
         let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
         let click = |x: f64| json!({"action": "click", "x": x, "y": 30.0});
         cua.state(json!({"max_edge": 0})).await.unwrap();
@@ -2939,7 +2867,7 @@ mod tests {
     async fn a_session_without_its_own_screenshot_maps_by_the_latest_one_of_any_session() {
         let dir = tempfile::tempdir().unwrap();
         let (socket, clicks, driver) = scaling_driver(dir.path());
-        let cua = Cua::new(socket, true);
+        let cua = Cua::new(socket);
         let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
         let click =
             |session: &str| json!({"action": "click", "x": 100.0, "y": 40.0, "session": session});
@@ -2972,7 +2900,7 @@ mod tests {
     async fn a_read_share_screenshot_leaves_the_scale_of_other_sessions_alone() {
         let dir = tempfile::tempdir().unwrap();
         let (socket, clicks, driver) = scaling_driver(dir.path());
-        let cua = Cua::new(socket, true);
+        let cua = Cua::new(socket);
         let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
         let click =
             |session: &str| json!({"action": "click", "x": 100.0, "y": 40.0, "session": session});
@@ -3033,66 +2961,59 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn with_plans_window_lines_and_click_replies_are_in_screenshot_pixels() {
-        for (plans, line, reply) in [
-            (
-                true,
-                "\"notes\" at (80,40) 512x384",
-                "click at (100,40) (desktop",
-            ),
-            (
-                false,
-                "\"notes\" at (100,50) 640x480",
-                "click at (125.0,50.0) (desktop",
-            ),
-        ] {
-            let dir = tempfile::tempdir().unwrap();
-            let socket = dir.path().join("cua.sock");
-            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-            let driver = tokio::spawn(async move {
-                loop {
-                    let (stream, _) = listener.accept().await.unwrap();
-                    let mut reader = BufReader::new(stream);
-                    let mut line = String::new();
-                    reader.read_line(&mut line).await.unwrap();
-                    let req: Value = serde_json::from_str(&line).unwrap();
-                    let args = &req["args"];
-                    let reply = match req["name"].as_str().unwrap_or_default() {
-                        "list_windows" => {
-                            json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Mousepad", "title": "notes", "bounds": {"x": 100, "y": 50, "width": 640, "height": 480}, "z_index": 1}]}}})
-                        }
-                        "get_desktop_state" => {
-                            let scale = match args["max_image_dimension"].as_u64() {
-                                Some(edge) if edge > 0 => 1280.0 / edge as f64,
-                                _ => 1.0,
-                            };
-                            json!({"ok": true, "result": {"structuredContent": {"frame_scale": scale}}})
-                        }
-                        "click" => {
-                            let text = format!(
-                                "\u{2705} Sent screen-absolute click at ({},{}) (desktop scope).",
-                                args["x"], args["y"]
-                            );
-                            json!({"ok": true, "result": {"content": [{"type": "text", "text": text}]}})
-                        }
-                        _ => json!({"ok": true, "result": {"structuredContent": {}}}),
-                    };
-                    let mut out = serde_json::to_vec(&reply).unwrap();
-                    out.push(b'\n');
-                    reader.into_inner().write_all(&out).await.unwrap();
-                }
-            });
-            let cua = Cua::new(socket, plans);
-            let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
-            let state = cua.state(json!({})).await.unwrap();
-            assert!(state.text.contains(line), "{plans}: {}", state.text);
-            let x = if plans { 100.0 } else { 125.0 };
-            let act =
-                json!({"action": "click", "x": x, "y": 40.0 * if plans { 1.0 } else { 1.25 }});
-            let out = cua.act(&browser, "ag", act).await.unwrap();
-            assert!(out.text.contains(reply), "{plans}: {}", out.text);
-            driver.abort();
-        }
+    async fn window_lines_and_click_replies_are_in_screenshot_pixels() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let driver = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let args = &req["args"];
+                let reply = match req["name"].as_str().unwrap_or_default() {
+                    "list_windows" => {
+                        json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Mousepad", "title": "notes", "bounds": {"x": 100, "y": 50, "width": 640, "height": 480}, "z_index": 1}]}}})
+                    }
+                    "get_desktop_state" => {
+                        let scale = match args["max_image_dimension"].as_u64() {
+                            Some(edge) if edge > 0 => 1280.0 / edge as f64,
+                            _ => 1.0,
+                        };
+                        json!({"ok": true, "result": {"structuredContent": {"frame_scale": scale}}})
+                    }
+                    "click" => {
+                        let text = format!(
+                            "\u{2705} Sent screen-absolute click at ({},{}) (desktop scope).",
+                            args["x"], args["y"]
+                        );
+                        json!({"ok": true, "result": {"content": [{"type": "text", "text": text}]}})
+                    }
+                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+                };
+                let mut out = serde_json::to_vec(&reply).unwrap();
+                out.push(b'\n');
+                reader.into_inner().write_all(&out).await.unwrap();
+            }
+        });
+        let cua = Cua::new(socket);
+        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
+        let state = cua.state(json!({})).await.unwrap();
+        assert!(
+            state.text.contains("\"notes\" at (80,40) 512x384"),
+            "{}",
+            state.text
+        );
+        let act = json!({"action": "click", "x": 100.0, "y": 40.0});
+        let out = cua.act(&browser, "ag", act).await.unwrap();
+        assert!(
+            out.text.contains("click at (100,40) (desktop"),
+            "{}",
+            out.text
+        );
+        driver.abort();
     }
 
     #[test]
@@ -3131,7 +3052,7 @@ mod tests {
                 .filter(|n| n == "click" || n == "type_text")
                 .collect()
         };
-        let cua = Cua::new(socket, false);
+        let cua = Cua::new(socket);
         let field = Browser::new(
             "/nonexistent/chrome".into(),
             dir.path().into(),
