@@ -13,7 +13,7 @@
   - input goes through `adb shell input`, screenshots through `screencap`, and text through a scrcpy clipboard paste;
   - `scroll`, `drag` and `still` answer `unknown desk tool`;
   - the daemon starts no cua-driver, indicator or stop hotkey;
-  - `desk computer_state`, `desk computer_act` and `desk look` answer from the command line only, with their screenshot written to a file;
+  - `desk computer_state`, `desk computer_act`, `desk computer_end` and `desk look` answer from the command line only, with their screenshot written to a file; `computer_end` forgets a session's element indexes;
   - `desk computer_act` is a desk action: `confirm` and the turn apply to it;
   - `launch` takes only package and component names;
   - an `[android]` section with a nonempty `[safety] apps` fails to load, since the device desk enforces no allowlist yet.

@@ -835,6 +835,32 @@ mod tests {
         assert_eq!(args.lines().last(), Some("'com.example/.Main$Launcher'"));
     }
 
+    #[tokio::test]
+    async fn a_session_end_forgets_only_that_sessions_elements() {
+        let android = Android::new(Device {
+            adb: "/nonexistent/adb".into(),
+            serial: None,
+            ui_jar: "/u.jar".into(),
+            scrcpy_jar: "/s.jar".into(),
+            su: None,
+        });
+        {
+            let mut points = android.points.lock().await;
+            points.insert("cu-1".into(), vec![(10, 20)]);
+            points.insert("cu-2".into(), vec![(30, 40)]);
+        }
+        assert_eq!(
+            android
+                .end(&serde_json::json!({"session": "cu-1"}))
+                .await
+                .unwrap(),
+            "ended"
+        );
+        let points = android.points.lock().await;
+        assert!(!points.contains_key("cu-1"));
+        assert_eq!(points.get("cu-2"), Some(&vec![(30, 40)]));
+    }
+
     #[test]
     fn clipboard_message_is_scrcpy_set_clipboard_with_paste() {
         let msg = clipboard_message("你好", 7);

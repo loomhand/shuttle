@@ -41,6 +41,7 @@ async fn answer(android: &Android, call: Call) -> Output {
     let answered = match call.tool.as_str() {
         "desk_computer_state" => android.state(call.args).await,
         "desk_computer_act" => android.act(call.args).await,
+        "desk_computer_end" => android.end(&call.args).await.map(Output::text),
         "desk_look" => android.look().await,
         verb => desk::run(android, verb, call.args).await,
     };
@@ -62,5 +63,26 @@ mod tests {
         };
         assert!(!local_controls(Some(&settings)));
         assert!(local_controls(None));
+    }
+
+    #[tokio::test]
+    async fn a_computer_session_end_is_answered_on_the_device() {
+        let android = device(AndroidSettings {
+            adb: "/nonexistent/adb".into(),
+            serial: None,
+            ui_jar: "/u.jar".into(),
+            scrcpy_jar: "/s.jar".into(),
+            su: None,
+        });
+        let out = answer(
+            &android,
+            Call {
+                agent_id: "agent".into(),
+                tool: "desk_computer_end".into(),
+                args: serde_json::json!({"session": "cu-1"}),
+            },
+        )
+        .await;
+        assert_eq!((out.is_error, out.text.as_str()), (false, "ended"));
     }
 }
