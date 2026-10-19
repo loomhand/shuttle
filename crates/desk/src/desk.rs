@@ -381,10 +381,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn press(&self, id: String, turn: Option<Turn>) -> Result<String, String> {
-        let linux = self.os == Os::Linux;
+        let os = self.os;
         match self
             .access
-            .run(TREE_LIMIT, turn, move |b| plan_press(b, &id, linux))
+            .run(TREE_LIMIT, turn, move |b| plan_press(b, &id, os))
             .await?
         {
             Press::Selected => Ok(json!({"ok": true, "how": "select"}).to_string()),
@@ -1306,7 +1306,11 @@ pub(crate) mod tests {
             if self.nodes.get(id).is_some_and(|(n, _)| n.role == "menu") {
                 self.opened = true;
             }
-            Ok(act != Act::Select || self.nodes.get(id).is_some_and(|(n, _)| n.role == "tab"))
+            Ok(act != Act::Select
+                || self
+                    .nodes
+                    .get(id)
+                    .is_some_and(|(n, _)| matches!(n.role, "tab" | "treeitem")))
         }
 
         fn close(&mut self, _: &Frame) -> Result<(), String> {
