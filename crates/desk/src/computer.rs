@@ -246,44 +246,17 @@ impl Computer {
         let session = session_of(&args);
         if args.get("actions").is_some() {
             let list: ActList = parse(args)?;
-            let pinned = self.pin(&session, list.scale)?;
-            let out = self.act_list(&session, list).await;
-            return self.unpin(&session, pinned, out);
+            positive(list.scale)?;
+            return self.act_list(&session, list).await;
         }
         let a: ActArgs = parse(args)?;
-        let pinned = self.pin(&session, a.scale)?;
-        let out = self.act_one(&session, a).await;
-        self.unpin(&session, pinned, out)
+        positive(a.scale)?;
+        self.act_one(&session, a).await
     }
 
-    /// Maps `session`'s x,y by `scale` for one act when the caller names the screenshot it saw; the scale it replaces.
-    fn pin(&self, session: &str, scale: Option<f64>) -> Result<Option<Option<f64>>, String> {
-        let Some(k) = scale else {
-            return Ok(None);
-        };
-        if !(k.is_finite() && k > 0.0) {
-            return Err(format!("scale {k} is not a positive number"));
-        }
-        Ok(Some(self.scales().insert(session.to_owned(), k)))
-    }
-
-    /// Puts back the scale [`Self::pin`] replaced unless the act returned a screenshot, whose scale `session` keeps.
-    fn unpin(
-        &self,
-        session: &str,
-        pinned: Option<Option<f64>>,
-        out: Result<Output, String>,
-    ) -> Result<Output, String> {
-        if let Some(before) = pinned
-            && !out.as_ref().is_ok_and(|o| o.image_b64.is_some())
-        {
-            let mut scales = self.scales();
-            match before {
-                Some(k) => scales.insert(session.to_owned(), k),
-                None => scales.remove(session),
-            };
-        }
-        out
+    /// Screen pixels per pixel of the screenshot `scale` names, else of `session`'s latest.
+    fn mapped(&self, session: &str, scale: Option<f64>) -> f64 {
+        scale.unwrap_or_else(|| self.scale_of(session))
     }
 
     /// Runs the actions in order, each settled, stops at the first failure and returns the last screenshot;
@@ -292,10 +265,10 @@ impl Computer {
         let total = list.actions.len();
         let mut lines = Vec::with_capacity(total);
         let mut out = Output::default();
-        let seen = self.scale_of(session);
+        let seen = self.mapped(session, list.scale);
         for (i, mut a) in list.actions.into_iter().enumerate() {
             a.max_edge = list.max_edge;
-            self.scales().insert(session.to_owned(), seen);
+            a.scale = Some(seen);
             let action = a.action.clone();
             let step = self.act_one(session, a).await.unwrap_or_else(Output::error);
             let failed = if step.is_error { " failed" } else { "" };
@@ -334,7 +307,7 @@ impl Computer {
         }
         driver_keys(&mut a)?;
         let screen = self.shm(|g| Ok(g.size()));
-        if let Some(e) = screen.and_then(|s| off_screen(&a, s, self.scale_of(session))) {
+        if let Some(e) = screen.and_then(|s| off_screen(&a, s, self.mapped(session, a.scale))) {
             return Err(e);
         }
         if a.action == "wait" {
@@ -378,7 +351,7 @@ impl Computer {
             result = self.press_return(target, &typed).await.and(result);
         }
         self.end_once(once).await;
-        let k = self.scale_of(session);
+        let k = self.mapped(session, a.scale);
         let changes = self.settle(before, k).await;
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
@@ -554,6 +527,7 @@ impl Computer {
                 x: a.x,
                 y: a.y,
                 foreground: a.foreground,
+                scale: a.scale,
                 ..ActArgs::default()
             };
             let (tool, req) = self.action_request(session, &focus).await?;
@@ -612,7 +586,7 @@ impl Computer {
             }
         }
         self.end_once(once).await;
-        let changes = self.settle(before, self.scale_of(session)).await;
+        let changes = self.settle(before, self.mapped(session, a.scale)).await;
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         let total = full.chars().count();
@@ -678,7 +652,7 @@ impl Computer {
                 });
             }
         };
-        let changes = self.settle(before, self.scale_of(session)).await;
+        let changes = self.settle(before, self.mapped(session, a.scale)).await;
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         Ok(Output {
@@ -1160,7 +1134,7 @@ impl Computer {
                 let (Some(x), Some(y), Some(tx), Some(ty)) = (a.x, a.y, a.to_x, a.to_y) else {
                     return Err("drag needs x, y, to_x and to_y".to_owned());
                 };
-                let k = self.scale_of(session);
+                let k = self.mapped(session, a.scale);
                 let (x, y, tx, ty) = (x * k, y * k, tx * k, ty * k);
                 req = json!({"from_x": x, "from_y": y, "to_x": tx, "to_y": ty, "target": desktop});
                 return Ok(("drag", req));
@@ -1187,7 +1161,7 @@ impl Computer {
                 req["window_id"] = id.into();
             }
         } else if let (Some(x), Some(y)) = (a.x, a.y) {
-            let k = self.scale_of(session);
+            let k = self.mapped(session, a.scale);
             req["x"] = (x * k).into();
             req["y"] = (y * k).into();
             req["target"] = desktop;
@@ -1779,6 +1753,15 @@ struct Window {
     w: i64,
     h: i64,
     z: i64,
+}
+
+fn positive(scale: Option<f64>) -> Result<(), String> {
+    match scale {
+        Some(k) if !(k.is_finite() && k > 0.0) => {
+            Err(format!("scale {k} is not a positive number"))
+        }
+        _ => Ok(()),
+    }
 }
 
 fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -2659,6 +2642,23 @@ mod tests {
             *clicks.lock().unwrap(),
             [(100.0, 40.0), (125.0, 50.0), (162.5, 50.0), (200.0, 80.0)]
         );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn two_acts_at_once_on_one_session_each_map_by_their_own_scale() {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, clicks, driver) = scaling_driver(dir.path());
+        let cua = cua(&socket);
+        cua.state(json!({"max_edge": 640})).await.unwrap();
+        let (one, two) = tokio::join!(
+            cua.act(json!({"action": "click", "x": 100.0, "y": 40.0, "scale": 1.0})),
+            cua.act(json!({"action": "click", "x": 300.0, "y": 40.0, "scale": 3.0}))
+        );
+        assert!(!one.unwrap().is_error && !two.unwrap().is_error);
+        let mut got = clicks.lock().unwrap().clone();
+        got.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(got, [(100.0, 40.0), (900.0, 120.0)]);
         driver.abort();
     }
 
