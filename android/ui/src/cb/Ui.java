@@ -27,8 +27,9 @@ import java.util.List;
  * "<<end>>": "windows" lists the interactive windows as JSON; "focus" the node with input focus as JSON (or null):
  * editable, password, whether its window has focus, and its text's length, hash and last 32 code points; "focus live"
  * the same, refreshed from the app rather than the accessibility cache; "paste" presses the paste key and answers once
- * the focused window has handled its down event (true) or the injection failed (false); "dump" the active window and
- * "dump ID" window ID as uiautomator-style nodes with their depth and child-index path.
+ * the focused window has handled its down event (true) or its injection failed (false), sending the up event either
+ * way; "dump" the active window and "dump ID" window ID as uiautomator-style nodes with their depth and child-index
+ * path.
  */
 public final class Ui {
     private static final int MAX_DEPTH = 64;
@@ -145,8 +146,9 @@ public final class Ui {
             inputManager = c.getMethod("getInstance").invoke(null);
         }
         long now = SystemClock.uptimeMillis();
-        return inject(pasteKey(now, KeyEvent.ACTION_DOWN), INJECT_WAIT_FOR_FINISH)
-            && inject(pasteKey(now, KeyEvent.ACTION_UP), INJECT_ASYNC);
+        boolean down = inject(pasteKey(now, KeyEvent.ACTION_DOWN), INJECT_WAIT_FOR_FINISH);
+        inject(pasteKey(now, KeyEvent.ACTION_UP), INJECT_ASYNC);
+        return down;
     }
 
     private static KeyEvent pasteKey(long now, int action) {
