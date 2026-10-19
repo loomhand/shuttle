@@ -921,7 +921,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .filter(|w| w.title.to_lowercase().contains(&want))
             .count()
             == 1;
-        if !self.allow.is_open() || (self.os == Os::Linux && !unique) {
+        if !self.allow.is_open() || !unique {
             let frames = self.access.run(CALL_LIMIT, (), |b| b.frames()).await?;
             for w in &mut windows {
                 w.app = app_of(&frames, w.pid).map(str::to_owned);
@@ -2133,28 +2133,31 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn linux_focus_takes_the_active_window_among_equal_titles() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let two = || {
-            Ok(Stub {
-                frames: vec![
-                    frame("a", "Report - Writer", 4, true, Some("writer")),
-                    frame("b", "Report - Writer", 8, false, Some("writer")),
-                ],
-                ..Stub::default()
-            })
-        };
-        let desk = Desk::new(two, TwoWindows(calls.clone()), Os::Linux);
-        desk.run("desk_focus", json!({"window": "Report - Writer"}))
-            .await
-            .unwrap();
-        assert_eq!(
-            calls.lock().unwrap().last().cloned().unwrap(),
-            (
-                "bring_to_front".to_owned(),
-                json!({"pid": 4, "window_id": 1})
-            )
-        );
+    async fn focus_takes_the_active_window_among_equal_titles() {
+        for os in [Os::Linux, Os::Mac, Os::Windows] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let two = || {
+                Ok(Stub {
+                    frames: vec![
+                        frame("a", "Report - Writer", 4, true, Some("writer")),
+                        frame("b", "Report - Writer", 8, false, Some("writer")),
+                    ],
+                    ..Stub::default()
+                })
+            };
+            let desk = Desk::new(two, TwoWindows(calls.clone()), os);
+            desk.run("desk_focus", json!({"window": "Report - Writer"}))
+                .await
+                .unwrap();
+            assert_eq!(
+                calls.lock().unwrap().last().cloned().unwrap(),
+                (
+                    "bring_to_front".to_owned(),
+                    json!({"pid": 4, "window_id": 1})
+                ),
+                "{os:?}"
+            );
+        }
     }
 
     #[tokio::test]
