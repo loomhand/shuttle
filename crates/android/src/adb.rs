@@ -1273,7 +1273,7 @@ mod tests {
             self.put(
                 name,
                 &format!(
-                    r#"<hierarchy{attr}><node text="OK" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" depth="1" path="0.0" bounds="[100,200][300,300]" /></hierarchy>"#
+                    r#"<hierarchy{attr}><node text="OK" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0" bounds="[100,200][300,300]" /></hierarchy>"#
                 ),
             );
         }
@@ -1701,7 +1701,7 @@ mod tests {
     #[test]
     fn the_ui_servers_focus_answer_decodes_and_null_is_no_focus() {
         let f: Option<Focus> = serde_json::from_str(
-            r#"{"editable":true,"password":false,"window":true,"len":6,"hash":-1,"tail":"ab 你好","class":"android.widget.EditText","package":"com.android.settings","bounds":[100,80,620,180]}"#,
+            r#"{"editable":true,"password":false,"window":true,"len":6,"hash":-1,"tail":"ab 你好","bounds":[100,80,620,180]}"#,
         )
         .unwrap();
         let f = f.unwrap();

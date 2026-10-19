@@ -10,7 +10,6 @@ public class AccessibilityNodeInfo {
     public CharSequence getText() { throw new RuntimeException(); }
     public CharSequence getContentDescription() { throw new RuntimeException(); }
     public CharSequence getClassName() { throw new RuntimeException(); }
-    public String getViewIdResourceName() { throw new RuntimeException(); }
     public void getBoundsInScreen(Rect r) { throw new RuntimeException(); }
     public boolean isVisibleToUser() { throw new RuntimeException(); }
     public boolean isCheckable() { throw new RuntimeException(); }

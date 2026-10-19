@@ -28,8 +28,7 @@ import java.util.List;
  * editable, password, whether its window has focus, and its text's length, hash and last 32 code points; "focus live"
  * the same, refreshed from the app rather than the accessibility cache; "paste" presses the paste key and answers once
  * the focused window has handled its down event (true) or its injection failed (false), sending the up event either
- * way; "dump" the active window and "dump ID" window ID as uiautomator-style nodes with their depth and child-index
- * path.
+ * way; "dump" the active window and "dump ID" window ID as uiautomator-style nodes with their child-index path.
  */
 public final class Ui {
     private static final int MAX_DEPTH = 64;
@@ -129,9 +128,8 @@ public final class Ui {
         String tail = text.substring(text.offsetByCodePoints(0, Math.max(0, n - TAIL)));
         return "{\"editable\":" + f.isEditable() + ",\"password\":" + f.isPassword()
             + ",\"window\":" + (w != null && w.isFocused()) + ",\"len\":" + text.length()
-            + ",\"hash\":" + text.hashCode() + ",\"tail\":" + json(tail) + ",\"class\":" + json(f.getClassName())
-            + ",\"package\":" + json(f.getPackageName()) + ",\"bounds\":[" + r.left + ',' + r.top + ','
-            + r.right + ',' + r.bottom + "]}";
+            + ",\"hash\":" + text.hashCode() + ",\"tail\":" + json(tail) + ",\"bounds\":[" + r.left + ',' + r.top
+            + ',' + r.right + ',' + r.bottom + "]}";
     }
 
     private static boolean paste() throws ReflectiveOperationException {
@@ -190,9 +188,7 @@ public final class Ui {
         n.getBoundsInScreen(r);
         sb.append("<node");
         attr(sb, "text", n.getText());
-        attr(sb, "resource-id", n.getViewIdResourceName());
         attr(sb, "class", n.getClassName());
-        attr(sb, "package", n.getPackageName());
         attr(sb, "content-desc", n.getContentDescription());
         attr(sb, "hint", n.getHintText());
         attr(sb, "showing-hint", String.valueOf(n.isShowingHintText()));
@@ -206,7 +202,6 @@ public final class Ui {
         attr(sb, "selected", String.valueOf(n.isSelected()));
         attr(sb, "scrollable", String.valueOf(n.isScrollable()));
         attr(sb, "visible", String.valueOf(n.isVisibleToUser()));
-        attr(sb, "depth", String.valueOf(depth));
         attr(sb, "path", path);
         attr(sb, "bounds", "[" + r.left + "," + r.top + "][" + r.right + "," + r.bottom + "]");
         sb.append(" />");
