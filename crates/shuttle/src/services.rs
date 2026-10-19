@@ -198,7 +198,7 @@ async fn listening(socket: &str) -> Result<server::Conn, String> {
     }
 }
 
-// the client's end only closes the service's input, since a reply can still come
+// an end of the data on either side only closes the other's input, and the first failure ends both
 async fn splice<C, S>(client: C, service: S)
 where
     C: AsyncRead + AsyncWrite + Unpin,
@@ -206,15 +206,7 @@ where
 {
     let (client_r, client_w) = tokio::io::split(client);
     let (service_r, service_w) = tokio::io::split(service);
-    let up = pump(client_r, service_w);
-    let down = pump(service_r, client_w);
-    tokio::pin!(up, down);
-    tokio::select! {
-        r = &mut up => if r.is_ok() {
-            let _ = down.await;
-        },
-        _ = &mut down => {}
-    }
+    let _ = tokio::try_join!(pump(client_r, service_w), pump(service_r, client_w));
 }
 
 async fn pump<R, W>(mut r: R, mut w: W) -> std::io::Result<()>
@@ -277,7 +269,7 @@ mod tests {
     use crate::runner::Runner;
 
     const FAKE: &str = r#"#!/usr/bin/env python3
-import json, os, socketserver, struct, sys
+import json, os, socket, socketserver, struct, sys
 state = sys.argv[1]
 
 def exact(f, n):
@@ -335,6 +327,16 @@ class Conn(socketserver.StreamRequestHandler):
                 send(self.wfile, d)
             send(self.wfile, b"")
             reply(self.wfile, str(sum(len(d) for d in chunks)))
+        elif tool == "demo_early":
+            reply(self.wfile, "early")
+            self.request.shutdown(socket.SHUT_WR)
+            total = 0
+            while True:
+                n = struct.unpack(">I", exact(self.rfile, 4))[0]
+                if n == 0:
+                    break
+                total += len(exact(self.rfile, n))
+            mark("received", str(total))
         elif tool == "demo_hold":
             mark("held")
             self.rfile.read(1)
@@ -409,7 +411,7 @@ server.serve_forever()
                     "service": "demo",
                     "bin": bin,
                     "args": [state],
-                    "tools": [tool("demo_echo", true), tool("demo_stream", false), tool("demo_blob", false), tool("demo_hold", false)],
+                    "tools": [tool("demo_echo", true), tool("demo_stream", false), tool("demo_blob", false), tool("demo_hold", false), tool("demo_early", false)],
                 }))
                 .unwrap(),
             ],
@@ -547,6 +549,29 @@ server.serve_forever()
         };
         let ((), (blocks, text)) = tokio::join!(send, receive);
         assert_eq!((blocks, text.as_str()), (64, "67108864"));
+        s.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_service_that_replies_and_closes_its_output_early_still_gets_the_whole_upload() {
+        let s = served(Guard::default()).await;
+        let mut conn = s.open("demo_early", json!({})).await;
+        let early: Output = read_frame(&mut conn).await.unwrap();
+        assert_eq!(early.text, "early");
+        let block = vec![9u8; 1 << 20];
+        for _ in 0..8 {
+            conn.write_all(&(1u32 << 20).to_be_bytes()).await.unwrap();
+            conn.write_all(&block).await.unwrap();
+        }
+        conn.write_all(&[0, 0, 0, 0]).await.unwrap();
+        assert!(
+            appears(&s.state("received")).await,
+            "the upload was cut off"
+        );
+        assert_eq!(
+            std::fs::read_to_string(s.state("received")).unwrap(),
+            (8u32 << 20).to_string()
+        );
         s.stop().await;
     }
 
