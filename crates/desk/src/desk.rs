@@ -532,12 +532,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return;
         };
         let allow = self.allow.clone();
+        let started = Instant::now();
         let _ = tokio::time::timeout(TYPE_SETTLE, async {
             let focused = self
                 .access
                 .run(CALL_LIMIT, (), move |b| {
                     let frame = allow.pick(b.frames()?, None, None)?;
-                    b.focused(&frame)
+                    b.focused(&frame, TYPE_SETTLE.saturating_sub(started.elapsed()))
                 })
                 .await?;
             let Some(focused) = focused else {
@@ -1351,6 +1352,8 @@ pub(crate) mod tests {
         closed: Vec<String>,
         opens: Option<Opens>,
         overlays: Vec<bool>,
+        stalled: bool,
+        budgets: Vec<Duration>,
     }
 
     impl Stub {
@@ -1368,6 +1371,15 @@ pub(crate) mod tests {
     }
 
     impl Access for Stub {
+        fn focused(&mut self, frame: &Frame, within: Duration) -> Result<Option<String>, String> {
+            if !self.stalled {
+                return crate::model::focused_by_tree(self, frame);
+            }
+            self.budgets.push(within);
+            std::thread::sleep(within);
+            Ok(None)
+        }
+
         fn capture(&mut self, _: [f64; 4], overlay: bool) -> Result<Option<Capture>, String> {
             self.overlays.push(overlay);
             Ok(None)
@@ -1954,6 +1966,45 @@ pub(crate) mod tests {
                 ),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_focused_lookup_that_never_answers_ends_within_the_settle_and_frees_the_desk() {
+        let desk = Desk::new(
+            || {
+                Ok(Stub {
+                    frames: vec![frame("w", "Untitled - Notepad", 4, true, Some("Notepad"))],
+                    stalled: true,
+                    ..Stub::default()
+                })
+            },
+            Recorder(Arc::default()),
+            Os::Linux,
+        )
+        .with_typer(|_, _| Ok(true));
+        let started = Instant::now();
+        desk.run("desk_type", json!({"text": "hello"}))
+            .await
+            .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        let started = Instant::now();
+        desk.run("desk_windows", json!({})).await.unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        let budgets = desk
+            .access
+            .run(CALL_LIMIT, (), |b| Ok(b.budgets.clone()))
+            .await
+            .unwrap();
+        assert_eq!(budgets.len(), 1);
+        assert!(budgets[0] <= TYPE_SETTLE, "{budgets:?}");
     }
 
     #[tokio::test]
