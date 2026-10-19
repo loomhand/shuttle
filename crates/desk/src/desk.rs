@@ -1053,7 +1053,7 @@ async fn delivered(png: Vec<u8>, w: u32, h: u32, path: Option<String>) -> Result
 
 /// Moves a Linux launch into a systemd scope of its own on a task that finishes when the call is dropped; false when the launch stays in the daemon's cgroup.
 #[cfg(target_os = "linux")]
-async fn adopt(launched: Value) -> bool {
+pub(crate) async fn adopt(launched: Value) -> bool {
     tokio::spawn(async move {
         crate::scope::adopt(&launched).await.unwrap_or_else(|e| {
             eprintln!("desk: scope the launch: {e}");

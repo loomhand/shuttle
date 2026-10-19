@@ -16,11 +16,12 @@ use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use super::desk::key_names;
-use super::rpc::{self, Output};
-use super::scope;
-use super::volatile::{Block, Shown, Volatile};
-use super::xshm::{self, Grabber, Modal, Placement, SHELL_APPS};
+use desk_core::args::parse;
+use desk_core::wire::Output;
+
+use crate::keys::{Os, key_names};
+use crate::volatile::{Block, Shown, Volatile};
+use crate::xshm::{self, Grabber, Modal, Placement, SHELL_APPS};
 
 const STATE_ELEMENTS: u64 = 300;
 const TREE_CHARS: usize = 15_000;
@@ -117,7 +118,7 @@ impl Cua {
     pub async fn state(&self, args: Value) -> Result<Output, String> {
         self.touch();
         let session = session_of(&args);
-        let a: StateArgs = rpc::parse(args)?;
+        let a: StateArgs = parse(args)?;
         let windows = self
             .request(&session, "list_windows", json!({"on_screen_only": true}))
             .await?;
@@ -210,10 +211,10 @@ impl Cua {
         self.touch();
         let session = session_of(&args);
         if args.get("actions").is_some() {
-            let list: ActList = rpc::parse(args)?;
+            let list: ActList = parse(args)?;
             return self.act_list(&session, list).await;
         }
-        let a: ActArgs = rpc::parse(args)?;
+        let a: ActArgs = parse(args)?;
         self.act_one(&session, a).await
     }
 
@@ -923,7 +924,7 @@ impl Cua {
             match Grabber::open() {
                 Ok(g) => *slot = Some(g),
                 Err(e) => {
-                    eprintln!("toolhost: MIT-SHM capture unavailable, using cua-driver: {e}");
+                    eprintln!("desk: MIT-SHM capture unavailable, using cua-driver: {e}");
                     return None;
                 }
             }
@@ -931,7 +932,7 @@ impl Cua {
         match read(slot.as_ref()?) {
             Ok(v) => Some(v),
             Err(e) => {
-                eprintln!("toolhost: MIT-SHM capture: {e}");
+                eprintln!("desk: MIT-SHM capture: {e}");
                 *slot = None;
                 None
             }
@@ -1439,10 +1440,8 @@ impl Cua {
         if result["isError"] == true {
             return Err(format!("{name}: {}", content_text(&result)));
         }
-        if name == "launch_app"
-            && let Err(e) = scope::adopt(&result).await
-        {
-            eprintln!("toolhost: scope the launch: {e}");
+        if name == "launch_app" {
+            crate::desk::adopt(result.clone()).await;
         }
         Ok(result)
     }
@@ -1705,7 +1704,7 @@ fn landed(run: &str, result: &Value) -> usize {
 fn driver_keys(a: &mut ActArgs) -> Result<(), String> {
     match a.action.as_str() {
         "key" => {
-            let mut keys = key_names(required(&a.key, "key")?)?;
+            let mut keys = key_names(required(&a.key, "key")?, Os::Linux)?;
             if keys.len() == 1 {
                 a.key = keys.pop();
             } else {
@@ -1717,7 +1716,7 @@ fn driver_keys(a: &mut ActArgs) -> Result<(), String> {
             let keys = a.keys.as_deref().ok_or("hotkey needs keys")?;
             let mut names = keys
                 .iter()
-                .map(|k| key_names(k))
+                .map(|k| key_names(k, Os::Linux))
                 .collect::<Result<Vec<_>, _>>()?
                 .concat();
             if names.len() == 1 {

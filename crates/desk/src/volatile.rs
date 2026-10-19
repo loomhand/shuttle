@@ -5,7 +5,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use super::xshm::Grabber;
+use crate::xshm::Grabber;
 
 const SAMPLE_EVERY: Duration = Duration::from_millis(200);
 const WINDOW: Duration = Duration::from_secs(2);
@@ -130,7 +130,7 @@ impl Volatile {
             .name("settle-sampler".to_owned())
             .spawn(move || sampler.run())
         {
-            eprintln!("toolhost: settle sampler: {e}");
+            eprintln!("desk: settle sampler: {e}");
         }
         Self { shared }
     }
@@ -229,7 +229,7 @@ impl Shared {
                     }
                 }
                 Some(Err(e)) if !failing => {
-                    eprintln!("toolhost: settle sampler: {e}");
+                    eprintln!("desk: settle sampler: {e}");
                     (failing, grabber) = (true, None);
                 }
                 _ => grabber = None,
