@@ -15,14 +15,12 @@ use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use super::browser::Browser;
 use super::desk::key_names;
 use super::rpc::{self, Output};
 use super::scope;
 use super::timing;
 use super::volatile::{Block, Shown, Volatile};
 use super::xshm::{self, Grabber, Modal, Placement, SHELL_APPS};
-use super::xtest;
 
 const STATE_ELEMENTS: u64 = 300;
 const TREE_CHARS: usize = 15_000;
@@ -70,7 +68,6 @@ const SKIPPED: &str = "had no keycode";
 const RUN_CHARS: usize = 8;
 const WM_WAIT: Duration = Duration::from_secs(10);
 const WM_POLL: Duration = Duration::from_millis(100);
-const CARD_FILE_MAX: u64 = 64 * 1024;
 const NO_TEXT_TARGET: &str =
     "no application window is on the screen to type into; open or focus one first";
 const RETRIED: [&str; 4] = [
@@ -208,27 +205,21 @@ impl Cua {
         })
     }
 
-    /// `computer_act` of agent `owner`: one input action, or a list of `actions`, followed by a fresh desktop screenshot.
-    pub async fn act(&self, browser: &Browser, owner: &str, args: Value) -> Result<Output, String> {
+    /// `computer_act`: one input action, or a list of `actions`, followed by a fresh desktop screenshot.
+    pub async fn act(&self, args: Value) -> Result<Output, String> {
         self.touch();
         let session = session_of(&args);
         if args.get("actions").is_some() {
             let list: ActList = rpc::parse(args)?;
-            return self.act_list(browser, owner, &session, list).await;
+            return self.act_list(&session, list).await;
         }
         let a: ActArgs = rpc::parse(args)?;
-        self.act_one(browser, owner, &session, a).await
+        self.act_one(&session, a).await
     }
 
     /// Runs the actions in order, each settled, stops at the first failure and returns the last screenshot;
     /// every x,y maps by the screenshot returned before the list, the one the caller saw.
-    async fn act_list(
-        &self,
-        browser: &Browser,
-        owner: &str,
-        session: &str,
-        list: ActList,
-    ) -> Result<Output, String> {
+    async fn act_list(&self, session: &str, list: ActList) -> Result<Output, String> {
         let total = list.actions.len();
         let mut lines = Vec::with_capacity(total);
         let mut out = Output::default();
@@ -237,10 +228,7 @@ impl Cua {
             a.max_edge = list.max_edge;
             self.scales().insert(session.to_owned(), seen);
             let action = a.action.clone();
-            let step = self
-                .act_one(browser, owner, session, a)
-                .await
-                .unwrap_or_else(Output::error);
+            let step = self.act_one(session, a).await.unwrap_or_else(Output::error);
             let failed = if step.is_error { " failed" } else { "" };
             lines.push(format!("{}. {action}{failed}: {}", i + 1, step.text));
             out.image_b64 = step.image_b64;
@@ -263,76 +251,13 @@ impl Cua {
         Ok(out)
     }
 
-    /// Runs one action; `type_from_file` clicks its target, types a card field through the `type` path
-    /// only while the focus is in a web page field (see [`Browser::page_field`]), returns only its
-    /// length and hands the field to the agent as a secret.
-    async fn act_one(
-        &self,
-        browser: &Browser,
-        owner: &str,
-        session: &str,
-        mut a: ActArgs,
-    ) -> Result<Output, String> {
+    /// Runs one action: a launch, or an input action.
+    async fn act_one(&self, session: &str, a: ActArgs) -> Result<Output, String> {
         if a.action == "launch_app" {
             timing::note("action", &a.action);
-            return self.launch(browser, owner, session, &a).await;
+            return self.launch(session, &a).await;
         }
-        if a.action != "type_from_file" {
-            return self.act_input(session, a).await;
-        }
-        let field = required(&a.field, "field")?.to_owned();
-        let value = card_field(required(&a.path, "path")?, &field).await?;
-        let mut shot = None;
-        if a.element.is_some() || (a.x.is_some() && a.y.is_some()) {
-            let click = ActArgs {
-                action: "click".to_owned(),
-                element: a.element.take(),
-                x: a.x.take(),
-                y: a.y.take(),
-                foreground: a.foreground,
-                max_edge: a.max_edge,
-                ..ActArgs::default()
-            };
-            let clicked = self.act_input(session, click).await?;
-            if clicked.is_error {
-                return Ok(Output {
-                    text: format!(
-                        "clicking the {field} field failed; nothing was typed: {}",
-                        clicked.text
-                    ),
-                    ..clicked
-                });
-            }
-            shot = clicked.image_b64;
-        }
-        if let Err(e) = browser.page_field().await {
-            if shot.is_none() {
-                shot = self.screenshot(session, a.max_edge).await?;
-            }
-            return Ok(Output {
-                text: e,
-                is_error: true,
-                image_b64: shot,
-                ..Output::default()
-            });
-        }
-        let typed = value.chars().count();
-        "type".clone_into(&mut a.action);
-        a.text = Some(value.clone());
-        let mut out = self
-            .act_input(session, a)
-            .await
-            .unwrap_or_else(Output::error);
-        out.text = if out.is_error {
-            format!(
-                "typing {field} failed: {}",
-                out.text.replace(&value, "[card field]")
-            )
-        } else {
-            format!("typed {typed} characters of {field}; verify on the screenshot")
-        };
-        out.secrets.push((field, value));
-        Ok(out)
+        self.act_input(session, a).await
     }
 
     async fn act_input(&self, session: &str, mut a: ActArgs) -> Result<Output, String> {
@@ -470,11 +395,6 @@ impl Cua {
     /// The modal dialogs that are open where the screen does not show them.
     pub fn modals(&self) -> Vec<Modal> {
         self.shm(Grabber::modals).unwrap_or_default()
-    }
-
-    /// The titles of the desktop's app windows.
-    pub fn window_titles(&self) -> Vec<String> {
-        self.shm(Grabber::client_titles).unwrap_or_default()
     }
 
     /// Base64 PNG of the whole desktop, scaled so its long edge is at most `max_edge`.
@@ -655,53 +575,38 @@ impl Cua {
         })
     }
 
-    /// Launches an app, or brings its existing window to the front when it already runs. Chrome by any name
-    /// is the window of `owner` in the browser tools' Chrome, so they and `type_from_file` see it.
-    async fn launch(
-        &self,
-        browser: &Browser,
-        owner: &str,
-        session: &str,
-        a: &ActArgs,
-    ) -> Result<Output, String> {
+    /// Launches an app, or brings its existing window to the front when it already runs.
+    async fn launch(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
         let app = required(&a.app, "app")?;
         let input = self.input.lock().await;
         let before = self.before_input(None).await;
-        let launched = if is_chrome(app) {
-            browser
-                .run(owner, "browser_show", Value::Null)
-                .await
-                .map(|title| format!("brought this agent's window \"{title}\" of the box's Chrome to the front; the browser tools and type_from_file see it"))
-                .map_err(|e| format!("opening the box's Chrome failed: {e}"))
-        } else {
-            match self.app_windows(session, app).await?.first() {
-                Some(w) => {
-                    let req = json!({"pid": w.pid, "window_id": w.window_id});
-                    Ok(match self.request(session, "bring_to_front", req).await {
-                        Ok(_) => format!(
-                            "{app} is already running; brought its window {} \"{}\" (pid {}) to the front",
-                            w.window_id, w.title, w.pid
-                        ),
-                        Err(e) => format!(
-                            "{app} is already running as window {} \"{}\" (pid {}); raising it failed: {e}",
-                            w.window_id, w.title, w.pid
-                        ),
-                    })
-                }
-                None => match self
-                    .request(session, "launch_app", json!({"name": app}))
-                    .await
-                {
-                    Ok(v) => Ok(content_text(&v)),
-                    Err(e) => match self.app_windows(session, app).await?.first() {
-                        Some(w) => Ok(format!(
-                            "{app} is running as window {} \"{}\" (pid {}); the launcher reported: {e}",
-                            w.window_id, w.title, w.pid
-                        )),
-                        None => Err(e),
-                    },
-                },
+        let launched = match self.app_windows(session, app).await?.first() {
+            Some(w) => {
+                let req = json!({"pid": w.pid, "window_id": w.window_id});
+                Ok(match self.request(session, "bring_to_front", req).await {
+                    Ok(_) => format!(
+                        "{app} is already running; brought its window {} \"{}\" (pid {}) to the front",
+                        w.window_id, w.title, w.pid
+                    ),
+                    Err(e) => format!(
+                        "{app} is already running as window {} \"{}\" (pid {}); raising it failed: {e}",
+                        w.window_id, w.title, w.pid
+                    ),
+                })
             }
+            None => match self
+                .request(session, "launch_app", json!({"name": app}))
+                .await
+            {
+                Ok(v) => Ok(content_text(&v)),
+                Err(e) => match self.app_windows(session, app).await?.first() {
+                    Some(w) => Ok(format!(
+                        "{app} is running as window {} \"{}\" (pid {}); the launcher reported: {e}",
+                        w.window_id, w.title, w.pid
+                    )),
+                    None => Err(e),
+                },
+            },
         };
         let text = match launched {
             Ok(text) => text,
@@ -1501,65 +1406,15 @@ impl Cua {
             .await;
     }
 
-    /// The desk tools' input: `req` of `tool` addressed to the desktop, serialized with every other input.
-    pub async fn desk_input(&self, tool: &str, req: Value) -> Result<Value, String> {
-        let _input = self.input.lock().await;
-        self.desktop_input(tool, req).await
-    }
-
-    /// The desk tools' typing: XTest when the keyboard map holds every character, else the driver's, serialized with every other input.
-    pub async fn desk_type(&self, text: &str) -> Result<(), String> {
-        let _input = self.input.lock().await;
-        if xtest::type_mapped(text)? {
-            return Ok(());
-        }
-        for run in text_runs(text) {
-            self.desktop_input("type_text", json!({"text": run}))
-                .await?;
-        }
-        Ok(())
-    }
-
-    /// The desk tools' other driver calls, each in a driver session of its own.
-    pub async fn desk_call(&self, tool: &str, req: Value) -> Result<Value, String> {
-        let once = crate::new_id("desk");
-        let done = self.request(&once, tool, req).await;
-        self.end_once(Some(once)).await;
-        done
-    }
-
-    /// The whole screen as `(width, height, RGB)` over MIT-SHM.
-    pub fn screen_rgb(&self) -> Option<(u32, u32, Vec<u8>)> {
-        self.shm(Grabber::rgb)
-    }
-
     /// Whether the screen point `(x, y)` shows a window title: a desktop panel or a window manager's title bar.
     pub fn title_at(&self, x: f64, y: f64) -> bool {
         self.shm(|g| g.title_at(x.round() as i32, y.round() as i32))
             .unwrap_or(false)
     }
 
-    /// Base64 of the screen rectangle `[x, y, w, h]` clipped to the screen, encoded like a screenshot.
-    pub fn crop(&self, rect: [f64; 4]) -> Option<String> {
-        let (rect, rgb) = self.region_rgb(rect).ok()?;
-        encode(rect[2].unsigned_abs(), rect[3].unsigned_abs(), &rgb).map(|i| B64.encode(i))
-    }
-
     /// Screen pixels per pixel of the last screenshot of the session `args` name, so a screen point maps to it.
     pub fn screenshot_scale(&self, args: &Value) -> f64 {
         self.scale_of(&session_of(args))
-    }
-
-    /// The fixed wait after an input that has no frame from before it.
-    pub async fn settled(&self) {
-        self.settle(None, 1.0).await;
-    }
-
-    /// The screen rectangle `[x, y, w, h]`, clipped to the screen, as `(width, height, PNG)` over MIT-SHM.
-    pub fn region_png(&self, rect: [f64; 4]) -> Result<(u32, u32, Vec<u8>), String> {
-        let (rect, rgb) = self.region_rgb(rect)?;
-        let (rw, rh) = (rect[2].unsigned_abs(), rect[3].unsigned_abs());
-        Ok((rw, rh, png_rgb(rw, rh, &rgb)?))
     }
 
     /// The screen rectangle `[x, y, w, h]` clipped to the screen, and its RGB rows over MIT-SHM.
@@ -1814,10 +1669,6 @@ struct ActArgs {
     #[serde(default)]
     foreground: bool,
     #[serde(default)]
-    path: Option<String>,
-    #[serde(default)]
-    field: Option<String>,
-    #[serde(default)]
     max_edge: Option<u32>,
 }
 
@@ -1975,7 +1826,7 @@ fn label_key(label: &str) -> String {
 }
 
 /// Whether `pid` runs LibreOffice, whose toolbar extents can sit a menu bar's height above the drawn controls.
-pub(super) fn libreoffice(pid: i64) -> bool {
+fn libreoffice(pid: i64) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/comm"))
         .is_ok_and(|c| c.trim_end() == "soffice.bin")
 }
@@ -2311,17 +2162,6 @@ fn encode(width: u32, height: u32, rgb: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Whether every [`COLOR_STRIDE`]th pixel shows more than [`PHOTO_COLORS`] distinct colours.
-pub(super) fn png_rgb(width: u32, height: u32, rgb: &[u8]) -> Result<Vec<u8>, String> {
-    let mut out = Vec::new();
-    let mut enc = png::Encoder::new(&mut out, width, height);
-    enc.set_color(png::ColorType::Rgb);
-    enc.set_depth(png::BitDepth::Eight);
-    enc.write_header()
-        .and_then(|mut w| w.write_image_data(rgb))
-        .map_err(|e| format!("encode PNG: {e}"))?;
-    Ok(out)
-}
-
 fn photo(rgb: &[u8]) -> bool {
     let mut seen = HashSet::new();
     rgb.as_chunks::<3>()
@@ -2349,72 +2189,13 @@ fn differs(a: &[u8], b: &[u8]) -> bool {
             .any(|(x, y)| x.abs_diff(*y) > STILL_TOLERANCE)
 }
 
-/// Reads `field` of the card in a link-cli `--output-file` JSON file under /tmp or $HOME; no error carries a value.
-async fn card_field(path: &str, field: &str) -> Result<String, String> {
-    let real = tokio::fs::canonicalize(path)
-        .await
-        .map_err(|e| format!("{path}: {e}"))?;
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let allowed = real.starts_with("/tmp") || home.is_some_and(|h| real.starts_with(h));
-    if !Path::new(path).is_absolute() || !allowed {
-        return Err(format!("{path}: give an absolute path under /tmp or $HOME"));
-    }
-    let size = tokio::fs::metadata(&real)
-        .await
-        .map_err(|e| format!("{path}: {e}"))?
-        .len();
-    if size > CARD_FILE_MAX {
-        return Err(format!("{path}: larger than {CARD_FILE_MAX} bytes"));
-    }
-    let raw = tokio::fs::read(&real)
-        .await
-        .map_err(|e| format!("{path}: {e}"))?;
-    let doc: Value = serde_json::from_slice(&raw)
-        .map_err(|_| format!("{path}: not a link-cli card file (no JSON)"))?;
-    let card = &doc["card"];
-    let text = |v: &Value| match v {
-        Value::String(s) => Some(s.clone()),
-        Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    };
-    let month = || text(&card["exp_month"]).and_then(|m| m.parse::<u32>().ok());
-    let value = match field {
-        "exp_month" => month().map(|m| format!("{m:02}")),
-        "exp" => month()
-            .zip(text(&card["exp_year"]).and_then(|y| y.parse::<u32>().ok()))
-            .map(|(m, y)| format!("{m:02}/{:02}", y % 100)),
-        _ => text(field.split('.').fold(card, |v, k| &v[k])),
-    };
-    value
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| format!("{path}: the card has no {field}"))
-}
-
-/// Whether `launch_app` names Chrome or Chromium by command, display name or desktop file id.
-fn is_chrome(app: &str) -> bool {
-    let app = app.to_lowercase();
-    app.contains("chrome") || app.contains("chromium")
-}
-
 fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
     v.as_deref().ok_or_else(|| format!("missing {name}"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::browser::tests::{slow_chrome, web_chrome};
     use super::*;
-
-    #[test]
-    fn png_rgb_round_trips_through_decode_png() {
-        let rgb = [1, 2, 3, 4, 5, 6];
-        let (info, data) = decode_png(&png_rgb(2, 1, &rgb).unwrap()).unwrap();
-        assert_eq!(
-            (info.width, info.height, info.color_type),
-            (2, 1, png::ColorType::Rgb)
-        );
-        assert_eq!(&data[..6], &rgb);
-    }
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -2561,9 +2342,8 @@ mod tests {
             }
         });
         let cua = Cua::new(socket);
-        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
         let out = cua
-            .act(&browser, "ag", json!({"action": "key", "key": "escape"}))
+            .act(json!({"action": "key", "key": "escape"}))
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.text);
@@ -2582,10 +2362,7 @@ mod tests {
         assert_eq!(pressed["args"]["session"], DEFAULT_SESSION);
         assert!(pressed["args"].get("pid").is_none(), "{pressed}");
         for text in ["hello", "héllo"] {
-            let failed = match cua
-                .act(&browser, "ag", json!({"action": "type", "text": text}))
-                .await
-            {
+            let failed = match cua.act(json!({"action": "type", "text": text})).await {
                 Ok(out) => {
                     assert!(out.is_error, "{text}: {}", out.text);
                     out.text
@@ -2604,53 +2381,6 @@ mod tests {
             calls.lock().unwrap()
         );
         driver.abort();
-    }
-
-    const PAN: &str = "4000056655665556";
-
-    fn card_file(dir: &Path) -> String {
-        let path = dir.join("card.json");
-        let card = json!({"spend_request_id": "lsrq_1", "card": {"number": PAN, "cvc": "321", "exp_month": 3, "exp_year": 2029, "brand": "visa", "billing_address": {"postal_code": "94107"}}});
-        std::fs::write(&path, card.to_string()).unwrap();
-        path.display().to_string()
-    }
-
-    #[tokio::test]
-    async fn card_field_reads_a_link_cli_card_file_under_tmp_only() {
-        let dir = tempfile::tempdir_in("/tmp").unwrap();
-        let path = card_file(dir.path());
-        for (field, want) in [
-            ("number", PAN),
-            ("cvc", "321"),
-            ("exp_month", "03"),
-            ("exp_year", "2029"),
-            ("exp", "03/29"),
-            ("billing_address.postal_code", "94107"),
-        ] {
-            assert_eq!(card_field(&path, field).await.unwrap(), want, "{field}");
-        }
-        let missing = card_field(&path, "billing_address.line1")
-            .await
-            .unwrap_err();
-        assert!(
-            missing.contains("no billing_address.line1") && !missing.contains(PAN),
-            "{missing}"
-        );
-        let big = dir.path().join("big.json");
-        std::fs::write(&big, vec![b' '; 64 * 1024 + 1]).unwrap();
-        assert!(
-            card_field(big.to_str().unwrap(), "number")
-                .await
-                .unwrap_err()
-                .contains("larger than")
-        );
-        assert!(
-            card_field("/etc/passwd", "number")
-                .await
-                .unwrap_err()
-                .contains("under /tmp or $HOME")
-        );
-        assert!(card_field("../../etc/passwd", "number").await.is_err());
     }
 
     /// A driver on `socket` that logs every call in `calls`, lists one Chrome window and types the first `typed` texts.
@@ -2699,15 +2429,10 @@ mod tests {
         let socket = dir.path().join("cua.sock");
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
-        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
         calls.lock().unwrap().clear();
         let cua = Cua::new(socket.clone());
         let out = cua
-            .act(
-                &browser,
-                "ag",
-                json!({"action": "type", "text": "hello", "x": 10, "y": 20}),
-            )
+            .act(json!({"action": "type", "text": "hello", "x": 10, "y": 20}))
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.text);
@@ -2736,16 +2461,11 @@ mod tests {
         let socket = dir.path().join("cua.sock");
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
-        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
         let text = "一二三四五六七八九十百千万亿甲乙丙丁戊己";
         calls.lock().unwrap().clear();
         let cua = Cua::new(socket.clone());
         let out = cua
-            .act(
-                &browser,
-                "ag",
-                json!({"action": "type", "text": text, "foreground": true}),
-            )
+            .act(json!({"action": "type", "text": text, "foreground": true}))
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.text);
@@ -2758,48 +2478,6 @@ mod tests {
         assert_eq!(runs.len(), 3, "{runs:?}");
         assert!(runs.iter().all(|r| r.chars().count() <= 8), "{runs:?}");
         assert_eq!(runs.concat(), text);
-        driver.abort();
-    }
-
-    #[tokio::test]
-    async fn with_plans_chrome_by_any_name_opens_the_agent_window_of_the_browser_tools_chrome() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
-        let calls = std::sync::Arc::default();
-        let driver = window_driver(&socket, &calls, usize::MAX);
-        let launches = || -> Vec<String> {
-            calls
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|c| c["name"] == "launch_app" || c["name"] == "bring_to_front")
-                .map(|c| c["name"].as_str().unwrap_or_default().to_owned())
-                .collect()
-        };
-        let port = slow_chrome(Duration::ZERO).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), port, false);
-        let launch = |app: &str| json!({"action": "launch_app", "app": app});
-        let plans = Cua::new(socket);
-        for app in [
-            "google-chrome",
-            "Google Chrome",
-            "chromium",
-            "com.google.Chrome.desktop",
-        ] {
-            let out = plans.act(&browser, "ag", launch(app)).await.unwrap();
-            assert!(
-                !out.is_error
-                    && out
-                        .text
-                        .contains("window \"Page: slow\" of the box's Chrome"),
-                "{app}: {}",
-                out.text
-            );
-        }
-        assert!(launches().is_empty(), "{:?}", launches());
-        plans.act(&browser, "ag", launch("mousepad")).await.unwrap();
-        assert_eq!(launches(), ["launch_app"]);
         driver.abort();
     }
 
@@ -2842,14 +2520,13 @@ mod tests {
             }
         });
         let cua = Cua::new(socket);
-        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
         let click = |x: f64| json!({"action": "click", "x": x, "y": 30.0});
         cua.state(json!({"max_edge": 0})).await.unwrap();
         let first = json!({"actions": [click(100.0), click(110.0), click(120.0)], "max_edge": 640});
-        let out = cua.act(&browser, "ag", first).await.unwrap();
+        let out = cua.act(first).await.unwrap();
         assert!(!out.is_error, "{}", out.text);
         let second = json!({"actions": [click(100.0), click(110.0)], "max_edge": 640});
-        cua.act(&browser, "ag", second).await.unwrap();
+        cua.act(second).await.unwrap();
         assert_eq!(
             *clicks.lock().unwrap(),
             [
@@ -2868,27 +2545,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (socket, clicks, driver) = scaling_driver(dir.path());
         let cua = Cua::new(socket);
-        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
         let click =
             |session: &str| json!({"action": "click", "x": 100.0, "y": 40.0, "session": session});
         cua.screenshot_once(None).await.unwrap();
-        cua.act(&browser, "ag", click("after-default-shot"))
-            .await
-            .unwrap();
+        cua.act(click("after-default-shot")).await.unwrap();
         cua.screenshot_once(Some(0)).await.unwrap();
-        cua.act(&browser, "ag", click("after-full-shot"))
-            .await
-            .unwrap();
+        cua.act(click("after-full-shot")).await.unwrap();
         cua.state(json!({"session": "ended", "max_edge": 640}))
             .await
             .unwrap();
         cua.end(json!({"session": "ended"})).await.unwrap();
-        cua.act(&browser, "ag", click("rotated")).await.unwrap();
+        cua.act(click("rotated")).await.unwrap();
         cua.state(json!({"session": "own", "max_edge": 1280}))
             .await
             .unwrap();
         cua.screenshot_once(None).await.unwrap();
-        cua.act(&browser, "ag", click("own")).await.unwrap();
+        cua.act(click("own")).await.unwrap();
         assert_eq!(
             *clicks.lock().unwrap(),
             [(125.0, 50.0), (100.0, 40.0), (200.0, 80.0), (100.0, 40.0)]
@@ -2901,7 +2573,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (socket, clicks, driver) = scaling_driver(dir.path());
         let cua = Cua::new(socket);
-        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
         let click =
             |session: &str| json!({"action": "click", "x": 100.0, "y": 40.0, "session": session});
         cua.state(json!({"session": "owner", "max_edge": 640}))
@@ -2914,8 +2585,8 @@ mod tests {
         cua.state(json!({"session": "guest", "max_edge": 256, "workspace_only": true}))
             .await
             .unwrap();
-        cua.act(&browser, "ag", click("rotated")).await.unwrap();
-        cua.act(&browser, "guest", click("guest")).await.unwrap();
+        cua.act(click("rotated")).await.unwrap();
+        cua.act(click("guest")).await.unwrap();
         assert_eq!(*clicks.lock().unwrap(), [(200.0, 80.0), (500.0, 200.0)]);
         driver.abort();
     }
@@ -2999,7 +2670,6 @@ mod tests {
             }
         });
         let cua = Cua::new(socket);
-        let browser = Browser::new("/nonexistent/chrome".into(), dir.path().into(), 1, false);
         let state = cua.state(json!({})).await.unwrap();
         assert!(
             state.text.contains("\"notes\" at (80,40) 512x384"),
@@ -3007,7 +2677,7 @@ mod tests {
             state.text
         );
         let act = json!({"action": "click", "x": 100.0, "y": 40.0});
-        let out = cua.act(&browser, "ag", act).await.unwrap();
+        let out = cua.act(act).await.unwrap();
         assert!(
             out.text.contains("click at (100,40) (desktop"),
             "{}",
@@ -3034,84 +2704,6 @@ mod tests {
             "at (325,296) (a, b) ("
         );
         assert_eq!(shot_points("(a, b) (8,4", 2.0), "(a, b) (8,4");
-    }
-
-    #[tokio::test]
-    async fn type_from_file_clicks_types_only_into_a_page_field_and_returns_only_its_length() {
-        let dir = tempfile::tempdir_in("/tmp").unwrap();
-        let path = card_file(dir.path());
-        let socket = dir.path().join("cua.sock");
-        let calls = std::sync::Arc::default();
-        let driver = window_driver(&socket, &calls, 1);
-        let names = || -> Vec<String> {
-            calls
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|c| c["name"].as_str().unwrap_or_default().to_owned())
-                .filter(|n| n == "click" || n == "type_text")
-                .collect()
-        };
-        let cua = Cua::new(socket);
-        let field = Browser::new(
-            "/nonexistent/chrome".into(),
-            dir.path().into(),
-            web_chrome(&[("page", "https://shop.test/checkout", "field")]).await,
-            false,
-        );
-        let act =
-            json!({"action": "type_from_file", "path": path, "field": "number", "x": 10, "y": 10});
-        let ok = cua.act(&field, "ag", act.clone()).await.unwrap();
-        assert!(!ok.is_error, "{}", ok.text);
-        assert_eq!(
-            ok.text,
-            "typed 16 characters of number; verify on the screenshot"
-        );
-        assert_eq!(ok.secrets, [("number".to_owned(), PAN.to_owned())]);
-        assert_eq!(names(), ["click", "type_text"]);
-        let typed = calls
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|c| c["name"] == "type_text")
-            .cloned()
-            .unwrap();
-        assert!(typed["args"].get("x").is_none(), "{typed}");
-        let failed = cua.act(&field, "ag", act.clone()).await.unwrap();
-        assert!(
-            failed.is_error && failed.text.contains("cannot type [card field]"),
-            "{}",
-            failed.text
-        );
-        assert_eq!(failed.secrets, ok.secrets);
-
-        let omnibox = Browser::new(
-            "/nonexistent/chrome".into(),
-            dir.path().into(),
-            web_chrome(&[("page", "https://shop.test/checkout", "")]).await,
-            false,
-        );
-        let refused = cua.act(&omnibox, "ag", act).await.unwrap();
-        assert!(
-            refused.is_error
-                && refused
-                    .text
-                    .starts_with("focus a card field on the checkout page first"),
-            "{}",
-            refused.text
-        );
-        assert!(refused.secrets.is_empty());
-        assert_eq!(
-            names(),
-            ["click", "type_text", "click", "type_text", "click"]
-        );
-        let unreadable = cua
-            .act(&field, "ag", json!({"action": "type_from_file", "path": "/etc/passwd", "field": "number", "x": 10, "y": 10}))
-            .await
-            .unwrap_err();
-        assert!(unreadable.contains("under /tmp or $HOME"), "{unreadable}");
-        assert_eq!(names().len(), 5);
-        driver.abort();
     }
 
     fn fast_png(w: u32, h: u32, pixels: &[u8]) -> Vec<u8> {
