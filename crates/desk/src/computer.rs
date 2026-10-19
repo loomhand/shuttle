@@ -95,8 +95,8 @@ pub struct Computer {
     /// The screen blocks that change while no action runs, which the settle ignores; sampled from the first computer call.
     volatile: OnceLock<Volatile>,
     ids: AtomicU64,
-    /// Per caller, how many times its default session was ended, which names its next one.
-    defaults: std::sync::Mutex<HashMap<String, u64>>,
+    /// How many default sessions were ended, which names every caller's next default.
+    defaults: AtomicU64,
 }
 
 impl Computer {
@@ -112,7 +112,7 @@ impl Computer {
             last_scale: std::sync::Mutex::new(1.0),
             volatile: OnceLock::new(),
             ids: AtomicU64::new(0),
-            defaults: std::sync::Mutex::new(HashMap::new()),
+            defaults: AtomicU64::new(0),
         }
     }
 
@@ -129,7 +129,7 @@ impl Computer {
             "desk_computer_end" => {
                 let ended = self.end(args).await;
                 if default {
-                    *lock(&self.defaults).entry(agent.to_owned()).or_default() += 1;
+                    self.defaults.fetch_add(1, Ordering::Relaxed);
                 }
                 ended.map(Output::text)
             }
@@ -841,7 +841,7 @@ impl Computer {
             .unwrap_or_default()
     }
 
-    /// The session of `agent` when its call names none; a new name once it was ended, since the driver refuses an ended one.
+    /// The session of `agent` when its call names none; every default takes a new name once one is ended, since the driver refuses an ended name.
     fn default_session(&self, agent: &str) -> String {
         let mut name = DEFAULT_SESSION.to_owned();
         if !agent.is_empty() {
@@ -852,9 +852,9 @@ impl Computer {
                     .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }),
             );
         }
-        match lock(&self.defaults).get(agent) {
-            Some(n) => format!("{name}-{n}"),
-            None => name,
+        match self.defaults.load(Ordering::Relaxed) {
+            0 => name,
+            n => format!("{name}-{n}"),
         }
     }
 
