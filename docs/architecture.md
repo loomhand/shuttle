@@ -27,7 +27,7 @@ cocoon-shuttle serve ─────── one per user; owns the desktop, the m
 
 ## What shuttle never does
 
-shuttle is thin and embeddable: it sends each model call once, non-streaming, to the one OpenAI-compatible endpoint and the decisions URL it is configured with. It never speaks a vendor's native API, streams, caches, retries or fails over across vendors, routes between models, or bills. Anyone who needs those points `base_url` and `decisions_url` at a gateway that does them. Nothing in shuttle names a cloud service or needs one.
+shuttle is thin and embeddable: it sends each model call once, non-streaming, to the one OpenAI-compatible endpoint and the decisions URL it is configured with. It never speaks a vendor's native API, streams, caches, retries or fails over across vendors, routes between models, or bills. Anyone who needs those points `base_url` and `decisions_url` at a gateway that does them. Beyond that configured endpoint, shuttle depends on no hosted service.
 
 ## Components
 
