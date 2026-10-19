@@ -219,7 +219,9 @@ pub struct Capture {
 pub struct Modal {
     pub title: String,
     pub pid: Option<u32>,
+    /// The title of the window it blocks, which it is transient for.
     pub owner: String,
+    /// `hidden`, `off the screen` or `behind "TITLE"`.
     pub place: String,
 }
 

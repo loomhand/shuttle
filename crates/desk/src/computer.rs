@@ -23,11 +23,12 @@ use desk_core::wire::Output;
 use crate::desk::text_runs;
 use crate::driver::{Driver, image_of, text_of};
 use crate::keys::{Os, key_names};
+use crate::model::Modal;
 use crate::press::libreoffice;
 use crate::server::Conn;
-use crate::still::Block;
+use crate::still::{Block, VISIBLE_STEP};
 use crate::volatile::{Shown, Volatile};
-use crate::xshm::{self, Grabber, Modal, Placement};
+use crate::xshm::{self, Grabber, Placement, clip};
 
 const STATE_ELEMENTS: u64 = 300;
 const TREE_CHARS: usize = 15_000;
@@ -46,7 +47,6 @@ const COMMIT_FIRST: Duration = Duration::from_millis(1500);
 const RETURN_GAP: Duration = Duration::from_millis(300);
 const STILL_EDGE: u32 = 160;
 const STILL_TOLERANCE: u8 = 48;
-const VISIBLE_STEP: u8 = 24;
 const MOVED_PERCENT: usize = 5;
 const POPUP_ROWS: [&str; 6] = [
     "menu item",
@@ -1252,7 +1252,7 @@ impl Computer {
         }
         let [x, y, w, h] = element.frame?;
         let (cx, cy) = ((x + w / 2.0).floor(), (y + h / 2.0).floor());
-        let rect = clip([x, y, w, h], screen)?;
+        let rect = clip([x, y, w, h], screen.size())?;
         let (pid, window) = (
             u32::try_from(snap.pid).ok()?,
             u32::try_from(snap.window_id?).ok()?,
@@ -1326,7 +1326,7 @@ impl Computer {
             else {
                 return Ok(None);
             };
-            let shown = element.frame.and_then(|f| clip(f, screen)).is_some();
+            let shown = element.frame.and_then(|f| clip(f, screen.size())).is_some();
             if shown || element.web || !PRESSED.contains(&element.role.as_str()) {
                 return Ok(None);
             }
@@ -1451,13 +1451,7 @@ impl Computer {
     /// The screen rectangle `[x, y, w, h]` clipped to the screen, and its RGB rows over MIT-SHM.
     fn region_rgb(&self, [x, y, w, h]: [f64; 4]) -> Result<([i32; 4], Vec<u8>), String> {
         self.shm(|g| {
-            let (sw, sh) = g.size();
-            let screen = Screen {
-                width: u32::try_from(sw).unwrap_or(0),
-                height: u32::try_from(sh).unwrap_or(0),
-                rgb: Vec::new(),
-            };
-            let Some(rect) = clip([x, y, w, h], &screen) else {
+            let Some(rect) = clip([x, y, w, h], g.size()) else {
                 return Ok(None);
             };
             Ok(Some((rect, g.region(rect)?)))
@@ -1667,6 +1661,12 @@ struct Screen {
     width: u32,
     height: u32,
     rgb: Vec<u8>,
+}
+
+impl Screen {
+    fn size(&self) -> (usize, usize) {
+        (self.width as usize, self.height as usize)
+    }
 }
 
 #[derive(Deserialize)]
@@ -2006,15 +2006,6 @@ fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
         tree = text_of(result);
     }
     (tree, by_index)
-}
-
-/// The screen rectangle `[x, y, w, h]` clipped to `screen`, in whole pixels; `None` when nothing is left.
-fn clip([x, y, w, h]: [f64; 4], screen: &Screen) -> Option<[i32; 4]> {
-    let (width, height) = (f64::from(screen.width), f64::from(screen.height));
-    let (left, top) = (x.max(0.0).floor(), y.max(0.0).floor());
-    let (right, bottom) = ((x + w).min(width).ceil(), (y + h).min(height).ceil());
-    (right > left && bottom > top)
-        .then(|| [left, top, right - left, bottom - top].map(|v| v as i32))
 }
 
 /// Whether more than [`MOVED_PERCENT`] of the pixels of `rect` in `screen` differ by more than
@@ -2998,8 +2989,6 @@ mod tests {
             height: 2,
             rgb: vec![100; 4 * 2 * 3],
         };
-        assert_eq!(clip([-1.5, 0.5, 3.0, 9.0], &screen), Some([0, 0, 2, 2]));
-        assert_eq!(clip([4.0, 0.0, 2.0, 2.0], &screen), None);
         let rect = [1, 0, 2, 2];
         let mut now = vec![100 + STILL_TOLERANCE; 2 * 2 * 3];
         assert!(!moved(&screen, rect, &now));

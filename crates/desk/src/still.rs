@@ -1,7 +1,8 @@
 //! The screen-still wait's block model: a block that keeps changing during the wait, like a clock, a spinner or a video, stops counting, a block toggling between two contents, like a caret, counts only with new contents, and a faint change does not count.
 
+pub(crate) const VISIBLE_STEP: u8 = 24;
+
 const BLOCK: usize = 8;
-const VISIBLE_STEP: u8 = 24;
 
 /// What a screen block did during the wait.
 #[derive(Clone, Debug, Default, PartialEq)]
