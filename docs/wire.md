@@ -81,7 +81,7 @@ A service plugin is a long-lived program that serves its own tools on the desk w
   - `mcp`, default `true`, lists the tool on MCP; with `false` the tool is reached on the desk wire only, which suits a tool that streams frames.
   - A file that breaks any rule is skipped whole, with one log line. Windows has no service plugins yet: a service file is skipped there, and the log line says so.
 - **Process.** The daemon starts `bin` with `args` when it starts, in your home directory, in a process group of its own, with:
-  - `SHUTTLE_SERVICE_SOCKET`: the unix socket to listen on, `services/<service>.sock` beside the daemon's endpoint, in a directory of mode 0700 that only your user reaches;
+  - `SHUTTLE_SERVICE_SOCKET`: the unix socket to listen on, `services/<service>.sock` beside the daemon's endpoint, in a directory of mode 0700 that only your user reaches; the daemon removes a file left at that path before each start;
   - `TOOLHOST_SOCKET`: the daemon's endpoint, for the service's own desk calls, which pass the same app allowlist, confirm and stop as any other;
   - no model key variables (`OPENROUTER_API_KEY` and the configured `api_key_env`).
   When the service exits, the daemon kills the rest of its process group (on Linux, all but the apps the desk moved into scopes of their own) and starts it again after 1 s, doubling the wait on each exit up to 30 s; a service that ran 30 s or more starts again after 1 s. When the daemon exits, it sends the service SIGTERM, waits 3 s, then kills its group.

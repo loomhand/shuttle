@@ -90,6 +90,7 @@ struct Proc {
 
 impl Proc {
     fn spawn(&self) -> Result<Running, String> {
+        let _ = std::fs::remove_file(&self.socket);
         let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
         let mut cmd = Command::new(&self.bin);
         cmd.args(&self.args)
@@ -343,7 +344,7 @@ class Conn(socketserver.StreamRequestHandler):
             mark("dropped")
 
 sock = os.environ["SHUTTLE_SERVICE_SOCKET"]
-if os.path.exists(sock):
+if os.path.exists(sock) and not os.path.exists(os.path.join(state, "keep-socket")):
     os.remove(sock)
 server = socketserver.ThreadingUnixStreamServer(sock, Conn)
 server.daemon_threads = True
@@ -594,6 +595,26 @@ server.serve_forever()
         assert!(!s.echo().await.is_error);
         s.stop().await;
         assert!(!alive(second), "the service stopped with the daemon");
+    }
+
+    #[tokio::test]
+    async fn a_service_killed_with_its_socket_left_behind_binds_again_on_restart() {
+        let s = served(Guard::default()).await;
+        std::fs::write(s.state("keep-socket"), "").unwrap();
+        let first = s.pid().unwrap();
+        // SAFETY: the pid is the fake service this test started.
+        unsafe { libc::kill(first, libc::SIGKILL) };
+        let mut second = first;
+        for _ in 0..100 {
+            tokio::time::sleep(POLL).await;
+            second = s.pid().unwrap_or(first);
+            if second != first {
+                break;
+            }
+        }
+        assert_ne!(second, first, "the restarted service did not bind");
+        assert!(!s.echo().await.is_error);
+        s.stop().await;
     }
 
     #[tokio::test]
