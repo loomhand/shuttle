@@ -1,8 +1,8 @@
 //! Desktop capture over MIT-SHM: the root window of the display read into one shared segment.
 
-use std::collections::HashMap;
 use std::ptr::NonNull;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
@@ -17,15 +17,10 @@ use x11rb::protocol::xproto::{
 };
 use x11rb::rust_connection::RustConnection;
 
-const PANEL_APP: &str = "Xfce4-panel";
-pub(super) const SHELL_APPS: [&str; 2] = [PANEL_APP, "Xfdesktop"];
 const OVERLAY_NAME: &[u8] = b"Cua.AgentCursorOverlay";
-const THUMB_BLOCK: usize = 8;
 const BLOCK: usize = 16;
 const HASH_MUL: u64 = 0x9e37_79b9_7f4a_7c15;
 const RGB_BYTES: u64 = 0x00ff_ffff_00ff_ffff;
-const PANEL_ROWS: usize = 32;
-const DOCK_ROWS: usize = 40;
 const ALL_MASTERS: u16 = 1;
 
 /// A mapped child of the root: a window frame, or a popup such as a menu.
@@ -77,8 +72,12 @@ pub struct Grabber {
     net_wm_name: Atom,
     utf8: Atom,
     net_active: Atom,
-    /// Whether a root child belongs to the desktop shell (panel, dock, desktop), by window id.
-    shell: Mutex<HashMap<Window, bool>>,
+    shell: Mutex<Shell>,
+    resized: AtomicBool,
+    net_clients: Atom,
+    net_workarea: Atom,
+    type_dock: Atom,
+    type_desktop: Atom,
     net_wm_pid: Atom,
     net_wm_check: Atom,
     net_stacking: Atom,
@@ -119,7 +118,8 @@ impl Grabber {
             .map_err(|e| format!("MIT-SHM: {e}"))?;
         conn.change_window_attributes(
             root,
-            &ChangeWindowAttributesAux::new().event_mask(EventMask::STRUCTURE_NOTIFY),
+            &ChangeWindowAttributesAux::new()
+                .event_mask(EventMask::STRUCTURE_NOTIFY | EventMask::PROPERTY_CHANGE),
         )
         .map_err(|e| format!("watch the root window: {e}"))?;
         let seg = conn.generate_id().map_err(|e| format!("X id: {e}"))?;
@@ -136,6 +136,10 @@ impl Grabber {
             state_hidden,
             net_wm_type,
             type_dialog,
+            net_clients,
+            net_workarea,
+            type_dock,
+            type_desktop,
         ] = [
             &b"_NET_WM_NAME"[..],
             b"UTF8_STRING",
@@ -148,6 +152,10 @@ impl Grabber {
             b"_NET_WM_STATE_HIDDEN",
             b"_NET_WM_WINDOW_TYPE",
             b"_NET_WM_WINDOW_TYPE_DIALOG",
+            b"_NET_CLIENT_LIST",
+            b"_NET_WORKAREA",
+            b"_NET_WM_WINDOW_TYPE_DOCK",
+            b"_NET_WM_WINDOW_TYPE_DESKTOP",
         ]
         .map(|name| {
             conn.intern_atom(false, name)
@@ -183,7 +191,12 @@ impl Grabber {
             net_wm_name,
             utf8,
             net_active,
-            shell: Mutex::new(HashMap::new()),
+            shell: Mutex::new(Shell::default()),
+            resized: AtomicBool::new(false),
+            net_clients,
+            net_workarea,
+            type_dock,
+            type_desktop,
             net_wm_pid,
             net_wm_check,
             net_stacking,
@@ -194,6 +207,7 @@ impl Grabber {
             type_dialog,
         };
         attached?;
+        grabber.refresh();
         Ok(grabber)
     }
 
@@ -266,33 +280,11 @@ impl Grabber {
             .collect())
     }
 
-    /// The root window shrunk eightfold by averaging, as RGB rows; the panel and dock strips stay black.
-    pub fn thumb(&self) -> Result<Vec<u8>, String> {
-        let (w, h) = (usize::from(self.width), usize::from(self.height));
-        let (tw, th) = (w / THUMB_BLOCK, h / THUMB_BLOCK);
-        let bgrx = self.image([0, 0, self.width.into(), self.height.into()])?;
-        let mut sums = vec![0u32; tw * th * 3];
-        for y in PANEL_ROWS..(th * THUMB_BLOCK).min(h - DOCK_ROWS) {
-            let row = &bgrx[y * w * 4..(y * w + tw * THUMB_BLOCK) * 4];
-            let base = y / THUMB_BLOCK * tw * 3;
-            for (x, p) in row.as_chunks::<4>().0.iter().enumerate() {
-                let i = base + x / THUMB_BLOCK * 3;
-                sums[i] += u32::from(p[2]);
-                sums[i + 1] += u32::from(p[1]);
-                sums[i + 2] += u32::from(p[0]);
-            }
-        }
-        let n = u32::try_from(THUMB_BLOCK * THUMB_BLOCK).unwrap_or(u32::MAX);
-        Ok(sums
-            .iter()
-            .map(|s| u8::try_from(s / n).unwrap_or(u8::MAX))
-            .collect())
-    }
-
-    /// The root window as one hash per 16-pixel square, row-major; the panel and dock strips hash as empty.
+    /// The root window as one hash per 16-pixel square, row-major; the squares docks cover hash as empty.
     pub fn blocks(&self) -> Result<Vec<u64>, String> {
         let (width, height) = self.size();
-        Ok(block_hashes(self.pixels()?, width, height))
+        let docks = self.docks();
+        Ok(block_hashes(self.pixels()?, width, height, &docks))
     }
 
     /// The root window as BGRX rows, valid until the next grab.
@@ -302,11 +294,23 @@ impl Grabber {
 
     /// Whether the root window still has the size the segment was made for, by the root configure events a RandR change sends; no round trip.
     pub fn current(&self) -> bool {
-        let mut current = true;
-        while let Ok(Some(event)) = self.conn.poll_for_event() {
-            current &= !resized(&event, (self.width, self.height));
-        }
-        current
+        self.drain();
+        !self.resized.load(Ordering::Relaxed)
+    }
+
+    /// Which 16-pixel squares a dock window covers, row-major.
+    pub fn docks(&self) -> Arc<[bool]> {
+        Arc::clone(&self.shell().mask)
+    }
+
+    /// The pids that own the desktop shell's windows: the docks and the desktop.
+    pub fn shell_pids(&self) -> Vec<u32> {
+        self.shell().pids.clone()
+    }
+
+    /// The desktop shell's windows, the docks and the desktop, with their window manager frames.
+    pub fn shell_windows(&self) -> Vec<Window> {
+        self.shell().windows.clone()
     }
 
     /// The root window's width and height.
@@ -342,12 +346,15 @@ impl Grabber {
                 Ok((w, attrs, geometry))
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let known = (!shell).then(|| self.shell());
         let mut mapped = Vec::new();
         for (id, attrs, geometry) in cookies {
             let (Ok(attrs), Ok(g)) = (attrs.reply(), geometry.reply()) else {
                 continue;
             };
-            if attrs.map_state == MapState::VIEWABLE && (shell || !self.is_shell(id)) {
+            if attrs.map_state == MapState::VIEWABLE
+                && known.as_ref().is_none_or(|k| !k.windows.contains(&id))
+            {
                 mapped.push(Placement {
                     id,
                     x: g.x,
@@ -359,10 +366,6 @@ impl Grabber {
                 });
             }
         }
-        self.shell
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|w, _| tree.children.contains(w));
         Ok(mapped)
     }
 
@@ -412,17 +415,6 @@ impl Grabber {
             .map_err(|e| format!("window attributes: {e}"))?
             .reply();
         Ok(alive(attrs, "window attributes")?.is_some())
-    }
-
-    fn is_shell(&self, w: Window) -> bool {
-        let mut known = self
-            .shell
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *known.entry(w).or_insert_with(|| {
-            let class = self.class(w);
-            SHELL_APPS.contains(&class.as_str())
-        })
     }
 
     pub fn dialog(&self, w: Window) -> bool {
@@ -643,7 +635,7 @@ impl Grabber {
         if top.popup {
             return Ok(false);
         }
-        if self.class(top.id) == PANEL_APP {
+        if self.shell().docks.contains(&top.id) {
             return Ok(true);
         }
         Ok(y < i32::from(top.y) + i32::from(self.client_offset(top.id)))
@@ -711,6 +703,101 @@ impl Grabber {
         Ok(alive(tree, "query tree")?.map_or(x11rb::NONE, |t| t.parent))
     }
 
+    /// The desktop shell as the last refresh read it, after the pending events.
+    fn shell(&self) -> std::sync::MutexGuard<'_, Shell> {
+        self.drain();
+        self.shell
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Drains the pending events without a round trip; a dock or client list change reads the shell again.
+    fn drain(&self) {
+        let mut changed = false;
+        while let Ok(Some(event)) = self.conn.poll_for_event() {
+            if resized(&event, (self.width, self.height)) {
+                self.resized.store(true, Ordering::Relaxed);
+            }
+            changed |= match &event {
+                Event::PropertyNotify(p) => [self.net_clients, self.net_workarea].contains(&p.atom),
+                Event::ConfigureNotify(c) => c.window != self.root,
+                Event::MapNotify(_) | Event::UnmapNotify(_) | Event::DestroyNotify(_) => true,
+                _ => false,
+            };
+        }
+        if changed {
+            self.refresh();
+        }
+    }
+
+    /// Reads the shell's windows by type, their pids and frames, and the dock mask, and watches each dock for moves.
+    fn refresh(&self) {
+        let clients = self.clients().unwrap_or_default();
+        let types: Vec<_> = clients
+            .iter()
+            .map(|&c| {
+                self.conn
+                    .get_property(false, c, self.net_wm_type, AtomEnum::ATOM, 0, 16)
+                    .ok()
+            })
+            .collect();
+        let (mut next, mut rects) = (Shell::default(), Vec::new());
+        for (&c, kind) in clients.iter().zip(types) {
+            let kinds: Vec<Atom> = kind
+                .and_then(|k| k.reply().ok())
+                .and_then(|r| r.value32().map(Iterator::collect))
+                .unwrap_or_default();
+            let dock = kinds.contains(&self.type_dock);
+            if !dock && !kinds.contains(&self.type_desktop) {
+                continue;
+            }
+            if let Some(pid) = self.pid(c).filter(|p| !next.pids.contains(p)) {
+                next.pids.push(pid);
+            }
+            let frame = self
+                .parent(c)
+                .ok()
+                .filter(|&f| f != self.root && f != x11rb::NONE);
+            let ids: Vec<Window> = std::iter::once(c).chain(frame).collect();
+            if dock {
+                for &w in &ids {
+                    let watch =
+                        ChangeWindowAttributesAux::new().event_mask(EventMask::STRUCTURE_NOTIFY);
+                    let _ = self.conn.change_window_attributes(w, &watch);
+                }
+                rects.extend(self.on_root(c));
+                next.docks.extend(&ids);
+            }
+            next.windows.extend(ids);
+        }
+        let _ = self.conn.flush();
+        next.mask = Arc::from(dock_mask(
+            &rects,
+            (usize::from(self.width), usize::from(self.height)),
+        ));
+        *self
+            .shell
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
+    }
+
+    /// The screen rectangle `[x, y, w, h]` of window `w` while it is mapped.
+    fn on_root(&self, w: Window) -> Option<[i32; 4]> {
+        let attrs = self.conn.get_window_attributes(w).ok()?;
+        let geometry = self.conn.get_geometry(w).ok()?;
+        let at = self.conn.translate_coordinates(w, self.root, 0, 0).ok()?;
+        if attrs.reply().ok()?.map_state != MapState::VIEWABLE {
+            return None;
+        }
+        let (g, at) = (geometry.reply().ok()?, at.reply().ok()?);
+        Some([
+            at.dst_x.into(),
+            at.dst_y.into(),
+            g.width.into(),
+            g.height.into(),
+        ])
+    }
+
     fn kids(&self, w: Window) -> Vec<Window> {
         self.conn
             .query_tree(w)
@@ -776,6 +863,18 @@ impl Drop for Grabber {
     }
 }
 
+/// The desktop shell as one refresh read it.
+#[derive(Default)]
+struct Shell {
+    /// Which 16-pixel squares a dock covers, row-major.
+    mask: Arc<[bool]>,
+    pids: Vec<u32>,
+    /// The dock windows and their window manager frames.
+    docks: Vec<Window>,
+    /// The docks and the desktop windows, with their frames.
+    windows: Vec<Window>,
+}
+
 /// How the screen hides a mapped window frame.
 #[derive(Debug, PartialEq)]
 enum Cover {
@@ -784,17 +883,21 @@ enum Cover {
 }
 
 /// One hash per 16-pixel square of the BGRX rows `bgrx`, `width` pixels wide, so any changed pixel
-/// changes its square's hash; the padding byte and the panel and dock rows do not count.
-pub fn block_hashes(bgrx: &[u8], width: usize, height: usize) -> Vec<u64> {
+/// changes its square's hash; the padding byte and the squares `skip` marks do not count.
+pub fn block_hashes(bgrx: &[u8], width: usize, height: usize, skip: &[bool]) -> Vec<u64> {
     let columns = width.div_ceil(BLOCK);
     let mut hashes = vec![0u64; columns * height.div_ceil(BLOCK)];
-    for y in PANEL_ROWS..height.saturating_sub(DOCK_ROWS) {
+    for y in 0..height {
         let base = y / BLOCK * columns;
         let row = &bgrx[y * width * 4..(y + 1) * width * 4];
-        for (h, piece) in hashes[base..base + columns]
+        for (i, (h, piece)) in hashes[base..base + columns]
             .iter_mut()
             .zip(row.chunks(BLOCK * 4))
+            .enumerate()
         {
+            if skip.get(base + i) == Some(&true) {
+                continue;
+            }
             let (words, rest) = piece.as_chunks::<8>();
             for w in words {
                 *h = mix(*h, u64::from_le_bytes(*w) & RGB_BYTES);
@@ -816,7 +919,7 @@ pub fn visible(a: &[u8], b: &[u8], width: usize, height: usize, block: usize, st
     let columns = width.div_ceil(BLOCK);
     let (x0, y0) = (block % columns * BLOCK, block / columns * BLOCK);
     let x1 = (x0 + BLOCK).min(width);
-    (y0.max(PANEL_ROWS)..(y0 + BLOCK).min(height.saturating_sub(DOCK_ROWS))).any(|y| {
+    (y0..(y0 + BLOCK).min(height)).any(|y| {
         let (start, end) = ((y * width + x0) * 4, (y * width + x1) * 4);
         a[start..end]
             .iter()
@@ -824,6 +927,24 @@ pub fn visible(a: &[u8], b: &[u8], width: usize, height: usize, block: usize, st
             .enumerate()
             .any(|(k, (p, q))| k % 4 != 3 && p.abs_diff(*q) > step)
     })
+}
+
+/// Which 16-pixel squares of a `width` by `height` screen, row-major, a dock rectangle of `docks` (`[x, y, w, h]`) overlaps.
+fn dock_mask(docks: &[[i32; 4]], (width, height): (usize, usize)) -> Vec<bool> {
+    let columns = width.div_ceil(BLOCK);
+    let mut mask = vec![false; columns * height.div_ceil(BLOCK)];
+    let clip = |v: i32, max: usize| usize::try_from(v.max(0)).unwrap_or(0).min(max);
+    for &[x, y, w, h] in docks {
+        let (x0, x1) = (clip(x, width), clip(x.saturating_add(w), width));
+        let (y0, y1) = (clip(y, height), clip(y.saturating_add(h), height));
+        if x0 >= x1 || y0 >= y1 {
+            continue;
+        }
+        for row in y0 / BLOCK..y1.div_ceil(BLOCK) {
+            mask[row * columns + x0 / BLOCK..row * columns + x1.div_ceil(BLOCK)].fill(true);
+        }
+    }
+    mask
 }
 
 /// How `mapped`, the drawn root children bottom to top, hide `frame` on a screen of `width` by
@@ -897,22 +1018,52 @@ mod tests {
     }
 
     #[test]
-    fn one_changed_pixel_changes_only_its_block_and_padding_and_strips_do_not_count() {
+    fn one_changed_pixel_changes_only_its_block_and_padding_and_masked_blocks_do_not_count() {
         let (w, h) = (40, 120);
         let frame = vec![200u8; w * h * 4];
-        let base = block_hashes(&frame, w, h);
+        let skip = dock_mask(&[[0, 0, 40, 27], [16, 100, 10, 20]], (w, h));
+        let base = block_hashes(&frame, w, h, &skip);
         assert_eq!(base.len(), 3 * 8);
         let mut one = frame.clone();
         one[(50 * w + 33) * 4 + 1] = 199;
         let changed: Vec<usize> = (0..base.len())
-            .filter(|&i| block_hashes(&one, w, h)[i] != base[i])
+            .filter(|&i| block_hashes(&one, w, h, &skip)[i] != base[i])
             .collect();
         assert_eq!(changed, [3 * 3 + 2]);
         let mut padding = frame.clone();
         padding[(50 * w + 3) * 4 + 3] = 0;
         padding[(10 * w + 3) * 4] = 0;
-        padding[((h - 1) * w + 3) * 4] = 0;
-        assert_eq!(block_hashes(&padding, w, h), base);
+        padding[(110 * w + 20) * 4] = 0;
+        assert_eq!(block_hashes(&padding, w, h, &skip), base);
+        let beside = {
+            let mut f = frame.clone();
+            f[(110 * w + 3) * 4] = 0;
+            f
+        };
+        assert_ne!(block_hashes(&beside, w, h, &skip), base);
+        assert_ne!(
+            block_hashes(&padding, w, h, &[]),
+            block_hashes(&frame, w, h, &[])
+        );
+    }
+
+    #[test]
+    fn the_mask_covers_the_blocks_a_dock_overlaps_and_nothing_beside_a_centred_dock() {
+        let (top, dock, hidden) = ([0, 0, 1280, 27], [487, 751, 306, 49], [-9999, -9999, 3, 3]);
+        let mask = dock_mask(&[top, dock, hidden], (1280, 800));
+        let columns = 80;
+        assert_eq!(mask.len(), columns * 50);
+        let masked = |row: usize| -> Vec<usize> {
+            (0..columns).filter(|&c| mask[row * columns + c]).collect()
+        };
+        assert_eq!(masked(0).len(), columns);
+        assert_eq!(masked(1).len(), columns);
+        assert!(masked(2).is_empty());
+        assert!(masked(45).is_empty());
+        assert_eq!(masked(46), (30..50).collect::<Vec<_>>());
+        assert_eq!(masked(49), (30..50).collect::<Vec<_>>());
+        assert_eq!(mask.iter().filter(|m| **m).count(), 2 * columns + 4 * 20);
+        assert!(dock_mask(&[], (1280, 800)).iter().all(|m| !m));
     }
 
     #[test]

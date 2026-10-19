@@ -63,8 +63,6 @@ const FILLER = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', '
 const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close']
 const TEXT_CUT = '\n(the outline shows only the start of the window: desk snapshot or find reads the rest)'
 const TREE_CUT = '\n(this accessibility read stopped before the end of the window: the elements past the cut are missing here; narrowing the view, e.g. by scrolling or opening a pane, brings them in)'
-const SHELL_BY_OS: Partial<Record<NodeJS.Platform, RegExp>> = { linux: /^(Desktop|xfce4-panel)$/, win32: /^Program Manager$/ }
-const SHELL_WINDOWS = SHELL_BY_OS[OS] ?? /(?!)/
 const SHELL_TARGET = /\b(dock|panel|taskbar|desktop)\b/i
 const ANDROID_PACKAGE = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/
 const CHOOSER_BY_OS: Partial<Record<NodeJS.Platform, RegExp>> = { linux: /File Chooser Widget/, win32: /^\s*- (combobox|textbox) "File name:?"/m, darwin: /^\s*- text "Save As:"/m }
@@ -198,7 +196,7 @@ async function perform(p: Params): Promise<Result> {
       if ((settled || (!escalate && changes)) && !chain.dirty && chain.steps.some((s) => !s.app)) { saved = store(chain); chain.saved = !!saved }
       const front = escalate ? await focused() : end
       chain.window = front?.title ?? null
-      if (front && !SHELL_WINDOWS.test(front.title)) chain.pid = front.pid
+      if (front && !isShell(front)) chain.pid = front.pid
       putPending(chain)
     } else if (prev) putPending({ ...prev, saved: false, escalated: false })
   }
@@ -264,6 +262,7 @@ async function current(bound = SETTLE) {
   const ws = k ? await until((ws) => { const f = focusedIn(ws); return !!f && f.title !== k.title }, bound - (t0 - k.at)) : await desk.windows()
   tick('settle', t0); return ws
 }
+function isShell(w: Win) { return !!w.shell || (OS === 'win32' && w.title === 'Program Manager') }
 function titledIn(ws: Win[], title: string, pid: number | null) { return pid !== null && ws.some((x) => x.title === title && x.pid === pid) }
 async function snapOf(w: Win, r: Reads = {}): Promise<desk.Snap> {
   return desk.snapshot(w.title, { pid: w.pid, ...r })
@@ -299,7 +298,7 @@ async function look(w: Win, r: Reads = {}, kept?: Kept, max = 1800): Promise<{ t
 }
 async function seen(): Promise<Seen> {
   const ws = await desk.windows(); const w = focusedIn(ws)
-  const windows = ws.filter((x) => x.title && !SHELL_WINDOWS.test(x.title)).map((x) => x.modal ? `${x.title} (modal dialog, ${x.modal})` : x.title)
+  const windows = ws.filter((x) => x.title && !isShell(x)).map((x) => x.modal ? `${x.title} (modal dialog, ${x.modal})` : x.title)
   return { window: w?.title ?? null, windows, outline: await outline(w, { keys: true }) }
 }
 // a modal dialog of the focused app that the screen does not show takes the app's input: typing lands in it, and clicks do nothing
@@ -1115,7 +1114,7 @@ async function located(target: string, press: boolean) {
   let at = w
   try {
     hit = await resolve(nodes, target, undefined, undefined, 0.7)
-    const shell = OS === 'linux' && !hit && SHELL_TARGET.test(target) ? (await desk.windows()).filter((x) => x.id !== w.id && (SHELL_WINDOWS.test(x.title) || (!x.title.trim() && x.role === 'window'))) : []
+    const shell = OS === 'linux' && !hit && SHELL_TARGET.test(target) ? (await desk.windows()).filter((x) => x.id !== w.id && (isShell(x) || (!x.title.trim() && x.role === 'window'))) : []
     for (const x of shell) {
       nodes = parse(await desk.snapshot(x.title, { id: x.id, bounds: true, menus: true }))
       hit = await resolve(nodes, target, undefined, undefined, 0.7)

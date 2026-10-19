@@ -147,6 +147,10 @@ impl Access for Spi {
     fn close(&mut self, frame: &Frame) -> Result<(), String> {
         close(&frame.title, frame.pid)
     }
+
+    fn shells(&mut self) -> Vec<u32> {
+        self.shm(|g| Ok(g.shell_pids())).unwrap_or_default()
+    }
 }
 
 fn frame(f: atspi::Frame) -> Frame {
@@ -158,6 +162,7 @@ fn frame(f: atspi::Frame) -> Frame {
         app: f.pid.and_then(app),
         modal: None,
         blocks: None,
+        shell: false,
         stale: false,
         unlisted: !FRAME_ROLES.contains(&f.role),
         framed: f.role != WINDOW_ROLE,
