@@ -128,7 +128,7 @@ impl Named for Node {
 
 /// An Android window the desk lists: an app's activity or dialog, titled `<title> - <package>`.
 #[derive(Clone, Debug, Default)]
-struct Frame {
+pub(crate) struct Frame {
     id: String,
     package: String,
     title: String,
@@ -170,12 +170,17 @@ impl Frame {
             .max_by_key(|(a, b)| b - a)
     }
 
-    /// Where a tap reaches element `n`: the middle of its shown part that no bar or keyboard covers.
-    fn tap_at(&self, n: &Node) -> Option<(i32, i32)> {
+    /// The part of element `n` a tap reaches: its shown part, less what a bar or keyboard covers at its middle column.
+    fn reach(&self, n: &Node) -> Option<[i32; 4]> {
         let [x, y, w, h] = n.shown(self.screen).filter(|_| n.visible)?;
-        let x = x + w / 2;
-        let (top, bottom) = self.span(x, y, y + h)?;
-        Some((x, (top + bottom) / 2))
+        let (top, bottom) = self.span(x + w / 2, y, y + h)?;
+        Some([x, top, w, bottom - top])
+    }
+
+    /// Where a tap reaches element `n`: the middle of that part.
+    fn tap_at(&self, n: &Node) -> Option<(i32, i32)> {
+        let [x, y, w, h] = self.reach(n)?;
+        Some((x + w / 2, y + h / 2))
     }
 
     fn swipe(&self, [sx, sy, sw, sh]: [i32; 4], target: i32) -> Option<(i32, i32, i32)> {
@@ -317,19 +322,30 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
     Ok(Output::text(text))
 }
 
-/// The shown elements of a UI server dump on a `screen`, each with the bounds of its shown part.
-pub(crate) fn elements(xml: &str, screen: (i32, i32)) -> Vec<Node> {
+/// The elements of a UI server dump that a tap reaches in `frame`, each with the bounds of that part.
+pub(crate) fn elements(xml: &str, frame: &Frame) -> Vec<Node> {
     nodes(&Frame::default(), &raws(xml))
         .into_iter()
         .skip(1)
-        .filter(|n| n.visible)
         .filter_map(|n| {
             Some(Node {
-                bounds: n.shown(screen)?,
+                bounds: frame.reach(&n)?,
                 ..n
             })
         })
         .collect()
+}
+
+/// The front window with the system windows over it; with none listed, a bare frame of the screen.
+pub(crate) async fn front(android: &Android) -> Result<Frame, String> {
+    let frames = frames(android).await?;
+    match frames.into_iter().find(|f| f.active) {
+        Some(frame) => Ok(frame),
+        None => Ok(Frame {
+            screen: android.screen().await?,
+            ..Frame::default()
+        }),
+    }
 }
 
 /// The listed windows, the front one active; an activity switch lists none for a moment, which this waits out.
@@ -1223,7 +1239,7 @@ mod tests {
 
     #[test]
     fn computer_state_lists_the_shown_elements() {
-        let lines: Vec<String> = elements(DUMP, REDROID)
+        let lines: Vec<String> = elements(DUMP, &settings())
             .iter()
             .enumerate()
             .map(|(i, e)| e.line(i))
@@ -1236,7 +1252,7 @@ mod tests {
                 "[2] textbox \"Search…\" at 360,140 disabled focused",
             ]
         );
-        let shown = elements(DUMP, REDROID);
+        let shown = elements(DUMP, &settings());
         assert!(shown[0].mentions("dark") && !shown[0].mentions("search"));
     }
 
@@ -1285,7 +1301,7 @@ mod tests {
 
     #[test]
     fn computer_state_points_into_the_shown_part_and_drops_clipped_rows() {
-        let lines: Vec<String> = elements(&list_dump(), REDROID)
+        let lines: Vec<String> = elements(&list_dump(), &settings())
             .iter()
             .enumerate()
             .map(|(i, e)| e.line(i))
@@ -1319,6 +1335,66 @@ mod tests {
             tap_of(&frame, &dump, "0.0.0.1"),
             None,
             "a row below the outer viewport is off the screen"
+        );
+    }
+
+    #[test]
+    fn computer_state_points_above_the_navigation_bar_and_the_keyboard() {
+        let bar = |id, kind, layer, bounds| WindowInfo {
+            id,
+            kind,
+            title: String::new(),
+            package: "com.android.systemui".into(),
+            active: false,
+            focused: false,
+            layer,
+            bounds,
+        };
+        let dump = format!(
+            "<hierarchy>{}{}{}{}</hierarchy>",
+            row("0.0", true, "[0,160][720,1280]"),
+            row("0.0.0", false, "[0,1134][720,1280]"),
+            row("0.0.1", false, "[0,1190][720,1280]"),
+            row("0.0.2", false, "[0,600][720,700]"),
+        );
+        let lines = |frames: Vec<Frame>| -> Vec<String> {
+            elements(&dump, &frames[0])
+                .iter()
+                .enumerate()
+                .map(|(i, e)| e.line(i))
+                .collect()
+        };
+        let closed = lines(frames_of(
+            vec![
+                bar(5, 3, 2, [0, 1184, 720, 1280]),
+                window([0, 0, 720, 1280]),
+            ],
+            REDROID,
+        ));
+        assert_eq!(
+            closed,
+            [
+                "[0] button \"0.0\" at 360,672",
+                "[1] button \"0.0.0\" at 360,1159",
+                "[2] button \"0.0.2\" at 360,650",
+            ],
+            "a row cut by the navigation bar is tapped above it; one under it is gone"
+        );
+        let typing = lines(frames_of(
+            vec![
+                bar(9, 2, 3, [0, 640, 720, 1184]),
+                bar(5, 3, 2, [0, 1184, 720, 1280]),
+                window([0, 0, 720, 1280]),
+            ],
+            REDROID,
+        ));
+        assert_eq!(
+            typing,
+            [
+                "[0] button \"0.0\" at 360,400",
+                "[1] button \"0.0.2\" at 360,620",
+            ],
+            "the keyboard takes the lower rows and cuts the list's reach"
         );
     }
 
