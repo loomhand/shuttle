@@ -87,6 +87,7 @@ pub struct Desk<B, D> {
     turn_wait: Duration,
     read: std::sync::Mutex<Option<Read>>,
     allow: Allow,
+    overlay: bool,
     typer: Typer,
     #[cfg(test)]
     skew: Arc<std::sync::atomic::AtomicU64>,
@@ -103,6 +104,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             turn_wait: TURN_WAIT,
             read: std::sync::Mutex::new(None),
             allow: Allow::default(),
+            overlay: true,
             typer: TYPER,
             #[cfg(test)]
             skew: Arc::default(),
@@ -118,6 +120,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     /// Limits the desk calls to windows of `apps`, matched by app name or executable, case-insensitive; empty allows every app.
     pub fn allow(mut self, apps: &[String]) -> Self {
         self.allow = Allow(apps.iter().map(|a| app_key(a)).collect());
+        self
+    }
+
+    /// Whether the driver may show its cursor overlay, which a shot read by the backend must leave out; true unless the driver runs without it.
+    pub fn overlay(mut self, shown: bool) -> Self {
+        self.overlay = shown;
         self
     }
 
@@ -939,9 +947,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             a.w.unwrap_or(f64::MAX / 4.0),
             a.h.unwrap_or(f64::MAX / 4.0),
         ];
+        let overlay = self.overlay;
         if let Some(c) = self
             .access
-            .run(CALL_LIMIT, (), move |b| b.capture(rect))
+            .run(CALL_LIMIT, (), move |b| b.capture(rect, overlay))
             .await?
         {
             return self.captured(c, a.path).await;
@@ -1342,6 +1351,7 @@ pub(crate) mod tests {
         scoped: bool,
         closed: Vec<String>,
         opens: Option<Opens>,
+        overlays: Vec<bool>,
     }
 
     impl Stub {
@@ -1359,6 +1369,11 @@ pub(crate) mod tests {
     }
 
     impl Access for Stub {
+        fn capture(&mut self, _: [f64; 4], overlay: bool) -> Result<Option<Capture>, String> {
+            self.overlays.push(overlay);
+            Ok(None)
+        }
+
         fn frames(&mut self) -> Result<Vec<Frame>, String> {
             if let Some(o) = &mut self.opens {
                 return Ok(o.frames());
@@ -2288,6 +2303,21 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert!(pixels(&crop).iter().all(|p| *p == [0; 3]));
+    }
+
+    #[tokio::test]
+    async fn a_shot_tells_the_backend_whether_the_driver_may_show_its_overlay() {
+        for shown in [true, false] {
+            let desk = Desk::new(|| Ok(Stub::default()), Desktop(Arc::default()), Os::Linux)
+                .overlay(shown);
+            desk.run("desk_shot", json!({})).await.unwrap();
+            let seen = desk
+                .access
+                .run(CALL_LIMIT, (), |b| Ok(b.overlays.clone()))
+                .await
+                .unwrap();
+            assert_eq!(seen, [shown]);
+        }
     }
 
     #[tokio::test]
