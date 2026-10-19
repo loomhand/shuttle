@@ -298,7 +298,7 @@ impl Cua {
         let input = self.input.lock().await;
         let before = self.before_input(Some(&a)).await;
         let once = self.once(&req);
-        let target = once.as_deref().unwrap_or(session);
+        let target = once.as_ref().map_or(session, Owned::name);
         let typed = enter.then(|| req.clone());
         let mut result = self.request(target, tool, req).await;
         if let Some(typed) = typed
@@ -402,10 +402,10 @@ impl Cua {
 
     /// Screenshot in a one-shot driver session that is ended right away.
     pub async fn screenshot_once(&self, max_edge: Option<u32>) -> Result<Option<String>, String> {
-        let session = self.id("shot");
-        let shot = self.screenshot(&session, max_edge).await;
-        self.scales().remove(&session);
-        self.request(&session, "end_session", json!({})).await?;
+        let session = self.own("shot");
+        let shot = self.screenshot(session.name(), max_edge).await;
+        self.scales().remove(session.name());
+        self.end_own(session).await?;
         shot
     }
 
@@ -488,7 +488,7 @@ impl Cua {
             let (tool, req) = self.action_request(session, &focus).await?;
             let once = self.once(&req);
             failure = self
-                .request(once.as_deref().unwrap_or(session), tool, req)
+                .request(once.as_ref().map_or(session, Owned::name), tool, req)
                 .await
                 .err();
             self.end_once(once).await;
@@ -520,7 +520,7 @@ impl Cua {
             let mut req = base.clone();
             req["text"] = (*run).into();
             match self
-                .call(once.as_deref().unwrap_or(session), "type_text", req)
+                .call(once.as_ref().map_or(session, Owned::name), "type_text", req)
                 .await
             {
                 Ok(v) if v["isError"] == true || content_text(&v).contains(SKIPPED) => {
@@ -533,7 +533,7 @@ impl Cua {
         }
         if failure.is_none() && text.len() < full.len() {
             match self
-                .press_return(once.as_deref().unwrap_or(session), &base)
+                .press_return(once.as_ref().map_or(session, Owned::name), &base)
                 .await
             {
                 Ok(_) => typed += 1,
@@ -596,7 +596,7 @@ impl Cua {
             Err(e) => {
                 self.end_volatile();
                 if let Some(probe) = before.and_then(|b| b.probe) {
-                    let _ = self.request(&probe, "end_session", json!({})).await;
+                    let _ = self.end_own(probe).await;
                 }
                 drop(input);
                 return Ok(Output {
@@ -654,8 +654,8 @@ impl Cua {
                 wait,
             });
         }
-        let probe = self.id("still");
-        match self.frame(Some(&probe)).await {
+        let probe = self.own("still");
+        match self.frame(Some(probe.name())).await {
             Some(frame) => Some(Before {
                 probe: Some(probe),
                 frame: Frame::Thumb(frame),
@@ -667,7 +667,7 @@ impl Cua {
                 wait: SETTLE,
             }),
             None => {
-                let _ = self.request(&probe, "end_session", json!({})).await;
+                let _ = self.end_own(probe).await;
                 None
             }
         }
@@ -726,7 +726,7 @@ impl Cua {
                 nap = nap.min((since + hold).saturating_duration_since(at));
             }
             tokio::time::sleep(nap).await;
-            let polled = match probe.as_deref() {
+            let polled = match probe.as_ref().map(Owned::name) {
                 Some(probe) => self.frame(Some(probe)).await.map(|f| {
                     let f = Frame::Thumb(f);
                     let differs = first.changes(&f, &volatile);
@@ -786,7 +786,7 @@ impl Cua {
         }
         self.end_volatile();
         if let Some(probe) = probe {
-            let _ = self.request(&probe, "end_session", json!({})).await;
+            let _ = self.end_own(probe).await;
             return String::new();
         }
         if seen == windows && focus == active {
@@ -796,10 +796,21 @@ impl Cua {
             .unwrap_or_default()
     }
 
-    /// A driver session name of its own, unique in this process.
-    fn id(&self, prefix: &str) -> String {
+    /// A driver session of its own for one step, named uniquely in this process.
+    fn own(&self, prefix: &str) -> Owned {
         let n = self.ids.fetch_add(1, Ordering::Relaxed);
-        format!("{prefix}-{}-{n}", std::process::id())
+        Owned {
+            driver: Arc::clone(&self.driver),
+            name: format!("{prefix}-{}-{n}", std::process::id()),
+            open: true,
+        }
+    }
+
+    /// Ends the driver session `session`, releasing its input devices.
+    async fn end_own(&self, mut session: Owned) -> Result<Value, String> {
+        let done = self.request(&session.name, "end_session", json!({})).await;
+        session.open = false;
+        done
     }
 
     fn touch(&self) {
@@ -1133,13 +1144,13 @@ impl Cua {
     /// A driver session of its own for the pid-addressed input `req`, ended by [`Self::end_once`] right
     /// after: the virtual master keyboard the driver makes for it would outlive the call, and while one
     /// exists Chrome drops core keyboard input, from XTest and VNC alike.
-    fn once(&self, req: &Value) -> Option<String> {
-        req.get("pid").is_some().then(|| self.id("input"))
+    fn once(&self, req: &Value) -> Option<Owned> {
+        req.get("pid").is_some().then(|| self.own("input"))
     }
 
-    async fn end_once(&self, once: Option<String>) {
+    async fn end_once(&self, once: Option<Owned>) {
         if let Some(session) = once {
-            let _ = self.request(&session, "end_session", json!({})).await;
+            let _ = self.end_own(session).await;
         }
     }
 
@@ -1321,9 +1332,11 @@ impl Cua {
             if self.pixel_click(x, y).await.is_err() {
                 continue;
             }
-            let probe = self.id("menu");
-            let state = self.request(&probe, "get_window_state", req.clone()).await;
-            let _ = self.request(&probe, "end_session", json!({})).await;
+            let probe = self.own("menu");
+            let state = self
+                .request(probe.name(), "get_window_state", req.clone())
+                .await;
+            let _ = self.end_own(probe).await;
             let Ok(state) = state else {
                 continue;
             };
@@ -1404,8 +1417,8 @@ impl Cua {
     /// The desktop-addressed input `req` of `tool` in a driver session of its own, whose x,y no capture maps.
     async fn desktop_input(&self, tool: &str, mut req: Value) -> Result<Value, String> {
         req["target"] = json!({"kind": "desktop", "display_id": "primary"});
-        let once = self.id("input");
-        let done = self.request(&once, tool, req).await;
+        let once = self.own("input");
+        let done = self.request(once.name(), tool, req).await;
         self.end_once(Some(once)).await;
         done
     }
@@ -1511,7 +1524,7 @@ impl Cua {
 }
 
 struct Before {
-    probe: Option<String>,
+    probe: Option<Owned>,
     frame: Frame,
     /// The BGRX pixels of a [`Frame::Blocks`].
     pixels: Vec<u8>,
@@ -1523,6 +1536,36 @@ struct Before {
     /// A commit action in Chrome: the settle holds [`COMMIT_STILL_FOR`], at most [`COMMIT_SETTLE`].
     page: bool,
     wait: Duration,
+}
+
+/// A driver session for one step; one dropped while open is ended by a detached call.
+struct Owned {
+    driver: Arc<Driver>,
+    name: String,
+    open: bool,
+}
+
+impl Owned {
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl Drop for Owned {
+    fn drop(&mut self) {
+        if !self.open {
+            return;
+        }
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let (driver, session) = (Arc::clone(&self.driver), std::mem::take(&mut self.name));
+        rt.spawn(async move {
+            let _ = driver
+                .send("end_session", &json!({"session": session}))
+                .await;
+        });
+    }
 }
 
 /// A settle frame: block hashes over MIT-SHM, or a probe session's thumbnail.
@@ -2640,6 +2683,63 @@ mod tests {
             "{}",
             out.text
         );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn an_input_session_dropped_mid_call_is_still_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let ended = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let log = std::sync::Arc::clone(&ended);
+        let driver = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let log = std::sync::Arc::clone(&log);
+                tokio::spawn(async move {
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+                    reader.read_line(&mut line).await.unwrap();
+                    let req: Value = serde_json::from_str(&line).unwrap();
+                    let session = req["args"]["session"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
+                    let reply = match req["name"].as_str().unwrap_or_default() {
+                        "type_text" => return std::future::pending().await,
+                        "end_session" => {
+                            log.lock().unwrap().push(session);
+                            json!({"ok": true, "result": {}})
+                        }
+                        "list_windows" => {
+                            json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Mousepad", "title": "notes", "bounds": {"x": 0, "y": 0, "width": 800, "height": 600}, "z_index": 1}]}}})
+                        }
+                        _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+                    };
+                    let mut out = reply.to_string().into_bytes();
+                    out.push(b'\n');
+                    reader.into_inner().write_all(&out).await.unwrap();
+                });
+            }
+        });
+        let cua = cua(&socket);
+        let act = cua.act(json!({"action": "type", "text": "hello"}));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), act)
+                .await
+                .is_err()
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !ended
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s.starts_with("input-"))
+        {
+            assert!(Instant::now() < deadline, "{:?}", ended.lock().unwrap());
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         driver.abort();
     }
 

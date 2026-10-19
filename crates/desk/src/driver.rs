@@ -93,7 +93,7 @@ impl Driver {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    async fn send(&self, tool: &str, args: &Value) -> Result<Value, String> {
+    pub(crate) async fn send(&self, tool: &str, args: &Value) -> Result<Value, String> {
         let request = Request {
             method: "call",
             name: tool,
