@@ -83,10 +83,10 @@ pub struct Device {
     pub su: Option<PathBuf>,
 }
 
-/// adb on an Android device, with the element centres of each session's latest computer_state.
+/// adb on an Android device, with the front window and element centres of each session's latest computer_state.
 pub struct Android {
     device: Device,
-    points: Mutex<HashMap<String, Vec<(i32, i32)>>>,
+    points: Mutex<HashMap<String, Saved>>,
     ui: Mutex<Option<UiServer>>,
     control: Mutex<Option<Control>>,
     screen: OnceCell<(i32, i32)>,
@@ -119,7 +119,8 @@ impl Android {
     pub async fn state(&self, args: Value) -> Result<Output, String> {
         let args: StateArgs = parse(args)?;
         let (xml, shot, front) = tokio::join!(self.tree(None), self.look(), desk::front(self));
-        let mut elements = desk::elements(&xml?, &front?);
+        let front = front?;
+        let mut elements = desk::elements(&xml?, &front);
         if let Some(q) = args.query.as_deref().map(str::to_lowercase) {
             elements.retain(|e| e.mentions(&q));
         }
@@ -130,10 +131,11 @@ impl Android {
             .map(|(i, e)| e.line(i))
             .collect::<Vec<_>>()
             .join("\n");
-        self.points
-            .lock()
-            .await
-            .insert(args.session, elements.iter().map(Node::center).collect());
+        let saved = Saved {
+            window: front.window().to_owned(),
+            points: elements.iter().map(Node::center).collect(),
+        };
+        self.points.lock().await.insert(args.session, saved);
         let mut out = shot?;
         out.text = if text.is_empty() {
             "no UI elements".to_owned()
@@ -360,20 +362,24 @@ impl Android {
         let Some(i) = args.element else {
             return Ok(args.x.zip(args.y).map(|(x, y)| (x as i32, y as i32)));
         };
-        let saved = self
-            .points
-            .lock()
-            .await
-            .get(&args.session)
-            .and_then(|p| p.get(i))
-            .copied()
-            .ok_or_else(|| format!("no element [{i}] in the latest computer_state"))?;
-        if desk::front(self).await?.covered(saved) {
+        let (window, point) = {
+            let saved = self.points.lock().await;
+            let saved = saved.get(&args.session);
+            let point = saved.and_then(|s| s.points.get(i)).copied();
+            let point =
+                point.ok_or_else(|| format!("no element [{i}] in the latest computer_state"))?;
+            (saved.map(|s| s.window.clone()).unwrap_or_default(), point)
+        };
+        let front = desk::front(self).await?;
+        if front.window() != window {
+            return Err("the screen changed since computer_state; call it again".to_owned());
+        }
+        if front.covered(point) {
             return Err(format!(
                 "element [{i}] is covered now; call computer_state again"
             ));
         }
-        Ok(Some(saved))
+        Ok(Some(point))
     }
 
     async fn swipe(&self, from: (i32, i32), to: (i32, i32), ms: u32) -> Result<(), String> {
@@ -563,6 +569,11 @@ async fn tail(mut reader: impl AsyncRead + Unpin, keep: usize) -> Vec<u8> {
 }
 
 /// The image's UI server (`image/android/ui`) in Android, one answer per request line; dropping it stops the server.
+struct Saved {
+    window: String,
+    points: Vec<(i32, i32)>,
+}
+
 struct UiServer {
     _child: Child,
     stdin: ChildStdin,
@@ -807,6 +818,13 @@ async fn read_ack<R: AsyncRead + Unpin>(r: &mut R, sequence: u64) -> Result<(), 
 mod tests {
     use super::*;
 
+    fn saved(points: Vec<(i32, i32)>) -> Saved {
+        Saved {
+            window: String::new(),
+            points,
+        }
+    }
+
     #[test]
     fn desktop_key_names_map_to_android_keycodes() {
         assert_eq!(keycodes("Return").unwrap(), [66]);
@@ -994,6 +1012,80 @@ mod tests {
         assert_eq!(abort_cause(log), None);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_indexed_point_is_refused_once_the_screen_it_came_from_changed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("shuttle-adb-point-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let adb = dir.join("adb");
+        std::fs::write(
+            &adb,
+            "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*app_process*) echo ready; while read l; do cat \"$DIR/windows.json\"; echo; echo '<<end>>'; done;;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let windows = |extra: &str| {
+            let app = |active| {
+                format!(
+                    r#"{{"id":7,"type":1,"layer":0,"title":"Settings","package":"com.android.settings","active":{active},"focused":{active},"bounds":[0,0,720,1280]}}"#
+                )
+            };
+            let bar = r#"{"id":5,"type":3,"layer":2,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[0,1184,720,1280]}"#;
+            let list = match extra {
+                "shade" => format!(
+                    r#"[{bar},{{"id":9,"type":3,"layer":4,"title":"Shade","package":"com.android.systemui","active":true,"focused":true,"bounds":[0,0,720,1280]}},{}]"#,
+                    app(false)
+                ),
+                "keyboard" => format!(
+                    r#"[{{"id":8,"type":2,"layer":3,"title":"","package":"com.android.inputmethod.latin","active":false,"focused":false,"bounds":[0,700,720,1184]}},{bar},{}]"#,
+                    app(true)
+                ),
+                _ => format!("[{bar},{}]", app(true)),
+            };
+            std::fs::write(dir.join("windows.json"), list).unwrap();
+        };
+        windows("");
+        let android = Android::new(Device {
+            adb,
+            serial: None,
+            ui_jar: "/u.jar".into(),
+            scrcpy_jar: "/s.jar".into(),
+            su: None,
+        });
+        android.points.lock().await.insert(
+            "s".into(),
+            Saved {
+                window: "7".into(),
+                points: vec![(360, 760)],
+            },
+        );
+        let act: ActArgs = serde_json::from_value(
+            serde_json::json!({"session": "s", "action": "tap", "element": 0}),
+        )
+        .unwrap();
+        assert_eq!(android.point(&act).await, Ok(Some((360, 760))));
+        windows("keyboard");
+        assert_eq!(
+            android.point(&act).await,
+            Err("element [0] is covered now; call computer_state again".to_owned())
+        );
+        windows("shade");
+        assert_eq!(
+            android.point(&act).await,
+            Err("the screen changed since computer_state; call it again".to_owned())
+        );
+        windows("");
+        assert_eq!(android.point(&act).await, Ok(Some((360, 760))));
+        let explicit: ActArgs = serde_json::from_value(
+            serde_json::json!({"session": "s", "action": "tap", "x": 360.0, "y": 760.0}),
+        )
+        .unwrap();
+        windows("shade");
+        assert_eq!(android.point(&explicit).await, Ok(Some((360, 760))));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[tokio::test]
     async fn a_session_end_forgets_only_that_sessions_elements() {
         let android = Android::new(Device {
@@ -1005,8 +1097,8 @@ mod tests {
         });
         {
             let mut points = android.points.lock().await;
-            points.insert("cu-1".into(), vec![(10, 20)]);
-            points.insert("cu-2".into(), vec![(30, 40)]);
+            points.insert("cu-1".into(), saved(vec![(10, 20)]));
+            points.insert("cu-2".into(), saved(vec![(30, 40)]));
         }
         assert_eq!(
             android
@@ -1017,7 +1109,7 @@ mod tests {
         );
         let points = android.points.lock().await;
         assert!(!points.contains_key("cu-1"));
-        assert_eq!(points.get("cu-2"), Some(&vec![(30, 40)]));
+        assert_eq!(points.get("cu-2").map(|s| &s.points), Some(&vec![(30, 40)]));
     }
 
     #[tokio::test]
@@ -1031,8 +1123,8 @@ mod tests {
         });
         {
             let mut points = android.points.lock().await;
-            points.insert(String::new(), vec![(10, 20)]);
-            points.insert("cu-2".into(), vec![(30, 40)]);
+            points.insert(String::new(), saved(vec![(10, 20)]));
+            points.insert("cu-2".into(), saved(vec![(30, 40)]));
         }
         let end = |args| {
             let android = &android;
