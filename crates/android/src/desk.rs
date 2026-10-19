@@ -44,7 +44,7 @@ pub(crate) struct Node {
     bounds: [i32; 4],
     /// Whether any of the element is on the screen; a list keeps rows next to the shown ones.
     visible: bool,
-    /// The list or page that scrolls the element, as `[x, y, w, h]`.
+    /// The part of the screen that every list or page scrolling the element shows, as `[x, y, w, h]`.
     scroller: Option<[i32; 4]>,
 }
 
@@ -634,14 +634,29 @@ fn nodes(frame: &Frame, raws: &[Raw]) -> Vec<Node> {
             states,
             bounds: xywh(r.rect),
             visible: r.visible,
-            scroller: raws
-                .iter()
-                .rev()
-                .find(|a| a.scrollable && under(&r.path, &a.path))
-                .map(|a| xywh(a.rect)),
+            scroller: viewport(raws, &r.path),
         });
     }
     out
+}
+
+fn viewport(raws: &[Raw], path: &str) -> Option<[i32; 4]> {
+    raws.iter()
+        .filter(|a| a.scrollable && under(path, &a.path))
+        .map(|a| a.rect)
+        .reduce(|a, b| Rect {
+            left: a.left.max(b.left),
+            top: a.top.max(b.top),
+            right: a.right.min(b.right),
+            bottom: a.bottom.min(b.bottom),
+        })
+        .map(|r| {
+            xywh(Rect {
+                right: r.right.max(r.left),
+                bottom: r.bottom.max(r.top),
+                ..r
+            })
+        })
 }
 
 fn under(path: &str, ancestor: &str) -> bool {
@@ -1282,6 +1297,28 @@ mod tests {
                 "[1] button \"0.0.0\" at 360,230",
                 "[2] button \"0.0.1\" at 360,340",
             ]
+        );
+    }
+
+    #[test]
+    fn a_row_in_a_nested_list_is_cut_to_every_viewport() {
+        let dump = format!(
+            "<hierarchy>{}{}{}{}</hierarchy>",
+            row("0.0", true, "[0,160][720,1000]"),
+            row("0.0.0", true, "[0,900][720,1100]"),
+            row("0.0.0.0", false, "[100,950][300,1050]"),
+            row("0.0.0.1", false, "[100,1010][300,1090]"),
+        );
+        let frame = settings();
+        assert_eq!(
+            tap_of(&frame, &dump, "0.0.0.0"),
+            Some((200, 975)),
+            "the outer list ends above the row's lower half"
+        );
+        assert_eq!(
+            tap_of(&frame, &dump, "0.0.0.1"),
+            None,
+            "a row below the outer viewport is off the screen"
         );
     }
 
