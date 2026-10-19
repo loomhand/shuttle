@@ -360,14 +360,20 @@ impl Android {
         let Some(i) = args.element else {
             return Ok(args.x.zip(args.y).map(|(x, y)| (x as i32, y as i32)));
         };
-        self.points
+        let saved = self
+            .points
             .lock()
             .await
             .get(&args.session)
             .and_then(|p| p.get(i))
             .copied()
-            .map(Some)
-            .ok_or_else(|| format!("no element [{i}] in the latest computer_state"))
+            .ok_or_else(|| format!("no element [{i}] in the latest computer_state"))?;
+        if desk::front(self).await?.covered(saved) {
+            return Err(format!(
+                "element [{i}] is covered now; call computer_state again"
+            ));
+        }
+        Ok(Some(saved))
     }
 
     async fn swipe(&self, from: (i32, i32), to: (i32, i32), ms: u32) -> Result<(), String> {
