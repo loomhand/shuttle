@@ -1062,20 +1062,10 @@ mod tests {
 
     #[test]
     fn a_tap_under_the_navigation_or_status_bar_does_not_reach_the_app() {
-        let bar = |id, layer, bounds| WindowInfo {
-            id,
-            kind: 3,
-            title: String::new(),
-            package: "com.android.systemui".into(),
-            active: false,
-            focused: false,
-            layer,
-            bounds,
-        };
         let frames = frames_of(
             vec![
-                bar(5, 2, [0, 1184, 720, 1280]),
-                bar(1, 1, [0, 0, 720, 48]),
+                bar(5, 3, 2, [0, 1184, 720, 1280]),
+                bar(1, 3, 1, [0, 0, 720, 48]),
                 window([0, 0, 720, 1280]),
             ],
             REDROID,
@@ -1106,14 +1096,11 @@ mod tests {
             Some((600, 1184)),
             "a list's swipe stays above the bar"
         );
-        let ime = WindowInfo {
-            kind: 2,
-            ..bar(9, 3, [0, 700, 720, 1184])
-        };
+        let ime = bar(9, 2, 3, [0, 700, 720, 1184]);
         let typing = frames_of(
             vec![
                 ime,
-                bar(5, 2, [0, 1184, 720, 1280]),
+                bar(5, 3, 2, [0, 1184, 720, 1280]),
                 window([0, 0, 720, 1280]),
             ],
             REDROID,
@@ -1124,7 +1111,10 @@ mod tests {
             "the keyboard covers the field"
         );
         let closed = frames_of(
-            vec![bar(5, 2, [0, 1184, 720, 1280]), window([0, 0, 720, 1280])],
+            vec![
+                bar(5, 3, 2, [0, 1184, 720, 1280]),
+                window([0, 0, 720, 1280]),
+            ],
             REDROID,
         );
         assert_eq!(
@@ -1146,16 +1136,6 @@ mod tests {
 
     #[test]
     fn a_saved_point_is_covered_once_the_keyboard_is_up() {
-        let bar = |id, kind, layer, bounds| WindowInfo {
-            id,
-            kind,
-            title: String::new(),
-            package: "com.android.systemui".into(),
-            active: false,
-            focused: false,
-            layer,
-            bounds,
-        };
         let closed = frames_of(
             vec![
                 bar(5, 3, 2, [0, 1184, 720, 1280]),
@@ -1180,16 +1160,6 @@ mod tests {
 
     #[test]
     fn a_list_swipe_runs_in_its_open_band_and_needs_room() {
-        let bar = |id, kind, layer, bounds| WindowInfo {
-            id,
-            kind,
-            title: String::new(),
-            package: "com.android.systemui".into(),
-            active: false,
-            focused: false,
-            layer,
-            bounds,
-        };
         let phone = frames_of(
             vec![
                 bar(5, 3, 2, [0, 1184, 720, 1280]),
@@ -1234,6 +1204,19 @@ mod tests {
 
     fn settings() -> Frame {
         frame(window([0, 0, 720, 1280]), false, REDROID)
+    }
+
+    fn bar(id: i64, kind: i64, layer: i64, bounds: [i32; 4]) -> WindowInfo {
+        WindowInfo {
+            id,
+            kind,
+            title: String::new(),
+            package: "com.android.systemui".into(),
+            active: false,
+            focused: false,
+            layer,
+            bounds,
+        }
     }
 
     #[test]
@@ -1389,16 +1372,6 @@ mod tests {
 
     #[test]
     fn computer_state_points_above_the_navigation_bar_and_the_keyboard() {
-        let bar = |id, kind, layer, bounds| WindowInfo {
-            id,
-            kind,
-            title: String::new(),
-            package: "com.android.systemui".into(),
-            active: false,
-            focused: false,
-            layer,
-            bounds,
-        };
         let dump = format!(
             "<hierarchy>{}{}{}{}</hierarchy>",
             row("0.0", true, "[0,160][720,1280]"),

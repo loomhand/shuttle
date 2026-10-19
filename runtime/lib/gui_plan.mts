@@ -974,7 +974,7 @@ function developerTools() {
 function repo() {
   if (!existsSync(`${FLOWS}/.git`)) {
     git('init', '-q'); writeFileSync(`${FLOWS}/.gitignore`, '.runs.jsonl\n.pending.json\n', PRIVATE)
-    git('config', 'user.name', 'gui_plan'); git('config', 'user.email', 'gui_plan@box')
+    git('config', 'user.name', 'gui_plan'); git('config', 'user.email', 'gui_plan@localhost')
   }
 }
 

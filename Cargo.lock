@@ -1237,6 +1237,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shuttle-desk-core",
+ "tempfile",
  "tokio",
 ]
 
