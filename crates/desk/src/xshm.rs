@@ -493,28 +493,6 @@ impl Grabber {
         Ok(out)
     }
 
-    /// The titles of the windows the window manager manages, minimized ones too.
-    pub fn client_titles(&self) -> Result<Vec<String>, String> {
-        let names = self
-            .clients()?
-            .iter()
-            .map(|&c| {
-                self.conn
-                    .get_property(false, c, self.net_wm_name, self.utf8, 0, 64)
-                    .map_err(|e| format!("get _NET_WM_NAME: {e}"))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let mut titles = Vec::new();
-        for name in names {
-            if let Some(r) = alive(name.reply(), "get _NET_WM_NAME")?
-                && !r.value.is_empty()
-            {
-                titles.push(String::from_utf8_lossy(&r.value).into_owned());
-            }
-        }
-        Ok(titles)
-    }
-
     /// The windows the window manager manages, bottom to top.
     fn clients(&self) -> Result<Vec<Window>, String> {
         Ok(self

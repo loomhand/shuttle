@@ -50,7 +50,7 @@ pub(crate) fn plan_press<B: Access>(b: &mut B, id: &str, os: Os) -> Result<Press
 }
 
 /// Whether process `pid` is LibreOffice, whose control extents can sit above the control.
-fn libreoffice(pid: u32) -> bool {
+pub(crate) fn libreoffice(pid: u32) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim() == "soffice.bin")
 }
 
@@ -208,5 +208,26 @@ mod tests {
             plan_press(&mut f, "downloads", Os::Mac).unwrap(),
             Press::Selected
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_a_soffice_bin_process_counts_as_libreoffice() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("soffice.bin");
+        std::fs::copy("/bin/sleep", &bin).unwrap();
+        let mut office = std::process::Command::new(&bin).arg("30").spawn().unwrap();
+        let pid = office.id();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !libreoffice(pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            libreoffice(pid),
+            "the soffice.bin copy never showed in /proc/{pid}/comm"
+        );
+        assert!(!libreoffice(std::process::id()));
+        office.kill().unwrap();
+        office.wait().unwrap();
     }
 }

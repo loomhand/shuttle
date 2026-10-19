@@ -5,68 +5,12 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use crate::still::Block;
 use crate::xshm::Grabber;
 
 const SAMPLE_EVERY: Duration = Duration::from_millis(200);
 const WINDOW: Duration = Duration::from_secs(2);
 const IDLE: Duration = Duration::from_secs(30);
-
-/// What a screen block did in the samples before an action.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub enum Block {
-    #[default]
-    Quiet,
-    /// It changed at least twice between two contents, like a blinking caret; other contents are a change.
-    Toggling(Vec<u64>),
-    /// It changed at least twice through more contents, like a clock, a spinner or a video; no contents
-    /// are a change. A block that changed once, like a window that opened, stays quiet.
-    Churning,
-}
-
-impl Block {
-    /// Whether the block showing `hash` after the action is a change the action may have made.
-    pub fn counts(&self, hash: u64) -> bool {
-        match self {
-            Self::Quiet => true,
-            Self::Toggling(seen) => !seen.contains(&hash),
-            Self::Churning => false,
-        }
-    }
-
-    fn of(contents: impl Iterator<Item = u64>) -> Self {
-        let mut runs: Vec<u64> = Vec::new();
-        for h in contents {
-            if runs.last() != Some(&h) {
-                runs.push(h);
-            }
-        }
-        if runs.len() < 3 {
-            return Self::Quiet;
-        }
-        let mut seen = runs;
-        seen.sort_unstable();
-        seen.dedup();
-        if seen.len() == 2 {
-            Self::Toggling(seen)
-        } else {
-            Self::Churning
-        }
-    }
-
-    fn merge(self, carried: &Self) -> Self {
-        match (self, carried) {
-            (Self::Churning, _) | (_, Self::Churning) => Self::Churning,
-            (Self::Toggling(mut a), Self::Toggling(b)) => {
-                a.extend(b);
-                a.sort_unstable();
-                a.dedup();
-                Self::Toggling(a)
-            }
-            (Self::Quiet, c) => c.clone(),
-            (b, Self::Quiet) => b,
-        }
-    }
-}
 
 /// The contents each block showed during a settle; a block back at its contents from before the
 /// action toggles among them from then on, like a caret or a flicker the sampler did not catch.
@@ -89,7 +33,7 @@ impl Shown {
             if n == f
                 && let Some(b) = blocks.get_mut(i)
             {
-                *b = std::mem::take(b).merge(&Block::Toggling(states.clone()));
+                *b = merge(std::mem::take(b), &Block::Toggling(states.clone()));
             }
         }
     }
@@ -172,7 +116,7 @@ impl Volatile {
         (0..now.len())
             .map(|i| {
                 s.pauses.iter().fold(Block::Quiet, |carried, p| {
-                    Block::of(p.iter().map(|(_, h)| h[i])).merge(&carried)
+                    merge(Block::of(p.iter().map(|(_, h)| h[i])), &carried)
                 })
             })
             .collect()
@@ -236,6 +180,21 @@ impl Shared {
             }
             std::thread::sleep(SAMPLE_EVERY);
         }
+    }
+}
+
+/// What `block` did in one pause together with what it did in the later pauses, `carried`.
+fn merge(block: Block, carried: &Block) -> Block {
+    match (block, carried) {
+        (Block::Churning, _) | (_, Block::Churning) => Block::Churning,
+        (Block::Toggling(mut a), Block::Toggling(b)) => {
+            a.extend(b);
+            a.sort_unstable();
+            a.dedup();
+            Block::Toggling(a)
+        }
+        (Block::Quiet, c) => c.clone(),
+        (b, Block::Quiet) => b,
     }
 }
 

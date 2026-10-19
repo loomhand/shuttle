@@ -180,6 +180,15 @@ pub fn text_of(v: &Value) -> String {
         .join("\n")
 }
 
+/// The base64 data of a driver result's first image block.
+pub fn image_of(v: &Value) -> Option<&str> {
+    v["content"]
+        .as_array()?
+        .iter()
+        .find(|c| c["type"] == "image")
+        .and_then(|c| c["data"].as_str())
+}
+
 #[derive(Serialize)]
 struct Request<'a> {
     method: &'static str,
