@@ -37,6 +37,7 @@ const CONNECT_PAUSE: Duration = Duration::from_millis(100);
 const ACK_CLIPBOARD: u8 = 1;
 const ACK_TIMEOUT: Duration = Duration::from_secs(2);
 const PASTE_TIMEOUT: Duration = Duration::from_secs(5);
+const DIAGNOSE_TIMEOUT: Duration = Duration::from_secs(1);
 const TYPE_WAIT: Duration = Duration::from_secs(1);
 const TYPE_DEADLINE: Duration = Duration::from_millis(1500);
 const TYPE_FOCUS_POLL: Duration = Duration::from_millis(20);
@@ -380,9 +381,11 @@ impl Android {
             *slot = Some(control);
         }
         match tokio::time::timeout(PASTE_TIMEOUT, self.served("paste")).await {
-            Ok(answer) => answer.map(drop),
+            Ok(Ok(answer)) if answer.trim() == "true" => Ok(()),
+            Ok(Ok(_)) => Err("the paste key was not injected".to_owned()),
+            Ok(Err(e)) => Err(e),
             Err(_) => Err(format!(
-                "{} did not handle the paste key within {} s",
+                "{} did not handle the paste key within {} s; the paste may still land, so check the field before typing again",
                 self.focused_window().await,
                 PASTE_TIMEOUT.as_secs()
             )),
@@ -391,10 +394,14 @@ impl Android {
 
     /// The window `dumpsys window` names as focused, for an error about it.
     async fn focused_window(&self) -> String {
-        let out = self
-            .adb(&["shell", "dumpsys", "window", "displays"])
-            .await
-            .unwrap_or_default();
+        let out = tokio::time::timeout(
+            DIAGNOSE_TIMEOUT,
+            self.adb(&["shell", "dumpsys", "window", "displays"]),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
         String::from_utf8_lossy(&out)
             .lines()
             .find_map(|l| l.trim().strip_prefix("mCurrentFocus="))
@@ -1527,9 +1534,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test(start_paused = true)]
-    async fn a_paste_key_the_window_does_not_handle_fails_in_time_and_drops_the_ui_server() {
-        let (android, mut peer) = session("/nonexistent/adb").await;
+    async fn paste_through(android: &Android, mut peer: TcpStream, mut ui: Command) -> String {
         let mut ack = vec![ACK_CLIPBOARD];
         ack.extend_from_slice(&1u64.to_be_bytes());
         peer.write_all(&ack).await.unwrap();
@@ -1538,25 +1543,79 @@ mod tests {
             let n = peer.read(&mut buf).await.unwrap();
             (buf[..n].to_vec(), peer)
         });
-        let mut hung = Command::new("sleep")
-            .arg("30")
+        let mut ui = ui
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .unwrap();
         *android.ui.lock().await = Some(UiServer {
-            stdin: hung.stdin.take().unwrap(),
-            stdout: BufReader::new(hung.stdout.take().unwrap()),
-            _child: hung,
+            stdin: ui.stdin.take().unwrap(),
+            stdout: BufReader::new(ui.stdout.take().unwrap()),
+            _child: ui,
         });
         let err = android.paste("hi").await.unwrap_err();
-        assert_eq!(
-            err,
-            "the focused window did not handle the paste key within 5 s"
-        );
         assert_eq!(device.await.unwrap().0, clipboard_message("hi", 1));
+        err
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn a_paste_key_the_window_does_not_handle_fails_in_time_and_drops_the_ui_server() {
+        let (android, peer) = session("/nonexistent/adb").await;
+        let mut hung = Command::new("sleep");
+        hung.arg("30");
+        assert_eq!(
+            paste_through(&android, peer, hung).await,
+            "the focused window did not handle the paste key within 5 s; the paste may still land, so check the field before typing again"
+        );
         assert!(android.ui.lock().await.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_paste_key_the_device_did_not_inject_fails() {
+        let (android, peer) = session("/nonexistent/adb").await;
+        let mut refused = Command::new("sh");
+        refused.args(["-c", "read l; printf 'false\\n<<end>>\\n'; sleep 30"]);
+        assert_eq!(
+            paste_through(&android, peer, refused).await,
+            "the paste key was not injected"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn the_focused_window_diagnostic_gives_up_after_a_second() {
+        let adb = std::env::temp_dir().join(format!("shuttle-hung-adb-{}", std::process::id()));
+        std::fs::write(&adb, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&adb, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let (android, _peer) = session(adb.to_str().unwrap()).await;
+        let started = tokio::time::Instant::now();
+        assert_eq!(android.focused_window().await, "the focused window");
+        assert!(started.elapsed() < ADB_TIMEOUT);
+        std::fs::remove_file(&adb).unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_paste_that_fails_is_not_pasted_again() {
+        let pastes = std::cell::Cell::new(0);
+        let err = type_with(
+            "abc",
+            None,
+            |_| async { Ok(Some(field(""))) },
+            || {
+                pastes.set(pastes.get() + 1);
+                async { Err("the paste key was not injected".to_owned()) }
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            (err.as_str(), pastes.get()),
+            ("the paste key was not injected", 1)
+        );
     }
 
     #[test]
