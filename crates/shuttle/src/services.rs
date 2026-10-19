@@ -446,6 +446,14 @@ server.serve_forever()
         served
     }
 
+    fn control(tool: &str) -> Call {
+        Call {
+            agent_id: String::new(),
+            tool: tool.into(),
+            args: json!({}),
+        }
+    }
+
     fn alive(pid: i32) -> bool {
         // SAFETY: signal 0 only checks that the process exists.
         unsafe { libc::kill(pid, 0) == 0 }
@@ -569,16 +577,7 @@ server.serve_forever()
         let mut held = s.open("demo_hold", json!({})).await;
         assert!(appears(&s.state("held")).await);
         let started = Instant::now();
-        assert!(
-            !s.daemon
-                .answer(Call {
-                    agent_id: String::new(),
-                    tool: "safety_stop".into(),
-                    args: json!({})
-                })
-                .await
-                .is_error
-        );
+        assert!(!s.daemon.answer(control("safety_stop")).await.is_error);
         let mut rest = Vec::new();
         held.read_to_end(&mut rest).await.unwrap();
         assert!(rest.is_empty() && started.elapsed() < Duration::from_secs(1));
@@ -590,15 +589,24 @@ server.serve_forever()
             (refused.is_error, refused.text.as_str()),
             (true, crate::STOPPED)
         );
-        s.daemon
-            .answer(Call {
-                agent_id: String::new(),
-                tool: "safety_resume".into(),
-                args: json!({}),
-            })
-            .await;
+        s.daemon.answer(control("safety_resume")).await;
         assert!(!s.echo().await.is_error);
         assert_eq!(s.pid(), Some(pid));
+        s.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_stop_and_a_resume_back_to_back_still_drop_a_live_splice() {
+        let s = served(Guard::default()).await;
+        let mut held = s.open("demo_hold", json!({})).await;
+        assert!(appears(&s.state("held")).await);
+        for tool in ["safety_stop", "safety_resume"] {
+            s.daemon.answer(control(tool)).await;
+        }
+        let mut rest = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(2), held.read_to_end(&mut rest)).await;
+        assert!(read.is_ok(), "the splice outlived the stop");
+        assert!(!s.echo().await.is_error);
         s.stop().await;
     }
 

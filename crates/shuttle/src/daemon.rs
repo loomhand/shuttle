@@ -90,6 +90,7 @@ pub struct Daemon<H> {
     plugins: Vec<Plugin>,
     services: HashMap<String, String>,
     halted: tokio::sync::watch::Sender<bool>,
+    stops: tokio::sync::watch::Sender<u64>,
     actions: AtomicUsize,
     asking: AtomicBool,
     turn: tokio::sync::Mutex<()>,
@@ -110,6 +111,7 @@ impl<H: Handler> Daemon<H> {
             plugins: Vec::new(),
             services: HashMap::new(),
             halted: tokio::sync::watch::Sender::new(false),
+            stops: tokio::sync::watch::Sender::new(0),
             actions: AtomicUsize::new(0),
             asking: AtomicBool::new(false),
             turn: tokio::sync::Mutex::new(()),
@@ -284,13 +286,14 @@ impl<H: Handler> Handler for Daemon<H> {
         let Some(socket) = self.services.get(tool) else {
             return;
         };
+        let mut stops = self.stops.subscribe();
+        let seen = *stops.borrow_and_update();
         let refused = if *self.halted.borrow() {
             Some(STOPPED.to_owned())
         } else {
-            let mut halted = self.halted.subscribe();
             tokio::select! {
                 routed = services::route(socket, body, &mut stream) => routed.err(),
-                _ = halted.wait_for(|h| *h) => None,
+                _ = stops.wait_for(|n| *n != seen) => None,
             }
         };
         if let Some(e) = refused {
@@ -302,6 +305,9 @@ impl<H: Handler> Handler for Daemon<H> {
 impl<H: Handler> Controls for Daemon<H> {
     fn halt(&self, stopped: bool) {
         self.halted.send_replace(stopped);
+        if stopped {
+            self.stops.send_modify(|n| *n += 1);
+        }
         self.runner.halt(stopped);
     }
 
