@@ -11,6 +11,7 @@
 - **Android over adb.** With an `[android]` section ([docs/config.md](docs/config.md#android-over-adb)), the daemon drives one Android device instead of the desktop. The device is reached from a Linux or macOS host, and the `shuttle-android` crate holds the backend:
   - the desk verbs answer from the device's UiAutomation tree, through a UI server the daemon pushes and runs under `app_process`;
   - input goes through `adb shell input`, screenshots through `screencap`, and text through a scrcpy clipboard paste;
+  - a type pastes line by line with Return between lines, in `desk type` and `computer_act` alike, and reads each line back from the focused field: a field that did not change is pasted again within 1.5 s, one that changed otherwise is not, and a password field or a web view gets one unchecked paste; `desk type` answers `typed` true, false or null;
   - `scroll`, `drag` and `still` answer `unknown desk tool`;
   - the daemon starts no cua-driver, indicator or stop hotkey;
   - `desk computer_state`, `desk computer_act`, `desk computer_end` and `desk look` answer from the command line only; state, act and look write their screenshot to a file, and `computer_end` forgets a session's element indexes;

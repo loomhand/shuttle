@@ -34,7 +34,7 @@ Desk calls name `desk_<verb>` tools:
 | `act` | `id`, `action` (`click`, `action`, `select`, `focus`) | one action on a node |
 | `at` | `x`, `y`, `window?`, `pid?` | the node at a screen point and its ancestors |
 | `key` | `keys` (`ctrl+s`, `cmd+shift+t`, ...) | sends a key combination |
-| `type` | `text` | types text |
+| `type` | `text` | types text; on an Android device `typed` says whether the field shows it (null: a password field or a web view, not checked) |
 | `click` | `x`, `y`, `button?`, `count?` | clicks a screen point |
 | `scroll` | `direction` (`up`, `down`, `left`, `right`), `amount?` (notches or key repeats, default 3, the driver caps it at 50), `x?`, `y?` | with `x` and `y`, wheel notches at that screen point, which scroll whatever is under it; without them, scroll keys to the front app window, by its pid and window id: the driver's topmost window, or with an app allowlist the window the allowlist picks and checks when the driver lists it under the same title, else that app's topmost window. On Windows, whose apps drop posted scroll keys, and on Linux, where the front window is that of the focused app, it wheels notches at that window's center instead, and fails when another window covers that center. `x` without `y` is an error. The allowlist gates the window at the point, or that front window |
 | `drag` | `x`, `y`, `to_x`, `to_y` | presses at (`x`, `y`), moves and releases at (`to_x`, `to_y`), in desk coordinates; the allowlist gates both ends |

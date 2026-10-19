@@ -813,15 +813,8 @@ async fn at(android: &Android, a: AtArgs) -> Result<String, String> {
 
 /// Types text into the focused field: each line pasted, Return between lines.
 async fn type_text(android: &Android, text: &str) -> Result<String, String> {
-    for (i, line) in text.split('\n').enumerate() {
-        if i > 0 {
-            android.keys("return").await?;
-        }
-        if !line.is_empty() {
-            android.paste(line).await?;
-        }
-    }
-    Ok(json!({"ok": true, "chars": text.chars().count()}).to_string())
+    let typed = android.type_text(text, None).await?;
+    Ok(json!({"ok": true, "chars": text.chars().count(), "typed": typed}).to_string())
 }
 
 async fn click(android: &Android, a: ClickArgs) -> Result<String, String> {
