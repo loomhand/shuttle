@@ -6,6 +6,9 @@
 - **Smaller UI server answers.** The dump no longer carries `resource-id`, `package` or `depth` per node, and the focus answer no `class` or `package`; the daemon read none of them.
 - **macOS menu toggles.** A `{menu, on}` step on macOS opens the item's menus, closes them and reads the check mark from a fresh snapshot before it presses: AppKit validates a mark only while its menu is open, so a freshly launched TextEdit read an unchecked item as checked and toggled it twice, on either bundled driver. This fixes the 0.1.6 known issue; a toggle step costs about 2 s more while the app is running, and up to about 4 s more on the first toggle after a launch.
 
+- **Linux docks and shell windows.** The settle's screen hashes skip only the squares a dock window covers, read from the window manager and read again when windows open or close or a dock moves, in place of fixed 32 and 40-row strips at the top and bottom of the screen; `windows` marks a window of a process that owns a dock or desktop window (`_NET_WM_WINDOW_TYPE`) with `shell: true`, and `gui_plan` leaves the shell out by that mark instead of by XFCE's names.
+- **Linux row bounds.** AT-SPI table and tree rows on screen carry `bounds` in `snapshot` and `find`, as on the other backends.
+
 ## 0.1.6 - 2026-10-19
 
 - **Windows tree items.** On Windows `press` clicks a tree item at its centre when a hit test reaches it, and otherwise tries UI Automation Select, then the item's action: File Explorer's navigation pane on some Windows 11 builds selects an item on Select without opening it.
