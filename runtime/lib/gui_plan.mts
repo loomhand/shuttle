@@ -733,7 +733,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       }
       tick('launch', t0)
     }
-    if (!w.active) await desk.focus(w.title, w.pid); known.add(w.title); rec.window = lastSeen = w.title; await windowFor(w.title); return
+    if (launched || !w.active) await desk.focus(w.title, w.pid); known.add(w.title); rec.window = lastSeen = w.title; await windowFor(w.title); return
   }
   if (s.type !== undefined) {
     const nl = s.type.endsWith('\n'); const ws = await current(nl ? OPENING : SETTLE); const w = focusedIn(ws); const t0 = Date.now()
