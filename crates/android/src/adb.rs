@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{Mutex, OnceCell};
 
 use desk_core::args::parse;
@@ -40,6 +40,9 @@ const UI_TIMEOUT: Duration = Duration::from_secs(10);
 const UI_END: &str = "<<end>>";
 const UI_STDERR_KEEP: usize = 4096;
 const UI_EXIT_WAIT: Duration = Duration::from_secs(2);
+const UI_LOG_WAIT: Duration = Duration::from_secs(2);
+const UI_LOG_LINES: &str = "200";
+const UI_ABORT_KEEP: usize = 512;
 const KEYCODES: [(&str, u32); 26] = [
     ("return", 66),
     ("enter", 66),
@@ -418,27 +421,40 @@ impl Android {
             .map_err(|_| "UI server start timed out".to_owned())?
             .map_err(|e| format!("read UI server: {e}"))?;
         if ready.trim() != "ready" {
-            let status = match tokio::time::timeout(UI_EXIT_WAIT, child.wait()).await {
-                Ok(Ok(status)) => status.to_string(),
-                _ => {
-                    let _ = child.start_kill();
-                    "still running".to_owned()
-                }
-            };
-            let tail = tokio::time::timeout(UI_EXIT_WAIT, tail(stderr, UI_STDERR_KEEP))
-                .await
-                .unwrap_or_default();
-            return Err(format!(
-                "UI server said {:?} and {status}: {}",
-                ready.trim(),
-                String::from_utf8_lossy(&tail).trim()
-            ));
+            return Err(self.start_failure(&mut child, stderr, ready.trim()).await);
         }
         Ok(UiServer {
             _child: child,
             stdin,
             stdout,
         })
+    }
+
+    async fn start_failure(&self, child: &mut Child, stderr: ChildStderr, said: &str) -> String {
+        let status = match tokio::time::timeout(UI_EXIT_WAIT, child.wait()).await {
+            Ok(Ok(status)) => status.to_string(),
+            _ => {
+                let _ = child.start_kill();
+                "still running".to_owned()
+            }
+        };
+        let tail = tokio::time::timeout(UI_EXIT_WAIT, tail(stderr, UI_STDERR_KEEP))
+            .await
+            .unwrap_or_default();
+        let log = tokio::time::timeout(
+            UI_LOG_WAIT,
+            self.adb(&["logcat", "-d", "-b", "crash", "-t", UI_LOG_LINES]),
+        )
+        .await;
+        let cause = match log {
+            Ok(Ok(log)) => abort_cause(&String::from_utf8_lossy(&log)),
+            _ => None,
+        };
+        format!(
+            "UI server said {said:?} and {status}: {}\n{}",
+            String::from_utf8_lossy(&tail).trim(),
+            cause.map_or_else(|| "see adb logcat".to_owned(), |c| format!("abort: {c}"))
+        )
     }
 
     async fn open_control(&self) -> Result<Control, String> {
@@ -501,7 +517,26 @@ impl Android {
     }
 }
 
-/// The image's UI server (`image/android/ui`) in Android, one answer per request line; dropping it stops the server.
+fn abort_cause(log: &str) -> Option<String> {
+    let mut ui = false;
+    let mut cause = None;
+    for line in log.lines() {
+        if let Some((_, cmdline)) = line.split_once("Cmdline: ") {
+            ui = cmdline.trim().ends_with("cb.Ui");
+        } else if let Some((_, abort)) = line.split_once("Abort message: ")
+            && ui
+        {
+            let abort = abort.trim().trim_start_matches('\'').trim_end_matches('\'');
+            let end = (0..=UI_ABORT_KEEP.min(abort.len()))
+                .rev()
+                .find(|&i| abort.is_char_boundary(i))
+                .unwrap_or(0);
+            cause = Some(abort[..end].to_owned());
+        }
+    }
+    cause
+}
+
 async fn tail(mut reader: impl AsyncRead + Unpin, keep: usize) -> Vec<u8> {
     let mut out = Vec::new();
     let mut chunk = [0; 4096];
@@ -517,6 +552,7 @@ async fn tail(mut reader: impl AsyncRead + Unpin, keep: usize) -> Vec<u8> {
     out
 }
 
+/// The image's UI server (`image/android/ui`) in Android, one answer per request line; dropping it stops the server.
 struct UiServer {
     _child: Child,
     stdin: ChildStdin,
@@ -863,18 +899,43 @@ mod tests {
         assert_eq!(args.lines().last(), Some("'com.example/.Main$Launcher'"));
     }
 
-    #[cfg(unix)]
+    const CRASH_LOG: &str = "10-19 08:01:40.100  3200  3200 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:40.100  3200  3200 F DEBUG   : Abort message: 'not ours'\n10-19 08:01:50.777  3318  3318 F DEBUG   : Cmdline: app_process / cb.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : pid: 3308, tid: 3308, name: main  >>> app_process <<<\n10-19 08:01:50.777  3318  3318 F DEBUG   : Abort message: 'No pending exception expected: java.lang.ClassNotFoundException: cb.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : (Throwable with empty stack trace)'\n10-19 08:01:51.000  3330  3330 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:51.000  3330  3330 F DEBUG   : Abort message: 'later, not ours'\n";
+
+    #[test]
+    fn the_abort_cause_is_the_last_one_of_a_cb_ui_process() {
+        assert_eq!(
+            abort_cause(CRASH_LOG).as_deref(),
+            Some("No pending exception expected: java.lang.ClassNotFoundException: cb.Ui")
+        );
+        assert_eq!(abort_cause(""), None);
+        let long = format!(
+            "F DEBUG   : Cmdline: app_process / cb.Ui\nF DEBUG   : Abort message: '{}'\n",
+            "é".repeat(400)
+        );
+        let cause = abort_cause(&long).unwrap();
+        assert!(cause.len() <= UI_ABORT_KEEP && cause.chars().all(|c| c == 'é'));
+    }
+
     #[tokio::test]
-    async fn a_ui_server_that_dies_before_ready_reports_its_exit_and_stderr_tail() {
+    async fn a_stderr_tail_keeps_only_its_last_bytes() {
+        let text: String = (0..600).map(|i| format!("noise {i}\n")).collect();
+        let kept = tail(text.as_bytes(), 100).await;
+        assert_eq!(kept.len(), 100);
+        assert!(text.as_bytes().ends_with(&kept));
+    }
+
+    #[cfg(unix)]
+    async fn failing_ui_server(log: &str) -> String {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("shuttle-adb-ui-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "shuttle-adb-ui-{}-{}",
+            std::process::id(),
+            log.len()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let adb = dir.join("adb");
-        std::fs::write(
-            &adb,
-            "#!/bin/sh\ncase \"$*\" in\n*app_process*)\n  i=0\n  while [ $i -lt 600 ]; do echo \"noise $i\" >&2; i=$((i+1)); done\n  echo 'ClassNotFoundException: cb.Ui' >&2\n  exit 3;;\nesac\n",
-        )
-        .unwrap();
+        std::fs::write(&adb, "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*logcat*) cat \"$DIR/crash.log\";;\n*app_process*) echo 'Aborted (core dumped)' >&2; exit 134;;\nesac\n").unwrap();
+        std::fs::write(dir.join("crash.log"), log).unwrap();
         std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755)).unwrap();
         let android = Android::new(Device {
             adb,
@@ -885,10 +946,25 @@ mod tests {
         });
         let err = android.windows().await.unwrap_err();
         std::fs::remove_dir_all(&dir).unwrap();
-        assert!(err.contains("exit status: 3"), "{err}");
-        assert!(err.ends_with("ClassNotFoundException: cb.Ui"), "{err}");
-        assert!(!err.contains("noise 0\n"), "only the tail is kept: {err}");
-        assert!(err.len() < UI_STDERR_KEEP + 100, "{}", err.len());
+        err
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_ui_server_that_aborts_before_ready_reports_its_exit_stderr_and_cause() {
+        let err = failing_ui_server(CRASH_LOG).await;
+        assert_eq!(
+            err,
+            "UI server said \"\" and exit status: 134: Aborted (core dumped)\nabort: No pending exception expected: java.lang.ClassNotFoundException: cb.Ui"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_start_with_no_abort_in_the_log_points_to_logcat() {
+        let err = failing_ui_server("").await;
+        assert!(err.ends_with("\nsee adb logcat"), "{err}");
+        assert!(err.contains("exit status: 134"), "{err}");
     }
 
     #[tokio::test]
