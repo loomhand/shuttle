@@ -24,7 +24,7 @@ type Params = { steps?: Step[]; flow?: string; params?: Record<string, string>; 
 type Rec = {
   i: number; op?: string; ms?: number; served?: unknown[]; how?: string; via?: string; window?: string; seen?: string; submit?: boolean
   blank?: Fp; fp?: Fp; was?: boolean | 'mixed' | null; now?: boolean; noop?: boolean; state?: string; opened?: number; path?: string[]; pick?: number[]
-  p?: number; p_zoom?: number | null; p_full?: number | null; verdict?: Vision; ground_hit?: string; checked?: string; value?: string; ref?: string; unsaved?: boolean
+  focused?: string; p?: number; p_zoom?: number | null; p_full?: number | null; verdict?: Vision; ground_hit?: string; checked?: string; value?: string; ref?: string; unsaved?: boolean
 }
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
@@ -733,7 +733,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       }
       tick('launch', t0)
     }
-    if (background || !w.active) await desk.focus(w.title, w.pid); known.add(w.title); rec.window = lastSeen = w.title; await windowFor(w.title); return
+    if (background || !w.active) { const t1 = Date.now(); const f = await desk.focus(w.title, w.pid); tick('focus', t1); if (f.path) rec.focused = `${f.path} front ${f.front ?? '-'}` }
+    known.add(w.title); rec.window = lastSeen = w.title; await windowFor(w.title); return
   }
   if (s.type !== undefined) {
     const nl = s.type.endsWith('\n'); const ws = await current(nl ? OPENING : SETTLE); const w = focusedIn(ws); const t0 = Date.now()

@@ -60,7 +60,7 @@ export const at = (x: number, y: number, window?: string, pid?: number | null): 
 export const key = (keys: string): Promise<unknown> => call('key', { keys })
 export const typeText = (text: string): Promise<unknown> => call('type', { text })
 export const click = (x: number, y: number, o: { button?: string; count?: number } = {}): Promise<unknown> => call('click', { x, y, ...o })
-export const focus = (window: string, pid?: number | null): Promise<{ ok: boolean; title: string; pid: number | null }> => call('focus', { window, pid: pid ?? undefined })
+export const focus = (window: string, pid?: number | null): Promise<{ ok: boolean; title: string; pid: number | null; path?: string; front?: number | null }> => call('focus', { window, pid: pid ?? undefined })
 export const close = (window: string, pid?: number | null): Promise<unknown> => call('close', { window, pid: pid ?? undefined })
 export const launch = (app: string): Promise<{ ok: boolean; launched: string; background?: boolean }> => call('launch', { app })
 export async function screen(): Promise<Size> {
