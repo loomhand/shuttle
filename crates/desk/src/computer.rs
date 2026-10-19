@@ -5,8 +5,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::ErrorKind;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use base64::Engine;
@@ -92,8 +92,8 @@ pub struct Computer {
     scales: std::sync::Mutex<HashMap<String, f64>>,
     /// Screen pixels per image pixel of the latest screenshot of any session, one-shot included.
     last_scale: std::sync::Mutex<f64>,
-    /// The screen blocks that change while no action runs, which the settle ignores.
-    volatile: Volatile,
+    /// The screen blocks that change while no action runs, which the settle ignores; sampled from the first computer call.
+    volatile: OnceLock<Volatile>,
     ids: AtomicU64,
     /// Per caller, how many times its default session was ended, which names its next one.
     defaults: std::sync::Mutex<HashMap<String, u64>>,
@@ -110,7 +110,7 @@ impl Computer {
             titles: std::sync::Mutex::new(HashMap::new()),
             scales: std::sync::Mutex::new(HashMap::new()),
             last_scale: std::sync::Mutex::new(1.0),
-            volatile: Volatile::start(),
+            volatile: OnceLock::new(),
             ids: AtomicU64::new(0),
             defaults: std::sync::Mutex::new(HashMap::new()),
         }
@@ -713,7 +713,7 @@ impl Computer {
             };
             Ok((pixels, blocks, g.mapped()?, active, page, wait))
         }) {
-            let volatile = self.volatile.begin(&blocks);
+            let volatile = self.volatile.get_or_init(Volatile::start).begin(&blocks);
             return Some(Before {
                 probe: None,
                 frame: Frame::Blocks(blocks),
@@ -902,11 +902,13 @@ impl Computer {
     }
 
     fn touch(&self) {
-        self.volatile.touch();
+        self.volatile.get_or_init(Volatile::start).touch();
     }
 
     fn end_volatile(&self) {
-        self.volatile.end();
+        if let Some(v) = self.volatile.get() {
+            v.end();
+        }
     }
 
     /// The windows that opened, closed or moved between `before` and `after`, and a new front window.
@@ -2860,6 +2862,27 @@ mod tests {
             assert!(Instant::now() < deadline, "{:?}", ended.lock().unwrap());
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn the_settle_sampler_starts_with_the_first_computer_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        let cua = cua(&socket);
+        cua.run("a", "desk_title_at", json!({"x": 1, "y": 1}))
+            .await
+            .unwrap();
+        cua.run("a", "desk_computer_scale", json!({}))
+            .await
+            .unwrap();
+        assert!(cua.volatile.get().is_none());
+        cua.run("a", "desk_computer_state", json!({}))
+            .await
+            .unwrap();
+        assert!(cua.volatile.get().is_some());
         driver.abort();
     }
 
