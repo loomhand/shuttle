@@ -232,24 +232,44 @@ impl Computer {
         let session = session_of(&args);
         if args.get("actions").is_some() {
             let list: ActList = parse(args)?;
-            self.pin(&session, list.scale)?;
-            return self.act_list(&session, list).await;
+            let pinned = self.pin(&session, list.scale)?;
+            let out = self.act_list(&session, list).await;
+            return self.unpin(&session, pinned, out);
         }
         let a: ActArgs = parse(args)?;
-        self.pin(&session, a.scale)?;
-        self.act_one(&session, a).await
+        let pinned = self.pin(&session, a.scale)?;
+        let out = self.act_one(&session, a).await;
+        self.unpin(&session, pinned, out)
     }
 
-    /// Maps `session`'s x,y by `scale` when the caller names the screenshot it saw.
-    fn pin(&self, session: &str, scale: Option<f64>) -> Result<(), String> {
+    /// Maps `session`'s x,y by `scale` for one act when the caller names the screenshot it saw; the scale it replaces.
+    fn pin(&self, session: &str, scale: Option<f64>) -> Result<Option<Option<f64>>, String> {
         let Some(k) = scale else {
-            return Ok(());
+            return Ok(None);
         };
         if !(k.is_finite() && k > 0.0) {
             return Err(format!("scale {k} is not a positive number"));
         }
-        self.scales().insert(session.to_owned(), k);
-        Ok(())
+        Ok(Some(self.scales().insert(session.to_owned(), k)))
+    }
+
+    /// Puts back the scale [`Self::pin`] replaced unless the act returned a screenshot, whose scale `session` keeps.
+    fn unpin(
+        &self,
+        session: &str,
+        pinned: Option<Option<f64>>,
+        out: Result<Output, String>,
+    ) -> Result<Output, String> {
+        if let Some(before) = pinned
+            && !out.as_ref().is_ok_and(|o| o.image_b64.is_some())
+        {
+            let mut scales = self.scales();
+            match before {
+                Some(k) => scales.insert(session.to_owned(), k),
+                None => scales.remove(session),
+            };
+        }
+        out
     }
 
     /// Runs the actions in order, each settled, stops at the first failure and returns the last screenshot;
@@ -2598,9 +2618,13 @@ mod tests {
         cua.act(list).await.unwrap();
         let bad = cua.act(json!({"action": "click", "x": 1.0, "y": 1.0, "scale": 0.0}));
         assert_eq!(bad.await.unwrap_err(), "scale 0 is not a positive number");
+        cua.state(json!({"max_edge": 640})).await.unwrap();
+        let typo = cua.act(json!({"action": "clik", "x": 1.0, "y": 1.0, "scale": 1.0}));
+        assert_eq!(typo.await.unwrap_err(), "unknown action clik");
+        cua.act(click(100.0)).await.unwrap();
         assert_eq!(
             *clicks.lock().unwrap(),
-            [(100.0, 40.0), (125.0, 50.0), (162.5, 50.0)]
+            [(100.0, 40.0), (125.0, 50.0), (162.5, 50.0), (200.0, 80.0)]
         );
         driver.abort();
     }
