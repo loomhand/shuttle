@@ -995,7 +995,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         })
     }
 
-    /// A capture the backend read itself, as the PNG of the image and, on the wire, `png_b64` or the file at `path` it is written to.
+    /// A capture the backend read itself, as a PNG image, also written to `path` when one is given.
     async fn captured(&self, c: Capture, path: Option<String>) -> Result<Output, String> {
         let rect = c.rect;
         let mask = if self.allow.is_open() {
@@ -1063,22 +1063,18 @@ fn live(frame: Frame) -> Result<Frame, String> {
     Ok(frame)
 }
 
-/// A Linux shot's answer: the PNG as the image and, in the text, `png_b64` or the file at `path` it is written to.
+/// A Linux shot's answer: the PNG as the image, also written to `path` when one is given.
 async fn delivered(png: Vec<u8>, w: u32, h: u32, path: Option<String>) -> Result<Output, String> {
-    let image = B64.encode(&png);
     let mut out = json!({"ok": true, "width": w, "height": h});
-    match path {
-        Some(path) => {
-            tokio::fs::write(&path, &png)
-                .await
-                .map_err(|e| format!("write {path}: {e}"))?;
-            out["path"] = path.into();
-        }
-        None => out["png_b64"] = image.clone().into(),
+    if let Some(path) = path {
+        tokio::fs::write(&path, &png)
+            .await
+            .map_err(|e| format!("write {path}: {e}"))?;
+        out["path"] = path.into();
     }
     Ok(Output {
         text: out.to_string(),
-        image_b64: Some(image),
+        image_b64: Some(B64.encode(&png)),
         ..Output::default()
     })
 }
@@ -2519,11 +2515,12 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_linux_shot_from_the_driver_answers_png_b64_or_writes_its_path() {
+    async fn a_linux_shot_from_the_driver_answers_the_image_and_writes_its_path() {
         let desk = Desk::new(|| Ok(Apps), Desktop(Arc::default()), Os::Linux);
         let shot = desk.run("desk_shot", json!({})).await.unwrap();
         let text: Value = serde_json::from_str(&shot.text).unwrap();
-        assert_eq!(text["png_b64"].as_str(), shot.image_b64.as_deref());
+        assert_eq!(text, json!({"ok": true, "width": 10, "height": 10}));
+        assert!(shot.image_b64.is_some());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shot.png");
         let shot = desk
