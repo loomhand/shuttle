@@ -834,13 +834,48 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       if (now !== s.on) throw new Surprise(`menu toggle "${hit.n.name}" is still ${now ? 'on' : 'off'}`, await seen())
       return
     }
-    if (hit.n.role === 'menuitemcheckbox' || hit.n.role === 'menuitemradio' || OS === 'darwin') {
+    if ((hit.n.role === 'menuitemcheckbox' || hit.n.role === 'menuitemradio') && OS !== 'darwin') {
       const now = await checked(hit.n); rec.was = now; rec.state = 'atspi'
       if (now === s.on) { for (let k = 0; k < (rec.opened ?? 0); k++) await desk.key('Escape'); rec.noop = true; return }
       if (now !== null) { await act(hit.n); await settle(w.title); return }
     }
     const chain = menus(nodes, hit.n.parent).reverse()
     if (!chain.length) throw new Surprise(`"${hit.n.name}" is not inside a menu`, await seen())
+    if (OS === 'darwin') {
+      const path = [...chain.map((q) => q.name), hit.n.name]
+      const locate = (ns: Node[], upto: number): Node | undefined => {
+        let at = -1
+        for (let k = 0; k <= upto; k++) {
+          const want = norm(path[k] ?? '')
+          at = ns.findIndex((x) => norm(x.name) === want && (k === 0 ? x.role === 'menu' && ns[x.parent]?.role === 'menubar' : [...up(ns, x.parent)].some(([a]) => a === at)))
+          if (at < 0) return undefined
+        }
+        return ns[at]
+      }
+      const fresh = async () => {
+        for (let t = 0; ; t++) {
+          try { return parse(await snapOf(w, { menus: true })) } catch (e: unknown) { if (t >= 4 || !String(e).includes('window list is stale')) throw e; await sleep(150) }
+        }
+      }
+      const shut = async () => { for (const _ of chain) await desk.key('Escape') }
+      let cur = nodes
+      const open = async () => {
+        for (let k = 0; k < chain.length; k++) {
+          const q = locate(cur, k); if (!q) throw new Surprise(`menu "${path[k]}" not found`, await seen())
+          await act(q); await sleep(120)
+        }
+      }
+      const read = async () => {
+        try { await open() } catch (e: unknown) { if (!String(e).includes('is gone')) throw e; await shut(); cur = await fresh(); await open() }
+        await shut(); cur = await fresh()
+        const leaf = locate(cur, chain.length); if (!leaf) throw new Surprise(`menu entry "${hit.n.name}" not found`, await seen())
+        return { leaf, on: leaf.checked }
+      }
+      const was = await read(); rec.was = was.on; rec.state = 'ax-validated'
+      if (was.on === s.on) { rec.noop = true; return }
+      await act(was.leaf); await settle(w.title)
+      return
+    }
     for (const q of chain) { await act(q); await sleep(120) }
     const on = await cropState(hit.n); rec.was = on; rec.state = 'vision'
     if (on === s.on) { for (const _ of chain) await desk.key('Escape'); rec.noop = true; return }
