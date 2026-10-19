@@ -1,7 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.6 - 2026-10-19
 
+- **Windows tree items.** On Windows `press` clicks a tree item at its centre when a hit test reaches it, and selects it only when the item is off screen or covered: File Explorer's navigation pane on some Windows 11 builds selects an item on UI Automation Select without opening it.
+- **macOS app step.** A macOS desk answers `launch` with `background: true`, after the bundled driver's launch contract, and the app step then brings the launched window to the front, so a plan no longer ends with its app behind Finder and `no focused window` on the next desk call. A focus by title takes the active window among equal titles on every OS, and the run record's app step says how its focus ended (`focused`).
 - **`SHUTTLE_SOCKET` everywhere.** The daemon hands its endpoint to `script_run`, `gui_plan`, plugins and services in `SHUTTLE_SOCKET`, the variable the binary already reads, in place of `TOOLHOST_SOCKET`: a plugin or service that read `TOOLHOST_SOCKET` reads `SHUTTLE_SOCKET` now.
 - **Runtime without fallbacks.** `desk.wait` calls `desk_wait`, which every desk answers, and no longer polls `windows` when a host lacks it; `gui_plan` keeps flows only where `SHUTTLE_FLOWS` points, which the daemon always sets, and fails without it instead of falling back to `~/workspace/flows` or `/workspace/flows`.
 - **`desk shot` text without the image.** On Linux and Android the text of a `shot` no longer repeats the PNG as `png_b64`: the image is in `image_b64` as on macOS and Windows, which halves the frame, and `cocoon-shuttle desk shot` no longer prints the base64 before saving the image.
@@ -11,6 +13,7 @@
   - the UI server's dump carries its window's id, and `computer_state` retries once when the tree and the front window differ, then answers `the screen is changing`; a dump without an id (an older `ui_jar`) is not compared.
 - **Android type.** A type on a device pastes line by line with Return between lines, in `desk type` and `computer_act` alike, and reads each line back from the focused field: a field that did not change is pasted again within 1.5 s; one that changed otherwise (an insert inside its text, a format), a password field and a web view get one unchecked paste; a `computer_act` type whose tap left another field focused fails without a paste; `desk type` answers `typed` true, false or null. scrcpy only sets the clipboard: the UI server presses the paste key and waits until the focused window has handled it, and a window that does not within 5 s fails the type with its name.
 - **Bundled:** cua-driver v0.36.0-loomhand.6 (was .5). On macOS a fast relaunch no longer reports an app as already in front while another app is, so the focus after a launch brings it to the front.
+- **Known issue:** on macOS a `{menu, on}` toggle whose app was just brought to the front can read its check mark stale and toggle twice; fixed next release.
 
 ## 0.1.5 - 2026-10-19
 
