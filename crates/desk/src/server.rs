@@ -121,6 +121,19 @@ pub async fn bind(endpoint: &str) -> Result<Listener, String> {
     })
 }
 
+/// Opens the unix socket of `listener` to the members of `group`, a group name or number: mode 0660, owned by that group.
+#[cfg(unix)]
+pub fn share(listener: &Listener, group: &str) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let gid = gid(group)?;
+    let path = std::path::Path::new(&listener.endpoint);
+    std::os::unix::fs::chown(path, None, Some(gid))
+        .map_err(|e| format!("give {} to group {group}: {e}", listener.endpoint))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))
+        .map_err(|e| format!("chmod {}: {e}", listener.endpoint))
+}
+
 /// Serves `handler` at `listener`.
 #[cfg(unix)]
 pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<(), String> {
@@ -182,6 +195,41 @@ pub fn cache_endpoint(var: &str, pipe: &str, dir: &str, file: &str) -> String {
         return format!("{cache}/{dir}/{file}");
     }
     format!("{home}/Library/Caches/{dir}/{file}")
+}
+
+#[cfg(unix)]
+fn gid(group: &str) -> Result<u32, String> {
+    if let Ok(n) = group.parse() {
+        return Ok(n);
+    }
+    let name = std::ffi::CString::new(group).map_err(|_| format!("group {group:?}: not a name"))?;
+    let mut buf = vec![0; 16 << 10];
+    loop {
+        // SAFETY: a zeroed `group` is plain integers and null pointers, which getgrnam_r overwrites.
+        let mut entry: libc::group = unsafe { std::mem::zeroed() };
+        let mut found = std::ptr::null_mut();
+        // SAFETY: every pointer is valid for the call, and `buf.len()` is the length of `buf`.
+        let rc = unsafe {
+            libc::getgrnam_r(
+                name.as_ptr(),
+                &raw mut entry,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &raw mut found,
+            )
+        };
+        match rc {
+            0 if found.is_null() => return Err(format!("no group {group}")),
+            0 => return Ok(entry.gr_gid),
+            libc::ERANGE if buf.len() < 1 << 20 => buf.resize(buf.len() * 2, 0),
+            e => {
+                return Err(format!(
+                    "look up group {group}: {}",
+                    std::io::Error::from_raw_os_error(e)
+                ));
+            }
+        }
+    }
 }
 
 /// Connects to the endpoint.
@@ -335,6 +383,38 @@ mod tests {
             Some(format!("another daemon serves {endpoint}"))
         );
         assert!(!std::path::Path::new(&endpoint).exists());
+    }
+
+    #[tokio::test]
+    async fn a_shared_socket_is_0660_and_owned_by_the_group_and_a_private_one_0600() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let listener = bind(&endpoint).await.unwrap();
+        let mode = |p: &str| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&endpoint), 0o600);
+        let own = std::fs::metadata(dir.path()).unwrap().gid();
+        share(&listener, &own.to_string()).unwrap();
+        assert_eq!(mode(&endpoint), 0o660);
+        assert_eq!(std::fs::metadata(&endpoint).unwrap().gid(), own);
+        assert_eq!(mode(&format!("{endpoint}.lock")), 0o600);
+    }
+
+    #[test]
+    fn a_socket_group_is_a_name_or_a_number_and_an_unknown_one_is_named() {
+        let root = if cfg!(target_os = "macos") {
+            "wheel"
+        } else {
+            "root"
+        };
+        assert_eq!(gid(root), Ok(0));
+        assert_eq!(gid("4242"), Ok(4242));
+        assert_eq!(
+            gid("no-such-group-shuttle"),
+            Err("no group no-such-group-shuttle".to_owned())
+        );
+        assert!(gid("a\0b").unwrap_err().contains("not a name"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -87,6 +87,15 @@ The MCP server reads the plugin directory and `script_run` when the agent starts
 
 `[driver] overlay = false` starts the bundled cua-driver with `--no-overlay`, for a desktop nobody watches, such as a cloud box. It has no effect on macOS, since the driver's front-window tracking needs its overlay, and the daemon says so in its log.
 
+## Daemon endpoint
+
+```toml
+[daemon]
+socket_group = "agents"
+```
+
+`socket_group`, a group name or number, opens the daemon's unix socket to the members of that group: the daemon gives the socket to the group with mode 0660 when it starts. Unset, the socket stays with its user (mode 0600). The daemon's user must be a member of the group, and the group needs search permission on the directories above the socket, so point `SHUTTLE_SOCKET` at a shared directory when the default cache directory sits in a private home. The lock file beside the socket stays 0600. macOS and Linux only: on Windows the setting fails the file, since the named pipe takes local clients of its own user. [safety.md](safety.md#a-shared-endpoint) says what the group can then do.
+
 ## Android over adb
 
 ```toml

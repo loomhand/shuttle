@@ -38,6 +38,7 @@ pub struct Config {
     pub safety: Safety,
     pub tools: Tools,
     pub driver: DriverSettings,
+    pub daemon: DaemonSettings,
     /// An Android device whose desk this daemon serves over adb, in place of this desktop's own.
     pub android: Option<AndroidSettings>,
 }
@@ -56,6 +57,7 @@ impl Default for Config {
             safety: Safety::default(),
             tools: Tools::default(),
             driver: DriverSettings::default(),
+            daemon: DaemonSettings::default(),
             android: None,
         }
     }
@@ -80,6 +82,21 @@ impl Config {
                 "{}: decide_build is empty; remove it to take any build",
                 path.display()
             ));
+        }
+        match config.daemon.socket_group.as_deref() {
+            Some("") => {
+                return Err(format!(
+                    "{}: [daemon] socket_group is empty; remove it to keep the endpoint to its user",
+                    path.display()
+                ));
+            }
+            Some(_) if cfg!(windows) => {
+                return Err(format!(
+                    "{}: [daemon] socket_group needs a unix socket; the Windows pipe stays with its user",
+                    path.display()
+                ));
+            }
+            _ => {}
         }
         if config.android.is_some() && !config.safety.apps.is_empty() {
             return Err(format!(
@@ -195,6 +212,13 @@ impl Default for DriverSettings {
     fn default() -> Self {
         Self { overlay: true }
     }
+}
+
+/// The daemon's endpoint: `socket_group`, a group name or number, opens the unix socket to that group's members (mode 0660); unset keeps it to its user (0600).
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DaemonSettings {
+    pub socket_group: Option<String>,
 }
 
 /// The adb program, the device's serial, and the host files the UI server and the paste push to the device.

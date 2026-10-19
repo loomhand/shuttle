@@ -45,6 +45,16 @@ The screenshot mask is per window rectangle, not per pixel:
 - a menu, tooltip or popover of another app, the Dock or the taskbar over an allowed window stays visible inside that window's rectangle;
 - a window that is on screen at the capture but gone when the window list is read stays visible. A process with no window of its own, such as a helper or a renderer, is refused. Without a `config.toml` there is no allowlist.
 
+## A shared endpoint
+
+`[daemon] socket_group` ([config.md](config.md#daemon-endpoint)) lets every member of that group call the daemon as you do:
+- every desk verb, on your desktop and with your signed-in apps;
+- `gui_plan` and, with `script_run` on, `script_run` and the plugin tools, which run as your user;
+- the model calls on your key, which stays in the daemon but pays for theirs;
+- `safety_stop` and `safety_resume`, so a member can lift a stop you set.
+
+The app allowlist and the confirm mode apply to their calls as to yours. Give the group only to accounts you would let use your desktop; `script_run = false` keeps them to the desk tools.
+
 ## Turning script_run off
 
 `script_run = false` under `[tools]` turns off the one tool that runs the agent's own code, and the plugin tools of [wire.md](wire.md#plugins) with it: the MCP server lists none, and `script_run` and every plugin answer how to turn it back on. `gui_plan`, `desk` and `screenshot` keep working, and so do [service plugins](#service-plugins). While plugins run, their desk calls pass the same app allowlist, confirm and stop as any other.

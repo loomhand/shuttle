@@ -30,6 +30,9 @@ windows = { version = "0.62", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
 
@@ -38,7 +41,6 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 image-webp = "0.2.4"
 jpeg-encoder = "0.7.1"
 tokio = { version = "1", features = ["macros"] }
-libc = "0.2"
 x11rb = { version = "0.14", features = ["shm", "shape", "xinput", "xkb", "xtest"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 

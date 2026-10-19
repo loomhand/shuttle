@@ -20,6 +20,7 @@
   - the screen size comes from `wm size`, read once (restart the daemon after an override), in its natural orientation: a portrait phone turned sideways gets swapped `screen` axes, the portrait default `shot` crop, full-screen windows listed as dialogs, and portrait-sized scrolls and list swipes, while taps and swipes at absolute points pass through; `su` is optional, and without it the paste runs as adb's shell uid, which takes the upstream scrcpy server; a device without `uiautomator.jar` says so.
 
   Tested on redroid 16; a stock phone is untested.
+- **Shared endpoint.** `[daemon] socket_group` opens the daemon's unix socket to one group's members (mode 0660, owned by the group) on macOS and Linux; unset, it stays 0600. Every member can then use the daemon as its user does ([docs/safety.md](docs/safety.md#a-shared-endpoint)). The Windows pipe stays with its user, and the setting fails the file there.
 
 - **Run errors.** A `script_run` or plugin report that carries `error` now answers `is_error: true`, with the whole report (logs, stderr) as its text, through the daemon and the MCP server alike; before, a failed run looked like a success to the client.
 
