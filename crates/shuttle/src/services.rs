@@ -90,7 +90,14 @@ struct Proc {
 
 impl Proc {
     fn spawn(&self) -> Result<Running, String> {
-        let _ = std::fs::remove_file(&self.socket);
+        if let Err(e) = std::fs::remove_file(&self.socket)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            log(format_args!(
+                "service {}: remove {}: {e}",
+                self.name, self.socket
+            ));
+        }
         let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
         let mut cmd = Command::new(&self.bin);
         cmd.args(&self.args)
