@@ -60,11 +60,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.1
 
-      - name: Build the UI server jar
+      - name: JDK
+        uses: actions/setup-java@v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21.0.12+101
+
+      - name: Build the UI server jar twice
         run: |
           shellcheck android/ui/build.sh
           bash android/ui/build.sh "$RUNNER_TEMP/cb-ui.jar"
+          bash android/ui/build.sh "$RUNNER_TEMP/again.jar"
           unzip -l "$RUNNER_TEMP/cb-ui.jar" | grep -q classes.dex
+          sha256sum "$RUNNER_TEMP/cb-ui.jar" "$RUNNER_TEMP/again.jar"
+          cmp "$RUNNER_TEMP/cb-ui.jar" "$RUNNER_TEMP/again.jar"
 
   runtime:
     strategy:
