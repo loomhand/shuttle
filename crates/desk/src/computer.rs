@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use base64::Engine;
@@ -18,7 +19,6 @@ use tokio::time::Instant;
 use super::desk::key_names;
 use super::rpc::{self, Output};
 use super::scope;
-use super::timing;
 use super::volatile::{Block, Shown, Volatile};
 use super::xshm::{self, Grabber, Modal, Placement, SHELL_APPS};
 
@@ -93,6 +93,7 @@ pub struct Cua {
     /// The screen blocks that change while no action runs, which the settle ignores.
     volatile: Volatile,
     last_click: std::sync::Mutex<Option<(Instant, f64, f64)>>,
+    ids: AtomicU64,
 }
 
 impl Cua {
@@ -108,6 +109,7 @@ impl Cua {
             last_scale: std::sync::Mutex::new(1.0),
             volatile: Volatile::start(),
             last_click: std::sync::Mutex::new(None),
+            ids: AtomicU64::new(0),
         }
     }
 
@@ -119,7 +121,6 @@ impl Cua {
         let windows = self
             .request(&session, "list_windows", json!({"on_screen_only": true}))
             .await?;
-        timing::mark("windows");
         let listed = window_list(&windows);
         let mut text = String::new();
         let target = match a.pid {
@@ -152,7 +153,6 @@ impl Cua {
                     let _ = writeln!(text, "\nElements of pid={pid} unavailable: {e}");
                 }
             }
-            timing::mark("elements");
         }
         // the capture comes last: a later get_window_state replaces the session's pixel-click context
         let (image_b64, scale, screen) =
@@ -254,7 +254,6 @@ impl Cua {
     /// Runs one action: a launch, or an input action.
     async fn act_one(&self, session: &str, a: ActArgs) -> Result<Output, String> {
         if a.action == "launch_app" {
-            timing::note("action", &a.action);
             return self.launch(session, &a).await;
         }
         self.act_input(session, a).await
@@ -269,11 +268,9 @@ impl Cua {
         if let Some(e) = screen.and_then(|s| off_screen(&a, s, self.scale_of(session))) {
             return Err(e);
         }
-        timing::note("action", &a.action);
         if a.action == "wait" {
             let secs = a.seconds.unwrap_or(1.0).clamp(0.1, MAX_WAIT_SECS);
             tokio::time::sleep(Duration::from_secs_f64(secs)).await;
-            timing::mark("wait");
             return Ok(Output {
                 text: format!("waited {secs:.1}s"),
                 is_error: false,
@@ -301,7 +298,6 @@ impl Cua {
             req["text"] = line.into();
         }
         let input = self.input.lock().await;
-        timing::mark("resolve");
         let before = self.before_input(Some(&a)).await;
         let once = self.once(&req);
         let target = once.as_deref().unwrap_or(session);
@@ -313,7 +309,6 @@ impl Cua {
             result = self.press_return(target, &typed).await.and(result);
         }
         self.end_once(once).await;
-        timing::mark("act");
         let k = self.scale_of(session);
         let changes = self.settle(before, k).await;
         let shot = self.screenshot(session, a.max_edge).await?;
@@ -409,11 +404,10 @@ impl Cua {
 
     /// Screenshot in a one-shot driver session that is ended right away.
     pub async fn screenshot_once(&self, max_edge: Option<u32>) -> Result<Option<String>, String> {
-        let session = crate::new_id("shot");
+        let session = self.id("shot");
         let shot = self.screenshot(&session, max_edge).await;
         self.scales().remove(&session);
         self.request(&session, "end_session", json!({})).await?;
-        timing::mark("end");
         shot
     }
 
@@ -439,7 +433,6 @@ impl Cua {
             .shm(|g| (!g.overlay_shown()?).then(|| g.rgb()).transpose())
             .flatten()
         {
-            timing::mark("grab");
             let image = match max_edge {
                 Some(edge) if edge > 0 && edge < w.max(h) => {
                     let (tw, th, small) = fit(w, h, &rgb, edge);
@@ -448,8 +441,6 @@ impl Cua {
                 _ => encode(w, h, &rgb).map(|i| (i, 1.0)),
             };
             if let Some((image, scale)) = image {
-                timing::mark("encode");
-                timing::note("image_bytes", image.len());
                 self.keep_scale(session, scale, shared);
                 let screen = Screen {
                     width: w,
@@ -464,7 +455,6 @@ impl Cua {
             args["max_image_dimension"] = edge.into();
         }
         let v = self.request(session, "get_desktop_state", args).await?;
-        timing::mark("capture");
         let scale = v["structuredContent"]["frame_scale"]
             .as_f64()
             .filter(|s| *s > 0.0)
@@ -477,9 +467,7 @@ impl Cua {
         // the driver rescales later desktop clicks by its last capture; a full-size one keeps it at 1
         if scale != 1.0 {
             let _ = self.request(session, "get_desktop_state", json!({})).await;
-            timing::mark("rescale");
         }
-        timing::note("image_bytes", image.as_ref().map_or(0, |b| b.len() / 4 * 3));
         Ok((image, scale, None))
     }
 
@@ -510,7 +498,6 @@ impl Cua {
         let mut base = json!({});
         if let Some((pid, window_id)) = self.key_window(session).await? {
             if !a.foreground && self.keyboard(pid, window_id) {
-                timing::note("route", "desktop");
                 base["target"] = json!({"kind": "desktop", "display_id": "primary"});
             } else {
                 base["pid"] = pid.into();
@@ -525,7 +512,6 @@ impl Cua {
         let text = before_newline(full)
             .filter(|_| self.to_dialog(&base))
             .unwrap_or(full);
-        timing::mark("resolve");
         let runs = text_runs(text);
         let mut typed = 0;
         let once = self.once(&base);
@@ -557,7 +543,6 @@ impl Cua {
             }
         }
         self.end_once(once).await;
-        timing::mark("act");
         let changes = self.settle(before, self.scale_of(session)).await;
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
@@ -624,7 +609,6 @@ impl Cua {
                 });
             }
         };
-        timing::mark("act");
         let changes = self.settle(before, self.scale_of(session)).await;
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
@@ -661,11 +645,6 @@ impl Cua {
             Ok((pixels, blocks, g.mapped()?, active, page, wait))
         }) {
             let volatile = self.volatile.begin(&blocks);
-            timing::mark("probe");
-            timing::note(
-                "volatile",
-                volatile.iter().filter(|b| **b != Block::Quiet).count(),
-            );
             return Some(Before {
                 probe: None,
                 frame: Frame::Blocks(blocks),
@@ -677,8 +656,8 @@ impl Cua {
                 wait,
             });
         }
-        let probe = crate::new_id("still");
-        let before = match self.frame(Some(&probe)).await {
+        let probe = self.id("still");
+        match self.frame(Some(&probe)).await {
             Some(frame) => Some(Before {
                 probe: Some(probe),
                 frame: Frame::Thumb(frame),
@@ -693,9 +672,7 @@ impl Cua {
                 let _ = self.request(&probe, "end_session", json!({})).await;
                 None
             }
-        };
-        timing::mark("probe");
-        before
+        }
     }
 
     /// Waits after an input action until the screen differs from `before` and held still, at most
@@ -726,7 +703,6 @@ impl Cua {
         }) = before
         else {
             tokio::time::sleep(SETTLE).await;
-            timing::mark("settle");
             return String::new();
         };
         let poll = if probe.is_some() {
@@ -811,10 +787,6 @@ impl Cua {
             still = changed && since.elapsed() >= hold;
         }
         self.end_volatile();
-        timing::mark("settle");
-        timing::note("still", still);
-        timing::note("hold_ms", hold.as_millis());
-        timing::note("page", page);
         if let Some(probe) = probe {
             let _ = self.request(&probe, "end_session", json!({})).await;
             return String::new();
@@ -822,11 +794,14 @@ impl Cua {
         if seen == windows && focus == active {
             return String::new();
         }
-        let report = self
-            .shm(|g| Ok(self.window_report(g, &windows, &seen, active, focus, scale)))
-            .unwrap_or_default();
-        timing::mark("report");
-        report
+        self.shm(|g| Ok(self.window_report(g, &windows, &seen, active, focus, scale)))
+            .unwrap_or_default()
+    }
+
+    /// A driver session name of its own, unique in this process.
+    fn id(&self, prefix: &str) -> String {
+        let n = self.ids.fetch_add(1, Ordering::Relaxed);
+        format!("{prefix}-{}-{n}", std::process::id())
     }
 
     fn touch(&self) {
@@ -847,7 +822,7 @@ impl Cua {
         active: Option<u32>,
         scale: f64,
     ) -> String {
-        let mut titles = crate::lock(&self.titles);
+        let mut titles = lock(&self.titles);
         let mut out = String::new();
         let mut opened = Vec::new();
         for p in after {
@@ -921,11 +896,11 @@ impl Cua {
     }
 
     fn scales(&self) -> std::sync::MutexGuard<'_, HashMap<String, f64>> {
-        crate::lock(&self.scales)
+        lock(&self.scales)
     }
 
     fn last_scale(&self) -> std::sync::MutexGuard<'_, f64> {
-        crate::lock(&self.last_scale)
+        lock(&self.last_scale)
     }
 
     fn keep_scale(&self, session: &str, scale: f64, shared: bool) {
@@ -943,7 +918,7 @@ impl Cua {
 
     /// Runs `read` on the MIT-SHM grabber, opening it when needed; `None` when it is unavailable or fails.
     fn shm<T>(&self, read: impl FnOnce(&Grabber) -> Result<T, String>) -> Option<T> {
-        let mut slot = crate::lock(&self.grabber);
+        let mut slot = lock(&self.grabber);
         if slot.is_none() {
             match Grabber::open() {
                 Ok(g) => *slot = Some(g),
@@ -1010,7 +985,6 @@ impl Cua {
         if !waited {
             return Ok(None);
         }
-        timing::note("wm_wait_ms", start.elapsed().as_millis());
         self.app_window(session).await
     }
 
@@ -1095,7 +1069,6 @@ impl Cua {
             other => return Err(format!("unknown action {other}")),
         };
         if let Some((x, y)) = pixel {
-            timing::note("route", "pixel");
             req["x"] = x.into();
             req["y"] = y.into();
             req["target"] = desktop;
@@ -1123,7 +1096,6 @@ impl Cua {
             return Err(format!("{} needs element or x and y", a.action));
         } else if let Some((pid, window_id)) = self.key_window(session).await? {
             if tool != "scroll" && !a.foreground && self.keyboard(pid, window_id) {
-                timing::note("route", "desktop");
                 req["target"] = desktop;
             } else {
                 req["pid"] = pid.into();
@@ -1132,7 +1104,6 @@ impl Cua {
         } else if tool == "type_text" {
             return Err(NO_TEXT_TARGET.to_owned());
         } else if tool != "scroll" && !a.foreground {
-            timing::note("route", "desktop");
             req["target"] = desktop;
         }
         if a.foreground {
@@ -1165,13 +1136,12 @@ impl Cua {
     /// after: the virtual master keyboard the driver makes for it would outlive the call, and while one
     /// exists Chrome drops core keyboard input, from XTest and VNC alike.
     fn once(&self, req: &Value) -> Option<String> {
-        req.get("pid").is_some().then(|| crate::new_id("input"))
+        req.get("pid").is_some().then(|| self.id("input"))
     }
 
     async fn end_once(&self, once: Option<String>) {
         if let Some(session) = once {
             let _ = self.request(&session, "end_session", json!({})).await;
-            timing::mark("end");
         }
     }
 
@@ -1273,7 +1243,6 @@ impl Cua {
             let (x, y) = self.poll_pixel(session, menu, true).await?;
             self.pixel_click(x, y).await.ok()?;
         }
-        timing::mark("menus");
         self.poll_pixel(session, index, false).await
     }
 
@@ -1354,10 +1323,9 @@ impl Cua {
             if self.pixel_click(x, y).await.is_err() {
                 continue;
             }
-            let probe = crate::new_id("menu");
+            let probe = self.id("menu");
             let state = self.request(&probe, "get_window_state", req.clone()).await;
             let _ = self.request(&probe, "end_session", json!({})).await;
-            timing::mark("twin");
             let Ok(state) = state else {
                 continue;
             };
@@ -1438,7 +1406,7 @@ impl Cua {
     /// The desktop-addressed input `req` of `tool` in a driver session of its own, whose x,y no capture maps.
     async fn desktop_input(&self, tool: &str, mut req: Value) -> Result<Value, String> {
         req["target"] = json!({"kind": "desktop", "display_id": "primary"});
-        let once = crate::new_id("input");
+        let once = self.id("input");
         let done = self.request(&once, tool, req).await;
         self.end_once(Some(once)).await;
         done
@@ -1486,13 +1454,12 @@ impl Cua {
             .map(|(at, _, _)| CLICK_SPACING.saturating_sub(at.elapsed()))
             .filter(|w| !w.is_zero());
         if let Some(wait) = wait {
-            timing::note("click_gap_ms", wait.as_millis());
             tokio::time::sleep(wait).await;
         }
     }
 
     fn last_click(&self) -> std::sync::MutexGuard<'_, Option<(Instant, f64, f64)>> {
-        crate::lock(&self.last_click)
+        lock(&self.last_click)
     }
 
     /// One driver call; a result the driver marks isError comes back as is.
@@ -1689,6 +1656,10 @@ struct Window {
     w: i64,
     h: i64,
     z: i64,
+}
+
+fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Splits text into runs with at most [`RUN_CHARS`] distinct non-ASCII characters; the driver's
@@ -2098,9 +2069,7 @@ fn shrink(b64: &str) -> Option<String> {
         .iter()
         .flat_map(|p| [p[0], p[1], p[2]])
         .collect();
-    timing::mark("decode");
     let out = encode(info.width, info.height, &rgb)?;
-    timing::mark("encode");
     (out.len() < data.len()).then(|| B64.encode(&out))
 }
 

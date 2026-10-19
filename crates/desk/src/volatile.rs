@@ -191,7 +191,7 @@ impl Volatile {
 
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, State> {
-        crate::lock(&self.state)
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn run(&self) {
