@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Android taps against system windows.** `computer_state` keeps tap points clear of the system windows over the app, as `press` does:
+  - a list row under the navigation bar or the keyboard is tapped in its open part, and one fully covered is left out;
+  - an indexed `computer_act` reads the windows again and refuses, with `call computer_state again`, when the window the state came from is no longer in front (the notification shade is open, say), a system window now covers the element's saved point (a keyboard raised since), or the window list is unavailable; explicit `x`,`y` are not checked;
+  - the UI server's dump carries its window's id, and `computer_state` retries once when the tree and the front window differ, then answers `the screen is changing`; a dump without an id (an older `ui_jar`) is not compared.
+
 ## 0.1.5 - 2026-10-19
 
 - **v0.1.4 is void:** its binaries report 0.1.3, since its version bump was missing. This release carries v0.1.4's changes, listed here, and the Android fixes below.
