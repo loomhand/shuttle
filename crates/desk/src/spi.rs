@@ -1,5 +1,7 @@
 //! The Linux desk backend: the AT-SPI client's async calls, run on the worker thread by a runtime of its own so their fan-out stays concurrent, and screen reads over MIT-SHM.
 
+use std::time::Duration;
+
 use desk_core::window::{TITLE_TIERS, title_matches};
 use tokio::runtime::{Builder, Runtime};
 use x11rb::connection::Connection as _;
@@ -70,11 +72,12 @@ impl Access for Spi {
         })
     }
 
-    fn focused(&mut self, frame: &Frame) -> Result<Option<String>, String> {
+    fn focused(&mut self, frame: &Frame, within: Duration) -> Result<Option<String>, String> {
         let obj = Obj::parse(&frame.id)?;
-        match self.rt.block_on(self.atspi.focused_in(&obj)) {
-            Some(found) => Ok(Some(found.id())),
-            None => focused_by_tree(self, frame),
+        match answered(&self.rt, within, self.atspi.focused_in(&obj)) {
+            None => Ok(None),
+            Some(Some(found)) => Ok(Some(found.id())),
+            Some(None) => focused_by_tree(self, frame),
         }
     }
 
@@ -296,6 +299,16 @@ fn spi_extras(e: Extras) -> atspi::Extras {
     }
 }
 
+/// What `lookup` answers within `within` on `rt`; none once the time is up, which drops the lookup and frees the runtime.
+fn answered<T>(
+    rt: &tokio::runtime::Runtime,
+    within: Duration,
+    lookup: impl Future<Output = T>,
+) -> Option<T> {
+    rt.block_on(async { tokio::time::timeout(within, lookup).await })
+        .ok()
+}
+
 /// `read` on the grabber in `slot`, opened on first use and again after a screen change; a failed read opens it once more and retries, and a second failure leaves the slot empty.
 fn reuse<G, T>(
     slot: &mut Option<G>,
@@ -369,6 +382,27 @@ mod tests {
         fn drop(&mut self) {
             self.1.borrow_mut().push(format!("drop {}", self.0));
         }
+    }
+
+    #[test]
+    fn a_lookup_past_its_deadline_is_dropped_and_the_runtime_answers_the_next_call() {
+        let rt = Builder::new_current_thread().enable_all().build().unwrap();
+        let started = std::time::Instant::now();
+        let stalled = answered(
+            &rt,
+            Duration::from_millis(50),
+            std::future::pending::<Option<Obj>>(),
+        );
+        assert_eq!(stalled, None);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            answered(&rt, Duration::from_millis(50), async { Some(7) }),
+            Some(Some(7))
+        );
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! The platform-neutral desk model: windows, element trees and the accessibility calls each OS backend serves.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use desk_core::text::Named;
 use desk_core::window::Window;
@@ -248,8 +249,8 @@ pub trait Access {
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String>;
     /// One element read live; a value has at most `chars` characters.
     fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String>;
-    /// The id of the focused element of `frame`, if one is.
-    fn focused(&mut self, frame: &Frame) -> Result<Option<String>, String> {
+    /// The id of the focused element of `frame`, if one is; a backend that cannot answer `within` gives none.
+    fn focused(&mut self, frame: &Frame, _within: Duration) -> Result<Option<String>, String> {
         focused_by_tree(self, frame)
     }
     /// The ids above `id`, from its top-level window down to its parent.
@@ -388,7 +389,7 @@ mod tests {
             Err("unused".into())
         }
 
-        fn focused(&mut self, frame: &Frame) -> Result<Option<String>, String> {
+        fn focused(&mut self, frame: &Frame, _: Duration) -> Result<Option<String>, String> {
             match self.matched.clone() {
                 Some(id) => Ok(Some(id)),
                 None => focused_by_tree(self, frame),
@@ -419,13 +420,19 @@ mod tests {
             matched: Some("field".into()),
             trees: 0,
         };
-        assert_eq!(matched.focused(&frame), Ok(Some("field".into())));
+        assert_eq!(
+            matched.focused(&frame, Duration::from_millis(100)),
+            Ok(Some("field".into()))
+        );
         assert_eq!(matched.trees, 0);
         let mut unmatched = Focus {
             matched: None,
             trees: 0,
         };
-        assert_eq!(unmatched.focused(&frame), Ok(Some("field".into())));
+        assert_eq!(
+            unmatched.focused(&frame, Duration::from_millis(100)),
+            Ok(Some("field".into()))
+        );
         assert_eq!(unmatched.trees, 1);
     }
 
