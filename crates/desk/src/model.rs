@@ -60,6 +60,9 @@ pub struct Frame {
     /// The title of the window such a dialog blocks.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocks: Option<String>,
+    /// A window of the desktop shell's processes on Linux: a panel, a dock or the desktop.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub shell: bool,
     #[serde(skip)]
     pub stale: bool,
     /// A Linux top-level object that is no frame, dialog or alert, which no call picks.
@@ -278,6 +281,10 @@ pub trait Access {
     }
     /// The modal dialogs the screen does not show.
     fn modals(&mut self) -> Vec<Modal> {
+        Vec::new()
+    }
+    /// The pids of the desktop shell's processes: those that own a dock or desktop window.
+    fn shells(&mut self) -> Vec<u32> {
         Vec::new()
     }
 }

@@ -201,7 +201,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 frames.retain(|f| allow.admits(f.app.as_deref()));
                 frames.sort_by_key(|f| !f.active);
                 let modals = b.modals();
+                let shells = b.shells();
                 for f in &mut frames {
+                    f.shell = f.pid.is_some_and(|p| shells.contains(&p));
                     if let Some(m) = modals.iter().find(|m| m.title == f.title && m.pid == f.pid) {
                         f.modal = Some(m.place.clone());
                         f.blocks = Some(m.owner.clone());
@@ -1351,6 +1353,7 @@ pub(crate) mod tests {
         overlays: Vec<bool>,
         stalled: bool,
         budgets: Vec<Duration>,
+        shells: Vec<u32>,
     }
 
     impl Stub {
@@ -1432,6 +1435,10 @@ pub(crate) mod tests {
             self.closed.push(frame.id.clone());
             Ok(())
         }
+
+        fn shells(&mut self) -> Vec<u32> {
+            self.shells.clone()
+        }
     }
 
     #[derive(Default)]
@@ -1492,6 +1499,33 @@ pub(crate) mod tests {
             scoped: true,
             ..Stub::default()
         }
+    }
+
+    #[tokio::test]
+    async fn the_window_list_marks_the_windows_of_the_desktop_shell() {
+        let desk = Desk::new(
+            || {
+                Ok(Stub {
+                    frames: vec![
+                        frame("4/1", "Untitled - Notepad", 4, true, Some("Notepad")),
+                        frame("8/1", "Desktop", 8, false, Some("xfdesktop")),
+                        frame("9/1", "", 9, false, Some("xfce4-panel")),
+                    ],
+                    shells: vec![8, 9],
+                    ..Stub::default()
+                })
+            },
+            Slow(Arc::default()),
+            Os::Mac,
+        );
+        let out = desk.run("desk_windows", json!({})).await.unwrap().text;
+        let listed: Vec<Value> = serde_json::from_str(&out).unwrap();
+        let shell: Vec<(&str, bool)> = listed
+            .iter()
+            .map(|w| (w["id"].as_str().unwrap(), w["shell"] == true))
+            .collect();
+        assert_eq!(shell, [("4/1", false), ("8/1", true), ("9/1", true)]);
+        assert!(listed[0].get("shell").is_none(), "{out}");
     }
 
     async fn closed<D: Input + Sync>(desk: &Desk<Stub, D>) -> Vec<String> {

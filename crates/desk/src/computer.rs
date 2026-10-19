@@ -27,7 +27,7 @@ use crate::press::libreoffice;
 use crate::server::Conn;
 use crate::still::Block;
 use crate::volatile::{Shown, Volatile};
-use crate::xshm::{self, Grabber, Modal, Placement, SHELL_APPS};
+use crate::xshm::{self, Grabber, Modal, Placement};
 
 const STATE_ELEMENTS: u64 = 300;
 const TREE_CHARS: usize = 15_000;
@@ -160,9 +160,8 @@ impl Computer {
         let mut text = String::new();
         let target = match a.pid {
             Some(pid) => Some((pid, a.window_id)),
-            None => listed
-                .iter()
-                .find(|w| !SHELL_APPS.contains(&w.app.as_str()))
+            None => self
+                .app_of(&listed)
                 .or(listed.first())
                 .map(|w| (w.pid, Some(w.window_id))),
         };
@@ -676,7 +675,7 @@ impl Computer {
             });
             let (width, height) = g.size();
             let pixels = g.pixels()?.to_vec();
-            let blocks = xshm::block_hashes(&pixels, width, height);
+            let blocks = xshm::block_hashes(&pixels, width, height, &g.docks());
             let wait = if confirm {
                 COMMIT_FIRST
             } else if page || a.is_none() {
@@ -699,7 +698,7 @@ impl Computer {
             });
         }
         let probe = self.own("still");
-        match self.frame(Some(probe.name())).await {
+        match self.frame(probe.name()).await {
             Some(frame) => Some(Before {
                 probe: Some(probe),
                 frame: Frame::Thumb(frame),
@@ -758,15 +757,16 @@ impl Computer {
             }
             tokio::time::sleep(nap).await;
             let polled = match probe.as_ref().map(Owned::name) {
-                Some(probe) => self.frame(Some(probe)).await.map(|f| {
+                Some(probe) => self.frame(probe).await.map(|f| {
                     let f = Frame::Thumb(f);
                     let differs = first.changes(&f, &volatile);
                     (f, differs, seen.clone(), focus)
                 }),
                 None => self.shm(|g| {
                     let (width, height) = g.size();
+                    let docks = g.docks();
                     let current = g.pixels()?;
-                    let blocks = xshm::block_hashes(current, width, height);
+                    let blocks = xshm::block_hashes(current, width, height, &docks);
                     let differs = match &first {
                         Frame::Blocks(before) => {
                             before.iter().zip(&blocks).enumerate().any(|(i, (x, y))| {
@@ -943,11 +943,8 @@ impl Computer {
         out
     }
 
-    /// A thumbnail from the probe driver session `probe`, or over MIT-SHM without one.
-    async fn frame(&self, probe: Option<&str>) -> Option<Vec<u8>> {
-        let Some(probe) = probe else {
-            return self.shm(Grabber::thumb);
-        };
+    /// A thumbnail from the probe driver session `probe`.
+    async fn frame(&self, probe: &str) -> Option<Vec<u8>> {
         let edge = json!({"max_image_dimension": STILL_EDGE});
         let v = self.request(probe, "get_desktop_state", edge).await.ok()?;
         let data = B64.decode(image_of(&v)?).ok()?;
@@ -1018,10 +1015,17 @@ impl Computer {
         let windows = self
             .request(session, "list_windows", json!({"on_screen_only": true}))
             .await?;
-        Ok(window_list(&windows)
-            .iter()
-            .find(|w| !SHELL_APPS.contains(&w.app.as_str()))
+        Ok(self
+            .app_of(&window_list(&windows))
             .map(|w| (w.pid, w.window_id)))
+    }
+
+    /// The first of `listed` that is no dock or desktop window by its X window type.
+    fn app_of<'a>(&self, listed: &'a [Window]) -> Option<&'a Window> {
+        let shell = self.shm(|g| Ok(g.shell_windows())).unwrap_or_default();
+        listed
+            .iter()
+            .find(|w| !u32::try_from(w.window_id).is_ok_and(|id| shell.contains(&id)))
     }
 
     /// [`Self::app_window`] once a window manager runs; while none does, as for a while after a desktop
