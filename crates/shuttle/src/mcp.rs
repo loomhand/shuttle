@@ -1,5 +1,8 @@
 //! The MCP server on stdio: newline-delimited JSON-RPC 2.0 with the tools of `tools` and the resources of the script plugins.
 
+use std::collections::VecDeque;
+use std::pin::Pin;
+
 use serde_json::{Map, Value, json};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -13,7 +16,10 @@ const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const INSTRUCTIONS: &str = "These tools act on the user's own desktop. GUI work in a desktop app goes to gui_plan, the whole plan in one call; a loop or logic a plan cannot hold goes to one script_run; one look or one click goes to desk or screenshot.";
 
-/// Answers MCP requests from `input` on `output`, one JSON line each way; desk and plugin tools go to the daemon at `endpoint`.
+type Answer<'a> = Pin<Box<dyn Future<Output = Option<Value>> + Send + 'a>>;
+
+/// Answers MCP requests from `input` on `output` in order, one JSON line each way; desk and plugin tools go to the daemon at `endpoint`.
+/// A `notifications/cancelled` drops the request it names without a reply, and a running one closes its daemon connection.
 pub async fn serve<R, W>(
     input: R,
     mut output: W,
@@ -25,31 +31,69 @@ where
     W: AsyncWrite + Unpin,
 {
     let mut lines = input.lines();
-    while let Some(line) = lines
-        .next_line()
-        .await
-        .map_err(|e| format!("read stdin: {e}"))?
-    {
-        if line.trim().is_empty() {
-            continue;
+    let mut queued: VecDeque<String> = VecDeque::new();
+    let mut running: Option<(Option<String>, Answer<'_>)> = None;
+    let mut open = true;
+    while open || running.is_some() || !queued.is_empty() {
+        if running.is_none()
+            && let Some(line) = queued.pop_front()
+        {
+            running = Some((request_id(&line), Box::pin(answer(line, endpoint, plugins))));
         }
-        let Some(reply) = answer(&line, endpoint, plugins).await else {
-            continue;
-        };
-        output
-            .write_all(format!("{reply}\n").as_bytes())
-            .await
-            .map_err(|e| format!("write stdout: {e}"))?;
-        output
-            .flush()
-            .await
-            .map_err(|e| format!("write stdout: {e}"))?;
+        tokio::select! {
+            line = lines.next_line(), if open => match line.map_err(|e| format!("read stdin: {e}"))? {
+                None => open = false,
+                Some(line) if line.trim().is_empty() => {}
+                Some(line) => match cancelled(&line) {
+                    Some(id) if running.as_ref().is_some_and(|(r, _)| r.as_ref() == Some(&id)) => running = None,
+                    Some(id) => queued.retain(|q| request_id(q).as_ref() != Some(&id)),
+                    None => queued.push_back(line),
+                },
+            },
+            reply = async {
+                match running.as_mut() {
+                    Some((_, answering)) => answering.await,
+                    None => std::future::pending().await,
+                }
+            }, if running.is_some() => {
+                running = None;
+                if let Some(reply) = reply {
+                    write(&mut output, &reply).await?;
+                }
+            }
+        }
     }
     Ok(())
 }
 
-async fn answer(line: &str, endpoint: &str, plugins: &Plugins) -> Option<Value> {
-    let mut msg: Map<String, Value> = match serde_json::from_str(line) {
+async fn write<W: AsyncWrite + Unpin>(output: &mut W, reply: &Value) -> Result<(), String> {
+    output
+        .write_all(format!("{reply}\n").as_bytes())
+        .await
+        .map_err(|e| format!("write stdout: {e}"))?;
+    output
+        .flush()
+        .await
+        .map_err(|e| format!("write stdout: {e}"))
+}
+
+/// The id of the request on `line` as JSON text; none for a notification or a line that does not parse.
+fn request_id(line: &str) -> Option<String> {
+    let msg: Value = serde_json::from_str(line).ok()?;
+    msg.get("id").map(Value::to_string)
+}
+
+/// The request id a `notifications/cancelled` on `line` names, as JSON text.
+fn cancelled(line: &str) -> Option<String> {
+    let msg: Value = serde_json::from_str(line).ok()?;
+    if msg["method"] != "notifications/cancelled" || msg.get("id").is_some() {
+        return None;
+    }
+    msg["params"].get("requestId").map(Value::to_string)
+}
+
+async fn answer(line: String, endpoint: &str, plugins: &Plugins) -> Option<Value> {
+    let mut msg: Map<String, Value> = match serde_json::from_str(&line) {
         Ok(m) => m,
         Err(e) => {
             return Some(reply(
@@ -245,6 +289,83 @@ mod tests {
         );
         assert_eq!(out[0]["id"], Value::Null);
         assert_eq!(out[2]["error"]["message"], "unknown tool rm");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cancelled_call_closes_its_daemon_connection_gets_no_reply_and_later_requests_go_on()
+    {
+        use tokio::io::{AsyncReadExt, BufReader};
+
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let daemon = tokio::net::UnixListener::bind(&endpoint).unwrap();
+        let (got, got_call) = tokio::sync::oneshot::channel();
+        let (shut, closed) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut conn, _) = daemon.accept().await.unwrap();
+            let call: Call = desk_core::wire::read_frame(&mut conn).await.unwrap();
+            let _ = got.send(call.tool);
+            let mut rest = Vec::new();
+            let _ = conn.read_to_end(&mut rest).await;
+            let _ = shut.send(());
+        });
+        let (mut to_mcp, input) = tokio::io::duplex(1 << 16);
+        let (output, from_mcp) = tokio::io::duplex(1 << 16);
+        let mcp = tokio::spawn({
+            let endpoint = endpoint.clone();
+            async move {
+                serve(
+                    BufReader::new(input),
+                    output,
+                    &endpoint,
+                    &Plugins::default(),
+                )
+                .await
+            }
+        });
+        let line = |v: Value| format!("{v}\n").into_bytes();
+        to_mcp
+            .write_all(&line(json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "desk", "arguments": {"verb": "windows"}}})))
+            .await
+            .unwrap();
+        assert_eq!(got_call.await.unwrap(), "desk_windows");
+        to_mcp
+            .write_all(&line(json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 7}})))
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), closed)
+            .await
+            .expect("the cancelled call's daemon connection stayed open")
+            .unwrap();
+        to_mcp
+            .write_all(&line(json!({"jsonrpc": "2.0", "id": 8, "method": "ping"})))
+            .await
+            .unwrap();
+        drop(to_mcp);
+        mcp.await.unwrap().unwrap();
+        let mut replies = BufReader::new(from_mcp).lines();
+        let mut ids = Vec::new();
+        while let Some(l) = replies.next_line().await.unwrap() {
+            ids.push(serde_json::from_str::<Value>(&l).unwrap()["id"].clone());
+        }
+        assert_eq!(ids, [json!(8)]);
+    }
+
+    #[tokio::test]
+    async fn a_cancel_drops_a_queued_request_and_replies_keep_their_order() {
+        let out = session(
+            &[
+                json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}),
+                json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+                json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 2}}),
+                json!({"jsonrpc": "2.0", "id": "3", "method": "ping"}),
+            ],
+            "unused",
+        )
+        .await;
+        let ids: Vec<&Value> = out.iter().map(|r| &r["id"]).collect();
+        assert_eq!(ids, [&json!(1), &json!("3")], "{out:?}");
     }
 
     #[cfg(unix)]
