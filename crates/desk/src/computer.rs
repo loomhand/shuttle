@@ -56,6 +56,11 @@ const POPUP_ROWS: [&str; 6] = [
     "option",
 ];
 const PRESSED: [&str; 2] = ["push button", "menu item"];
+const HIT_REFUSALS: [&str; 3] = [
+    "hit_mismatch",
+    "foreground_unavailable",
+    "hit_check_unavailable",
+];
 const FIELDS: [&str; 5] = [
     "AXTextField",
     "AXTextArea",
@@ -384,18 +389,32 @@ impl Computer {
         if let Some(p) = pressed.as_mut().and_then(Value::as_object_mut) {
             p.remove("verify_hit");
         }
-        let verified = req.get("verify_hit").is_some();
-        let mut result = self.send(target, tool, req, enter, &input).await;
-        if let (true, Some(pressed), Err(e)) = (verified, &pressed, &result)
-            && e.contains("verify_hit")
-        {
-            result = self.request(target, "click", pressed.clone()).await;
-        }
+        let mut refused = None;
+        let mut result = if req.get("verify_hit").is_some() {
+            match self.call(target, tool, req).await {
+                Ok(v) if v["isError"] == true => {
+                    let text = format!("{tool}: {}", text_of(&v));
+                    match (hit_refusal(&v), &pressed) {
+                        (Some(identity), Some(pressed)) => {
+                            refused = identity.then_some(text);
+                            self.request(target, "click", pressed.clone()).await
+                        }
+                        _ => Err(text),
+                    }
+                }
+                done => done,
+            }
+        } else {
+            self.send(target, tool, req, enter, &input).await
+        };
         if let (Some(pressed), Err(e)) = (pressed, &result)
             && e.contains(AX_UNSUPPORTED)
-            && let Some(retry) = self.unpressable(session, &a, pressed).await
         {
-            result = self.request(target, "click", retry).await;
+            if let Some(refused) = refused {
+                result = Err(refused);
+            } else if let Some(retry) = self.unpressable(session, &a, pressed).await {
+                result = self.request(target, "click", retry).await;
+            }
         }
         if let Some(typed) = typed
             && result.is_ok()
@@ -2217,6 +2236,16 @@ fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
     (tree, by_index)
 }
 
+/// For a refused `verify_hit` click that sent nothing, whether the driver refused it on identity (`true`) or does not know `verify_hit` (`false`); none for any other failure.
+fn hit_refusal(result: &Value) -> Option<bool> {
+    let s = &result["structuredContent"];
+    let code = s["refusal"]["code"].as_str();
+    if s["effect"] == "refused" && code.is_some_and(|c| HIT_REFUSALS.contains(&c)) {
+        return Some(true);
+    }
+    (code == Some("invalid_arguments") && text_of(result).contains("verify_hit")).then_some(false)
+}
+
 /// Whether more than [`MOVED_PERCENT`] of the pixels of `rect` in `screen` differ by more than [`STILL_TOLERANCE`] from `now`, the same rectangle's RGB rows.
 fn moved(screen: &Screen, [x, y, w, h]: [i32; 4], now: &[u8]) -> bool {
     let (x, y, w, h) = (x as usize, y as usize, w as usize, h as usize);
@@ -2949,6 +2978,7 @@ mod tests {
         calls: &std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
         refusal: &'static str,
         role: &'static str,
+        hit: &'static str,
     ) -> tokio::task::JoinHandle<()> {
         let listener = Fake::bind(socket).unwrap();
         let log = std::sync::Arc::clone(calls);
@@ -2966,13 +2996,20 @@ mod tests {
                     "get_window_state" => {
                         json!({"ok": true, "result": {"structuredContent": {"window_id": 9, "elements": [{"element_index": 0, "element_token": "t0", "role": role, "label": "", "frame": {"x": 100.0, "y": 100.0, "w": 200.0, "h": 40.0}}]}}})
                     }
-                    "click" if req["args"]["verify_hit"] == true => {
-                        if refusal.contains("verify_hit") {
-                            json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": refusal}]}})
-                        } else {
+                    "click" if req["args"]["verify_hit"] == true => match hit {
+                        "" => {
                             json!({"ok": true, "result": {"content": [{"type": "text", "text": "hit"}]}})
                         }
-                    }
+                        "unknown" => {
+                            json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "click: unknown argument verify_hit; accepted: pid"}], "structuredContent": {"status": "refused", "refusal": {"code": "invalid_arguments"}}}})
+                        }
+                        "posted" => {
+                            json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "click.verify_hit: the click failed: mouse up"}]}})
+                        }
+                        code => {
+                            json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "click.verify_hit: nothing was sent."}], "structuredContent": {"status": "refused", "code": code, "effect": "refused", "refusal": {"code": code}}}})
+                        }
+                    },
                     "click" if req["args"]["element_token"].is_string() => {
                         json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": refusal}]}})
                     }
@@ -2990,7 +3027,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
-        let driver = press_driver(&socket, &calls, refusal, "AXTextArea");
+        let driver = press_driver(&socket, &calls, refusal, "AXTextArea", "");
         let mut cua = cua(&socket);
         cua.under = under;
         cua.state(json!({"pid": 7})).await.unwrap();
@@ -3029,18 +3066,20 @@ mod tests {
         assert!(clicks[1]["element_token"].is_null(), "{clicks:?}");
     }
 
-    const MISMATCH: &str = "click.verify_hit: the element on top at (200,120) is not element [0] or inside it; nothing was sent.";
+    const UNSUPPORTED: &str = "AX action failed: AXUIElementPerformAction(AXPress) returned -25206";
 
     async fn field(
         role: &'static str,
         action: &str,
         refusal: &'static str,
+        hit: &'static str,
     ) -> (Output, Vec<Value>) {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
-        let driver = press_driver(&socket, &calls, refusal, role);
-        let cua = cua_on(&socket, Os::Mac);
+        let driver = press_driver(&socket, &calls, refusal, role, hit);
+        let mut cua = cua_on(&socket, Os::Mac);
+        cua.under = |_, _| Some((7, 9));
         cua.state(json!({"pid": 7})).await.unwrap();
         calls.lock().unwrap().clear();
         let out = cua
@@ -3060,7 +3099,7 @@ mod tests {
 
     #[tokio::test]
     async fn off_linux_a_click_on_a_text_field_asks_the_driver_for_a_hit_checked_click() {
-        let (out, sent) = field("AXTextField", "left_click", "").await;
+        let (out, sent) = field("AXTextField", "left_click", "", "").await;
         assert!(!out.is_error, "{}", out.text);
         assert_eq!(sent.len(), 1, "{sent:?}");
         assert_eq!(
@@ -3074,22 +3113,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn off_linux_a_refused_hit_checked_click_falls_back_to_the_press_and_other_elements_are_pressed()
-     {
-        let (_, sent) = field("AXTextField", "click", MISMATCH).await;
-        assert_eq!(sent.len(), 2, "{sent:?}");
-        assert_eq!(sent[0]["verify_hit"], true, "{sent:?}");
-        assert!(sent[1].get("verify_hit").is_none(), "{sent:?}");
-        assert_eq!(sent[1]["element_token"], "t0", "{sent:?}");
+    async fn off_linux_a_hit_refusal_falls_back_to_the_press_and_other_elements_are_pressed() {
+        for code in HIT_REFUSALS.into_iter().chain(["unknown"]) {
+            let (_, sent) = field("AXTextField", "click", "", code).await;
+            assert_eq!(sent.len(), 2, "{code}: {sent:?}");
+            assert_eq!(sent[0]["verify_hit"], true, "{code}: {sent:?}");
+            assert!(sent[1].get("verify_hit").is_none(), "{code}: {sent:?}");
+            assert_eq!(sent[1]["element_token"], "t0", "{code}: {sent:?}");
+        }
         for (role, action) in [("AXButton", "click"), ("AXTextField", "right_click")] {
-            let (_, sent) = field(role, action, "").await;
+            let (_, sent) = field(role, action, "", "").await;
             assert_eq!(sent.len(), 1, "{role} {action}: {sent:?}");
             assert!(
                 sent[0].get("verify_hit").is_none(),
                 "{role} {action}: {sent:?}"
             );
-            assert_eq!(sent[0]["element_token"], "t0", "{sent:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn after_a_hit_refusal_an_unsupported_press_returns_the_refusal_and_no_pixel_click() {
+        let (out, sent) = field("AXTextField", "click", UNSUPPORTED, "hit_mismatch").await;
+        assert!(
+            out.is_error && out.text.contains("nothing was sent"),
+            "{}",
+            out.text
+        );
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert!(sent.iter().all(|c| c["x"].is_null()), "{sent:?}");
+        let (_, old) = field("AXTextField", "click", UNSUPPORTED, "unknown").await;
+        assert_eq!(old.len(), 3, "{old:?}");
+        assert_eq!(old[2]["scope"], "desktop", "{old:?}");
+    }
+
+    #[tokio::test]
+    async fn a_hit_checked_click_that_failed_after_sending_is_not_repeated() {
+        let (out, sent) = field("AXTextField", "click", "", "posted").await;
+        assert!(
+            out.is_error && out.text.contains("the click failed"),
+            "{}",
+            out.text
+        );
+        assert_eq!(sent.len(), 1, "{sent:?}");
     }
 
     #[tokio::test]
@@ -3097,7 +3162,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
-        let driver = press_driver(&socket, &calls, "", "AXTextArea");
+        let driver = press_driver(&socket, &calls, "", "AXTextArea", "");
         cua(&socket).state(json!({"pid": 7})).await.unwrap();
         driver.abort();
         let read = calls.lock().unwrap().clone();
