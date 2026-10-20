@@ -16,6 +16,7 @@
   - a scrolled press takes 138 ms against 1073 ms for one scroll and 137 ms against 4278 ms for three or four, on the Settings list of redroid 16;
   - the tree is read again after the request; an element that did not move, an element that refused, an error, or a server that predates the request leaves the press to the swipe and settle as before, and a press asks once;
   - lists that do not honour the action, Compose among them, were not tried; they fall back to the swipe.
+- **Graceful run ends.** On macOS and Linux a run's timeout, a stop or a dropped client sends SIGTERM to the run's process group, so a script can release the keys it holds or close what it opened, and SIGKILL to whatever is left 2 s later; on Linux the apps the desk moved into scopes of their own are spared, as the bundled driver's end already spared them. A run still in that grace when its client goes away, or when the daemon shuts down, is killed all the same. Before, the group got SIGKILL at once. Windows keeps ending the run's Job object at once.
 
 ## 0.1.8 - 2026-10-20
 

@@ -176,10 +176,6 @@ impl Runner {
             s = tokio::time::timeout(timeout, child.wait()) => s.map_err(|_| Ended::Timeout),
             _ = stopped.wait_for(|s| *s) => Err(Ended::Stopped),
         };
-        #[cfg(unix)]
-        {
-            group.0 = None;
-        }
         if status.is_err() {
             #[cfg(unix)]
             if let Some(pid) = child.id() {
@@ -191,6 +187,10 @@ impl Runner {
         } else {
             #[cfg(windows)]
             job.release();
+        }
+        #[cfg(unix)]
+        {
+            group.0 = None;
         }
         let drained = async {
             for p in &mut pipes {
@@ -268,10 +268,10 @@ impl Drop for Group {
         };
         crate::signal_group(pid, libc::SIGTERM);
         match tokio::runtime::Handle::try_current() {
-            Ok(rt) => {
+            Ok(rt) if !crate::ENDING.load(std::sync::atomic::Ordering::Relaxed) => {
                 rt.spawn(crate::kill_after(pid, END_GRACE));
             }
-            Err(_) => {
+            _ => {
                 crate::signal_group(pid, libc::SIGKILL);
             }
         }
@@ -424,16 +424,16 @@ mod tests {
 
     #[cfg(unix)]
     fn alive(pid: &str) -> bool {
-        std::process::Command::new("kill")
-            .args(["-0", pid])
-            .stderr(Stdio::null())
-            .status()
-            .unwrap()
-            .success()
+        let out = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", pid.trim()])
+            .output()
+            .unwrap();
+        let stat = String::from_utf8_lossy(&out.stdout);
+        !stat.trim().is_empty() && !stat.trim_start().starts_with('Z')
     }
 
     #[cfg(unix)]
-    const ON_TERM: &str = "import { writeFileSync } from 'node:fs'\nexport async function main({ marker }) { process.on('SIGTERM', () => { writeFileSync(marker, 'term'); process.exit(0) }); await new Promise((r) => setTimeout(r, 30000)) }";
+    const ON_TERM: &str = "import { writeFileSync } from 'node:fs'\nexport async function main({ marker }) { process.on('SIGTERM', () => { writeFileSync(marker, 'term'); process.exit(0) }); writeFileSync(`${marker}.ready`, ''); await new Promise((r) => setTimeout(r, 30000)) }";
 
     #[cfg(unix)]
     #[tokio::test]
@@ -443,7 +443,7 @@ mod tests {
         let marker = dir.path().join("timeout");
         let report = r
             .script(
-                json!({"code": ON_TERM, "params": {"marker": marker}, "timeout_s": 1}),
+                json!({"code": ON_TERM, "params": {"marker": marker}, "timeout_s": 2}),
                 "run-test",
             )
             .await
@@ -451,9 +451,15 @@ mod tests {
         assert_eq!(report["error"]["kind"], "timeout", "{report}");
         assert_eq!(std::fs::read_to_string(&marker).unwrap(), "term");
         let marker = dir.path().join("stop");
+        let ready = dir.path().join("stop.ready");
         let args = json!({"code": ON_TERM, "params": {"marker": marker}, "timeout_s": 30});
         let (report, ()) = tokio::join!(r.script(args, "run-test"), async {
-            tokio::time::sleep(Duration::from_millis(1000)).await;
+            for _ in 0..200 {
+                if ready.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
             r.halt(true);
         });
         r.halt(false);
@@ -470,12 +476,12 @@ mod tests {
         let code = "process.on('SIGTERM', () => {})\nconsole.log(process.pid)\nexport async function main() { await new Promise((r) => setTimeout(r, 30000)) }";
         let started = Instant::now();
         let report = r
-            .script(json!({"code": code, "timeout_s": 1}), "run-test")
+            .script(json!({"code": code, "timeout_s": 2}), "run-test")
             .await
             .unwrap();
         let took = started.elapsed();
         assert_eq!(report["error"]["kind"], "timeout", "{report}");
-        let limit = Duration::from_secs(1) + END_GRACE;
+        let limit = Duration::from_secs(2) + END_GRACE;
         assert!(
             took >= limit - Duration::from_millis(100)
                 && took < limit + PIPE_GRACE + Duration::from_millis(500),
@@ -487,16 +493,45 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_run_dropped_during_its_grace_still_kills_a_script_that_ignores_term() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = runner(dir.path());
+        let pid_file = dir.path().join("pid");
+        let code = "import { writeFileSync } from 'node:fs'\nprocess.on('SIGTERM', () => {})\nexport async function main({ pid }) { writeFileSync(pid, String(process.pid)); await new Promise((r) => setTimeout(r, 30000)) }";
+        let args = json!({"code": code, "params": {"pid": pid_file}, "timeout_s": 2});
+        assert!(
+            tokio::time::timeout(Duration::from_millis(2500), r.script(args, "run-test"))
+                .await
+                .is_err()
+        );
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let mut gone = false;
+        for _ in 0..60 {
+            gone = !alive(&pid);
+            if gone {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(gone, "{pid} outlived the run dropped during its grace");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_run_whose_client_goes_away_gets_term_first() {
         let dir = tempfile::tempdir().unwrap();
         let r = runner(dir.path());
         let marker = dir.path().join("dropped");
+        let ready = dir.path().join("dropped.ready");
         let args = json!({"code": ON_TERM, "params": {"marker": marker}, "timeout_s": 30});
-        assert!(
-            tokio::time::timeout(Duration::from_millis(1000), r.script(args, "run-test"))
-                .await
-                .is_err()
-        );
+        tokio::select! {
+            report = r.script(args, "run-test") => panic!("the run ended: {report:?}"),
+            () = async {
+                while !ready.exists() {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            } => {}
+        }
         let mut termed = false;
         for _ in 0..40 {
             termed = std::fs::read_to_string(&marker).is_ok_and(|m| m == "term");
@@ -510,19 +545,14 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[tokio::test]
+    #[ignore = "needs a writable cgroupfs"]
     async fn a_timeout_spares_an_app_in_a_cgroup_of_its_own() {
         let own = std::fs::read_to_string("/proc/self/cgroup").unwrap();
-        let Some(own) = own.trim().strip_prefix("0::") else {
-            eprintln!("skipped: no cgroup v2");
-            return;
-        };
+        let own = own.trim().strip_prefix("0::").expect("cgroup v2");
         let scope = Path::new("/sys/fs/cgroup")
             .join(own.trim_start_matches('/'))
             .join(format!("shuttle-test-{}", std::process::id()));
-        if let Err(e) = std::fs::create_dir(&scope) {
-            eprintln!("skipped: create {}: {e}", scope.display());
-            return;
-        }
+        std::fs::create_dir(&scope).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let r = runner(dir.path());
         let pids = dir.path().join("pids");
@@ -564,13 +594,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let (kept, gone) = match moved.and(checked) {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("skipped: move into {}: {e}", scope.display());
-                return;
-            }
-        };
+        let (kept, gone) = moved.and(checked).unwrap();
         assert_eq!(report["error"]["kind"], "timeout", "{report}");
         assert!(gone, "the helper in the run's cgroup outlived the timeout");
         assert!(kept, "the app in its own cgroup died with the run");

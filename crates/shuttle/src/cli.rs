@@ -272,6 +272,7 @@ async fn serve(
         r = server::serve(daemon, listener) => r,
         () = shutdown() => Ok(()),
     };
+    crate::ENDING.store(true, std::sync::atomic::Ordering::Relaxed);
     services.stop().await;
     if let Some(b) = bundled {
         b.stop().await;
