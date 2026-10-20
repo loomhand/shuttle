@@ -22,8 +22,8 @@ use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GW_OWNER, GetForegroundWindow, GetWindow, GetWindowTextW,
-    GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_CLOSE,
+    EnumWindows, GA_ROOT, GW_OWNER, GetAncestor, GetForegroundWindow, GetWindow, GetWindowTextW,
+    GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_CLOSE, WindowFromPoint,
 };
 use windows::core::{BOOL, PWSTR};
 
@@ -492,6 +492,24 @@ impl Access for Uia {
         }
         .map_err(|e| format!("close {:?}: {e}", frame.title))
     }
+}
+
+/// The pid and top-level window at the screen point `(x, y)`.
+pub fn window_at(x: f64, y: f64) -> Option<(i64, i64)> {
+    let mut pid = 0u32;
+    // SAFETY: the window calls take a point or a handle; `pid` is a live u32 they write.
+    let root = unsafe {
+        let root = GetAncestor(
+            WindowFromPoint(POINT {
+                x: x.round() as i32,
+                y: y.round() as i32,
+            }),
+            GA_ROOT,
+        );
+        GetWindowThreadProcessId(root, Some(&raw mut pid));
+        root
+    };
+    (!root.is_invalid()).then_some((i64::from(pid), root.0 as i64))
 }
 
 struct Top {

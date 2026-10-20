@@ -56,6 +56,13 @@ const POPUP_ROWS: [&str; 6] = [
     "option",
 ];
 const PRESSED: [&str; 2] = ["push button", "menu item"];
+const FIELDS: [&str; 5] = [
+    "AXTextField",
+    "AXTextArea",
+    "AXComboBox",
+    "Edit",
+    "ComboBox",
+];
 const JPEG_QUALITY: u8 = 80;
 const DEFAULT_EDGE: u32 = 1024;
 const PIXELS_PER_TOKEN: u32 = 750;
@@ -76,7 +83,9 @@ const NO_TEXT_TARGET: &str =
     "no application window is on the screen to type into; open or focus one first";
 #[cfg(target_os = "macos")]
 const UNDER: Under = crate::ax::window_at;
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+const UNDER: Under = crate::uia::window_at;
+#[cfg(not(any(target_os = "macos", windows)))]
 const UNDER: Under = |_, _| None;
 const RETRIED: [&str; 4] = [
     "list_windows",
@@ -1117,6 +1126,9 @@ impl Computer {
             "click" | "double_click" | "right_click" | "triple_click"
         );
         let pixel = match a.element {
+            Some(index) if self.os != Os::Linux && a.action == "click" => {
+                self.field_point(session, index).await?
+            }
             Some(index) if clicks && !a.foreground => {
                 match self.element_pixel(session, index, false).await {
                     None if presses(a) => match self.open_menus(session, index).await {
@@ -1266,6 +1278,36 @@ impl Computer {
         })
         .await
         .map_err(|e| format!("XTest: {e}"))?
+    }
+
+    /// Off Linux, the centre of text field `index` of `session`'s snapshot once its window is in front, when that window is the topmost there: a press does not focus a field.
+    async fn field_point(&self, session: &str, index: i64) -> Result<Option<(f64, f64)>, String> {
+        let (pid, window, x, y) = {
+            let last = self.last.lock().await;
+            let Some(snap) = last.get(session) else {
+                return Ok(None);
+            };
+            let Some(element) = snap
+                .elements
+                .get(&index)
+                .filter(|e| FIELDS.contains(&e.role.as_str()))
+            else {
+                return Ok(None);
+            };
+            let (Some([x, y, w, h]), Some(window)) = (element.frame, snap.window_id) else {
+                return Ok(None);
+            };
+            (snap.pid, window, x + w / 2.0, y + h / 2.0)
+        };
+        self.request(
+            session,
+            "bring_to_front",
+            json!({"pid": pid, "window_id": window}),
+        )
+        .await?;
+        Ok((self.under)(x, y)
+            .is_some_and(|(_, top)| top == window)
+            .then_some((x, y)))
     }
 
     /// A desktop click at the centre of the element `a` names, when the topmost window there is the element's own.
@@ -2924,6 +2966,7 @@ mod tests {
         socket: &Path,
         calls: &std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
         refusal: &'static str,
+        role: &'static str,
     ) -> tokio::task::JoinHandle<()> {
         let listener = Fake::bind(socket).unwrap();
         let log = std::sync::Arc::clone(calls);
@@ -2939,7 +2982,7 @@ mod tests {
                         json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "TextEdit", "title": "t", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 2}]}}})
                     }
                     "get_window_state" => {
-                        json!({"ok": true, "result": {"structuredContent": {"window_id": 9, "elements": [{"element_index": 0, "element_token": "t0", "role": "AXTextArea", "label": "", "frame": {"x": 100.0, "y": 100.0, "w": 200.0, "h": 40.0}}]}}})
+                        json!({"ok": true, "result": {"structuredContent": {"window_id": 9, "elements": [{"element_index": 0, "element_token": "t0", "role": role, "label": "", "frame": {"x": 100.0, "y": 100.0, "w": 200.0, "h": 40.0}}]}}})
                     }
                     "click" if req["args"]["element_token"].is_string() => {
                         json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": refusal}]}})
@@ -2958,7 +3001,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
-        let driver = press_driver(&socket, &calls, refusal);
+        let driver = press_driver(&socket, &calls, refusal, "AXTextArea");
         let mut cua = cua(&socket);
         cua.under = under;
         cua.state(json!({"pid": 7})).await.unwrap();
@@ -2997,12 +3040,84 @@ mod tests {
         assert!(clicks[1]["element_token"].is_null(), "{clicks:?}");
     }
 
+    async fn field(role: &'static str, action: &str, under: Under) -> (Output, Vec<Value>) {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = press_driver(&socket, &calls, "", role);
+        let mut cua = cua_on(&socket, Os::Mac);
+        cua.under = under;
+        cua.state(json!({"pid": 7})).await.unwrap();
+        calls.lock().unwrap().clear();
+        let out = cua
+            .act(json!({"action": action, "element": 0}))
+            .await
+            .unwrap();
+        driver.abort();
+        let sent = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| !RETRIED.iter().any(|r| c["name"] == *r))
+            .cloned()
+            .collect();
+        (out, sent)
+    }
+
+    #[tokio::test]
+    async fn off_linux_a_click_on_a_text_field_fronts_its_window_and_clicks_its_centre() {
+        let (out, sent) = field("AXTextField", "left_click", |x, y| {
+            ((x, y) == (200.0, 120.0)).then_some((7, 9))
+        })
+        .await;
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert_eq!(
+            (
+                &sent[0]["name"],
+                &sent[0]["args"]["pid"],
+                &sent[0]["args"]["window_id"]
+            ),
+            (&json!("bring_to_front"), &json!(7), &json!(9))
+        );
+        let click = &sent[1]["args"];
+        assert_eq!(
+            (&sent[1]["name"], &click["x"], &click["y"], &click["scope"]),
+            (
+                &json!("click"),
+                &json!(200.0),
+                &json!(120.0),
+                &json!("desktop")
+            )
+        );
+        assert!(click["element_token"].is_null(), "{sent:?}");
+    }
+
+    #[tokio::test]
+    async fn off_linux_a_covered_field_is_pressed_and_other_elements_and_buttons_are_not_fronted() {
+        let (_, covered) = field("AXTextField", "click", |_, _| Some((8, 10))).await;
+        assert_eq!(covered.len(), 2, "{covered:?}");
+        assert_eq!(covered[0]["name"], "bring_to_front");
+        assert_eq!(covered[1]["args"]["element_token"], "t0", "{covered:?}");
+        let on = |_, _| Some((7, 9));
+        for (role, action) in [("AXButton", "click"), ("AXTextField", "right_click")] {
+            let (_, sent) = field(role, action, on).await;
+            assert_eq!(sent.len(), 1, "{role} {action}: {sent:?}");
+            assert_eq!(
+                sent[0]["name"],
+                json!(action.replace("left_", "")),
+                "{sent:?}"
+            );
+            assert_eq!(sent[0]["args"]["element_token"], "t0", "{sent:?}");
+        }
+    }
+
     #[tokio::test]
     async fn a_pid_without_a_window_id_reads_its_frontmost_listed_window() {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
-        let driver = press_driver(&socket, &calls, "");
+        let driver = press_driver(&socket, &calls, "", "AXTextArea");
         cua(&socket).state(json!({"pid": 7})).await.unwrap();
         driver.abort();
         let read = calls.lock().unwrap().clone();
