@@ -77,11 +77,11 @@ On Windows the same order holds with UI Automation patterns and cua-driver input
 
 ## Background input
 
-With `[desk] input = "background"` ([config.md](config.md#desk-input)), shuttle sends input to its target window through cua-driver without fronting that window or moving your pointer. It never falls back to the foreground; an action that needs the foreground fails and names why:
+With `[desk] input = "background"` ([config.md](config.md#desk-input)), shuttle sends input to its target window through cua-driver without fronting that window or moving your pointer. shuttle sends no fronting call, but an app may still bring itself to the front in reaction to the input, for example when a menu opens. It never falls back to the foreground; an action that needs the foreground fails and names why:
 - keys, typed text, scrolls and drags need the target window named (`window` or `pid`);
 - a window that takes no pointer input without the foreground, such as a macOS sheet, refuses a click;
 - on Linux the computer actions refuse, since they send desktop input;
-- on Windows a `focus` action on an element refuses, since UI Automation focuses an element only by bringing its window to the front;
+- on Windows a `focus`, `select` or `action` on an element refuses, since UI Automation runs them by bringing the element's window to the front, and a `press` clicks the element in its window instead, and refuses when it shows no point to click;
 - `gui_plan` refuses, since it drives the front window.
 
 The driver refuses or cannot deliver some input in the background:
@@ -90,6 +90,6 @@ The driver refuses or cannot deliver some input in the background:
 - some toolkits (Tk, LibreOffice) refuse background input;
 - on X11, GTK and Chromium ignore synthetic events, and Chrome drops core keyboard input while a second master keyboard exists. Second-cursor delivery needs a real Xorg server and `/dev/uinput`.
 
-A delivered action is not always a landed one. When cua-driver cannot confirm that background input took effect, for example keys posted to a Windows XAML or console window, the result carries `unverified` with the driver's note ([wire.md](wire.md#desk-calls)). Read the effect back before relying on it; the input may have landed, so sending it again can type twice. An app can also bring itself to the front when it opens a menu or dialog; shuttle sends no fronting call, but cannot stop the app.
+A delivered action is not always a landed one. When cua-driver cannot confirm that background input took effect, for example keys posted to a Windows XAML or console window, the result carries `unverified` with the driver's note ([wire.md](wire.md#desk-calls)). Read the effect back before relying on it; the input may have landed, so sending it again can type twice.
 
 `focus` is the one call that brings a window to the front in background mode.

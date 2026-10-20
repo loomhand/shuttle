@@ -12,6 +12,7 @@ use desk_core::args::{
     ScrollArgs, ShotArgs, SnapArgs, StillArgs, TypeArgs, WaitArgs, WindowArgs, parse,
 };
 use desk_core::text::{MAX_FOUND, NAME_CHARS, matches, ms, quote};
+use desk_core::window::{TITLE_TIERS, title_matches};
 use desk_core::wire::Output;
 use serde_json::{Map, Value, json};
 
@@ -64,7 +65,7 @@ const BACKGROUND_DESKTOP: &str = "background input: this window takes no pointer
 const BACKGROUND_NO_WINDOW: &str = "background input: no window under the point";
 const BACKGROUND_ELEMENT: &str = "background input: the element's own window could not be found, and background input never clicks a window that covers it";
 const BACKGROUND_TWINS: &str = "background input: the element's own window is ambiguous (same or no title, and no single frame match), and background input never guesses which window to click";
-const BACKGROUND_FOCUS: &str = "background input: on Windows an element takes the keyboard focus only by bringing its window to the front; use the desk verbs with a window, or focus with input = \"foreground\"";
+const BACKGROUND_UIA: &str = "background input: on Windows UI Automation focuses, selects or runs an element only by bringing its window to the front; click it in its window, or use input = \"foreground\"";
 const SCROLL_POINT: &str = "scroll needs both x and y, or neither";
 const OK: &str = r#"{"ok":true}"#;
 const SCROLL_AMOUNT: u32 = 3;
@@ -443,11 +444,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn act(&self, a: ActArgs, turn: Option<Turn>) -> Result<String, String> {
         let act = match a.action.as_str() {
+            "focus" | "select" | "action" if self.background && self.os == Os::Windows => {
+                return Err(BACKGROUND_UIA.to_owned());
+            }
             "action" => Act::Action,
             "select" => Act::Select,
-            "focus" if self.background && self.os == Os::Windows => {
-                return Err(BACKGROUND_FOCUS.to_owned());
-            }
             "focus" => Act::Focus,
             "click" => {
                 let id = a.id.clone();
@@ -715,13 +716,16 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let Value::Array(windows) = listed["structuredContent"]["windows"].take() else {
             return Err(BACKGROUND_ELEMENT.to_owned());
         };
-        let mut same: Vec<Value> = windows
-            .into_iter()
-            .filter(|w| w["pid"].as_u64() == Some(u64::from(pid)) && w["title"] == title.as_str())
-            .collect();
-        if same.is_empty() && picked["pid"].as_u64() == Some(u64::from(pid)) {
-            same.push(picked);
-        }
+        let titled = |w: &Value, tier: usize| {
+            w["pid"].as_u64() == Some(u64::from(pid))
+                && title_matches(tier, w["title"].as_str().unwrap_or_default(), &title)
+        };
+        let tier = (0..TITLE_TIERS).find(|&t| windows.iter().any(|w| titled(w, t)));
+        let mut same: Vec<Value> = match tier {
+            Some(t) => windows.into_iter().filter(|w| titled(w, t)).collect(),
+            None if picked["pid"].as_u64() == Some(u64::from(pid)) => vec![picked],
+            None => Vec::new(),
+        };
         same.retain(|w| {
             frame.is_some_and(|f| {
                 bounds(w)
@@ -1848,15 +1852,15 @@ pub(crate) mod tests {
         }
     }
 
-    struct Solo(Arc<Mutex<Vec<(String, Value)>>>, &'static str, f64);
+    struct Solo(Arc<Mutex<Vec<(String, Value)>>>, &'static str, f64, f64);
 
     impl Input for Solo {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
             self.0.lock().unwrap().push((tool.to_owned(), args));
             Ok(match tool {
-                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": self.3}}),
                 "list_windows" => json!({"structuredContent": {"windows": [
-                    {"pid": 4, "window_id": 5, "layer": 0, "z_index": 1, "title": self.1, "bounds": {"x": self.2, "y": 0.0, "width": 800.0, "height": 600.0}}
+                    {"pid": 4, "window_id": 5, "layer": 0, "z_index": 1, "title": self.1, "bounds": {"x": self.2, "y": 0.0, "width": 800.0 / self.3, "height": 600.0 / self.3}}
                 ]}}),
                 "get_window_state" => json!({"structuredContent": {
                     "screenshot_width": 800, "screenshot_height": 600,
@@ -2153,6 +2157,7 @@ pub(crate) mod tests {
         }
         click_one_of_twins("Untitled - Notepad", || Ok(notepad())).await;
         click_one_of_twins("", untitled).await;
+        click_one_of_twins("Untitled - Notepad (2)", || Ok(notepad())).await;
     }
 
     async fn click_one_of_twins(title: &'static str, fake: fn() -> Result<Fake, String>) {
@@ -2181,33 +2186,38 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_background_focus_action_refuses_on_windows_where_it_fronts_the_window() {
         let back = Desk::new(|| Ok(notepad()), Slow(Arc::default()), Os::Windows).background(true);
-        let err = back
-            .run("desk_act", json!({"id": "ok", "action": "focus"}))
-            .await
-            .unwrap_err();
-        assert!(
-            err.contains("only by bringing its window to the front"),
-            "{err}"
-        );
         let mac = Desk::new(|| Ok(notepad()), Slow(Arc::default()), Os::Mac).background(true);
-        assert!(
-            mac.run("desk_act", json!({"id": "ok", "action": "focus"}))
+        for action in ["focus", "select", "action"] {
+            let err = back
+                .run("desk_act", json!({"id": "ok", "action": action}))
                 .await
-                .is_ok()
-        );
+                .unwrap_err();
+            assert!(
+                err.contains("only by bringing its window to the front"),
+                "{action}: {err}"
+            );
+            assert!(
+                mac.run("desk_act", json!({"id": "ok", "action": action}))
+                    .await
+                    .is_ok(),
+                "{action}"
+            );
+        }
     }
 
     #[tokio::test]
     async fn a_background_element_click_checks_the_frame_of_a_lone_or_fuzzy_title_match() {
-        for (title, x, clicks) in [
-            ("Untitled - Notepad", 900.0, 0),
-            ("Untitled - Notepad (2)", 900.0, 0),
-            ("Untitled - Notepad (2)", 0.0, 1),
+        for (title, x, scale, clicks) in [
+            ("Untitled - Notepad", 900.0, 1.0, 0),
+            ("Untitled - Notepad (2)", 900.0, 1.0, 0),
+            ("Untitled - Notepad (2)", 0.0, 1.0, 1),
+            ("Untitled - Notepad", 0.0, 2.0, 1),
+            ("Untitled - Notepad", 450.0, 2.0, 0),
         ] {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let desk = Desk::new(
                 || Ok(notepad()),
-                Solo(Arc::clone(&calls), title, x),
+                Solo(Arc::clone(&calls), title, x, scale),
                 Os::Mac,
             )
             .background(true);
