@@ -1039,7 +1039,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_native_desk_answers_the_computer_verbs_unless_an_app_allowlist_is_set() {
+    async fn the_native_desk_answers_the_computer_verbs_unless_an_app_allowlist_or_background_input_is_set()
+     {
         let ask = |tool: &str, args: Value| Call {
             agent_id: "desk".into(),
             tool: tool.into(),
@@ -1070,6 +1071,18 @@ mod tests {
         }
         let other = listed.answer(ask("shell", json!({}))).await;
         assert_eq!(other.text, "unknown desk tool shell");
+        let background = native("/nonexistent/driver.sock".into(), &[], false, true);
+        let act = background
+            .answer(ask(
+                "desk_computer_act",
+                json!({"action": "click", "x": 10, "y": 10}),
+            ))
+            .await;
+        assert!(
+            act.is_error && act.text.contains("needs the foreground"),
+            "{}",
+            act.text
+        );
     }
 }
 
