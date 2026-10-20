@@ -26,6 +26,7 @@ const WALK_BUDGET: Duration = Duration::from_secs(4);
 const MESSAGING_TIMEOUT: Duration = Duration::from_millis(500);
 const HUNG_SKIP: Duration = Duration::from_secs(10);
 const HUNG_AFTER: Duration = Duration::from_secs(2);
+const LAUNCH_GRACE: Duration = Duration::from_secs(10);
 const AX_SUCCESS: i32 = 0;
 
 const POINT_TYPE: u32 = 1;
@@ -74,6 +75,7 @@ pub struct Ax {
     hung: HashMap<i32, Instant>,
     slow: HashMap<i32, Instant>,
     last: HashMap<i32, Vec<Frame>>,
+    listed_at: HashMap<i32, Instant>,
     driver: Option<PathBuf>,
 }
 
@@ -99,6 +101,7 @@ impl Ax {
             hung: HashMap::new(),
             slow: HashMap::new(),
             last: HashMap::new(),
+            listed_at: HashMap::new(),
             driver: std::env::current_exe()
                 .and_then(std::fs::canonicalize)
                 .ok()
@@ -111,6 +114,10 @@ impl Ax {
         self.hung.retain(|_, at| at.elapsed() < HUNG_SKIP);
         self.last.retain(|p, _| pids.contains(p));
         self.slow.retain(|p, _| pids.contains(p));
+        self.listed_at.retain(|p, _| pids.contains(p));
+        for &p in &pids {
+            self.listed_at.entry(p).or_insert_with(Instant::now);
+        }
         let driver = self.driver.as_ref();
         pids.into_iter()
             .filter(|&p| driver.is_none_or(|d| exe_path(p).as_ref() != Some(d)))
@@ -127,16 +134,21 @@ impl Ax {
             let asked = Instant::now();
             let read = values(&self.app_names, &app);
             if read.iter().all(Option::is_none) && asked.elapsed() >= MESSAGING_TIMEOUT * 9 / 10 {
-                if self.slow.entry(p).or_insert(asked).elapsed() < HUNG_AFTER {
+                let slow = self.slow.entry(p).or_insert(asked).elapsed();
+                let listed = self
+                    .listed_at
+                    .get(&p)
+                    .map_or(LAUNCH_GRACE, Instant::elapsed);
+                if hung(slow, listed) {
+                    self.slow.remove(&p);
+                    self.last.remove(&p);
+                    self.hung.insert(p, Instant::now());
+                } else {
                     let kept = self.last.get(&p).into_iter().flatten();
                     frames.extend(kept.map(|f| Frame {
                         stale: true,
                         ..f.clone()
                     }));
-                } else {
-                    self.slow.remove(&p);
-                    self.last.remove(&p);
-                    self.hung.insert(p, Instant::now());
                 }
                 continue;
             }
@@ -532,6 +544,10 @@ unsafe extern "C" {
     fn CGDisplayModeRelease(mode: *mut c_void);
 }
 
+fn hung(slow: Duration, listed: Duration) -> bool {
+    slow >= HUNG_AFTER && listed >= LAUNCH_GRACE
+}
+
 fn attrs(names: &CFArray<CFString>, el: &CFType) -> Attrs {
     let [
         role,
@@ -798,6 +814,15 @@ fn text(v: &CFType, chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_app_listed_within_the_launch_grace_is_not_skipped_as_hung() {
+        let s = Duration::from_secs;
+        assert!(!hung(s(1), s(30)));
+        assert!(hung(s(2), s(30)));
+        assert!(!hung(s(5), s(4)));
+        assert!(hung(s(5), s(10)));
+    }
 
     #[test]
     fn a_process_path_is_its_canonical_executable_as_the_daemon_finds_its_driver_beside() {
