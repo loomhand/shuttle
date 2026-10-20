@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 pub const WINDOW_SESSION: &str = "desk-window";
+pub const CAPTURE_SESSION: &str = "desk-capture";
 pub(crate) const CLICK_SPACING: Duration = Duration::from_millis(500);
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -27,7 +28,7 @@ pub trait Input {
 #[derive(Debug)]
 pub struct Driver {
     endpoint: String,
-    started: [AtomicBool; 2],
+    started: [AtomicBool; 3],
     calls: AtomicU64,
     last_click: Mutex<Option<(Instant, f64, f64)>>,
 }
@@ -36,7 +37,11 @@ impl Driver {
     pub fn new(endpoint: String) -> Self {
         Self {
             endpoint,
-            started: [AtomicBool::new(false), AtomicBool::new(false)],
+            started: [
+                AtomicBool::new(false),
+                AtomicBool::new(false),
+                AtomicBool::new(false),
+            ],
             calls: AtomicU64::new(0),
             last_click: Mutex::new(None),
         }
@@ -52,18 +57,18 @@ impl Driver {
         )
     }
 
-    async fn start(&self, window: bool) -> Result<(), String> {
-        let (scope, session) = if window {
-            ("window", WINDOW_SESSION)
-        } else {
-            ("desktop", SESSION)
+    async fn start(&self, kind: usize) -> Result<(), String> {
+        let (scope, session) = match kind {
+            1 => ("window", WINDOW_SESSION),
+            2 => ("desktop", CAPTURE_SESSION),
+            _ => ("desktop", SESSION),
         };
         self.send(
             "start_session",
             &json!({"capture_scope": scope, "session": session}),
         )
         .await?;
-        self.started[usize::from(window)].store(true, Ordering::Relaxed);
+        self.started[kind].store(true, Ordering::Relaxed);
         Ok(())
     }
 
@@ -140,16 +145,20 @@ impl Input for Driver {
             let _ = self.send("end_session", &json!({"session": once})).await;
             return done;
         }
-        let window = args["session"] == WINDOW_SESSION;
-        if !window {
-            args["session"] = SESSION.into();
-        }
-        if !self.started[usize::from(window)].load(Ordering::Relaxed) {
-            self.start(window).await?;
+        let kind = match args["session"].as_str() {
+            Some(WINDOW_SESSION) => 1,
+            Some(CAPTURE_SESSION) => 2,
+            _ => {
+                args["session"] = SESSION.into();
+                0
+            }
+        };
+        if !self.started[kind].load(Ordering::Relaxed) {
+            self.start(kind).await?;
         }
         match self.send(tool, &args).await {
             Err(e) if e.contains(ENDED) => {
-                self.start(window).await?;
+                self.start(kind).await?;
                 self.send(tool, &args).await
             }
             done => done,
@@ -285,6 +294,58 @@ mod tests {
                 "press_key"
             ]
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_capture_runs_in_a_desktop_session_of_its_own_apart_from_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let daemon = tokio::spawn(async move {
+            let mut lines = Vec::new();
+            for _ in 0..4 {
+                let (s, _) = listener.accept().await.unwrap();
+                let mut s = BufReader::new(s);
+                let mut line = String::new();
+                s.read_line(&mut line).await.unwrap();
+                s.get_mut()
+                    .write_all(b"{\"ok\":true,\"result\":{}}\n")
+                    .await
+                    .unwrap();
+                lines.push(serde_json::from_str::<Value>(&line).unwrap());
+            }
+            lines
+        });
+        let d = Driver::new(socket.to_string_lossy().into_owned());
+        d.call("get_desktop_state", json!({"session": CAPTURE_SESSION}))
+            .await
+            .unwrap();
+        d.call("click", json!({"x": 10, "y": 10, "scope": "desktop"}))
+            .await
+            .unwrap();
+        let lines = tokio::time::timeout(Duration::from_secs(5), daemon)
+            .await
+            .expect("the daemon got fewer calls than a capture and a click make")
+            .unwrap();
+        let got: Vec<_> = lines
+            .iter()
+            .map(|l| {
+                (
+                    l["name"].as_str().unwrap().to_owned(),
+                    l["args"]["session"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        let want = [
+            ("start_session", CAPTURE_SESSION),
+            ("get_desktop_state", CAPTURE_SESSION),
+            ("start_session", SESSION),
+            ("click", SESSION),
+        ]
+        .map(|(n, s)| (n.to_owned(), s.to_owned()));
+        assert_eq!(got, want);
+        assert_eq!(lines[0]["args"]["capture_scope"], "desktop");
     }
 
     #[cfg(target_os = "linux")]
