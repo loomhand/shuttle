@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Bundled:** cua-driver v0.37.0-loomhand.3 (was v0.37.0-loomhand.2): on Linux under xfwm4, a background `type_text` into a window behind another no longer leaves the front window looking inactive: the focus guard puts back the window manager's active window by moving the core focus through None and back, where it used to report `not_restored` after its full restore budget (about 1.1 s → 0.64 s per call on cross-app pairs).
+
 ## 0.1.11 - 2026-10-20
 
 - **Auto input.** `[desk] input = "auto"` sends desk input in the background and takes the foreground only for an action that background input refused before anything was sent: shuttle brings that action's window to the front, runs it once in the foreground, and its result says `"input": "foreground"`. A Windows drag runs in the foreground from the start. Input the driver could not confirm comes back with `unverified`, as in background, and is never sent twice. `gui_plan` types a step again in the foreground only when its read-back shows that nothing landed and the front held, and a step background refuses before sending anything (a macOS menu-bar entry, grounding, a pixel state read, a vision `expect`) fronts the plan window and runs, with the rest of the plan, in the foreground. On Linux and with an `[android]` section, `auto` acts as `foreground` ([safety.md](docs/safety.md#background-input)).
