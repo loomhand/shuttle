@@ -1057,6 +1057,42 @@ mod pipe_tests {
 
     #[cfg(windows)]
     #[tokio::test]
+    async fn a_client_dropped_with_a_write_pending_hangs_up_at_once() {
+        use tokio::io::AsyncWriteExt;
+
+        let name = format!(r"\\.\pipe\shuttle-test-hangup-{}", std::process::id());
+        let mut server = tokio::net::windows::named_pipe::ServerOptions::new()
+            .first_pipe_instance(true)
+            .in_buffer_size(4096)
+            .out_buffer_size(4096)
+            .create(&name)
+            .unwrap();
+        let accepted = server.connect();
+        let mut client = connect(&name).await.unwrap();
+        accepted.await.unwrap();
+        let writer = tokio::spawn(async move {
+            let _ = client.write_all(&vec![7u8; 1 << 20]).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        writer.abort();
+        let _ = writer.await;
+        let started = std::time::Instant::now();
+        let mut hung_up = false;
+        while started.elapsed() < std::time::Duration::from_secs(2) {
+            if server.write(b"x").await.is_err() {
+                hung_up = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            hung_up,
+            "the server saw no hang-up within 2 s of the client's drop"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
     async fn an_owner_only_call_over_the_pipe_from_this_user_is_answered_with_a_group_admitted() {
         let endpoint = format!(r"\\.\pipe\shuttle-test-owner-{}", std::process::id());
         let listener = bind_for(&endpoint, "S-1-5-32-545").await.unwrap();
