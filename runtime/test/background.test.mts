@@ -111,3 +111,12 @@ test('input to a macOS sheet goes to the window it hangs on, which owns its pixe
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'name', window: 'Untitled', pid: 4 }])
 })
+
+test('an untitled plain window the target owns, such as a console host, never becomes the target', async (t) => {
+  const ws = [user(), notepad(), { id: 'h', title: '', role: 'window', pid: 4, active: false, owner: '1' }]
+  const d = desktop(ws)
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { type: 'x' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'x', window: 'Untitled - Notepad', pid: 4 }])
+})
