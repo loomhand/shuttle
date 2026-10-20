@@ -10,7 +10,7 @@ One wire connects `cocoon-shuttle mcp` to the daemon, the runtime (`desk.mts`) t
 | Windows | `\\.\pipe\cocoon-shuttle-desk`, local clients only |
 | Linux | `$XDG_CACHE_HOME/cocoon-shuttle/desk.sock`, else `~/.cache/cocoon-shuttle/desk.sock`, mode 0600 |
 
-`[daemon] socket_group` in `config.toml` opens the macOS or Linux socket to that group: mode 0660, owned by the group ([config.md](config.md#daemon-endpoint)). The Windows pipe stays with its user. `SHUTTLE_SOCKET` overrides the endpoint for the binary, and the daemon hands its endpoint to the runtime, the plugins and the services in the same variable.
+`[daemon] socket_group` in `config.toml` opens the macOS or Linux socket to that group: mode 0660, owned by the group ([config.md](config.md#daemon-endpoint)). On Windows the pipe admits SYSTEM and its user, and `socket_group` names one more account or SID that may read and write it. `SHUTTLE_SOCKET` overrides the endpoint for the binary, and the daemon hands its endpoint to the runtime, the plugins and the services in the same variable.
 
 ## Framing
 

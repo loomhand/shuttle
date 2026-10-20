@@ -11,6 +11,8 @@ pub mod desk;
 pub mod driver;
 pub mod keys;
 pub mod model;
+#[cfg(windows)]
+pub mod pipesec;
 #[cfg(target_os = "linux")]
 pub mod scope;
 pub mod server;

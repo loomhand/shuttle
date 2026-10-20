@@ -151,15 +151,14 @@ mod tests {
                 .is_none()
         );
         let shared = file("[daemon]\nsocket_group = \"agents\"\n");
-        let loaded = Config::load(shared.path());
-        if cfg!(windows) {
-            assert!(loaded.unwrap_err().contains("unix socket"));
-        } else {
-            assert_eq!(
-                loaded.unwrap().daemon.socket_group.as_deref(),
-                Some("agents")
-            );
-        }
+        assert_eq!(
+            Config::load(shared.path())
+                .unwrap()
+                .daemon
+                .socket_group
+                .as_deref(),
+            Some("agents")
+        );
         let err = Config::load(file("[daemon]\nsocket_group = \"\"\n").path()).unwrap_err();
         assert!(err.contains("socket_group is empty"), "{err}");
         let err = Config::load(file("[daemon]\nsocket_mode = 438\n").path()).unwrap_err();

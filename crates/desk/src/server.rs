@@ -21,6 +21,8 @@ const SUN_PATH: usize = 104;
 
 #[cfg(target_os = "linux")]
 const ALLOWLIST_REFUSED: &str = "the computer verbs see and click the whole screen, which an app allowlist does not bound: empty [safety] apps in config.toml to use them";
+// a group may read and write the pipe but not create instances of it: FILE_GENERIC_READ and FILE_GENERIC_WRITE less FILE_CREATE_PIPE_INSTANCE
+const GROUP_RIGHTS: &str = "0x12019b";
 #[cfg(windows)]
 const PIPE_BUSY: i32 = 231;
 #[cfg(windows)]
@@ -87,7 +89,8 @@ impl Peer for tokio::net::UnixStream {
 #[cfg(windows)]
 impl Peer for tokio::net::windows::named_pipe::NamedPipeServer {
     fn is_owner(&self) -> bool {
-        true
+        use std::os::windows::io::AsRawHandle;
+        crate::pipesec::client_is_owner(windows::Win32::Foundation::HANDLE(self.as_raw_handle()))
     }
 }
 
@@ -116,6 +119,8 @@ pub struct Listener {
     _lock: std::fs::File,
     #[cfg(windows)]
     first: tokio::net::windows::named_pipe::NamedPipeServer,
+    #[cfg(windows)]
+    security: crate::pipesec::Security,
     endpoint: String,
 }
 
@@ -282,11 +287,24 @@ pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<()
     }
 }
 
-/// Takes the named pipe `endpoint`, local clients only, once no other daemon holds it.
+/// Takes the named pipe `endpoint`, open to SYSTEM and this user, local clients only, once no other daemon holds it.
 #[cfg(windows)]
 pub async fn bind(endpoint: &str) -> Result<Listener, String> {
+    bind_at(endpoint, None)
+}
+
+/// Takes the named pipe `endpoint` like [`bind`], open also to `group`, an account name or SID string, to read and write but not to create instances.
+#[cfg(windows)]
+pub async fn bind_for(endpoint: &str, group: &str) -> Result<Listener, String> {
+    bind_at(endpoint, Some(group))
+}
+
+#[cfg(windows)]
+fn bind_at(endpoint: &str, group: Option<&str>) -> Result<Listener, String> {
+    let security = crate::pipesec::Security::new(group)?;
     Ok(Listener {
-        first: pipe(endpoint, true)?,
+        first: pipe(endpoint, true, &security)?,
+        security,
         endpoint: endpoint.to_owned(),
     })
 }
@@ -294,16 +312,28 @@ pub async fn bind(endpoint: &str) -> Result<Listener, String> {
 /// Serves `handler` at `listener`.
 #[cfg(windows)]
 pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<(), String> {
-    let endpoint = listener.endpoint;
-    let mut server = listener.first;
+    let Listener {
+        first: mut server,
+        security,
+        endpoint,
+    } = listener;
     loop {
         server
             .connect()
             .await
             .map_err(|e| format!("accept {endpoint}: {e}"))?;
-        let client = std::mem::replace(&mut server, pipe(&endpoint, false)?);
+        let client = std::mem::replace(&mut server, pipe(&endpoint, false, &security)?);
         tokio::spawn(handle(handler.clone(), client));
     }
+}
+
+/// The SDDL of the daemon's pipe: full access for SYSTEM and the SID `user`, and read and write for the SID `group`.
+pub fn pipe_sddl(user: &str, group: Option<&str>) -> String {
+    let mut sddl = format!("D:P(A;;GA;;;SY)(A;;GA;;;{user})");
+    if let Some(group) = group {
+        sddl.push_str(&format!("(A;;{GROUP_RIGHTS};;;{group})"));
+    }
+    sddl
 }
 
 /// Sends one call to the endpoint and returns its output.
@@ -453,11 +483,14 @@ pub fn native(_: String, _: &[String], _: bool) -> impl Handler {
 fn pipe(
     endpoint: &str,
     first: bool,
+    security: &crate::pipesec::Security,
 ) -> Result<tokio::net::windows::named_pipe::NamedPipeServer, String> {
-    tokio::net::windows::named_pipe::ServerOptions::new()
+    let mut options = tokio::net::windows::named_pipe::ServerOptions::new();
+    options
         .first_pipe_instance(first)
-        .reject_remote_clients(true)
-        .create(endpoint)
+        .reject_remote_clients(true);
+    // SAFETY: the attributes point into `security`, which outlives the call.
+    unsafe { options.create_with_security_attributes_raw(endpoint, security.attributes()) }
         .map_err(|e| format!("create pipe {endpoint}: {e}"))
 }
 
@@ -968,5 +1001,71 @@ mod tests {
         }
         let other = listed.answer(ask("shell", json!({}))).await;
         assert_eq!(other.text, "unknown desk tool shell");
+    }
+}
+
+#[cfg(test)]
+mod pipe_tests {
+    use super::*;
+
+    #[test]
+    fn the_pipe_admits_system_and_its_user_and_a_group_reads_and_writes_without_making_instances() {
+        assert_eq!(
+            pipe_sddl("S-1-5-21-1", None),
+            "D:P(A;;GA;;;SY)(A;;GA;;;S-1-5-21-1)"
+        );
+        assert_eq!(
+            pipe_sddl("S-1-5-21-1", Some("S-1-5-32-545")),
+            "D:P(A;;GA;;;SY)(A;;GA;;;S-1-5-21-1)(A;;0x12019b;;;S-1-5-32-545)"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_group_is_an_account_name_or_a_sid_and_an_unknown_one_is_named() {
+        assert_eq!(
+            crate::pipesec::sid_of("S-1-5-32-545").unwrap(),
+            "S-1-5-32-545"
+        );
+        assert_eq!(
+            crate::pipesec::sid_of(r"BUILTIN\Users").unwrap(),
+            "S-1-5-32-545"
+        );
+        let err = crate::pipesec::sid_of("no-such-account-8d1f").unwrap_err();
+        assert!(err.contains("no-such-account-8d1f"), "{err}");
+    }
+
+    #[cfg(windows)]
+    struct Guarded;
+
+    #[cfg(windows)]
+    impl Handler for Guarded {
+        async fn answer(&self, call: Call) -> Output {
+            Output::text(format!("{} answered", call.tool))
+        }
+
+        fn owner_only(&self, tool: &str) -> bool {
+            tool == "halt"
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn an_owner_only_call_over_the_pipe_from_this_user_is_answered_with_a_group_admitted() {
+        let endpoint = format!(r"\\.\pipe\shuttle-test-owner-{}", std::process::id());
+        let listener = bind_for(&endpoint, "S-1-5-32-545").await.unwrap();
+        let server = tokio::spawn(serve(Arc::new(Guarded), listener));
+        let out = call(
+            &endpoint,
+            &Call {
+                agent_id: String::new(),
+                tool: "halt".into(),
+                args: serde_json::Value::Null,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!((out.is_error, out.text.as_str()), (false, "halt answered"));
+        server.abort();
     }
 }

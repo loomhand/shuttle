@@ -83,20 +83,11 @@ impl Config {
                 path.display()
             ));
         }
-        match config.daemon.socket_group.as_deref() {
-            Some("") => {
-                return Err(format!(
-                    "{}: [daemon] socket_group is empty; remove it to keep the endpoint to its user",
-                    path.display()
-                ));
-            }
-            Some(_) if cfg!(windows) => {
-                return Err(format!(
-                    "{}: [daemon] socket_group needs a unix socket; the Windows pipe stays with its user",
-                    path.display()
-                ));
-            }
-            _ => {}
+        if config.daemon.socket_group.as_deref() == Some("") {
+            return Err(format!(
+                "{}: [daemon] socket_group is empty; remove it to keep the endpoint to its user",
+                path.display()
+            ));
         }
         if config.android.is_some() && !config.safety.apps.is_empty() {
             return Err(format!(
@@ -214,7 +205,7 @@ impl Default for DriverSettings {
     }
 }
 
-/// The daemon's endpoint: `socket_group`, a group name or number, opens the unix socket to that group's members (mode 0660); unset keeps it to its user (0600).
+/// The daemon's endpoint: `socket_group` opens it to a second identity, a unix group name or number (mode 0660) or a Windows account name or SID; unset keeps it to its user.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DaemonSettings {

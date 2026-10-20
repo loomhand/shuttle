@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Windows pipe security.** The daemon's named pipe admits SYSTEM and its own user only, with an explicit security descriptor in place of the default one, and `[daemon] socket_group` now works on Windows: an account name or SID string that may read and write the pipe but not create instances of it. `safety_stop` and `safety_resume` answer only a client whose token is the daemon's user, as on macOS and Linux; on Windows they answered any client before.
+
 ## 0.1.7 - 2026-10-20
 
 - **Android UI server name.** The UI server is the class `shuttle.Ui` in `shuttle-ui.jar`: the linux archives carry it as `android/shuttle-ui.jar`, which an `[android]` section without `ui_jar` takes, and the device copies are `/data/local/tmp/shuttle-ui.jar` and `/data/local/tmp/shuttle-scrcpy.jar`. A configured `ui_jar` keeps working whatever its file name.
