@@ -67,6 +67,8 @@ pub(crate) struct Running {
     pub(crate) child: Child,
     #[cfg(unix)]
     group: Option<u32>,
+    #[cfg(windows)]
+    pub(crate) job: Option<crate::job::Job>,
 }
 
 impl Running {
@@ -74,8 +76,24 @@ impl Running {
         Self {
             #[cfg(unix)]
             group: child.id(),
+            #[cfg(windows)]
+            job: None,
             child,
         }
+    }
+
+    /// Like [`Running::new`]; on Windows the child also goes into a job that ends its whole tree with it.
+    pub(crate) fn jobbed(child: Child) -> Result<Self, String> {
+        #[cfg(windows)]
+        {
+            let job = crate::job::Job::hold(child.raw_handle())?;
+            Ok(Self {
+                job: Some(job),
+                ..Self::new(child)
+            })
+        }
+        #[cfg(not(windows))]
+        Ok(Self::new(child))
     }
 }
 

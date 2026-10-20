@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Windows pipe security.** The daemon's named pipe admits SYSTEM and its own user only, with an explicit security descriptor in place of the default one, and `[daemon] socket_group` now works on Windows: an account name or SID string that may read and write the pipe but not create instances of it. `safety_stop` and `safety_resume` answer only a client whose token is the daemon's user, as on macOS and Linux; on Windows they answered any client before.
+- **Windows process trees.** Each `script_run` or `gui_plan` run and each service plugin runs in a Job object of its own. A timeout, a stop or a dropped connection kills the run with every process it started, as the process group does on macOS and Linux, and a service dies with its whole tree when the daemon stops or exits by any means, `taskkill /F` and logoff included. A run that finishes leaves the processes it started running.
 
 ## 0.1.7 - 2026-10-20
 

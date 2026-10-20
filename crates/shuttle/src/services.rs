@@ -112,8 +112,8 @@ impl Proc {
         #[cfg(unix)]
         cmd.process_group(0);
         cmd.spawn()
-            .map(Running::new)
             .map_err(|e| format!("start {}: {e}", self.bin.display()))
+            .and_then(Running::jobbed)
     }
 
     async fn supervise(self, mut stopped: oneshot::Receiver<()>) {
@@ -181,8 +181,13 @@ async fn terminate(running: &mut Running) {
     if let Some(pid) = running.child.id() {
         crate::term(pid);
     }
-    #[cfg(not(unix))]
-    let _ = running.child.start_kill();
+    #[cfg(windows)]
+    match &running.job {
+        Some(job) => job.kill(),
+        None => {
+            let _ = running.child.start_kill();
+        }
+    }
     if tokio::time::timeout(STOP_WAIT, running.child.wait())
         .await
         .is_err()

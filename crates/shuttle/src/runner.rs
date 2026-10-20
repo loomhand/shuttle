@@ -159,6 +159,8 @@ impl Runner {
             .map_err(|e| format!("start {}: {e}", program.display()))?;
         #[cfg(unix)]
         let mut group = Group(child.id());
+        #[cfg(windows)]
+        let job = crate::job::Job::hold(child.raw_handle())?;
         let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
             return Err("the script's pipes are missing".to_owned());
         };
@@ -181,7 +183,12 @@ impl Runner {
             if let Some(pid) = child.id() {
                 crate::kill_group(pid);
             }
+            #[cfg(windows)]
+            job.kill();
             let _ = child.kill().await;
+        } else {
+            #[cfg(windows)]
+            job.release();
         }
         let drained = async {
             for p in &mut pipes {
@@ -410,6 +417,50 @@ mod tests {
             stray,
             "the detached pipe holder is gone, so the test proves nothing"
         );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_timeout_kills_the_run_with_the_process_it_started_first_and_a_finished_run_leaves_its_processes()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let r = runner(dir.path());
+        let alive = |pid: &str| {
+            let out = std::process::Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).contains(pid)
+        };
+        let started = "import { spawn } from 'node:child_process'\nconst ping = spawn('ping', ['-n', '60', '127.0.0.1'], { stdio: 'ignore', detached: true })\nconsole.log(ping.pid)\n";
+        let hung = format!(
+            "{started}export async function main() {{ await new Promise((r) => setTimeout(r, 5000)) }}"
+        );
+        let report = r
+            .script(json!({"code": hung, "timeout_s": 1}), "run-test")
+            .await
+            .unwrap();
+        assert_eq!(report["error"]["kind"], "timeout", "{report}");
+        let pid = report["logs"].as_str().unwrap().trim().to_owned();
+        let mut gone = false;
+        for _ in 0..40 {
+            gone = !alive(&pid);
+            if gone {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(gone, "{pid} outlived the timeout");
+        let done = format!("{started}export function main() {{ return 1 }}");
+        let report = r.script(json!({"code": done}), "run-test").await.unwrap();
+        assert_eq!(report["result"], 1, "{report}");
+        let pid = report["logs"].as_str().unwrap().trim().to_owned();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let kept = alive(&pid);
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &pid])
+            .output();
+        assert!(kept, "{pid} died with a run that finished");
     }
 
     #[cfg(unix)]

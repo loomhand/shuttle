@@ -6,6 +6,8 @@ pub mod daemon;
 pub mod driver;
 #[cfg(any(target_os = "macos", windows, test))]
 pub mod hotkey;
+#[cfg(windows)]
+mod job;
 #[cfg(target_os = "macos")]
 pub mod mac;
 pub mod mcp;
