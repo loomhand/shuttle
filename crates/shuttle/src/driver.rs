@@ -68,7 +68,7 @@ pub(crate) struct Running {
     #[cfg(unix)]
     group: Option<u32>,
     #[cfg(windows)]
-    pub(crate) job: Option<crate::job::Job>,
+    pub(crate) job: Option<std::sync::Arc<crate::job::Job>>,
 }
 
 impl Running {
@@ -88,7 +88,7 @@ impl Running {
         {
             let job = crate::job::Job::hold_alone(child.raw_handle())?;
             Ok(Self {
-                job: Some(job),
+                job: Some(std::sync::Arc::new(job)),
                 ..Self::new(child)
             })
         }
@@ -102,7 +102,7 @@ impl Running {
         {
             let job = crate::job::Job::hold(child.raw_handle())?;
             Ok(Self {
-                job: Some(job),
+                job: Some(std::sync::Arc::new(job)),
                 ..Self::new(child)
             })
         }

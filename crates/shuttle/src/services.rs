@@ -1,7 +1,9 @@
 //! Service plugins: the daemon runs each as its child, starts it again when it exits, and splices the connections of its tools' calls to its socket.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -17,6 +19,7 @@ use crate::log;
 use crate::plugins::Service;
 
 const SOCKET_VAR: &str = "SHUTTLE_SERVICE_SOCKET";
+#[cfg(unix)]
 const DIR: &str = "services";
 const FIRST_DELAY: Duration = Duration::from_secs(1);
 const MAX_DELAY: Duration = Duration::from_secs(30);
@@ -41,6 +44,7 @@ impl Services {
         if services.is_empty() {
             return Ok(running);
         }
+        #[cfg(unix)]
         private_dir(&dir(desk))?;
         for s in services {
             let proc = Proc {
@@ -90,6 +94,7 @@ struct Proc {
 
 impl Proc {
     fn spawn(&self) -> Result<Running, String> {
+        #[cfg(unix)]
         if let Err(e) = std::fs::remove_file(&self.socket)
             && e.kind() != std::io::ErrorKind::NotFound
         {
@@ -98,7 +103,9 @@ impl Proc {
                 self.name, self.socket
             ));
         }
-        let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map_or_else(|| PathBuf::from("/"), PathBuf::from);
         let mut cmd = Command::new(&self.bin);
         cmd.args(&self.args)
             .current_dir(home)
@@ -111,9 +118,15 @@ impl Proc {
         }
         #[cfg(unix)]
         cmd.process_group(0);
-        cmd.spawn()
+        let running = cmd
+            .spawn()
             .map_err(|e| format!("start {}: {e}", self.bin.display()))
-            .and_then(Running::jobbed)
+            .and_then(Running::jobbed)?;
+        #[cfg(windows)]
+        if let Some(job) = &running.job {
+            servers().insert(self.socket.clone(), std::sync::Arc::downgrade(job));
+        }
+        Ok(running)
     }
 
     async fn supervise(self, mut stopped: oneshot::Receiver<()>) {
@@ -163,6 +176,8 @@ where
     C: AsyncRead + AsyncWrite + Unpin,
 {
     let mut service = listening(socket).await?;
+    #[cfg(windows)]
+    serves(socket, &service)?;
     let len = u32::try_from(body.len()).map_err(|_| "frame too large".to_owned())?;
     let sent = async {
         service.write_all(&len.to_be_bytes()).await?;
@@ -241,10 +256,12 @@ where
     }
 }
 
+#[cfg(unix)]
 fn dir(desk: &str) -> PathBuf {
     Path::new(desk).with_file_name(DIR)
 }
 
+#[cfg(unix)]
 fn socket(desk: &str, service: &str) -> String {
     dir(desk)
         .join(format!("{service}.sock"))
@@ -252,6 +269,36 @@ fn socket(desk: &str, service: &str) -> String {
         .into_owned()
 }
 
+#[cfg(windows)]
+fn socket(desk: &str, service: &str) -> String {
+    format!("{desk}-svc-{service}")
+}
+
+/// The job of the service last started on each pipe, which alone may serve it.
+#[cfg(windows)]
+fn servers() -> std::sync::MutexGuard<'static, HashMap<String, std::sync::Weak<crate::job::Job>>> {
+    static SERVERS: std::sync::LazyLock<
+        std::sync::Mutex<HashMap<String, std::sync::Weak<crate::job::Job>>>,
+    > = std::sync::LazyLock::new(Default::default);
+    SERVERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+// anyone can create a pipe of any free name, so a call goes only to a server inside the service's job
+#[cfg(windows)]
+fn serves(socket: &str, service: &server::Conn) -> Result<(), String> {
+    use std::os::windows::io::AsRawHandle;
+
+    let job = servers()
+        .get(socket)
+        .and_then(std::sync::Weak::upgrade)
+        .ok_or_else(|| format!("no service runs for {socket}"))?;
+    job.serves(windows::Win32::Foundation::HANDLE(service.as_raw_handle()))
+        .map_err(|e| format!("{socket}: {e}"))
+}
+
+#[cfg(unix)]
 fn private_dir(dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     #[cfg(unix)]
@@ -844,5 +891,138 @@ server.serve_forever()
                 64.0 / best
             );
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg(windows)]
+mod pipe_tests {
+    use desk_core::wire::{Call, Output, read_frame};
+    use serde_json::json;
+
+    use super::*;
+    use crate::plugins::ServiceTool;
+
+    const POWERSHELL: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
+    const PING: &str = r"C:\Windows\System32\PING.EXE";
+    const FAKE: &str = r#"
+$child = Start-Process -FilePath ping -ArgumentList '-n','60','127.0.0.1' -WindowStyle Hidden -PassThru
+Set-Content -Path $args[0] -Value $child.Id
+$name = $env:SHUTTLE_SERVICE_SOCKET -replace '^\\\\\.\\pipe\\', ''
+while ($true) {
+  $p = New-Object System.IO.Pipes.NamedPipeServerStream($name, [System.IO.Pipes.PipeDirection]::InOut, 10)
+  $p.WaitForConnection()
+  $head = New-Object byte[] 4; [void]$p.Read($head, 0, 4); [Array]::Reverse($head)
+  $n = [BitConverter]::ToInt32($head, 0); $body = New-Object byte[] $n; $got = 0
+  while ($got -lt $n) { $got += $p.Read($body, $got, $n - $got) }
+  $out = [Text.Encoding]::UTF8.GetBytes('{"text":"pong","is_error":false}')
+  $len = [BitConverter]::GetBytes([int]$out.Length); [Array]::Reverse($len)
+  $p.Write($len, 0, 4); $p.Write($out, 0, $out.Length); $p.Flush(); $p.WaitForPipeDrain(); $p.Dispose()
+}
+"#;
+
+    fn service(bin: &str, args: Vec<String>) -> Service {
+        Service {
+            service: "demo".into(),
+            bin: bin.into(),
+            args,
+            tools: vec![ServiceTool {
+                name: "demo_ping".into(),
+                description: "d".into(),
+                input_schema: json!({"type": "object"}),
+                mcp: true,
+            }],
+        }
+    }
+
+    fn body() -> Zeroizing<Vec<u8>> {
+        let call = Call {
+            agent_id: "a".into(),
+            tool: "demo_ping".into(),
+            args: json!({}),
+        };
+        Zeroizing::new(serde_json::to_vec(&call).unwrap())
+    }
+
+    fn alive(pid: &str) -> bool {
+        let out = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).contains(pid)
+    }
+
+    #[tokio::test]
+    async fn a_service_serves_its_pipe_and_a_stop_ends_it_with_the_process_it_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("service.ps1");
+        std::fs::write(&script, FAKE).unwrap();
+        let pidfile = dir.path().join("child.pid");
+        let args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([script.display().to_string(), pidfile.display().to_string()])
+            .collect();
+        let desk = format!(r"\\.\pipe\shuttle-test-serve-{}", std::process::id());
+        let running = Services::start(&[service(POWERSHELL, args)], &desk, &[]).unwrap();
+        let (mut client, mut far) = tokio::io::duplex(1 << 16);
+        let routed =
+            tokio::spawn(async move { route(&socket(&desk, "demo"), body(), &mut far).await });
+        let out: Output = read_frame(&mut client).await.unwrap();
+        assert_eq!((out.text.as_str(), out.is_error), ("pong", false));
+        drop(client);
+        routed.await.unwrap().unwrap();
+        let mut child = String::new();
+        for _ in 0..100 {
+            child = std::fs::read_to_string(&pidfile)
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            if !child.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(alive(&child), "{child} never started");
+        running.stop().await;
+        let mut gone = false;
+        for _ in 0..40 {
+            gone = !alive(&child);
+            if gone {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(gone, "{child} outlived the service's stop");
+    }
+
+    #[tokio::test]
+    async fn a_call_is_refused_by_a_pipe_served_outside_the_services_tree() {
+        let desk = format!(r"\\.\pipe\shuttle-test-squat-{}", std::process::id());
+        let args = ["-n", "60", "127.0.0.1"].map(str::to_owned).to_vec();
+        let running = Services::start(&[service(PING, args)], &desk, &[]).unwrap();
+        let pipe = socket(&desk, "demo");
+        let squatter = tokio::net::windows::named_pipe::ServerOptions::new()
+            .create(&pipe)
+            .unwrap();
+        let held = tokio::spawn(async move {
+            let _ = squatter.connect().await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        for _ in 0..100 {
+            if servers().contains_key(&pipe) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let (_client, mut far) = tokio::io::duplex(1 << 16);
+        let err = route(&pipe, body(), &mut far).await.unwrap_err();
+        assert!(
+            err.contains(&format!("process {}", std::process::id()))
+                && err.contains("outside the service's process tree"),
+            "{err}"
+        );
+        held.abort();
+        running.stop().await;
     }
 }

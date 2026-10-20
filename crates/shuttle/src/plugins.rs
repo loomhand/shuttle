@@ -78,7 +78,7 @@ pub struct Resource {
     pub description: String,
 }
 
-/// A long-lived program that serves `tools` on the socket the daemon names in `SHUTTLE_SERVICE_SOCKET`.
+/// A long-lived program that serves `tools` on the unix socket or Windows named pipe the daemon names in `SHUTTLE_SERVICE_SOCKET`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Service {
@@ -91,9 +91,6 @@ pub struct Service {
 
 impl Service {
     fn check(&self, builtins: &[&str]) -> Result<(), String> {
-        if cfg!(windows) {
-            return Err("service plugins need a unix socket: not on Windows yet".to_owned());
-        }
         if !is_word(&self.service) || self.service.len() > MAX_SERVICE_NAME {
             return Err(format!(
                 "service {:?} is not ^[a-z][a-z0-9_]*$ of at most {MAX_SERVICE_NAME} characters",
@@ -428,10 +425,20 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn a_service_file_is_skipped_on_windows() {
+    fn a_service_file_loads_on_windows_with_an_absolute_bin() {
         let dir = tempfile::tempdir().unwrap();
-        let spec = json!({"service": "files", "bin": "/usr/bin/f", "tools": [{"name": "read_file", "description": "d", "input_schema": {"type": "object"}}]});
-        write(dir.path(), "files.json", &spec.to_string());
+        let spec = |bin: &str| {
+            json!({"service": "files", "bin": bin, "tools": [{"name": "read_file", "description": "d", "input_schema": {"type": "object"}}]}).to_string()
+        };
+        write(
+            dir.path(),
+            "files.json",
+            &spec(r"C:\Windows\System32\cmd.exe"),
+        );
+        let got = load(dir.path(), &BUILTINS);
+        assert_eq!(got.services.len(), 1);
+        assert!(got.lists("read_file"));
+        write(dir.path(), "files.json", &spec("cmd.exe"));
         assert!(load(dir.path(), &BUILTINS).services.is_empty());
     }
 
