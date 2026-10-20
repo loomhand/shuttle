@@ -115,10 +115,7 @@ impl Running {
 impl Drop for Running {
     fn drop(&mut self) {
         if let Some(g) = self.group {
-            #[cfg(target_os = "linux")]
-            crate::kill_unscoped(g);
-            #[cfg(not(target_os = "linux"))]
-            crate::kill_group(g);
+            crate::signal_group(g, libc::SIGKILL);
         }
     }
 }
