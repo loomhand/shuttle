@@ -61,6 +61,7 @@ const BACKGROUND_TARGET: &str = "background input needs its target window: pass 
 const BACKGROUND_DESKTOP: &str = "background input: this window takes no pointer input without the foreground, and background input never brings a window to the front";
 const BACKGROUND_NO_WINDOW: &str = "background input: no window under the point";
 const BACKGROUND_ELEMENT: &str = "background input: the element's own window could not be found, and background input never clicks a window that covers it";
+const BACKGROUND_TWINS: &str = "background input: the element's window cannot be told from the app's other windows (same or no title, and no single frame match), and background input never guesses which window to click";
 const SCROLL_POINT: &str = "scroll needs both x and y, or neither";
 const OK: &str = r#"{"ok":true}"#;
 const SCROLL_AMOUNT: u32 = 3;
@@ -692,20 +693,44 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .as_f64()
             .zip(req["y"].as_f64())
             .ok_or(BACKGROUND_ELEMENT)?;
-        let (pid, title) = self
+        let (pid, title, frame) = self
             .access
             .run(CALL_LIMIT, (), move |b| {
                 let pid = b.pid_of(&id)?.ok_or(BACKGROUND_ELEMENT)?;
                 let root = b.ancestors(&id)?.into_iter().next().unwrap_or(id);
-                let frame = b.frames_of(pid)?.into_iter().find(|f| f.id == root);
-                Ok((pid, frame.ok_or(BACKGROUND_ELEMENT)?.title))
+                let title = b.frames_of(pid)?.into_iter().find(|f| f.id == root);
+                let frame = b.node(&root, Extras::BOUNDS, 0)?.bounds;
+                Ok((pid, title.ok_or(BACKGROUND_ELEMENT)?.title, frame))
             })
             .await?;
-        let (_, w) = self.pick_window(Some(&title), Some(pid)).await?;
-        if w["pid"].as_u64() != Some(u64::from(pid)) {
+        let (_, picked) = self.pick_window(Some(&title), Some(pid)).await?;
+        let scale = self.scale().await?;
+        let mut listed = self.driver.call("list_windows", json!({})).await?;
+        let Value::Array(windows) = listed["structuredContent"]["windows"].take() else {
             return Err(BACKGROUND_ELEMENT.to_owned());
+        };
+        let mut same: Vec<Value> = windows
+            .into_iter()
+            .filter(|w| w["pid"].as_u64() == Some(u64::from(pid)) && w["title"] == title.as_str())
+            .collect();
+        if same.is_empty() && picked["pid"].as_u64() == Some(u64::from(pid)) {
+            same.push(picked);
         }
-        self.click_in(req, &w, point).await
+        if same.len() > 1 || title.trim().is_empty() {
+            let fits = |w: &Value| {
+                frame.is_some_and(|f| {
+                    bounds(w)
+                        .iter()
+                        .zip(f)
+                        .all(|(d, a)| (d - f64::from(a) / scale).abs() <= 2.0)
+                })
+            };
+            same.retain(fits);
+        }
+        match same.as_slice() {
+            [w] => self.click_in(req, w, point).await,
+            _ => Err(BACKGROUND_TWINS.to_owned()),
+        }
     }
 
     async fn click_at(&self, req: Value) -> Result<Option<String>, String> {
@@ -1800,6 +1825,26 @@ pub(crate) mod tests {
         }
     }
 
+    struct Twins(Arc<Mutex<Vec<(String, Value)>>>, f64);
+
+    impl Input for Twins {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 4, "window_id": 3, "layer": 0, "z_index": 2, "title": "Untitled - Notepad", "bounds": {"x": self.1, "y": 0.0, "width": 800.0, "height": 600.0}},
+                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}}
+                ]}}),
+                "get_window_state" => json!({"structuredContent": {
+                    "screenshot_width": 800, "screenshot_height": 600,
+                    "window_bounds": {"width": 800.0, "height": 600.0}
+                }}),
+                _ => json!({}),
+            })
+        }
+    }
+
     struct Overlaid(Arc<Mutex<Vec<(String, Value)>>>);
 
     impl Input for Overlaid {
@@ -2075,6 +2120,31 @@ pub(crate) mod tests {
             .unwrap_err();
         assert!(err.contains("own window could not be found"), "{err}");
         assert_eq!(sent(&calls, "click").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_background_element_click_tells_same_titled_windows_apart_by_frame_or_refuses() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk =
+            Desk::new(|| Ok(notepad()), Twins(Arc::clone(&calls), 900.0), Os::Mac).background(true);
+        desk.run("desk_act", json!({"id": "ok", "action": "click"}))
+            .await
+            .unwrap();
+        let clicks = sent(&calls, "click");
+        assert_eq!(
+            (clicks.len(), &clicks[0]["window_id"]),
+            (1, &json!(1)),
+            "{clicks:?}"
+        );
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk =
+            Desk::new(|| Ok(notepad()), Twins(Arc::clone(&calls), 0.0), Os::Mac).background(true);
+        let err = desk
+            .run("desk_act", json!({"id": "ok", "action": "click"}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("never guesses"), "{err}");
+        assert!(sent(&calls, "click").is_empty());
     }
 
     #[tokio::test]
