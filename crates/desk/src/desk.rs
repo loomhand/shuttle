@@ -80,9 +80,9 @@ const TYPE_SETTLE: Duration = Duration::from_millis(100);
 const TYPE_POLL: Duration = Duration::from_millis(10);
 const TYPE_TAIL: usize = 16;
 #[cfg(target_os = "linux")]
-const TYPER: Typer = crate::xtest::type_mapped;
+pub(crate) const TYPER: Typer = crate::xtest::type_mapped;
 #[cfg(not(target_os = "linux"))]
-const TYPER: Typer = |_, _| Ok(false);
+pub(crate) const TYPER: Typer = |_, _| Ok(false);
 
 pub(crate) type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
 /// Types a line on the core keyboard: true when typed, false when it typed nothing and leaves the line to the driver; it stops once the flag is set.
@@ -205,9 +205,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 size.to_string()
             }
             t if COMPUTER_VERBS.contains(&t) => {
-                return Err(format!(
-                    "{t}: not on this OS yet: the computer verbs run on Linux X11"
-                ));
+                return Err(format!("{t}: this desk answers no computer verbs"));
             }
             other => return Err(format!("unknown desk tool {other}")),
         };
@@ -1358,7 +1356,7 @@ pub(crate) async fn adopt(launched: Value) -> bool {
 }
 
 #[cfg(not(target_os = "linux"))]
-async fn adopt(_: Value) -> bool {
+pub(crate) async fn adopt(_: Value) -> bool {
     false
 }
 

@@ -1,4 +1,4 @@
-//! The computer verbs on Linux X11: `desk_computer_state`, `desk_computer_act`, `desk_computer_end` and `desk_look` for a vision
+//! The computer verbs: `desk_computer_state`, `desk_computer_act`, `desk_computer_end` and `desk_look` for a vision
 //! agent, with the settle, the window report and the press guards, over cua-driver's line-delimited JSON in named driver sessions.
 
 use std::collections::{HashMap, HashSet};
@@ -84,6 +84,7 @@ const RETRIED: [&str; 4] = [
 /// The computer verbs' state: the element tokens of each session's latest window state and the scale of its latest screenshot.
 pub struct Computer {
     driver: Arc<Driver>,
+    os: Os,
     typer: Typer,
     last: Mutex<HashMap<String, Snapshot>>,
     input: Arc<Mutex<()>>,
@@ -104,11 +105,12 @@ pub struct Computer {
 }
 
 impl Computer {
-    /// Creates a client of `driver`'s daemon, whose click spacing it shares.
-    pub fn new(driver: Arc<Driver>) -> Self {
+    /// Creates a client of `driver`'s daemon on `os`, whose click spacing it shares.
+    pub fn new(driver: Arc<Driver>, os: Os) -> Self {
         Self {
             driver,
-            typer: crate::xtest::type_mapped,
+            os,
+            typer: crate::desk::TYPER,
             last: Mutex::new(HashMap::new()),
             input: Arc::new(Mutex::new(())),
             grabber: std::sync::Mutex::new(None),
@@ -317,7 +319,7 @@ impl Computer {
         if a.action == "left_click" {
             "click".clone_into(&mut a.action);
         }
-        driver_keys(&mut a)?;
+        driver_keys(&mut a, self.os)?;
         let screen = self.shm(|g| Ok(g.size()));
         if let Some(e) = screen.and_then(|s| off_screen(&a, s, self.mapped(session, a.scale))) {
             return Err(e);
@@ -1815,10 +1817,10 @@ fn landed(run: &str, result: &Value) -> usize {
 
 /// Rewrites the keys of a `key` or `hotkey` action in the driver's names; a `key` that names a
 /// combination such as `ctrl+l` becomes a `hotkey`, and a `hotkey` of one key a `key`.
-fn driver_keys(a: &mut ActArgs) -> Result<(), String> {
+fn driver_keys(a: &mut ActArgs, os: Os) -> Result<(), String> {
     match a.action.as_str() {
         "key" => {
-            let mut keys = key_names(required(&a.key, "key")?, Os::Linux)?;
+            let mut keys = key_names(required(&a.key, "key")?, os)?;
             if keys.len() == 1 {
                 a.key = keys.pop();
             } else {
@@ -1830,7 +1832,7 @@ fn driver_keys(a: &mut ActArgs) -> Result<(), String> {
             let keys = a.keys.as_deref().ok_or("hotkey needs keys")?;
             let mut names = keys
                 .iter()
-                .map(|k| key_names(k, Os::Linux))
+                .map(|k| key_names(k, os))
                 .collect::<Result<Vec<_>, _>>()?
                 .concat();
             if names.len() == 1 {
@@ -2237,7 +2239,66 @@ mod tests {
     use crate::driver::CLICK_SPACING;
 
     fn cua(socket: &Path) -> Computer {
-        Computer::new(Arc::new(Driver::new(socket.to_string_lossy().into_owned())))
+        Computer::new(
+            Arc::new(Driver::new(socket.to_string_lossy().into_owned())),
+            Os::Linux,
+        )
+    }
+
+    #[cfg(unix)]
+    fn endpoint(dir: &Path) -> PathBuf {
+        dir.join("cua.sock")
+    }
+
+    #[cfg(windows)]
+    fn endpoint(_: &Path) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        PathBuf::from(format!(
+            r"\\.\pipe\shuttle-test-cua-{}-{n}",
+            std::process::id()
+        ))
+    }
+
+    #[cfg(unix)]
+    struct Fake(tokio::net::UnixListener);
+
+    #[cfg(unix)]
+    impl Fake {
+        fn bind(socket: impl AsRef<Path>) -> std::io::Result<Self> {
+            tokio::net::UnixListener::bind(socket).map(Self)
+        }
+
+        async fn accept(&self) -> std::io::Result<(crate::server::Accepted, ())> {
+            self.0.accept().await.map(|(stream, _)| (stream, ()))
+        }
+    }
+
+    #[cfg(windows)]
+    struct Fake {
+        name: String,
+        next: std::sync::Mutex<tokio::net::windows::named_pipe::NamedPipeServer>,
+    }
+
+    #[cfg(windows)]
+    impl Fake {
+        fn bind(socket: impl AsRef<Path>) -> std::io::Result<Self> {
+            let name = socket.as_ref().to_string_lossy().into_owned();
+            let first = tokio::net::windows::named_pipe::ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(&name)?;
+            Ok(Self {
+                name,
+                next: std::sync::Mutex::new(first),
+            })
+        }
+
+        async fn accept(&self) -> std::io::Result<(crate::server::Accepted, ())> {
+            let fresh = tokio::net::windows::named_pipe::ServerOptions::new().create(&self.name)?;
+            let server = std::mem::replace(&mut *self.next.lock().unwrap(), fresh);
+            server.connect().await?;
+            Ok((server, ()))
+        }
     }
 
     #[tokio::test]
@@ -2277,11 +2338,11 @@ mod tests {
     #[tokio::test]
     async fn a_request_waits_for_a_driver_that_is_restarting() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
+        let socket = endpoint(dir.path());
         let path = socket.clone();
         let driver = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(600)).await;
-            let listener = tokio::net::UnixListener::bind(&path).unwrap();
+            let listener = Fake::bind(&path).unwrap();
             let (stream, _) = listener.accept().await.unwrap();
             let mut reader = BufReader::new(stream);
             let mut line = String::new();
@@ -2301,8 +2362,8 @@ mod tests {
     #[tokio::test]
     async fn a_click_near_the_last_one_waits_out_the_double_click_time() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
         let driver = tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
@@ -2328,7 +2389,7 @@ mod tests {
     }
 
     async fn closing_then_answering_driver(socket: PathBuf) -> Vec<String> {
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let listener = Fake::bind(&socket).unwrap();
         let mut names = Vec::new();
         for answer in [false, true] {
             let (stream, _) = listener.accept().await.unwrap();
@@ -2351,7 +2412,7 @@ mod tests {
     #[tokio::test]
     async fn a_read_is_retried_once_after_an_empty_reply() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
+        let socket = endpoint(dir.path());
         let driver = tokio::spawn(closing_then_answering_driver(socket.clone()));
         tokio::time::sleep(Duration::from_millis(50)).await;
         let out = cua(&socket).request("s", "list_windows", json!({})).await;
@@ -2362,7 +2423,7 @@ mod tests {
     #[tokio::test]
     async fn an_input_action_is_never_retried_after_an_empty_reply() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
+        let socket = endpoint(dir.path());
         let driver = tokio::spawn(closing_then_answering_driver(socket.clone()));
         tokio::time::sleep(Duration::from_millis(50)).await;
         let out = cua(&socket).request("s", "click", json!({})).await;
@@ -2373,8 +2434,8 @@ mod tests {
     #[tokio::test]
     async fn a_key_with_no_window_on_the_screen_goes_to_the_desktop_and_typing_fails() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
         let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
         let log = std::sync::Arc::clone(&calls);
         let driver = tokio::spawn(async move {
@@ -2443,7 +2504,7 @@ mod tests {
         calls: &std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
         typed: usize,
     ) -> tokio::task::JoinHandle<()> {
-        let listener = tokio::net::UnixListener::bind(socket).unwrap();
+        let listener = Fake::bind(socket).unwrap();
         let log = std::sync::Arc::clone(calls);
         tokio::spawn(async move {
             loop {
@@ -2480,7 +2541,7 @@ mod tests {
     #[tokio::test]
     async fn a_type_at_a_point_clicks_it_then_types_into_the_focus() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
+        let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         calls.lock().unwrap().clear();
@@ -2526,7 +2587,7 @@ mod tests {
     #[tokio::test]
     async fn a_typeable_desktop_line_goes_on_the_core_keyboard_without_a_driver_type_call() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
+        let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         let mut cua = cua(&socket);
@@ -2545,7 +2606,7 @@ mod tests {
     #[tokio::test]
     async fn a_desktop_line_the_typer_cannot_type_goes_to_the_driver() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
+        let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         let mut cua = cua(&socket);
@@ -2561,7 +2622,7 @@ mod tests {
     #[tokio::test]
     async fn a_typer_error_fails_the_type_without_a_driver_retry() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
+        let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         let mut cua = cua(&socket);
@@ -2579,7 +2640,7 @@ mod tests {
     #[tokio::test]
     async fn a_cancelled_type_holds_the_input_turn_until_its_typer_returns() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
+        let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         let mut cua = cua(&socket);
@@ -2612,7 +2673,7 @@ mod tests {
     #[tokio::test]
     async fn pid_addressed_input_a_dialog_line_and_cjk_never_reach_the_typer() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
+        let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         let mut cua = cua(&socket);
@@ -2637,7 +2698,7 @@ mod tests {
     #[tokio::test]
     async fn a_foreground_type_of_twenty_distinct_cjk_goes_as_runs_of_at_most_eight() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
+        let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         let text = "一二三四五六七八九十百千万亿甲乙丙丁戊己";
@@ -2663,8 +2724,8 @@ mod tests {
     #[tokio::test]
     async fn every_point_of_an_action_list_maps_by_the_screenshot_taken_before_it() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
         let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(f64, f64)>::new()));
         let log = std::sync::Arc::clone(&clicks);
         let driver = tokio::spawn(async move {
@@ -2815,8 +2876,8 @@ mod tests {
     type Clicks = std::sync::Arc<std::sync::Mutex<Vec<(f64, f64)>>>;
 
     fn scaling_driver(dir: &Path) -> (PathBuf, Clicks, tokio::task::JoinHandle<()>) {
-        let socket = dir.join("cua.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let socket = endpoint(dir);
+        let listener = Fake::bind(&socket).unwrap();
         let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(f64, f64)>::new()));
         let log = std::sync::Arc::clone(&clicks);
         let driver = tokio::spawn(async move {
@@ -2855,8 +2916,8 @@ mod tests {
     #[tokio::test]
     async fn window_lines_and_click_replies_are_in_screenshot_pixels() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
         let driver = tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
@@ -2910,8 +2971,8 @@ mod tests {
     #[tokio::test]
     async fn an_input_session_dropped_mid_call_is_still_ended() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
         let ended = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let log = std::sync::Arc::clone(&ended);
         let driver = tokio::spawn(async move {
@@ -2967,7 +3028,7 @@ mod tests {
     #[tokio::test]
     async fn the_settle_sampler_starts_with_the_first_computer_call() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
+        let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         let cua = cua(&socket);
@@ -2988,8 +3049,8 @@ mod tests {
     #[tokio::test]
     async fn callers_without_a_session_get_their_own_and_an_ended_default_is_named_anew() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
         let sessions = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
         let log = std::sync::Arc::clone(&sessions);
         let driver = tokio::spawn(async move {
@@ -3237,7 +3298,7 @@ mod tests {
                 keys: keys.map(|k| k.iter().map(|s| (*s).to_owned()).collect()),
                 ..ActArgs::default()
             };
-            driver_keys(&mut a).map(|()| (a.action, a.key, a.keys))
+            driver_keys(&mut a, Os::Linux).map(|()| (a.action, a.key, a.keys))
         };
         let names = |k: &[&str]| Some(k.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
         assert_eq!(
