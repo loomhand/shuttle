@@ -94,3 +94,33 @@ test('after auto ran a step in the foreground, a dialog of the app in front fail
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(r.trace?.[1]?.input, 'foreground')
 })
+
+test('an auto macOS menu step fronts the plan window and runs the entry in the foreground, where background refuses', { skip: process.platform !== 'darwin' }, async (t) => {
+  const nodes = [
+    { ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: 'Untitled - Notepad', states: [] },
+    { ref: 1, id: 'mb', parent: 0, depth: 1, role: 'menubar', name: '', states: ['showing'] },
+    { ref: 2, id: 'm', parent: 1, depth: 2, role: 'menu', name: 'Format', states: ['showing'], bounds: [10, 0, 40, 20] },
+    { ref: 3, id: 'f', parent: 2, depth: 3, role: 'menuitem', name: 'Font', states: ['showing'], bounds: [10, 30, 80, 20] },
+  ]
+  const plan = async (main: Plan) => {
+    const ws = [user(), notepad()]
+    const calls: Call[] = []
+    await daemon(t, (c) => {
+      calls.push(c)
+      if (c.tool === 'desk_windows') return JSON.stringify(ws)
+      if (c.tool === 'desk_snapshot') return JSON.stringify({ window: ws[1], nodes, truncated: false })
+      if (c.tool === 'desk_focus') { ws[0] = { ...user(), active: false }; ws[1] = { ...notepad(), active: true }; return JSON.stringify({ ok: true, title: ws[1].title, pid: 4 }) }
+      if (c.tool === 'desk_press') return JSON.stringify({ ok: true, how: 'action' })
+      return '{"ok":true}'
+    })
+    return { r: await main({ steps: [{ app: 'Notepad' }, { menu: 'Format > Font' }] }), calls }
+  }
+  const bg = await plan(background)
+  assert.equal(bg.r.ok, false)
+  assert.match(String(bg.r.escalate?.reason), /menu bar belongs to the front app/)
+  const au = await plan(auto)
+  assert.equal(au.r.ok, true, JSON.stringify(au.r))
+  assert.deepEqual(au.calls.filter((c) => c.tool === 'desk_focus').map((c) => c.args), [{ window: 'Untitled - Notepad', pid: 4 }])
+  assert.deepEqual(au.calls.filter((c) => c.tool === 'desk_press').map((c) => c.args), [{ id: 'f' }])
+  assert.equal(au.r.trace?.[1]?.input, 'foreground')
+})
