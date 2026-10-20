@@ -35,7 +35,11 @@ impl Security {
     /// Admits SYSTEM and this process's user, and `group`, an account name or SID string, when set.
     pub fn new(group: Option<&str>) -> Result<Self, String> {
         let group = group.map(sid_of).transpose()?;
-        let sddl = HSTRING::from(pipe_sddl(own_sid()?, group.as_deref()));
+        Self::from_sddl(&pipe_sddl(own_sid()?, group.as_deref()))
+    }
+
+    fn from_sddl(sddl: &str) -> Result<Self, String> {
+        let sddl = HSTRING::from(sddl);
         let mut descriptor = PSECURITY_DESCRIPTOR::default();
         // SAFETY: `sddl` is a NUL-terminated string that outlives the call; `descriptor` receives a LocalAlloc block.
         unsafe {
@@ -184,4 +188,35 @@ fn sid_string(sid: PSID, owned: bool) -> Result<String, String> {
     // SAFETY: `text` came from ConvertSidToStringSidW and is freed once.
     unsafe { LocalFree(Some(HLOCAL(text.0.cast()))) };
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::net::windows::named_pipe::ServerOptions;
+
+    use super::*;
+
+    async fn open(case: &str, sddl: &str) -> std::io::Result<()> {
+        let name = format!(r"\\.\pipe\shuttle-test-{case}-{}", std::process::id());
+        let security = Security::from_sddl(sddl).unwrap();
+        // SAFETY: `security` outlives the call and holds a valid SECURITY_ATTRIBUTES.
+        let _server = unsafe {
+            ServerOptions::new()
+                .first_pipe_instance(true)
+                .create_with_security_attributes_raw(&name, security.attributes())
+        }
+        .unwrap();
+        crate::server::connect(&name).await.map(drop)
+    }
+
+    #[tokio::test]
+    async fn a_client_the_group_rights_alone_admit_opens_the_pipe_and_one_without_write_is_refused()
+    {
+        let me = own_sid().unwrap();
+        open("group", &pipe_sddl("SY", Some(me))).await.unwrap();
+        let err = open("readonly", &format!("D:P(A;;GA;;;SY)(A;;0x120089;;;{me})"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(5), "{err}");
+    }
 }
