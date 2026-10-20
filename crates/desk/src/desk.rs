@@ -16,7 +16,7 @@ use desk_core::wire::Output;
 use serde_json::{Map, Value, json};
 
 use crate::allow::{Allow, app_key, app_of};
-use crate::driver::{Input, WINDOW_SESSION, desktop, image_of, text_of};
+use crate::driver::{CAPTURE_SESSION, Input, WINDOW_SESSION, desktop, image_of, text_of};
 use crate::keys::{Os, key_names, keystroke};
 use crate::model::{Access, Act, Capture, Extras, Frame, Node};
 use crate::press::{Press, plan_press};
@@ -758,7 +758,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .driver
             .call(
                 "get_desktop_state",
-                json!({"max_image_dimension": STILL_EDGE}),
+                json!({"max_image_dimension": STILL_EDGE, "session": CAPTURE_SESSION}),
             )
             .await?;
         let png = image_of(&v).ok_or("the driver returned no screenshot")?;
@@ -960,7 +960,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         {
             return self.captured(c, a.path).await;
         }
-        let v = self.driver.call("get_desktop_state", json!({})).await?;
+        let v = self
+            .driver
+            .call("get_desktop_state", json!({"session": CAPTURE_SESSION}))
+            .await?;
         let png = image_of(&v).ok_or("the driver returned no screenshot")?;
         let png = B64
             .decode(png)
@@ -1761,6 +1764,46 @@ pub(crate) mod tests {
                 _ => json!({}),
             })
         }
+    }
+
+    struct Retina(Desktop, Arc<Mutex<Vec<Value>>>);
+
+    impl Input for Retina {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.1
+                .lock()
+                .unwrap()
+                .push(json!({"tool": tool, "args": args}));
+            match tool {
+                "get_screen_size" => Ok(
+                    json!({"structuredContent": {"width": 1280, "height": 800, "scale_factor": 2.0}}),
+                ),
+                _ => self.0.call(tool, args).await,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_shot_captures_in_its_own_driver_session() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(Apps),
+            Retina(Desktop(Arc::default()), calls.clone()),
+            Os::Mac,
+        );
+        desk.run("desk_shot", json!({})).await.unwrap();
+        let calls = calls.lock().unwrap();
+        let shots: Vec<_> = calls
+            .iter()
+            .filter(|c| c["tool"] == "get_desktop_state")
+            .collect();
+        assert!(!shots.is_empty(), "{calls:?}");
+        assert!(
+            shots
+                .iter()
+                .all(|c| c["args"]["session"] == CAPTURE_SESSION),
+            "{calls:?}"
+        );
     }
 
     #[tokio::test]
@@ -2992,7 +3035,10 @@ pub(crate) mod tests {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
             assert_eq!(
                 (tool, &args),
-                ("get_desktop_state", &json!({"max_image_dimension": 320}))
+                (
+                    "get_desktop_state",
+                    &json!({"max_image_dimension": 320, "session": CAPTURE_SESSION})
+                )
             );
             let mut n = self.0.lock().unwrap();
             *n += 1;
