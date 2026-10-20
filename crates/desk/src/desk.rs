@@ -60,6 +60,8 @@ const WINDOW_NEVER_READ: &str = "window_never_read";
 const BACKGROUND_TARGET: &str = "background input needs its target window: pass window or pid";
 const BACKGROUND_DESKTOP: &str = "background input: this window takes no pointer input without the foreground, and background input never brings a window to the front";
 const BACKGROUND_NO_WINDOW: &str = "background input: no window under the point";
+const BACKGROUND_ELEMENT: &str = "background input: the element's own window could not be found, and background input never clicks a window that covers it";
+const SCROLL_POINT: &str = "scroll needs both x and y, or neither";
 const OK: &str = r#"{"ok":true}"#;
 const SCROLL_AMOUNT: u32 = 3;
 const STILL_TIMEOUT: Duration = Duration::from_millis(600);
@@ -414,18 +416,23 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn press(&self, id: String, turn: Option<Turn>) -> Result<String, String> {
         let (os, background) = (self.os, self.background);
+        let pressed = id.clone();
         match self
             .access
             .run(TREE_LIMIT, turn, move |b| {
-                plan_press(b, &id, os, background)
+                plan_press(b, &pressed, os, background)
             })
             .await?
         {
             Press::Selected => Ok(json!({"ok": true, "how": "select"}).to_string()),
             Press::Acted(ok) => Ok(json!({"ok": ok, "how": "action"}).to_string()),
             Press::Click(x, y) => {
-                self.click_at(json!({"x": x, "y": y})).await?;
-                Ok(json!({"ok": true, "how": "click", "x": x, "y": y}).to_string())
+                let note = self.click_element(id, json!({"x": x, "y": y})).await?;
+                let mut out = json!({"ok": true, "how": "click", "x": x, "y": y});
+                if let Some(note) = note {
+                    out["unverified"] = note.into();
+                }
+                Ok(out.to_string())
             }
         }
     }
@@ -436,14 +443,16 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "select" => Act::Select,
             "focus" => Act::Focus,
             "click" => {
+                let id = a.id.clone();
                 let n = self
                     .access
-                    .run(CALL_LIMIT, turn, move |b| b.node(&a.id, Extras::BOUNDS, 0))
+                    .run(CALL_LIMIT, turn, move |b| b.node(&id, Extras::BOUNDS, 0))
                     .await?;
                 let [x, y, w, h] = n.bounds.ok_or("the element has no screen position")?;
-                self.click_at(json!({"x": x + w / 2, "y": y + h / 2}))
+                let note = self
+                    .click_element(a.id, json!({"x": x + w / 2, "y": y + h / 2}))
                     .await?;
-                return Ok(OK.to_owned());
+                return Ok(ok_with(note));
             }
             other => {
                 return Err(format!(
@@ -650,21 +659,53 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
         if self.background && (a.window.is_some() || a.pid.is_some()) {
             let (_, w) = self.pick_window(a.window.as_deref(), a.pid).await?;
-            let scale = self.scale().await?;
-            let under = Under {
-                pid: w["pid"].as_i64().ok_or(BACKGROUND_TARGET)?,
-                id: w["window_id"].as_i64().ok_or(BACKGROUND_TARGET)?,
-                bounds: bounds(&w),
-                point: (a.x / scale, a.y / scale),
-            };
-            if !self.allow.is_open() {
-                self.check_point(a.x, a.y, Some(&under)).await?;
-            }
-            let note = self.click_window(req, &under).await?;
+            let note = self.click_in(req, &w, (a.x, a.y)).await?;
             return Ok(ok_with(note));
         }
         let note = self.click_at(req).await?;
         Ok(ok_with(note))
+    }
+
+    /// A background click at desk point `(x, y)` in driver window `w`, which the allowlist already admitted when it was picked.
+    async fn click_in(
+        &self,
+        req: Value,
+        w: &Value,
+        (x, y): (f64, f64),
+    ) -> Result<Option<String>, String> {
+        let scale = self.scale().await?;
+        let under = Under {
+            pid: w["pid"].as_i64().ok_or(BACKGROUND_TARGET)?,
+            id: w["window_id"].as_i64().ok_or(BACKGROUND_TARGET)?,
+            bounds: bounds(w),
+            point: (x / scale, y / scale),
+        };
+        self.click_window(req, &under).await
+    }
+
+    /// A click at the centre `(x, y)` of element `id`; in the background in the element's own window, whatever covers it.
+    async fn click_element(&self, id: String, req: Value) -> Result<Option<String>, String> {
+        if !self.background {
+            return self.click_at(req).await;
+        }
+        let point = req["x"]
+            .as_f64()
+            .zip(req["y"].as_f64())
+            .ok_or(BACKGROUND_ELEMENT)?;
+        let (pid, title) = self
+            .access
+            .run(CALL_LIMIT, (), move |b| {
+                let pid = b.pid_of(&id)?.ok_or(BACKGROUND_ELEMENT)?;
+                let root = b.ancestors(&id)?.into_iter().next().unwrap_or(id);
+                let frame = b.frames_of(pid)?.into_iter().find(|f| f.id == root);
+                Ok((pid, frame.ok_or(BACKGROUND_ELEMENT)?.title))
+            })
+            .await?;
+        let (_, w) = self.pick_window(Some(&title), Some(pid)).await?;
+        if w["pid"].as_u64() != Some(u64::from(pid)) {
+            return Err(BACKGROUND_ELEMENT.to_owned());
+        }
+        self.click_in(req, &w, point).await
     }
 
     async fn click_at(&self, req: Value) -> Result<Option<String>, String> {
@@ -743,12 +784,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     /// Wheel notches at a screen point; without one, scroll keys to the front app window on macOS (the driver's topmost, or the one an allowlist picks and checks), and elsewhere wheel notches at its center, the window of the focused app on Linux.
     async fn scroll(&self, a: ScrollArgs) -> Result<String, String> {
+        if a.x.is_some() != a.y.is_some() {
+            return Err(SCROLL_POINT.to_owned());
+        }
         let mut req =
             json!({"direction": a.direction, "amount": a.amount.unwrap_or(SCROLL_AMOUNT)});
         if self.background {
             let (to, w) = self.background_window(a.window.as_deref(), a.pid).await?;
             if let (Some(x), Some(y)) = (a.x, a.y) {
-                self.admit_point(x, y).await?;
                 let (lx, ly) = self.local(&w, (x, y)).await?;
                 req["x"] = lx.into();
                 req["y"] = ly.into();
@@ -778,7 +821,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 }
                 (x, y)
             }
-            _ => return Err("scroll needs both x and y, or neither".to_owned()),
+            _ => return Err(SCROLL_POINT.to_owned()),
         };
         self.admit_point(x, y).await?;
         req["x"] = x.into();
@@ -818,8 +861,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     /// A press-drag-release from (x, y) to (to_x, to_y) in desk coordinates.
     async fn drag(&self, a: DragArgs) -> Result<String, String> {
-        self.admit_point(a.x, a.y).await?;
-        self.admit_point(a.to_x, a.to_y).await?;
         if self.background {
             let (to, w) = self.background_window(a.window.as_deref(), a.pid).await?;
             let (fx, fy) = self.local(&w, (a.x, a.y)).await?;
@@ -828,6 +869,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let out = self.driver.call("drag", background(req, to)).await?;
             return Ok(ok_with(self.unverified(&out)));
         }
+        self.admit_point(a.x, a.y).await?;
+        self.admit_point(a.to_x, a.to_y).await?;
         let req = json!({"from_x": a.x, "from_y": a.y, "to_x": a.to_x, "to_y": a.to_y});
         self.driver.call("drag", desktop(req)).await?;
         Ok(OK.to_owned())
@@ -1486,6 +1529,10 @@ pub(crate) mod tests {
             Ok(self.hits.get(&(x, y)).cloned())
         }
 
+        fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
+            Ok(self.nodes.contains_key(id).then_some(4))
+        }
+
         fn menu_at(&mut self, x: i32, y: i32) -> Result<Option<String>, String> {
             Ok(self
                 .hits
@@ -1753,6 +1800,27 @@ pub(crate) mod tests {
         }
     }
 
+    struct Overlaid(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for Overlaid {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}},
+                    {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "title": "Inbox", "bounds": {"x": 0.0, "y": 0.0, "width": 1000.0, "height": 1000.0}}
+                ]}}),
+                "get_window_state" => json!({"structuredContent": {
+                    "screenshot_width": 800, "screenshot_height": 600,
+                    "window_bounds": {"width": 800.0, "height": 600.0}
+                }}),
+                "click" => json!({"structuredContent": {"effect": "unverifiable"}}),
+                _ => json!({}),
+            })
+        }
+    }
+
     struct Behind(Arc<Mutex<Vec<(String, Value)>>>);
 
     impl Input for Behind {
@@ -1885,6 +1953,14 @@ pub(crate) mod tests {
             let err = desk.run(tool, args).await.unwrap_err();
             assert!(err.contains("needs its target window"), "{tool}: {err}");
         }
+        let err = desk
+            .run(
+                "desk_scroll",
+                json!({"direction": "down", "x": 600.0, "window": "Untitled"}),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("both x and y"), "{err}");
         for (tool, args) in [
             (
                 "desk_click",
@@ -1954,6 +2030,86 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_background_element_click_goes_to_the_elements_own_window_under_the_window_that_covers_it()
+     {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || {
+                let mut f = notepad();
+                f.add(
+                    "orphan",
+                    None,
+                    "button",
+                    &["showing"],
+                    Some([10, 10, 20, 20]),
+                );
+                Ok(f)
+            },
+            Overlaid(Arc::clone(&calls)),
+            Os::Mac,
+        )
+        .background(true);
+        let out = desk
+            .run("desk_act", json!({"id": "ok", "action": "click"}))
+            .await
+            .unwrap();
+        assert!(
+            out.text.contains(r#""unverified":"unverifiable: "#),
+            "{}",
+            out.text
+        );
+        let clicks = sent(&calls, "click");
+        assert_eq!(clicks.len(), 1, "{clicks:?}");
+        assert_eq!(
+            (
+                &clicks[0]["pid"],
+                &clicks[0]["window_id"],
+                &clicks[0]["x"],
+                &clicks[0]["y"]
+            ),
+            (&json!(4), &json!(1), &json!(140.0), &json!(110.0))
+        );
+        let err = desk
+            .run("desk_act", json!({"id": "orphan", "action": "click"}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("own window could not be found"), "{err}");
+        assert_eq!(sent(&calls, "click").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_allowlist_gates_named_background_input_on_its_target_app_not_on_what_covers_it() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Overlaid(Arc::clone(&calls)), Os::Mac)
+            .allow(&["notepad".into()])
+            .background(true);
+        let notepad = json!({"x": 50.0, "y": 600.0, "window": "Untitled"});
+        desk.run("desk_click", notepad.clone()).await.unwrap();
+        let mut scroll = notepad.clone();
+        scroll["direction"] = "down".into();
+        desk.run("desk_scroll", scroll).await.unwrap();
+        let mut drag = notepad;
+        drag["to_x"] = 60.0.into();
+        drag["to_y"] = 600.0.into();
+        desk.run("desk_drag", drag).await.unwrap();
+        for tool in ["click", "scroll", "drag"] {
+            let all = sent(&calls, tool);
+            assert_eq!(all.len(), 1, "{tool}");
+            let pid = all[0]["pid"].as_i64().or(all[0]["target"]["pid"].as_i64());
+            assert_eq!(pid, Some(4), "{tool} {all:?}");
+        }
+        assert!(
+            desk.run(
+                "desk_click",
+                json!({"x": 50.0, "y": 600.0, "window": "Inbox"})
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(sent(&calls, "click").len(), 1);
+    }
+
+    #[tokio::test]
     async fn foreground_input_ignores_a_named_window_and_goes_to_the_desktop() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Mac);
@@ -1963,6 +2119,54 @@ pub(crate) mod tests {
         assert_eq!(
             sent(&calls, "hotkey"),
             [json!({"keys": ["ctrl", "s"], "scope": "desktop"})]
+        );
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Windows);
+        let named = json!({"window": "Inbox", "pid": 8});
+        for (tool, mut args) in [
+            ("desk_type", json!({"text": "a"})),
+            ("desk_click", json!({"x": 300.0, "y": 250.0})),
+            (
+                "desk_scroll",
+                json!({"direction": "down", "x": 300.0, "y": 250.0}),
+            ),
+            (
+                "desk_drag",
+                json!({"x": 200.0, "y": 100.0, "to_x": 400.0, "to_y": 150.0}),
+            ),
+        ] {
+            args.as_object_mut()
+                .unwrap()
+                .extend(named.as_object().unwrap().clone());
+            desk.run(tool, args).await.unwrap();
+        }
+        let input: Vec<(String, Value)> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(t, _)| t != "get_screen_size" && t != "list_windows")
+            .cloned()
+            .collect();
+        assert_eq!(
+            input,
+            [
+                (
+                    "press_key".to_owned(),
+                    json!({"key": "a", "scope": "desktop"})
+                ),
+                (
+                    "click".to_owned(),
+                    json!({"x": 300.0, "y": 250.0, "scope": "desktop"})
+                ),
+                (
+                    "scroll".to_owned(),
+                    json!({"direction": "down", "amount": 3, "x": 300.0, "y": 250.0, "scope": "desktop"})
+                ),
+                (
+                    "drag".to_owned(),
+                    json!({"from_x": 200.0, "from_y": 100.0, "to_x": 400.0, "to_y": 150.0, "scope": "desktop"})
+                ),
+            ]
         );
     }
 
