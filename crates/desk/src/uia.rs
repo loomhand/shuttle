@@ -191,8 +191,12 @@ impl Uia {
             value,
             shortcut: uia_combo(&r.accel),
             mnemonic: uia_combo(&r.access),
-            bounds: (extras.bounds && !r.facts.offscreen && w > 0 && h > 0 && is_active(role))
-                .then_some([x, y, w, h]),
+            bounds: (extras.bounds
+                && !r.facts.offscreen
+                && w > 0
+                && h > 0
+                && (extras.frame || is_active(role)))
+            .then_some([x, y, w, h]),
             ..Node::default()
         })
     }

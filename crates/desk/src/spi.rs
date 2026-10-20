@@ -285,6 +285,7 @@ fn spi_extras(e: Extras) -> atspi::Extras {
         values: e.values,
         bounds: e.bounds,
         keys: e.keys,
+        frame: e.frame,
     }
 }
 
