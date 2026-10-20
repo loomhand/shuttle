@@ -756,24 +756,28 @@ async function typedInto(w: Win, text: string): Promise<Fp | undefined> {
   } catch { return undefined } finally { tick('blank', t0) }
 }
 // the text of each element of `w` that holds text, by id, read before and after typing the driver may not confirm
-async function texts(w: Win): Promise<Map<string, string | undefined> | null> {
+type Text = { value?: string; field: boolean }
+async function texts(w: Win): Promise<Map<string, Text> | null> {
   try {
-    const out = new Map<string, string | undefined>()
+    const out = new Map<string, Text>()
     for (const n of parse(await snapOf(w))) {
-      if (n.value) out.set(n.id, n.value)
-      else if (n.role === 'document' || FIELD_ROLES.has(n.role)) out.set(n.id, (await desk.read(n.id, { text: true }).catch(() => null))?.value)
+      const field = n.role === 'document' || FIELD_ROLES.has(n.role)
+      if (n.value) out.set(n.id, { value: n.value, field })
+      else if (field) out.set(n.id, { value: (await desk.read(n.id, { text: true }).catch(() => null))?.value, field })
     }
     return out
   } catch { return null }
 }
-function unchanged(before: Map<string, string | undefined> | null, after: Map<string, string | undefined> | null) {
-  return !!before && !!after && before.size === after.size && [...after].every(([id, v]) => v !== undefined && before.get(id) === v)
+function unchanged(before: Map<string, Text> | null, after: Map<string, Text> | null) {
+  if (!before || !after || before.size !== after.size) return false
+  const all = [...after]
+  return all.some(([, t]) => t.field) && all.every(([id, t]) => t.value !== undefined && before.get(id)?.value === t.value)
 }
-function shows(before: Map<string, string | undefined> | null, after: Map<string, string | undefined> | null, text: string) {
+function shows(before: Map<string, Text> | null, after: Map<string, Text> | null, text: string) {
   const squash = (v: string) => v.replace(/\s+/g, '').toLowerCase()
   const want = squash(text)
   const count = (v: string | undefined) => want ? squash(v ?? '').split(want).length - 1 : 0
-  return !!before && !!after && [...after].some(([id, v]) => count(v) > count(before.get(id)))
+  return !!before && !!after && [...after].some(([id, t]) => count(t.value) > count(before.get(id)?.value))
 }
 async function holdsText(w: Win, fp: Fp) {
   const t0 = Date.now()

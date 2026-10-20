@@ -164,3 +164,19 @@ test('a menu state read from pixels after the menus opened in the background sta
   assert.deepEqual(calls.filter((c) => c.tool === 'desk_press').map((c) => c.args), [{ id: 'm' }])
   assert.ok(!calls.some((c) => c.tool === 'desk_focus' || c.tool === 'desk_shot'))
 })
+
+test('a window that shows auto no field to read is never typed into again in the foreground', async (t) => {
+  const calls: Call[] = []
+  await daemon(t, (c) => {
+    calls.push(c)
+    if (c.tool === 'desk_windows') return JSON.stringify([user(), notepad()])
+    if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes: [{ ref: 0, id: 'w', parent: -1, depth: 0, role: 'window', name: 'Untitled - Notepad', states: [] }, { ref: 1, id: 'b', parent: 0, depth: 1, role: 'button', name: 'Send', states: ['showing'] }], truncated: false })
+    if (c.tool === 'desk_type') return JSON.stringify({ ok: true, chars: 2, unverified: NOTE })
+    return '{"ok":true}'
+  })
+  const r = await auto({ steps: [{ app: 'Notepad' }, { type: 'hi' }] })
+  assert.equal(r.ok, false)
+  assert.match(String(r.escalate?.reason), /did not show/)
+  assert.ok(!calls.some((c) => c.tool === 'desk_focus'))
+  assert.equal(calls.filter((c) => c.tool === 'desk_type').length, 1)
+})
