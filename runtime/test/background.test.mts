@@ -203,3 +203,17 @@ test('two new macOS dialogs of the app with no owner make background input refus
   assert.match(String(r.escalate?.reason), /never guesses which one/)
   assert.ok(!d.calls.some((c) => c.tool === 'desk_type'))
 })
+
+test('when the plan window is gone a window of the app with the same title never takes its place', async (t) => {
+  const ws = [user(), notepad()]
+  const d = desktop(ws, ({ tool }) => {
+    if (tool === 'desk_key') ws[1] = { ...notepad(), id: '2' }
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+w' }, { type: 'x' }] })
+  assert.equal(r.ok, false)
+  assert.equal(r.escalate?.step, 2)
+  assert.match(String(r.escalate?.reason), /is gone/)
+  assert.ok(!d.calls.some((c) => c.tool === 'desk_type'))
+})

@@ -136,6 +136,7 @@ async function perform(p: Params): Promise<Result> {
     const ts = Date.now(); const calls = desk.served.length
     try {
       const ws = i === (p.start ?? 0) ? ws0 : await desk.windows(); const f = BG ? frontOf(ws) : desk.front(ws)
+      if (BG && doubt && !s.app && !s.wait) throw new Surprise(doubt, await seen())
       if (BG && i > (p.start ?? 0)) stolen(ws, i - 1)
       const m = s.close ? null : await hiddenModal(ws, f)
       if (m) throw new Surprise(modalBlocks(m), await seen())
@@ -156,7 +157,8 @@ async function perform(p: Params): Promise<Result> {
         }
       })
       if (BG && unheard && !rec.unverified) rec.unverified = unheard
-      if (BG && (s.wait || s.verify || s.expect)) for (const r of recs) if (r) r.confirmed = true
+      const before = recs[i - 1]
+      if (BG && before && (s.wait || s.verify || s.expect)) before.confirmed = true
     } catch (e: unknown) {
       const sp = e instanceof Surprise ? e : new Surprise(e instanceof Error ? e.message : String(e), await seen())
       const step = e instanceof Stolen ? e.step : i
@@ -295,7 +297,8 @@ function targetIn(ws: Win[]): Win | null {
   listed = ws
   if (!target) return null
   const t = target
-  const live = ws.find((x) => x.id === t.id) ?? ws.find((x) => x.pid === t.pid && x.title === t.title) ?? null
+  const live = ws.find((x) => x.id === t.id) ?? null
+  if (!live) doubt = `the plan's window "${t.title}" is gone, and background gui_plan never takes another window of that title for it`
   const mine = new Set(live ? [live.id] : [])
   const owned: Win[] = []
   for (let grew = true; grew;) {
@@ -319,7 +322,12 @@ function ours(x: Win, ws: Win[]) {
   for (let y: Win | undefined = x, k = 0; y && k < ws.length; y = ws.find((z) => z.id === y?.owner), k++) if (y.id === target?.id || adopted.has(y.id)) return true
   return false
 }
-function follow(w: Win, ws: Win[]) { target = w; targetSince = new Set(ws.map((x) => x.id)) }
+function ownerOf(w: Win, ws: Win[]) {
+  let x = w
+  for (let k = 0; k < ws.length; k++) { const o = ws.find((y) => y.id === x.owner); if (!o) break; x = o }
+  return x.id !== w.id ? x : ws.find((y) => y.id === target?.id && y.id !== w.id)
+}
+function follow(w: Win, ws: Win[]) { target = w; doubt = null; targetSince = new Set(ws.map((x) => x.id)) }
 // a macOS sheet has no window of its own, so its input goes to the window it hangs on
 function at(w: Win | null): desk.Target {
   if (!BG || !w) return {}
@@ -327,9 +335,12 @@ function at(w: Win | null): desk.Target {
   let x = w
   for (let o = OS === 'darwin' ? x.owner : undefined; o; o = x.owner) { const up = listed.find((y) => y.id === o); if (!up) break; x = up }
   const to = x
-  if (listed.some((y) => y.id !== to.id && y.pid === to.pid && y.title === to.title)) throw new Surprise(`another window of the app is also titled "${to.title}", and background input names its window by title, so it never guesses which one gets it`)
+  unique(to)
   targetSince = new Set([...targetSince, ...listed.map((y) => y.id)])
   return { window: to.title, pid: to.pid }
+}
+function unique(w: Win) {
+  if (BG && listed.some((y) => y.id !== w.id && y.pid === w.pid && y.title === w.title)) throw new Surprise(`another window of the app is also titled "${w.title}", and background input names its window by title, so it never guesses which one gets it`)
 }
 function heard(r: desk.Sent, rec: Rec) { if (BG && r.unverified && !rec.unverified) rec.unverified = r.unverified }
 async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
@@ -673,7 +684,7 @@ async function choose(nodes: Node[], n: Node, rec: { via?: string }, open = fals
     const mods = n.shortcut.split('+').slice(0, -1)
     if (OS !== 'darwin' && n.shortcut && (mods.some((x) => x !== 'shift') || /^f\d+$/.test(n.shortcut))) {
       if (open) for (const _ of menus(nodes, n.parent)) await desk.key('Escape', at(w))
-      try { await desk.key(n.shortcut, at(w)); rec.via = 'shortcut'; return } catch {}
+      try { const k = await desk.key(n.shortcut, at(w)); if (BG && k.unverified) unheard ??= k.unverified; rec.via = 'shortcut'; return } catch {}
     }
     rec.via = await act(n)
   } finally { tick('act', t0) }
@@ -760,7 +771,8 @@ async function holdsText(w: Win, fp: Fp) {
 async function documents(w: Win) {
   const t0 = Date.now()
   try {
-    const d = (await desk.windows()).find((x) => x.title !== w.title && x.pid === w.pid); if (!d) return null
+    const ws = await desk.windows()
+    const d = BG ? ownerOf(w, ws) : ws.find((x) => x.title !== w.title && x.pid === w.pid); if (!d) return null
     const ids = parse(await snapOf(d)).filter((n) => n.role === 'textbox').map((n) => n.id)
     return async () => (await Promise.all(ids.map(async (id) => { try { return (await desk.read(id, { text: true })).value ?? '' } catch { return '' } }))).join('\n')
   } catch { return null } finally { tick('verify', t0) }
@@ -890,7 +902,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const o = w && !s.window ? await outline(w, {}, kept) : ''
     const self = w
     const others = self ? ws.filter((x) => x.pid === self.pid && x.title !== self.title && (!BG || ours(x, ws))) : []
-    if (w && blocked(o) && others.length) { rec.seen = w.title; rec.how = 'wm'; await desk.close(w.title, w.pid); await settle(w.title); tick('act', t0); return }
+    if (w && blocked(o) && others.length) { rec.seen = w.title; rec.how = 'wm'; unique(w); await desk.close(w.title, w.pid); await settle(w.title); tick('act', t0); return }
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     if (w && !s.window && !isDialog(o)) {
       let d: Win | null = null; for (const x of others) if (isDialog(await outline(x))) { d = x; break }
@@ -900,7 +912,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     }
     if (!w) { rec.noop = true; tick('act', t0); return }
     const [title, pid] = [w.title, w.pid]; rec.seen = title; if (!w.active && !BG) await desk.focus(title, pid); await desk.key('Escape', at(w))
-    if (titledIn(await settle(w.title), title, pid)) await desk.close(title, pid)
+    if (titledIn(await settle(w.title), title, pid)) { unique(w); await desk.close(title, pid) }
     tick('act', t0); await closed(title, pid); return
   }
   const w = await windowFor(s.window, 3000, s.seen)
