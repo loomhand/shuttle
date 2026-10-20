@@ -446,7 +446,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             frame: false,
         };
         let (window, pid, id) = (a.window, a.pid, a.id);
-        let allow = self.allow.clone();
+        let (allow, background) = (self.allow.clone(), self.background);
         let (tree, found) = self
             .access
             .run(TREE_LIMIT, (), move |b| {
@@ -454,14 +454,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 let frame = live(match id {
                     Some(id) => {
                         let Some(f) = listed.into_iter().find(|f| f.id == id) else {
-                            return Err(
-                                away(b, |f| f.id == id).unwrap_or(format!("no window {id}"))
-                            );
+                            return Err(away(b, background, |f| f.id == id)
+                                .unwrap_or(format!("no window {id}")));
                         };
                         allow.check(f.app.as_deref())?;
                         f
                     }
-                    None => pick(b, &allow, listed, window.as_deref(), pid)?,
+                    None => pick(b, &allow, background, listed, window.as_deref(), pid)?,
                 })?;
                 let found = started.elapsed().as_micros();
                 Ok((b.tree(&frame, extras)?, found))
@@ -500,12 +499,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             frame: false,
         };
         let (window, pid) = (a.window, a.pid);
-        let allow = self.allow.clone();
+        let (allow, background) = (self.allow.clone(), self.background);
         let tree = self
             .access
             .run(TREE_LIMIT, (), move |b| {
                 let listed = frames(b, pid, &allow)?;
-                let frame = live(pick(b, &allow, listed, window.as_deref(), pid)?)?;
+                let frame = live(pick(b, &allow, background, listed, window.as_deref(), pid)?)?;
                 b.tree(&frame, extras)
             })
             .await?;
@@ -592,12 +591,19 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn at(&self, a: AtArgs) -> Result<String, String> {
-        let allow = self.allow.clone();
+        let (allow, background) = (self.allow.clone(), self.background);
         self.access
             .run(CALL_LIMIT, (), move |b| {
                 let frames = frames(b, a.pid, &allow)?;
                 let kept = (!allow.is_open()).then(|| frames.clone());
-                let frame = live(pick(b, &allow, frames, a.window.as_deref(), a.pid)?)?;
+                let frame = live(pick(
+                    b,
+                    &allow,
+                    background,
+                    frames,
+                    a.window.as_deref(),
+                    a.pid,
+                )?)?;
                 let Some(hit) = b.at(&frame.id, a.x, a.y)? else {
                     return Ok(json!({"found": null, "window": frame}).to_string());
                 };
@@ -623,11 +629,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn close(&self, a: WindowArgs, turn: Option<Turn>) -> Result<String, String> {
-        let allow = self.allow.clone();
+        let (allow, background) = (self.allow.clone(), self.background);
         self.access
             .run(CALL_LIMIT, turn, move |b| {
                 let listed = frames(b, a.pid, &allow)?;
-                let frame = live(pick(b, &allow, listed, Some(&a.window), a.pid)?)?;
+                let frame = live(pick(b, &allow, background, listed, Some(&a.window), a.pid)?)?;
                 b.close(&frame)?;
                 Ok(json!({"ok": true, "title": frame.title}).to_string())
             })
@@ -1335,9 +1341,36 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let w = self.allow.pick(windows, window, pid)?;
         let id = w.id.parse::<i64>().ok();
         let listed = raw
-            .into_iter()
+            .iter()
             .find(|r| r["window_id"].as_i64() == id)
+            .cloned()
             .unwrap_or_default();
+        if self.background && mac {
+            let twins: Vec<&Value> = raw
+                .iter()
+                .filter(|r| r["pid"] == listed["pid"] && r["title"] == listed["title"])
+                .collect();
+            if twins.len() > 1 && twins.iter().any(|t| off_space(t)) {
+                let named: Vec<String> = twins
+                    .iter()
+                    .map(|t| {
+                        let space = if off_space(t) {
+                            "another Space"
+                        } else {
+                            "this Space"
+                        };
+                        format!("{} on {space}", t["window_id"])
+                    })
+                    .collect();
+                return Err(format!(
+                    "{} windows of pid {} are titled {:?} ({}): background input cannot tell them apart; give one of them a title of its own or close the other",
+                    twins.len(),
+                    listed["pid"],
+                    w.title,
+                    named.join(", ")
+                ));
+            }
+        }
         if let Some(to) = listed["pid"].as_i64().zip(listed["window_id"].as_i64()) {
             let mut off = self.off_spaced();
             if off_space(&listed) {
@@ -1452,6 +1485,7 @@ fn check_process<B: Access>(b: &mut B, allow: &Allow, pid: Option<u32>) -> Resul
 fn pick<B: Access>(
     b: &mut B,
     allow: &Allow,
+    background: bool,
     frames: Vec<Frame>,
     window: Option<&str>,
     pid: Option<u32>,
@@ -1462,11 +1496,14 @@ fn pick<B: Access>(
             pid.is_none_or(|p| f.pid == Some(p))
                 && (0..TITLE_TIERS).any(|t| title_matches(t, &f.title, want))
         };
-        window.and_then(|_| away(b, named)).unwrap_or(e)
+        window.and_then(|_| away(b, background, named)).unwrap_or(e)
     })
 }
 
-fn away<B: Access>(b: &mut B, named: impl Fn(&Frame) -> bool) -> Option<String> {
+fn away<B: Access>(b: &mut B, background: bool, named: impl Fn(&Frame) -> bool) -> Option<String> {
+    if !background {
+        return None;
+    }
     let f = b.off_space().into_iter().find(|f| named(f))?;
     Some(format!(
         "window {:?} is on another Space: {ANOTHER_SPACE}",
@@ -2244,7 +2281,9 @@ pub(crate) mod tests {
                     {"pid": 4, "window_id": 1, "layer": 0, "title": "Untitled - Notepad", "app_name": "Notepad", "is_on_screen": true, "on_current_space": true, "space_ids": [8]},
                     {"pid": 9, "window_id": 84080, "layer": 0, "title": "微信", "app_name": "WeChat", "is_on_screen": false, "on_current_space": false, "space_ids": [18]},
                     {"pid": 9, "window_id": 727, "layer": 0, "title": "微信", "app_name": "WeChat", "is_on_screen": false, "on_current_space": null, "space_ids": null},
-                    {"pid": 9, "window_id": 37333, "layer": 3, "title": "", "app_name": "WeChat", "is_on_screen": false, "on_current_space": false, "space_ids": [18]}
+                    {"pid": 9, "window_id": 37333, "layer": 3, "title": "", "app_name": "WeChat", "is_on_screen": false, "on_current_space": false, "space_ids": [18]},
+                    {"pid": 5, "window_id": 2, "layer": 0, "title": "Untitled", "app_name": "TextEdit", "is_on_screen": true, "on_current_space": true, "space_ids": [8]},
+                    {"pid": 5, "window_id": 3, "layer": 0, "title": "Untitled", "app_name": "TextEdit", "is_on_screen": false, "on_current_space": false, "space_ids": [18]}
                 ]}}),
                 "type_text" => json!({
                     "content": [{"type": "text", "text": "Sent (unverified) 1 char(s) via CGEvent."}],
@@ -2278,20 +2317,28 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_snapshot_of_a_window_on_another_space_says_so_by_title_or_id() {
+    async fn a_background_snapshot_of_a_window_on_another_space_says_so_by_title_or_id() {
         for background in [false, true] {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let desk =
                 Desk::new(|| Ok(Apps), Spaces(Arc::clone(&calls)), Os::Mac).background(background);
             for args in [json!({"window": "微信"}), json!({"id": "84080"})] {
                 let err = desk.run("desk_snapshot", args.clone()).await.unwrap_err();
-                assert!(err.contains("is on another Space"), "{args} {err}");
+                assert_eq!(
+                    err.contains("is on another Space"),
+                    background,
+                    "{background} {args} {err}"
+                );
             }
             let err = desk
                 .run("desk_find", json!({"name": "x", "window": "微信"}))
                 .await
                 .unwrap_err();
-            assert!(err.contains("is on another Space"), "{err}");
+            assert_eq!(
+                err.contains("is on another Space"),
+                background,
+                "{background} {err}"
+            );
             let err = desk
                 .run("desk_snapshot", json!({"window": "Nope"}))
                 .await
@@ -2319,6 +2366,21 @@ pub(crate) mod tests {
                 .is_some_and(|n| n.contains(OFF_SPACE)),
             "{note}"
         );
+    }
+
+    #[tokio::test]
+    async fn background_input_to_title_twins_on_two_spaces_is_refused_and_names_both() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Spaces(Arc::clone(&calls)), Os::Mac).background(true);
+        let err = desk
+            .run("desk_type", json!({"text": "x", "window": "Untitled"}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("2 on this Space") && err.contains("3 on another Space"),
+            "{err}"
+        );
+        assert!(sent(&calls, "type_text").is_empty());
     }
 
     fn sent(calls: &Arc<Mutex<Vec<(String, Value)>>>, tool: &str) -> Vec<Value> {
