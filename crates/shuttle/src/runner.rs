@@ -140,9 +140,12 @@ impl Runner {
         scratch: &Path,
         agent: &str,
     ) -> Result<Value, String> {
-        write_private(&scratch.join("params.json"), params.to_string().as_bytes())
-            .await
-            .map_err(|e| format!("write params: {e}"))?;
+        write_private(
+            &scratch.join("params.json"),
+            &serde_json::to_vec(params).map_err(|e| format!("encode params: {e}"))?,
+        )
+        .await
+        .map_err(|e| format!("write params: {e}"))?;
         let timeout =
             Duration::from_secs(timeout_s.unwrap_or(DEFAULT_TIMEOUT_S).min(MAX_TIMEOUT_S));
         let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
