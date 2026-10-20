@@ -296,15 +296,11 @@ impl Access for Uia {
             let Some(top) = self.frame_of(&shown[i], front) else {
                 continue;
             };
-            let mut ids = HashMap::from([(shown[i].hwnd.0 as isize, top.id.clone())]);
-            for o in owned(&shown, i) {
-                let Some(mut f) = self.frame_of(&shown[o], front) else {
-                    continue;
-                };
-                f.owner = ids.get(&shown[o].owner).cloned();
-                ids.insert(shown[o].hwnd.0 as isize, f.id.clone());
-                frames.push(f);
-            }
+            let found = owned(&shown, i)
+                .into_iter()
+                .filter_map(|o| Some((o, self.frame_of(&shown[o], front)?)))
+                .collect();
+            frames.extend(link(&shown, i, &top, found));
             frames.push(top);
         }
         Ok(frames)
@@ -684,6 +680,21 @@ fn owned(shown: &[Shown], root: usize) -> Vec<usize> {
     found
 }
 
+fn link(shown: &[Shown], root: usize, top: &Frame, found: Vec<(usize, Frame)>) -> Vec<Frame> {
+    let mut ids: HashMap<isize, String> = found
+        .iter()
+        .map(|(o, f)| (shown[*o].hwnd.0 as isize, f.id.clone()))
+        .collect();
+    ids.insert(shown[root].hwnd.0 as isize, top.id.clone());
+    found
+        .into_iter()
+        .map(|(o, mut f)| {
+            f.owner = ids.get(&shown[o].owner).cloned();
+            f
+        })
+        .collect()
+}
+
 fn title(hwnd: HWND) -> String {
     let mut buf = [0u16; TITLE_CHARS];
     // SAFETY: GetWindowTextW writes at most `buf.len()` UTF-16 units into `buf`.
@@ -859,5 +870,29 @@ mod tests {
         let shown = [window(3, 2), window(2, 1), window(1, 0), window(4, 0)];
         assert_eq!(owned(&shown, 2), vec![0, 1]);
         assert!(owned(&shown, 3).is_empty());
+    }
+
+    #[test]
+    fn a_nested_owned_alert_names_the_dialog_that_owns_it() {
+        let shown = [window(3, 2), window(2, 1), window(1, 0)];
+        let frame = |id: &str| Frame {
+            id: id.into(),
+            ..Frame::default()
+        };
+        let found = owned(&shown, 2)
+            .into_iter()
+            .map(|o| (o, frame(["alert", "dialog"][o])))
+            .collect();
+        let owners: Vec<_> = link(&shown, 2, &frame("root"), found)
+            .into_iter()
+            .map(|f| (f.id, f.owner))
+            .collect();
+        assert_eq!(
+            owners,
+            [
+                ("alert".to_owned(), Some("dialog".to_owned())),
+                ("dialog".to_owned(), Some("root".to_owned()))
+            ]
+        );
     }
 }
