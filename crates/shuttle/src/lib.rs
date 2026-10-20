@@ -118,10 +118,15 @@ async fn kill_after(group: u32, grace: Duration) {
 
 #[cfg(unix)]
 pub(crate) fn kill_later(rt: &tokio::runtime::Handle, group: u32, grace: Duration) {
-    GRACED
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .push(group);
+    {
+        let mut graced = GRACED.lock().unwrap_or_else(PoisonError::into_inner);
+        if ENDING.load(std::sync::atomic::Ordering::Relaxed) {
+            drop(graced);
+            signal_group(group, libc::SIGKILL);
+            return;
+        }
+        graced.push(group);
+    }
     rt.spawn(async move {
         kill_after(group, grace).await;
         GRACED

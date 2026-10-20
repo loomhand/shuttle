@@ -277,7 +277,7 @@ impl Drop for Group {
             crate::signal_group(pid, libc::SIGTERM);
         }
         match tokio::runtime::Handle::try_current() {
-            Ok(rt) if !self.termed && !crate::ENDING.load(std::sync::atomic::Ordering::Relaxed) => {
+            Ok(rt) if !self.termed => {
                 crate::kill_later(&rt, pid, END_GRACE);
             }
             _ => {
@@ -534,6 +534,11 @@ mod tests {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if !gone {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", pid.trim()])
+                .status();
         }
         assert!(gone, "{pid} outlived the run dropped during its grace");
     }
