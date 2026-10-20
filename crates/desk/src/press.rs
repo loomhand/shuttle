@@ -5,6 +5,8 @@ use desk_core::press::{MENU_POLL, MENU_POLLS, SELECTED_ROLES};
 use crate::keys::Os;
 use crate::model::{Access, Act, Extras, Node};
 
+const BACKGROUND_NO_POINT: &str = "background input: the element shows no point to click in its window, and on Windows its UI Automation action would bring the window to the front";
+
 /// What a press comes to after the backend's part of it.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Press {
@@ -21,22 +23,28 @@ pub(crate) fn plan_press<B: Access>(
     background: bool,
 ) -> Result<Press, String> {
     let linux = os == Os::Linux;
+    let uia_behind = background && os == Os::Windows;
     let mut node = b.node(id, Extras::BOUNDS, 0)?;
     let click_first = os == Os::Windows && node.role == "treeitem";
     if SELECTED_ROLES.contains(&node.role)
         && !click_first
+        && !uia_behind
         && b.act(id, Act::Select).unwrap_or(false)
     {
         return Ok(Press::Selected);
     }
-    if node.role.starts_with("menuitem") && !linux {
+    if node.role.starts_with("menuitem") && !linux && !uia_behind {
         return Ok(Press::Acted(b.act(id, Act::Action)?));
     }
-    if background && b.act(id, Act::Action)? {
+    if background && !uia_behind && b.act(id, Act::Action)? {
         return Ok(Press::Acted(true));
     }
     let chain = b.ancestors(id)?;
-    if node.role.starts_with("menu") && !node.has("showing") && (open_menus(b, &chain) || linux) {
+    if node.role.starts_with("menu")
+        && !node.has("showing")
+        && !uia_behind
+        && (open_menus(b, &chain) || linux)
+    {
         for _ in 0..MENU_POLLS {
             node = b.node(id, Extras::BOUNDS, 0)?;
             if node.has("showing") {
@@ -50,6 +58,9 @@ pub(crate) fn plan_press<B: Access>(
         || !b.pid_of(id).ok().flatten().is_some_and(libreoffice);
     if pixel && let Some((x, y)) = reachable(b, id, &node, &chain, linux) {
         return Ok(Press::Click(x, y));
+    }
+    if uia_behind {
+        return Err(BACKGROUND_NO_POINT.to_owned());
     }
     if click_first && b.act(id, Act::Select).unwrap_or(false) {
         return Ok(Press::Selected);
@@ -130,6 +141,30 @@ mod tests {
             Press::Acted(true)
         );
         assert_eq!(f.acts, [("ok".to_owned(), Act::Action)]);
+    }
+
+    #[test]
+    fn a_windows_background_press_clicks_in_the_window_and_runs_no_ui_automation_action() {
+        let mut f = notepad();
+        f.add(
+            "downloads",
+            Some("w"),
+            "treeitem",
+            &["showing"],
+            Some([10, 200, 60, 30]),
+        );
+        f.hits.insert((40, 215), "downloads".into());
+        assert_eq!(
+            plan_press(&mut f, "ok", Os::Windows, true).unwrap(),
+            Press::Click(140, 110)
+        );
+        assert_eq!(
+            plan_press(&mut f, "downloads", Os::Windows, true).unwrap(),
+            Press::Click(40, 215)
+        );
+        let err = plan_press(&mut f, "save", Os::Windows, true).unwrap_err();
+        assert!(err.contains("no point to click"), "{err}");
+        assert!(f.acts.is_empty(), "{:?}", f.acts);
     }
 
     #[test]
