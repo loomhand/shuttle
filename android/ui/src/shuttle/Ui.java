@@ -12,6 +12,7 @@ import android.view.InputDevice;
 import android.view.InputEvent;
 import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 import java.io.BufferedOutputStream;
@@ -33,7 +34,9 @@ import java.util.List;
  * the focused window has handled its down event (true) or its injection failed (false), sending the up event either
  * way; "shot" the screen as a PNG frame, a line "png N" and then N bytes before the end line; "show ID PATH" asks the
  * element at child-index path PATH of window ID to scroll itself into view and answers whether the element took the
- * action; "dump" the active window and "dump ID" window ID as uiautomator-style nodes with their child-index path.
+ * action; "tap X Y" and "key CODE" inject a touch and a key press, each as `adb shell input` does, and answer true when
+ * both events were accepted, false when either was not (the press may still have happened), and unavailable when no
+ * input could be injected at all; "dump" the active window and "dump ID" window ID as uiautomator-style nodes with their child-index path.
  */
 public final class Ui {
     private static final int MAX_DEPTH = 64;
@@ -75,6 +78,10 @@ public final class Ui {
                     out.println(focus(ui, line.equals("focus live")));
                 } else if (line.equals("paste")) {
                     out.println(paste());
+                } else if (line.startsWith("tap ")) {
+                    out.println(tap(line.substring(4).trim()));
+                } else if (line.startsWith("key ")) {
+                    out.println(key(Integer.parseInt(line.substring(4).trim())));
                 } else if (line.equals("shot")) {
                     shot(ui, out);
                 } else if (line.startsWith("show ")) {
@@ -171,7 +178,7 @@ public final class Ui {
             + ',' + r.right + ',' + r.bottom + "]}";
     }
 
-    private static boolean paste() throws ReflectiveOperationException {
+    private static void connectInput() throws ReflectiveOperationException {
         if (inputManager == null) {
             Class<?> c;
             try {
@@ -182,6 +189,53 @@ public final class Ui {
             injectInputEvent = c.getMethod("injectInputEvent", InputEvent.class, int.class);
             inputManager = c.getMethod("getInstance").invoke(null);
         }
+    }
+
+    private static boolean inputReady() {
+        try {
+            connectInput();
+            return true;
+        } catch (ReflectiveOperationException e) {
+            return false;
+        }
+    }
+
+    private static String tap(String args) throws ReflectiveOperationException {
+        if (!inputReady()) {
+            return "unavailable";
+        }
+        String[] xy = args.split(" ");
+        float x = Float.parseFloat(xy[0]);
+        float y = Float.parseFloat(xy[1]);
+        long now = SystemClock.uptimeMillis();
+        boolean down = inject(touch(now, MotionEvent.ACTION_DOWN, x, y, 1.0f), INJECT_WAIT_FOR_FINISH);
+        boolean up = inject(touch(now, MotionEvent.ACTION_UP, x, y, 0.0f), INJECT_WAIT_FOR_FINISH);
+        return String.valueOf(down && up);
+    }
+
+    private static MotionEvent touch(long now, int action, float x, float y, float pressure) {
+        MotionEvent event = MotionEvent.obtain(now, now, action, x, y, pressure, 1.0f, 0, 1.0f, 1.0f, 0, 0);
+        event.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        return event;
+    }
+
+    private static String key(int code) throws ReflectiveOperationException {
+        if (!inputReady()) {
+            return "unavailable";
+        }
+        long now = SystemClock.uptimeMillis();
+        boolean down = inject(keyEvent(now, KeyEvent.ACTION_DOWN, code), INJECT_WAIT_FOR_FINISH);
+        boolean up = inject(keyEvent(now, KeyEvent.ACTION_UP, code), INJECT_WAIT_FOR_FINISH);
+        return String.valueOf(down && up);
+    }
+
+    private static KeyEvent keyEvent(long now, int action, int code) {
+        return new KeyEvent(now, now, action, code, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0,
+            InputDevice.SOURCE_KEYBOARD);
+    }
+
+    private static boolean paste() throws ReflectiveOperationException {
+        connectInput();
         long now = SystemClock.uptimeMillis();
         boolean down = inject(pasteKey(now, KeyEvent.ACTION_DOWN), INJECT_WAIT_FOR_FINISH);
         inject(pasteKey(now, KeyEvent.ACTION_UP), INJECT_ASYNC);
@@ -193,8 +247,8 @@ public final class Ui {
             InputDevice.SOURCE_KEYBOARD);
     }
 
-    private static boolean inject(KeyEvent key, int mode) throws ReflectiveOperationException {
-        return (Boolean) injectInputEvent.invoke(inputManager, key, mode);
+    private static boolean inject(InputEvent event, int mode) throws ReflectiveOperationException {
+        return (Boolean) injectInputEvent.invoke(inputManager, event, mode);
     }
 
     private static String dump(UiAutomation ui, String id) {

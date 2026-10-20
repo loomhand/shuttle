@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Android taps and keys from the UI server.** A tap and a single key press are injected by the UI server through `InputManager`, as `adb shell input` does it, in place of an adb process and a device JVM per call:
+  - the UI line protocol gains `tap X Y` and `key CODE`, each answered `true` (both events accepted), `false` (one was not, and the press may still have happened) or `unavailable` (nothing could be injected);
+  - `unavailable`, a server that predates the requests and a server that does not start leave the call to `adb shell input`, the first two for good; a `false`, an error or a lost reply is an error that says the press may have reached the device, and is never repeated by adb;
+  - a tap or key takes 0.6–1.4 ms against 16.5 ms and about 85–90% less CPU on redroid 16;
+  - key combinations, swipes and long presses stay on `adb shell input`: a swipe the server injects flings about 1% farther than `input swipe`, enough to move a list off a saved position over repeated scrolls.
 - **MCP cancellation.** `cocoon-shuttle mcp` keeps reading its client while a request runs, and a `notifications/cancelled` drops the request it names, running or queued, without a reply; a running one closes its daemon connection, where the daemon ends the call. Before, the server read the next line only after the call had ended, so an interrupt reached it up to the 110 s run limit late while the desktop kept acting.
 - **Android screenshots from the UI server.** `desk_look`, `desk_shot`, `computer_state` and every `computer_act` take the screen from the UI server's `UiAutomation.takeScreenshot` in place of an `adb exec-out screencap -p` process:
   - the UI line protocol gains a `shot` request answered by a binary frame, `png N` and then N bytes before the end line; a server that predates it answers a dump, and `screencap` serves for good after that, as it does for one call after a failed shot;

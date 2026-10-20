@@ -101,6 +101,7 @@ pub struct Android {
     device: Device,
     points: Mutex<HashMap<String, Saved>>,
     ui: Mutex<Option<UiServer>>,
+    server_input: AtomicBool,
     server_shot: AtomicBool,
     server_show: AtomicBool,
     control: Mutex<Option<Control>>,
@@ -114,6 +115,7 @@ impl Android {
             device,
             points: Mutex::new(HashMap::new()),
             ui: Mutex::new(None),
+            server_input: AtomicBool::new(true),
             server_shot: AtomicBool::new(true),
             server_show: AtomicBool::new(true),
             control: Mutex::new(None),
@@ -318,12 +320,26 @@ impl Android {
     }
 
     pub(crate) async fn tap(&self, (x, y): (i32, i32)) -> Result<(), String> {
+        match self.inject(&format!("tap {x} {y}")).await {
+            Injection::Done => return Ok(()),
+            Injection::Unconfirmed(why) => return Err(unconfirmed(&format!("tap {x},{y}"), &why)),
+            Injection::NotSent => {}
+        }
         self.input(&["tap", &x.to_string(), &y.to_string()]).await
     }
 
-    /// Presses a key or a combination such as `ctrl+a`.
+    /// Presses a key or a combination such as `ctrl+a`; a single key is injected by the UI server, a combination by `input`.
     pub(crate) async fn keys(&self, keys: &str) -> Result<(), String> {
         let codes: Vec<String> = keycodes(keys)?.iter().map(u32::to_string).collect();
+        if let [code] = codes.as_slice() {
+            match self.inject(&format!("key {code}")).await {
+                Injection::Done => return Ok(()),
+                Injection::Unconfirmed(why) => {
+                    return Err(unconfirmed(&format!("key {keys}"), &why));
+                }
+                Injection::NotSent => {}
+            }
+        }
         let mut argv = vec![if codes.len() == 1 {
             "keyevent"
         } else {
@@ -331,6 +347,43 @@ impl Android {
         }];
         argv.extend(codes.iter().map(String::as_str));
         self.input(&argv).await
+    }
+
+    async fn inject(&self, cmd: &str) -> Injection {
+        if !self.server_input.load(Ordering::Relaxed) {
+            return Injection::NotSent;
+        }
+        let mut slot = self.ui.lock().await;
+        let mut server = match slot.take() {
+            Some(server) => server,
+            None => match self.start_ui().await {
+                Ok(server) => server,
+                Err(_) => return Injection::NotSent,
+            },
+        };
+        if server.send(cmd).await.is_err() {
+            return Injection::NotSent;
+        }
+        let answer = match tokio::time::timeout(UI_TIMEOUT, server.read_answer()).await {
+            Ok(Ok(answer)) => answer,
+            Ok(Err(e)) => return Injection::Unconfirmed(e),
+            Err(_) => return Injection::Unconfirmed("UI server: timed out".to_owned()),
+        };
+        *slot = Some(server);
+        match answer.trim() {
+            "true" => Injection::Done,
+            "false" => Injection::Unconfirmed("the injection was not confirmed".to_owned()),
+            other if other.starts_with("<error>") => Injection::Unconfirmed(
+                other
+                    .trim_start_matches("<error>")
+                    .trim_end_matches("</error>")
+                    .to_owned(),
+            ),
+            _ => {
+                self.server_input.store(false, Ordering::Relaxed);
+                Injection::NotSent
+            }
+        }
     }
 
     pub(crate) async fn input(&self, args: &[&str]) -> Result<(), String> {
@@ -716,6 +769,18 @@ struct Saved {
     points: Vec<(i32, i32)>,
 }
 
+enum Injection {
+    Done,
+    NotSent,
+    Unconfirmed(String),
+}
+
+fn unconfirmed(what: &str, why: &str) -> String {
+    format!(
+        "{what} is unconfirmed ({why}) and was not repeated, since it may have reached the device"
+    )
+}
+
 /// The UI server (`android/ui`) on the device, one answer per request line; dropping it stops the server.
 struct UiServer {
     _child: Child,
@@ -774,10 +839,18 @@ impl UiServer {
     }
 
     async fn ask(&mut self, cmd: &str) -> Result<String, String> {
+        self.send(cmd).await?;
+        self.read_answer().await
+    }
+
+    async fn send(&mut self, cmd: &str) -> Result<(), String> {
         self.stdin
             .write_all(format!("{cmd}\n").as_bytes())
             .await
-            .map_err(|e| format!("ask UI server: {e}"))?;
+            .map_err(|e| format!("ask UI server: {e}"))
+    }
+
+    async fn read_answer(&mut self) -> Result<String, String> {
         let mut answer = String::new();
         let mut line = String::new();
         loop {
@@ -1331,7 +1404,7 @@ mod tests {
             let adb = dir.path().join("adb");
             script(
                 &adb,
-                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi;;\n*screencap*) cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
+                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi;;\n*screencap*) cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) a=$(cat \"$DIR/inject.answer\" 2>/dev/null); if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
             );
             let android = Android::new(Device {
                 adb,
@@ -1552,6 +1625,89 @@ mod tests {
         assert_eq!(press_target(&fake).await["y"].as_i64(), Some(650));
         assert_eq!(log(&fake, "requests").matches("show ").count(), 1);
         assert_eq!(log(&fake, "adbinput").matches("swipe").count(), 2);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_tap_and_a_single_key_are_injected_by_the_ui_server() {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.android.tap((10, 20)).await.unwrap();
+        fake.android.keys("back").await.unwrap();
+        assert_eq!(log(&fake, "requests"), "tap 10 20\nkey 4\n");
+        assert_eq!(log(&fake, "adbinput"), "");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_combination_and_a_swipe_stay_on_adb_input() {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.android.keys("ctrl+a").await.unwrap();
+        fake.android
+            .input(&["swipe", "1", "2", "3", "4", "300"])
+            .await
+            .unwrap();
+        assert_eq!(log(&fake, "requests"), "");
+        let adb = log(&fake, "adbinput");
+        assert!(adb.contains("shell input keycombination 113 29"), "{adb}");
+        assert!(adb.contains("shell input swipe 1 2 3 4 300"), "{adb}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_tap_the_server_may_have_delivered_is_never_repeated() {
+        for answer in [
+            "false",
+            "<error>java.lang.SecurityException</error>",
+            "exit",
+        ] {
+            let fake = Fake::new();
+            fake.put("inject.answer", answer);
+            let err = fake.android.tap((10, 20)).await.unwrap_err();
+            assert!(err.contains("tap 10,20 is unconfirmed"), "{answer}: {err}");
+            let err = fake.android.keys("enter").await.unwrap_err();
+            assert!(err.contains("key enter is unconfirmed"), "{answer}: {err}");
+            assert_eq!(log(&fake, "adbinput"), "", "{answer}");
+            let requests = log(&fake, "requests");
+            assert_eq!(requests.matches("tap").count(), 1, "{answer}: {requests}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_server_that_cannot_inject_or_predates_tap_leaves_it_to_adb_for_good() {
+        for answer in ["unavailable", ""] {
+            let fake = Fake::new();
+            fake.put("inject.answer", answer);
+            fake.android.tap((10, 20)).await.unwrap();
+            fake.android.keys("home").await.unwrap();
+            fake.android.tap((30, 40)).await.unwrap();
+            assert_eq!(log(&fake, "requests"), "tap 10 20\n", "{answer}");
+            let adb = log(&fake, "adbinput");
+            assert_eq!(adb.lines().count(), 3, "{answer}: {adb}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_ui_server_that_does_not_start_leaves_a_tap_to_adb() {
+        let dir = tempfile::tempdir().unwrap();
+        let adb = dir.path().join("adb");
+        script(
+            &adb,
+            "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*app_process*) exit 1;;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\";;\nesac\n",
+        );
+        let android = Android::new(Device {
+            adb,
+            serial: None,
+            ui_jar: "/u.jar".into(),
+            scrcpy_jar: "/s.jar".into(),
+            su: None,
+        });
+        android.tap((10, 20)).await.unwrap();
+        let sent = std::fs::read_to_string(dir.path().join("adbinput")).unwrap();
+        assert_eq!(sent, "shell input tap 10 20\n");
     }
 
     #[cfg(unix)]
