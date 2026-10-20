@@ -809,7 +809,7 @@ async function setState(s: Step, hit: Hit, rec: Rec) {
   if (was === on) { rec.noop = true; return }
   let now = await flip(hit.n, on)
   if (now !== on && (was === 'mixed' || now === 'mixed')) now = await flip(hit.n, on)
-  if (now === null) now = await cropState(hit.n)
+  if (now === null) now = await cropState(hit.n, false)
   if (now !== on) throw new Surprise(`"${hit.n.name}" is still ${now === 'mixed' ? 'mixed' : now ? 'on' : 'off'}`, await seen())
   rec.confirmed = true
 }
@@ -836,8 +836,8 @@ async function option(combo: Node, opts: Node[], value: string, target: string, 
   throw new Surprise(`"${target}" reads "${got}" after set`, await seen())
 }
 
-async function cropState(n: Node) {
-  if (BG && !AUTO) throw new Surprise(`the state of "${n.name}" needs a look at the screen: ${NO_PIXELS}`, await seen())
+async function cropState(n: Node, unsent = true) {
+  if (BG && (!AUTO || !unsent)) throw new Surprise(`the state of "${n.name}" needs a look at the screen: ${NO_PIXELS}`, await seen())
   if (BG) await front(frontOf(await desk.windows()))
   const b = (await desk.read(n.id)).bounds ?? n.bounds
   if (!b) throw new Error(`"${n.name}" has no screen position`)
@@ -1033,7 +1033,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       return
     }
     for (const q of chain) { await act(q); await sleep(120) }
-    const on = await cropState(hit.n); rec.was = on; rec.state = 'vision'
+    const on = await cropState(hit.n, false); rec.was = on; rec.state = 'vision'
     if (on === s.on) { for (const _ of chain) await desk.key('Escape', at(w)); rec.noop = true; return }
     await act(hit.n); await settle(w.title); return
   }

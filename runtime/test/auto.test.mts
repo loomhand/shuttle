@@ -142,3 +142,25 @@ test('a field auto cannot read is never typed into again in the foreground', asy
   assert.ok(!calls.some((c) => c.tool === 'desk_focus'))
   assert.equal(calls.filter((c) => c.tool === 'desk_type').length, 1)
 })
+
+test('a menu state read from pixels after the menus opened in the background stays refused under auto', { skip: process.platform === 'darwin' }, async (t) => {
+  const nodes = [
+    { ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: 'Untitled - Notepad', states: [] },
+    { ref: 1, id: 'mb', parent: 0, depth: 1, role: 'menubar', name: '', states: ['showing'] },
+    { ref: 2, id: 'm', parent: 1, depth: 2, role: 'menu', name: 'View', states: ['showing'], bounds: [10, 0, 40, 20] },
+    { ref: 3, id: 's', parent: 2, depth: 3, role: 'menuitem', name: 'Status bar', states: ['showing'], bounds: [10, 30, 80, 20] },
+  ]
+  const calls: Call[] = []
+  await daemon(t, (c) => {
+    calls.push(c)
+    if (c.tool === 'desk_windows') return JSON.stringify([user(), notepad()])
+    if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes, truncated: false })
+    if (c.tool === 'desk_press') return JSON.stringify({ ok: true, how: 'action' })
+    return '{"ok":true}'
+  })
+  const r = await auto({ steps: [{ app: 'Notepad' }, { menu: 'View > Status bar', on: true }] })
+  assert.equal(r.ok, false)
+  assert.match(String(r.escalate?.reason), /does not read the screen/)
+  assert.deepEqual(calls.filter((c) => c.tool === 'desk_press').map((c) => c.args), [{ id: 'm' }])
+  assert.ok(!calls.some((c) => c.tool === 'desk_focus' || c.tool === 'desk_shot'))
+})
