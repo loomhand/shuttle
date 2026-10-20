@@ -162,10 +162,10 @@ async function perform(p: Params): Promise<Result> {
           try { return await run(s, rec) } catch (again: unknown) { if (!late(again) || Date.now() > end) throw again }
         }
       })
-      if (BG && unheard && !rec.unverified) rec.unverified = unheard
+      if (unheard && !rec.unverified) rec.unverified = unheard
       if (desk.foreground.runs + foreground.steps > runs) { rec.fg = true; fronted = true; BG = false }
       const before = recs[i - 1]
-      if (BG && before && (s.wait || s.verify || s.expect)) before.confirmed = true
+      if (before && (s.wait || s.verify || s.expect)) before.confirmed = true
     } catch (e: unknown) {
       const sp = e instanceof Surprise ? e : new Surprise(e instanceof Error ? e.message : String(e), await seen())
       const step = e instanceof Stolen ? e.step : i
@@ -194,7 +194,7 @@ async function perform(p: Params): Promise<Result> {
     log.push({ i: plan.length, op: 'end', ms: Date.now() - ts, window: f?.title ?? null })
     const left = f && !startTitles.has(f.title) && isDialog(o) && !(last.wait || last.app || (last.window && norm(f.title).includes(norm(last.window))))
     const theft = BG ? taken(ws) : null
-    const open = BG ? recs.find((r) => r?.unverified && !r.confirmed) : undefined
+    const open = recs.find((r) => r?.unverified && !r.confirmed)
     if (theft) { escalate = { step: plan.length - 1, reason: theft, ...(await seen()) }; done = plan.length - 1 }
     else if (open) { escalate = { step: open.i, reason: `step ${open.i} (${open.op}) was sent but not confirmed, and no later step read its effect, so the plan cannot say it landed: ${open.unverified}`, ...(await seen()) }; done = open.i }
     else if (f && blocked(o) && recs.at(-1)?.how !== 'wm') { escalate = { step: plan.length, reason: unanswered(f.title), ...(await seen()) }; done = plan.length }
@@ -242,7 +242,7 @@ async function perform(p: Params): Promise<Result> {
   if (escalate) out.escalate = escalate
   else out.window = end?.title ?? null
   const notes = recs.filter((r) => r?.unverified && !r.confirmed).map((r) => ({ step: r.i, note: r.unverified }))
-  if (BG && notes.length) out.unverified = notes
+  if (notes.length) out.unverified = notes
   return out
 }
 
