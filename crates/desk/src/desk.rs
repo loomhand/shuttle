@@ -62,6 +62,7 @@ const BACKGROUND_DESKTOP: &str = "background input: this window takes no pointer
 const BACKGROUND_NO_WINDOW: &str = "background input: no window under the point";
 const BACKGROUND_ELEMENT: &str = "background input: the element's own window could not be found, and background input never clicks a window that covers it";
 const BACKGROUND_TWINS: &str = "background input: the element's own window is ambiguous (same or no title, and no single frame match), and background input never guesses which window to click";
+const BACKGROUND_FOCUS: &str = "background input: on Windows an element takes the keyboard focus only by bringing its window to the front; use the desk verbs with a window, or focus with input = \"foreground\"";
 const SCROLL_POINT: &str = "scroll needs both x and y, or neither";
 const OK: &str = r#"{"ok":true}"#;
 const SCROLL_AMOUNT: u32 = 3;
@@ -442,6 +443,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let act = match a.action.as_str() {
             "action" => Act::Action,
             "select" => Act::Select,
+            "focus" if self.background && self.os == Os::Windows => {
+                return Err(BACKGROUND_FOCUS.to_owned());
+            }
             "focus" => Act::Focus,
             "click" => {
                 let id = a.id.clone();
@@ -2154,6 +2158,25 @@ pub(crate) mod tests {
             .unwrap_err();
         assert!(err.contains("own window is ambiguous"), "{title:?} {err}");
         assert!(sent(&calls, "click").is_empty(), "{title:?}");
+    }
+
+    #[tokio::test]
+    async fn a_background_focus_action_refuses_on_windows_where_it_fronts_the_window() {
+        let back = Desk::new(|| Ok(notepad()), Slow(Arc::default()), Os::Windows).background(true);
+        let err = back
+            .run("desk_act", json!({"id": "ok", "action": "focus"}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("only by bringing its window to the front"),
+            "{err}"
+        );
+        let mac = Desk::new(|| Ok(notepad()), Slow(Arc::default()), Os::Mac).background(true);
+        assert!(
+            mac.run("desk_act", json!({"id": "ok", "action": "focus"}))
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
