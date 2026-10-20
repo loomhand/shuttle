@@ -13,8 +13,13 @@ pub(crate) enum Press {
     Acted(bool),
 }
 
-/// Presses `id` the way a user would; a menu entry runs its action, since a click right after its popup opens misses it, except on Linux, where it takes a click once it shows and a LibreOffice control runs its action; a Windows tree item takes a click first, since Explorer can ignore its select.
-pub(crate) fn plan_press<B: Access>(b: &mut B, id: &str, os: Os) -> Result<Press, String> {
+/// Presses `id` the way a user would; a menu entry runs its action, since a click right after its popup opens misses it, except on Linux, where it takes a click once it shows and a LibreOffice control runs its action; a Windows tree item takes a click first, since Explorer can ignore its select. With `background` input an element runs its action before any click, which needs no pointer.
+pub(crate) fn plan_press<B: Access>(
+    b: &mut B,
+    id: &str,
+    os: Os,
+    background: bool,
+) -> Result<Press, String> {
     let linux = os == Os::Linux;
     let mut node = b.node(id, Extras::BOUNDS, 0)?;
     let click_first = os == Os::Windows && node.role == "treeitem";
@@ -26,6 +31,9 @@ pub(crate) fn plan_press<B: Access>(b: &mut B, id: &str, os: Os) -> Result<Press
     }
     if node.role.starts_with("menuitem") && !linux {
         return Ok(Press::Acted(b.act(id, Act::Action)?));
+    }
+    if background && b.act(id, Act::Action).unwrap_or(false) {
+        return Ok(Press::Acted(true));
     }
     let chain = b.ancestors(id)?;
     if node.role.starts_with("menu") && !node.has("showing") && (open_menus(b, &chain) || linux) {
@@ -108,10 +116,20 @@ mod tests {
     fn a_shown_control_that_a_hit_test_finds_takes_a_click() {
         let mut f = notepad();
         assert_eq!(
-            plan_press(&mut f, "ok", Os::Mac).unwrap(),
+            plan_press(&mut f, "ok", Os::Mac, false).unwrap(),
             Press::Click(140, 110)
         );
         assert!(f.acts.is_empty());
+    }
+
+    #[test]
+    fn a_background_press_runs_the_action_of_a_control_that_would_take_a_click() {
+        let mut f = notepad();
+        assert_eq!(
+            plan_press(&mut f, "ok", Os::Mac, true).unwrap(),
+            Press::Acted(true)
+        );
+        assert_eq!(f.acts, [("ok".to_owned(), Act::Action)]);
     }
 
     #[test]
@@ -120,7 +138,7 @@ mod tests {
         f.hits.insert((340, 110), "elsewhere".into());
         f.add("elsewhere", None, "button", &[], None);
         assert_eq!(
-            plan_press(&mut f, "hidden", Os::Mac).unwrap(),
+            plan_press(&mut f, "hidden", Os::Mac, false).unwrap(),
             Press::Acted(true)
         );
         assert_eq!(f.acts, [("hidden".to_owned(), Act::Action)]);
@@ -129,7 +147,10 @@ mod tests {
     #[test]
     fn a_tab_is_selected() {
         let mut f = notepad();
-        assert_eq!(plan_press(&mut f, "tab", Os::Mac).unwrap(), Press::Selected);
+        assert_eq!(
+            plan_press(&mut f, "tab", Os::Mac, false).unwrap(),
+            Press::Selected
+        );
     }
 
     #[test]
@@ -143,11 +164,11 @@ mod tests {
             Some([0, 20, 40, 20]),
         );
         assert_eq!(
-            plan_press(&mut f, "copy", Os::Linux).unwrap(),
+            plan_press(&mut f, "copy", Os::Linux, false).unwrap(),
             Press::Click(20, 30)
         );
         assert_eq!(
-            plan_press(&mut f, "save", Os::Linux).unwrap(),
+            plan_press(&mut f, "save", Os::Linux, false).unwrap(),
             Press::Acted(true)
         );
         assert_eq!(
@@ -163,7 +184,7 @@ mod tests {
     fn a_macos_menu_entry_runs_its_action_without_opening_its_menu() {
         let mut f = notepad();
         assert_eq!(
-            plan_press(&mut f, "save", Os::Mac).unwrap(),
+            plan_press(&mut f, "save", Os::Mac, false).unwrap(),
             Press::Acted(true)
         );
         assert_eq!(f.acts, [("save".to_owned(), Act::Action)]);
@@ -182,12 +203,12 @@ mod tests {
         f.add("off", Some("w"), "treeitem", &[], Some([10, 900, 60, 30]));
         f.hits.insert((40, 215), "downloads".into());
         assert_eq!(
-            plan_press(&mut f, "downloads", Os::Windows).unwrap(),
+            plan_press(&mut f, "downloads", Os::Windows, false).unwrap(),
             Press::Click(40, 215)
         );
         assert!(f.acts.is_empty());
         assert_eq!(
-            plan_press(&mut f, "off", Os::Windows).unwrap(),
+            plan_press(&mut f, "off", Os::Windows, false).unwrap(),
             Press::Selected
         );
         assert_eq!(f.acts, [("off".to_owned(), Act::Select)]);
@@ -205,7 +226,7 @@ mod tests {
         );
         f.hits.insert((40, 215), "downloads".into());
         assert_eq!(
-            plan_press(&mut f, "downloads", Os::Mac).unwrap(),
+            plan_press(&mut f, "downloads", Os::Mac, false).unwrap(),
             Press::Selected
         );
     }

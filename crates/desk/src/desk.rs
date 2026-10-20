@@ -413,10 +413,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn press(&self, id: String, turn: Option<Turn>) -> Result<String, String> {
-        let os = self.os;
+        let (os, background) = (self.os, self.background);
         match self
             .access
-            .run(TREE_LIMIT, turn, move |b| plan_press(b, &id, os))
+            .run(TREE_LIMIT, turn, move |b| {
+                plan_press(b, &id, os, background)
+            })
             .await?
         {
             Press::Selected => Ok(json!({"ok": true, "how": "select"}).to_string()),
