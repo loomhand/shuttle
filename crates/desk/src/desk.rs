@@ -921,11 +921,31 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok((to, w))
     }
 
-    /// The desk point `(x, y)` in the coordinates of driver window `w`.
+    /// The desk point `(x, y)` in the screenshot pixels of driver window `w`, which the driver reads first as for a click.
     async fn local(&self, w: &Value, (x, y): (f64, f64)) -> Result<(f64, f64), String> {
         let scale = self.scale().await?;
-        let [bx, by, _, _] = bounds(w);
-        Ok((x / scale - bx, y / scale - by))
+        let (pid, id) = w["pid"]
+            .as_i64()
+            .zip(w["window_id"].as_i64())
+            .ok_or(BACKGROUND_TARGET)?;
+        let under = Under {
+            pid,
+            id,
+            bounds: bounds(w),
+            point: (x / scale, y / scale),
+        };
+        let cached = self
+            .reads()
+            .filter(|r| (r.pid, r.id, r.bounds) == (pid, id, under.bounds))
+            .map(|r| r.k);
+        let (kx, ky) = match cached {
+            Some(k) => k,
+            None => self.pixels(&under).await?.ok_or(BACKGROUND_DESKTOP)?,
+        };
+        Ok((
+            (under.point.0 - under.bounds[0]) * kx,
+            (under.point.1 - under.bounds[1]) * ky,
+        ))
     }
 
     async fn scale(&self) -> Result<f64, String> {
@@ -1810,17 +1830,26 @@ pub(crate) mod tests {
             let err = desk.run(tool, args).await.unwrap_err();
             assert!(err.contains("needs its target window"), "{tool}: {err}");
         }
-        let err = desk
-            .run(
+        for (tool, args) in [
+            (
                 "desk_click",
                 json!({"x": 600.0, "y": 100.0, "window": "Inbox"}),
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            err.contains("no pointer input without the foreground"),
-            "{err}"
-        );
+            ),
+            (
+                "desk_scroll",
+                json!({"direction": "down", "x": 600.0, "y": 100.0, "window": "Inbox"}),
+            ),
+            (
+                "desk_drag",
+                json!({"x": 600.0, "y": 100.0, "to_x": 700.0, "to_y": 100.0, "window": "Inbox"}),
+            ),
+        ] {
+            let err = desk.run(tool, args).await.unwrap_err();
+            assert!(
+                err.contains("no pointer input without the foreground"),
+                "{tool}: {err}"
+            );
+        }
         for tool in [
             "hotkey",
             "type_text",
