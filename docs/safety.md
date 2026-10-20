@@ -81,6 +81,7 @@ With `[desk] input = "background"` ([config.md](config.md#desk-input)), shuttle 
 - keys, typed text, scrolls and drags need the target window named (`window` or `pid`);
 - a window that takes no pointer input without the foreground, such as a macOS sheet, refuses a click;
 - on Linux the computer actions refuse, since they send desktop input;
+- on Windows a `focus` action on an element refuses, since UI Automation focuses an element only by bringing its window to the front;
 - `gui_plan` refuses, since it drives the front window.
 
 The driver refuses or cannot deliver some input in the background:
