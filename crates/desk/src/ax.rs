@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use core_foundation::array::{CFArray, CFArrayRef};
+use core_foundation::array::{CFArray, CFArrayCreate, CFArrayRef};
 use core_foundation::base::{CFGetTypeID, CFHash, CFType, CFTypeID, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::CFDictionary;
@@ -346,6 +346,40 @@ impl Access for Ax {
         Ok(self.app_frames(pids))
     }
 
+    fn off_space(&mut self) -> Vec<Frame> {
+        let own = std::process::id();
+        let (name, owner, layer, shown) = (
+            CFString::from_static_string("kCGWindowName"),
+            CFString::from_static_string("kCGWindowOwnerName"),
+            CFString::from_static_string("kCGWindowLayer"),
+            CFString::from_static_string("kCGWindowIsOnscreen"),
+        );
+        let (id, pid) = (
+            CFString::from_static_string("kCGWindowNumber"),
+            CFString::from_static_string("kCGWindowOwnerPID"),
+        );
+        off_space_windows()
+            .iter()
+            .filter(|d| number(d, &layer) == Some(0) && number(d, &shown) != Some(1))
+            .filter_map(|d| {
+                let pid = u32::try_from(number(d, &pid)?).ok()?;
+                let exe = || exe_path(i32::try_from(pid).ok()?);
+                if pid == own || self.driver.is_some() && exe() == self.driver {
+                    return None;
+                }
+                Some(Frame {
+                    id: number(d, &id)?.to_string(),
+                    title: string(d.find(&name).map(|v| (*v).clone())),
+                    role: "window",
+                    pid: Some(pid),
+                    app: Some(string(d.find(&owner).map(|v| (*v).clone()))),
+                    space: Some("other"),
+                    ..Frame::default()
+                })
+            })
+            .collect()
+    }
+
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
         let started = Instant::now();
         let deadline = started + WALK_BUDGET;
@@ -540,6 +574,17 @@ unsafe extern "C" {
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> CFArrayRef;
+    fn CGWindowListCreateDescriptionFromArray(windows: CFArrayRef) -> CFArrayRef;
+    fn CGSMainConnectionID() -> i32;
+    fn CGSCopyManagedDisplaySpaces(cid: i32) -> CFArrayRef;
+    fn CGSCopyWindowsWithOptionsAndTags(
+        cid: i32,
+        owner: u32,
+        spaces: CFArrayRef,
+        options: u32,
+        set_tags: *mut u64,
+        clear_tags: *mut u64,
+    ) -> CFArrayRef;
     fn CGMainDisplayID() -> u32;
     fn CGDisplayCopyDisplayMode(display: u32) -> *mut c_void;
     fn CGDisplayModeGetPixelWidth(mode: *mut c_void) -> usize;
@@ -796,6 +841,93 @@ fn on_screen() -> Vec<CFDictionary<CFString, CFType>> {
         .filter(|d| number(d, &layer) == Some(0))
         .map(|d| (*d).clone())
         .collect()
+}
+
+fn off_space_windows() -> Vec<CFDictionary<CFString, CFType>> {
+    let (current, spaces, managed, kind) = (
+        CFString::from_static_string("Current Space"),
+        CFString::from_static_string("Spaces"),
+        CFString::from_static_string("ManagedSpaceID"),
+        CFString::from_static_string("type"),
+    );
+    // SAFETY: the connection id is a plain integer, and the display list comes at +1 or null, wrapped once under the create rule.
+    let (cid, displays) = unsafe {
+        let cid = CGSMainConnectionID();
+        (cid, CGSCopyManagedDisplaySpaces(cid))
+    };
+    if displays.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: `displays` is a non-null CFArray at +1.
+    let displays: CFArray<CFType> = unsafe { CFArray::wrap_under_create_rule(displays) };
+    let mut other = Vec::new();
+    for display in displays.iter().filter_map(|d| dictionary(&d)) {
+        let shown = display
+            .find(&current)
+            .and_then(|c| dictionary(&c))
+            .and_then(|c| number(&c, &managed));
+        let listed = display.find(&spaces).map(|s| items(&s)).unwrap_or_default();
+        other.extend(
+            listed
+                .iter()
+                .filter_map(dictionary)
+                .filter(|s| number(s, &kind) == Some(0))
+                .filter_map(|s| number(&s, &managed))
+                .filter(|&id| Some(id) != shown)
+                .map(CFNumber::from),
+        );
+    }
+    if other.is_empty() {
+        return Vec::new();
+    }
+    let other = CFArray::from_CFTypes(&other);
+    let (mut set_tags, mut clear_tags) = (0, 0);
+    // SAFETY: `other` is a live CFArray of space ids and the tag pointers are valid; the window list comes at +1 or null.
+    let windows = unsafe {
+        CGSCopyWindowsWithOptionsAndTags(
+            cid,
+            0,
+            other.as_concrete_TypeRef(),
+            2,
+            &raw mut set_tags,
+            &raw mut clear_tags,
+        )
+    };
+    if windows.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: `windows` is a non-null CFArray of CFNumbers at +1.
+    let windows: CFArray<CFNumber> = unsafe { CFArray::wrap_under_create_rule(windows) };
+    let ids: Vec<*const c_void> = windows
+        .iter()
+        .filter_map(|n| n.to_i64())
+        .map(|id| id as usize as *const c_void)
+        .collect();
+    // SAFETY: the description call takes a CFArray of raw window ids with no callbacks; the array is released after it, and the descriptions come at +1 or null.
+    let described = unsafe {
+        let raw = CFArrayCreate(
+            std::ptr::null(),
+            ids.as_ptr(),
+            ids.len() as isize,
+            std::ptr::null(),
+        );
+        let described = CGWindowListCreateDescriptionFromArray(raw);
+        core_foundation::base::CFRelease(raw.cast());
+        described
+    };
+    if described.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: `described` is a non-null CFArray of window dictionaries at +1.
+    let described: CFArray<CFDictionary<CFString, CFType>> =
+        unsafe { CFArray::wrap_under_create_rule(described) };
+    described.iter().map(|d| (*d).clone()).collect()
+}
+
+fn dictionary(v: &CFType) -> Option<CFDictionary<CFString, CFType>> {
+    let d = v.downcast::<CFDictionary>()?;
+    // SAFETY: `d` is a live CFDictionary whose keys are CFStrings; the get rule retains it.
+    Some(unsafe { CFDictionary::wrap_under_get_rule(d.as_concrete_TypeRef()) })
 }
 
 fn number(d: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<i64> {

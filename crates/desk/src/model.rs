@@ -66,6 +66,8 @@ pub struct Frame {
     /// A window of the desktop shell's processes on Linux: a panel, a dock or the desktop.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub shell: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space: Option<&'static str>,
     #[serde(skip)]
     pub stale: bool,
     /// A Linux top-level object that is no frame, dialog or alert, which no call picks.
@@ -254,6 +256,9 @@ pub trait Access {
             .into_iter()
             .filter(|f| f.pid == Some(pid))
             .collect())
+    }
+    fn off_space(&mut self) -> Vec<Frame> {
+        Vec::new()
     }
     /// A cheap fingerprint of the windows on screen that changes when windows open, close or retitle; `None` when the backend has none.
     fn hint(&mut self) -> Option<u64> {
