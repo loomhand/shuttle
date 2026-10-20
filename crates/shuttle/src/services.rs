@@ -212,21 +212,21 @@ async fn terminate(running: &mut Running) {
 }
 
 async fn listening(socket: &str) -> Result<server::Conn, String> {
-    let mut waited = Duration::ZERO;
+    let deadline = tokio::time::Instant::now() + LISTEN_WAIT;
     loop {
-        match server::connect(socket).await {
-            Ok(conn) => return Ok(conn),
-            Err(e) if waited >= LISTEN_WAIT => {
-                return Err(format!("no service listens at {socket}: {e}"));
-            }
-            Err(_) => {}
+        let e = match tokio::time::timeout_at(deadline, server::connect(socket)).await {
+            Ok(Ok(conn)) => return Ok(conn),
+            Ok(Err(e)) => e.to_string(),
+            Err(_) => "the pipe stays busy".to_owned(),
+        };
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!("no service listens at {socket}: {e}"));
         }
         tokio::time::sleep(POLL).await;
-        waited += POLL;
     }
 }
 
-// an end of the data on either side only closes the other's input, and the first failure ends both
+// an end of the data on either side closes only the other's input, or both on Windows where a pipe has no half-close; the first failure ends both
 async fn splice<C, S>(client: C, service: S)
 where
     C: AsyncRead + AsyncWrite + Unpin,
@@ -234,7 +234,13 @@ where
 {
     let (client_r, client_w) = tokio::io::split(client);
     let (service_r, service_w) = tokio::io::split(service);
+    #[cfg(unix)]
     let _ = tokio::try_join!(pump(client_r, service_w), pump(service_r, client_w));
+    #[cfg(windows)]
+    tokio::select! {
+        _ = pump(client_r, service_w) => {}
+        _ = pump(service_r, client_w) => {}
+    }
 }
 
 async fn pump<R, W>(mut r: R, mut w: W) -> std::io::Result<()>
@@ -1024,5 +1030,46 @@ while ($true) {
         );
         held.abort();
         running.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_client_that_closes_mid_call_ends_the_call_and_the_service_sees_its_pipe_close() {
+        let pipe = format!(r"\\.\pipe\shuttle-test-close-{}", std::process::id());
+        let mut service = tokio::net::windows::named_pipe::ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&pipe)
+            .unwrap();
+        let near = server::connect(&pipe).await.unwrap();
+        service.connect().await.unwrap();
+        let (client, far) = tokio::io::duplex(1 << 16);
+        let spliced = tokio::spawn(splice(far, near));
+        drop(client);
+        let read = tokio::time::timeout(Duration::from_secs(5), service.read(&mut [0u8; 1]))
+            .await
+            .expect("the service never saw the call end");
+        assert!(!matches!(read, Ok(n) if n > 0), "{read:?}");
+        tokio::time::timeout(Duration::from_secs(5), spliced)
+            .await
+            .expect("the splice outlived the call")
+            .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pipe_that_stays_busy_fails_the_call_after_the_listen_wait() {
+        let pipe = format!(r"\\.\pipe\shuttle-test-busy-{}", std::process::id());
+        let _service = tokio::net::windows::named_pipe::ServerOptions::new()
+            .max_instances(1)
+            .create(&pipe)
+            .unwrap();
+        let _held = tokio::net::windows::named_pipe::ClientOptions::new()
+            .open(&pipe)
+            .unwrap();
+        let start = tokio::time::Instant::now();
+        let err = listening(&pipe).await.unwrap_err();
+        assert!(
+            err.contains("no service listens") && start.elapsed() >= LISTEN_WAIT,
+            "{err} after {:?}",
+            start.elapsed()
+        );
     }
 }
