@@ -27,6 +27,7 @@ pub struct Runner {
     endpoint: String,
     flows: PathBuf,
     key_vars: Vec<String>,
+    background: bool,
     stop: tokio::sync::watch::Sender<bool>,
 }
 
@@ -44,8 +45,15 @@ impl Runner {
             endpoint,
             flows,
             key_vars,
+            background: false,
             stop: tokio::sync::watch::Sender::new(false),
         }
+    }
+
+    /// Runs with `SHUTTLE_INPUT=background`, so `gui_plan` drives its target window without fronting it.
+    pub fn background(mut self, on: bool) -> Self {
+        self.background = on;
+        self
     }
 
     /// Stops the run in flight and every run after it, until `halt(false)`.
@@ -146,6 +154,14 @@ impl Runner {
             .env("SHUTTLE_RUN", scratch)
             .env("SHUTTLE_FLOWS", &self.flows)
             .env("SHUTTLE_AGENT", agent)
+            .env(
+                "SHUTTLE_INPUT",
+                if self.background {
+                    "background"
+                } else {
+                    "foreground"
+                },
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -342,6 +358,24 @@ mod tests {
             dir.join("flows"),
             vec!["HOME".into(), "CARGO_PKG_NAME".into()],
         )
+    }
+
+    #[tokio::test]
+    async fn a_run_knows_whether_desk_input_goes_in_the_background() {
+        let dir = tempfile::tempdir().unwrap();
+        let code = "export function main() { return process.env.SHUTTLE_INPUT }";
+        let front = runner(dir.path());
+        let report = front
+            .script(json!({"code": code}), "run-test")
+            .await
+            .unwrap();
+        assert_eq!(report["result"], "foreground", "{report}");
+        let back = runner(dir.path()).background(true);
+        let report = back
+            .script(json!({"code": code}), "run-test")
+            .await
+            .unwrap();
+        assert_eq!(report["result"], "background", "{report}");
     }
 
     #[tokio::test]

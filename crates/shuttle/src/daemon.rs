@@ -28,7 +28,8 @@ const BUSY: &str = "desk busy: another run or action is still going";
 const SCRIPT_RUN_OFF: &str =
     "script_run is turned off: set script_run = true under [tools] in config.toml";
 const DECLINED: &str = "declined by the user";
-const PLAN_BACKGROUND: &str = "gui_plan drives the front window, and [desk] input = \"background\" never brings one to the front: use the desk verbs with a window";
+#[cfg(target_os = "linux")]
+const PLAN_BACKGROUND: &str = "background gui_plan is not measured on Linux: set [desk] input = \"foreground\" for plans, or use the desk verbs with a window";
 const NO_ASK: &str = "confirm needs the menu-bar controls, which this OS does not have yet: set confirm = \"off\" under [safety] in config.toml";
 const CONFIRM_OPEN: &str = "a confirm dialog is open: answer it first";
 const QUESTION_CHARS: usize = 200;
@@ -54,7 +55,7 @@ pub struct Guard {
     pub script_run: bool,
     pub confirm: Confirm,
     pub asker: Option<Asker>,
-    /// Whether desk input goes in the background, which `gui_plan` cannot drive.
+    /// Whether desk input goes in the background, which `gui_plan` refuses on Linux.
     pub background: bool,
 }
 
@@ -152,6 +153,7 @@ impl<H: Handler> Daemon<H> {
         if (tool == "script_run" || plugin.is_some()) && !self.guard.script_run {
             return Err(SCRIPT_RUN_OFF.to_owned());
         }
+        #[cfg(target_os = "linux")]
         if tool == "gui_plan" && self.guard.background {
             return Err(PLAN_BACKGROUND.to_owned());
         }
@@ -1120,8 +1122,9 @@ mod tests {
         assert_eq!(*keys.0.lock().unwrap(), ["a"]);
     }
 
+    #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn with_background_input_gui_plan_refuses_and_says_why() {
+    async fn with_background_input_gui_plan_refuses_on_linux_and_says_why() {
         let d = daemon(
             Echo,
             Guard {
