@@ -81,7 +81,7 @@ On Windows the same order holds with UI Automation patterns and cua-driver input
 With `[desk] input = "background"` ([config.md](config.md#desk-input)), shuttle sends input to its target window through cua-driver without fronting that window or moving your pointer. shuttle sends no fronting call, but an app may still bring itself to the front in reaction to the input, for example when a menu opens. It never falls back to the foreground; an action that needs the foreground fails and names why:
 - keys, typed text, scrolls and drags need the target window named (`window` or `pid`);
 - a window that takes no pointer input without the foreground, such as a macOS sheet, refuses a click;
-- on Linux the computer actions refuse, since they send desktop input;
+- the computer actions refuse, since they send desktop input;
 - on Windows a `focus`, `select` or `action` on an element refuses, since UI Automation runs them by bringing the element's window to the front, and a `press` clicks the element in its window instead, and refuses when it shows no point to click;
 - `gui_plan` refuses, since it drives the front window.
 
