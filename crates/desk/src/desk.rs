@@ -175,8 +175,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
             "desk_shot" => return self.shot(parse(args)?).await,
             "desk_screen" => {
-                let v = self.driver.call("get_screen_size", json!({})).await?;
-                v["structuredContent"].to_string()
+                let mut v = self.driver.call("get_screen_size", json!({})).await?;
+                let mut size = v["structuredContent"].take();
+                if self.os == Os::Mac
+                    && let Some(k) = size["scale_factor"].as_f64().filter(|k| *k > 0.0)
+                {
+                    for side in ["width", "height"] {
+                        if let Some(n) = size[side].as_f64() {
+                            size[side] = ((n * k).round() as i64).into();
+                        }
+                    }
+                }
+                size.to_string()
             }
             t if COMPUTER_VERBS.contains(&t) => {
                 return Err(format!(
@@ -1780,6 +1790,29 @@ pub(crate) mod tests {
                 ),
                 _ => self.0.call(tool, args).await,
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_screen_is_in_pixels_on_a_retina_mac_and_as_the_driver_reports_it_elsewhere() {
+        for (os, want) in [
+            (
+                Os::Mac,
+                json!({"width": 2560, "height": 1600, "scale_factor": 2.0}),
+            ),
+            (
+                Os::Windows,
+                json!({"width": 1280, "height": 800, "scale_factor": 2.0}),
+            ),
+        ] {
+            let desk = Desk::new(
+                || Ok(Apps),
+                Retina(Desktop(Arc::default()), Arc::default()),
+                os,
+            );
+            let out = desk.run("desk_screen", json!({})).await.unwrap();
+            let got: Value = serde_json::from_str(&out.text).unwrap();
+            assert_eq!(got, want, "{os:?}");
         }
     }
 
