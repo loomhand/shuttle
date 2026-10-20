@@ -149,7 +149,12 @@ fn save_png(b64: &str) -> Result<PathBuf, String> {
 fn controls_serve(endpoint: String) -> ExitCode {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let ready = move |controls, safety: Safety, hotkey: Option<Hotkey>| {
+        let ready = move |controls, safety: Safety, hotkey: Option<Hotkey>, input: InputMode| {
+            let input = match input {
+                InputMode::Foreground => "foreground",
+                InputMode::Background => "background",
+                InputMode::Auto => "auto",
+            };
             let _ = tx.send(Ui {
                 controls,
                 hotkey,
@@ -158,6 +163,7 @@ fn controls_serve(endpoint: String) -> ExitCode {
                     None => "Stop".to_owned(),
                 },
                 indicator: safety.indicator,
+                about: format!("Cocoon Shuttle {VERSION}, {input} input"),
             });
         };
         let done = block_on(
@@ -186,6 +192,7 @@ async fn serve(
         Arc<dyn Controls>,
         Safety,
         Option<Hotkey>,
+        InputMode,
     ),
 ) -> Result<(), String> {
     let path = default_path(NAME);
@@ -213,13 +220,14 @@ async fn serve(
         key_vars.push(c.api_key_env.clone());
     }
     let apps = std::mem::take(&mut safety.apps);
+    let input = config
+        .as_ref()
+        .map_or(InputMode::Foreground, |c| c.desk.input);
     let guard = Guard {
         script_run: config.as_ref().is_ok_and(|c| c.tools.script_run),
         confirm: safety.confirm,
         asker,
-        background: config
-            .as_ref()
-            .is_ok_and(|c| c.desk.input == InputMode::Background),
+        background: input == InputMode::Background,
     };
     let overlay = !config.as_ref().is_ok_and(|c| !c.driver.overlay);
     let group = config
@@ -271,7 +279,7 @@ async fn serve(
             .with_services(routes),
     );
     #[cfg(any(target_os = "macos", windows))]
-    ready(daemon.clone(), safety, hotkey.filter(|_| local));
+    ready(daemon.clone(), safety, hotkey.filter(|_| local), input);
     let served = tokio::select! {
         r = server::serve(daemon, listener) => r,
         () = shutdown() => Ok(()),
