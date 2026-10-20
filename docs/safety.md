@@ -93,6 +93,8 @@ The driver refuses or cannot deliver some input in the background:
 
 A delivered action is not always a landed one. When cua-driver cannot confirm that background input took effect, for example keys posted to a Windows XAML or console window, the result carries `unverified` with the driver's note ([wire.md](wire.md#desk-calls)). Read the effect back before relying on it; the input may have landed, so sending it again can type twice.
 
+On macOS `windows` also lists, in background mode only, the windows on another Space, marked `space: "other"` and never active, so input can name them; a snapshot of one fails with "is on another Space", since accessibility reaches a window only on the current Space. Input to such a window is delivered without a Space switch, but its capture can lag what it shows, and its result's `unverified` says so: read it back on its Space before sending the input again.
+
 `focus` is the one call that brings a window to the front in background mode.
 
 With `[desk] input = "auto"`, a desk action that background input refuses before anything is sent runs once more in the foreground, its window brought to the front first; any other error stays an error. These refusals take the foreground:
