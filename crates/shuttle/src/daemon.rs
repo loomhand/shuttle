@@ -1064,16 +1064,13 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_plugin_runs_on_its_own_program_and_its_desk_calls_reach_the_desk() {
-        use std::os::unix::fs::PermissionsExt;
-
         let bins = tempfile::tempdir().unwrap();
         let bin = bins.path().join("demo-bin");
-        std::fs::write(
+        crate::script(
             &bin,
             "#!/bin/sh\necho \"$@\" > \"$0.argv\"\nexec node \"$@\"\n",
         )
         .unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let (d, keys, _dir) = served_with(Duration::from_secs(10), vec![demo(bin.clone())]).await;
         let out = d
             .answer(Call {

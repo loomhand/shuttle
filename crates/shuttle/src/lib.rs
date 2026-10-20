@@ -79,3 +79,20 @@ pub(crate) fn kill_group(pid: u32) {
         unsafe { libc::kill(-pid, libc::SIGKILL) };
     }
 }
+
+#[cfg(all(test, unix))]
+pub(crate) fn script(path: &std::path::Path, body: &str) -> std::io::Result<()> {
+    let made = std::process::Command::new("/bin/sh")
+        .args(["-c", r#"printf '%s' "$1" > "$0" && chmod 755 "$0""#])
+        .arg(path)
+        .arg(body)
+        .status()?;
+    if made.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "write {}: {made}",
+            path.display()
+        )))
+    }
+}

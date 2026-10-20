@@ -248,8 +248,6 @@ fn pid_file(endpoint: &str) -> Result<PathBuf, String> {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
-
     use super::*;
 
     const FAKE: &str = r#"#!/usr/bin/env python3
@@ -282,9 +280,7 @@ while True:
 "#;
 
     fn fake(dir: &Path, script: &str) -> std::io::Result<PathBuf> {
-        let bin = dir.join("cua-driver");
-        std::fs::write(&bin, script)?;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
+        crate::script(&dir.join("cua-driver"), script)?;
         Ok(dir.join(NAME))
     }
 
