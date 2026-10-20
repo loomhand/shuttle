@@ -20,7 +20,7 @@ use desk_core::args::parse;
 use desk_core::press::{MENU_POLL, MENU_POLLS};
 use desk_core::wire::Output;
 
-use crate::desk::{Cancel, Typer, text_runs};
+use crate::desk::{Cancel, Turn, Typer, text_runs};
 use crate::driver::{Driver, image_of, text_of};
 use crate::keys::{Os, key_names};
 use crate::model::Modal;
@@ -85,7 +85,7 @@ pub struct Computer {
     driver: Arc<Driver>,
     typer: Typer,
     last: Mutex<HashMap<String, Snapshot>>,
-    input: Mutex<()>,
+    input: Arc<Mutex<()>>,
     /// The MIT-SHM grabber, opened on first use and again after a failure.
     grabber: std::sync::Mutex<Option<Grabber>>,
     /// Titles of the windows an action opened, to name them when they close.
@@ -108,7 +108,7 @@ impl Computer {
             driver,
             typer: crate::xtest::type_mapped,
             last: Mutex::new(HashMap::new()),
-            input: Mutex::new(()),
+            input: Arc::new(Mutex::new(())),
             grabber: std::sync::Mutex::new(None),
             titles: std::sync::Mutex::new(HashMap::new()),
             scales: std::sync::Mutex::new(HashMap::new()),
@@ -341,12 +341,12 @@ impl Computer {
         if enter && let Some(line) = line {
             req["text"] = line.into();
         }
-        let input = self.input.lock().await;
+        let input: Turn = Arc::new(self.input.clone().lock_owned().await);
         let before = self.before_input(Some(&a)).await;
         let once = self.once(&req);
         let target = once.as_ref().map_or(session, Owned::name);
         let typed = enter.then(|| req.clone());
-        let mut result = self.send(target, tool, req, enter).await;
+        let mut result = self.send(target, tool, req, enter, &input).await;
         if let Some(typed) = typed
             && result.is_ok()
         {
@@ -1182,25 +1182,31 @@ impl Computer {
         tool: &str,
         req: Value,
         enter: bool,
+        input: &Turn,
     ) -> Result<Value, String> {
         if tool == "type_text"
             && !enter
             && req["target"]["kind"] == "desktop"
-            && self.xtest(req["text"].as_str().unwrap_or_default()).await?
+            && self
+                .xtest(req["text"].as_str().unwrap_or_default(), input.clone())
+                .await?
         {
             return Ok(json!({"content": [{"type": "text", "text": XTEST_TYPED}]}));
         }
         self.request(session, tool, req).await
     }
 
-    /// Whether the typer typed `text`; it stops at its next key once this call is dropped.
-    async fn xtest(&self, text: &str) -> Result<bool, String> {
+    /// Whether the typer typed `text`; it runs on a blocking thread that holds the input turn to its end and stops at its next key once this call is dropped.
+    async fn xtest(&self, text: &str, turn: Turn) -> Result<bool, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let _cancel = Cancel(stop.clone());
         let (text, typer) = (text.to_owned(), self.typer);
-        tokio::task::spawn_blocking(move || typer(&text, &stop))
-            .await
-            .map_err(|e| format!("XTest: {e}"))?
+        tokio::task::spawn_blocking(move || {
+            let _turn = turn;
+            typer(&text, &stop)
+        })
+        .await
+        .map_err(|e| format!("XTest: {e}"))?
     }
 
     fn to_dialog(&self, req: &Value) -> bool {
@@ -2459,6 +2465,10 @@ mod tests {
         driver.abort();
     }
 
+    async fn turn(cua: &Computer) -> Turn {
+        Arc::new(cua.input.clone().lock_owned().await)
+    }
+
     fn types(calls: &std::sync::Mutex<Vec<Value>>) -> Vec<String> {
         calls
             .lock()
@@ -2479,7 +2489,10 @@ mod tests {
         cua.typer = |text, _| Ok(text == "Ab3!x-Y_z?");
         let req =
             json!({"text": "Ab3!x-Y_z?", "target": {"kind": "desktop", "display_id": "primary"}});
-        let out = cua.send("s", "type_text", req, false).await.unwrap();
+        let out = cua
+            .send("s", "type_text", req, false, &turn(&cua).await)
+            .await
+            .unwrap();
         assert_eq!(text_of(&out), XTEST_TYPED);
         assert!(types(&calls).is_empty(), "{:?}", calls.lock().unwrap());
         driver.abort();
@@ -2494,7 +2507,9 @@ mod tests {
         let mut cua = cua(&socket);
         cua.typer = |_, _| Ok(false);
         let req = json!({"text": "abc", "target": {"kind": "desktop", "display_id": "primary"}});
-        cua.send("s", "type_text", req, false).await.unwrap();
+        cua.send("s", "type_text", req, false, &turn(&cua).await)
+            .await
+            .unwrap();
         assert_eq!(types(&calls), ["abc"]);
         driver.abort();
     }
@@ -2508,9 +2523,45 @@ mod tests {
         let mut cua = cua(&socket);
         cua.typer = |_, _| Err("XTest: connection lost".to_owned());
         let req = json!({"text": "abc", "target": {"kind": "desktop", "display_id": "primary"}});
-        let err = cua.send("s", "type_text", req, false).await.unwrap_err();
+        let err = cua
+            .send("s", "type_text", req, false, &turn(&cua).await)
+            .await
+            .unwrap_err();
         assert!(err.contains("connection lost"), "{err}");
         assert!(types(&calls).is_empty(), "{:?}", calls.lock().unwrap());
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_type_holds_the_input_turn_until_its_typer_returns() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        let mut cua = cua(&socket);
+        cua.typer = |_, stop| {
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            std::thread::sleep(Duration::from_millis(300));
+            Err("stopped by the user".to_owned())
+        };
+        let req = json!({"text": "abc", "target": {"kind": "desktop", "display_id": "primary"}});
+        let held = turn(&cua).await;
+        let send = cua.send("s", "type_text", req, false, &held);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), send)
+                .await
+                .is_err()
+        );
+        drop(held);
+        let start = Instant::now();
+        drop(turn(&cua).await);
+        assert!(
+            start.elapsed() >= Duration::from_millis(250),
+            "{:?}",
+            start.elapsed()
+        );
         driver.abort();
     }
 
@@ -2523,9 +2574,13 @@ mod tests {
         let mut cua = cua(&socket);
         cua.typer = |_, _| Err("the typer ran".to_owned());
         let pid = json!({"text": "abc", "pid": 7, "window_id": 9});
-        cua.send("s", "type_text", pid, false).await.unwrap();
+        cua.send("s", "type_text", pid, false, &turn(&cua).await)
+            .await
+            .unwrap();
         let line = json!({"text": "name", "target": {"kind": "desktop", "display_id": "primary"}});
-        cua.send("s", "type_text", line, true).await.unwrap();
+        cua.send("s", "type_text", line, true, &turn(&cua).await)
+            .await
+            .unwrap();
         let out = cua
             .act(json!({"action": "type", "text": "中文测试"}))
             .await

@@ -73,7 +73,7 @@ const TYPER: Typer = crate::xtest::type_mapped;
 #[cfg(not(target_os = "linux"))]
 const TYPER: Typer = |_, _| Ok(false);
 
-type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
+pub(crate) type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
 /// Types a line on the core keyboard: true when typed, false when it typed nothing and leaves the line to the driver; it stops once the flag is set.
 pub(crate) type Typer = fn(&str, &AtomicBool) -> Result<bool, String>;
 
