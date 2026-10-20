@@ -352,18 +352,44 @@ mod tests {
         assert_eq!(ids, [json!(8)]);
     }
 
+    #[cfg(unix)]
+    struct Slow;
+
+    #[cfg(unix)]
+    impl Handler for Slow {
+        async fn answer(&self, _: Call) -> Output {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            Output::text("[]")
+        }
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_cancel_drops_a_queued_request_and_replies_keep_their_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let daemon = tokio::spawn({
+            let endpoint = endpoint.clone();
+            async move { server::serve(Arc::new(Slow), server::bind(&endpoint).await?).await }
+        });
+        for _ in 0..50 {
+            if server::connect(&endpoint).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let windows = |id: i64| json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": "desk", "arguments": {"verb": "windows"}}});
         let out = session(
             &[
-                json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}),
-                json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+                windows(1),
+                windows(2),
                 json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 2}}),
                 json!({"jsonrpc": "2.0", "id": "3", "method": "ping"}),
             ],
-            "unused",
+            &endpoint,
         )
         .await;
+        daemon.abort();
         let ids: Vec<&Value> = out.iter().map(|r| &r["id"]).collect();
         assert_eq!(ids, [&json!(1), &json!("3")], "{out:?}");
     }
