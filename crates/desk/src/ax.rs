@@ -1,10 +1,11 @@
 //! The macOS desk backend: window trees by a budgeted AX walk with one batched attribute read per element.
 
 use std::collections::HashMap;
-use std::ffi::c_void;
+use std::ffi::{CStr, c_void};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -63,6 +64,7 @@ const APP_ATTRS: [&str; 5] = [
 const FRAME_ATTRS: [&str; 4] = ["AXRole", "AXSubrole", "AXTitle", "AXChildren"];
 
 static PROMPTED: AtomicBool = AtomicBool::new(false);
+static CGS: OnceLock<Option<Cgs>> = OnceLock::new();
 
 /// The AX backend: element ids are `pid/n`, kept while this backend lives.
 pub struct Ax {
@@ -543,6 +545,48 @@ struct Pair {
     b: f64,
 }
 
+struct Cgs {
+    main_connection: unsafe extern "C" fn() -> i32,
+    managed_spaces: unsafe extern "C" fn(i32) -> CFArrayRef,
+    windows: unsafe extern "C" fn(i32, u32, CFArrayRef, u32, *mut u64, *mut u64) -> CFArrayRef,
+}
+
+impl Cgs {
+    fn get() -> Option<&'static Self> {
+        CGS.get_or_init(|| {
+            Some(Self {
+                // SAFETY: the symbol is CGSMainConnectionID, which has this signature.
+                main_connection: unsafe {
+                    std::mem::transmute::<*mut c_void, unsafe extern "C" fn() -> i32>(symbol(
+                        c"CGSMainConnectionID",
+                    )?)
+                },
+                // SAFETY: the symbol is CGSCopyManagedDisplaySpaces, which has this signature.
+                managed_spaces: unsafe {
+                    std::mem::transmute::<*mut c_void, unsafe extern "C" fn(i32) -> CFArrayRef>(
+                        symbol(c"CGSCopyManagedDisplaySpaces")?,
+                    )
+                },
+                // SAFETY: the symbol is CGSCopyWindowsWithOptionsAndTags, which has this signature.
+                windows: unsafe {
+                    std::mem::transmute::<
+                        *mut c_void,
+                        unsafe extern "C" fn(
+                            i32,
+                            u32,
+                            CFArrayRef,
+                            u32,
+                            *mut u64,
+                            *mut u64,
+                        ) -> CFArrayRef,
+                    >(symbol(c"CGSCopyWindowsWithOptionsAndTags")?)
+                },
+            })
+        })
+        .as_ref()
+    }
+}
+
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     fn AXIsProcessTrustedWithOptions(options: CFTypeRef) -> bool;
@@ -575,16 +619,6 @@ unsafe extern "C" {
 unsafe extern "C" {
     fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> CFArrayRef;
     fn CGWindowListCreateDescriptionFromArray(windows: CFArrayRef) -> CFArrayRef;
-    fn CGSMainConnectionID() -> i32;
-    fn CGSCopyManagedDisplaySpaces(cid: i32) -> CFArrayRef;
-    fn CGSCopyWindowsWithOptionsAndTags(
-        cid: i32,
-        owner: u32,
-        spaces: CFArrayRef,
-        options: u32,
-        set_tags: *mut u64,
-        clear_tags: *mut u64,
-    ) -> CFArrayRef;
     fn CGMainDisplayID() -> u32;
     fn CGDisplayCopyDisplayMode(display: u32) -> *mut c_void;
     fn CGDisplayModeGetPixelWidth(mode: *mut c_void) -> usize;
@@ -844,6 +878,9 @@ fn on_screen() -> Vec<CFDictionary<CFString, CFType>> {
 }
 
 fn off_space_windows() -> Vec<CFDictionary<CFString, CFType>> {
+    let Some(cgs) = Cgs::get() else {
+        return Vec::new();
+    };
     let (current, spaces, managed, kind) = (
         CFString::from_static_string("Current Space"),
         CFString::from_static_string("Spaces"),
@@ -852,8 +889,8 @@ fn off_space_windows() -> Vec<CFDictionary<CFString, CFType>> {
     );
     // SAFETY: the connection id is a plain integer, and the display list comes at +1 or null, wrapped once under the create rule.
     let (cid, displays) = unsafe {
-        let cid = CGSMainConnectionID();
-        (cid, CGSCopyManagedDisplaySpaces(cid))
+        let cid = (cgs.main_connection)();
+        (cid, (cgs.managed_spaces)(cid))
     };
     if displays.is_null() {
         return Vec::new();
@@ -871,7 +908,7 @@ fn off_space_windows() -> Vec<CFDictionary<CFString, CFType>> {
             listed
                 .iter()
                 .filter_map(dictionary)
-                .filter(|s| number(s, &kind) == Some(0))
+                .filter(|s| user_space(number(s, &kind)))
                 .filter_map(|s| number(&s, &managed))
                 .filter(|&id| Some(id) != shown)
                 .map(CFNumber::from),
@@ -884,7 +921,7 @@ fn off_space_windows() -> Vec<CFDictionary<CFString, CFType>> {
     let (mut set_tags, mut clear_tags) = (0, 0);
     // SAFETY: `other` is a live CFArray of space ids and the tag pointers are valid; the window list comes at +1 or null.
     let windows = unsafe {
-        CGSCopyWindowsWithOptionsAndTags(
+        (cgs.windows)(
             cid,
             0,
             other.as_concrete_TypeRef(),
@@ -922,6 +959,16 @@ fn off_space_windows() -> Vec<CFDictionary<CFString, CFType>> {
     let described: CFArray<CFDictionary<CFString, CFType>> =
         unsafe { CFArray::wrap_under_create_rule(described) };
     described.iter().map(|d| (*d).clone()).collect()
+}
+
+fn user_space(kind: Option<i64>) -> bool {
+    matches!(kind, Some(0 | 4))
+}
+
+fn symbol(name: &CStr) -> Option<*mut c_void> {
+    // SAFETY: `name` is a NUL-terminated symbol name; RTLD_DEFAULT searches the loaded images.
+    let p = unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) };
+    (!p.is_null()).then_some(p)
 }
 
 fn dictionary(v: &CFType) -> Option<CFDictionary<CFString, CFType>> {
@@ -983,5 +1030,17 @@ mod tests {
             std::env::current_exe().and_then(std::fs::canonicalize).ok()
         );
         assert_eq!(exe_path(-1), None);
+    }
+
+    #[test]
+    fn desktop_and_full_screen_spaces_hold_app_windows_and_others_do_not() {
+        assert!(user_space(Some(0)) && user_space(Some(4)));
+        assert!(!user_space(Some(2)) && !user_space(None));
+    }
+
+    #[test]
+    fn the_space_calls_resolve_at_run_time_and_a_missing_symbol_is_none() {
+        assert!(Cgs::get().is_some());
+        assert!(symbol(c"CGSNoSuchCallForShuttle").is_none());
     }
 }
