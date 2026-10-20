@@ -1025,6 +1025,9 @@ impl Computer {
 
     /// Runs `read` on the MIT-SHM grabber, opening it when needed; `None` when it is unavailable or fails.
     fn shm<T>(&self, read: impl FnOnce(&Grabber) -> Result<T, String>) -> Option<T> {
+        if !cfg!(target_os = "linux") {
+            return None;
+        }
         let mut slot = lock(&self.grabber);
         if slot.is_none() {
             match Grabber::open() {
