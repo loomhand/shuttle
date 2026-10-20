@@ -89,4 +89,6 @@ The driver refuses or cannot deliver some input in the background:
 - some toolkits (Tk, LibreOffice) refuse background input;
 - on X11, GTK and Chromium ignore synthetic events, and Chrome drops core keyboard input while a second master keyboard exists. Second-cursor delivery needs a real Xorg server and `/dev/uinput`.
 
+A delivered action is not always a landed one. When cua-driver cannot confirm that background input took effect, for example keys posted to a Windows XAML or console window, the result carries `unverified` with the driver's note ([wire.md](wire.md#desk-calls)). Read the effect back before relying on it; the input may have landed, so sending it again can type twice. An app can also bring itself to the front when it opens a menu or dialog; shuttle sends no fronting call, but cannot stop the app.
+
 `focus` is the one call that brings a window to the front in background mode.

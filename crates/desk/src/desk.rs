@@ -503,17 +503,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn key(&self, a: KeyArgs) -> Result<String, String> {
         let (tool, req) = key_request(key_names(&a.keys, self.os)?);
         let to = self.target(a.window.as_deref(), a.pid).await?;
-        self.driver.call(tool, deliver(req, to)).await?;
-        Ok(OK.to_owned())
+        let mut note = None;
+        self.send(tool, req, to, &mut note).await?;
+        Ok(ok_with(note))
     }
 
     async fn type_text(&self, a: TypeArgs, turn: Option<Turn>) -> Result<String, String> {
         let text = a.text.as_str();
         let to = self.target(a.window.as_deref(), a.pid).await?;
+        let mut note = None;
         for (i, line) in text.split('\n').enumerate() {
             if i > 0 {
-                self.driver
-                    .call("press_key", deliver(json!({"key": "return"}), to))
+                self.send("press_key", json!({"key": "return"}), to, &mut note)
                     .await?;
             }
             let line = line.trim_end_matches('\r');
@@ -522,16 +523,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     continue;
                 }
                 for run in text_runs(line) {
-                    self.driver
-                        .call("type_text", deliver(json!({"text": run}), to))
+                    self.send("type_text", json!({"text": run}), to, &mut note)
                         .await?;
                 }
                 continue;
             }
             if self.os == Os::Mac {
                 if !line.is_empty() {
-                    self.driver
-                        .call("type_text", deliver(json!({"text": line}), to))
+                    self.send("type_text", json!({"text": line}), to, &mut note)
                         .await?;
                 }
                 continue;
@@ -541,13 +540,50 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     Some(keys) => key_request(keys),
                     None => ("type_text", json!({"text": &line[at..at + c.len_utf8()]})),
                 };
-                self.driver.call(tool, deliver(req, to)).await?;
+                self.send(tool, req, to, &mut note).await?;
             }
         }
         if self.os == Os::Linux && to.is_none() {
             self.typed(text).await;
         }
-        Ok(json!({"ok": true, "chars": text.chars().count()}).to_string())
+        let mut out = json!({"ok": true, "chars": text.chars().count()});
+        if let Some(note) = note {
+            out["unverified"] = note.into();
+        }
+        Ok(out.to_string())
+    }
+
+    /// Sends `req` to window `to`, or in the foreground to the focused window, and keeps the first note of background input the driver could not confirm.
+    async fn send(
+        &self,
+        tool: &str,
+        req: Value,
+        to: Option<(i64, i64)>,
+        note: &mut Option<String>,
+    ) -> Result<(), String> {
+        let out = self.driver.call(tool, deliver(req, to)).await?;
+        if note.is_none() {
+            *note = self.unverified(&out);
+        }
+        Ok(())
+    }
+
+    /// The driver's note on background input whose effect it could not confirm, with the escalation it proposes.
+    fn unverified(&self, out: &Value) -> Option<String> {
+        let c = &out["structuredContent"];
+        let effect = c["effect"]
+            .as_str()
+            .filter(|e| self.background && *e != "confirmed")?;
+        let note = format!("{effect}: {}", text_of(out));
+        let escalation = &c["escalation"];
+        Some(
+            match (escalation["reason"].as_str(), escalation["target"].as_str()) {
+                (Some(reason), Some(target)) => {
+                    format!("{note} (escalation: {reason}, to {target})")
+                }
+                _ => note,
+            },
+        )
     }
 
     /// Whether the typer typed `line` on the core keyboard; it runs on a blocking thread that holds the action's turn to its end and stops at its next key once this call is dropped.
@@ -624,14 +660,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             if !self.allow.is_open() {
                 self.check_point(a.x, a.y, Some(&under)).await?;
             }
-            self.click_window(req, &under).await?;
-            return Ok(OK.to_owned());
+            let note = self.click_window(req, &under).await?;
+            return Ok(ok_with(note));
         }
-        self.click_at(req).await?;
-        Ok(OK.to_owned())
+        let note = self.click_at(req).await?;
+        Ok(ok_with(note))
     }
 
-    async fn click_at(&self, req: Value) -> Result<(), String> {
+    async fn click_at(&self, req: Value) -> Result<Option<String>, String> {
         let point = req["x"].as_f64().zip(req["y"].as_f64());
         if self.os == Os::Mac
             && let Some((x, y)) = point
@@ -656,7 +692,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 })
                 .await?;
             if pressed {
-                return Ok(());
+                return Ok(None);
             }
         }
         let under = match point {
@@ -679,7 +715,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return Err(BACKGROUND_NO_WINDOW.to_owned());
         }
         self.driver.call("click", desktop(req)).await?;
-        Ok(())
+        Ok(None)
     }
 
     /// Refuses a point whose window, or the process on top there, the allowlist does not admit.
@@ -717,8 +753,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 req["x"] = lx.into();
                 req["y"] = ly.into();
             }
-            self.driver.call("scroll", background(req, to)).await?;
-            return Ok(OK.to_owned());
+            let out = self.driver.call("scroll", background(req, to)).await?;
+            return Ok(ok_with(self.unverified(&out)));
         }
         let (x, y) = match (a.x, a.y) {
             (Some(x), Some(y)) => (x, y),
@@ -789,8 +825,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let (fx, fy) = self.local(&w, (a.x, a.y)).await?;
             let (tx, ty) = self.local(&w, (a.to_x, a.to_y)).await?;
             let req = json!({"from_x": fx, "from_y": fy, "to_x": tx, "to_y": ty});
-            self.driver.call("drag", background(req, to)).await?;
-            return Ok(OK.to_owned());
+            let out = self.driver.call("drag", background(req, to)).await?;
+            return Ok(ok_with(self.unverified(&out)));
         }
         let req = json!({"from_x": a.x, "from_y": a.y, "to_x": a.to_x, "to_y": a.to_y});
         self.driver.call("drag", desktop(req)).await?;
@@ -838,7 +874,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         )
     }
 
-    async fn click_window(&self, req: Value, w: &Under) -> Result<(), String> {
+    async fn click_window(&self, req: Value, w: &Under) -> Result<Option<String>, String> {
         if !self.background {
             let front = json!({"pid": w.pid, "window_id": w.id});
             self.driver.call("bring_to_front", front).await?;
@@ -852,7 +888,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             None => self.pixels(w).await?,
         };
         let Some(k) = k else {
-            return self.desktop_click(req).await;
+            return self.desktop_click(req).await.map(|()| None);
         };
         let mut win = req.clone();
         win["session"] = WINDOW_SESSION.into();
@@ -866,22 +902,22 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             win["y"] = ((w.point.1 - w.bounds[1]) * ky).into();
         };
         at(&mut win, k);
-        match self.driver.call("click", win.clone()).await {
-            Err(e) if e.contains(NO_WINDOWSERVER_CONNECTION) => self.desktop_click(req).await?,
+        let out = match self.driver.call("click", win.clone()).await {
+            Err(e) if e.contains(NO_WINDOWSERVER_CONNECTION) => {
+                return self.desktop_click(req).await.map(|()| None);
+            }
             Err(e) if cached.is_some() && e.contains(WINDOW_NEVER_READ) => {
                 match self.pixels(w).await? {
                     Some(k) => {
                         at(&mut win, k);
-                        self.driver.call("click", win).await?;
+                        self.driver.call("click", win).await?
                     }
-                    None => self.desktop_click(req).await?,
+                    None => return self.desktop_click(req).await.map(|()| None),
                 }
             }
-            done => {
-                done?;
-            }
-        }
-        Ok(())
+            done => done?,
+        };
+        Ok(self.unverified(&out))
     }
 
     /// A click at a screen point, for a window that takes no window click; background input refuses it.
@@ -1291,6 +1327,14 @@ fn key_request(mut keys: Vec<String>) -> (&'static str, Value) {
 /// A driver window's layer, 0 when the driver gives none, as on Linux.
 fn layer(w: &Value) -> i64 {
     w["layer"].as_i64().unwrap_or(0)
+}
+
+/// `{"ok":true}`, with the driver's note when it could not confirm background input.
+fn ok_with(unverified: Option<String>) -> String {
+    match unverified {
+        Some(note) => json!({"ok": true, "unverified": note}).to_string(),
+        None => OK.to_owned(),
+    }
 }
 
 /// `req` to the focused window, or in the background to window `to`.
@@ -1728,6 +1772,14 @@ pub(crate) mod tests {
                     "screenshot_width": 800, "screenshot_height": 600,
                     "window_bounds": {"width": 800.0, "height": 600.0}
                 }}),
+                "type_text" => json!({
+                    "content": [{"type": "text", "text": "Sent 1 char(s) via PostMessage (not verified)."}],
+                    "structuredContent": {
+                        "effect": "unverifiable",
+                        "escalation": {"reason": "delivery_failed", "target": "foreground"}
+                    }
+                }),
+                "press_key" => json!({"structuredContent": {"effect": "confirmed"}}),
                 _ => json!({}),
             })
         }
@@ -1864,6 +1916,41 @@ pub(crate) mod tests {
         ] {
             assert!(sent(&calls, tool).is_empty(), "{tool}");
         }
+    }
+
+    #[tokio::test]
+    async fn background_input_the_driver_cannot_confirm_says_so_and_foreground_input_does_not() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let back = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Mac).background(true);
+        let typed: Value = serde_json::from_str(
+            &back
+                .run("desk_type", json!({"text": "a", "pid": 4}))
+                .await
+                .unwrap()
+                .text,
+        )
+        .unwrap();
+        assert_eq!(
+            typed["unverified"],
+            "unverifiable: Sent 1 char(s) via PostMessage (not verified). (escalation: delivery_failed, to foreground)"
+        );
+        assert_eq!(
+            back.run("desk_key", json!({"keys": "enter", "pid": 4}))
+                .await
+                .unwrap()
+                .text,
+            OK
+        );
+        let front = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Mac);
+        let typed: Value = serde_json::from_str(
+            &front
+                .run("desk_type", json!({"text": "a"}))
+                .await
+                .unwrap()
+                .text,
+        )
+        .unwrap();
+        assert_eq!(typed, json!({"ok": true, "chars": 1}));
     }
 
     #[tokio::test]
