@@ -2256,6 +2256,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn background_input_never_reaches_the_xtest_typer() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        let mut cua = cua(&socket).background(true);
+        cua.typer = |_, _| panic!("the XTest typer ran in background");
+        for args in [
+            json!({"action": "type", "text": "Ab3!x"}),
+            json!({"actions": [{"action": "type", "text": "Ab3!x"}]}),
+        ] {
+            let err = cua.run("a", "desk_computer_act", args).await.unwrap_err();
+            assert!(err.contains("needs the foreground"), "{err}");
+        }
+        assert!(types(&calls).is_empty(), "{:?}", calls.lock().unwrap());
+        driver.abort();
+    }
+
+    #[tokio::test]
     async fn a_request_waits_for_a_driver_that_is_restarting() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("cua.sock");
