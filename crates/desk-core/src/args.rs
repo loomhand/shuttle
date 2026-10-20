@@ -64,11 +64,17 @@ pub struct AtArgs {
 #[derive(Deserialize)]
 pub struct KeyArgs {
     pub keys: String,
+    /// The window that background input goes to, by title.
+    pub window: Option<String>,
+    pub pid: Option<u32>,
 }
 
 #[derive(Deserialize)]
 pub struct TypeArgs {
     pub text: String,
+    /// The window that background input goes to, by title.
+    pub window: Option<String>,
+    pub pid: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -77,6 +83,9 @@ pub struct ClickArgs {
     pub y: f64,
     pub button: Option<String>,
     pub count: Option<u32>,
+    /// The window that background input goes to, by title.
+    pub window: Option<String>,
+    pub pid: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -86,6 +95,9 @@ pub struct ScrollArgs {
     pub amount: Option<u32>,
     pub x: Option<f64>,
     pub y: Option<f64>,
+    /// The window that background input goes to, by title.
+    pub window: Option<String>,
+    pub pid: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -94,6 +106,9 @@ pub struct DragArgs {
     pub y: f64,
     pub to_x: f64,
     pub to_y: f64,
+    /// The window that background input goes to, by title.
+    pub window: Option<String>,
+    pub pid: Option<u32>,
 }
 
 #[derive(Deserialize)]
