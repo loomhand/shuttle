@@ -446,7 +446,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             frame: false,
         };
         let (window, pid, id) = (a.window, a.pid, a.id);
-        let (allow, background) = (self.allow.clone(), self.background);
+        let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
         let (tree, found) = self
             .access
             .run(TREE_LIMIT, (), move |b| {
@@ -499,7 +499,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             frame: false,
         };
         let (window, pid) = (a.window, a.pid);
-        let (allow, background) = (self.allow.clone(), self.background);
+        let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
         let tree = self
             .access
             .run(TREE_LIMIT, (), move |b| {
@@ -591,7 +591,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn at(&self, a: AtArgs) -> Result<String, String> {
-        let (allow, background) = (self.allow.clone(), self.background);
+        let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
         self.access
             .run(CALL_LIMIT, (), move |b| {
                 let frames = frames(b, a.pid, &allow)?;
@@ -629,7 +629,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn close(&self, a: WindowArgs, turn: Option<Turn>) -> Result<String, String> {
-        let (allow, background) = (self.allow.clone(), self.background);
+        let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
         self.access
             .run(CALL_LIMIT, turn, move |b| {
                 let listed = frames(b, a.pid, &allow)?;
@@ -1345,7 +1345,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .find(|r| r["window_id"].as_i64() == id)
             .cloned()
             .unwrap_or_default();
-        if self.background && mac {
+        if self.bg() && mac {
             let twins: Vec<&Value> = raw
                 .iter()
                 .filter(|r| r["pid"] == listed["pid"] && r["title"] == listed["title"])
@@ -2318,10 +2318,12 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_background_snapshot_of_a_window_on_another_space_says_so_by_title_or_id() {
-        for background in [false, true] {
+        for (background, auto) in [(false, false), (true, true), (true, false)] {
             let calls = Arc::new(Mutex::new(Vec::new()));
-            let desk =
-                Desk::new(|| Ok(Apps), Spaces(Arc::clone(&calls)), Os::Mac).background(background);
+            let desk = Desk::new(|| Ok(Apps), Spaces(Arc::clone(&calls)), Os::Mac)
+                .background(background)
+                .auto(auto);
+            let background = background && !auto;
             for args in [json!({"window": "微信"}), json!({"id": "84080"})] {
                 let err = desk.run("desk_snapshot", args.clone()).await.unwrap_err();
                 assert_eq!(
