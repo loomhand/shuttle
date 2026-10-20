@@ -15,7 +15,7 @@ use shuttle_desk::server;
 use shuttle_models::Models;
 #[cfg(any(target_os = "macos", windows))]
 use shuttle_models::config::Safety;
-use shuttle_models::config::{Config, DEFAULT_KEY_ENV, default_path};
+use shuttle_models::config::{Config, DEFAULT_KEY_ENV, InputMode, default_path};
 use tokio::runtime::Builder;
 
 use crate::android::{self, Desks};
@@ -217,6 +217,9 @@ async fn serve(
         script_run: config.as_ref().is_ok_and(|c| c.tools.script_run),
         confirm: safety.confirm,
         asker,
+        background: config
+            .as_ref()
+            .is_ok_and(|c| c.desk.input == InputMode::Background),
     };
     let overlay = !config.as_ref().is_ok_and(|c| !c.driver.overlay);
     let group = config

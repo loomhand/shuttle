@@ -43,9 +43,11 @@ export const read = (id: string, o: { text?: boolean } = {}): Promise<El> => cal
 export const press = (id: string): Promise<{ ok: boolean; how: string }> => call('press', { id })
 export const act = (id: string, action: 'click' | 'action' | 'select' | 'focus'): Promise<{ ok: boolean }> => call('act', { id, action })
 export const at = (x: number, y: number, window?: string, pid?: number | null): Promise<{ found: El | null; path?: { id: string; role: string; name: string }[] }> => call('at', { x, y, window, pid: pid ?? undefined })
-export const key = (keys: string): Promise<unknown> => call('key', { keys })
-export const typeText = (text: string): Promise<unknown> => call('type', { text })
-export const click = (x: number, y: number, o: { button?: string; count?: number } = {}): Promise<unknown> => call('click', { x, y, ...o })
+/** The window that background input goes to, by title or process; required with `[desk] input = "background"`, ignored otherwise. */
+export type Target = { window?: string; pid?: number | null }
+export const key = (keys: string, to: Target = {}): Promise<unknown> => call('key', { keys, ...target(to) })
+export const typeText = (text: string, to: Target = {}): Promise<unknown> => call('type', { text, ...target(to) })
+export const click = (x: number, y: number, o: { button?: string; count?: number } & Target = {}): Promise<unknown> => call('click', { x, y, ...o, pid: o.pid ?? undefined })
 export const focus = (window: string, pid?: number | null): Promise<{ ok: boolean; title: string; pid: number | null; path?: string; front?: number | null }> => call('focus', { window, pid: pid ?? undefined })
 export const close = (window: string, pid?: number | null): Promise<unknown> => call('close', { window, pid: pid ?? undefined })
 export const launch = (app: string): Promise<{ ok: boolean; launched: string; background?: boolean }> => call('launch', { app })
@@ -136,3 +138,5 @@ async function judge(state: unknown, questions: Record<string, Question>, image:
   Object.assign(rec, r.served)
   return r.answers
 }
+
+function target(to: Target) { return { window: to.window, pid: to.pid ?? undefined } }
