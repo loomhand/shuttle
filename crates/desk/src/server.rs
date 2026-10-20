@@ -331,12 +331,19 @@ pub async fn exchange(mut conn: Conn, call: &Call) -> Result<Output, String> {
 
 /// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
 #[cfg(target_os = "macos")]
-pub fn native(driver: String, apps: &[String], _overlay: bool, background: bool) -> impl Handler {
+pub fn native(
+    driver: String,
+    apps: &[String],
+    _overlay: bool,
+    background: bool,
+    auto: bool,
+) -> impl Handler {
     let driver = Arc::new(Driver::new(driver));
     Native {
         desk: Desk::new(crate::ax::Ax::open, Arc::clone(&driver), Os::Mac)
             .allow(apps)
-            .background(background),
+            .background(background || auto)
+            .auto(auto),
         computer: Computer::new(driver, Os::Mac).background(background),
         open: apps.is_empty(),
     }
@@ -344,12 +351,19 @@ pub fn native(driver: String, apps: &[String], _overlay: bool, background: bool)
 
 /// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
 #[cfg(windows)]
-pub fn native(driver: String, apps: &[String], _overlay: bool, background: bool) -> impl Handler {
+pub fn native(
+    driver: String,
+    apps: &[String],
+    _overlay: bool,
+    background: bool,
+    auto: bool,
+) -> impl Handler {
     let driver = Arc::new(Driver::new(driver));
     Native {
         desk: Desk::new(crate::uia::Uia::open, Arc::clone(&driver), Os::Windows)
             .allow(apps)
-            .background(background),
+            .background(background || auto)
+            .auto(auto),
         computer: Computer::new(driver, Os::Windows).background(background),
         open: apps.is_empty(),
     }
@@ -357,13 +371,20 @@ pub fn native(driver: String, apps: &[String], _overlay: bool, background: bool)
 
 /// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty; `overlay` says whether that driver may show its cursor overlay.
 #[cfg(target_os = "linux")]
-pub fn native(driver: String, apps: &[String], overlay: bool, background: bool) -> impl Handler {
+pub fn native(
+    driver: String,
+    apps: &[String],
+    overlay: bool,
+    background: bool,
+    auto: bool,
+) -> impl Handler {
     let driver = Arc::new(Driver::new(driver));
     Native {
         desk: Desk::new(crate::spi::Spi::open, Arc::clone(&driver), Os::Linux)
             .allow(apps)
             .overlay(overlay)
-            .background(background),
+            .background(background || auto)
+            .auto(auto),
         computer: Computer::new(driver, Os::Linux).background(background),
         open: apps.is_empty(),
     }
@@ -371,7 +392,7 @@ pub fn native(driver: String, apps: &[String], overlay: bool, background: bool) 
 
 /// This OS's desk: none yet.
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
-pub fn native(_: String, _: &[String], _: bool, _: bool) -> impl Handler {
+pub fn native(_: String, _: &[String], _: bool, _: bool, _: bool) -> impl Handler {
     NoDesk
 }
 
@@ -1045,7 +1066,7 @@ mod tests {
             tool: tool.into(),
             args,
         };
-        let open = native("/nonexistent/driver.sock".into(), &[], false, false);
+        let open = native("/nonexistent/driver.sock".into(), &[], false, false, false);
         let title = open
             .answer(ask("desk_title_at", json!({"x": 10, "y": 10})))
             .await;
@@ -1060,6 +1081,7 @@ mod tests {
             &["mousepad".to_owned()],
             false,
             false,
+            false,
         );
         for tool in COMPUTER_VERBS {
             let out = listed.answer(ask(tool, json!({}))).await;
@@ -1070,7 +1092,7 @@ mod tests {
         }
         let other = listed.answer(ask("shell", json!({}))).await;
         assert_eq!(other.text, "unknown desk tool shell");
-        let background = native("/nonexistent/driver.sock".into(), &[], false, true);
+        let background = native("/nonexistent/driver.sock".into(), &[], false, true, false);
         let act = background
             .answer(ask(
                 "desk_computer_act",

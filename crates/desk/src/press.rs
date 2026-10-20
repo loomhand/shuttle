@@ -5,7 +5,7 @@ use desk_core::press::{MENU_POLL, MENU_POLLS, SELECTED_ROLES};
 use crate::keys::Os;
 use crate::model::{Access, Act, Extras, Node};
 
-const BACKGROUND_NO_POINT: &str = "background input: the element shows no point to click in its window, and on Windows its UI Automation action would bring the window to the front";
+pub(crate) const BACKGROUND_NO_POINT: &str = "background input: the element shows no point to click in its window, and on Windows its UI Automation action would bring the window to the front";
 
 /// What a press comes to after the backend's part of it.
 #[derive(Debug, PartialEq)]

@@ -34,7 +34,8 @@ export type Result = { ok?: boolean; done?: number; ms?: number; trace?: Trace[]
 
 const OS = process.platform
 // with [desk] input = "background" a plan drives its target window, never the front one
-const BG = process.env.SHUTTLE_INPUT === 'background'
+const BG = process.env.SHUTTLE_INPUT === 'background' || process.env.SHUTTLE_INPUT === 'auto'
+const AUTO = process.env.SHUTTLE_INPUT === 'auto'
 const NO_PIXELS = 'background gui_plan does not read the screen, which shows whatever covers the plan\'s window'
 const FLOWS = process.env.SHUTTLE_FLOWS ?? ''
 const LOG = `${FLOWS}/.runs.jsonl`
@@ -149,6 +150,7 @@ async function perform(p: Params): Promise<Result> {
       const kept = f && pre?.snap && pre.nodes && f.title !== pressed?.title ? { ...r, id: f.id, snap: pre.snap, nodes: pre.nodes } : undefined
       const prev = plan[i - 1]
       unheard = undefined
+      const fronted = desk.foreground.runs
       await run(s, rec, kept).catch(async (e: unknown) => {
         const late = (x: unknown) => x instanceof Surprise && x.late
         if (!late(e) || !(prev?.menu || prev?.click || prev?.key)) throw e
@@ -157,6 +159,7 @@ async function perform(p: Params): Promise<Result> {
         }
       })
       if (BG && unheard && !rec.unverified) rec.unverified = unheard
+      if (desk.foreground.runs > fronted) { rec.via ??= 'foreground'; userFront = desk.front(await desk.windows()) }
       const before = recs[i - 1]
       if (BG && before && (s.wait || s.verify || s.expect)) before.confirmed = true
     } catch (e: unknown) {
@@ -754,6 +757,9 @@ async function texts(w: Win): Promise<Map<string, string> | null> {
     return out
   } catch { return null }
 }
+function unchanged(before: Map<string, string> | null, after: Map<string, string> | null) {
+  return !!before && !!after && before.size === after.size && [...after].every(([id, v]) => before.get(id) === v)
+}
 function shows(before: Map<string, string> | null, after: Map<string, string> | null, text: string) {
   const squash = (v: string) => v.replace(/\s+/g, '').toLowerCase()
   const want = squash(text)
@@ -871,7 +877,12 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     for (const [i, part] of (sub ? s.type.slice(0, -1) : s.type).split(/\r?\n/).entries()) { if (i) heard(await desk.key('Return', at(w)), rec); if (part) heard(await desk.typeText(part, at(w)), rec) }
     tick('act', t0)
     if (BG && rec.unverified && w && !sub) {
-      if (!shows(was, await texts(w), s.type)) throw new Surprise(`"${s.type}" did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
+      const now = await texts(w)
+      if (AUTO && !shows(was, now, s.type) && unchanged(was, now) && !taken(await desk.windows())) {
+        await desk.focus(w.title, w.pid)
+        for (const [i, part] of s.type.split(/\r?\n/).entries()) { if (i) await desk.key('Return'); if (part) await desk.typeText(part) }
+        rec.how = 'foreground'; rec.unverified = undefined; userFront = desk.front(await desk.windows())
+      } else if (!shows(was, now, s.type)) throw new Surprise(`"${s.type}" did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
       rec.confirmed = true
     }
     if (recording && first && !chooser && w) rec.blank = await typedInto(w, s.type)

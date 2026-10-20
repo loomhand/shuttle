@@ -220,7 +220,7 @@ pub struct DeskSettings {
     pub input: InputMode,
 }
 
-/// `foreground` fronts the target app as a person would; `background` acts without moving the pointer or the focus and refuses what it cannot do so; `auto` is reserved for picking per app and action and acts as `foreground` for now.
+/// `foreground` fronts the target app as a person would; `background` acts without moving the pointer or the focus and refuses what it cannot do so; `auto` acts as `background` and takes the foreground for an action refused before anything was sent, on macOS and Windows.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum InputMode {
