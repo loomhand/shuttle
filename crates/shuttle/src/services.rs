@@ -466,8 +466,7 @@ server.serve_forever()
         let state = dir.path().join("state");
         std::fs::create_dir(&state).unwrap();
         let bin = dir.path().join("demo-service");
-        std::fs::write(&bin, FAKE).unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::script(&bin, FAKE).unwrap();
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
         let tool = |name: &str, mcp: bool| json!({"name": name, "description": name, "input_schema": {"type": "object", "properties": {"say": {"type": "string"}}}, "mcp": mcp});
         let plugins = Plugins {
