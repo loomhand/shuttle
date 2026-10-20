@@ -155,7 +155,9 @@ async function perform(p: Params): Promise<Result> {
       const sp = e instanceof Surprise ? e : new Surprise(e instanceof Error ? e.message : String(e), await seen())
       const step = e instanceof Stolen ? e.step : i
       const note = step === i ? recs[i - 1]?.unverified : undefined
-      escalate = { step, plan_step: plan[step] ?? planned, reason: note ? `${sp.reason} (the step before was sent but not confirmed: ${note})` : sp.reason, ...sp.seen }; done = step
+      const theft = BG && !(e instanceof Stolen) ? taken(await desk.windows()) : null
+      const reason = `${sp.reason}${note ? ` (the step before was sent but not confirmed: ${note})` : ''}${theft ? `; meanwhile ${theft}` : ''}`
+      escalate = { step, plan_step: plan[step] ?? planned, reason, ...sp.seen }; done = step
     }
     rec.ms = Date.now() - ts; if (desk.served.length > calls) rec.served = desk.served.slice(calls)
     log.push({ ...rec, ...T }); recs[i] = rec
@@ -707,8 +709,16 @@ async function typedInto(w: Win, text: string): Promise<Fp | undefined> {
 }
 // whether a field of `w`, or the window's text, shows `text` after typing the driver could not confirm
 async function shows(w: Win, text: string) {
-  const squash = (v: string) => v.replace(/\s+/g, '')
-  try { return parse(await snapOf(w)).some((n) => squash(n.value).includes(squash(text))) } catch { return false }
+  const squash = (v: string) => v.replace(/\s+/g, '').toLowerCase()
+  const want = squash(text)
+  try {
+    const nodes = parse(await snapOf(w))
+    if (nodes.some((n) => squash(n.value).includes(want))) return true
+    for (const n of nodes.filter((x) => !x.value && (x.role === 'document' || FIELD_ROLES.has(x.role)))) {
+      if (squash((await desk.read(n.id, { text: true }).catch(() => null))?.value ?? '').includes(want)) return true
+    }
+    return false
+  } catch { return false }
 }
 async function holdsText(w: Win, fp: Fp) {
   const t0 = Date.now()
@@ -788,7 +798,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const titled = (w: Win) => pkg ? w.title === s.app || w.title.endsWith(` - ${s.app}`) : norm(w.title).includes(name)
     const own = (w: Win) => titled(w) || (!s.title && !!w.app && norm(w.app).includes(app)) || (word && ((!pkg && norm(w.title).includes(name.replace(/-/g, ' '))) || ownedBy(w.pid, name) || entries.some((e) => norm(w.title).includes(e))))
     const has = async () => { const ws = await desk.windows(); return ws.find(own) ?? (launched ? ws.find((w) => w.title && !before.has(w.title)) : undefined) }
-    let w = ws.find(own)
+    let w = (BG ? ws.find((x) => own(x) && !!x.title.trim()) : undefined) ?? ws.find(own)
     const listed = !w && word && !BG ? await desk.focus(s.app).catch(() => null) : null
     if (listed) { known.add(listed.title); rec.window = lastSeen = listed.title; return }
     if (!w) {
