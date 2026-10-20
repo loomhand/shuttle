@@ -756,20 +756,20 @@ async function typedInto(w: Win, text: string): Promise<Fp | undefined> {
   } catch { return undefined } finally { tick('blank', t0) }
 }
 // the text of each element of `w` that holds text, by id, read before and after typing the driver may not confirm
-async function texts(w: Win): Promise<Map<string, string> | null> {
+async function texts(w: Win): Promise<Map<string, string | undefined> | null> {
   try {
-    const out = new Map<string, string>()
+    const out = new Map<string, string | undefined>()
     for (const n of parse(await snapOf(w))) {
       if (n.value) out.set(n.id, n.value)
-      else if (n.role === 'document' || FIELD_ROLES.has(n.role)) out.set(n.id, (await desk.read(n.id, { text: true }).catch(() => null))?.value ?? '')
+      else if (n.role === 'document' || FIELD_ROLES.has(n.role)) out.set(n.id, (await desk.read(n.id, { text: true }).catch(() => null))?.value)
     }
     return out
   } catch { return null }
 }
-function unchanged(before: Map<string, string> | null, after: Map<string, string> | null) {
-  return !!before && !!after && before.size === after.size && [...after].every(([id, v]) => before.get(id) === v)
+function unchanged(before: Map<string, string | undefined> | null, after: Map<string, string | undefined> | null) {
+  return !!before && !!after && before.size === after.size && [...after].every(([id, v]) => v !== undefined && before.get(id) === v)
 }
-function shows(before: Map<string, string> | null, after: Map<string, string> | null, text: string) {
+function shows(before: Map<string, string | undefined> | null, after: Map<string, string | undefined> | null, text: string) {
   const squash = (v: string) => v.replace(/\s+/g, '').toLowerCase()
   const want = squash(text)
   const count = (v: string | undefined) => want ? squash(v ?? '').split(want).length - 1 : 0

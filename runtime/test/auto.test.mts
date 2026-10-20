@@ -125,3 +125,20 @@ test('an auto macOS menu step fronts the plan window and runs the entry in the f
   assert.deepEqual(au.calls.filter((c) => c.tool === 'desk_press').map((c) => c.args), [{ id: 'f' }])
   assert.equal(au.r.trace?.[1]?.input, 'foreground')
 })
+
+test('a field auto cannot read is never typed into again in the foreground', async (t) => {
+  const calls: Call[] = []
+  await daemon(t, (c) => {
+    calls.push(c)
+    if (c.tool === 'desk_windows') return JSON.stringify([user(), notepad()])
+    if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes: [{ ref: 0, id: 'd', parent: -1, depth: 0, role: 'document', name: '', states: [] }], truncated: false })
+    if (c.tool === 'desk_read') return { text: 'the element answers no text', error: true }
+    if (c.tool === 'desk_type') return JSON.stringify({ ok: true, chars: 2, unverified: NOTE })
+    return '{"ok":true}'
+  })
+  const r = await auto({ steps: [{ app: 'Notepad' }, { type: 'hi' }] })
+  assert.equal(r.ok, false)
+  assert.match(String(r.escalate?.reason), /did not show/)
+  assert.ok(!calls.some((c) => c.tool === 'desk_focus'))
+  assert.equal(calls.filter((c) => c.tool === 'desk_type').length, 1)
+})
