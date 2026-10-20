@@ -24,7 +24,7 @@ type Rec = {
   i: number; op?: string; ms?: number; served?: unknown[]; how?: string; via?: string; window?: string; seen?: string; submit?: boolean
   blank?: Fp; fp?: Fp; was?: boolean | 'mixed' | null; now?: boolean; noop?: boolean; state?: string; opened?: number; path?: string[]; pick?: number[]
   focused?: string; p?: number; p_zoom?: number | null; p_full?: number | null; verdict?: Vision; ground_hit?: string; checked?: string; value?: string; ref?: string; unsaved?: boolean
-  unverified?: string
+  unverified?: string; confirmed?: boolean
 }
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
@@ -82,6 +82,9 @@ let pressed: { title: string; at: number } | null = null
 let target: Win | null = null
 let listed: Win[] = []
 let targetSince = new Set<string>()
+let adopted = new Set<string>()
+let doubt: string | null = null
+let unheard: string | undefined
 let userFront: Win | null = null
 let T: Record<string, number> = {}
 
@@ -120,7 +123,7 @@ async function perform(p: Params): Promise<Result> {
   const gapStep = plan[gap]
   if (gapStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: gapStep, reason: `no value for {{${unfilled(gapStep)}}}: pass it in params; nothing ran` } }
   const ws0 = await desk.windows(); for (const w of ws0) known.add(w.title)
-  if (BG) { target = null; userFront = desk.front(ws0); const c = pending(); const was = c && Date.now() - c.at < CHAIN_AGE ? ws0.find((w) => w.title === c.window && w.pid === c.pid) : undefined; if (was) follow(was, ws0) }
+  if (BG) { target = null; adopted = new Set(); doubt = null; userFront = desk.front(ws0); const c = pending(); const was = c && Date.now() - c.at < CHAIN_AGE ? ws0.find((w) => w.title === c.window && w.pid === c.pid) : undefined; if (was) follow(was, ws0) }
   const vetted = new Set<string>()
   const startTitles = new Set(known)
   const start = frontOf(ws0); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
@@ -144,6 +147,7 @@ async function perform(p: Params): Promise<Result> {
       if (f && pre) vetted.add(`${f.id} ${f.pid} ${f.title}`)
       const kept = f && pre?.snap && pre.nodes && f.title !== pressed?.title ? { ...r, id: f.id, snap: pre.snap, nodes: pre.nodes } : undefined
       const prev = plan[i - 1]
+      unheard = undefined
       await run(s, rec, kept).catch(async (e: unknown) => {
         const late = (x: unknown) => x instanceof Surprise && x.late
         if (!late(e) || !(prev?.menu || prev?.click || prev?.key)) throw e
@@ -151,6 +155,8 @@ async function perform(p: Params): Promise<Result> {
           try { return await run(s, rec) } catch (again: unknown) { if (!late(again) || Date.now() > end) throw again }
         }
       })
+      if (BG && unheard && !rec.unverified) rec.unverified = unheard
+      if (BG && (s.wait || s.verify || s.expect)) for (const r of recs) if (r) r.confirmed = true
     } catch (e: unknown) {
       const sp = e instanceof Surprise ? e : new Surprise(e instanceof Error ? e.message : String(e), await seen())
       const step = e instanceof Stolen ? e.step : i
@@ -179,9 +185,9 @@ async function perform(p: Params): Promise<Result> {
     log.push({ i: plan.length, op: 'end', ms: Date.now() - ts, window: f?.title ?? null })
     const left = f && !startTitles.has(f.title) && isDialog(o) && !(last.wait || last.app || (last.window && norm(f.title).includes(norm(last.window))))
     const theft = BG ? taken(ws) : null
-    const lastRec = recs.at(-1)
+    const open = BG ? recs.find((r) => r?.unverified && !r.confirmed) : undefined
     if (theft) { escalate = { step: plan.length - 1, reason: theft, ...(await seen()) }; done = plan.length - 1 }
-    else if (BG && lastRec?.unverified && lastRec.op === 'key') { escalate = { step: plan.length - 1, reason: `the last key was sent but not confirmed, so the plan cannot say it landed: ${lastRec.unverified}`, ...(await seen()) }; done = plan.length - 1 }
+    else if (open) { escalate = { step: open.i, reason: `step ${open.i} (${open.op}) was sent but not confirmed, and no later step read its effect, so the plan cannot say it landed: ${open.unverified}`, ...(await seen()) }; done = open.i }
     else if (f && blocked(o) && recs.at(-1)?.how !== 'wm') { escalate = { step: plan.length, reason: unanswered(f.title), ...(await seen()) }; done = plan.length }
     else if (f && (isAlert(o) || left)) { escalate = { step: plan.length, reason: `the plan ended with "${f.title || o.split('\n')[0]}" still in front`, ...(await seen()) }; done = plan.length }
     opened = !!f && !startTitles.has(f.title) && isDialog(o)
@@ -226,6 +232,8 @@ async function perform(p: Params): Promise<Result> {
   if (flow?.usage) out.recorded_usage = flow.usage
   if (escalate) out.escalate = escalate
   else out.window = end?.title ?? null
+  const notes = recs.filter((r) => r?.unverified && !r.confirmed).map((r) => ({ step: r.i, note: r.unverified }))
+  if (BG && notes.length) out.unverified = notes
   return out
 }
 
@@ -242,7 +250,7 @@ class Stolen extends Surprise {
 }
 function taken(ws: Win[]): string | null {
   const f = desk.front(ws)
-  if (!f || !target || f.pid !== target.pid || (userFront && f.pid === userFront.pid)) return null
+  if (!f || !target || f.pid !== target.pid || (userFront && f.id === userFront.id)) return null
   return `"${f.title || f.app || 'the app'}" brought itself to the front though the plan sent no fronting call: background input cannot keep this app behind`
 }
 function stolen(ws: Win[], step: number) { const r = taken(ws); if (r) throw new Stolen(r, step) }
@@ -296,16 +304,32 @@ function targetIn(ws: Win[]): Win | null {
   }
   const leaves = owned.filter((x) => !owned.some((y) => y.owner === x.id))
   return leaves.find((x) => x.active) ?? leaves.at(-1) ?? live
-  // the OS names a window's owner where it knows it; a macOS dialog window it does not relate falls back to its app and its arrival after the target
-  function ownedBy(x: Win) { return x.owner !== undefined ? mine.has(x.owner) : OS === 'darwin' && x.pid === t.pid && x.role !== 'window' && !targetSince.has(x.id) }
+  // the OS names a window's owner where it knows it; on macOS one new dialog of the app with no owner after input to the target is the target's
+  function ownedBy(x: Win) {
+    if (x.owner !== undefined) return mine.has(x.owner)
+    if (OS !== 'darwin' || x.pid !== t.pid || x.role === 'window') return false
+    if (adopted.has(x.id)) return true
+    const fresh = ws.filter((y) => y.owner === undefined && y.pid === t.pid && y.role !== 'window' && !targetSince.has(y.id) && !adopted.has(y.id))
+    if (fresh.length > 1) { doubt = `${fresh.length} dialogs of the app opened with no owner the OS names, and background gui_plan never guesses which one belongs to the plan's window`; return false }
+    if (fresh[0]?.id !== x.id) return false
+    adopted.add(x.id); return true
+  }
+}
+function ours(x: Win, ws: Win[]) {
+  for (let y: Win | undefined = x, k = 0; y && k < ws.length; y = ws.find((z) => z.id === y?.owner), k++) if (y.id === target?.id || adopted.has(y.id)) return true
+  return false
 }
 function follow(w: Win, ws: Win[]) { target = w; targetSince = new Set(ws.map((x) => x.id)) }
 // a macOS sheet has no window of its own, so its input goes to the window it hangs on
 function at(w: Win | null): desk.Target {
   if (!BG || !w) return {}
+  if (doubt) throw new Surprise(doubt)
   let x = w
   for (let o = OS === 'darwin' ? x.owner : undefined; o; o = x.owner) { const up = listed.find((y) => y.id === o); if (!up) break; x = up }
-  return { window: x.title, pid: x.pid }
+  const to = x
+  if (listed.some((y) => y.id !== to.id && y.pid === to.pid && y.title === to.title)) throw new Surprise(`another window of the app is also titled "${to.title}", and background input names its window by title, so it never guesses which one gets it`)
+  targetSince = new Set([...targetSince, ...listed.map((y) => y.id)])
+  return { window: to.title, pid: to.pid }
 }
 function heard(r: desk.Sent, rec: Rec) { if (BG && r.unverified && !rec.unverified) rec.unverified = r.unverified }
 async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
@@ -321,7 +345,7 @@ async function current(bound = SETTLE) {
 function isShell(w: Win) { return !!w.shell || (OS === 'win32' && w.title === 'Program Manager') }
 function titledIn(ws: Win[], title: string, pid: number | null) { return pid !== null && ws.some((x) => x.title === title && x.pid === pid) }
 async function snapOf(w: Win, r: Reads = {}): Promise<desk.Snap> {
-  return desk.snapshot(w.title, { pid: w.pid, ...r })
+  return BG ? desk.snapshot(undefined, { id: w.id, ...r }) : desk.snapshot(w.title, { pid: w.pid, ...r })
 }
 function targetRole(s: Step) {
   if (s.verify !== undefined) return s.role ?? (s.value !== undefined ? FIELDS : s.on !== undefined ? `${TOGGLES}|menuitem` : undefined)
@@ -637,6 +661,7 @@ async function act(n: Node) {
   try {
     const r = await desk.press(n.id)
     if (!r.ok) throw new Surprise(`"${n.name}" took no ${r.how}`, await seen())
+    if (BG && r.unverified) unheard ??= r.unverified
     return r.how
   } finally { tick('act', t0) }
 }
@@ -707,18 +732,22 @@ async function typedInto(w: Win, text: string): Promise<Fp | undefined> {
     return fp
   } catch { return undefined } finally { tick('blank', t0) }
 }
-// whether a field of `w`, or the window's text, shows `text` after typing the driver could not confirm
-async function shows(w: Win, text: string) {
+// the text of each element of `w` that holds text, by id, read before and after typing the driver may not confirm
+async function texts(w: Win): Promise<Map<string, string> | null> {
+  try {
+    const out = new Map<string, string>()
+    for (const n of parse(await snapOf(w))) {
+      if (n.value) out.set(n.id, n.value)
+      else if (n.role === 'document' || FIELD_ROLES.has(n.role)) out.set(n.id, (await desk.read(n.id, { text: true }).catch(() => null))?.value ?? '')
+    }
+    return out
+  } catch { return null }
+}
+function shows(before: Map<string, string> | null, after: Map<string, string> | null, text: string) {
   const squash = (v: string) => v.replace(/\s+/g, '').toLowerCase()
   const want = squash(text)
-  try {
-    const nodes = parse(await snapOf(w))
-    if (nodes.some((n) => squash(n.value).includes(want))) return true
-    for (const n of nodes.filter((x) => !x.value && (x.role === 'document' || FIELD_ROLES.has(x.role)))) {
-      if (squash((await desk.read(n.id, { text: true }).catch(() => null))?.value ?? '').includes(want)) return true
-    }
-    return false
-  } catch { return false }
+  const count = (v: string | undefined) => want ? squash(v ?? '').split(want).length - 1 : 0
+  return !!before && !!after && [...after].some(([id, v]) => count(v) > count(before.get(id)))
 }
 async function holdsText(w: Win, fp: Fp) {
   const t0 = Date.now()
@@ -755,6 +784,7 @@ async function setState(s: Step, hit: Hit, rec: Rec) {
   if (now !== on && (was === 'mixed' || now === 'mixed')) now = await flip(hit.n, on)
   if (now === null) now = await cropState(hit.n)
   if (now !== on) throw new Surprise(`"${hit.n.name}" is still ${now === 'mixed' ? 'mixed' : now ? 'on' : 'off'}`, await seen())
+  rec.confirmed = true
 }
 
 async function flip(n: Node, on: boolean) {
@@ -775,7 +805,7 @@ async function option(combo: Node, opts: Node[], value: string, target: string, 
   for (let i = 0; i < 25 && !(await desk.read(o.id)).states.includes('showing'); i++) await sleep(20)
   await act(o); tick('act', t0)
   let got = ''
-  for (let i = 0; i < 10; i++) { got = (await desk.read(combo.id)).name; if (norm(got) === norm(o.name)) return; await sleep(40) }
+  for (let i = 0; i < 10; i++) { got = (await desk.read(combo.id)).name; if (norm(got) === norm(o.name)) { rec.confirmed = true; return } await sleep(40) }
   throw new Surprise(`"${target}" reads "${got}" after set`, await seen())
 }
 
@@ -821,13 +851,17 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     const chooser = isChooser(o); const sub = chooser && nl
     const first = !typed; typed = true
+    const was = BG && w ? await texts(w) : null
     if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field, then replay the flow`, await seen())
     // GTK preselects the name up to its last dot: a bare name keeps the extension, a path or a name with its own extension replaces the whole field
     if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine(w)
     // a line break goes as Return, which GTK text views take where they ignore a Linefeed
     for (const [i, part] of (sub ? s.type.slice(0, -1) : s.type).split(/\r?\n/).entries()) { if (i) heard(await desk.key('Return', at(w)), rec); if (part) heard(await desk.typeText(part, at(w)), rec) }
     tick('act', t0)
-    if (BG && rec.unverified && w && !sub && !(await shows(w, s.type))) throw new Surprise(`"${s.type}" did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
+    if (BG && rec.unverified && w && !sub) {
+      if (!shows(was, await texts(w), s.type)) throw new Surprise(`"${s.type}" did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
+      rec.confirmed = true
+    }
     if (recording && first && !chooser && w) rec.blank = await typedInto(w, s.type)
     const v = nl && !sub ? await focused() : null
     if (sub && w) { rec.submit = true; await submit(w, true) } else if (v && isDialog(v.title === w?.title ? o : await outline(v)) && await closed(v.title, v.pid)) rec.submit = true
@@ -855,10 +889,15 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const t0 = Date.now(); const ws = s.window ? [] : await desk.windows(); let w: Win | null = s.window ? await windowFor(s.window, 3000, s.seen) : frontOf(ws)
     const o = w && !s.window ? await outline(w, {}, kept) : ''
     const self = w
-    const others = self ? ws.filter((x) => x.pid === self.pid && x.title !== self.title) : []
+    const others = self ? ws.filter((x) => x.pid === self.pid && x.title !== self.title && (!BG || ours(x, ws))) : []
     if (w && blocked(o) && others.length) { rec.seen = w.title; rec.how = 'wm'; await desk.close(w.title, w.pid); await settle(w.title); tick('act', t0); return }
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
-    if (w && !s.window && !isDialog(o)) { let d: Win | null = null; for (const x of others) if (isDialog(await outline(x))) { d = x; break }; w = d }
+    if (w && !s.window && !isDialog(o)) {
+      let d: Win | null = null; for (const x of others) if (isDialog(await outline(x))) { d = x; break }
+      const pid = w.pid
+      if (BG && !d && OS === 'darwin' && ws.some((x) => x.pid === pid && x.owner === undefined && x.role !== 'window' && !adopted.has(x.id))) throw new Surprise(`a dialog of "${w.title}"'s app has no owner the OS names, and background close never guesses whether it belongs to the plan's window: name it with {close: true, window}`, await seen())
+      w = d
+    }
     if (!w) { rec.noop = true; tick('act', t0); return }
     const [title, pid] = [w.title, w.pid]; rec.seen = title; if (!w.active && !BG) await desk.focus(title, pid); await desk.key('Escape', at(w))
     if (titledIn(await settle(w.title), title, pid)) await desk.close(title, pid)
@@ -914,7 +953,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       let now = gtkToggle(pid, hit.n.name)
       for (let i = 0; i < 5 && now !== s.on; i++) { await sleep(30); now = gtkToggle(pid, hit.n.name) }
       if (now !== s.on) throw new Surprise(`menu toggle "${hit.n.name}" is still ${now ? 'on' : 'off'}`, await seen())
-      return
+      rec.confirmed = true; return
     }
     if ((hit.n.role === 'menuitemcheckbox' || hit.n.role === 'menuitemradio') && OS !== 'darwin') {
       const now = await checked(hit.n); rec.was = now; rec.state = 'atspi'
@@ -1017,6 +1056,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   for (let i = 0; i < 10; i++) { try { got = (await desk.read(f.id)).value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); got = undefined }; if (same(got)) break; await sleep(40) }
   tick('verify', t0); rec.value = got
   if (!same(got)) throw new Surprise(`"${target}" reads "${got}" after set`, await seen())
+  rec.confirmed = true
   if (raw.endsWith('\n')) { rec.submit = true; await submit(w, isChooser(render(nodes, 100, false))) }
 }
 

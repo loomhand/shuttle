@@ -40,7 +40,7 @@ export const snapshot = (window?: string, o: { pid?: number | null; id?: string;
 export const outline = async (window?: string): Promise<string> => (await call<{ text: string }>('snapshot', { window, text: true })).text
 export const find = (name: string, o: { role?: string; window?: string } = {}): Promise<{ window: Win; found: El[] }> => call('find', { name, ...o })
 export const read = (id: string, o: { text?: boolean } = {}): Promise<El> => call('read', { id, text: o.text })
-export const press = (id: string): Promise<{ ok: boolean; how: string }> => call('press', { id })
+export const press = (id: string): Promise<{ ok: boolean; how: string; unverified?: string }> => call('press', { id })
 export const act = (id: string, action: 'click' | 'action' | 'select' | 'focus'): Promise<{ ok: boolean }> => call('act', { id, action })
 export const at = (x: number, y: number, window?: string, pid?: number | null): Promise<{ found: El | null; path?: { id: string; role: string; name: string }[] }> => call('at', { x, y, window, pid: pid ?? undefined })
 /** The window that background input goes to, by title or process; required with `[desk] input = "background"`, ignored otherwise. */
