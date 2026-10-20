@@ -153,6 +153,7 @@ fn frame(f: atspi::Frame) -> Frame {
         pid: f.pid,
         active: f.active(),
         app: f.pid.and_then(app),
+        owner: None,
         modal: None,
         blocks: None,
         shell: false,

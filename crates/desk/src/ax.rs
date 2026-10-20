@@ -175,6 +175,7 @@ impl Ax {
                     .is_some_and(|f| f == w || sheets.contains(&f));
                 let mut active = front && mine;
                 let title = string(title).trim().to_owned();
+                let owner = self.id_of(w);
                 for sheet in sheets {
                     let s = attrs(&self.names, sheet);
                     frames.push(Frame {
@@ -187,6 +188,7 @@ impl Ax {
                         pid: Some(p as u32),
                         active,
                         app: name.clone(),
+                        owner: Some(owner.clone()),
                         ..Frame::default()
                     });
                     active = false;
@@ -198,7 +200,7 @@ impl Ax {
                     ..Kind::default()
                 };
                 frames.push(Frame {
-                    id: self.id_of(w),
+                    id: owner,
                     title,
                     role: ax_roles::role(kind).unwrap_or("window"),
                     pid: Some(p as u32),

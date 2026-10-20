@@ -296,8 +296,14 @@ impl Access for Uia {
             let Some(top) = self.frame_of(&shown[i], front) else {
                 continue;
             };
+            let mut ids = HashMap::from([(shown[i].hwnd.0 as isize, top.id.clone())]);
             for o in owned(&shown, i) {
-                frames.extend(self.frame_of(&shown[o], front));
+                let Some(mut f) = self.frame_of(&shown[o], front) else {
+                    continue;
+                };
+                f.owner = ids.get(&shown[o].owner).cloned();
+                ids.insert(shown[o].hwnd.0 as isize, f.id.clone());
+                frames.push(f);
             }
             frames.push(top);
         }
