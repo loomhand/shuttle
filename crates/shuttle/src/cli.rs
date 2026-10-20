@@ -229,6 +229,10 @@ async fn serve(
         asker,
         background: input == InputMode::Background,
     };
+    let auto = !cfg!(target_os = "linux")
+        && config
+            .as_ref()
+            .is_ok_and(|c| c.desk.input == InputMode::Auto && c.android.is_none());
     let overlay = !config.as_ref().is_ok_and(|c| !c.driver.overlay);
     let group = config
         .as_mut()
@@ -268,10 +272,22 @@ async fn serve(
         path.with_file_name("flows"),
         key_vars,
     )
-    .background(guard.background);
+    .input(if guard.background {
+        "background"
+    } else if auto {
+        "auto"
+    } else {
+        "foreground"
+    });
     let desk = match android {
         Some(settings) => Desks::Android(Box::new(android::device(settings, &exe)?)),
-        None => Desks::Native(server::native(driver, &apps, overlay, guard.background)),
+        None => Desks::Native(server::native(
+            driver,
+            &apps,
+            overlay,
+            guard.background,
+            auto,
+        )),
     };
     let daemon = Arc::new(
         Daemon::new(desk, models, runner, guard)

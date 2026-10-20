@@ -30,6 +30,7 @@ pub mod xshm;
 pub mod xtest;
 
 mod allow;
+mod auto;
 mod press;
 mod screen;
 mod shot;

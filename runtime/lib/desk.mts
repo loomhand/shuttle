@@ -15,7 +15,7 @@ export type Size = { left?: number; top?: number; width: number; height: number 
 /** The window that background input goes to, by title or process; required with `[desk] input = "background"`, ignored otherwise. */
 export type Target = { window?: string; pid?: number | null }
 /** An input result; background input the driver could not confirm carries `unverified`, so read its effect back before relying on it. */
-export type Sent = { ok: boolean; chars?: number; unverified?: string }
+export type Sent = { ok: boolean; chars?: number; unverified?: string; input?: 'foreground' }
 type Output = { text: string; is_error: boolean; image_b64?: string }
 type Metered = { usage: { model: string; input_tokens: number; output_tokens: number; cached_tokens: number } }
 type Decided = Metered & { answers: Record<string, Judgment>; served: Omit<Served, 'image'> }
@@ -23,6 +23,8 @@ type Decided = Metered & { answers: Record<string, Judgment>; served: Omit<Serve
 const LOOK_TIMEOUT = 5_000
 
 let screenSize: Size | null = null
+/** How many inputs `[desk] input = "auto"` ran in the foreground after a refusal before anything was sent, their window brought to the front. */
+export const foreground = { runs: 0 }
 export const usage: Usage = {}
 /** One entry per decide/look call: the answering model, whether an image went in, and the build and id it named. */
 export const served: Served[] = []
@@ -44,12 +46,12 @@ export const snapshot = (window?: string, o: { pid?: number | null; id?: string;
 export const outline = async (window?: string): Promise<string> => (await call<{ text: string }>('snapshot', { window, text: true })).text
 export const find = (name: string, o: { role?: string; window?: string } = {}): Promise<{ window: Win; found: El[] }> => call('find', { name, ...o })
 export const read = (id: string, o: { text?: boolean } = {}): Promise<El> => call('read', { id, text: o.text })
-export const press = (id: string): Promise<{ ok: boolean; how: string; unverified?: string }> => call('press', { id })
+export const press = async (id: string): Promise<{ ok: boolean; how: string; unverified?: string; input?: 'foreground' }> => ran(await call('press', { id }))
 export const act = (id: string, action: 'click' | 'action' | 'select' | 'focus'): Promise<{ ok: boolean }> => call('act', { id, action })
 export const at = (x: number, y: number, window?: string, pid?: number | null): Promise<{ found: El | null; path?: { id: string; role: string; name: string }[] }> => call('at', { x, y, window, pid: pid ?? undefined })
-export const key = (keys: string, to: Target = {}): Promise<Sent> => call('key', { keys, ...target(to) })
-export const typeText = (text: string, to: Target = {}): Promise<Sent> => call('type', { text, ...target(to) })
-export const click = (x: number, y: number, o: { button?: string; count?: number } & Target = {}): Promise<Sent> => call('click', { x, y, ...o, pid: o.pid ?? undefined })
+export const key = async (keys: string, to: Target = {}): Promise<Sent> => ran(await call('key', { keys, ...target(to) }))
+export const typeText = async (text: string, to: Target = {}): Promise<Sent> => ran(await call('type', { text, ...target(to) }))
+export const click = async (x: number, y: number, o: { button?: string; count?: number } & Target = {}): Promise<Sent> => ran(await call('click', { x, y, ...o, pid: o.pid ?? undefined }))
 export const focus = (window: string, pid?: number | null): Promise<{ ok: boolean; title: string; pid: number | null; path?: string; front?: number | null }> => call('focus', { window, pid: pid ?? undefined })
 export const close = (window: string, pid?: number | null): Promise<unknown> => call('close', { window, pid: pid ?? undefined })
 export const launch = (app: string): Promise<{ ok: boolean; launched: string; background?: boolean }> => call('launch', { app })
@@ -139,6 +141,11 @@ async function judge(state: unknown, questions: Record<string, Question>, image:
   const r = await model<Decided>('model_decide', { state, questions, image, timeout_ms })
   Object.assign(rec, r.served)
   return r.answers
+}
+
+function ran<T extends { input?: string }>(r: T): T {
+  if (r.input === 'foreground') foreground.runs += 1
+  return r
 }
 
 function target(to: Target) { return { window: to.window, pid: to.pid ?? undefined } }
