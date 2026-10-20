@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Bundled:** cua-driver v0.37.0-loomhand.2 (was v0.37.0-loomhand.1): on macOS `get_desktop_state` with no overlay to leave out captures through ScreenCaptureKit instead of a `screencapture` process, about 170 ms in place of 325 ms at a 1024 cap on a GPU-less VM; on Linux an ended session keeps its master pointer while its menus are open by upstream's own code (trycua/cua#5254), and a text may use keycode 248 as a spare, so 18 of a desktop box's 19 free keycodes.
+
 ## 0.1.9 - 2026-10-20
 
 - **Background input.** `[desk] input = "background"` sends desk input to its target window through cua-driver without fronting it or moving your pointer: keys, typed text, scrolls and drags go to the window that `window` or `pid` names, a click at a point goes to the window under it or the one named, and a press or element click goes to the element's own window even under another window. It never falls back to the foreground; an action that needs it fails and names why, `focus` is the one call that fronts a window, `gui_plan` and the Linux computer actions refuse, and results the driver cannot confirm carry `unverified`. On Windows a background press clicks in the element's own window, and UI Automation focus, select and action refuse, since they front it. `foreground` stays the default, and `auto` acts as it for now ([config.md](docs/config.md#desk-input), [safety.md](docs/safety.md#background-input)).
