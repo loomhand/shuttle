@@ -730,13 +730,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             None if picked["pid"].as_u64() == Some(u64::from(pid)) => vec![picked],
             None => Vec::new(),
         };
+        let border = if self.os == Os::Windows {
+            FRAME_BORDER
+        } else {
+            2.0
+        };
         same.retain(|w| {
             let [x, y, width, height] = bounds(w);
             frame.is_some_and(|[l, t, fw, fh]| {
                 let [l, t, r, b] = [l, t, l + fw, t + fh].map(|v| f64::from(v) / scale);
                 [x - l, y - t, r - x - width, b - y - height]
                     .iter()
-                    .all(|d| (-2.0..=FRAME_BORDER).contains(d))
+                    .all(|d| (-2.0..=border).contains(d))
             })
         });
         match same.as_slice() {
@@ -1499,6 +1504,7 @@ pub(crate) mod tests {
         nodes: HashMap<String, (Node, Option<String>)>,
         pub(crate) hits: HashMap<(i32, i32), String>,
         pub(crate) acts: Vec<(String, Act)>,
+        pub(crate) ancestry: usize,
         opened: bool,
         menus: Vec<bool>,
         untitled: bool,
@@ -1552,6 +1558,7 @@ pub(crate) mod tests {
         }
 
         fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
+            self.ancestry += 1;
             let mut chain = Vec::new();
             let mut at = self.nodes.get(id).and_then(|(_, p)| p.clone());
             while let Some(p) = at {
@@ -1837,7 +1844,7 @@ pub(crate) mod tests {
         }
     }
 
-    struct Twins(Arc<Mutex<Vec<(String, Value)>>>, f64, &'static str);
+    struct Twins(Arc<Mutex<Vec<(String, Value)>>>, f64, &'static str, f64);
 
     impl Input for Twins {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
@@ -1846,7 +1853,7 @@ pub(crate) mod tests {
                 "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
                 "list_windows" => json!({"structuredContent": {"windows": [
                     {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": self.2, "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}},
-                    {"pid": 4, "window_id": 3, "layer": 0, "z_index": 2, "title": self.2, "bounds": {"x": self.1, "y": 0.0, "width": 800.0, "height": 600.0}}
+                    {"pid": 4, "window_id": 3, "layer": 0, "z_index": 2, "title": self.2, "bounds": {"x": self.1 + self.3, "y": self.3, "width": 800.0 - 2.0 * self.3, "height": 600.0 - 2.0 * self.3}}
                 ]}}),
                 "get_window_state" => json!({"structuredContent": {
                     "screenshot_width": 800, "screenshot_height": 600,
@@ -2174,7 +2181,7 @@ pub(crate) mod tests {
     async fn click_one_of_twins(title: &'static str, fake: fn() -> Result<Fake, String>) {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk =
-            Desk::new(fake, Twins(Arc::clone(&calls), 900.0, title), Os::Mac).background(true);
+            Desk::new(fake, Twins(Arc::clone(&calls), 900.0, title, 0.0), Os::Mac).background(true);
         desk.run("desk_act", json!({"id": "ok", "action": "click"}))
             .await
             .unwrap();
@@ -2185,13 +2192,35 @@ pub(crate) mod tests {
             "{title:?} {clicks:?}"
         );
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let desk = Desk::new(fake, Twins(Arc::clone(&calls), 0.0, title), Os::Mac).background(true);
+        let desk =
+            Desk::new(fake, Twins(Arc::clone(&calls), 0.0, title, 0.0), Os::Mac).background(true);
         let err = desk
             .run("desk_act", json!({"id": "ok", "action": "click"}))
             .await
             .unwrap_err();
         assert!(err.contains("own window is ambiguous"), "{title:?} {err}");
         assert!(sent(&calls, "click").is_empty(), "{title:?}");
+    }
+
+    #[tokio::test]
+    async fn only_windows_allows_a_resize_border_between_the_element_frame_and_its_window() {
+        for (os, clicks) in [(Os::Mac, 1), (Os::Linux, 1), (Os::Windows, 0)] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(
+                || Ok(notepad()),
+                Twins(Arc::clone(&calls), 0.0, "Untitled - Notepad", 10.0),
+                os,
+            )
+            .background(true);
+            let out = desk
+                .run("desk_act", json!({"id": "ok", "action": "click"}))
+                .await;
+            let sent = sent(&calls, "click");
+            assert_eq!(sent.len(), clicks, "{os:?}: {out:?}");
+            if clicks == 1 {
+                assert_eq!(sent[0]["window_id"], json!(1), "{os:?}");
+            }
+        }
     }
 
     #[tokio::test]
@@ -2218,20 +2247,21 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_background_element_click_checks_the_frame_of_a_lone_or_fuzzy_title_match() {
-        for (title, x, scale, border, clicks) in [
-            ("Untitled - Notepad", 900.0, 1.0, 0.0, 0),
-            ("Untitled - Notepad (2)", 900.0, 1.0, 0.0, 0),
-            ("Untitled - Notepad (2)", 0.0, 1.0, 0.0, 1),
-            ("Untitled - Notepad", 0.0, 2.0, 0.0, 1),
-            ("Untitled - Notepad", 450.0, 2.0, 0.0, 0),
-            ("Untitled - Notepad", 0.0, 1.0, 5.0, 1),
-            ("Untitled - Notepad", 0.0, 1.0, 20.0, 0),
+        for (os, title, x, scale, border, clicks) in [
+            (Os::Mac, "Untitled - Notepad", 900.0, 1.0, 0.0, 0),
+            (Os::Mac, "Untitled - Notepad (2)", 900.0, 1.0, 0.0, 0),
+            (Os::Mac, "Untitled - Notepad (2)", 0.0, 1.0, 0.0, 1),
+            (Os::Mac, "Untitled - Notepad", 0.0, 2.0, 0.0, 1),
+            (Os::Mac, "Untitled - Notepad", 450.0, 2.0, 0.0, 0),
+            (Os::Mac, "Untitled - Notepad", 0.0, 1.0, 5.0, 0),
+            (Os::Windows, "Untitled - Notepad", 0.0, 1.0, 5.0, 1),
+            (Os::Windows, "Untitled - Notepad", 0.0, 1.0, 20.0, 0),
         ] {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let desk = Desk::new(
                 || Ok(notepad()),
                 Solo(Arc::clone(&calls), title, x, scale, border),
-                Os::Mac,
+                os,
             )
             .background(true);
             let out = desk

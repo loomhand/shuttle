@@ -114,10 +114,11 @@ fn reachable<B: Access>(
         return None;
     }
     let hit = b.at(chain.first()?, cx, cy).ok()??;
+    if hit == id || chain.contains(&hit) {
+        return Some((cx, cy));
+    }
     let above = b.ancestors(&hit).ok()?;
-    let reaches = hit == id
-        || chain.contains(&hit)
-        || above.iter().any(|a| a == id)
+    let reaches = above.iter().any(|a| a == id)
         || (background && above.first().unwrap_or(&hit) != chain.first()?);
     reaches.then_some((cx, cy))
 }
@@ -145,6 +146,21 @@ mod tests {
             Press::Acted(true)
         );
         assert_eq!(f.acts, [("ok".to_owned(), Act::Action)]);
+    }
+
+    #[test]
+    fn a_direct_hit_reads_no_ancestry_of_the_hit() {
+        let mut f = notepad();
+        let node = f.node("ok", Extras::BOUNDS, 0).unwrap();
+        let chain = f.ancestors("ok").unwrap();
+        f.ancestry = 0;
+        for background in [false, true] {
+            assert_eq!(
+                reachable(&mut f, "ok", &node, &chain, false, background),
+                Some((140, 110))
+            );
+        }
+        assert_eq!(f.ancestry, 0);
     }
 
     #[test]
