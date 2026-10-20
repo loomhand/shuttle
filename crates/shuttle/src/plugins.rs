@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use shuttle_models::config::Config;
 
@@ -34,7 +34,7 @@ impl Plugins {
 }
 
 /// One plugin tool, as its JSON file spells it.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plugin {
     pub name: String,
@@ -68,7 +68,7 @@ impl Plugin {
 }
 
 /// A file the plugin serves as an MCP resource.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Resource {
     pub uri: String,

@@ -306,14 +306,11 @@ fn serves(socket: &str, service: &server::Conn) -> Result<(), String> {
 
 #[cfg(unix)]
 fn private_dir(dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| format!("chmod {}: {e}", dir.display()))?;
-    }
-    Ok(())
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("chmod {}: {e}", dir.display()))
 }
 
 #[cfg(test)]
