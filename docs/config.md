@@ -96,8 +96,10 @@ input = "foreground"                  # or "background", "auto"
 
 `input` says how desk input reaches an app:
 - `foreground`, the default, works as a person does: a click brings its window to the front, and keys and typed text go to the focused window.
-- `background` acts without moving your pointer or taking the focus. Keys, typed text, scrolls and drags go to the window that the call's `window` or `pid` names, which is required. A click at a point goes to the window under it, or to the window the call names, without raising it. A press runs the element's own action before any click. An action that cannot be done this way fails with the reason, and shuttle never falls back to the foreground: you chose not to be interrupted. `focus` still brings a window to the front; it is the only call that does. On Linux the computer actions refuse, since they send desktop input, and `gui_plan` refuses on every OS, since it drives the front window; scripts use the desk API with a `window` or `pid` on each input call.
+- `background` acts without moving your pointer or taking the focus. Keys, typed text, scrolls and drags go to the window that the call's `window` or `pid` names, which is required. A click at a point goes to the window under it, or to the window the call names, without raising it. A press runs the element's own action before any click, and a press or element click that does click goes to the element's own window, even under another window. An action that cannot be done this way fails with the reason, and shuttle never falls back to the foreground: you chose not to be interrupted. `focus` still brings a window to the front; it is the only call that does. On Linux the computer actions refuse, since they send desktop input, and `gui_plan` refuses on every OS, since it drives the front window; scripts use the desk API with a `window` or `pid` on each input call.
 - `auto` is reserved for choosing per app and action, and acts as `foreground` for now.
+
+With an [`[android]`](#android-over-adb) section, `background` fails to load: input on a device always reaches its screen.
 
 [safety.md](safety.md#background-input) lists what background input cannot do.
 

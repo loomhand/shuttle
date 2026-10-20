@@ -97,6 +97,12 @@ impl Config {
                 path.display()
             ));
         }
+        if config.android.is_some() && config.desk.input == InputMode::Background {
+            return Err(format!(
+                "{}: [desk] input = \"background\" is not available on an [android] device, whose input always reaches the screen; remove it or the [android] section",
+                path.display()
+            ));
+        }
         if config.api_key.is_some() {
             owner_only(path)?;
         }
