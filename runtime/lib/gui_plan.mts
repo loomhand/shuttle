@@ -303,12 +303,12 @@ function targetIn(ws: Win[]): Win | null {
   const owned: Win[] = []
   for (let grew = true; grew;) {
     grew = false
-    for (const x of ws) if (!mine.has(x.id) && ownedBy(x) && (!!x.title.trim() || x.role !== 'window')) { mine.add(x.id); owned.push(x); grew = true }
+    for (const x of ws) if (!mine.has(x.id) && belongs(x) && (!!x.title.trim() || x.role !== 'window')) { mine.add(x.id); owned.push(x); grew = true }
   }
   const leaves = owned.filter((x) => !owned.some((y) => y.owner === x.id))
   return leaves.find((x) => x.active) ?? leaves.at(-1) ?? live
   // the OS names a window's owner where it knows it; on macOS one new dialog of the app with no owner after input to the target is the target's
-  function ownedBy(x: Win) {
+  function belongs(x: Win) {
     if (x.owner !== undefined) return mine.has(x.owner)
     if (OS !== 'darwin' || x.pid !== t.pid || x.role === 'window') return false
     if (adopted.has(x.id)) return true
