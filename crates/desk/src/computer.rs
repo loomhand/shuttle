@@ -1623,6 +1623,7 @@ impl Computer {
             return;
         }
         req["scope"] = "desktop".into();
+        req["delivery_mode"] = "foreground".into();
         let backing = *lock(&self.backing);
         for key in ["x", "y", "from_x", "from_y", "to_x", "to_y"] {
             if let Some(v) = req[key].as_f64() {
@@ -3319,6 +3320,11 @@ mod tests {
                     _ if args.get("target").is_some() => refused("target is read on Linux only"),
                     _ if windowless && args["scope"] != "desktop" => {
                         refused("desktop_scope_disabled: pass scope=\"desktop\"")
+                    }
+                    "click" | "drag" if windowless && args["delivery_mode"] != "foreground" => {
+                        refused(
+                            "a desktop click moves the user's real pointer: pass delivery_mode=\"foreground\"",
+                        )
                     }
                     name => {
                         let mut text = String::new();
