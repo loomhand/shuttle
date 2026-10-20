@@ -2977,11 +2977,23 @@ mod tests {
         assert_eq!(got, [(7, 180, 97, 920, 436), (8, 57, 52, 950, 538)]);
     }
 
+    type Gate = std::sync::Arc<(tokio::sync::Notify, tokio::sync::Notify)>;
+
     fn press_driver(
         socket: &Path,
         calls: &std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
         refusal: &'static str,
         role: &'static str,
+    ) -> tokio::task::JoinHandle<()> {
+        gated_driver(socket, calls, refusal, role, None)
+    }
+
+    fn gated_driver(
+        socket: &Path,
+        calls: &std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+        refusal: &'static str,
+        role: &'static str,
+        gate: Option<Gate>,
     ) -> tokio::task::JoinHandle<()> {
         let listener = Fake::bind(socket).unwrap();
         let log = std::sync::Arc::clone(calls);
@@ -3003,7 +3015,10 @@ mod tests {
                         json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": refusal}]}})
                     }
                     "bring_to_front" => {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        if let Some(gate) = &gate {
+                            gate.0.notify_one();
+                            gate.1.notified().await;
+                        }
                         json!({"ok": true, "result": {"structuredContent": {}}})
                     }
                     _ => json!({"ok": true, "result": {"structuredContent": {}}}),
@@ -3153,18 +3168,32 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
-        let driver = press_driver(&socket, &calls, "", "AXTextField");
+        let gate = Gate::default();
+        let driver = gated_driver(
+            &socket,
+            &calls,
+            "",
+            "AXTextField",
+            Some(std::sync::Arc::clone(&gate)),
+        );
         let mut cua = cua_on(&socket, Os::Mac);
         cua.under = |_, _| Some((7, 9));
         cua.hit = FIELD;
         cua.state(json!({"pid": 7})).await.unwrap();
         calls.lock().unwrap().clear();
-        let (field, other) =
-            tokio::join!(cua.act(json!({"action": "click", "element": 0})), async {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                cua.act(json!({"action": "click", "x": 10.0, "y": 10.0}))
-                    .await
-            });
+        let mut field = std::pin::pin!(cua.act(json!({"action": "click", "element": 0})));
+        let mut other = std::pin::pin!(cua.act(json!({"action": "click", "x": 10.0, "y": 10.0})));
+        tokio::select! {
+            _ = &mut field => panic!("the field click ended before its window came to the front"),
+            () = gate.0.notified() => {}
+        }
+        tokio::select! {
+            biased;
+            _ = &mut other => panic!("the other click ended while the window was coming to the front"),
+            () = std::future::ready(()) => {}
+        }
+        gate.1.notify_one();
+        let (field, other) = tokio::join!(field, other);
         driver.abort();
         assert!(!field.unwrap().is_error && !other.unwrap().is_error);
         let order: Vec<String> = calls
