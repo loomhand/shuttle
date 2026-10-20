@@ -16,7 +16,9 @@ use desk_core::wire::Output;
 use serde_json::{Map, Value, json};
 
 use crate::allow::{Allow, app_key, app_of};
-use crate::driver::{CAPTURE_SESSION, Input, WINDOW_SESSION, background, desktop, image_of, text_of};
+use crate::driver::{
+    CAPTURE_SESSION, Input, WINDOW_SESSION, background, desktop, image_of, text_of,
+};
 use crate::keys::{Os, key_names, keystroke};
 use crate::model::{Access, Act, Capture, Extras, Frame, Node};
 use crate::press::{Press, plan_press};
@@ -720,17 +722,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if same.is_empty() && picked["pid"].as_u64() == Some(u64::from(pid)) {
             same.push(picked);
         }
-        if same.len() > 1 || title.trim().is_empty() {
-            let fits = |w: &Value| {
-                frame.is_some_and(|f| {
-                    bounds(w)
-                        .iter()
-                        .zip(f)
-                        .all(|(d, a)| (d - f64::from(a) / scale).abs() <= 2.0)
-                })
-            };
-            same.retain(fits);
-        }
+        same.retain(|w| {
+            frame.is_some_and(|f| {
+                bounds(w)
+                    .iter()
+                    .zip(f)
+                    .all(|(d, a)| (d - f64::from(a) / scale).abs() <= 2.0)
+            })
+        });
         match same.as_slice() {
             [w] => self.click_in(req, w, point).await,
             _ => Err(BACKGROUND_TWINS.to_owned()),
@@ -1849,6 +1848,25 @@ pub(crate) mod tests {
         }
     }
 
+    struct Solo(Arc<Mutex<Vec<(String, Value)>>>, &'static str, f64);
+
+    impl Input for Solo {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 4, "window_id": 5, "layer": 0, "z_index": 1, "title": self.1, "bounds": {"x": self.2, "y": 0.0, "width": 800.0, "height": 600.0}}
+                ]}}),
+                "get_window_state" => json!({"structuredContent": {
+                    "screenshot_width": 800, "screenshot_height": 600,
+                    "window_bounds": {"width": 800.0, "height": 600.0}
+                }}),
+                _ => json!({}),
+            })
+        }
+    }
+
     struct Overlaid(Arc<Mutex<Vec<(String, Value)>>>);
 
     impl Input for Overlaid {
@@ -2177,6 +2195,37 @@ pub(crate) mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn a_background_element_click_checks_the_frame_of_a_lone_or_fuzzy_title_match() {
+        for (title, x, clicks) in [
+            ("Untitled - Notepad", 900.0, 0),
+            ("Untitled - Notepad (2)", 900.0, 0),
+            ("Untitled - Notepad (2)", 0.0, 1),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(
+                || Ok(notepad()),
+                Solo(Arc::clone(&calls), title, x),
+                Os::Mac,
+            )
+            .background(true);
+            let out = desk
+                .run("desk_act", json!({"id": "ok", "action": "click"}))
+                .await;
+            assert_eq!(
+                sent(&calls, "click").len(),
+                clicks,
+                "{title} at {x}: {out:?}"
+            );
+            if clicks == 0 {
+                assert!(
+                    out.unwrap_err().contains("own window is ambiguous"),
+                    "{title} at {x}"
+                );
+            }
+        }
     }
 
     #[tokio::test]
