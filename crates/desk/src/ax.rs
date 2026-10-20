@@ -35,6 +35,7 @@ const SIZE_TYPE: u32 = 2;
 const ON_SCREEN_ONLY: u32 = 1;
 const EXCLUDE_DESKTOP: u32 = 1 << 4;
 const PATH_MAX: usize = 4096;
+const HIT_DEPTH: usize = 6;
 const ATTRS: [&str; 17] = [
     "AXRole",
     "AXSubrole",
@@ -640,6 +641,24 @@ pub fn window_at(x: f64, y: f64) -> Option<(i64, i64)> {
         return None;
     }
     Some((i64::from(pid(&el)?), i64::from(id)))
+}
+
+/// The frames of the element at the screen point `(x, y)` and of its ancestors, innermost first.
+pub fn frames_at(x: f64, y: f64) -> Vec<[f64; 4]> {
+    let mut el = hit(&system_wide(), x.round() as i32, y.round() as i32, 1.0);
+    let mut frames = Vec::new();
+    for _ in 0..HIT_DEPTH {
+        let Some(e) = el else {
+            break;
+        };
+        let pos = attr(&e, "AXPosition").and_then(|v| pair(&v, POINT_TYPE));
+        let size = attr(&e, "AXSize").and_then(|v| pair(&v, SIZE_TYPE));
+        if let (Some((x, y)), Some((w, h))) = (pos, size) {
+            frames.push([x, y, w, h]);
+        }
+        el = attr(&e, "AXParent");
+    }
+    frames
 }
 
 fn hung(slow: Duration, listed: Duration) -> bool {
