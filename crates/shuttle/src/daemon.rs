@@ -28,6 +28,7 @@ const BUSY: &str = "desk busy: another run or action is still going";
 const SCRIPT_RUN_OFF: &str =
     "script_run is turned off: set script_run = true under [tools] in config.toml";
 const DECLINED: &str = "declined by the user";
+const PLAN_BACKGROUND: &str = "gui_plan drives the front window, and [desk] input = \"background\" never brings one to the front: use the desk verbs with a window";
 const NO_ASK: &str = "confirm needs the menu-bar controls, which this OS does not have yet: set confirm = \"off\" under [safety] in config.toml";
 const CONFIRM_OPEN: &str = "a confirm dialog is open: answer it first";
 const QUESTION_CHARS: usize = 200;
@@ -53,6 +54,8 @@ pub struct Guard {
     pub script_run: bool,
     pub confirm: Confirm,
     pub asker: Option<Asker>,
+    /// Whether desk input goes in the background, which `gui_plan` cannot drive.
+    pub background: bool,
 }
 
 impl Default for Guard {
@@ -61,6 +64,7 @@ impl Default for Guard {
             script_run: true,
             confirm: Confirm::Off,
             asker: None,
+            background: false,
         }
     }
 }
@@ -147,6 +151,9 @@ impl<H: Handler> Daemon<H> {
         let plugin = self.plugin(tool);
         if (tool == "script_run" || plugin.is_some()) && !self.guard.script_run {
             return Err(SCRIPT_RUN_OFF.to_owned());
+        }
+        if tool == "gui_plan" && self.guard.background {
+            return Err(PLAN_BACKGROUND.to_owned());
         }
         let _turn = tokio::time::timeout(self.wait, self.turn.lock())
             .await
@@ -1040,6 +1047,19 @@ mod tests {
         let report: Value = serde_json::from_str(&ran.text).unwrap();
         assert!(report.get("error").is_none(), "{report}");
         assert_eq!(*keys.0.lock().unwrap(), ["a"]);
+    }
+
+    #[tokio::test]
+    async fn with_background_input_gui_plan_refuses_and_says_why() {
+        let d = daemon(
+            Echo,
+            Guard {
+                background: true,
+                ..Guard::default()
+            },
+        );
+        let out = d.answer(call("gui_plan", json!({"steps": []}))).await;
+        assert_eq!((out.is_error, out.text.as_str()), (true, PLAN_BACKGROUND));
     }
 
     #[tokio::test]
