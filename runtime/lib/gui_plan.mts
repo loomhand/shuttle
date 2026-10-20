@@ -292,7 +292,7 @@ function targetIn(ws: Win[]): Win | null {
   const owned: Win[] = []
   for (let grew = true; grew;) {
     grew = false
-    for (const x of ws) if (!mine.has(x.id) && ownedBy(x)) { mine.add(x.id); owned.push(x); grew = true }
+    for (const x of ws) if (!mine.has(x.id) && ownedBy(x) && (!!x.title.trim() || x.role !== 'window')) { mine.add(x.id); owned.push(x); grew = true }
   }
   const leaves = owned.filter((x) => !owned.some((y) => y.owner === x.id))
   return leaves.find((x) => x.active) ?? leaves.at(-1) ?? live
