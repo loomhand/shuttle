@@ -123,12 +123,7 @@ public final class Ui {
 
     private static boolean show(UiAutomation ui, String args) {
         String[] a = args.split(" ");
-        AccessibilityNodeInfo node = null;
-        for (AccessibilityWindowInfo w : ui.getWindows()) {
-            if (String.valueOf(w.getId()).equals(a[0])) {
-                node = w.getRoot();
-            }
-        }
+        AccessibilityNodeInfo node = root(ui, a[0]);
         String[] path = a[1].split("\\.");
         for (int i = 1; node != null && i < path.length; i++) {
             node = node.getChild(Integer.parseInt(path[i]));
@@ -252,16 +247,7 @@ public final class Ui {
     }
 
     private static String dump(UiAutomation ui, String id) {
-        AccessibilityNodeInfo root = null;
-        if (id.isEmpty()) {
-            root = ui.getRootInActiveWindow();
-        } else {
-            for (AccessibilityWindowInfo w : ui.getWindows()) {
-                if (String.valueOf(w.getId()).equals(id)) {
-                    root = w.getRoot();
-                }
-            }
-        }
+        AccessibilityNodeInfo root = id.isEmpty() ? ui.getRootInActiveWindow() : root(ui, id);
         StringBuilder sb = new StringBuilder("<hierarchy");
         if (root != null) {
             sb.append(" window=\"").append(root.getWindowId()).append('"');
@@ -271,6 +257,16 @@ public final class Ui {
             node(root, sb, 0, "0");
         }
         return sb.append("</hierarchy>").toString();
+    }
+
+    private static AccessibilityNodeInfo root(UiAutomation ui, String id) {
+        AccessibilityNodeInfo root = null;
+        for (AccessibilityWindowInfo w : ui.getWindows()) {
+            if (String.valueOf(w.getId()).equals(id)) {
+                root = w.getRoot();
+            }
+        }
+        return root;
     }
 
     private static void node(AccessibilityNodeInfo n, StringBuilder sb, int depth, String path) {
