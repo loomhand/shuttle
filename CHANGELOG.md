@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **macOS menu-bar icon.** The indicator is an 18 pt template icon in place of the `Shuttle` text: outlined when idle, filled while acting, struck through when stopped. Its tooltip and the first line of its menu name the version and the input mode. The icons are vector PDFs built into the binary, and the item redraws only when its state changes. A menu-bar manager such as Ice puts a new item in its hidden section until you move it ([safety.md](docs/safety.md#indicator)).
+
 ## 0.1.10 - 2026-10-20
 
 - **Background gui_plan.** With `[desk] input = "background"`, `gui_plan` drives the window its app or wait step names, and the dialogs that window owns, without fronting it or moving your pointer, on macOS and Windows; it refuses only on Linux. It reads that window by its id, and refuses input when another window of the app has the same title, a step that needs the screen, a macOS menu-bar entry, a close of a dialog it cannot tie to the window, input the driver could not confirm that its own read or the next wait, verify or expect step does not show, and input after its window is gone; an app that brings itself to the front fails the step. Known limits: the typing check counts the text in any element of the window, and a macOS dialog with no owner is taken by its app and its arrival after input. `desk windows` names the window that owns a macOS sheet or a Windows owned window as `owner` ([safety.md](docs/safety.md#background-input)).

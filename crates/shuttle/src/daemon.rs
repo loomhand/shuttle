@@ -87,6 +87,8 @@ pub struct Ui {
     /// The Stop entry's title, with the hotkey when one is set.
     pub stop_label: String,
     pub indicator: bool,
+    /// The version and input mode the indicator names.
+    pub about: String,
 }
 
 /// Answers `model_*` calls with `models`, `gui_plan`, `script_run` and plugin tools with `runner`, splices service tools to their services, and answers the rest with `desk`; `safety_stop` halts every call until `safety_resume`.

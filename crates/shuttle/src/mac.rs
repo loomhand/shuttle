@@ -1,18 +1,22 @@
 //! The macOS controls on the main thread's AppKit loop: the kill hotkey, the menu-bar indicator with Stop and Resume, and the confirm dialog.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::sync::Arc;
 
 use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{
-    NSAlert, NSAlertSecondButtonReturn, NSApplication, NSApplicationActivationPolicy, NSMenu,
-    NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+use objc2::{
+    AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
 };
-use objc2_foundation::{NSObject, NSRunLoop, NSRunLoopCommonModes, NSString, NSTimer};
+use objc2_app_kit::{
+    NSAlert, NSAlertSecondButtonReturn, NSApplication, NSApplicationActivationPolicy, NSImage,
+    NSMenu, NSMenuItem, NSSquareStatusItemLength, NSStatusBar, NSStatusItem,
+};
+use objc2_foundation::{
+    NSData, NSObject, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer,
+};
 use tokio::sync::oneshot;
 
 use crate::daemon::{Asker, Controls, Ui};
@@ -23,6 +27,12 @@ const POLL_S: f64 = 0.25;
 const KEYBOARD_CLASS: u32 = u32::from_be_bytes(*b"keyb");
 const HOT_KEY_PRESSED: u32 = 5;
 const SIGNATURE: u32 = u32::from_be_bytes(*b"cshl");
+const ICON_PT: f64 = 18.0;
+const STATES: [(&str, &[u8]); 3] = [
+    ("idle", include_bytes!("../assets/idle.pdf")),
+    ("acting", include_bytes!("../assets/acting.pdf")),
+    ("stopped", include_bytes!("../assets/stopped.pdf")),
+];
 
 /// Runs the controls on this, the main, thread until the process exits.
 pub fn run(ui: Ui) -> ! {
@@ -35,7 +45,7 @@ pub fn run(ui: Ui) -> ! {
     }
     let _indicator = ui
         .indicator
-        .then(|| indicator(mtm, &ui.controls, &ui.stop_label));
+        .then(|| indicator(mtm, &ui.controls, &ui.stop_label, ui.about));
     app.run();
     std::process::exit(0)
 }
@@ -116,16 +126,30 @@ struct Indicator {
     _timer: Retained<NSTimer>,
 }
 
-fn indicator(mtm: MainThreadMarker, controls: &Arc<dyn Controls>, stop: &str) -> Indicator {
-    let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
+fn indicator(
+    mtm: MainThreadMarker,
+    controls: &Arc<dyn Controls>,
+    stop: &str,
+    about: String,
+) -> Indicator {
+    let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSSquareStatusItemLength);
+    #[allow(clippy::expect_used)]
+    let icons = STATES.map(|(name, pdf)| icon(name, pdf).expect("the bundled icons are PDFs"));
+    let menu = NSMenu::new(mtm);
+    let header = NSMenuItem::new(mtm);
+    header.setTitle(&NSString::from_str(&about));
+    menu.addItem(&header);
+    menu.addItem(&NSMenuItem::separatorItem(mtm));
     let target = Target::new(
         mtm,
         Shown {
             controls: Arc::clone(controls),
             item: item.clone(),
+            icons,
+            about,
+            state: Cell::new(None),
         },
     );
-    let menu = NSMenu::new(mtm);
     for (title, action) in [
         (stop.to_owned(), sel!(stop:)),
         ("Resume".to_owned(), sel!(resume:)),
@@ -166,19 +190,27 @@ fn indicator(mtm: MainThreadMarker, controls: &Arc<dyn Controls>, stop: &str) ->
 struct Shown {
     controls: Arc<dyn Controls>,
     item: Retained<NSStatusItem>,
+    icons: [Retained<NSImage>; 3],
+    about: String,
+    state: Cell<Option<usize>>,
 }
 
 impl Shown {
     fn show(&self, mtm: MainThreadMarker) {
-        let title = if self.controls.halted() {
-            "■ Shuttle stopped"
-        } else if self.controls.acting() {
-            "● Shuttle"
+        let state = if self.controls.halted() {
+            2
         } else {
-            "Shuttle"
+            usize::from(self.controls.acting())
         };
+        if self.state.replace(Some(state)) == Some(state) {
+            return;
+        }
         if let Some(button) = self.item.button(mtm) {
-            button.setTitle(&NSString::from_str(title));
+            button.setImage(Some(&self.icons[state]));
+            button.setToolTip(Some(&NSString::from_str(&format!(
+                "{}: {}",
+                self.about, STATES[state].0
+            ))));
         }
     }
 }
@@ -214,6 +246,14 @@ impl Target {
         // SAFETY: NSObject's init on a freshly allocated object with its ivars set.
         unsafe { msg_send![super(this), init] }
     }
+}
+
+fn icon(name: &str, pdf: &[u8]) -> Option<Retained<NSImage>> {
+    let image = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(pdf))?;
+    image.setTemplate(true);
+    image.setSize(NSSize::new(ICON_PT, ICON_PT));
+    image.setAccessibilityDescription(Some(&NSString::from_str(&format!("Cocoon Shuttle {name}"))));
+    Some(image)
 }
 
 #[repr(C)]
@@ -288,5 +328,20 @@ fn register(hotkey: Hotkey, controls: Arc<dyn Controls>) {
         log(format_args!(
             "the kill hotkey did not register (handler {installed}, hotkey {registered}); cocoon-shuttle stop still works"
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_state_has_an_18_point_template_icon() {
+        for (name, pdf) in STATES {
+            let image = icon(name, pdf).unwrap_or_else(|| panic!("{name} icon does not load"));
+            assert!(image.isTemplate(), "{name}");
+            assert_eq!(image.size(), NSSize::new(ICON_PT, ICON_PT), "{name}");
+            assert!(image.isValid(), "{name}");
+        }
     }
 }
