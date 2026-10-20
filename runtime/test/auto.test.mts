@@ -180,3 +180,18 @@ test('a window that shows auto no field to read is never typed into again in the
   assert.ok(!calls.some((c) => c.tool === 'desk_focus'))
   assert.equal(calls.filter((c) => c.tool === 'desk_type').length, 1)
 })
+
+test('a background note left open before a later step took the foreground still fails the plan', async (t) => {
+  await daemon(t, (c) => {
+    if (c.tool === 'desk_windows') return JSON.stringify([user(), notepad()])
+    if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes: [], truncated: false })
+    if (c.tool === 'desk_key' && c.args.keys === 'ctrl+b') return JSON.stringify({ ok: true, unverified: 'unverifiable: posted ctrl+b' })
+    if (c.tool === 'desk_key') return JSON.stringify({ ok: true, input: 'foreground' })
+    return '{"ok":true}'
+  })
+  const r = await auto({ steps: [{ app: 'Notepad' }, { key: 'ctrl+b' }, { key: 'ctrl+a' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.step, 1)
+  assert.match(String(r.escalate?.reason), /not confirmed.*posted ctrl\+b/)
+  assert.deepEqual(r.unverified, [{ step: 1, note: 'unverifiable: posted ctrl+b' }])
+})
