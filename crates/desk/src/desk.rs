@@ -551,7 +551,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             if self.os == Os::Mac {
                 if !line.is_empty() {
                     let mut req = json!({"text": line});
-                    if line.chars().all(|c| c.len_utf16() == 1) {
+                    if !self.background && line.chars().all(|c| c.len_utf16() == 1) {
                         req["delay_ms"] = MAC_TYPE_DELAY_MS.into();
                     }
                     self.send("type_text", req, to, &mut note).await?;
@@ -2121,10 +2121,10 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn macos_typing_sets_the_driver_delay_for_text_in_the_basic_plane_only() {
+    async fn macos_foreground_typing_sets_the_driver_delay_for_text_in_the_basic_plane_only() {
         for (os, background, text, delay) in [
             (Os::Mac, false, "ab\u{4e2d}\ncd", Some(MAC_TYPE_DELAY_MS)),
-            (Os::Mac, true, "ab\u{4e2d}\ncd", Some(MAC_TYPE_DELAY_MS)),
+            (Os::Mac, true, "ab\u{4e2d}\ncd", None),
             (Os::Mac, false, "a\u{1f600}", None),
             (Os::Windows, false, "ab\u{4e2d}\ncd", None),
         ] {
