@@ -795,7 +795,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             req["count"] = count.into();
         }
         if self.bg() && (a.window.is_some() || a.pid.is_some()) {
-            let (_, w) = self.pick_window(a.window.as_deref(), a.pid).await?;
+            let (_, w) = self.pick_window(a.window.as_deref(), a.pid, true).await?;
             let note = self.click_in(req, &w, (a.x, a.y)).await?;
             return Ok(ok_with(note));
         }
@@ -839,7 +839,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 Ok((pid, title.ok_or(BACKGROUND_ELEMENT)?.title, frame))
             })
             .await?;
-        let (_, picked) = self.pick_window(Some(&title), Some(pid)).await?;
+        let (_, picked) = self.pick_window(Some(&title), Some(pid), false).await?;
         let scale = self.scale().await?;
         let mut listed = self.call("list_windows", json!({})).await?;
         let Value::Array(windows) = listed["structuredContent"]["windows"].take() else {
@@ -1158,7 +1158,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if window.is_none() && pid.is_none() {
             return Err(BACKGROUND_TARGET.to_owned());
         }
-        let (_, w) = self.pick_window(window, pid).await?;
+        let (_, w) = self.pick_window(window, pid, true).await?;
         let to = w["pid"]
             .as_i64()
             .zip(w["window_id"].as_i64())
@@ -1281,7 +1281,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn focus(&self, a: WindowArgs) -> Result<String, String> {
-        let (w, _) = self.pick_window(Some(&a.window), a.pid).await?;
+        let (w, _) = self.pick_window(Some(&a.window), a.pid, true).await?;
         let window_id: i64 =
             w.id.parse()
                 .map_err(|_| format!("window id {:?} is not a number", w.id))?;
@@ -1300,11 +1300,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(out.to_string())
     }
 
-    /// The driver window titled like `window` or of `pid`, as a frame and as the driver lists it; the allowlist picks among them.
+    /// The driver window titled like `window` or of `pid`, as a frame and as the driver lists it; the allowlist picks among them, and a title alone does not pick between twins on two Spaces.
     async fn pick_window(
         &self,
         window: Option<&str>,
         pid: Option<u32>,
+        by_title: bool,
     ) -> Result<(Frame, Value), String> {
         let mut listed = self.call("list_windows", json!({})).await?;
         let mut raw = match listed["structuredContent"]["windows"].take() {
@@ -1345,7 +1346,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .find(|r| r["window_id"].as_i64() == id)
             .cloned()
             .unwrap_or_default();
-        if self.bg() && mac {
+        if by_title && self.bg() && mac {
             let twins: Vec<&Value> = raw
                 .iter()
                 .filter(|r| r["pid"] == listed["pid"] && r["title"] == listed["title"])
@@ -2061,6 +2062,23 @@ pub(crate) mod tests {
         }
     }
 
+    struct SpaceTwins(Twins);
+
+    impl Input for SpaceTwins {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let mut out = self.0.call(tool, args).await?;
+            if let Value::Array(windows) = &mut out["structuredContent"]["windows"] {
+                for w in windows {
+                    let here = w["window_id"] == 1;
+                    w["is_on_screen"] = here.into();
+                    w["on_current_space"] = here.into();
+                    w["space_ids"] = json!([if here { 8 } else { 18 }]);
+                }
+            }
+            Ok(out)
+        }
+    }
+
     struct Solo(
         Arc<Mutex<Vec<(String, Value)>>>,
         &'static str,
@@ -2665,6 +2683,31 @@ pub(crate) mod tests {
             .unwrap_err();
         assert!(err.contains("own window is ambiguous"), "{title:?} {err}");
         assert!(sent(&calls, "click").is_empty(), "{title:?}");
+    }
+
+    #[tokio::test]
+    async fn a_background_element_click_picks_its_window_by_frame_over_a_title_twin_on_another_space()
+     {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let twins = SpaceTwins(Twins(Arc::clone(&calls), 900.0, "Untitled - Notepad", 0.0));
+        let desk = Desk::new(|| Ok(notepad()), twins, Os::Mac).background(true);
+        desk.run("desk_act", json!({"id": "ok", "action": "click"}))
+            .await
+            .unwrap();
+        let clicks = sent(&calls, "click");
+        assert_eq!(
+            (clicks.len(), &clicks[0]["window_id"]),
+            (1, &json!(1)),
+            "{clicks:?}"
+        );
+        let err = desk
+            .run(
+                "desk_type",
+                json!({"text": "x", "window": "Untitled - Notepad"}),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("cannot tell them apart"), "{err}");
     }
 
     #[tokio::test]
