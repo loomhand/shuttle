@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.9 - 2026-10-20
 
+- **Background input.** `[desk] input = "background"` sends desk input to its target window through cua-driver without fronting it or moving your pointer: keys, typed text, scrolls and drags go to the window that `window` or `pid` names, a click at a point goes to the window under it or the one named, and a press or element click goes to the element's own window even under another window. It never falls back to the foreground; an action that needs it fails and names why, `focus` is the one call that fronts a window, `gui_plan` and the Linux computer actions refuse, and results the driver cannot confirm carry `unverified`. On Windows a background press clicks in the element's own window, and UI Automation focus, select and action refuse, since they front it. `foreground` stays the default, and `auto` acts as it for now ([config.md](docs/config.md#desk-input), [safety.md](docs/safety.md#background-input)).
+- **Desktop clicks after a capture.** On macOS and Windows a desktop click after a `still`, a `shot` or a settle lands on the point asked: the desk's own captures run in a driver session of their own, since the driver reads desktop x,y as pixels of the session's last capture; a click after a still landed 4x off at 1x and 8x off on a Retina Mac. `screen` reports pixels on a Retina Mac, as the wire says; it reported points, which halved `gui_plan`'s grounding and crop fitting there.
+- **Linux typing through XTest.** On Linux `computer_act` types a desktop-routed line on the core keyboard through XTest, as `desk type` does, instead of through the driver at 10 ms per character: a 40-character line takes about 80 ms in place of 470 ms. A line the keyboard map cannot type goes to the driver as before, an XTest error fails the action without a driver retry, and a stop ends the typing at its next key.
 - **Android taps and keys from the UI server.** A tap and a single key press are injected by the UI server through `InputManager`, as `adb shell input` does it, in place of an adb process and a device JVM per call:
   - the UI line protocol gains `tap X Y` and `key CODE`, each answered `true` (both events accepted), `false` (one was not, and the press may still have happened) or `unavailable` (nothing could be injected);
   - `unavailable`, a server that predates the requests and a server that does not start leave the call to `adb shell input`, the first two for good; a `false`, an error or a lost reply is an error that says the press may have reached the device, and is never repeated by adb;
@@ -17,6 +20,7 @@
   - the tree is read again after the request; an element that did not move, an element that refused, an error, or a server that predates the request leaves the press to the swipe and settle as before, and a press asks once;
   - lists that do not honour the action, Compose among them, were not tried; they fall back to the swipe.
 - **Graceful run ends.** On macOS and Linux a run's timeout, a stop or a dropped client sends SIGTERM to the run's process group, so a script can release the keys it holds or close what it opened, and SIGKILL to whatever is left 2 s later; on Linux the apps the desk moved into scopes of their own are spared, as the bundled driver's end already spared them. A run whose client goes away during that grace is killed at once, and so is every run still in its grace when the daemon shuts down. Before, the group got SIGKILL at once. Windows keeps ending the run's Job object at once.
+- **Known issue:** on a Retina Mac guest whose apps answer accessibility slowly at launch, a just-launched app can drop out of `windows` for 10 s, longer than the app step's 8 s wait, and the step fails with `has no window`; 1x guests are not affected.
 
 ## 0.1.8 - 2026-10-20
 
