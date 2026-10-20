@@ -74,3 +74,18 @@ macOS has one pointer and one keyboard focus, shared by you and shuttle:
 3. **Coordinate clicks.** A click at a point goes through cua-driver to the window under it, which shuttle brings to the front first; a window that refuses pointer input, such as a sheet, gets a desktop click. shuttle does not wait for you to stop using the mouse or keyboard, so a click can land on something you opened in that instant.
 
 On Windows the same order holds with UI Automation patterns and cua-driver input. On Linux AT-SPI actions come first too.
+
+## Background input
+
+With `[desk] input = "background"` ([config.md](config.md#desk-input)), shuttle sends input to its target window through cua-driver without fronting that window or moving your pointer. It never falls back to the foreground; an action that needs the foreground fails and names why:
+- keys, typed text, scrolls and drags need the target window named (`window` or `pid`);
+- a window that takes no pointer input without the foreground, such as a macOS sheet, refuses a click;
+- on Linux the computer actions refuse, since they send desktop input.
+
+The driver refuses or cannot deliver some input in the background:
+- macOS drag and drop follows the real pointer;
+- modifier clicks need the foreground;
+- some toolkits (Tk, LibreOffice) refuse background input;
+- on X11, GTK and Chromium ignore synthetic events, and Chrome drops core keyboard input while a second master keyboard exists. Second-cursor delivery needs a real Xorg server and `/dev/uinput`.
+
+`focus` is the one call that brings a window to the front in background mode.

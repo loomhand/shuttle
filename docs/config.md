@@ -87,6 +87,20 @@ The MCP server reads the plugin directory and `script_run` when the agent starts
 
 `[driver] overlay = false` starts the bundled cua-driver with `--no-overlay`, for a desktop nobody watches, such as a cloud box. It has no effect on macOS, since the driver's front-window tracking needs its overlay, and the daemon says so in its log.
 
+## Desk input
+
+```toml
+[desk]
+input = "foreground"                  # or "background", "auto"
+```
+
+`input` says how desk input reaches an app:
+- `foreground`, the default, works as a person does: a click brings its window to the front, and keys and typed text go to the focused window.
+- `background` acts without moving your pointer or taking the focus. Keys, typed text, scrolls and drags go to the window that the call's `window` or `pid` names, which is required. A click at a point goes to the window under it, or to the window the call names, without raising it. A press runs the element's own action before any click. An action that cannot be done this way fails with the reason, and shuttle never falls back to the foreground: you chose not to be interrupted. `focus` still brings a window to the front; it is the only call that does. On Linux the computer actions refuse, since they send desktop input.
+- `auto` is reserved for choosing per app and action, and acts as `foreground` for now.
+
+[safety.md](safety.md#background-input) lists what background input cannot do.
+
 ## Daemon endpoint
 
 ```toml
