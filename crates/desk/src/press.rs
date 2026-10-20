@@ -56,7 +56,7 @@ pub(crate) fn plan_press<B: Access>(
     let pixel = !linux
         || node.role.starts_with("menu")
         || !b.pid_of(id).ok().flatten().is_some_and(libreoffice);
-    if pixel && let Some((x, y)) = reachable(b, id, &node, &chain, linux) {
+    if pixel && let Some((x, y)) = reachable(b, id, &node, &chain, linux, background) {
         return Ok(Press::Click(x, y));
     }
     if uia_behind {
@@ -91,6 +91,7 @@ fn reachable<B: Access>(
     node: &Node,
     chain: &[String],
     linux: bool,
+    background: bool,
 ) -> Option<(i32, i32)> {
     let [x, y, w, h] = node.bounds?;
     if !node.has("showing") || w <= 0 || h <= 0 || x < 0 || y < 0 {
@@ -113,8 +114,11 @@ fn reachable<B: Access>(
         return None;
     }
     let hit = b.at(chain.first()?, cx, cy).ok()??;
-    let reaches =
-        hit == id || chain.contains(&hit) || b.ancestors(&hit).ok()?.iter().any(|a| a == id);
+    let above = b.ancestors(&hit).ok()?;
+    let reaches = hit == id
+        || chain.contains(&hit)
+        || above.iter().any(|a| a == id)
+        || (background && above.first().unwrap_or(&hit) != chain.first()?);
     reaches.then_some((cx, cy))
 }
 
@@ -153,7 +157,21 @@ mod tests {
             &["showing"],
             Some([10, 200, 60, 30]),
         );
-        f.hits.insert((40, 215), "downloads".into());
+        f.add(
+            "calc",
+            None,
+            "window",
+            &["showing"],
+            Some([0, 150, 300, 300]),
+        );
+        f.add(
+            "key",
+            Some("calc"),
+            "button",
+            &["showing"],
+            Some([30, 200, 30, 30]),
+        );
+        f.hits.insert((40, 215), "key".into());
         assert_eq!(
             plan_press(&mut f, "ok", Os::Windows, true).unwrap(),
             Press::Click(140, 110)
@@ -163,6 +181,9 @@ mod tests {
             Press::Click(40, 215)
         );
         let err = plan_press(&mut f, "save", Os::Windows, true).unwrap_err();
+        assert!(err.contains("no point to click"), "{err}");
+        f.hits.insert((40, 215), "tab".into());
+        let err = plan_press(&mut f, "downloads", Os::Windows, true).unwrap_err();
         assert!(err.contains("no point to click"), "{err}");
         assert!(f.acts.is_empty(), "{:?}", f.acts);
     }

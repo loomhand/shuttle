@@ -56,6 +56,7 @@ const READ_CHARS: usize = 64 << 10;
 const WAIT_MAX: Duration = Duration::from_secs(5);
 const WAIT_POLL: Duration = Duration::from_millis(10);
 const WAIT_CHECK: Duration = Duration::from_millis(100);
+const FRAME_BORDER: f64 = 16.0;
 const NO_WINDOW_UNDER: &str =
     "no window under the point, and the app allowlist admits only windows";
 const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
@@ -332,6 +333,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             bounds: a.bounds.unwrap_or(true),
             keys: a.keys,
             menus: a.menus,
+            frame: false,
         };
         let (window, pid, id) = (a.window, a.pid, a.id);
         let allow = self.allow.clone();
@@ -384,6 +386,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             bounds: true,
             keys: false,
             menus: true,
+            frame: false,
         };
         let (window, pid) = (a.window, a.pid);
         let allow = self.allow.clone();
@@ -410,6 +413,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             bounds: true,
             keys: true,
             menus: false,
+            frame: false,
         };
         let chars = if a.text { READ_CHARS } else { NAME_CHARS };
         let node = self
@@ -706,7 +710,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 let pid = b.pid_of(&id)?.ok_or(BACKGROUND_ELEMENT)?;
                 let root = b.ancestors(&id)?.into_iter().next().unwrap_or(id);
                 let title = b.frames_of(pid)?.into_iter().find(|f| f.id == root);
-                let frame = b.node(&root, Extras::BOUNDS, 0)?.bounds;
+                let frame = b.node(&root, Extras::FRAME, 0)?.bounds;
                 Ok((pid, title.ok_or(BACKGROUND_ELEMENT)?.title, frame))
             })
             .await?;
@@ -727,11 +731,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             None => Vec::new(),
         };
         same.retain(|w| {
-            frame.is_some_and(|f| {
-                bounds(w)
+            let [x, y, width, height] = bounds(w);
+            frame.is_some_and(|[l, t, fw, fh]| {
+                let [l, t, r, b] = [l, t, l + fw, t + fh].map(|v| f64::from(v) / scale);
+                [x - l, y - t, r - x - width, b - y - height]
                     .iter()
-                    .zip(f)
-                    .all(|(d, a)| (d - f64::from(a) / scale).abs() <= 2.0)
+                    .all(|d| (-2.0..=FRAME_BORDER).contains(d))
             })
         });
         match same.as_slice() {
@@ -1852,7 +1857,13 @@ pub(crate) mod tests {
         }
     }
 
-    struct Solo(Arc<Mutex<Vec<(String, Value)>>>, &'static str, f64, f64);
+    struct Solo(
+        Arc<Mutex<Vec<(String, Value)>>>,
+        &'static str,
+        f64,
+        f64,
+        f64,
+    );
 
     impl Input for Solo {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
@@ -1860,7 +1871,7 @@ pub(crate) mod tests {
             Ok(match tool {
                 "get_screen_size" => json!({"structuredContent": {"scale_factor": self.3}}),
                 "list_windows" => json!({"structuredContent": {"windows": [
-                    {"pid": 4, "window_id": 5, "layer": 0, "z_index": 1, "title": self.1, "bounds": {"x": self.2, "y": 0.0, "width": 800.0 / self.3, "height": 600.0 / self.3}}
+                    {"pid": 4, "window_id": 5, "layer": 0, "z_index": 1, "title": self.1, "bounds": {"x": self.2 + self.4, "y": 0.0, "width": 800.0 / self.3 - 2.0 * self.4, "height": 600.0 / self.3 - self.4}}
                 ]}}),
                 "get_window_state" => json!({"structuredContent": {
                     "screenshot_width": 800, "screenshot_height": 600,
@@ -2207,17 +2218,19 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_background_element_click_checks_the_frame_of_a_lone_or_fuzzy_title_match() {
-        for (title, x, scale, clicks) in [
-            ("Untitled - Notepad", 900.0, 1.0, 0),
-            ("Untitled - Notepad (2)", 900.0, 1.0, 0),
-            ("Untitled - Notepad (2)", 0.0, 1.0, 1),
-            ("Untitled - Notepad", 0.0, 2.0, 1),
-            ("Untitled - Notepad", 450.0, 2.0, 0),
+        for (title, x, scale, border, clicks) in [
+            ("Untitled - Notepad", 900.0, 1.0, 0.0, 0),
+            ("Untitled - Notepad (2)", 900.0, 1.0, 0.0, 0),
+            ("Untitled - Notepad (2)", 0.0, 1.0, 0.0, 1),
+            ("Untitled - Notepad", 0.0, 2.0, 0.0, 1),
+            ("Untitled - Notepad", 450.0, 2.0, 0.0, 0),
+            ("Untitled - Notepad", 0.0, 1.0, 5.0, 1),
+            ("Untitled - Notepad", 0.0, 1.0, 20.0, 0),
         ] {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let desk = Desk::new(
                 || Ok(notepad()),
-                Solo(Arc::clone(&calls), title, x, scale),
+                Solo(Arc::clone(&calls), title, x, scale, border),
                 Os::Mac,
             )
             .background(true);

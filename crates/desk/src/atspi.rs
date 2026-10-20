@@ -333,6 +333,7 @@ pub struct Extras {
     pub values: bool,
     pub bounds: bool,
     pub keys: bool,
+    pub frame: bool,
 }
 
 /// The tree of one window with the time each phase took.
@@ -604,7 +605,7 @@ impl Atspi {
                 if !(extras.bounds
                     && n.has(SHOWING)
                     && n.ifaces & IF_COMPONENT != 0
-                    && is_active(role))
+                    && (extras.frame || is_active(role)))
                 {
                     return None;
                 }

@@ -270,7 +270,9 @@ impl Ax {
             .find(|n| !n.is_empty())
             .map_or("", |n| n.as_str());
         let bounds = match (a.pos, a.size) {
-            (Some((x, y)), Some((w, h))) if extras.bounds && shown && is_active(role) => {
+            (Some((x, y)), Some((w, h)))
+                if extras.bounds && shown && (extras.frame || is_active(role)) =>
+            {
                 Some([x, y, w, h].map(|v| (v * scale).round() as i32))
             }
             _ => None,

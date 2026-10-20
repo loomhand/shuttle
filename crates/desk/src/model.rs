@@ -196,6 +196,7 @@ pub struct Extras {
     pub bounds: bool,
     pub keys: bool,
     pub menus: bool,
+    pub frame: bool,
 }
 
 impl Extras {
@@ -204,6 +205,11 @@ impl Extras {
         bounds: true,
         keys: false,
         menus: false,
+        frame: false,
+    };
+    pub const FRAME: Self = Self {
+        frame: true,
+        ..Self::BOUNDS
     };
 }
 
