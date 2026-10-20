@@ -72,7 +72,6 @@ impl Driver {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
     pub(crate) fn endpoint(&self) -> &str {
         &self.endpoint
     }
