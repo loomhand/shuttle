@@ -649,11 +649,15 @@ mod tests {
             "{started}export async function main() {{ await new Promise((r) => setTimeout(r, 5000)) }}"
         );
         let report = r
-            .script(json!({"code": hung, "timeout_s": 1}), "run-test")
+            .script(json!({"code": hung, "timeout_s": 2}), "run-test")
             .await
             .unwrap();
         assert_eq!(report["error"]["kind"], "timeout", "{report}");
         let pid = report["logs"].as_str().unwrap().trim().to_owned();
+        assert!(
+            !pid.is_empty(),
+            "the script printed no pid before its timeout: {report}"
+        );
         let mut gone = false;
         for _ in 0..40 {
             gone = !alive(&pid);
