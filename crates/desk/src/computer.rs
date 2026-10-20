@@ -87,6 +87,13 @@ const UNDER: Under = crate::ax::window_at;
 const UNDER: Under = crate::uia::window_at;
 #[cfg(not(any(target_os = "macos", windows)))]
 const UNDER: Under = |_, _| None;
+#[cfg(target_os = "macos")]
+const HIT: Hit = crate::ax::frames_at;
+#[cfg(windows)]
+const HIT: Hit = crate::uia::frames_at;
+#[cfg(not(any(target_os = "macos", windows)))]
+const HIT: Hit = |_, _| Vec::new();
+const SAME_FRAME: f64 = 2.0;
 const RETRIED: [&str; 4] = [
     "list_windows",
     "get_window_state",
@@ -95,6 +102,7 @@ const RETRIED: [&str; 4] = [
 ];
 
 type Under = fn(f64, f64) -> Option<(i64, i64)>;
+type Hit = fn(f64, f64) -> Vec<[f64; 4]>;
 
 /// The computer verbs' state: the element tokens of each session's latest window state and the scale of its latest screenshot.
 pub struct Computer {
@@ -102,6 +110,7 @@ pub struct Computer {
     os: Os,
     typer: Typer,
     under: Under,
+    hit: Hit,
     last: Mutex<HashMap<String, Snapshot>>,
     input: Arc<Mutex<()>>,
     /// The MIT-SHM grabber, opened on first use and again after a failure.
@@ -130,6 +139,7 @@ impl Computer {
             os,
             typer: crate::desk::TYPER,
             under: UNDER,
+            hit: HIT,
             last: Mutex::new(HashMap::new()),
             input: Arc::new(Mutex::new(())),
             grabber: std::sync::Mutex::new(None),
@@ -365,6 +375,7 @@ impl Computer {
         {
             return self.type_mixed(session, &a).await;
         }
+        let input: Turn = Arc::new(self.input.clone().lock_owned().await);
         let (tool, mut req) = self.action_request(session, &a).await?;
         let line = req["text"]
             .as_str()
@@ -377,7 +388,6 @@ impl Computer {
         if enter && let Some(line) = line {
             req["text"] = line.into();
         }
-        let input: Turn = Arc::new(self.input.clone().lock_owned().await);
         let before = self.before_input(Some(&a)).await;
         let once = self.once(&req);
         let target = once.as_ref().map_or(session, Owned::name);
@@ -1280,9 +1290,9 @@ impl Computer {
         .map_err(|e| format!("XTest: {e}"))?
     }
 
-    /// Off Linux, the centre of text field `index` of `session`'s snapshot once its window is in front, when that window is the topmost there: a press does not focus a field.
+    /// Off Linux, the centre of text field `index` of `session`'s snapshot once its window is in front, when the field itself, still where the snapshot saw it, is under that point: a press does not focus a field.
     async fn field_point(&self, session: &str, index: i64) -> Result<Option<(f64, f64)>, String> {
-        let (pid, window, x, y) = {
+        let (pid, window, frame) = {
             let last = self.last.lock().await;
             let Some(snap) = last.get(session) else {
                 return Ok(None);
@@ -1294,20 +1304,25 @@ impl Computer {
             else {
                 return Ok(None);
             };
-            let (Some([x, y, w, h]), Some(window)) = (element.frame, snap.window_id) else {
+            let (Some(frame), Some(window)) = (element.frame, snap.window_id) else {
                 return Ok(None);
             };
-            (snap.pid, window, x + w / 2.0, y + h / 2.0)
+            (snap.pid, window, frame)
         };
+        let [x, y] = [frame[0] + frame[2] / 2.0, frame[1] + frame[3] / 2.0];
         self.request(
             session,
             "bring_to_front",
             json!({"pid": pid, "window_id": window}),
         )
         .await?;
-        Ok((self.under)(x, y)
-            .is_some_and(|(_, top)| top == window)
-            .then_some((x, y)))
+        let shown = (self.under)(x, y).is_some_and(|(_, top)| top == window)
+            && (self.hit)(x, y).iter().any(|f| {
+                f.iter()
+                    .zip(frame)
+                    .all(|(a, b)| (a - b).abs() <= SAME_FRAME)
+            });
+        Ok(shown.then_some((x, y)))
     }
 
     /// A desktop click at the centre of the element `a` names, when the topmost window there is the element's own.
@@ -2987,6 +3002,10 @@ mod tests {
                     "click" if req["args"]["element_token"].is_string() => {
                         json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": refusal}]}})
                     }
+                    "bring_to_front" => {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        json!({"ok": true, "result": {"structuredContent": {}}})
+                    }
                     _ => json!({"ok": true, "result": {"structuredContent": {}}}),
                 };
                 log.lock().unwrap().push(req);
@@ -3040,13 +3059,21 @@ mod tests {
         assert!(clicks[1]["element_token"].is_null(), "{clicks:?}");
     }
 
-    async fn field(role: &'static str, action: &str, under: Under) -> (Output, Vec<Value>) {
+    const FIELD: Hit = |_, _| vec![[100.0, 100.0, 200.0, 40.0], [0.0, 0.0, 800.0, 600.0]];
+
+    async fn field(
+        role: &'static str,
+        action: &str,
+        under: Under,
+        hit: Hit,
+    ) -> (Output, Vec<Value>) {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
         let driver = press_driver(&socket, &calls, "", role);
         let mut cua = cua_on(&socket, Os::Mac);
         cua.under = under;
+        cua.hit = hit;
         cua.state(json!({"pid": 7})).await.unwrap();
         calls.lock().unwrap().clear();
         let out = cua
@@ -3066,9 +3093,12 @@ mod tests {
 
     #[tokio::test]
     async fn off_linux_a_click_on_a_text_field_fronts_its_window_and_clicks_its_centre() {
-        let (out, sent) = field("AXTextField", "left_click", |x, y| {
-            ((x, y) == (200.0, 120.0)).then_some((7, 9))
-        })
+        let (out, sent) = field(
+            "AXTextField",
+            "left_click",
+            |x, y| ((x, y) == (200.0, 120.0)).then_some((7, 9)),
+            FIELD,
+        )
         .await;
         assert!(!out.is_error, "{}", out.text);
         assert_eq!(sent.len(), 2, "{sent:?}");
@@ -3094,14 +3124,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn off_linux_a_covered_field_is_pressed_and_other_elements_and_buttons_are_not_fronted() {
-        let (_, covered) = field("AXTextField", "click", |_, _| Some((8, 10))).await;
-        assert_eq!(covered.len(), 2, "{covered:?}");
-        assert_eq!(covered[0]["name"], "bring_to_front");
-        assert_eq!(covered[1]["args"]["element_token"], "t0", "{covered:?}");
-        let on = |_, _| Some((7, 9));
+    async fn off_linux_a_covered_or_moved_field_is_pressed_and_other_elements_and_buttons_are_not_fronted()
+     {
+        let on: Under = |_, _| Some((7, 9));
+        let behind: Under = |_, _| Some((8, 10));
+        let header: Hit = |_, _| vec![[0.0, 90.0, 800.0, 60.0], [0.0, 0.0, 800.0, 600.0]];
+        let moved: Hit = |_, _| vec![[100.0, 60.0, 200.0, 40.0], [0.0, 0.0, 800.0, 600.0]];
+        for (under, hit) in [(behind, FIELD), (on, header), (on, moved)] {
+            let (_, covered) = field("AXTextField", "click", under, hit).await;
+            assert_eq!(covered.len(), 2, "{covered:?}");
+            assert_eq!(covered[0]["name"], "bring_to_front");
+            assert_eq!(covered[1]["args"]["element_token"], "t0", "{covered:?}");
+        }
         for (role, action) in [("AXButton", "click"), ("AXTextField", "right_click")] {
-            let (_, sent) = field(role, action, on).await;
+            let (_, sent) = field(role, action, on, FIELD).await;
             assert_eq!(sent.len(), 1, "{role} {action}: {sent:?}");
             assert_eq!(
                 sent[0]["name"],
@@ -3110,6 +3146,42 @@ mod tests {
             );
             assert_eq!(sent[0]["args"]["element_token"], "t0", "{sent:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_field_click_holds_the_input_turn_from_fronting_to_its_click() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = press_driver(&socket, &calls, "", "AXTextField");
+        let mut cua = cua_on(&socket, Os::Mac);
+        cua.under = |_, _| Some((7, 9));
+        cua.hit = FIELD;
+        cua.state(json!({"pid": 7})).await.unwrap();
+        calls.lock().unwrap().clear();
+        let (field, other) =
+            tokio::join!(cua.act(json!({"action": "click", "element": 0})), async {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                cua.act(json!({"action": "click", "x": 10.0, "y": 10.0}))
+                    .await
+            });
+        driver.abort();
+        assert!(!field.unwrap().is_error && !other.unwrap().is_error);
+        let order: Vec<String> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c["name"] == "bring_to_front" || c["name"] == "click")
+            .map(|c| format!("{} {}", c["name"], c["args"]["x"]))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                "\"bring_to_front\" null",
+                "\"click\" 200.0",
+                "\"click\" 10.0"
+            ]
+        );
     }
 
     #[tokio::test]
