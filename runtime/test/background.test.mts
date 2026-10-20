@@ -46,7 +46,9 @@ test('a dialog the OS says the plan window owns becomes the target, and a window
   await daemon(t, d.reply)
   const r = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+s' }, { type: 'name' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
-  assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'name', window: 'Save as', pid: 4 }])
+  assert.equal(r.window, 'Save as')
+  const into = process.platform === 'darwin' ? 'Untitled - Notepad' : 'Save as'
+  assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'name', window: into, pid: 4 }])
 })
 
 test('a background plan with no app or wait step has no target and says so', async (t) => {
@@ -96,4 +98,16 @@ test('a macOS menu step in the background refuses before it acts', { skip: proce
   assert.equal(r.ok, false)
   assert.match(String(r.escalate?.reason), /menu bar belongs to the front app/)
   assert.ok(!d.calls.some((c) => c.tool === 'desk_press'))
+})
+
+test('input to a macOS sheet goes to the window it hangs on, which owns its pixels', { skip: process.platform !== 'darwin' }, async (t) => {
+  const ws = [user(), { ...notepad(), title: 'Untitled' }]
+  const d = desktop(ws, ({ tool }) => {
+    if (tool === 'desk_key') ws.push({ id: 's', title: 'save', role: 'dialog', pid: 4, active: true, owner: '1' })
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Untitled' }, { key: 'cmd+s' }, { type: 'name' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'name', window: 'Untitled', pid: 4 }])
 })

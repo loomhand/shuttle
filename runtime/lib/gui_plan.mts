@@ -80,6 +80,7 @@ let recording = false
 let typed = false
 let pressed: { title: string; at: number } | null = null
 let target: Win | null = null
+let listed: Win[] = []
 let targetSince = new Set<string>()
 let userFront: Win | null = null
 let T: Record<string, number> = {}
@@ -281,6 +282,7 @@ function focusedIn(ws: Win[]) {
 // the window a step acts in: the front one, or in the background the plan's target or the newest window it owns
 function frontOf(ws: Win[]) { return BG ? targetIn(ws) : focusedIn(ws) }
 function targetIn(ws: Win[]): Win | null {
+  listed = ws
   if (!target) return null
   const t = target
   const live = ws.find((x) => x.id === t.id) ?? ws.find((x) => x.pid === t.pid && x.title === t.title) ?? null
@@ -296,7 +298,13 @@ function targetIn(ws: Win[]): Win | null {
   function ownedBy(x: Win) { return x.owner !== undefined ? mine.has(x.owner) : OS === 'darwin' && x.pid === t.pid && x.role !== 'window' && !targetSince.has(x.id) }
 }
 function follow(w: Win, ws: Win[]) { target = w; targetSince = new Set(ws.map((x) => x.id)) }
-function at(w: Win | null): desk.Target { return BG && w ? { window: w.title, pid: w.pid } : {} }
+// a macOS sheet has no window of its own, so its input goes to the window it hangs on
+function at(w: Win | null): desk.Target {
+  if (!BG || !w) return {}
+  let x = w
+  for (let o = OS === 'darwin' ? x.owner : undefined; o; o = x.owner) { const up = listed.find((y) => y.id === o); if (!up) break; x = up }
+  return { window: x.title, pid: x.pid }
+}
 function heard(r: desk.Sent, rec: Rec) { if (BG && r.unverified && !rec.unverified) rec.unverified = r.unverified }
 async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
   let ws = seed ?? await desk.windows()
