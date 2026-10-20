@@ -75,3 +75,22 @@ test('typing that landed in part is never typed again in the foreground', async 
   assert.equal(au.doc, 'xh')
   assert.ok(!au.calls.some((c) => c.tool === 'desk_focus'))
 })
+
+test('after auto ran a step in the foreground, a dialog of the app in front fails no later step', async (t) => {
+  const ws: (W & { owner?: string })[] = [user(), notepad()]
+  const calls: Call[] = []
+  await daemon(t, (c) => {
+    calls.push(c)
+    if (c.tool === 'desk_windows') return JSON.stringify(ws)
+    if (c.tool === 'desk_snapshot') return JSON.stringify({ window: ws[1], nodes: [], truncated: false })
+    if (c.tool === 'desk_key') {
+      ws[0] = { ...user(), active: false }; ws[1] = { ...notepad(), active: false }
+      ws.push({ id: 's', title: 'Save as', role: 'dialog', pid: 4, active: true, owner: '1' })
+      return JSON.stringify({ ok: true, input: 'foreground' })
+    }
+    return JSON.stringify({ ok: true, chars: 4 })
+  })
+  const r = await auto({ steps: [{ app: 'Notepad' }, { key: 'ctrl+shift+s' }, { type: 'name' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.trace?.[1]?.input, 'foreground')
+})

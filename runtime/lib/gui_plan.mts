@@ -29,7 +29,7 @@ type Rec = {
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
 type Escalation = Seen & { reason: string; step?: number; plan_step?: Step }
-type Trace = { i: number; op?: string; how?: string; ms?: number; was?: 'on' | 'off' | 'mixed'; now?: 'on' | 'off'; noop?: boolean }
+type Trace = { i: number; op?: string; how?: string; input?: 'foreground'; ms?: number; was?: 'on' | 'off' | 'mixed'; now?: 'on' | 'off'; noop?: boolean }
 export type Result = { ok?: boolean; done?: number; ms?: number; trace?: Trace[]; escalate?: Escalation; served?: desk.Served[]; [key: string]: unknown }
 
 const OS = process.platform
@@ -87,6 +87,7 @@ let adopted = new Set<string>()
 let doubt: string | null = null
 let unheard: string | undefined
 let userFront: Win | null = null
+let fronted = false
 let T: Record<string, number> = {}
 
 /** Runs one gui_plan call: a plan, a saved flow, or a flow-library verb. */
@@ -124,7 +125,7 @@ async function perform(p: Params): Promise<Result> {
   const gapStep = plan[gap]
   if (gapStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: gapStep, reason: `no value for {{${unfilled(gapStep)}}}: pass it in params; nothing ran` } }
   const ws0 = await desk.windows(); for (const w of ws0) known.add(w.title)
-  if (BG) { target = null; adopted = new Set(); doubt = null; userFront = desk.front(ws0); const c = pending(); const was = c && Date.now() - c.at < CHAIN_AGE ? ws0.find((w) => w.title === c.window && w.pid === c.pid) : undefined; if (was) follow(was, ws0) }
+  if (BG) { target = null; adopted = new Set(); doubt = null; fronted = false; userFront = desk.front(ws0); const c = pending(); const was = c && Date.now() - c.at < CHAIN_AGE ? ws0.find((w) => w.title === c.window && w.pid === c.pid) : undefined; if (was) follow(was, ws0) }
   const vetted = new Set<string>()
   const startTitles = new Set(known)
   const start = frontOf(ws0); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
@@ -150,7 +151,7 @@ async function perform(p: Params): Promise<Result> {
       const kept = f && pre?.snap && pre.nodes && f.title !== pressed?.title ? { ...r, id: f.id, snap: pre.snap, nodes: pre.nodes } : undefined
       const prev = plan[i - 1]
       unheard = undefined
-      const fronted = desk.foreground.runs
+      const runs = desk.foreground.runs
       await run(s, rec, kept).catch(async (e: unknown) => {
         const late = (x: unknown) => x instanceof Surprise && x.late
         if (!late(e) || !(prev?.menu || prev?.click || prev?.key)) throw e
@@ -159,7 +160,7 @@ async function perform(p: Params): Promise<Result> {
         }
       })
       if (BG && unheard && !rec.unverified) rec.unverified = unheard
-      if (desk.foreground.runs > fronted) { rec.via ??= 'foreground'; userFront = desk.front(await desk.windows()) }
+      if (desk.foreground.runs > runs) { rec.via ??= 'foreground'; fronted = true }
       const before = recs[i - 1]
       if (BG && before && (s.wait || s.verify || s.expect)) before.confirmed = true
     } catch (e: unknown) {
@@ -172,7 +173,7 @@ async function perform(p: Params): Promise<Result> {
     }
     rec.ms = Date.now() - ts; if (desk.served.length > calls) rec.served = desk.served.slice(calls)
     log.push({ ...rec, ...T }); recs[i] = rec
-    trace.push({ i, op: rec.op, how: rec.how, ms: rec.ms, ...(rec.was !== undefined ? { was: rec.was === 'mixed' ? 'mixed' : rec.was ? 'on' : 'off', now: rec.noop || s.verify || escalate ? undefined : s.on === false ? 'off' : 'on' } : {}), ...(rec.now !== undefined ? { now: rec.now ? 'on' : 'off' } : {}), ...(rec.noop ? { noop: true } : {}) })
+    trace.push({ i, op: rec.op, how: rec.how, ...(rec.via === 'foreground' || rec.how === 'foreground' ? { input: 'foreground' as const } : {}), ms: rec.ms, ...(rec.was !== undefined ? { was: rec.was === 'mixed' ? 'mixed' : rec.was ? 'on' : 'off', now: rec.noop || s.verify || escalate ? undefined : s.on === false ? 'off' : 'on' } : {}), ...(rec.now !== undefined ? { now: rec.now ? 'on' : 'off' } : {}), ...(rec.noop ? { noop: true } : {}) })
     if (escalate) break
   }
   const last = plan.at(-1) ?? {}
@@ -255,7 +256,7 @@ class Stolen extends Surprise {
 }
 function taken(ws: Win[]): string | null {
   const f = desk.front(ws)
-  if (!f || !target || f.pid !== target.pid || (userFront && f.id === userFront.id)) return null
+  if (!f || !target || fronted || f.pid !== target.pid || (userFront && f.id === userFront.id)) return null
   return `"${f.title || f.app || 'the app'}" brought itself to the front though the plan sent no fronting call: background input cannot keep this app behind`
 }
 function stolen(ws: Win[], step: number) { const r = taken(ws); if (r) throw new Stolen(r, step) }
@@ -881,7 +882,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       if (AUTO && !shows(was, now, s.type) && unchanged(was, now) && !taken(await desk.windows())) {
         await desk.focus(w.title, w.pid)
         for (const [i, part] of s.type.split(/\r?\n/).entries()) { if (i) await desk.key('Return'); if (part) await desk.typeText(part) }
-        rec.how = 'foreground'; rec.unverified = undefined; userFront = desk.front(await desk.windows())
+        rec.how = 'foreground'; rec.unverified = undefined; fronted = true
       } else if (!shows(was, now, s.type)) throw new Surprise(`"${s.type}" did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
       rec.confirmed = true
     }
