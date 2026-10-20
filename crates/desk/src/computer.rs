@@ -511,9 +511,11 @@ impl Computer {
             args["max_image_dimension"] = edge.into();
         }
         let v = self.request(session, "get_desktop_state", args).await?;
-        let scale = v["structuredContent"]["frame_scale"]
+        let state = &v["structuredContent"];
+        let scale = state["frame_scale"]
             .as_f64()
-            .filter(|s| *s > 0.0)
+            .or_else(|| Some(state["screen_width"].as_f64()? / state["screenshot_width"].as_f64()?))
+            .filter(|s| s.is_finite() && *s > 0.0)
             .unwrap_or(1.0);
         let mut image = image_of(&v).map(str::to_owned);
         if let Some(smaller) = image.as_deref().and_then(shrink) {
@@ -1254,12 +1256,14 @@ impl Computer {
     }
 
     /// Whether keys for `window` of `pid` can go to the desktop, which skips the driver's
-    /// 220 ms focus guard: the window is active and holds the input focus, and no popup of another app is open.
+    /// 220 ms focus guard: on X11 the window is active and holds the input focus, and no popup of another app is open;
+    /// off Linux always, since the key window is the frontmost and the driver's per-window keys miss XAML windows.
     fn keyboard(&self, pid: i64, window: i64) -> bool {
         let (Ok(pid), Ok(window)) = (u32::try_from(pid), u32::try_from(window)) else {
             return false;
         };
-        self.shm(|g| g.keyboard(window, pid)).unwrap_or(false)
+        self.shm(|g| g.keyboard(window, pid))
+            .unwrap_or(!cfg!(target_os = "linux"))
     }
 
     /// Whether `a` types into a web page element of `session`'s snapshot that a pixel click can focus.
@@ -2722,6 +2726,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_driver_without_frame_scale_maps_by_its_screen_and_screenshot_widths() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(f64, f64)>::new()));
+        let log = std::sync::Arc::clone(&clicks);
+        let driver = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let args = &req["args"];
+                let reply = match req["name"].as_str().unwrap_or_default() {
+                    "get_desktop_state" => {
+                        let shot = args["max_image_dimension"].as_u64().unwrap_or(1280);
+                        json!({"ok": true, "result": {"structuredContent": {"screen_width": 1280, "screenshot_width": shot.min(1280)}}})
+                    }
+                    name => {
+                        if name == "click" {
+                            log.lock()
+                                .unwrap()
+                                .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
+                        }
+                        json!({"ok": true, "result": {"structuredContent": {}}})
+                    }
+                };
+                let mut out = serde_json::to_vec(&reply).unwrap();
+                out.push(b'\n');
+                reader.into_inner().write_all(&out).await.unwrap();
+            }
+        });
+        let cua = cua(&socket);
+        cua.state(json!({})).await.unwrap();
+        let out = cua
+            .act(json!({"action": "click", "x": 100.0, "y": 40.0}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(*clicks.lock().unwrap(), [(125.0, 50.0)]);
+        driver.abort();
+    }
+
+    #[tokio::test]
     async fn every_point_of_an_action_list_maps_by_the_screenshot_taken_before_it() {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
@@ -2968,6 +3017,7 @@ mod tests {
         driver.abort();
     }
 
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn an_input_session_dropped_mid_call_is_still_ended() {
         let dir = tempfile::tempdir().unwrap();
@@ -3025,6 +3075,51 @@ mod tests {
         driver.abort();
     }
 
+    #[cfg(not(target_os = "linux"))]
+    #[tokio::test]
+    async fn keys_for_the_frontmost_window_go_to_the_desktop_off_linux() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let log = std::sync::Arc::clone(&sent);
+        let driver = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let reply = match req["name"].as_str().unwrap_or_default() {
+                    "list_windows" => {
+                        json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Notepad.exe", "title": "notes", "bounds": {"x": 0, "y": 0, "width": 800, "height": 600}, "z_index": 1}]}}})
+                    }
+                    "press_key" | "type_text" => {
+                        log.lock().unwrap().push(req.clone());
+                        json!({"ok": true, "result": {}})
+                    }
+                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+                };
+                let mut out = reply.to_string().into_bytes();
+                out.push(b'\n');
+                reader.into_inner().write_all(&out).await.unwrap();
+            }
+        });
+        let cua = cua(&socket);
+        cua.act(json!({"action": "key", "key": "escape"}))
+            .await
+            .unwrap();
+        cua.act(json!({"action": "type", "text": "hi"}))
+            .await
+            .unwrap();
+        let sent = sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        for req in &sent {
+            assert_eq!(req["args"]["target"]["kind"], "desktop", "{req}");
+            assert!(req["args"]["pid"].is_null(), "{req}");
+        }
+        driver.abort();
+    }
     #[tokio::test]
     async fn the_settle_sampler_starts_with_the_first_computer_call() {
         let dir = tempfile::tempdir().unwrap();
