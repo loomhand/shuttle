@@ -1,6 +1,7 @@
 //! The desk calls: snapshots and element actions through the OS backend; input, windows, launch and capture through cua-driver.
 
 use std::cell::Cell;
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -70,6 +71,8 @@ pub(crate) const BACKGROUND_NO_WINDOW: &str = "background input: no window under
 pub(crate) const BACKGROUND_ELEMENT: &str = "background input: the element's own window could not be found, and background input never clicks a window that covers it";
 pub(crate) const BACKGROUND_TWINS: &str = "background input: the element's own window is ambiguous (same or no title, and no single frame match), and background input never guesses which window to click";
 pub(crate) const BACKGROUND_UIA: &str = "background input: on Windows UI Automation focuses, selects or runs an element only by bringing its window to the front; click it in its window, or use input = \"foreground\"";
+const ANOTHER_SPACE: &str = "accessibility does not reach it there, so a snapshot or an element action needs it on the current Space; background key, type, click, scroll and drag reach it by its title or pid";
+const OFF_SPACE: &str = "the window is on another Space, where its capture may be stale: read it back on its Space before sending the input again";
 const SCROLL_POINT: &str = "scroll needs both x and y, or neither";
 const OK: &str = r#"{"ok":true}"#;
 const SCROLL_AMOUNT: u32 = 3;
@@ -109,6 +112,7 @@ pub struct Desk<B, D> {
     overlay: bool,
     background: bool,
     auto: bool,
+    off_space: std::sync::Mutex<HashSet<(i64, i64)>>,
     typer: Typer,
     #[cfg(test)]
     skew: Arc<std::sync::atomic::AtomicU64>,
@@ -128,6 +132,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             overlay: true,
             background: false,
             auto: false,
+            off_space: std::sync::Mutex::new(HashSet::new()),
             typer: TYPER,
             #[cfg(test)]
             skew: Arc::default(),
@@ -322,10 +327,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn listed(&self) -> Result<Vec<Frame>, String> {
-        let allow = self.allow.clone();
+        let (allow, background) = (self.allow.clone(), self.bg());
         self.access
             .run(CALL_LIMIT, (), move |b| {
                 let mut frames = b.frames()?;
+                if background {
+                    frames.extend(b.off_space());
+                }
                 frames.retain(|f| allow.admits(f.app.as_deref()));
                 frames.sort_by_key(|f| !f.active);
                 let modals = b.modals();
@@ -445,14 +453,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 let listed = frames(b, pid, &allow)?;
                 let frame = live(match id {
                     Some(id) => {
-                        let f = listed
-                            .into_iter()
-                            .find(|f| f.id == id)
-                            .ok_or_else(|| format!("no window {id}"))?;
+                        let Some(f) = listed.into_iter().find(|f| f.id == id) else {
+                            return Err(
+                                away(b, |f| f.id == id).unwrap_or(format!("no window {id}"))
+                            );
+                        };
                         allow.check(f.app.as_deref())?;
                         f
                     }
-                    None => allow.pick(listed, window.as_deref(), pid)?,
+                    None => pick(b, &allow, listed, window.as_deref(), pid)?,
                 })?;
                 let found = started.elapsed().as_micros();
                 Ok((b.tree(&frame, extras)?, found))
@@ -495,7 +504,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let tree = self
             .access
             .run(TREE_LIMIT, (), move |b| {
-                let frame = live(allow.pick(frames(b, pid, &allow)?, window.as_deref(), pid)?)?;
+                let listed = frames(b, pid, &allow)?;
+                let frame = live(pick(b, &allow, listed, window.as_deref(), pid)?)?;
                 b.tree(&frame, extras)
             })
             .await?;
@@ -587,7 +597,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .run(CALL_LIMIT, (), move |b| {
                 let frames = frames(b, a.pid, &allow)?;
                 let kept = (!allow.is_open()).then(|| frames.clone());
-                let frame = live(allow.pick(frames, a.window.as_deref(), a.pid)?)?;
+                let frame = live(pick(b, &allow, frames, a.window.as_deref(), a.pid)?)?;
                 let Some(hit) = b.at(&frame.id, a.x, a.y)? else {
                     return Ok(json!({"found": null, "window": frame}).to_string());
                 };
@@ -616,7 +626,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let allow = self.allow.clone();
         self.access
             .run(CALL_LIMIT, turn, move |b| {
-                let frame = live(allow.pick(frames(b, a.pid, &allow)?, Some(&a.window), a.pid)?)?;
+                let listed = frames(b, a.pid, &allow)?;
+                let frame = live(pick(b, &allow, listed, Some(&a.window), a.pid)?)?;
                 b.close(&frame)?;
                 Ok(json!({"ok": true, "title": frame.title}).to_string())
             })
@@ -689,18 +700,21 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     ) -> Result<(), String> {
         let out = self.call(tool, deliver(req, to)).await?;
         if note.is_none() {
-            *note = self.unverified(&out);
+            *note = self.unverified(&out, to);
         }
         Ok(())
     }
 
     /// The driver's note on background input whose effect it could not confirm, with the escalation it proposes.
-    fn unverified(&self, out: &Value) -> Option<String> {
+    fn unverified(&self, out: &Value, to: Option<(i64, i64)>) -> Option<String> {
         let c = &out["structuredContent"];
         let effect = c["effect"]
             .as_str()
             .filter(|e| self.bg() && *e != "confirmed")?;
-        let note = format!("{effect}: {}", text_of(out));
+        let mut note = format!("{effect}: {}", text_of(out));
+        if to.is_some_and(|t| self.off_spaced().contains(&t)) {
+            note = format!("{note}; {OFF_SPACE}");
+        }
         let escalation = &c["escalation"];
         Some(
             match (escalation["reason"].as_str(), escalation["target"].as_str()) {
@@ -944,7 +958,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 req["y"] = ly.into();
             }
             let out = self.call("scroll", background(req, to)).await?;
-            return Ok(ok_with(self.unverified(&out)));
+            return Ok(ok_with(self.unverified(&out, Some(to))));
         }
         let (x, y) = match (a.x, a.y) {
             (Some(x), Some(y)) => (x, y),
@@ -1014,7 +1028,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let (tx, ty) = self.local(&w, (a.to_x, a.to_y)).await?;
             let req = json!({"from_x": fx, "from_y": fy, "to_x": tx, "to_y": ty});
             let out = self.call("drag", background(req, to)).await?;
-            return Ok(ok_with(self.unverified(&out)));
+            return Ok(ok_with(self.unverified(&out, Some(to))));
         }
         self.admit_point(a.x, a.y).await?;
         self.admit_point(a.to_x, a.to_y).await?;
@@ -1106,7 +1120,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
             done => done?,
         };
-        Ok(self.unverified(&out))
+        Ok(self.unverified(&out, Some((w.pid, w.id))))
     }
 
     /// A click at a screen point, for a window that takes no window click; background input refuses it.
@@ -1254,6 +1268,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    fn off_spaced(&self) -> std::sync::MutexGuard<'_, HashSet<(i64, i64)>> {
+        self.off_space
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     async fn focus(&self, a: WindowArgs) -> Result<String, String> {
         let (w, _) = self.pick_window(Some(&a.window), a.pid).await?;
         let window_id: i64 =
@@ -1281,10 +1301,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         pid: Option<u32>,
     ) -> Result<(Frame, Value), String> {
         let mut listed = self.call("list_windows", json!({})).await?;
-        let raw = match listed["structuredContent"]["windows"].take() {
+        let mut raw = match listed["structuredContent"]["windows"].take() {
             Value::Array(windows) => windows,
             _ => Vec::new(),
         };
+        let mac = self.os == Os::Mac;
+        raw.retain(|w| !mac || w["is_on_screen"] != false || !w["on_current_space"].is_null());
         let mut windows: Vec<Frame> = raw
             .iter()
             .map(|w| Frame {
@@ -1316,6 +1338,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .into_iter()
             .find(|r| r["window_id"].as_i64() == id)
             .unwrap_or_default();
+        if let Some(to) = listed["pid"].as_i64().zip(listed["window_id"].as_i64()) {
+            let mut off = self.off_spaced();
+            if off_space(&listed) {
+                off.insert(to);
+            } else {
+                off.remove(&to);
+            }
+        }
         Ok((w, listed))
     }
 
@@ -1419,6 +1449,31 @@ fn check_process<B: Access>(b: &mut B, allow: &Allow, pid: Option<u32>) -> Resul
     allow.check(app_of(&frames, pid))
 }
 
+fn pick<B: Access>(
+    b: &mut B,
+    allow: &Allow,
+    frames: Vec<Frame>,
+    window: Option<&str>,
+    pid: Option<u32>,
+) -> Result<Frame, String> {
+    allow.pick(frames, window, pid).map_err(|e| {
+        let want = window.unwrap_or_default();
+        let named = |f: &Frame| {
+            pid.is_none_or(|p| f.pid == Some(p))
+                && (0..TITLE_TIERS).any(|t| title_matches(t, &f.title, want))
+        };
+        window.and_then(|_| away(b, named)).unwrap_or(e)
+    })
+}
+
+fn away<B: Access>(b: &mut B, named: impl Fn(&Frame) -> bool) -> Option<String> {
+    let f = b.off_space().into_iter().find(|f| named(f))?;
+    Some(format!(
+        "window {:?} is on another Space: {ANOTHER_SPACE}",
+        f.title
+    ))
+}
+
 fn live(frame: Frame) -> Result<Frame, String> {
     if frame.stale {
         return Err(format!(
@@ -1511,6 +1566,10 @@ fn key_request(mut keys: Vec<String>) -> (&'static str, Value) {
 }
 
 /// A driver window's layer, 0 when the driver gives none, as on Linux.
+fn off_space(w: &Value) -> bool {
+    w["on_current_space"] == false && w["space_ids"].as_array().is_some_and(|s| !s.is_empty())
+}
+
 fn layer(w: &Value) -> i64 {
     w["layer"].as_i64().unwrap_or(0)
 }
@@ -2175,6 +2234,93 @@ pub(crate) mod tests {
         assert_eq!(order(&calls), ["bring_to_front -", "drag desktop"]);
     }
 
+    struct Spaces(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for Spaces {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 4, "window_id": 1, "layer": 0, "title": "Untitled - Notepad", "app_name": "Notepad", "is_on_screen": true, "on_current_space": true, "space_ids": [8]},
+                    {"pid": 9, "window_id": 84080, "layer": 0, "title": "微信", "app_name": "WeChat", "is_on_screen": false, "on_current_space": false, "space_ids": [18]},
+                    {"pid": 9, "window_id": 727, "layer": 0, "title": "微信", "app_name": "WeChat", "is_on_screen": false, "on_current_space": null, "space_ids": null},
+                    {"pid": 9, "window_id": 37333, "layer": 3, "title": "", "app_name": "WeChat", "is_on_screen": false, "on_current_space": false, "space_ids": [18]}
+                ]}}),
+                "type_text" => json!({
+                    "content": [{"type": "text", "text": "Sent (unverified) 1 char(s) via CGEvent."}],
+                    "structuredContent": {"effect": "unverifiable"}
+                }),
+                _ => json!({}),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn background_input_lists_a_window_on_another_space_and_foreground_input_does_not() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let back = Desk::new(|| Ok(Apps), Spaces(Arc::clone(&calls)), Os::Mac).background(true);
+        let listed: Vec<Value> =
+            serde_json::from_str(&back.run("desk_windows", json!({})).await.unwrap().text).unwrap();
+        let other: Vec<&Value> = listed.iter().filter(|w| w["space"] == "other").collect();
+        assert_eq!(other.len(), 1, "{listed:?}");
+        assert_eq!(
+            (
+                &other[0]["id"],
+                &other[0]["title"],
+                &other[0]["pid"],
+                &other[0]["active"]
+            ),
+            (&json!("84080"), &json!("微信"), &json!(9), &json!(false))
+        );
+        let fore = Desk::new(|| Ok(Apps), Spaces(Arc::clone(&calls)), Os::Mac);
+        let listed = fore.run("desk_windows", json!({})).await.unwrap().text;
+        assert!(!listed.contains("\"space\""), "{listed}");
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_of_a_window_on_another_space_says_so_by_title_or_id() {
+        for background in [false, true] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk =
+                Desk::new(|| Ok(Apps), Spaces(Arc::clone(&calls)), Os::Mac).background(background);
+            for args in [json!({"window": "微信"}), json!({"id": "84080"})] {
+                let err = desk.run("desk_snapshot", args.clone()).await.unwrap_err();
+                assert!(err.contains("is on another Space"), "{args} {err}");
+            }
+            let err = desk
+                .run("desk_find", json!({"name": "x", "window": "微信"}))
+                .await
+                .unwrap_err();
+            assert!(err.contains("is on another Space"), "{err}");
+            let err = desk
+                .run("desk_snapshot", json!({"window": "Nope"}))
+                .await
+                .unwrap_err();
+            assert!(!err.contains("Space"), "{err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn background_input_to_a_title_twin_goes_to_the_window_on_a_space_and_says_its_capture_may_be_stale()
+     {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Spaces(Arc::clone(&calls)), Os::Mac).background(true);
+        let out = desk
+            .run("desk_type", json!({"text": "x", "window": "微信"}))
+            .await
+            .unwrap();
+        let typed = sent(&calls, "type_text");
+        assert_eq!(typed.len(), 1, "{typed:?}");
+        assert_eq!(typed[0]["target"]["window_id"], 84080, "{typed:?}");
+        let note: Value = serde_json::from_str(&out.text).unwrap();
+        assert!(
+            note["unverified"]
+                .as_str()
+                .is_some_and(|n| n.contains(OFF_SPACE)),
+            "{note}"
+        );
+    }
+
     fn sent(calls: &Arc<Mutex<Vec<(String, Value)>>>, tool: &str) -> Vec<Value> {
         calls
             .lock()
@@ -2765,6 +2911,13 @@ pub(crate) mod tests {
                 frame("4/1", "Untitled - Notepad", 4, true, Some("Notepad.exe")),
                 frame("8/1", "Inbox", 8, false, Some("Mail")),
             ])
+        }
+
+        fn off_space(&mut self) -> Vec<Frame> {
+            vec![Frame {
+                space: Some("other"),
+                ..frame("84080", "微信", 9, false, Some("WeChat"))
+            }]
         }
 
         fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {

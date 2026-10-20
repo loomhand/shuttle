@@ -157,6 +157,7 @@ fn frame(f: atspi::Frame) -> Frame {
         modal: None,
         blocks: None,
         shell: false,
+        space: None,
         stale: false,
         unlisted: !FRAME_ROLES.contains(&f.role),
         framed: f.role != WINDOW_ROLE,
