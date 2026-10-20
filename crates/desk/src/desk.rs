@@ -61,7 +61,7 @@ const BACKGROUND_TARGET: &str = "background input needs its target window: pass 
 const BACKGROUND_DESKTOP: &str = "background input: this window takes no pointer input without the foreground, and background input never brings a window to the front";
 const BACKGROUND_NO_WINDOW: &str = "background input: no window under the point";
 const BACKGROUND_ELEMENT: &str = "background input: the element's own window could not be found, and background input never clicks a window that covers it";
-const BACKGROUND_TWINS: &str = "background input: the element's window cannot be told from the app's other windows (same or no title, and no single frame match), and background input never guesses which window to click";
+const BACKGROUND_TWINS: &str = "background input: the element's own window is ambiguous (same or no title, and no single frame match), and background input never guesses which window to click";
 const SCROLL_POINT: &str = "scroll needs both x and y, or neither";
 const OK: &str = r#"{"ok":true}"#;
 const SCROLL_AMOUNT: u32 = 3;
@@ -1489,6 +1489,7 @@ pub(crate) mod tests {
         pub(crate) acts: Vec<(String, Act)>,
         opened: bool,
         menus: Vec<bool>,
+        untitled: bool,
     }
 
     impl Fake {
@@ -1514,13 +1515,12 @@ pub(crate) mod tests {
 
     impl Access for Fake {
         fn frames(&mut self) -> Result<Vec<Frame>, String> {
-            Ok(vec![frame(
-                "w",
-                "Untitled - Notepad",
-                4,
-                true,
-                Some("Notepad"),
-            )])
+            let title = if self.untitled {
+                ""
+            } else {
+                "Untitled - Notepad"
+            };
+            Ok(vec![frame("w", title, 4, true, Some("Notepad"))])
         }
 
         fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
@@ -1825,7 +1825,7 @@ pub(crate) mod tests {
         }
     }
 
-    struct Twins(Arc<Mutex<Vec<(String, Value)>>>, f64);
+    struct Twins(Arc<Mutex<Vec<(String, Value)>>>, f64, &'static str);
 
     impl Input for Twins {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
@@ -1833,8 +1833,8 @@ pub(crate) mod tests {
             Ok(match tool {
                 "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
                 "list_windows" => json!({"structuredContent": {"windows": [
-                    {"pid": 4, "window_id": 3, "layer": 0, "z_index": 2, "title": "Untitled - Notepad", "bounds": {"x": self.1, "y": 0.0, "width": 800.0, "height": 600.0}},
-                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}}
+                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": self.2, "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}},
+                    {"pid": 4, "window_id": 3, "layer": 0, "z_index": 2, "title": self.2, "bounds": {"x": self.1, "y": 0.0, "width": 800.0, "height": 600.0}}
                 ]}}),
                 "get_window_state" => json!({"structuredContent": {
                     "screenshot_width": 800, "screenshot_height": 600,
@@ -2124,9 +2124,19 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_background_element_click_tells_same_titled_windows_apart_by_frame_or_refuses() {
+        fn untitled() -> Result<Fake, String> {
+            let mut f = notepad();
+            f.untitled = true;
+            Ok(f)
+        }
+        click_one_of_twins("Untitled - Notepad", || Ok(notepad())).await;
+        click_one_of_twins("", untitled).await;
+    }
+
+    async fn click_one_of_twins(title: &'static str, fake: fn() -> Result<Fake, String>) {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk =
-            Desk::new(|| Ok(notepad()), Twins(Arc::clone(&calls), 900.0), Os::Mac).background(true);
+            Desk::new(fake, Twins(Arc::clone(&calls), 900.0, title), Os::Mac).background(true);
         desk.run("desk_act", json!({"id": "ok", "action": "click"}))
             .await
             .unwrap();
@@ -2134,17 +2144,16 @@ pub(crate) mod tests {
         assert_eq!(
             (clicks.len(), &clicks[0]["window_id"]),
             (1, &json!(1)),
-            "{clicks:?}"
+            "{title:?} {clicks:?}"
         );
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let desk =
-            Desk::new(|| Ok(notepad()), Twins(Arc::clone(&calls), 0.0), Os::Mac).background(true);
+        let desk = Desk::new(fake, Twins(Arc::clone(&calls), 0.0, title), Os::Mac).background(true);
         let err = desk
             .run("desk_act", json!({"id": "ok", "action": "click"}))
             .await
             .unwrap_err();
-        assert!(err.contains("never guesses"), "{err}");
-        assert!(sent(&calls, "click").is_empty());
+        assert!(err.contains("own window is ambiguous"), "{title:?} {err}");
+        assert!(sent(&calls, "click").is_empty(), "{title:?}");
     }
 
     #[tokio::test]
