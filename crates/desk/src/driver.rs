@@ -182,6 +182,7 @@ pub fn desktop(mut req: Value) -> Value {
 pub fn background(mut req: Value, (pid, window_id): (i64, i64)) -> Value {
     req["target"] = json!({"kind": "window", "pid": pid, "window_id": window_id});
     req["delivery_mode"] = "background".into();
+    req["session"] = WINDOW_SESSION.into();
     req
 }
 

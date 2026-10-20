@@ -1758,6 +1758,7 @@ pub(crate) mod tests {
             for a in all {
                 assert_eq!(a["target"], window, "{tool} {a}");
                 assert_eq!(a["delivery_mode"], "background", "{tool} {a}");
+                assert_eq!(a["session"], WINDOW_SESSION, "{tool} {a}");
                 assert!(a.get("scope").is_none(), "{tool} {a}");
             }
         }
