@@ -79,6 +79,7 @@ const RUN_CHARS: usize = 8;
 const TYPE_SETTLE: Duration = Duration::from_millis(100);
 const TYPE_POLL: Duration = Duration::from_millis(10);
 const TYPE_TAIL: usize = 16;
+const MAC_TYPE_DELAY_MS: u64 = 0;
 #[cfg(target_os = "linux")]
 pub(crate) const TYPER: Typer = crate::xtest::type_mapped;
 #[cfg(not(target_os = "linux"))]
@@ -549,8 +550,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
             if self.os == Os::Mac {
                 if !line.is_empty() {
-                    self.send("type_text", json!({"text": line}), to, &mut note)
-                        .await?;
+                    let mut req = json!({"text": line});
+                    if line.chars().all(|c| c.len_utf16() == 1) {
+                        req["delay_ms"] = MAC_TYPE_DELAY_MS.into();
+                    }
+                    self.send("type_text", req, to, &mut note).await?;
                 }
                 continue;
             }
@@ -2117,6 +2121,28 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn macos_typing_sets_the_driver_delay_for_text_in_the_basic_plane_only() {
+        for (os, background, text, delay) in [
+            (Os::Mac, false, "ab\u{4e2d}\ncd", Some(MAC_TYPE_DELAY_MS)),
+            (Os::Mac, true, "ab\u{4e2d}\ncd", Some(MAC_TYPE_DELAY_MS)),
+            (Os::Mac, false, "a\u{1f600}", None),
+            (Os::Windows, false, "ab\u{4e2d}\ncd", None),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk =
+                Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), os).background(background);
+            desk.run("desk_type", json!({"text": text, "pid": 4}))
+                .await
+                .unwrap();
+            let typed = sent(&calls, "type_text");
+            assert!(!typed.is_empty(), "{os:?}");
+            for req in typed {
+                assert_eq!(req["delay_ms"].as_u64(), delay, "{os:?} {req}");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn a_background_element_click_goes_to_the_elements_own_window_under_the_window_that_covers_it()
      {
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -3008,7 +3034,7 @@ pub(crate) mod tests {
                 ),
                 (
                     "type_text".to_owned(),
-                    json!({"text": "a", "scope": "desktop"})
+                    json!({"text": "a", "scope": "desktop", "delay_ms": MAC_TYPE_DELAY_MS})
                 ),
                 (
                     "press_key".to_owned(),
@@ -3016,7 +3042,7 @@ pub(crate) mod tests {
                 ),
                 (
                     "type_text".to_owned(),
-                    json!({"text": "b", "scope": "desktop"})
+                    json!({"text": "b", "scope": "desktop", "delay_ms": MAC_TYPE_DELAY_MS})
                 ),
             ]
         );
