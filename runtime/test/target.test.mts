@@ -20,3 +20,9 @@ test('the input helpers send a background target only when one is given', async 
     ['desk_click', { x: 10, y: 20 }],
   ])
 })
+
+test('an input helper returns the note of background input the driver could not confirm', async (t) => {
+  await daemon(t, () => '{"ok":true,"chars":1,"unverified":"unverifiable: Sent 1 char(s) via PostMessage (not verified)."}')
+  const sent = await desk.typeText('a', { pid: 4 })
+  assert.equal(sent.unverified, 'unverifiable: Sent 1 char(s) via PostMessage (not verified).')
+})

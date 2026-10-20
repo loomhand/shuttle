@@ -45,9 +45,11 @@ export const act = (id: string, action: 'click' | 'action' | 'select' | 'focus')
 export const at = (x: number, y: number, window?: string, pid?: number | null): Promise<{ found: El | null; path?: { id: string; role: string; name: string }[] }> => call('at', { x, y, window, pid: pid ?? undefined })
 /** The window that background input goes to, by title or process; required with `[desk] input = "background"`, ignored otherwise. */
 export type Target = { window?: string; pid?: number | null }
-export const key = (keys: string, to: Target = {}): Promise<unknown> => call('key', { keys, ...target(to) })
-export const typeText = (text: string, to: Target = {}): Promise<unknown> => call('type', { text, ...target(to) })
-export const click = (x: number, y: number, o: { button?: string; count?: number } & Target = {}): Promise<unknown> => call('click', { x, y, ...o, pid: o.pid ?? undefined })
+/** An input result; background input the driver could not confirm carries `unverified`, so read its effect back before relying on it. */
+export type Sent = { ok: boolean; chars?: number; unverified?: string }
+export const key = (keys: string, to: Target = {}): Promise<Sent> => call('key', { keys, ...target(to) })
+export const typeText = (text: string, to: Target = {}): Promise<Sent> => call('type', { text, ...target(to) })
+export const click = (x: number, y: number, o: { button?: string; count?: number } & Target = {}): Promise<Sent> => call('click', { x, y, ...o, pid: o.pid ?? undefined })
 export const focus = (window: string, pid?: number | null): Promise<{ ok: boolean; title: string; pid: number | null; path?: string; front?: number | null }> => call('focus', { window, pid: pid ?? undefined })
 export const close = (window: string, pid?: number | null): Promise<unknown> => call('close', { window, pid: pid ?? undefined })
 export const launch = (app: string): Promise<{ ok: boolean; launched: string; background?: boolean }> => call('launch', { app })
