@@ -24,7 +24,7 @@ type Rec = {
   i: number; op?: string; ms?: number; served?: unknown[]; how?: string; via?: string; window?: string; seen?: string; submit?: boolean
   blank?: Fp; fp?: Fp; was?: boolean | 'mixed' | null; now?: boolean; noop?: boolean; state?: string; opened?: number; path?: string[]; pick?: number[]
   focused?: string; p?: number; p_zoom?: number | null; p_full?: number | null; verdict?: Vision; ground_hit?: string; checked?: string; value?: string; ref?: string; unsaved?: boolean
-  unverified?: string; confirmed?: boolean
+  unverified?: string; confirmed?: boolean; fg?: boolean
 }
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
@@ -34,7 +34,7 @@ export type Result = { ok?: boolean; done?: number; ms?: number; trace?: Trace[]
 
 const OS = process.platform
 // with [desk] input = "background" a plan drives its target window, never the front one
-const BG = process.env.SHUTTLE_INPUT === 'background' || process.env.SHUTTLE_INPUT === 'auto'
+const BEHIND = process.env.SHUTTLE_INPUT === 'background' || process.env.SHUTTLE_INPUT === 'auto'
 const AUTO = process.env.SHUTTLE_INPUT === 'auto'
 const NO_PIXELS = 'background gui_plan does not read the screen, which shows whatever covers the plan\'s window'
 const FLOWS = process.env.SHUTTLE_FLOWS ?? ''
@@ -87,7 +87,9 @@ let adopted = new Set<string>()
 let doubt: string | null = null
 let unheard: string | undefined
 let userFront: Win | null = null
+let BG = BEHIND
 let fronted = false
+const foreground = { steps: 0 }
 let T: Record<string, number> = {}
 
 /** Runs one gui_plan call: a plan, a saved flow, or a flow-library verb. */
@@ -124,6 +126,7 @@ async function perform(p: Params): Promise<Result> {
   const gap = plan.findIndex((s, i) => i >= (p.start ?? 0) && unfilled(s))
   const gapStep = plan[gap]
   if (gapStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: gapStep, reason: `no value for {{${unfilled(gapStep)}}}: pass it in params; nothing ran` } }
+  BG = BEHIND
   const ws0 = await desk.windows(); for (const w of ws0) known.add(w.title)
   if (BG) { target = null; adopted = new Set(); doubt = null; fronted = false; userFront = desk.front(ws0); const c = pending(); const was = c && Date.now() - c.at < CHAIN_AGE ? ws0.find((w) => w.title === c.window && w.pid === c.pid) : undefined; if (was) follow(was, ws0) }
   const vetted = new Set<string>()
@@ -151,7 +154,7 @@ async function perform(p: Params): Promise<Result> {
       const kept = f && pre?.snap && pre.nodes && f.title !== pressed?.title ? { ...r, id: f.id, snap: pre.snap, nodes: pre.nodes } : undefined
       const prev = plan[i - 1]
       unheard = undefined
-      const runs = desk.foreground.runs
+      const runs = desk.foreground.runs + foreground.steps
       await run(s, rec, kept).catch(async (e: unknown) => {
         const late = (x: unknown) => x instanceof Surprise && x.late
         if (!late(e) || !(prev?.menu || prev?.click || prev?.key)) throw e
@@ -160,7 +163,7 @@ async function perform(p: Params): Promise<Result> {
         }
       })
       if (BG && unheard && !rec.unverified) rec.unverified = unheard
-      if (desk.foreground.runs > runs) { rec.via ??= 'foreground'; fronted = true }
+      if (desk.foreground.runs + foreground.steps > runs) { rec.fg = true; fronted = true }
       const before = recs[i - 1]
       if (BG && before && (s.wait || s.verify || s.expect)) before.confirmed = true
     } catch (e: unknown) {
@@ -173,7 +176,7 @@ async function perform(p: Params): Promise<Result> {
     }
     rec.ms = Date.now() - ts; if (desk.served.length > calls) rec.served = desk.served.slice(calls)
     log.push({ ...rec, ...T }); recs[i] = rec
-    trace.push({ i, op: rec.op, how: rec.how, ...(rec.via === 'foreground' || rec.how === 'foreground' ? { input: 'foreground' as const } : {}), ms: rec.ms, ...(rec.was !== undefined ? { was: rec.was === 'mixed' ? 'mixed' : rec.was ? 'on' : 'off', now: rec.noop || s.verify || escalate ? undefined : s.on === false ? 'off' : 'on' } : {}), ...(rec.now !== undefined ? { now: rec.now ? 'on' : 'off' } : {}), ...(rec.noop ? { noop: true } : {}) })
+    trace.push({ i, op: rec.op, how: rec.how, ...(rec.fg || rec.how === 'foreground' ? { input: 'foreground' as const } : {}), ms: rec.ms, ...(rec.was !== undefined ? { was: rec.was === 'mixed' ? 'mixed' : rec.was ? 'on' : 'off', now: rec.noop || s.verify || escalate ? undefined : s.on === false ? 'off' : 'on' } : {}), ...(rec.now !== undefined ? { now: rec.now ? 'on' : 'off' } : {}), ...(rec.noop ? { noop: true } : {}) })
     if (escalate) break
   }
   const last = plan.at(-1) ?? {}
@@ -330,6 +333,11 @@ function ownerOf(w: Win, ws: Win[]) {
   let x = w
   for (let k = 0; k < ws.length; k++) { const o = ws.find((y) => y.id === x.owner); if (!o) break; x = o }
   return x.id !== w.id ? x : ws.find((y) => y.id === target?.id && y.id !== w.id)
+}
+async function front(w: Win | null) {
+  const to = w ? at(w) : {}
+  if (to.window !== undefined) await desk.focus(to.window, to.pid)
+  BG = false; fronted = true; foreground.steps += 1
 }
 function follow(w: Win, ws: Win[]) { target = w; doubt = null; targetSince = new Set(ws.map((x) => x.id)) }
 // a macOS sheet has no window of its own, so its input goes to the window it hangs on
@@ -829,7 +837,8 @@ async function option(combo: Node, opts: Node[], value: string, target: string, 
 }
 
 async function cropState(n: Node) {
-  if (BG) throw new Surprise(`the state of "${n.name}" needs a look at the screen: ${NO_PIXELS}`, await seen())
+  if (BG && !AUTO) throw new Surprise(`the state of "${n.name}" needs a look at the screen: ${NO_PIXELS}`, await seen())
+  if (BG) await front(frontOf(await desk.windows()))
   const b = (await desk.read(n.id)).bounds ?? n.bounds
   if (!b) throw new Error(`"${n.name}" has no screen position`)
   const shot = await desk.shot({ x: Math.max(0, b[0] - 40), y: Math.max(0, b[1] - 4), w: b[2] + 80, h: b[3] + 8 })
@@ -945,7 +954,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const d = await decide({ window_title: w.title, contents: render(nodes, 60, false, 4000) }, { ok: desk.yes(s.expect) })
     rec.p = +prob(d.ok).toFixed(2)
     if (prob(d.ok) >= 0.5) return
-    if (BG) throw new Surprise(`expectation not met in the window's tree: ${s.expect}; ${NO_PIXELS}`, await seen())
+    if (BG && !AUTO) throw new Surprise(`expectation not met in the window's tree: ${s.expect}; ${NO_PIXELS}`, await seen())
+    if (BG) await front(w)
     const v = await vision(`You check the state of a computer screen.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot()); rec.verdict = v
     if (!v.ok) throw new Surprise(`expectation not met: ${s.expect} (${v.why})`, await seen())
     return
@@ -962,7 +972,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     return
   }
   if (s.menu) {
-    if (BG && OS === 'darwin') throw new Surprise(`the macOS menu bar belongs to the front app, and an app behind it runs no menu entry: background gui_plan cannot run "${s.menu}" in "${w.title}"`, await seen())
+    if (BG && OS === 'darwin' && !AUTO) throw new Surprise(`the macOS menu bar belongs to the front app, and an app behind it runs no menu entry: background gui_plan cannot run "${s.menu}" in "${w.title}"`, await seen())
+    if (BG && OS === 'darwin') { await front(w); nodes = parse(await snapOf(w, r)) }
     const entry = await menuEntry(w, nodes, s.menu, s.fp, rec)
     const hit = entry.hit; nodes = entry.nodes
     rec.fp = fingerprint(nodes, hit)
@@ -1030,7 +1041,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   const hit = await resolve(nodes, target, targetRole(s), undefined, s.set ? 0.5 : 0.7, s.fp)
   if (!hit) {
     if (!s.click) throw new Surprise(`no element matches "${target}"`, await seen(), true)
-    if (BG) throw new Surprise(`no element of "${w.title}" matches "${target}", and finding it on the screen is out: ${NO_PIXELS}`, await seen(), true)
+    if (BG && !AUTO) throw new Surprise(`no element of "${w.title}" matches "${target}", and finding it on the screen is out: ${NO_PIXELS}`, await seen(), true)
+    if (BG) await front(w)
     t0 = Date.now()
     const area = await desk.screen()
     const [x, y] = await desk.ground(await desk.shot(), `${target} in the "${w.title}" window`, area)
@@ -1052,7 +1064,9 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.click && hit.how !== 'fp' && norm(hit.n.name) !== norm(target) && TOGGLE_ROLES.has(hit.n.role))
     throw new Surprise(`"${target}" is closest to ${hit.n.role} "${hit.n.name}" (${hit.how}), and a click would flip it; use {check: "${hit.n.name}", on: ...} for it, or name the element you mean exactly`, await seen())
   if (s.click && hit.n.role === 'menuitem') {
-    if (BG && OS === 'darwin' && [...up(nodes, hit.n.parent)].some(([, a]) => a.role === 'menubar')) throw new Surprise(`the macOS menu bar belongs to the front app, and an app behind it runs no menu entry: background gui_plan cannot click "${hit.n.name}" in "${w.title}"`, await seen())
+    const bar = BG && OS === 'darwin' && [...up(nodes, hit.n.parent)].some(([, a]) => a.role === 'menubar')
+    if (bar && !AUTO) throw new Surprise(`the macOS menu bar belongs to the front app, and an app behind it runs no menu entry: background gui_plan cannot click "${hit.n.name}" in "${w.title}"`, await seen())
+    if (bar) await front(w)
     await choose(nodes, hit.n, rec, true, w); await settle(w.title); return
   }
   if (s.click) {
