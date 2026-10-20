@@ -1566,12 +1566,12 @@ fn key_request(mut keys: Vec<String>) -> (&'static str, Value) {
 }
 
 /// A driver window's layer, 0 when the driver gives none, as on Linux.
-fn off_space(w: &Value) -> bool {
-    w["on_current_space"] == false && w["space_ids"].as_array().is_some_and(|s| !s.is_empty())
-}
-
 fn layer(w: &Value) -> i64 {
     w["layer"].as_i64().unwrap_or(0)
+}
+
+fn off_space(w: &Value) -> bool {
+    w["on_current_space"] == false && w["space_ids"].as_array().is_some_and(|s| !s.is_empty())
 }
 
 /// `{"ok":true}`, with the driver's note when it could not confirm background input.
