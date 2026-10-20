@@ -1105,18 +1105,26 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn script(path: &std::path::Path, body: &str) {
+        let made = std::process::Command::new("/bin/sh")
+            .args(["-c", r#"printf '%s' "$1" > "$0" && chmod 755 "$0""#])
+            .arg(path)
+            .arg(body)
+            .status()
+            .unwrap();
+        assert!(made.success(), "write {}", path.display());
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_component_reaches_the_device_shell_quoted() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let adb = dir.path().join("adb");
         let argv = dir.path().join("argv");
-        std::fs::write(
+        script(
             &adb,
-            format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n", argv.display()),
-        )
-        .unwrap();
-        std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755)).unwrap();
+            &format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n", argv.display()),
+        );
         let android = Android::new(Device {
             adb,
             serial: None,
@@ -1156,12 +1164,15 @@ mod tests {
 
     #[cfg(unix)]
     async fn failing_ui_server(log: &str, stderr: &str, status: u8) -> String {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let adb = dir.path().join("adb");
-        std::fs::write(&adb, format!("#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*logcat*) cat \"$DIR/crash.log\";;\n*app_process*) echo '{stderr}' >&2; exit {status};;\nesac\n")).unwrap();
+        script(
+            &adb,
+            &format!(
+                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*logcat*) cat \"$DIR/crash.log\";;\n*app_process*) echo '{stderr}' >&2; exit {status};;\nesac\n"
+            ),
+        );
         std::fs::write(dir.path().join("crash.log"), log).unwrap();
-        std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755)).unwrap();
         let android = Android::new(Device {
             adb,
             serial: None,
@@ -1215,15 +1226,12 @@ mod tests {
     #[cfg(unix)]
     impl Fake {
         fn new() -> Self {
-            use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();
             let adb = dir.path().join("adb");
-            std::fs::write(
+            script(
                 &adb,
                 "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*screencap*) printf png;;\n*app_process*)\n  echo ready\n  while read l; do\n    case \"$l\" in\n      windows) cat \"$DIR/windows.json\";;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
-            )
-            .unwrap();
-            std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755)).unwrap();
+            );
             let android = Android::new(Device {
                 adb,
                 serial: None,
@@ -1574,9 +1582,7 @@ mod tests {
     async fn the_focused_window_diagnostic_gives_up_after_a_second() {
         let dir = tempfile::tempdir().unwrap();
         let adb = dir.path().join("adb");
-        std::fs::write(&adb, "#!/bin/sh\nexec sleep 30\n").unwrap();
-        std::fs::set_permissions(&adb, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-            .unwrap();
+        script(&adb, "#!/bin/sh\nexec sleep 30\n");
         let (android, _peer) = session(adb.to_str().unwrap()).await;
         let started = tokio::time::Instant::now();
         assert_eq!(android.focused_window().await, "the focused window");
