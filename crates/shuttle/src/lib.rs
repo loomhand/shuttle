@@ -21,6 +21,7 @@ pub mod win;
 
 use std::fmt::Display;
 use std::io::Write as _;
+use std::sync::atomic::AtomicBool;
 #[cfg(unix)]
 use std::time::Duration;
 
@@ -33,6 +34,8 @@ pub const STOPPED: &str = "stopped by the user: run `cocoon-shuttle resume` to g
 
 #[cfg(unix)]
 const GROUP_POLL: Duration = Duration::from_millis(20);
+
+pub(crate) static ENDING: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn log(line: impl Display) {
     let _ = writeln!(std::io::stderr(), "{NAME}: {line}");
