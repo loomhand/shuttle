@@ -2,7 +2,8 @@
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
     SetInformationJobObject, TerminateJobObject,
 };
@@ -19,6 +20,23 @@ unsafe impl Sync for Job {}
 impl Job {
     /// Puts `child`, a process handle from a spawn just now, into a new job that kills its tree on close.
     pub(crate) fn hold(child: Option<std::os::windows::io::RawHandle>) -> Result<Self, String> {
+        Self::with(child, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
+    }
+
+    /// Like [`Job::hold`] for `child` alone: the processes it starts stay outside the job and outlive it.
+    pub(crate) fn hold_alone(
+        child: Option<std::os::windows::io::RawHandle>,
+    ) -> Result<Self, String> {
+        Self::with(
+            child,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
+        )
+    }
+
+    fn with(
+        child: Option<std::os::windows::io::RawHandle>,
+        flags: JOB_OBJECT_LIMIT,
+    ) -> Result<Self, String> {
         let child = child.ok_or("the child has no process handle")?;
         // SAFETY: no attributes and no name: CreateJobObjectW returns a fresh handle owned by `job` below.
         let job = Self(
@@ -26,7 +44,7 @@ impl Job {
                 .map_err(|e| format!("create a job: {e}"))?,
         );
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        limits.BasicLimitInformation.LimitFlags = flags;
         // SAFETY: `limits` is a JOBOBJECT_EXTENDED_LIMIT_INFORMATION of the size passed.
         unsafe {
             SetInformationJobObject(

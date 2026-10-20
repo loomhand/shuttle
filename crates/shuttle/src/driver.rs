@@ -82,6 +82,20 @@ impl Running {
         }
     }
 
+    /// Like [`Running::new`]; on Windows the child alone also goes into a job that ends it with this value, and the apps it starts stay out of it.
+    pub(crate) fn alone(child: Child) -> Result<Self, String> {
+        #[cfg(windows)]
+        {
+            let job = crate::job::Job::hold_alone(child.raw_handle())?;
+            Ok(Self {
+                job: Some(job),
+                ..Self::new(child)
+            })
+        }
+        #[cfg(not(windows))]
+        Ok(Self::new(child))
+    }
+
     /// Like [`Running::new`]; on Windows the child also goes into a job that ends its whole tree with it.
     pub(crate) fn jobbed(child: Child) -> Result<Self, String> {
         #[cfg(windows)]
@@ -132,8 +146,8 @@ impl Proc {
         cmd.process_group(0);
         let mut running = cmd
             .spawn()
-            .map(Running::new)
-            .map_err(|e| format!("start {}: {e}", self.bin.display()))?;
+            .map_err(|e| format!("start {}: {e}", self.bin.display()))
+            .and_then(Running::alone)?;
         let mut waited = Duration::ZERO;
         while server::connect(&self.endpoint).await.is_err() {
             if let Ok(Some(status)) = running.child.try_wait() {
