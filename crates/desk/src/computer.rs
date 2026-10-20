@@ -31,6 +31,7 @@ use crate::volatile::{Shown, Volatile};
 use crate::xshm::{self, Grabber, Placement, clip};
 
 const STATE_ELEMENTS: u64 = 300;
+const BACKGROUND_ACT: &str = "background input: computer actions send desktop input (screen-point clicks, core-keyboard typing), which needs the foreground; use the desk verbs with a window";
 const TREE_CHARS: usize = 15_000;
 const MIN_WINDOW: i64 = 10;
 const CHROME_CLASS: &str = "Google-chrome";
@@ -99,6 +100,7 @@ pub struct Computer {
     ids: AtomicU64,
     /// How many default sessions were ended, which names every caller's next default.
     defaults: AtomicU64,
+    background: bool,
 }
 
 impl Computer {
@@ -116,7 +118,14 @@ impl Computer {
             volatile: OnceLock::new(),
             ids: AtomicU64::new(0),
             defaults: AtomicU64::new(0),
+            background: false,
         }
+    }
+
+    /// Whether input must reach its window without raising it or moving the pointer; the computer actions refuse then.
+    pub fn background(mut self, on: bool) -> Self {
+        self.background = on;
+        self
     }
 
     /// Answers the computer verb `tool` of caller `agent`, whose default session is its own.
@@ -128,6 +137,7 @@ impl Computer {
         }
         match tool {
             "desk_computer_state" => self.state(args).await,
+            "desk_computer_act" if self.background => Err(BACKGROUND_ACT.to_owned()),
             "desk_computer_act" => self.act(args).await,
             "desk_computer_end" => {
                 let ended = self.end(args).await;
@@ -2228,6 +2238,21 @@ mod tests {
 
     fn cua(socket: &Path) -> Computer {
         Computer::new(Arc::new(Driver::new(socket.to_string_lossy().into_owned())))
+    }
+
+    #[tokio::test]
+    async fn background_input_refuses_computer_actions_before_any_driver_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let cua = cua(&dir.path().join("none.sock")).background(true);
+        let err = cua
+            .run(
+                "a",
+                "desk_computer_act",
+                json!({"action": "click", "x": 10, "y": 10}),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("needs the foreground"), "{err}");
     }
 
     #[tokio::test]
