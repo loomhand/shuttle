@@ -75,7 +75,7 @@ const TYPER: Typer = |_, _| Ok(false);
 
 type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
 /// Types a line on the core keyboard: true when typed, false when it typed nothing and leaves the line to the driver; it stops once the flag is set.
-type Typer = fn(&str, &AtomicBool) -> Result<bool, String>;
+pub(crate) type Typer = fn(&str, &AtomicBool) -> Result<bool, String>;
 
 /// The desk of one OS: `B` reads and acts on elements, `D` sends input.
 pub struct Desk<B, D> {
@@ -1088,7 +1088,7 @@ async fn adopt(_: Value) -> bool {
 }
 
 /// Sets its flag when dropped, as when a stop drops the call that holds it.
-struct Cancel(Arc<AtomicBool>);
+pub(crate) struct Cancel(pub(crate) Arc<AtomicBool>);
 
 impl Drop for Cancel {
     fn drop(&mut self) {

@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::ErrorKind;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -20,7 +20,7 @@ use desk_core::args::parse;
 use desk_core::press::{MENU_POLL, MENU_POLLS};
 use desk_core::wire::Output;
 
-use crate::desk::text_runs;
+use crate::desk::{Cancel, Typer, text_runs};
 use crate::driver::{Driver, image_of, text_of};
 use crate::keys::{Os, key_names};
 use crate::model::Modal;
@@ -70,6 +70,7 @@ const DEFAULT_SESSION: &str = "computer";
 const SKIPPED: &str = "had no keycode";
 const WM_WAIT: Duration = Duration::from_secs(10);
 const WM_POLL: Duration = Duration::from_millis(100);
+const XTEST_TYPED: &str = "Typed text into the focused desktop application.";
 const NO_TEXT_TARGET: &str =
     "no application window is on the screen to type into; open or focus one first";
 const RETRIED: [&str; 4] = [
@@ -82,6 +83,7 @@ const RETRIED: [&str; 4] = [
 /// The computer verbs' state: the element tokens of each session's latest window state and the scale of its latest screenshot.
 pub struct Computer {
     driver: Arc<Driver>,
+    typer: Typer,
     last: Mutex<HashMap<String, Snapshot>>,
     input: Mutex<()>,
     /// The MIT-SHM grabber, opened on first use and again after a failure.
@@ -104,6 +106,7 @@ impl Computer {
     pub fn new(driver: Arc<Driver>) -> Self {
         Self {
             driver,
+            typer: crate::xtest::type_mapped,
             last: Mutex::new(HashMap::new()),
             input: Mutex::new(()),
             grabber: std::sync::Mutex::new(None),
@@ -343,7 +346,7 @@ impl Computer {
         let once = self.once(&req);
         let target = once.as_ref().map_or(session, Owned::name);
         let typed = enter.then(|| req.clone());
-        let mut result = self.request(target, tool, req).await;
+        let mut result = self.send(target, tool, req, enter).await;
         if let Some(typed) = typed
             && result.is_ok()
         {
@@ -1171,6 +1174,33 @@ impl Computer {
             req["delivery_mode"] = "foreground".into();
         }
         Ok((tool, req))
+    }
+
+    async fn send(
+        &self,
+        session: &str,
+        tool: &str,
+        req: Value,
+        enter: bool,
+    ) -> Result<Value, String> {
+        if tool == "type_text"
+            && !enter
+            && req["target"]["kind"] == "desktop"
+            && self.xtest(req["text"].as_str().unwrap_or_default()).await?
+        {
+            return Ok(json!({"content": [{"type": "text", "text": XTEST_TYPED}]}));
+        }
+        self.request(session, tool, req).await
+    }
+
+    /// Whether the typer typed `text`; it stops at its next key once this call is dropped.
+    async fn xtest(&self, text: &str) -> Result<bool, String> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let _cancel = Cancel(stop.clone());
+        let (text, typer) = (text.to_owned(), self.typer);
+        tokio::task::spawn_blocking(move || typer(&text, &stop))
+            .await
+            .map_err(|e| format!("XTest: {e}"))?
     }
 
     fn to_dialog(&self, req: &Value) -> bool {
@@ -2426,6 +2456,82 @@ mod tests {
         );
         assert_eq!(input[1]["args"]["text"], "hello");
         assert!(input[1]["args"].get("x").is_none(), "{}", input[1]);
+        driver.abort();
+    }
+
+    fn types(calls: &std::sync::Mutex<Vec<Value>>) -> Vec<String> {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c["name"] == "type_text")
+            .map(|c| c["args"]["text"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_typeable_desktop_line_goes_on_the_core_keyboard_without_a_driver_type_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        let mut cua = cua(&socket);
+        cua.typer = |text, _| Ok(text == "Ab3!x-Y_z?");
+        let req =
+            json!({"text": "Ab3!x-Y_z?", "target": {"kind": "desktop", "display_id": "primary"}});
+        let out = cua.send("s", "type_text", req, false).await.unwrap();
+        assert_eq!(text_of(&out), XTEST_TYPED);
+        assert!(types(&calls).is_empty(), "{:?}", calls.lock().unwrap());
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_desktop_line_the_typer_cannot_type_goes_to_the_driver() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        let mut cua = cua(&socket);
+        cua.typer = |_, _| Ok(false);
+        let req = json!({"text": "abc", "target": {"kind": "desktop", "display_id": "primary"}});
+        cua.send("s", "type_text", req, false).await.unwrap();
+        assert_eq!(types(&calls), ["abc"]);
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_typer_error_fails_the_type_without_a_driver_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        let mut cua = cua(&socket);
+        cua.typer = |_, _| Err("XTest: connection lost".to_owned());
+        let req = json!({"text": "abc", "target": {"kind": "desktop", "display_id": "primary"}});
+        let err = cua.send("s", "type_text", req, false).await.unwrap_err();
+        assert!(err.contains("connection lost"), "{err}");
+        assert!(types(&calls).is_empty(), "{:?}", calls.lock().unwrap());
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn pid_addressed_input_a_dialog_line_and_cjk_never_reach_the_typer() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        let mut cua = cua(&socket);
+        cua.typer = |_, _| Err("the typer ran".to_owned());
+        let pid = json!({"text": "abc", "pid": 7, "window_id": 9});
+        cua.send("s", "type_text", pid, false).await.unwrap();
+        let line = json!({"text": "name", "target": {"kind": "desktop", "display_id": "primary"}});
+        cua.send("s", "type_text", line, true).await.unwrap();
+        let out = cua
+            .act(json!({"action": "type", "text": "中文测试"}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(types(&calls), ["abc", "name", "中文测试"]);
         driver.abort();
     }
 
