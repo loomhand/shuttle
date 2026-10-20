@@ -3,8 +3,7 @@
 use serde_json::Value;
 
 use crate::desk::{
-    BACKGROUND_DESKTOP, BACKGROUND_ELEMENT, BACKGROUND_NO_WINDOW, BACKGROUND_TARGET,
-    BACKGROUND_TWINS, BACKGROUND_UIA,
+    BACKGROUND_DESKTOP, BACKGROUND_ELEMENT, BACKGROUND_NO_WINDOW, BACKGROUND_TARGET, BACKGROUND_UIA,
 };
 use crate::keys::Os;
 use crate::press::BACKGROUND_NO_POINT;
@@ -31,12 +30,11 @@ pub(crate) const INPUT_TOOLS: [&str; 8] = [
     "type_text",
 ];
 
-const SHUTTLE: [&str; 7] = [
+const SHUTTLE: [&str; 6] = [
     BACKGROUND_TARGET,
     BACKGROUND_DESKTOP,
     BACKGROUND_NO_WINDOW,
     BACKGROUND_ELEMENT,
-    BACKGROUND_TWINS,
     BACKGROUND_UIA,
     BACKGROUND_NO_POINT,
 ];
@@ -86,7 +84,7 @@ mod tests {
             ("desk_click", Os::Mac, BACKGROUND_NO_WINDOW),
             ("desk_act", Os::Windows, BACKGROUND_UIA),
             ("desk_press", Os::Windows, BACKGROUND_NO_POINT),
-            ("desk_press", Os::Windows, BACKGROUND_TWINS),
+            ("desk_press", Os::Windows, BACKGROUND_ELEMENT),
             ("desk_key", Os::Windows, REFUSED),
             (
                 "desk_key",
@@ -110,6 +108,13 @@ mod tests {
             ("desk_click", Os::Windows, &none, TRIED),
             ("desk_click", Os::Windows, &json!({"count": 2}), REFUSED),
             ("desk_press", Os::Mac, &none, BACKGROUND_ELEMENT),
+            (
+                "desk_press",
+                Os::Windows,
+                &none,
+                crate::desk::BACKGROUND_TWINS,
+            ),
+            ("desk_act", Os::Mac, &none, crate::desk::BACKGROUND_TWINS),
             (
                 "desk_click",
                 Os::Windows,
