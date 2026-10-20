@@ -57,21 +57,6 @@ impl Driver {
         )
     }
 
-    async fn start(&self, kind: usize) -> Result<(), String> {
-        let (scope, session) = match kind {
-            1 => ("window", WINDOW_SESSION),
-            2 => ("desktop", CAPTURE_SESSION),
-            _ => ("desktop", SESSION),
-        };
-        self.send(
-            "start_session",
-            &json!({"capture_scope": scope, "session": session}),
-        )
-        .await?;
-        self.started[kind].store(true, Ordering::Relaxed);
-        Ok(())
-    }
-
     pub(crate) fn endpoint(&self) -> &str {
         &self.endpoint
     }
@@ -103,6 +88,21 @@ impl Driver {
             .await
             .map_err(|_| format!("cua-driver {tool} timed out"))??;
         result(tool, &reply)
+    }
+
+    async fn start(&self, kind: usize) -> Result<(), String> {
+        let (scope, session) = match kind {
+            1 => ("window", WINDOW_SESSION),
+            2 => ("desktop", CAPTURE_SESSION),
+            _ => ("desktop", SESSION),
+        };
+        self.send(
+            "start_session",
+            &json!({"capture_scope": scope, "session": session}),
+        )
+        .await?;
+        self.started[kind].store(true, Ordering::Relaxed);
+        Ok(())
     }
 
     async fn exchange(&self, line: Vec<u8>) -> Result<String, String> {

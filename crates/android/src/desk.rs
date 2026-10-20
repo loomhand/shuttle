@@ -816,8 +816,7 @@ async fn read(android: &Android, a: ReadArgs) -> Result<String, String> {
     Ok(node.json(0, &frame.package).to_string())
 }
 
-/// Taps an element, after scrolling its list until it shows: the element is asked to scroll itself into view first, and
-/// swiped for when it does not move.
+/// Taps an element, after scrolling its list until it shows: the element is asked to scroll itself into view first, and swiped for when it does not move.
 async fn press(android: &Android, id: &str) -> Result<String, String> {
     let (mut frame, mut node) = node(android, id).await?;
     let mut ask = true;

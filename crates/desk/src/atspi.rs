@@ -1,5 +1,4 @@
-//! AT-SPI over D-Bus: a window's tree from its app's `Cache.GetItems`, filled in by live calls
-//! where the cache lacks children or their order, plus live reads and actions on one node.
+//! AT-SPI over D-Bus: a window's tree from its app's `Cache.GetItems`, filled in by live calls where the cache lacks children or their order, plus live reads and actions on one node.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
@@ -208,6 +207,10 @@ const ROLE_NAMES: [&str; 130] = [
     "push button menu",
 ];
 
+/// The apps that stopped answering, by bus name, with when; shared by every client, so a restarted worker keeps skipping them.
+static HUNG: LazyLock<std::sync::Mutex<HashMap<String, Instant>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
 /// An accessible object: the bus name of its app and its object path.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Obj {
@@ -380,10 +383,6 @@ type OldItem = (
     Vec<u32>,
 );
 
-/// The apps that stopped answering, by bus name, with when; shared by every client, so a restarted worker keeps skipping them.
-static HUNG: LazyLock<std::sync::Mutex<HashMap<String, Instant>>> =
-    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
-
 /// A lazily opened connection to the accessibility bus, shared by all calls.
 pub struct Atspi {
     conn: Mutex<Option<Connection>>,
@@ -415,29 +414,6 @@ impl Atspi {
         )
         .await;
         Ok(per_app.into_iter().flatten().collect())
-    }
-
-    async fn app_frames(&self, app: &Obj) -> Vec<Frame> {
-        let (kids, pid) = tokio::join!(self.children(app), self.pid(&app.bus));
-        let Ok(kids) = kids else {
-            return Vec::new();
-        };
-        let pid = pid.ok();
-        join_all(kids.into_iter().map(|obj| async move {
-            let (role, name, states) =
-                tokio::join!(self.role(&obj), self.name(&obj), self.state(&obj));
-            Some(Frame {
-                role: role.ok()?,
-                name: name.unwrap_or_default(),
-                states: states.ok()?,
-                obj,
-                pid,
-            })
-        }))
-        .await
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
     }
 
     /// The tree under `frame`: shown nodes in preorder, with `extras` read live.
@@ -585,67 +561,6 @@ impl Atspi {
         Ok(tree)
     }
 
-    async fn extras(&self, nodes: &mut [Node], extras: Extras) {
-        let all = &*nodes;
-        let reads = join_all(nodes.iter().map(|n| async move {
-            let Some(obj) = n.obj.as_ref() else {
-                return (None, None, None, None);
-            };
-            let role = n.role();
-            let value = async {
-                if !(extras.values && is_field(role)) {
-                    return None;
-                }
-                self.value(obj, n.ifaces, VALUE_CHARS)
-                    .await
-                    .ok()
-                    .filter(|v| !v.is_empty())
-            };
-            let bounds = async {
-                if !(extras.bounds
-                    && n.has(SHOWING)
-                    && n.ifaces & IF_COMPONENT != 0
-                    && (extras.frame || is_active(role)))
-                {
-                    return None;
-                }
-                self.extents(obj).await.ok()
-            };
-            let keys = async {
-                if !(extras.keys && n.ifaces & IF_ACTION != 0) {
-                    return None;
-                }
-                self.key_binding(obj).await.ok().filter(|k| !k.is_empty())
-            };
-            let label = async {
-                if !(extras.values && n.name.is_empty() && n.has(SHOWING) && is_field(role)) {
-                    return None;
-                }
-                let set: Vec<(u32, Vec<(String, OwnedObjectPath)>)> = self
-                    .call(obj, ACCESSIBLE, "GetRelationSet", &())
-                    .await
-                    .ok()?;
-                let by = labelled_by(set)?;
-                match all.iter().find(|m| m.obj.as_ref() == Some(&by)) {
-                    Some(m) => Some(m.name.clone()),
-                    None => self.name(&by).await.ok(),
-                }
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty())
-            };
-            tokio::join!(value, bounds, keys, label)
-        }))
-        .await;
-        for (n, (value, bounds, keys, label)) in nodes.iter_mut().zip(reads) {
-            n.value = value;
-            n.bounds = bounds;
-            n.keys = keys;
-            if let Some(label) = label {
-                n.name = label;
-            }
-        }
-    }
-
     /// The node's live role, name and states, with the reads `extras` asks for; a value has at most `chars` characters.
     pub async fn node(&self, obj: &Obj, extras: Extras, chars: usize) -> Result<Node, String> {
         let r = self.raw(obj).await?;
@@ -783,6 +698,105 @@ impl Atspi {
         Ok(chain)
     }
 
+    /// The process id behind the accessibility bus name `bus`.
+    pub async fn pid(&self, bus: &str) -> Result<u32, String> {
+        let dbus = Obj {
+            bus: DBUS.to_owned(),
+            path: DBUS_PATH.to_owned(),
+        };
+        self.call(&dbus, DBUS, "GetConnectionUnixProcessID", &(bus,))
+            .await
+    }
+
+    /// Drops the connection so that the next call opens a new one.
+    pub async fn reset(&self) {
+        *self.conn.lock().await = None;
+    }
+
+    async fn app_frames(&self, app: &Obj) -> Vec<Frame> {
+        let (kids, pid) = tokio::join!(self.children(app), self.pid(&app.bus));
+        let Ok(kids) = kids else {
+            return Vec::new();
+        };
+        let pid = pid.ok();
+        join_all(kids.into_iter().map(|obj| async move {
+            let (role, name, states) =
+                tokio::join!(self.role(&obj), self.name(&obj), self.state(&obj));
+            Some(Frame {
+                role: role.ok()?,
+                name: name.unwrap_or_default(),
+                states: states.ok()?,
+                obj,
+                pid,
+            })
+        }))
+        .await
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+    }
+
+    async fn extras(&self, nodes: &mut [Node], extras: Extras) {
+        let all = &*nodes;
+        let reads = join_all(nodes.iter().map(|n| async move {
+            let Some(obj) = n.obj.as_ref() else {
+                return (None, None, None, None);
+            };
+            let role = n.role();
+            let value = async {
+                if !(extras.values && is_field(role)) {
+                    return None;
+                }
+                self.value(obj, n.ifaces, VALUE_CHARS)
+                    .await
+                    .ok()
+                    .filter(|v| !v.is_empty())
+            };
+            let bounds = async {
+                if !(extras.bounds
+                    && n.has(SHOWING)
+                    && n.ifaces & IF_COMPONENT != 0
+                    && (extras.frame || is_active(role)))
+                {
+                    return None;
+                }
+                self.extents(obj).await.ok()
+            };
+            let keys = async {
+                if !(extras.keys && n.ifaces & IF_ACTION != 0) {
+                    return None;
+                }
+                self.key_binding(obj).await.ok().filter(|k| !k.is_empty())
+            };
+            let label = async {
+                if !(extras.values && n.name.is_empty() && n.has(SHOWING) && is_field(role)) {
+                    return None;
+                }
+                let set: Vec<(u32, Vec<(String, OwnedObjectPath)>)> = self
+                    .call(obj, ACCESSIBLE, "GetRelationSet", &())
+                    .await
+                    .ok()?;
+                let by = labelled_by(set)?;
+                match all.iter().find(|m| m.obj.as_ref() == Some(&by)) {
+                    Some(m) => Some(m.name.clone()),
+                    None => self.name(&by).await.ok(),
+                }
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+            };
+            tokio::join!(value, bounds, keys, label)
+        }))
+        .await;
+        for (n, (value, bounds, keys, label)) in nodes.iter_mut().zip(reads) {
+            n.value = value;
+            n.bounds = bounds;
+            n.keys = keys;
+            if let Some(label) = label {
+                n.name = label;
+            }
+        }
+    }
+
     async fn raw(&self, obj: &Obj) -> Result<Raw, String> {
         let (role, name, description, states, count, ifaces) = tokio::join!(
             self.role(obj),
@@ -802,8 +816,7 @@ impl Atspi {
         })
     }
 
-    /// The app's cached objects, from the cache of at-spi2-core 2.46 and later or from the older one,
-    /// which lists the children of each object instead of its index and child count.
+    /// The app's cached objects, from the cache of at-spi2-core 2.46 and later or from the older one, which lists the children of each object instead of its index and child count.
     async fn items(&self, bus: &str) -> Result<Vec<Item>, String> {
         let cache = Obj {
             bus: bus.to_owned(),
@@ -837,16 +850,6 @@ impl Atspi {
     async fn state(&self, obj: &Obj) -> Result<u64, String> {
         let bits: Vec<u32> = self.call(obj, ACCESSIBLE, "GetState", &()).await?;
         Ok(state_bits(&bits))
-    }
-
-    /// The process id behind the accessibility bus name `bus`.
-    pub async fn pid(&self, bus: &str) -> Result<u32, String> {
-        let dbus = Obj {
-            bus: DBUS.to_owned(),
-            path: DBUS_PATH.to_owned(),
-        };
-        self.call(&dbus, DBUS, "GetConnectionUnixProcessID", &(bus,))
-            .await
     }
 
     async fn prop<T>(&self, obj: &Obj, iface: &str, name: &str) -> Result<T, String>
@@ -934,28 +937,6 @@ impl Atspi {
         *slot = Some(conn.clone());
         Ok(conn)
     }
-
-    /// Drops the connection so that the next call opens a new one.
-    pub async fn reset(&self) {
-        *self.conn.lock().await = None;
-    }
-}
-
-fn mark_hung(bus: &str) {
-    HUNG.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(bus.to_owned(), Instant::now());
-}
-
-/// The frames `read` finds for the app on `bus` within [`APP_FRAMES`], else none, and the app is skipped for a while.
-async fn capped(bus: &str, read: impl Future<Output = Vec<Frame>>) -> Vec<Frame> {
-    match tokio::time::timeout(APP_FRAMES, read).await {
-        Ok(frames) => frames,
-        Err(_) => {
-            mark_hung(bus);
-            Vec::new()
-        }
-    }
 }
 
 /// The ARIA role of AT-SPI role `role` after W3C Core-AAM, else its AT-SPI name; a nameless generic container has none.
@@ -974,6 +955,23 @@ pub fn key_combos(binding: &str) -> (Option<String>, Option<String>) {
     let mnemonic = parts.next().and_then(gtk_combo);
     let shortcut = parts.nth(1).and_then(gtk_combo);
     (mnemonic, shortcut)
+}
+
+fn mark_hung(bus: &str) {
+    HUNG.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(bus.to_owned(), Instant::now());
+}
+
+/// The frames `read` finds for the app on `bus` within [`APP_FRAMES`], else none, and the app is skipped for a while.
+async fn capped(bus: &str, read: impl Future<Output = Vec<Frame>>) -> Vec<Frame> {
+    match tokio::time::timeout(APP_FRAMES, read).await {
+        Ok(frames) => frames,
+        Err(_) => {
+            mark_hung(bus);
+            Vec::new()
+        }
+    }
 }
 
 fn aria_role(role: u32, named: bool) -> Option<&'static str> {
@@ -1075,8 +1073,7 @@ fn cache_items(reply: &zbus::Message) -> Result<Vec<Item>, zbus::Error> {
     }
 }
 
-/// Items of the older cache with each object's index among its parent's children, -1 when the parent
-/// does not list it, and its child count.
+/// Items of the older cache with each object's index among its parent's children, -1 when the parent does not list it, and its child count.
 fn indexed(old: Vec<OldItem>) -> Vec<Item> {
     let mut index: HashMap<(Obj, Obj), i32> = HashMap::new();
     for (object, _, _, children, ..) in &old {
@@ -1121,8 +1118,7 @@ fn needs_live(r: &Raw, cached: Option<&Vec<(i32, Obj)>>) -> bool {
         || cached.is_some_and(|c| c.iter().any(|(i, _)| *i < 0))
 }
 
-/// Appends `obj` and its subtree in preorder, an object shared by two parents under both; a nameless generic
-/// container gives its place to its children.
+/// Appends `obj` and its subtree in preorder, an object shared by two parents under both; a nameless generic container gives its place to its children.
 fn flatten<'a>(
     obj: &'a Obj,
     raw: &HashMap<Obj, Raw>,

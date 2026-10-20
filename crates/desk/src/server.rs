@@ -7,8 +7,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use zeroize::Zeroizing;
 
 use crate::computer::Computer;
-use crate::desk::COMPUTER_VERBS;
-use crate::desk::Desk;
+use crate::desk::{COMPUTER_VERBS, Desk};
 use crate::driver::{Driver, Input};
 use crate::keys::Os;
 use crate::model::Access;
@@ -186,6 +185,37 @@ pub struct Listener {
     endpoint: String,
 }
 
+/// One path component as `lstat` sees it.
+#[cfg(unix)]
+struct Entry {
+    uid: u32,
+    mode: u32,
+    link: bool,
+}
+
+/// A desk with the computer verbs: the desk verbs and, with no app allowlist, the computer verbs.
+struct Native<B> {
+    desk: Desk<B, Arc<Driver>>,
+    computer: Computer,
+    open: bool,
+}
+
+impl<B: Access + 'static> Handler for Native<B> {
+    async fn answer(&self, call: Call) -> Output {
+        let tool = call.tool.as_str();
+        if !COMPUTER_VERBS.contains(&tool) {
+            return self.desk.answer(call).await;
+        }
+        if !self.open {
+            return Output::error(format!("{tool}: {ALLOWLIST_REFUSED}"));
+        }
+        self.computer
+            .run(&call.agent_id, tool, call.args)
+            .await
+            .unwrap_or_else(Output::error)
+    }
+}
+
 /// Takes the unix socket `endpoint`, readable by its user only, once no other daemon holds its lock.
 #[cfg(unix)]
 pub async fn bind(endpoint: &str) -> Result<Listener, String> {
@@ -196,6 +226,153 @@ pub async fn bind(endpoint: &str) -> Result<Listener, String> {
 #[cfg(unix)]
 pub async fn bind_for(endpoint: &str, group: &str) -> Result<Listener, String> {
     bind_at(endpoint, Some(gid(group)?))
+}
+
+/// Serves `handler` at `listener`.
+#[cfg(unix)]
+pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<(), String> {
+    loop {
+        let (stream, _) = listener
+            .socket
+            .accept()
+            .await
+            .map_err(|e| format!("accept {}: {e}", listener.endpoint))?;
+        tokio::spawn(handle(handler.clone(), stream));
+    }
+}
+
+/// Takes the named pipe `endpoint`, open to SYSTEM and this user, local clients only, once no other daemon holds it.
+#[cfg(windows)]
+pub async fn bind(endpoint: &str) -> Result<Listener, String> {
+    bind_at(endpoint, None)
+}
+
+/// Takes the named pipe `endpoint` like [`bind`], open also to `group`, an account name or SID string, to read and write but not to create instances.
+#[cfg(windows)]
+pub async fn bind_for(endpoint: &str, group: &str) -> Result<Listener, String> {
+    bind_at(endpoint, Some(group))
+}
+
+/// Serves `handler` at `listener`.
+#[cfg(windows)]
+pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<(), String> {
+    let Listener {
+        first: mut server,
+        security,
+        endpoint,
+    } = listener;
+    loop {
+        server
+            .connect()
+            .await
+            .map_err(|e| format!("accept {endpoint}: {e}"))?;
+        let client = std::mem::replace(&mut server, pipe(&endpoint, false, &security)?);
+        tokio::spawn(handle(handler.clone(), client));
+    }
+}
+
+/// The SDDL of the daemon's pipe: full access for SYSTEM and the SID `user`, and read and write for the SID `group`.
+pub fn pipe_sddl(user: &str, group: Option<&str>) -> String {
+    let mut sddl = format!("D:P(A;;GA;;;SY)(A;;GA;;;{user})");
+    if let Some(group) = group {
+        sddl.push_str(&format!("(A;;{GROUP_RIGHTS};;;{group})"));
+    }
+    sddl
+}
+
+/// Sends one call to the endpoint and returns its output.
+pub async fn call(endpoint: &str, call: &Call) -> Result<Output, String> {
+    let conn = connect(endpoint)
+        .await
+        .map_err(|e| format!("connect {endpoint}: {e}"))?;
+    exchange(conn, call).await
+}
+
+pub fn cache_endpoint(var: &str, pipe: &str, dir: &str, file: &str) -> String {
+    if let Some(e) = std::env::var(var).ok().filter(|e| !e.is_empty()) {
+        return e;
+    }
+    if cfg!(windows) {
+        return format!(r"\\.\pipe\{pipe}");
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    if cfg!(target_os = "linux") {
+        let cache = std::env::var("XDG_CACHE_HOME")
+            .ok()
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| format!("{home}/.cache"));
+        return format!("{cache}/{dir}/{file}");
+    }
+    format!("{home}/Library/Caches/{dir}/{file}")
+}
+
+/// Connects to the endpoint.
+#[cfg(unix)]
+pub async fn connect(endpoint: &str) -> std::io::Result<Conn> {
+    tokio::net::UnixStream::connect(endpoint).await
+}
+
+/// Connects to the endpoint, waiting while a Windows pipe is busy.
+#[cfg(windows)]
+pub async fn connect(endpoint: &str) -> std::io::Result<Conn> {
+    loop {
+        match tokio::net::windows::named_pipe::ClientOptions::new().open(endpoint) {
+            Err(e) if e.raw_os_error() == Some(PIPE_BUSY) => tokio::time::sleep(BUSY_POLL).await,
+            done => return done.map(PipeClient),
+        }
+    }
+}
+
+/// Sends `call` on `conn` and reads its output.
+pub async fn exchange(mut conn: Conn, call: &Call) -> Result<Output, String> {
+    write_frame(&mut conn, call).await?;
+    read_frame(&mut conn).await
+}
+
+/// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
+#[cfg(target_os = "macos")]
+pub fn native(driver: String, apps: &[String], _overlay: bool, background: bool) -> impl Handler {
+    let driver = Arc::new(Driver::new(driver));
+    Native {
+        desk: Desk::new(crate::ax::Ax::open, Arc::clone(&driver), Os::Mac)
+            .allow(apps)
+            .background(background),
+        computer: Computer::new(driver, Os::Mac).background(background),
+        open: apps.is_empty(),
+    }
+}
+
+/// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
+#[cfg(windows)]
+pub fn native(driver: String, apps: &[String], _overlay: bool, background: bool) -> impl Handler {
+    let driver = Arc::new(Driver::new(driver));
+    Native {
+        desk: Desk::new(crate::uia::Uia::open, Arc::clone(&driver), Os::Windows)
+            .allow(apps)
+            .background(background),
+        computer: Computer::new(driver, Os::Windows).background(background),
+        open: apps.is_empty(),
+    }
+}
+
+/// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty; `overlay` says whether that driver may show its cursor overlay.
+#[cfg(target_os = "linux")]
+pub fn native(driver: String, apps: &[String], overlay: bool, background: bool) -> impl Handler {
+    let driver = Arc::new(Driver::new(driver));
+    Native {
+        desk: Desk::new(crate::spi::Spi::open, Arc::clone(&driver), Os::Linux)
+            .allow(apps)
+            .overlay(overlay)
+            .background(background),
+        computer: Computer::new(driver, Os::Linux).background(background),
+        open: apps.is_empty(),
+    }
+}
+
+/// This OS's desk: none yet.
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+pub fn native(_: String, _: &[String], _: bool, _: bool) -> impl Handler {
+    NoDesk
 }
 
 #[cfg(unix)]
@@ -271,14 +448,6 @@ fn private_dir(dir: &std::path::Path) -> Result<(), String> {
     })
 }
 
-/// One path component as `lstat` sees it.
-#[cfg(unix)]
-struct Entry {
-    uid: u32,
-    mode: u32,
-    link: bool,
-}
-
 /// [`private_dir`] for the user `own`, with `stat` reading each component of `dir` as given, links included.
 #[cfg(unix)]
 fn private_path(
@@ -336,31 +505,6 @@ fn socket_at(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Serves `handler` at `listener`.
-#[cfg(unix)]
-pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<(), String> {
-    loop {
-        let (stream, _) = listener
-            .socket
-            .accept()
-            .await
-            .map_err(|e| format!("accept {}: {e}", listener.endpoint))?;
-        tokio::spawn(handle(handler.clone(), stream));
-    }
-}
-
-/// Takes the named pipe `endpoint`, open to SYSTEM and this user, local clients only, once no other daemon holds it.
-#[cfg(windows)]
-pub async fn bind(endpoint: &str) -> Result<Listener, String> {
-    bind_at(endpoint, None)
-}
-
-/// Takes the named pipe `endpoint` like [`bind`], open also to `group`, an account name or SID string, to read and write but not to create instances.
-#[cfg(windows)]
-pub async fn bind_for(endpoint: &str, group: &str) -> Result<Listener, String> {
-    bind_at(endpoint, Some(group))
-}
-
 #[cfg(windows)]
 fn bind_at(endpoint: &str, group: Option<&str>) -> Result<Listener, String> {
     let security = crate::pipesec::Security::new(group)?;
@@ -369,59 +513,6 @@ fn bind_at(endpoint: &str, group: Option<&str>) -> Result<Listener, String> {
         security,
         endpoint: endpoint.to_owned(),
     })
-}
-
-/// Serves `handler` at `listener`.
-#[cfg(windows)]
-pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<(), String> {
-    let Listener {
-        first: mut server,
-        security,
-        endpoint,
-    } = listener;
-    loop {
-        server
-            .connect()
-            .await
-            .map_err(|e| format!("accept {endpoint}: {e}"))?;
-        let client = std::mem::replace(&mut server, pipe(&endpoint, false, &security)?);
-        tokio::spawn(handle(handler.clone(), client));
-    }
-}
-
-/// The SDDL of the daemon's pipe: full access for SYSTEM and the SID `user`, and read and write for the SID `group`.
-pub fn pipe_sddl(user: &str, group: Option<&str>) -> String {
-    let mut sddl = format!("D:P(A;;GA;;;SY)(A;;GA;;;{user})");
-    if let Some(group) = group {
-        sddl.push_str(&format!("(A;;{GROUP_RIGHTS};;;{group})"));
-    }
-    sddl
-}
-
-/// Sends one call to the endpoint and returns its output.
-pub async fn call(endpoint: &str, call: &Call) -> Result<Output, String> {
-    let conn = connect(endpoint)
-        .await
-        .map_err(|e| format!("connect {endpoint}: {e}"))?;
-    exchange(conn, call).await
-}
-
-pub fn cache_endpoint(var: &str, pipe: &str, dir: &str, file: &str) -> String {
-    if let Some(e) = std::env::var(var).ok().filter(|e| !e.is_empty()) {
-        return e;
-    }
-    if cfg!(windows) {
-        return format!(r"\\.\pipe\{pipe}");
-    }
-    let home = std::env::var("HOME").unwrap_or_default();
-    if cfg!(target_os = "linux") {
-        let cache = std::env::var("XDG_CACHE_HOME")
-            .ok()
-            .filter(|c| !c.is_empty())
-            .unwrap_or_else(|| format!("{home}/.cache"));
-        return format!("{cache}/{dir}/{file}");
-    }
-    format!("{home}/Library/Caches/{dir}/{file}")
 }
 
 #[cfg(unix)]
@@ -457,98 +548,6 @@ fn gid(group: &str) -> Result<u32, String> {
             }
         }
     }
-}
-
-/// Connects to the endpoint.
-#[cfg(unix)]
-pub async fn connect(endpoint: &str) -> std::io::Result<Conn> {
-    tokio::net::UnixStream::connect(endpoint).await
-}
-
-/// Connects to the endpoint, waiting while a Windows pipe is busy.
-#[cfg(windows)]
-pub async fn connect(endpoint: &str) -> std::io::Result<Conn> {
-    loop {
-        match tokio::net::windows::named_pipe::ClientOptions::new().open(endpoint) {
-            Err(e) if e.raw_os_error() == Some(PIPE_BUSY) => tokio::time::sleep(BUSY_POLL).await,
-            done => return done.map(PipeClient),
-        }
-    }
-}
-
-/// Sends `call` on `conn` and reads its output.
-pub async fn exchange(mut conn: Conn, call: &Call) -> Result<Output, String> {
-    write_frame(&mut conn, call).await?;
-    read_frame(&mut conn).await
-}
-
-/// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
-#[cfg(target_os = "macos")]
-pub fn native(driver: String, apps: &[String], _overlay: bool, background: bool) -> impl Handler {
-    let driver = Arc::new(Driver::new(driver));
-    Native {
-        desk: Desk::new(crate::ax::Ax::open, Arc::clone(&driver), Os::Mac)
-            .allow(apps)
-            .background(background),
-        computer: Computer::new(driver, Os::Mac).background(background),
-        open: apps.is_empty(),
-    }
-}
-
-/// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
-#[cfg(windows)]
-pub fn native(driver: String, apps: &[String], _overlay: bool, background: bool) -> impl Handler {
-    let driver = Arc::new(Driver::new(driver));
-    Native {
-        desk: Desk::new(crate::uia::Uia::open, Arc::clone(&driver), Os::Windows)
-            .allow(apps)
-            .background(background),
-        computer: Computer::new(driver, Os::Windows).background(background),
-        open: apps.is_empty(),
-    }
-}
-
-/// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty; `overlay` says whether that driver may show its cursor overlay.
-#[cfg(target_os = "linux")]
-pub fn native(driver: String, apps: &[String], overlay: bool, background: bool) -> impl Handler {
-    let driver = Arc::new(Driver::new(driver));
-    Native {
-        desk: Desk::new(crate::spi::Spi::open, Arc::clone(&driver), Os::Linux)
-            .allow(apps)
-            .overlay(overlay)
-            .background(background),
-        computer: Computer::new(driver, Os::Linux).background(background),
-        open: apps.is_empty(),
-    }
-}
-
-/// A desk with the computer verbs: the desk verbs and, with no app allowlist, the computer verbs.
-struct Native<B> {
-    desk: Desk<B, Arc<Driver>>,
-    computer: Computer,
-    open: bool,
-}
-
-impl<B: Access + 'static> Handler for Native<B> {
-    async fn answer(&self, call: Call) -> Output {
-        let tool = call.tool.as_str();
-        if !COMPUTER_VERBS.contains(&tool) {
-            return self.desk.answer(call).await;
-        }
-        if !self.open {
-            return Output::error(format!("{tool}: {ALLOWLIST_REFUSED}"));
-        }
-        self.computer
-            .run(&call.agent_id, tool, call.args)
-            .await
-            .unwrap_or_else(Output::error)
-    }
-}
-
-/// This OS's desk: none yet.
-#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
-pub fn native(_: String, _: &[String], _: bool, _: bool) -> impl Handler {
-    NoDesk
 }
 
 #[cfg(windows)]

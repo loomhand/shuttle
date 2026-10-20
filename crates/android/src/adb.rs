@@ -9,15 +9,14 @@ use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
+use desk_core::args::parse;
+use desk_core::wire::Output;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{Mutex, OnceCell};
-
-use desk_core::args::parse;
-use desk_core::wire::Output;
 
 use crate::desk::{self, Node};
 
@@ -305,20 +304,6 @@ impl Android {
         Ok(component)
     }
 
-    /// Starts activity `component`, quoted so the device shell keeps a nested class's `$`.
-    async fn start(&self, component: &str) -> Result<(), String> {
-        self.adb(&[
-            "shell",
-            "am",
-            "start",
-            "-W",
-            "-n",
-            &format!("'{component}'"),
-        ])
-        .await
-        .map(drop)
-    }
-
     pub(crate) async fn tap(&self, (x, y): (i32, i32)) -> Result<(), String> {
         match self.inject(&format!("tap {x} {y}")).await {
             Injection::Done => return Ok(()),
@@ -347,43 +332,6 @@ impl Android {
         }];
         argv.extend(codes.iter().map(String::as_str));
         self.input(&argv).await
-    }
-
-    async fn inject(&self, cmd: &str) -> Injection {
-        if !self.server_input.load(Ordering::Relaxed) {
-            return Injection::NotSent;
-        }
-        let mut slot = self.ui.lock().await;
-        let mut server = match slot.take() {
-            Some(server) => server,
-            None => match self.start_ui().await {
-                Ok(server) => server,
-                Err(_) => return Injection::NotSent,
-            },
-        };
-        if server.send(cmd).await.is_err() {
-            return Injection::NotSent;
-        }
-        let answer = match tokio::time::timeout(UI_TIMEOUT, server.read_answer()).await {
-            Ok(Ok(answer)) => answer,
-            Ok(Err(e)) => return Injection::Unconfirmed(e),
-            Err(_) => return Injection::Unconfirmed("UI server: timed out".to_owned()),
-        };
-        *slot = Some(server);
-        match answer.trim() {
-            "true" => Injection::Done,
-            "false" => Injection::Unconfirmed("the injection was not confirmed".to_owned()),
-            other if other.starts_with("<error>") => Injection::Unconfirmed(
-                other
-                    .trim_start_matches("<error>")
-                    .trim_end_matches("</error>")
-                    .to_owned(),
-            ),
-            _ => {
-                self.server_input.store(false, Ordering::Relaxed);
-                Injection::NotSent
-            }
-        }
     }
 
     pub(crate) async fn input(&self, args: &[&str]) -> Result<(), String> {
@@ -425,8 +373,7 @@ impl Android {
         self.served("windows").await
     }
 
-    /// Types `text` into the focused field, the first line under `at` when given: each line pasted and checked (see
-    /// [`type_with`]), Return between lines.
+    /// Types `text` into the focused field, the first line under `at` when given: each line pasted and checked (see [`type_with`]), Return between lines.
     pub(crate) async fn type_text(
         &self,
         text: &str,
@@ -461,8 +408,7 @@ impl Android {
         Ok(typed)
     }
 
-    /// Pastes `text` into the focused field through the clipboard, which takes any Unicode: scrcpy sets it and the UI server
-    /// presses the paste key; false when the device refused the key, which then reached no window.
+    /// Pastes `text` into the focused field through the clipboard, which takes any Unicode: scrcpy sets it and the UI server presses the paste key; false when the device refused the key, which then reached no window.
     pub(crate) async fn paste(&self, text: &str) -> Result<bool, String> {
         {
             let mut slot = self.control.lock().await;
@@ -481,22 +427,6 @@ impl Android {
                 PASTE_TIMEOUT.as_secs()
             )),
         }
-    }
-
-    /// The window `dumpsys window` names as focused, for an error about it.
-    async fn focused_window(&self) -> String {
-        let out = tokio::time::timeout(
-            DIAGNOSE_TIMEOUT,
-            self.adb(&["shell", "dumpsys", "window", "displays"]),
-        )
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or_default();
-        String::from_utf8_lossy(&out)
-            .lines()
-            .find_map(|l| l.trim().strip_prefix("mCurrentFocus="))
-            .map_or_else(|| "the focused window".to_owned(), str::to_owned)
     }
 
     /// The screen size `wm size` reports, read once per device.
@@ -528,6 +458,73 @@ impl Android {
                 String::from_utf8_lossy(&out.stderr).trim()
             ))
         }
+    }
+
+    /// Starts activity `component`, quoted so the device shell keeps a nested class's `$`.
+    async fn start(&self, component: &str) -> Result<(), String> {
+        self.adb(&[
+            "shell",
+            "am",
+            "start",
+            "-W",
+            "-n",
+            &format!("'{component}'"),
+        ])
+        .await
+        .map(drop)
+    }
+
+    async fn inject(&self, cmd: &str) -> Injection {
+        if !self.server_input.load(Ordering::Relaxed) {
+            return Injection::NotSent;
+        }
+        let mut slot = self.ui.lock().await;
+        let mut server = match slot.take() {
+            Some(server) => server,
+            None => match self.start_ui().await {
+                Ok(server) => server,
+                Err(_) => return Injection::NotSent,
+            },
+        };
+        if server.send(cmd).await.is_err() {
+            return Injection::NotSent;
+        }
+        let answer = match tokio::time::timeout(UI_TIMEOUT, server.read_answer()).await {
+            Ok(Ok(answer)) => answer,
+            Ok(Err(e)) => return Injection::Unconfirmed(e),
+            Err(_) => return Injection::Unconfirmed("UI server: timed out".to_owned()),
+        };
+        *slot = Some(server);
+        match answer.trim() {
+            "true" => Injection::Done,
+            "false" => Injection::Unconfirmed("the injection was not confirmed".to_owned()),
+            other if other.starts_with("<error>") => Injection::Unconfirmed(
+                other
+                    .trim_start_matches("<error>")
+                    .trim_end_matches("</error>")
+                    .to_owned(),
+            ),
+            _ => {
+                self.server_input.store(false, Ordering::Relaxed);
+                Injection::NotSent
+            }
+        }
+    }
+
+    /// The window `dumpsys window` names as focused, for an error about it.
+    async fn focused_window(&self) -> String {
+        let out = tokio::time::timeout(
+            DIAGNOSE_TIMEOUT,
+            self.adb(&["shell", "dumpsys", "window", "displays"]),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
+        String::from_utf8_lossy(&out)
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("mCurrentFocus="))
+            .map_or_else(|| "the focused window".to_owned(), str::to_owned)
     }
 
     fn command(&self) -> Command {
@@ -732,38 +729,6 @@ impl Android {
     }
 }
 
-fn abort_cause(log: &str) -> Option<String> {
-    let mut ui = false;
-    let mut cause = None;
-    for line in log.lines() {
-        if let Some((_, cmdline)) = line.split_once("Cmdline: ") {
-            ui = cmdline.trim().ends_with("shuttle.Ui");
-        } else if let Some((_, abort)) = line.split_once("Abort message: ")
-            && ui
-        {
-            let abort = abort.trim().trim_start_matches('\'').trim_end_matches('\'');
-            let end = abort.floor_char_boundary(UI_ABORT_KEEP);
-            cause = Some(abort[..end].to_owned()).filter(|c| !c.is_empty());
-        }
-    }
-    cause
-}
-
-async fn tail(mut reader: impl AsyncRead + Unpin, keep: usize) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut chunk = [0; 4096];
-    while let Ok(n) = reader.read(&mut chunk).await {
-        if n == 0 {
-            break;
-        }
-        out.extend_from_slice(&chunk[..n]);
-        if out.len() > keep {
-            out.drain(..out.len() - keep);
-        }
-    }
-    out
-}
-
 struct Saved {
     window: String,
     points: Vec<(i32, i32)>,
@@ -773,12 +738,6 @@ enum Injection {
     Done,
     NotSent,
     Unconfirmed(String),
-}
-
-fn unconfirmed(what: &str, why: &str) -> String {
-    format!(
-        "{what} is unconfirmed ({why}) and was not repeated, since it may have reached the device"
-    )
 }
 
 /// The UI server (`android/ui`) on the device, one answer per request line; dropping it stops the server.
@@ -991,6 +950,53 @@ struct ActArgs {
     seconds: Option<f64>,
 }
 
+/// Whether `s` is an Android package name, such as `com.android.settings`, which a device shell takes as it is.
+pub(crate) fn is_package(s: &str) -> bool {
+    s.split('.').count() >= 2
+        && s.split('.').all(|part| {
+            part.starts_with(|c: char| c.is_ascii_alphabetic())
+                && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+}
+
+fn abort_cause(log: &str) -> Option<String> {
+    let mut ui = false;
+    let mut cause = None;
+    for line in log.lines() {
+        if let Some((_, cmdline)) = line.split_once("Cmdline: ") {
+            ui = cmdline.trim().ends_with("shuttle.Ui");
+        } else if let Some((_, abort)) = line.split_once("Abort message: ")
+            && ui
+        {
+            let abort = abort.trim().trim_start_matches('\'').trim_end_matches('\'');
+            let end = abort.floor_char_boundary(UI_ABORT_KEEP);
+            cause = Some(abort[..end].to_owned()).filter(|c| !c.is_empty());
+        }
+    }
+    cause
+}
+
+async fn tail(mut reader: impl AsyncRead + Unpin, keep: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut chunk = [0; 4096];
+    while let Ok(n) = reader.read(&mut chunk).await {
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&chunk[..n]);
+        if out.len() > keep {
+            out.drain(..out.len() - keep);
+        }
+    }
+    out
+}
+
+fn unconfirmed(what: &str, why: &str) -> String {
+    format!(
+        "{what} is unconfirmed ({why}) and was not repeated, since it may have reached the device"
+    )
+}
+
 /// The keycodes of `keys` such as `ctrl+a`; desktop names keep their meaning, the phone's keys are back, home_screen, recents.
 fn keycodes(keys: &str) -> Result<Vec<u32>, String> {
     keys.split('+')
@@ -1030,8 +1036,7 @@ fn launcher(out: &str, app: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Pastes `line` into the field `focus` names, pasting again while the field's text did not change: Some(true) when it shows, Some(false) when the text stayed the same for 1.5 s.
-/// None is a paste it does not check (no field, a password field, or text that changed otherwise); an error when no paste key was delivered or the field under `at` has no focus.
+/// Pastes `line` into the field `focus` names, pasting again while the field's text did not change: Some(true) when it shows, Some(false) when the text stayed the same for 1.5 s. None is a paste it does not check (no field, a password field, or text that changed otherwise); an error when no paste key was delivered or the field under `at` has no focus.
 async fn type_with<F, Ff, P, Pf>(
     line: &str,
     at: Option<(i32, i32)>,
@@ -1113,15 +1118,6 @@ where
     }
 }
 
-/// Whether `s` is an Android package name, such as `com.android.settings`, which a device shell takes as it is.
-pub(crate) fn is_package(s: &str) -> bool {
-    s.split('.').count() >= 2
-        && s.split('.').all(|part| {
-            part.starts_with(|c: char| c.is_ascii_alphabetic())
-                && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        })
-}
-
 /// Whether `s` is an activity component, `<package>/<class>` with the class relative (`.Main`) or full.
 fn is_component(s: &str) -> bool {
     let Some((package, class)) = s.split_once('/') else {
@@ -1149,8 +1145,7 @@ fn wm_size(out: &str) -> Option<(i32, i32)> {
     size("Override size:").or_else(|| size("Physical size:"))
 }
 
-/// A scrcpy SET_CLIPBOARD message that sets the clipboard to `text`, without scrcpy's own paste key, and asks for an
-/// acknowledgement of `sequence`.
+/// A scrcpy SET_CLIPBOARD message that sets the clipboard to `text`, without scrcpy's own paste key, and asks for an acknowledgement of `sequence`.
 fn clipboard_message(text: &str, sequence: u64) -> Vec<u8> {
     let mut msg = Vec::with_capacity(14 + text.len());
     msg.push(SET_CLIPBOARD);
