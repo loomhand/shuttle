@@ -33,13 +33,75 @@ const BUSY_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 pub type Conn = tokio::net::UnixStream;
 /// One client connection to an endpoint.
 #[cfg(windows)]
-pub type Conn = tokio::net::windows::named_pipe::NamedPipeClient;
+pub type Conn = PipeClient;
 /// One connection an endpoint accepted.
 #[cfg(unix)]
 pub type Accepted = tokio::net::UnixStream;
 /// One connection an endpoint accepted.
 #[cfg(windows)]
 pub type Accepted = tokio::net::windows::named_pipe::NamedPipeServer;
+
+/// The client end of a named pipe that cancels its pending I/O when dropped, so its server sees the hang-up at once: the runtime closes a pipe only after its writes finish.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct PipeClient(tokio::net::windows::named_pipe::NamedPipeClient);
+
+#[cfg(windows)]
+impl AsyncRead for PipeClient {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_read(cx, buf)
+    }
+}
+
+#[cfg(windows)]
+impl tokio::io::AsyncWrite for PipeClient {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.0).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_shutdown(cx)
+    }
+}
+
+#[cfg(windows)]
+impl std::os::windows::io::AsRawHandle for PipeClient {
+    fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
+        self.0.as_raw_handle()
+    }
+}
+
+#[cfg(windows)]
+impl Drop for PipeClient {
+    fn drop(&mut self) {
+        use std::os::windows::io::AsRawHandle as _;
+        // SAFETY: the handle stays open until the inner pipe drops after this; no OVERLAPPED is named, so every pending call on it is cancelled.
+        let _ = unsafe {
+            windows::Win32::System::IO::CancelIoEx(
+                windows::Win32::Foundation::HANDLE(self.0.as_raw_handle()),
+                None,
+            )
+        };
+    }
+}
 
 /// What answers the calls of an endpoint.
 pub trait Handler: Send + Sync + 'static {
@@ -409,7 +471,7 @@ pub async fn connect(endpoint: &str) -> std::io::Result<Conn> {
     loop {
         match tokio::net::windows::named_pipe::ClientOptions::new().open(endpoint) {
             Err(e) if e.raw_os_error() == Some(PIPE_BUSY) => tokio::time::sleep(BUSY_POLL).await,
-            done => return done,
+            done => return done.map(PipeClient),
         }
     }
 }
