@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.11 - 2026-10-20
 
 - **Auto input.** `[desk] input = "auto"` sends desk input in the background and takes the foreground only for an action that background input refused before anything was sent: shuttle brings that action's window to the front, runs it once in the foreground, and its result says `"input": "foreground"`. A Windows drag runs in the foreground from the start. Input the driver could not confirm comes back with `unverified`, as in background, and is never sent twice. `gui_plan` types a step again in the foreground only when its read-back shows that nothing landed and the front held, and a step background refuses before sending anything (a macOS menu-bar entry, grounding, a pixel state read, a vision `expect`) fronts the plan window and runs, with the rest of the plan, in the foreground. On Linux and with an `[android]` section, `auto` acts as `foreground` ([safety.md](docs/safety.md#background-input)).
 - **macOS menu-bar icon.** The indicator is an 18 pt template icon in place of the `Shuttle` text: outlined when idle, filled while acting, struck through when stopped. Its tooltip and the first line of its menu name the version and the input mode. The icons are vector PDFs built into the binary, and the item redraws only when its state changes. A menu-bar manager such as Ice puts a new item in its hidden section until you move it ([safety.md](docs/safety.md#indicator)).
