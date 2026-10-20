@@ -1054,6 +1054,64 @@ while ($true) {
             .unwrap();
     }
 
+    async fn reply_through(size: usize, run: usize) -> Result<(), String> {
+        use tokio::net::windows::named_pipe::ServerOptions;
+
+        let reply: Vec<u8> = (0..size)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let desk = format!(
+            r"\\.\pipe\shuttle-test-reply-{}-{size}-{run}",
+            std::process::id()
+        );
+        let accepted = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&desk)
+            .unwrap();
+        let mut caller = server::connect(&desk).await.unwrap();
+        accepted.connect().await.unwrap();
+        let pipe = format!("{desk}-svc");
+        let mut service = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&pipe)
+            .unwrap();
+        let near = server::connect(&pipe).await.unwrap();
+        service.connect().await.unwrap();
+        let spliced = tokio::spawn(splice(accepted, near));
+        let sent = reply.clone();
+        tokio::spawn(async move {
+            for frame in sent.chunks(16 << 10) {
+                service.write_all(frame).await.unwrap();
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let mut got = Vec::new();
+        caller.read_to_end(&mut got).await.unwrap();
+        spliced.await.unwrap();
+        if got == reply {
+            Ok(())
+        } else {
+            Err(format!("{size} bytes, run {run}: {} arrived", got.len()))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reply_the_service_sends_before_it_closes_reaches_a_caller_that_reads_late() {
+        let mut runs = JoinSet::new();
+        for size in [64 << 10, 1 << 20] {
+            for run in 0..20 {
+                runs.spawn(reply_through(size, run));
+            }
+        }
+        let lost: Vec<String> = runs
+            .join_all()
+            .await
+            .into_iter()
+            .filter_map(Result::err)
+            .collect();
+        assert!(lost.is_empty(), "{lost:?}");
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_pipe_that_stays_busy_fails_the_call_after_the_listen_wait() {
         let pipe = format!(r"\\.\pipe\shuttle-test-busy-{}", std::process::id());
