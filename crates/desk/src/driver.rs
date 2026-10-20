@@ -178,6 +178,13 @@ pub fn desktop(mut req: Value) -> Value {
     req
 }
 
+/// `req` delivered to window `window_id` of `pid` without raising it or moving the pointer.
+pub fn background(mut req: Value, (pid, window_id): (i64, i64)) -> Value {
+    req["target"] = json!({"kind": "window", "pid": pid, "window_id": window_id});
+    req["delivery_mode"] = "background".into();
+    req
+}
+
 /// The text blocks of a driver result.
 pub fn text_of(v: &Value) -> String {
     v["content"]
