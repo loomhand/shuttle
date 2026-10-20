@@ -160,7 +160,10 @@ impl Runner {
             .spawn()
             .map_err(|e| format!("start {}: {e}", program.display()))?;
         #[cfg(unix)]
-        let mut group = Group(child.id());
+        let mut group = Group {
+            pid: child.id(),
+            termed: false,
+        };
         #[cfg(windows)]
         let job = crate::job::Job::hold(child.raw_handle())?;
         let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
@@ -179,6 +182,7 @@ impl Runner {
         if status.is_err() {
             #[cfg(unix)]
             if let Some(pid) = child.id() {
+                group.termed = true;
                 let _ = tokio::join!(crate::end_group(pid, END_GRACE), child.wait());
             }
             #[cfg(windows)]
@@ -190,7 +194,7 @@ impl Runner {
         }
         #[cfg(unix)]
         {
-            group.0 = None;
+            group.pid = None;
         }
         let drained = async {
             for p in &mut pipes {
@@ -258,18 +262,23 @@ enum Ended {
 
 /// A run's process group, ended when the run is dropped before it ends, as when its client closes the connection.
 #[cfg(unix)]
-struct Group(Option<u32>);
+struct Group {
+    pid: Option<u32>,
+    termed: bool,
+}
 
 #[cfg(unix)]
 impl Drop for Group {
     fn drop(&mut self) {
-        let Some(pid) = self.0 else {
+        let Some(pid) = self.pid else {
             return;
         };
-        crate::signal_group(pid, libc::SIGTERM);
+        if !self.termed {
+            crate::signal_group(pid, libc::SIGTERM);
+        }
         match tokio::runtime::Handle::try_current() {
-            Ok(rt) if !crate::ENDING.load(std::sync::atomic::Ordering::Relaxed) => {
-                rt.spawn(crate::kill_after(pid, END_GRACE));
+            Ok(rt) if !self.termed && !crate::ENDING.load(std::sync::atomic::Ordering::Relaxed) => {
+                crate::kill_later(&rt, pid, END_GRACE);
             }
             _ => {
                 crate::signal_group(pid, libc::SIGKILL);
@@ -449,17 +458,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(report["error"]["kind"], "timeout", "{report}");
+        assert!(
+            dir.path().join("timeout.ready").exists(),
+            "the script was not ready before its timeout: {report}"
+        );
         assert_eq!(std::fs::read_to_string(&marker).unwrap(), "term");
         let marker = dir.path().join("stop");
         let ready = dir.path().join("stop.ready");
         let args = json!({"code": ON_TERM, "params": {"marker": marker}, "timeout_s": 30});
         let (report, ()) = tokio::join!(r.script(args, "run-test"), async {
-            for _ in 0..200 {
-                if ready.exists() {
-                    break;
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while !ready.exists() {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
+            })
+            .await
+            .expect("the script never got ready");
             r.halt(true);
         });
         r.halt(false);
@@ -496,17 +510,25 @@ mod tests {
     async fn a_run_dropped_during_its_grace_still_kills_a_script_that_ignores_term() {
         let dir = tempfile::tempdir().unwrap();
         let r = runner(dir.path());
-        let pid_file = dir.path().join("pid");
-        let code = "import { writeFileSync } from 'node:fs'\nprocess.on('SIGTERM', () => {})\nexport async function main({ pid }) { writeFileSync(pid, String(process.pid)); await new Promise((r) => setTimeout(r, 30000)) }";
-        let args = json!({"code": code, "params": {"pid": pid_file}, "timeout_s": 2});
-        assert!(
-            tokio::time::timeout(Duration::from_millis(2500), r.script(args, "run-test"))
-                .await
-                .is_err()
-        );
+        let (pid_file, termed) = (dir.path().join("pid"), dir.path().join("termed"));
+        let code = "import { writeFileSync } from 'node:fs'\nexport async function main({ pid, termed }) { process.on('SIGTERM', () => writeFileSync(termed, '')); writeFileSync(pid, String(process.pid)); await new Promise((r) => setTimeout(r, 30000)) }";
+        let args =
+            json!({"code": code, "params": {"pid": pid_file, "termed": termed}, "timeout_s": 2});
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                report = r.script(args, "run-test") => panic!("the run ended: {report:?}"),
+                () = async {
+                    while !termed.exists() {
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                } => {}
+            }
+        })
+        .await
+        .expect("the run got no TERM");
         let pid = std::fs::read_to_string(&pid_file).unwrap();
         let mut gone = false;
-        for _ in 0..60 {
+        for _ in 0..20 {
             gone = !alive(&pid);
             if gone {
                 break;
@@ -524,14 +546,18 @@ mod tests {
         let marker = dir.path().join("dropped");
         let ready = dir.path().join("dropped.ready");
         let args = json!({"code": ON_TERM, "params": {"marker": marker}, "timeout_s": 30});
-        tokio::select! {
-            report = r.script(args, "run-test") => panic!("the run ended: {report:?}"),
-            () = async {
-                while !ready.exists() {
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
-            } => {}
-        }
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                report = r.script(args, "run-test") => panic!("the run ended: {report:?}"),
+                () = async {
+                    while !ready.exists() {
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                } => {}
+            }
+        })
+        .await
+        .expect("the script never got ready");
         let mut termed = false;
         for _ in 0..40 {
             termed = std::fs::read_to_string(&marker).is_ok_and(|m| m == "term");

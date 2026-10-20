@@ -23,6 +23,8 @@ use std::fmt::Display;
 use std::io::Write as _;
 use std::sync::atomic::AtomicBool;
 #[cfg(unix)]
+use std::sync::{Mutex, PoisonError};
+#[cfg(unix)]
 use std::time::Duration;
 
 /// The program name in usage lines, endpoints and the MCP server info.
@@ -36,6 +38,8 @@ pub const STOPPED: &str = "stopped by the user: run `cocoon-shuttle resume` to g
 const GROUP_POLL: Duration = Duration::from_millis(20);
 
 pub(crate) static ENDING: AtomicBool = AtomicBool::new(false);
+#[cfg(unix)]
+static GRACED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
 pub(crate) fn log(line: impl Display) {
     let _ = writeln!(std::io::stderr(), "{NAME}: {line}");
@@ -101,7 +105,7 @@ pub(crate) async fn end_group(group: u32, grace: Duration) {
 
 /// KILLs whatever is left of the group `group` leads once `grace` has passed, or nothing once the group is gone.
 #[cfg(unix)]
-pub(crate) async fn kill_after(group: u32, grace: Duration) {
+async fn kill_after(group: u32, grace: Duration) {
     let deadline = tokio::time::Instant::now() + grace;
     while tokio::time::Instant::now() < deadline {
         tokio::time::sleep(GROUP_POLL).await;
@@ -110,6 +114,29 @@ pub(crate) async fn kill_after(group: u32, grace: Duration) {
         }
     }
     signal_group(group, libc::SIGKILL);
+}
+
+#[cfg(unix)]
+pub(crate) fn kill_later(rt: &tokio::runtime::Handle, group: u32, grace: Duration) {
+    GRACED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(group);
+    rt.spawn(async move {
+        kill_after(group, grace).await;
+        GRACED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|g| *g != group);
+    });
+}
+
+#[cfg(unix)]
+pub(crate) fn kill_graced() {
+    let graced = std::mem::take(&mut *GRACED.lock().unwrap_or_else(PoisonError::into_inner));
+    for group in graced {
+        signal_group(group, libc::SIGKILL);
+    }
 }
 
 #[cfg(unix)]

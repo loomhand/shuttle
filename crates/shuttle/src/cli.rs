@@ -273,6 +273,8 @@ async fn serve(
         () = shutdown() => Ok(()),
     };
     crate::ENDING.store(true, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(unix)]
+    crate::kill_graced();
     services.stop().await;
     if let Some(b) = bundled {
         b.stop().await;
