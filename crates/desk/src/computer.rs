@@ -76,6 +76,10 @@ const OFF_SCREEN: &str = "the rectangle is off the screen";
 const XTEST_TYPED: &str = "Typed text into the focused desktop application.";
 const NO_TEXT_TARGET: &str =
     "no application window is on the screen to type into; open or focus one first";
+#[cfg(target_os = "macos")]
+const UNDER: Under = crate::ax::window_at;
+#[cfg(not(target_os = "macos"))]
+const UNDER: Under = |_, _| None;
 const RETRIED: [&str; 4] = [
     "list_windows",
     "get_window_state",
@@ -83,11 +87,14 @@ const RETRIED: [&str; 4] = [
     "end_session",
 ];
 
+type Under = fn(f64, f64) -> Option<(i64, i64)>;
+
 /// The computer verbs' state: the element tokens of each session's latest window state and the scale of its latest screenshot.
 pub struct Computer {
     driver: Arc<Driver>,
     os: Os,
     typer: Typer,
+    under: Under,
     last: Mutex<HashMap<String, Snapshot>>,
     input: Arc<Mutex<()>>,
     /// The MIT-SHM grabber, opened on first use and again after a failure.
@@ -114,6 +121,7 @@ impl Computer {
             driver,
             os,
             typer: crate::desk::TYPER,
+            under: UNDER,
             last: Mutex::new(HashMap::new()),
             input: Arc::new(Mutex::new(())),
             grabber: std::sync::Mutex::new(None),
@@ -366,7 +374,7 @@ impl Computer {
         let mut result = self.send(target, tool, req, enter, &input).await;
         if let (Some(pressed), Err(e)) = (pressed, &result)
             && e.contains(AX_UNSUPPORTED)
-            && let Some(retry) = self.unpressable(target, session, &a, pressed).await
+            && let Some(retry) = self.unpressable(session, &a, pressed).await
         {
             result = self.request(target, "click", retry).await;
         }
@@ -1255,28 +1263,15 @@ impl Computer {
     }
 
     /// A desktop click at the centre of the element `a` names, when the topmost window there is the element's own.
-    async fn unpressable(
-        &self,
-        target: &str,
-        session: &str,
-        a: &ActArgs,
-        mut req: Value,
-    ) -> Option<Value> {
-        let (pid, x, y) = {
+    async fn unpressable(&self, session: &str, a: &ActArgs, mut req: Value) -> Option<Value> {
+        let (window, x, y) = {
             let last = self.last.lock().await;
             let snap = last.get(session)?;
             let [x, y, w, h] = snap.elements.get(&a.element?)?.frame?;
-            (snap.pid, x + w / 2.0, y + h / 2.0)
+            (snap.window_id?, x + w / 2.0, y + h / 2.0)
         };
-        let windows = self
-            .request(target, "list_windows", json!({"on_screen_only": true}))
-            .await
-            .ok()?;
-        let top = window_list(&windows).into_iter().find(|w| {
-            (w.x as f64..(w.x + w.w) as f64).contains(&x)
-                && (w.y as f64..(w.y + w.h) as f64).contains(&y)
-        })?;
-        if top.pid != pid {
+        let (_, top) = (self.under)(x, y)?;
+        if top != window {
             return None;
         }
         let req = req.as_object_mut()?;
@@ -2915,7 +2910,6 @@ mod tests {
         socket: &Path,
         calls: &std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
         refusal: &'static str,
-        top: i64,
     ) -> tokio::task::JoinHandle<()> {
         let listener = Fake::bind(socket).unwrap();
         let log = std::sync::Arc::clone(calls);
@@ -2926,13 +2920,12 @@ mod tests {
                 let mut line = String::new();
                 reader.read_line(&mut line).await.unwrap();
                 let req: Value = serde_json::from_str(&line).unwrap();
-                let window = |pid: i64, z: i64| json!({"pid": pid, "window_id": pid + 2, "app_name": "TextEdit", "title": "t", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": z});
                 let reply = match req["name"].as_str().unwrap_or_default() {
                     "list_windows" => {
-                        json!({"ok": true, "result": {"structuredContent": {"windows": [window(top, 3), window(7, 2)]}}})
+                        json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "TextEdit", "title": "t", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 2}]}}})
                     }
                     "get_window_state" => {
-                        json!({"ok": true, "result": {"structuredContent": {"elements": [{"element_index": 0, "element_token": "t0", "role": "AXTextArea", "label": "", "frame": {"x": 100.0, "y": 100.0, "w": 200.0, "h": 40.0}}]}}})
+                        json!({"ok": true, "result": {"structuredContent": {"window_id": 9, "elements": [{"element_index": 0, "element_token": "t0", "role": "AXTextArea", "label": "", "frame": {"x": 100.0, "y": 100.0, "w": 200.0, "h": 40.0}}]}}})
                     }
                     "click" if req["args"]["element_token"].is_string() => {
                         json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": refusal}]}})
@@ -2947,12 +2940,13 @@ mod tests {
         })
     }
 
-    async fn press(refusal: &'static str, top: i64) -> (Output, Vec<Value>) {
+    async fn press(refusal: &'static str, under: Under) -> (Output, Vec<Value>) {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
-        let driver = press_driver(&socket, &calls, refusal, top);
-        let cua = cua(&socket);
+        let driver = press_driver(&socket, &calls, refusal);
+        let mut cua = cua(&socket);
+        cua.under = under;
         cua.state(json!({"pid": 7})).await.unwrap();
         let out = cua
             .act(json!({"action": "click", "element": 0}))
@@ -2973,7 +2967,7 @@ mod tests {
     async fn an_element_without_the_press_action_gets_one_desktop_click_at_its_centre() {
         let (out, clicks) = press(
             "AX action failed: AXUIElementPerformAction(AXPress) returned -25206",
-            7,
+            |x, y| ((x, y) == (200.0, 120.0)).then_some((7, 9)),
         )
         .await;
         assert!(!out.is_error, "{}", out.text);
@@ -2993,7 +2987,7 @@ mod tests {
     async fn a_press_that_timed_out_is_not_clicked_again() {
         let (out, clicks) = press(
             "AX action failed: AXUIElementPerformAction(AXPress) returned -25204",
-            7,
+            |x, y| ((x, y) == (200.0, 120.0)).then_some((7, 9)),
         )
         .await;
         assert!(out.is_error && out.text.contains("-25204"), "{}", out.text);
@@ -3001,14 +2995,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_element_under_another_apps_window_is_not_clicked_through_it() {
-        let (out, clicks) = press(
-            "AX action failed: AXUIElementPerformAction(AXPress) returned -25206",
-            8,
-        )
-        .await;
-        assert!(out.is_error && out.text.contains("-25206"), "{}", out.text);
-        assert_eq!(clicks.len(), 1, "{clicks:?}");
+    async fn an_element_under_another_window_or_a_popup_even_of_its_own_app_is_not_clicked_through_it()
+     {
+        let covered: [Under; 3] = [|_, _| Some((8, 10)), |_, _| Some((7, 11)), |_, _| None];
+        for under in covered {
+            let (out, clicks) = press(
+                "AX action failed: AXUIElementPerformAction(AXPress) returned -25206",
+                under,
+            )
+            .await;
+            assert!(out.is_error && out.text.contains("-25206"), "{}", out.text);
+            assert_eq!(clicks.len(), 1, "{clicks:?}");
+        }
     }
 
     fn png_of(width: u32, height: u32, rgba: &[u8]) -> String {

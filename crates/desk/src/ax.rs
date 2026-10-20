@@ -526,6 +526,7 @@ unsafe extern "C" {
     fn AXUIElementCopyElementAtPosition(app: CFTypeRef, x: f32, y: f32, out: *mut CFTypeRef)
     -> i32;
     fn AXUIElementGetPid(e: CFTypeRef, pid: *mut i32) -> i32;
+    fn _AXUIElementGetWindow(e: CFTypeRef, window: *mut u32) -> i32;
     fn AXUIElementSetMessagingTimeout(e: CFTypeRef, seconds: f32) -> i32;
     fn AXValueGetValue(v: CFTypeRef, kind: u32, out: *mut c_void) -> bool;
 }
@@ -542,6 +543,22 @@ unsafe extern "C" {
     fn CGDisplayModeGetPixelWidth(mode: *mut c_void) -> usize;
     fn CGDisplayModeGetWidth(mode: *mut c_void) -> usize;
     fn CGDisplayModeRelease(mode: *mut c_void);
+}
+
+pub fn window_at(x: f64, y: f64) -> Option<(i64, i64)> {
+    let el = hit(&system_wide(), x.round() as i32, y.round() as i32, 1.0)?;
+    let owner = match string(attr(&el, "AXRole")).as_str() {
+        "AXWindow" => None,
+        _ => Some(attr(&el, "AXWindow")?),
+    };
+    let window = owner.as_ref().unwrap_or(&el);
+    let mut id = 0;
+    // SAFETY: `window` is a live AXUIElement and `id` a valid out pointer.
+    let err = unsafe { _AXUIElementGetWindow(window.as_CFTypeRef(), &mut id) };
+    if err != AX_SUCCESS {
+        return None;
+    }
+    Some((i64::from(pid(&el)?), i64::from(id)))
 }
 
 fn hung(slow: Duration, listed: Duration) -> bool {
