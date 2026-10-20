@@ -784,7 +784,9 @@ async fn find(android: &Android, a: FindArgs) -> Result<String, String> {
         .take(MAX_FOUND)
         .map(|i| nodes[i].json(i, &frame.package))
         .collect();
-    Ok(json!({"window": frame.json(), "found": found}).to_string())
+    let mut out = json!({"window": frame.json()});
+    out["found"] = Value::Array(found);
+    Ok(out.to_string())
 }
 
 /// The node of id `package:path:role:name` in the app's front window: at that path, else the first shown of that role and name.
@@ -890,7 +892,10 @@ async fn at(android: &Android, a: AtArgs) -> Result<String, String> {
         path.push(json!({"id": n.id(&frame.package), "role": n.role, "name": n.name}));
         p = n.parent;
     }
-    Ok(json!({"found": hit.json(i, &frame.package), "path": path}).to_string())
+    let mut out = json!({});
+    out["found"] = hit.json(i, &frame.package);
+    out["path"] = Value::Array(path);
+    Ok(out.to_string())
 }
 
 /// Types text into the focused field: each line pasted, Return between lines.
@@ -1021,7 +1026,9 @@ where
         last = at.elapsed();
         let same = windows == since;
         if !same || started.elapsed() >= limit {
-            return Ok(json!({"changed": !same, "windows": windows}));
+            let mut out = json!({"changed": !same});
+            out["windows"] = windows;
+            return Ok(out);
         }
     }
 }
