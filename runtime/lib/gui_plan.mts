@@ -1055,6 +1055,9 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   }
   rec.how = hit.how; rec.ref = `${hit.n.role} "${hit.n.name}"`; rec.fp = fingerprint(nodes, hit)
   if (hit.p !== undefined) rec.pick = [+hit.p.toFixed(2), +(hit.margin ?? 0).toFixed(2)]
+  const bar = BG && OS === 'darwin' && !!s.click && hit.n.role === 'menuitem' && [...up(nodes, hit.n.parent)].some(([, a]) => a.role === 'menubar')
+  if (bar && !AUTO) throw new Surprise(`the macOS menu bar belongs to the front app, and an app behind it runs no menu entry: background gui_plan cannot click "${hit.n.name}" in "${w.title}"`, await seen())
+  if (bar) await front(w)
   if (hit.n.disabled) {
     t0 = Date.now(); let on = false
     for (let i = 0; i < 15 && !on; i++) { await sleep(40); on = !(await desk.read(hit.n.id)).states.includes('disabled') }
@@ -1064,9 +1067,6 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.click && hit.how !== 'fp' && norm(hit.n.name) !== norm(target) && TOGGLE_ROLES.has(hit.n.role))
     throw new Surprise(`"${target}" is closest to ${hit.n.role} "${hit.n.name}" (${hit.how}), and a click would flip it; use {check: "${hit.n.name}", on: ...} for it, or name the element you mean exactly`, await seen())
   if (s.click && hit.n.role === 'menuitem') {
-    const bar = BG && OS === 'darwin' && [...up(nodes, hit.n.parent)].some(([, a]) => a.role === 'menubar')
-    if (bar && !AUTO) throw new Surprise(`the macOS menu bar belongs to the front app, and an app behind it runs no menu entry: background gui_plan cannot click "${hit.n.name}" in "${w.title}"`, await seen())
-    if (bar) await front(w)
     await choose(nodes, hit.n, rec, true, w); await settle(w.title); return
   }
   if (s.click) {
