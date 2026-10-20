@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Bundled:** cua-driver v0.37.0-loomhand.3 (was v0.37.0-loomhand.2): on Linux under xfwm4, a background `type_text` into a window behind another no longer leaves the front window looking inactive: the focus guard puts back the window manager's active window by moving the core focus through None and back, where it used to report `not_restored` after its full restore budget (about 1.1 s → 0.64 s per call on cross-app pairs).
+- **Bundled:** cua-driver v0.37.0-loomhand.4 (was v0.37.0-loomhand.2): on macOS the agent cursor overlay repaints only the region around its cursors instead of the whole screen each animation frame, so a background `press_key`, `type_text` or `scroll` takes about 0.5–0.6 s in place of 1.3–2.3 s while the cursor animates on a GPU-less VM; on Linux under xfwm4, a background `type_text` into a window behind another no longer leaves the front window looking inactive: the focus guard puts back the window manager's active window by moving the core focus through None and back, where it used to report `not_restored` after its full restore budget (about 1.1 s → 0.64 s per call on cross-app pairs).
 
 ## 0.1.11 - 2026-10-20
 
