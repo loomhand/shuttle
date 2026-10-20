@@ -2,7 +2,7 @@
 mod tests {
     use std::io::Write as _;
 
-    use shuttle_models::config::{Config, Confirm, DecideApi, default_path};
+    use shuttle_models::config::{Config, Confirm, DecideApi, InputMode, default_path};
 
     fn file(text: &str) -> tempfile::NamedTempFile {
         let mut f = tempfile::NamedTempFile::new().unwrap();
@@ -104,6 +104,26 @@ mod tests {
         let text = file("[driver]\noverlay = \"off\"\n");
         let err = Config::load(text.path()).unwrap_err();
         assert!(err.contains("line 2") && err.contains("bool"), "{err}");
+    }
+
+    #[test]
+    fn the_desk_table_picks_the_input_mode_and_defaults_to_foreground() {
+        let dir = tempfile::tempdir().unwrap();
+        let none = Config::load(&dir.path().join("config.toml")).unwrap();
+        assert_eq!(none.desk.input, InputMode::Foreground);
+        for (text, mode) in [
+            ("foreground", InputMode::Foreground),
+            ("background", InputMode::Background),
+            ("auto", InputMode::Auto),
+        ] {
+            let f = file(&format!("[desk]\ninput = \"{text}\"\n"));
+            assert_eq!(Config::load(f.path()).unwrap().desk.input, mode, "{text}");
+        }
+        let bad = file("[desk]\ninput = \"quiet\"\n");
+        let err = Config::load(bad.path()).unwrap_err();
+        assert!(err.contains("line 2") && err.contains("quiet"), "{err}");
+        let unknown = file("[desk]\nmode = \"background\"\n");
+        assert!(Config::load(unknown.path()).unwrap_err().contains("mode"));
     }
 
     #[test]

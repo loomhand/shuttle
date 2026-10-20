@@ -38,6 +38,7 @@ pub struct Config {
     pub safety: Safety,
     pub tools: Tools,
     pub driver: DriverSettings,
+    pub desk: DeskSettings,
     pub daemon: DaemonSettings,
     /// An Android device whose desk this daemon serves over adb, in place of this desktop's own.
     pub android: Option<AndroidSettings>,
@@ -57,6 +58,7 @@ impl Default for Config {
             safety: Safety::default(),
             tools: Tools::default(),
             driver: DriverSettings::default(),
+            desk: DeskSettings::default(),
             daemon: DaemonSettings::default(),
             android: None,
         }
@@ -203,6 +205,23 @@ impl Default for DriverSettings {
     fn default() -> Self {
         Self { overlay: true }
     }
+}
+
+/// How desk input reaches an app.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DeskSettings {
+    pub input: InputMode,
+}
+
+/// `foreground` fronts the target app as a person would; `background` acts without moving the pointer or the focus and refuses what it cannot do so; `auto` picks per app and action, as `foreground` where no check is available.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum InputMode {
+    #[default]
+    Foreground,
+    Background,
+    Auto,
 }
 
 /// The daemon's endpoint: `socket_group` opens it to a second identity, a unix group name or number (mode 0660) or a Windows account name or SID; unset keeps it to its user.
