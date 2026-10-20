@@ -1960,18 +1960,16 @@ fn window_list(result: &Value) -> Vec<Window> {
         .flatten()
         .filter_map(|w| {
             let b = &w["bounds"];
+            let n = |v: &Value| v.as_i64().or_else(|| v.as_f64().map(|f| f.round() as i64));
             Some(Window {
                 pid: w["pid"].as_i64()?,
                 window_id: w["window_id"].as_i64()?,
                 app: w["app_name"].as_str().unwrap_or_default().to_owned(),
                 title: w["title"].as_str().unwrap_or_default().to_owned(),
-                x: b["x"].as_i64().unwrap_or(0),
-                y: b["y"].as_i64().unwrap_or(0),
-                w: b["width"].as_i64().or_else(|| b["w"].as_i64()).unwrap_or(0),
-                h: b["height"]
-                    .as_i64()
-                    .or_else(|| b["h"].as_i64())
-                    .unwrap_or(0),
+                x: n(&b["x"]).unwrap_or(0),
+                y: n(&b["y"]).unwrap_or(0),
+                w: n(&b["width"]).or_else(|| n(&b["w"])).unwrap_or(0),
+                h: n(&b["height"]).or_else(|| n(&b["h"])).unwrap_or(0),
                 z: w["z_index"].as_i64().unwrap_or(i64::MIN),
             })
         })
@@ -2723,6 +2721,16 @@ mod tests {
         assert!(runs.iter().all(|r| r.chars().count() <= 8), "{runs:?}");
         assert_eq!(runs.concat(), text);
         driver.abort();
+    }
+
+    #[test]
+    fn a_window_list_takes_whole_or_fractional_bounds() {
+        let listed = window_list(&json!({"structuredContent": {"windows": [
+            {"pid": 7, "window_id": 9, "app_name": "TextEdit", "title": "a", "bounds": {"x": 180.0, "y": 97.0, "width": 920.0, "height": 436.0}, "z_index": 2},
+            {"pid": 8, "window_id": 3, "app_name": "Notepad.exe", "title": "b", "bounds": {"x": 57, "y": 52, "width": 950, "height": 538}, "z_index": 1}
+        ]}}));
+        let got: Vec<_> = listed.iter().map(|w| (w.pid, w.x, w.y, w.w, w.h)).collect();
+        assert_eq!(got, [(7, 180, 97, 920, 436), (8, 57, 52, 950, 538)]);
     }
 
     #[tokio::test]
