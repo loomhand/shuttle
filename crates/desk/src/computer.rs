@@ -186,7 +186,11 @@ impl Computer {
         let listed = window_list(&windows);
         let mut text = String::new();
         let target = match a.pid {
-            Some(pid) => Some((pid, a.window_id)),
+            Some(pid) => Some((
+                pid,
+                a.window_id
+                    .or_else(|| listed.iter().find(|w| w.pid == pid).map(|w| w.window_id)),
+            )),
             None => self
                 .app_of(&listed)
                 .or(listed.first())
@@ -2982,6 +2986,19 @@ mod tests {
             (&json!(200.0), &json!(120.0), &json!("desktop"))
         );
         assert!(clicks[1]["element_token"].is_null(), "{clicks:?}");
+    }
+
+    #[tokio::test]
+    async fn a_pid_without_a_window_id_reads_its_frontmost_listed_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = press_driver(&socket, &calls, "");
+        cua(&socket).state(json!({"pid": 7})).await.unwrap();
+        driver.abort();
+        let read = calls.lock().unwrap().clone();
+        let read = read.iter().find(|c| c["name"] == "get_window_state");
+        assert_eq!(read.unwrap()["args"]["window_id"], 9, "{read:?}");
     }
 
     #[tokio::test]
