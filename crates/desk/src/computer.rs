@@ -98,6 +98,7 @@ pub struct Computer {
     scales: std::sync::Mutex<HashMap<String, f64>>,
     /// Screen pixels per image pixel of the latest screenshot of any session, one-shot included.
     last_scale: std::sync::Mutex<f64>,
+    backing: std::sync::Mutex<f64>,
     /// The screen blocks that change while no action runs, which the settle ignores; sampled from the first computer call.
     volatile: OnceLock<Volatile>,
     ids: AtomicU64,
@@ -119,6 +120,7 @@ impl Computer {
             titles: std::sync::Mutex::new(HashMap::new()),
             scales: std::sync::Mutex::new(HashMap::new()),
             last_scale: std::sync::Mutex::new(1.0),
+            backing: std::sync::Mutex::new(1.0),
             volatile: OnceLock::new(),
             ids: AtomicU64::new(0),
             defaults: AtomicU64::new(0),
@@ -538,14 +540,18 @@ impl Computer {
             .or_else(|| Some(state["screen_width"].as_f64()? / state["screenshot_width"].as_f64()?))
             .filter(|s| s.is_finite() && *s > 0.0)
             .unwrap_or(1.0);
+        let capped = state.get("screenshot_original_width").is_some()
+            || state["frame_scale"].as_f64().is_some_and(|s| s != 1.0);
+        self.keep_backing(state);
         let mut image = image_of(&v).map(str::to_owned);
         if let Some(smaller) = image.as_deref().and_then(shrink) {
             image = Some(smaller);
         }
         self.keep_scale(session, scale, shared);
         // the driver rescales later desktop clicks by its last capture; a full-size one keeps it at 1
-        if scale != 1.0 {
-            let _ = self.request(session, "get_desktop_state", json!({})).await;
+        if capped {
+            let full = json!({"max_image_dimension": 0});
+            let _ = self.request(session, "get_desktop_state", full).await;
         }
         Ok((image, scale, None))
     }
@@ -1574,8 +1580,13 @@ impl Computer {
     /// The screen rectangle `area` clipped to the screen, cut from a full-size driver capture.
     async fn captured_region(&self, session: &str, area: [f64; 4]) -> Result<Cut, String> {
         let v = self
-            .request(session, "get_desktop_state", json!({}))
+            .request(
+                session,
+                "get_desktop_state",
+                json!({"max_image_dimension": 0}),
+            )
             .await?;
+        self.keep_backing(&v["structuredContent"]);
         let png = B64
             .decode(image_of(&v).ok_or("the capture has no image")?)
             .map_err(|e| format!("decode the capture: {e}"))?;
@@ -1614,8 +1625,24 @@ impl Computer {
     fn on_desktop(&self, req: &mut Value) {
         if self.os == Os::Linux {
             req["target"] = json!({"kind": "desktop", "display_id": "primary"});
-        } else {
-            req["scope"] = "desktop".into();
+            return;
+        }
+        req["scope"] = "desktop".into();
+        let backing = *lock(&self.backing);
+        for key in ["x", "y", "from_x", "from_y", "to_x", "to_y"] {
+            if let Some(v) = req[key].as_f64() {
+                req[key] = (v * backing).into();
+            }
+        }
+    }
+
+    fn keep_backing(&self, state: &Value) {
+        if self.os == Os::Mac
+            && let Some(backing) = state["scale_factor"]
+                .as_f64()
+                .filter(|b| b.is_finite() && *b > 0.0)
+        {
+            *lock(&self.backing) = backing;
         }
     }
 
@@ -3296,16 +3323,21 @@ mod tests {
                         refused("desktop_scope_disabled: pass scope=\"desktop\"")
                     }
                     name => {
+                        let mut text = String::new();
                         if matches!(name, "click" | "drag") {
                             let factor = factors.get(&session).copied().unwrap_or(1.0);
-                            let points = ["x", "y", "from_x", "from_y", "to_x", "to_y"]
+                            let points: Vec<f64> = ["x", "y", "from_x", "from_y", "to_x", "to_y"]
                                 .iter()
                                 .filter_map(|k| args[k].as_f64())
                                 .map(|v| v * factor / 2.0)
                                 .collect();
+                            text = format!(
+                                "Sent {name} to screen-point ({},{})",
+                                points[0], points[1]
+                            );
                             log.lock().unwrap().push(points);
                         }
-                        json!({"ok": true, "result": {"structuredContent": {}}})
+                        json!({"ok": true, "result": {"content": [{"type": "text", "text": text}]}})
                     }
                 };
                 let mut out = serde_json::to_vec(&reply).unwrap();
@@ -3331,6 +3363,42 @@ mod tests {
             assert!(!out.is_error, "{}", out.text);
         }
         assert_eq!(landed.lock().unwrap().len(), 2);
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_retina_desktop_click_lands_where_the_screenshot_showed_after_a_shot_a_zoom_or_a_full_shot()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, landed, driver) = retina_driver(dir.path());
+        let cua = cua_on(&socket, Os::Mac);
+        let click = json!({"action": "click", "x": 10.0, "y": 5.0, "max_edge": 50});
+        cua.state(json!({"max_edge": 50})).await.unwrap();
+        let clicked = cua.act(click.clone()).await.unwrap();
+        assert!(
+            clicked.text.contains("screen-point (10,5)"),
+            "{}",
+            clicked.text
+        );
+        let drag = json!({"action": "drag", "x": 10.0, "y": 5.0, "to_x": 20.0, "to_y": 10.0, "max_edge": 50});
+        cua.act(drag).await.unwrap();
+        let zoom = json!({"region": {"x": 5, "y": 5, "w": 10, "h": 5}, "session": DEFAULT_SESSION});
+        let zoomed = cua.look(&zoom).await.unwrap();
+        assert!(zoomed.text.contains("px*0.25"), "{}", zoomed.text);
+        cua.act(click).await.unwrap();
+        cua.state(json!({"max_edge": 0})).await.unwrap();
+        cua.act(json!({"action": "click", "x": 40.0, "y": 20.0}))
+            .await
+            .unwrap();
+        assert_eq!(
+            *landed.lock().unwrap(),
+            [
+                vec![20.0, 10.0],
+                vec![20.0, 10.0, 40.0, 20.0],
+                vec![20.0, 10.0],
+                vec![20.0, 10.0]
+            ]
+        );
         driver.abort();
     }
 
