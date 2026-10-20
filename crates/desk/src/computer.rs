@@ -72,6 +72,7 @@ const SKIPPED: &str = "had no keycode";
 const WM_WAIT: Duration = Duration::from_secs(10);
 const WM_POLL: Duration = Duration::from_millis(100);
 const AX_UNSUPPORTED: &str = "returned -25206";
+const OFF_SCREEN: &str = "the rectangle is off the screen";
 const XTEST_TYPED: &str = "Typed text into the focused desktop application.";
 const NO_TEXT_TARGET: &str =
     "no application window is on the screen to type into; open or focus one first";
@@ -398,7 +399,7 @@ impl Computer {
         let session = args["session"].as_str();
         let shared = args["workspace_only"] == true;
         if let Some(region) = args.get("region").filter(|r| !r.is_null()) {
-            return self.zoom(session, region, max_edge);
+            return self.zoom(session, region, max_edge).await;
         }
         let image_b64 = match session {
             Some(session) => {
@@ -420,7 +421,7 @@ impl Computer {
     }
 
     /// `region` {x, y, w, h} in the pixels of `session`'s last screenshot, at full resolution unless `max_edge` is smaller.
-    fn zoom(
+    async fn zoom(
         &self,
         session: Option<&str>,
         region: &Value,
@@ -431,14 +432,26 @@ impl Computer {
         else {
             return Err("region needs x, y, w and h".to_owned());
         };
-        let (rect, rgb) = self.region_rgb([x * k, y * k, w * k, h * k])?;
-        let (rw, rh) = (rect[2].unsigned_abs(), rect[3].unsigned_abs());
+        let area = [x * k, y * k, w * k, h * k];
+        let Cut {
+            rect,
+            width: rw,
+            height: rh,
+            rgb,
+            per_unit: ps,
+        } = match self.region_rgb(area) {
+            Some(cut) => cut?,
+            None => {
+                self.captured_region(session.unwrap_or(DEFAULT_SESSION), area)
+                    .await?
+            }
+        };
         let (iw, ih, rgb) = match max_edge {
             Some(edge) if edge > 0 && edge < rw.max(rh) => fit(rw, rh, &rgb, edge),
             _ => (rw, rh, rgb),
         };
         let image = B64.encode(encode(iw, ih, &rgb).ok_or("encode the region")?);
-        let f = f64::from(rw) / f64::from(iw) / k;
+        let f = f64::from(rw) / f64::from(iw) / ps / k;
         let (ox, oy) = (f64::from(rect[0]) / k, f64::from(rect[1]) / k);
         Ok(Output {
             text: format!(
@@ -1539,16 +1552,52 @@ impl Computer {
             .unwrap_or(false)
     }
 
-    /// The screen rectangle `[x, y, w, h]` clipped to the screen, and its RGB rows over MIT-SHM.
-    fn region_rgb(&self, [x, y, w, h]: [f64; 4]) -> Result<([i32; 4], Vec<u8>), String> {
+    /// The screen rectangle `[x, y, w, h]` clipped to the screen, and its RGB rows over MIT-SHM; none without MIT-SHM.
+    fn region_rgb(&self, area: [f64; 4]) -> Option<Result<Cut, String>> {
         self.shm(|g| {
-            let Some(rect) = clip([x, y, w, h], g.size()) else {
+            let Some(rect) = clip(area, g.size()) else {
                 return Ok(None);
             };
-            Ok(Some((rect, g.region(rect)?)))
+            Ok(Some(Cut {
+                rect,
+                width: rect[2].unsigned_abs(),
+                height: rect[3].unsigned_abs(),
+                rgb: g.region(rect)?,
+                per_unit: 1.0,
+            }))
         })
-        .ok_or_else(|| "no screen capture over MIT-SHM".to_owned())?
-        .ok_or_else(|| "the rectangle is off the screen".to_owned())
+        .map(|cut| cut.ok_or_else(|| OFF_SCREEN.to_owned()))
+    }
+
+    /// The screen rectangle `area` clipped to the screen, cut from a full-size driver capture.
+    async fn captured_region(&self, session: &str, area: [f64; 4]) -> Result<Cut, String> {
+        let v = self
+            .request(session, "get_desktop_state", json!({}))
+            .await?;
+        let png = B64
+            .decode(image_of(&v).ok_or("the capture has no image")?)
+            .map_err(|e| format!("decode the capture: {e}"))?;
+        let (info, data) = decode_png(&png).ok_or("decode the capture")?;
+        let state = &v["structuredContent"];
+        let screen = state["screen_width"]
+            .as_f64()
+            .zip(state["screen_height"].as_f64())
+            .unwrap_or((f64::from(info.width), f64::from(info.height)));
+        let ps = f64::from(info.width) / screen.0;
+        let rect = clip(area, (screen.0 as usize, screen.1 as usize)).ok_or(OFF_SCREEN)?;
+        let (width, height, rgb) = crop(
+            &info,
+            &data,
+            rect.map(|v| (f64::from(v) * ps).round() as u32),
+        )
+        .ok_or("crop the capture")?;
+        Ok(Cut {
+            rect,
+            width,
+            height,
+            rgb,
+            per_unit: ps,
+        })
     }
 
     /// The desktop-addressed input `req` of `tool` in a driver session of its own, whose x,y no capture maps.
@@ -2272,6 +2321,43 @@ fn decode_png(data: &[u8]) -> Option<(png::OutputInfo, Vec<u8>)> {
     Some((info, pixels))
 }
 
+/// A screen rectangle's pixels: the rectangle in screen units, its size and RGB rows in image pixels, and the image pixels per screen unit.
+struct Cut {
+    rect: [i32; 4],
+    width: u32,
+    height: u32,
+    rgb: Vec<u8>,
+    per_unit: f64,
+}
+
+/// The RGB rows of the pixel rectangle `[x, y, w, h]` of an 8-bit RGB or RGBA image, clipped to it.
+fn crop(
+    info: &png::OutputInfo,
+    data: &[u8],
+    [x, y, w, h]: [u32; 4],
+) -> Option<(u32, u32, Vec<u8>)> {
+    let channels = match (info.color_type, info.bit_depth) {
+        (png::ColorType::Rgb, png::BitDepth::Eight) => 3,
+        (png::ColorType::Rgba, png::BitDepth::Eight) => 4,
+        _ => return None,
+    };
+    let (w, h) = (
+        w.min(info.width.checked_sub(x)?),
+        h.min(info.height.checked_sub(y)?),
+    );
+    let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+    for row in y..y + h {
+        let start = (row as usize * info.line_size) + x as usize * channels;
+        for p in data
+            .get(start..start + w as usize * channels)?
+            .chunks(channels)
+        {
+            rgb.extend_from_slice(&p[..3]);
+        }
+    }
+    (w > 0 && h > 0).then_some((w, h, rgb))
+}
+
 /// Whether two frames differ by more than [`STILL_TOLERANCE`] in any channel of any pixel.
 fn differs(a: &[u8], b: &[u8]) -> bool {
     a.len() != b.len()
@@ -2882,6 +2968,69 @@ mod tests {
         .await;
         assert!(out.is_error && out.text.contains("-25206"), "{}", out.text);
         assert_eq!(clicks.len(), 1, "{clicks:?}");
+    }
+
+    fn png_of(width: u32, height: u32, rgba: &[u8]) -> String {
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(rgba)
+            .unwrap();
+        B64.encode(out)
+    }
+
+    #[test]
+    fn a_crop_keeps_the_rgb_of_its_rectangle_and_stops_at_the_image_edge() {
+        let rgba: Vec<u8> = (0..4u8 * 2 * 4).collect();
+        let png = B64.decode(png_of(4, 2, &rgba)).unwrap();
+        let (info, data) = decode_png(&png).unwrap();
+        let (w, h, rgb) = crop(&info, &data, [2, 1, 5, 5]).unwrap();
+        assert_eq!((w, h), (2, 1));
+        assert_eq!(rgb, [24, 25, 26, 28, 29, 30]);
+        assert!(crop(&info, &data, [4, 0, 1, 1]).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_zoom_without_mit_shm_cuts_the_region_from_a_full_size_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let image = png_of(8, 4, &[200; 8 * 4 * 4]);
+        let driver = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let reply = match req["name"].as_str().unwrap_or_default() {
+                    "get_desktop_state" => {
+                        json!({"ok": true, "result": {"content": [{"type": "image", "data": image, "mimeType": "image/png"}], "structuredContent": {"screen_width": 4, "screen_height": 2}}})
+                    }
+                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+                };
+                let mut out = reply.to_string().into_bytes();
+                out.push(b'\n');
+                reader.into_inner().write_all(&out).await.unwrap();
+            }
+        });
+        let cua = cua(&socket);
+        let out = cua
+            .look(&json!({"region": {"x": 1, "y": 0, "w": 2, "h": 1}, "max_edge": 0}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("4x2"), "{}", out.text);
+        assert!(
+            out.text.contains("x = 1 + px*0.50, y = 0 + py*0.50"),
+            "{}",
+            out.text
+        );
+        driver.abort();
     }
 
     #[tokio::test]
