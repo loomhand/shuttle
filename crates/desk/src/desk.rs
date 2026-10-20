@@ -1460,6 +1460,9 @@ pub(crate) mod tests {
             if id == "dead" {
                 return Ok(false);
             }
+            if id == "slow" {
+                return Err("the action timed out".into());
+            }
             if self.nodes.get(id).is_some_and(|(n, _)| n.role == "menu") {
                 self.opened = true;
             }

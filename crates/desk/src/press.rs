@@ -32,7 +32,7 @@ pub(crate) fn plan_press<B: Access>(
     if node.role.starts_with("menuitem") && !linux {
         return Ok(Press::Acted(b.act(id, Act::Action)?));
     }
-    if background && b.act(id, Act::Action).unwrap_or(false) {
+    if background && b.act(id, Act::Action)? {
         return Ok(Press::Acted(true));
     }
     let chain = b.ancestors(id)?;
@@ -130,6 +130,22 @@ mod tests {
             Press::Acted(true)
         );
         assert_eq!(f.acts, [("ok".to_owned(), Act::Action)]);
+    }
+
+    #[test]
+    fn a_background_action_that_fails_is_never_followed_by_a_click() {
+        let mut f = notepad();
+        f.add(
+            "slow",
+            Some("w"),
+            "button",
+            &["showing"],
+            Some([500, 100, 80, 20]),
+        );
+        f.hits.insert((540, 110), "slow".into());
+        let err = plan_press(&mut f, "slow", Os::Mac, true).unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+        assert_eq!(f.acts, [("slow".to_owned(), Act::Action)]);
     }
 
     #[test]
