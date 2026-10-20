@@ -5,6 +5,7 @@
 | Release archive | arm64, x64 (13.5+) | x64 | x64, arm64 (glibc 2.31+) |
 | Accessibility tree | AX: done in `shuttle-desk` | UI Automation: done in `shuttle-desk` | AT-SPI: done in `shuttle-desk` |
 | Input, windows, capture | cua-driver | cua-driver | cua-driver, with XTest typing, MIT-SHM capture and window-manager close (X11 only) |
+| Computer verbs (`computer_state`, `computer_act`, `look`) | cua-driver captures | cua-driver captures | MIT-SHM, else cua-driver captures |
 | MCP tools that act | built (P1) | built (P2) | built (P3) |
 | Kill switch, indicator, allowlist, confirm | built (P1) | built (P2) | `stop`/`resume`, the `script_run` switch and the allowlist built; no hotkey, indicator or confirm dialog |
 
