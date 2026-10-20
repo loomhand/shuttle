@@ -7,6 +7,10 @@
   - the UI line protocol gains a `shot` request answered by a binary frame, `png N` and then N bytes before the end line; a server that predates it answers a dump, and `screencap` serves for good after that, as it does for one call after a failed shot;
   - a capture takes 30 ms against 92–104 ms and about 55–60% less CPU on redroid 16;
   - an uncropped `desk_shot` returns that PNG as it is, with no decode and re-encode; a cropped one is cut as before.
+- **Android press scrolls the element into view.** `press` on an element in a scrolling list that is off the screen first asks the element to scroll itself into view (`ACTION_SHOW_ON_SCREEN`, through a `show ID PATH` request of the UI server) in place of a 600 ms swipe and a 400 ms settle:
+  - a scrolled press takes 138 ms against 1073 ms for one scroll and 137 ms against 4278 ms for three or four, on the Settings list of redroid 16;
+  - the tree is read again after the request; an element that did not move, an element that refused, an error, or a server that predates the request leaves the press to the swipe and settle as before, and a press asks once;
+  - lists that do not honour the action, Compose among them, were not tried; they fall back to the swipe.
 
 ## 0.1.8 - 2026-10-20
 

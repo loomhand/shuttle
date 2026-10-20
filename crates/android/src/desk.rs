@@ -816,9 +816,11 @@ async fn read(android: &Android, a: ReadArgs) -> Result<String, String> {
     Ok(node.json(0, &frame.package).to_string())
 }
 
-/// Taps an element, after scrolling its list until it shows.
+/// Taps an element, after scrolling its list until it shows: the element is asked to scroll itself into view first, and
+/// swiped for when it does not move.
 async fn press(android: &Android, id: &str) -> Result<String, String> {
     let (mut frame, mut node) = node(android, id).await?;
+    let mut ask = true;
     for _ in 0..SCROLL_TRIES {
         if let Some((x, y)) = frame.tap_at(&node) {
             android.tap((x, y)).await?;
@@ -827,6 +829,21 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
         let Some([sx, sy, sw, sh]) = node.scroller else {
             break;
         };
+        if ask {
+            if android.show(&frame.id, &node.path).await {
+                let (refreshed, mut nodes) = app_tree(android, &frame.package).await?;
+                frame = refreshed;
+                if let Some(i) = unique(&nodes, node.role, &node.name) {
+                    let next = nodes.swap_remove(i);
+                    let moved = next.bounds != node.bounds || frame.tap_at(&next).is_some();
+                    node = next;
+                    if moved {
+                        continue;
+                    }
+                }
+            }
+            ask = false;
+        }
         let (cx, from, to) = frame
             .swipe([sx, sy, sw, sh], node.bounds[1])
             .ok_or_else(|| format!("element {id} is off the screen, and its list is covered"))?;

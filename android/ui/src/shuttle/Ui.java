@@ -31,8 +31,9 @@ import java.util.List;
  * editable, password, whether its window has focus, and its text's length, hash and last 32 code points; "focus live"
  * the same, refreshed from the app rather than the accessibility cache; "paste" presses the paste key and answers once
  * the focused window has handled its down event (true) or its injection failed (false), sending the up event either
- * way; "shot" the screen as a PNG frame, a line "png N" and then N bytes before the end line; "dump" the active window
- * and "dump ID" window ID as uiautomator-style nodes with their child-index path.
+ * way; "shot" the screen as a PNG frame, a line "png N" and then N bytes before the end line; "show ID PATH" asks the
+ * element at child-index path PATH of window ID to scroll itself into view and answers whether the element took the
+ * action; "dump" the active window and "dump ID" window ID as uiautomator-style nodes with their child-index path.
  */
 public final class Ui {
     private static final int MAX_DEPTH = 64;
@@ -42,6 +43,7 @@ public final class Ui {
     private static final int TAIL = 32;
     private static final int OUT_BUFFER = 1 << 20;
     private static final int SHOT_BUFFER = 1 << 17;
+    private static final int ACTION_SHOW_ON_SCREEN = 0x1020036;
     private static final int INJECT_ASYNC = 0;
     private static final int INJECT_WAIT_FOR_FINISH = 2;
 
@@ -75,6 +77,8 @@ public final class Ui {
                     out.println(paste());
                 } else if (line.equals("shot")) {
                     shot(ui, out);
+                } else if (line.startsWith("show ")) {
+                    out.println(show(ui, line.substring(5).trim()));
                 } else {
                     idle(ui);
                     out.println(dump(ui, line.startsWith("dump ") ? line.substring(5).trim() : ""));
@@ -108,6 +112,21 @@ public final class Ui {
         }
         out.println("png " + png.size());
         png.writeTo(out);
+    }
+
+    private static boolean show(UiAutomation ui, String args) {
+        String[] a = args.split(" ");
+        AccessibilityNodeInfo node = null;
+        for (AccessibilityWindowInfo w : ui.getWindows()) {
+            if (String.valueOf(w.getId()).equals(a[0])) {
+                node = w.getRoot();
+            }
+        }
+        String[] path = a[1].split("\\.");
+        for (int i = 1; node != null && i < path.length; i++) {
+            node = node.getChild(Integer.parseInt(path[i]));
+        }
+        return node != null && node.performAction(ACTION_SHOW_ON_SCREEN);
     }
 
     private static String windows(UiAutomation ui) {

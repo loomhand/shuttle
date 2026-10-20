@@ -102,6 +102,7 @@ pub struct Android {
     points: Mutex<HashMap<String, Saved>>,
     ui: Mutex<Option<UiServer>>,
     server_shot: AtomicBool,
+    server_show: AtomicBool,
     control: Mutex<Option<Control>>,
     screen: OnceCell<(i32, i32)>,
 }
@@ -114,6 +115,7 @@ impl Android {
             points: Mutex::new(HashMap::new()),
             ui: Mutex::new(None),
             server_shot: AtomicBool::new(true),
+            server_show: AtomicBool::new(true),
             control: Mutex::new(None),
             screen: OnceCell::new(),
         }
@@ -342,6 +344,26 @@ impl Android {
         match window {
             Some(w) => self.served(&format!("dump {w}")).await,
             None => self.served("dump").await,
+        }
+    }
+
+    /// Whether the element at `path` of window `window` took the UI server's request to scroll itself into view; a server that predates it answers a dump, and is not asked again.
+    pub(crate) async fn show(&self, window: &str, path: &str) -> bool {
+        if !self.server_show.load(Ordering::Relaxed) {
+            return false;
+        }
+        match self
+            .served(&format!("show {window} {path}"))
+            .await
+            .as_deref()
+            .map(str::trim)
+        {
+            Ok("true") => true,
+            Ok("false") | Err(_) => false,
+            Ok(_) => {
+                self.server_show.store(false, Ordering::Relaxed);
+                false
+            }
         }
     }
 
@@ -1309,7 +1331,7 @@ mod tests {
             let adb = dir.path().join("adb");
             script(
                 &adb,
-                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*screencap*) cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
+                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi;;\n*screencap*) cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
             );
             let android = Android::new(Device {
                 adb,
@@ -1430,6 +1452,92 @@ mod tests {
             serde_json::from_str::<Value>(&part.text).unwrap()["height"],
             1
         );
+    }
+
+    #[cfg(unix)]
+    fn log(fake: &Fake, name: &str) -> String {
+        std::fs::read_to_string(fake.dir.path().join(name)).unwrap_or_default()
+    }
+
+    #[cfg(unix)]
+    fn list(fake: &Fake, name: &str, target: &str) {
+        fake.put(
+            name,
+            &format!(
+                r#"<hierarchy window="7"><node text="" class="androidx.recyclerview.widget.RecyclerView" scrollable="true" visible="true" path="0.0" bounds="[0,160][720,1184]" /><node text="Target" class="android.widget.TextView" clickable="true" visible="true" path="0.0.1" bounds="{target}" /></hierarchy>"#
+            ),
+        );
+    }
+
+    #[cfg(unix)]
+    async fn press_target(fake: &Fake) -> Value {
+        let out = crate::desk::run(
+            &fake.android,
+            "desk_press",
+            serde_json::json!({"id": "com.android.settings:0.0.1:button:Target"}),
+        )
+        .await
+        .unwrap();
+        serde_json::from_str(&out.text).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_element_that_shows_itself_is_tapped_without_a_swipe() {
+        let fake = Fake::new();
+        fake.windows("");
+        fake.put("show.answer", "true");
+        list(&fake, "dump.xml", "[0,1300][720,1400]");
+        list(&fake, "after-show.xml", "[0,600][720,700]");
+        let pressed = press_target(&fake).await;
+        assert_eq!(
+            (pressed["x"].as_i64(), pressed["y"].as_i64()),
+            (Some(360), Some(650))
+        );
+        assert_eq!(log(&fake, "adbinput"), "shell input tap 360 650\n");
+        assert!(log(&fake, "requests").contains("show 7 0.0.1\n"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_element_that_says_true_and_does_not_move_is_swiped_for() {
+        let fake = Fake::new();
+        fake.windows("");
+        fake.put("show.answer", "true");
+        list(&fake, "dump.xml", "[0,1300][720,1400]");
+        list(&fake, "after-swipe.xml", "[0,600][720,700]");
+        let pressed = press_target(&fake).await;
+        assert_eq!(pressed["y"].as_i64(), Some(650));
+        let input = log(&fake, "adbinput");
+        assert_eq!(input.lines().count(), 2, "{input}");
+        assert!(input.starts_with("shell input swipe "), "{input}");
+        assert_eq!(log(&fake, "requests").matches("show ").count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_refusing_element_is_swiped_for() {
+        let fake = Fake::new();
+        fake.windows("");
+        fake.put("show.answer", "false");
+        list(&fake, "dump.xml", "[0,1300][720,1400]");
+        list(&fake, "after-swipe.xml", "[0,600][720,700]");
+        assert_eq!(press_target(&fake).await["y"].as_i64(), Some(650));
+        assert!(log(&fake, "adbinput").starts_with("shell input swipe "));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_server_that_predates_show_is_asked_once() {
+        let fake = Fake::new();
+        fake.windows("");
+        list(&fake, "dump.xml", "[0,1300][720,1400]");
+        list(&fake, "after-swipe.xml", "[0,600][720,700]");
+        assert_eq!(press_target(&fake).await["y"].as_i64(), Some(650));
+        list(&fake, "dump.xml", "[0,1300][720,1400]");
+        assert_eq!(press_target(&fake).await["y"].as_i64(), Some(650));
+        assert_eq!(log(&fake, "requests").matches("show ").count(), 1);
+        assert_eq!(log(&fake, "adbinput").matches("swipe").count(), 2);
     }
 
     #[cfg(unix)]
