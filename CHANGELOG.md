@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **MCP cancellation.** `cocoon-shuttle mcp` keeps reading its client while a request runs, and a `notifications/cancelled` drops the request it names, running or queued, without a reply; a running one closes its daemon connection, where the daemon ends the call. Before, the server read the next line only after the call had ended, so an interrupt reached it up to the 110 s run limit late while the desktop kept acting.
+
 ## 0.1.8 - 2026-10-20
 
 - **Windows pipe security.** The daemon's named pipe admits SYSTEM and its own user only, with an explicit security descriptor in place of the default one, and `[daemon] socket_group` now works on Windows: an account name or SID string that may read and write the pipe but not create instances of it. `safety_stop` and `safety_resume` answer only a client whose token is the daemon's user, as on macOS and Linux; on Windows they answered any client before.

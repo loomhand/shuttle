@@ -956,6 +956,77 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_mcp_cancel_ends_the_run_it_names_long_before_the_run_would_end() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let (_d, _keys, dir) = served(Duration::from_secs(10)).await;
+        let endpoint = dir.path().join("d.sock").to_string_lossy().into_owned();
+        let pid_file = dir.path().join("child.pid");
+        let code = format!(
+            "import {{ spawn }} from 'node:child_process'; import {{ writeFileSync }} from 'node:fs'; export async function main() {{ const c = spawn('sleep', ['30']); writeFileSync({:?}, String(c.pid)); await new Promise((r) => setTimeout(r, 30000)) }}",
+            pid_file.to_string_lossy()
+        );
+        let (mut to_mcp, input) = tokio::io::duplex(1 << 16);
+        let (output, from_mcp) = tokio::io::duplex(1 << 16);
+        let mcp = tokio::spawn({
+            let endpoint = endpoint.clone();
+            async move {
+                crate::mcp::serve(
+                    BufReader::new(input),
+                    output,
+                    &endpoint,
+                    &crate::plugins::Plugins::default(),
+                )
+                .await
+            }
+        });
+        let line = |v: Value| format!("{v}\n").into_bytes();
+        to_mcp
+            .write_all(&line(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "script_run", "arguments": {"code": code, "timeout_s": 30}}})))
+            .await
+            .unwrap();
+        let mut child = None;
+        for _ in 0..200 {
+            if let Ok(pid) = std::fs::read_to_string(&pid_file) {
+                child = pid.trim().parse::<i32>().ok();
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let child = child.expect("the run started its child");
+        to_mcp
+            .write_all(&line(json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}})))
+            .await
+            .unwrap();
+        let started = std::time::Instant::now();
+        // SAFETY: kill with signal 0 only checks that the process exists.
+        while unsafe { libc::kill(child, 0) } == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "the cancelled run's child outlived the cancel"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        to_mcp
+            .write_all(&line(json!({"jsonrpc": "2.0", "id": 2, "method": "ping"})))
+            .await
+            .unwrap();
+        drop(to_mcp);
+        tokio::time::timeout(Duration::from_secs(5), mcp)
+            .await
+            .expect("the MCP server outlived its input")
+            .unwrap()
+            .unwrap();
+        let mut replies = BufReader::new(from_mcp).lines();
+        let mut ids = Vec::new();
+        while let Some(l) = replies.next_line().await.unwrap() {
+            ids.push(serde_json::from_str::<Value>(&l).unwrap()["id"].clone());
+        }
+        assert_eq!(ids, [json!(2)]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_closed_connection_kills_its_run_with_its_children_and_frees_the_turn() {
         let (d, _keys, dir) = served(Duration::from_secs(10)).await;
         let endpoint = dir.path().join("d.sock").to_string_lossy().into_owned();
