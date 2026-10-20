@@ -1,5 +1,4 @@
-//! The computer verbs: `desk_computer_state`, `desk_computer_act`, `desk_computer_end` and `desk_look` for a vision
-//! agent, with the settle, the window report and the press guards, over cua-driver's line-delimited JSON in named driver sessions.
+//! The computer verbs: `desk_computer_state`, `desk_computer_act`, `desk_computer_end` and `desk_look` for a vision agent, with the settle, the window report and the press guards, over cua-driver's line-delimited JSON in named driver sessions.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -10,15 +9,14 @@ use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
+use desk_core::args::parse;
+use desk_core::press::{MENU_POLL, MENU_POLLS};
+use desk_core::wire::Output;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
-
-use desk_core::args::parse;
-use desk_core::press::{MENU_POLL, MENU_POLLS};
-use desk_core::wire::Output;
 
 use crate::desk::{Cancel, Turn, Typer, text_runs};
 use crate::driver::{Driver, image_of, text_of};
@@ -291,8 +289,7 @@ impl Computer {
         scale.unwrap_or_else(|| self.scale_of(session))
     }
 
-    /// Runs the actions in order, each settled, stops at the first failure and returns the last screenshot;
-    /// every x,y maps by the screenshot returned before the list, the one the caller saw.
+    /// Runs the actions in order, each settled, stops at the first failure and returns the last screenshot; every x,y maps by the screenshot returned before the list, the one the caller saw.
     async fn act_list(&self, session: &str, list: ActList) -> Result<Output, String> {
         let total = list.actions.len();
         let mut lines = Vec::with_capacity(total);
@@ -406,8 +403,7 @@ impl Computer {
         })
     }
 
-    /// `screenshot`: the whole desktop, or `region`, a part of it at full resolution, with the image's
-    /// size and input tokens in the text.
+    /// `screenshot`: the whole desktop, or `region`, a part of it at full resolution, with the image's size and input tokens in the text.
     async fn look(&self, args: &Value) -> Result<Output, String> {
         let max_edge = args["max_edge"]
             .as_u64()
@@ -514,8 +510,7 @@ impl Computer {
         Ok(format!("ended session {session}"))
     }
 
-    /// Captures the desktop; the driver maps desktop-scope pixels of this capture back to the screen.
-    /// A capture over MIT-SHM is shrunk to `max_edge` here and also returns the full-size pixels.
+    /// Captures the desktop; the driver maps desktop-scope pixels of this capture back to the screen. A capture over MIT-SHM is shrunk to `max_edge` here and also returns the full-size pixels.
     async fn capture(
         &self,
         session: &str,
@@ -721,8 +716,7 @@ impl Computer {
         })
     }
 
-    /// The screen before an input action: MIT-SHM pixels and block hashes with each block's past, else a thumbnail
-    /// from a probe session that leaves the action session's capture context alone. A commit action `a` (see [`commits`]) in Chrome may load a page.
+    /// The screen before an input action: MIT-SHM pixels and block hashes with each block's past, else a thumbnail from a probe session that leaves the action session's capture context alone. A commit action `a` (see [`commits`]) in Chrome may load a page.
     async fn before_input(&self, a: Option<&ActArgs>) -> Option<Before> {
         let commit = a.is_some_and(commits);
         if let Some((pixels, blocks, windows, active, page, wait)) = self.shm(|g| {
@@ -774,8 +768,7 @@ impl Computer {
         }
     }
 
-    /// Waits until the screen differs from `before` and holds still, within the wait [`Before`] carries; blocks that churn or toggle (see [`Block`], [`Shown`]) and changes under [`VISIBLE_STEP`] do not count.
-    /// Returns lines naming the windows the action opened, closed or brought to the front.
+    /// Waits until the screen differs from `before` and holds still, within the wait [`Before`] carries; blocks that churn or toggle (see [`Block`], [`Shown`]) and changes under [`VISIBLE_STEP`] do not count. Returns lines naming the windows the action opened, closed or brought to the front.
     async fn settle(&self, before: Option<Before>, scale: f64) -> String {
         let Some(Before {
             probe,
@@ -1086,8 +1079,7 @@ impl Computer {
             .find(|w| !u32::try_from(w.window_id).is_ok_and(|id| shell.contains(&id)))
     }
 
-    /// [`Self::app_window`] once a window manager runs; while none does, as for a while after a desktop
-    /// start, waits for one at most [`WM_WAIT`], then fails.
+    /// [`Self::app_window`] once a window manager runs; while none does, as for a while after a desktop start, waits for one at most [`WM_WAIT`], then fails.
     async fn key_window(&self, session: &str) -> Result<Option<(i64, i64)>, String> {
         if let Some(window) = self.app_window(session).await? {
             return Ok(Some(window));
@@ -1318,8 +1310,7 @@ impl Computer {
         self.request(session, "press_key", req).await
     }
 
-    /// A one-call driver session for the pid-addressed input `req`, ended by [`Self::end_once`]: its virtual master
-    /// keyboard would outlive the call, and while one exists Chrome drops core keyboard input from XTest and VNC.
+    /// A one-call driver session for the pid-addressed input `req`, ended by [`Self::end_once`]: its virtual master keyboard would outlive the call, and while one exists Chrome drops core keyboard input from XTest and VNC.
     fn once(&self, req: &Value) -> Option<Owned> {
         req.get("pid").is_some().then(|| self.own("input"))
     }
@@ -1330,9 +1321,7 @@ impl Computer {
         }
     }
 
-    /// Whether keys for `window` of `pid` can go to the desktop, which skips the driver's
-    /// 220 ms focus guard: on X11 the window is active and holds the input focus, and no popup of another app is open;
-    /// off Linux always, since the key window is the frontmost and the driver's per-window keys miss XAML windows.
+    /// Whether keys for `window` of `pid` can go to the desktop, which skips the driver's 220 ms focus guard: on X11 the window is active and holds the input focus, and no popup of another app is open; off Linux always, since the key window is the frontmost and the driver's per-window keys miss XAML windows.
     fn keyboard(&self, pid: i64, window: i64) -> bool {
         let (Ok(pid), Ok(window)) = (u32::try_from(pid), u32::try_from(window)) else {
             return false;
@@ -1356,8 +1345,7 @@ impl Computer {
         web && self.element_pixel(session, index, false).await.is_some()
     }
 
-    /// The point where a pixel click reaches element `index` of `session`'s snapshot, skipping the driver's 270 ms click and an AT-SPI dispatch a modal dialog deadlocks;
-    /// none unless it looks as in the snapshot (a `menu` to open need not) under its active window or an own popup, and none for LibreOffice outside menus.
+    /// The point where a pixel click reaches element `index` of `session`'s snapshot, skipping the driver's 270 ms click and an AT-SPI dispatch a modal dialog deadlocks; none unless it looks as in the snapshot (a `menu` to open need not) under its active window or an own popup, and none for LibreOffice outside menus.
     async fn element_pixel(&self, session: &str, index: i64, menu: bool) -> Option<(f64, f64)> {
         let last = self.last.lock().await;
         let snap = last.get(session)?;
@@ -1392,8 +1380,7 @@ impl Computer {
         reached.unwrap_or(false).then_some((cx, cy))
     }
 
-    /// Opens the menus that hold menu item `index` of `session`'s snapshot, outermost first, with pixel clicks while no
-    /// popup of its app is open, and returns the item's click point.
+    /// Opens the menus that hold menu item `index` of `session`'s snapshot, outermost first, with pixel clicks while no popup of its app is open, and returns the item's click point.
     async fn open_menus(&self, session: &str, index: i64) -> Option<(f64, f64)> {
         let (pid, menus) = {
             let last = self.last.lock().await;
@@ -1429,8 +1416,7 @@ impl Computer {
         self.poll_pixel(session, index, false).await
     }
 
-    /// The menu bar twin's point for an off-screen push button or menu item of a GTK app outside a web page, whose
-    /// AT-SPI action can deadlock on a modal dialog; an error when none is found, `None` for any other element.
+    /// The menu bar twin's point for an off-screen push button or menu item of a GTK app outside a web page, whose AT-SPI action can deadlock on a modal dialog; an error when none is found, `None` for any other element.
     async fn hidden_press(&self, session: &str, index: i64) -> Result<Option<(f64, f64)>, String> {
         let (pid, window_id, name, button, menus) = {
             let last = self.last.lock().await;
@@ -1479,8 +1465,7 @@ impl Computer {
         ))
     }
 
-    /// Opens the menu bar `menus` of `session`'s snapshot in turn and returns the point of the first
-    /// shown menu item named `name` that a pixel click reaches; closes the menu when none is.
+    /// Opens the menu bar `menus` of `session`'s snapshot in turn and returns the point of the first shown menu item named `name` that a pixel click reaches; closes the menu when none is.
     async fn menu_twin(
         &self,
         session: &str,
@@ -1817,8 +1802,7 @@ enum Frame {
 }
 
 impl Frame {
-    /// Whether `other` differs from this frame: in a block whose new contents count (see
-    /// [`Block::counts`]), or past [`STILL_TOLERANCE`] between thumbnails.
+    /// Whether `other` differs from this frame: in a block whose new contents count (see [`Block::counts`]), or past [`STILL_TOLERANCE`] between thumbnails.
     fn changes(&self, other: &Self, volatile: &[Block]) -> bool {
         match (self, other) {
             (Self::Blocks(a), Self::Blocks(b)) => {
@@ -1961,8 +1945,7 @@ fn before_newline(text: &str) -> Option<&str> {
     text.strip_suffix(['\n', '\r']).filter(|t| !t.is_empty())
 }
 
-/// How many characters of `run` a failed type_text call typed: all but the skipped ones on the
-/// virtual-keyboard route, else the count its "typed N of" error names.
+/// How many characters of `run` a failed type_text call typed: all but the skipped ones on the virtual-keyboard route, else the count its "typed N of" error names.
 fn landed(run: &str, result: &Value) -> usize {
     if let Some(skipped) = result["structuredContent"]["skipped_characters"].as_str() {
         return run.chars().count().saturating_sub(skipped.chars().count());
@@ -1975,8 +1958,7 @@ fn landed(run: &str, result: &Value) -> usize {
         .unwrap_or(0)
 }
 
-/// Rewrites the keys of a `key` or `hotkey` action in the driver's names; a `key` that names a
-/// combination such as `ctrl+l` becomes a `hotkey`, and a `hotkey` of one key a `key`.
+/// Rewrites the keys of a `key` or `hotkey` action in the driver's names; a `key` that names a combination such as `ctrl+l` becomes a `hotkey`, and a `hotkey` of one key a `key`.
 fn driver_keys(a: &mut ActArgs, os: Os) -> Result<(), String> {
     match a.action.as_str() {
         "key" => {
@@ -2007,8 +1989,7 @@ fn driver_keys(a: &mut ActArgs, os: Os) -> Result<(), String> {
     Ok(())
 }
 
-/// Why a point of `a` in screenshot pixels, `scale` screen pixels each, lies off a screen of `width` by
-/// `height`: its x,y unless it targets an element, and the end of a drag.
+/// Why a point of `a` in screenshot pixels, `scale` screen pixels each, lies off a screen of `width` by `height`: its x,y unless it targets an element, and the end of a drag.
 fn off_screen(a: &ActArgs, (width, height): (usize, usize), scale: f64) -> Option<String> {
     let (width, height) = (width as f64, height as f64);
     let drag = a.action == "drag";
@@ -2052,8 +2033,7 @@ fn confirms(a: &ActArgs) -> bool {
     combo(a).is_some_and(|k| ["return", "enter", "kp_enter"].contains(&k.as_str()))
 }
 
-/// `label` without case, mnemonic underscores, a trailing ellipsis or colon, and extra spaces, so a
-/// toolbar button and its menu item compare equal.
+/// `label` without case, mnemonic underscores, a trailing ellipsis or colon, and extra spaces, so a toolbar button and its menu item compare equal.
 fn label_key(label: &str) -> String {
     let words = label.replace('_', "").to_lowercase();
     let words = words.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -2207,8 +2187,7 @@ fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
     (tree, by_index)
 }
 
-/// Whether more than [`MOVED_PERCENT`] of the pixels of `rect` in `screen` differ by more than
-/// [`STILL_TOLERANCE`] from `now`, the same rectangle's RGB rows.
+/// Whether more than [`MOVED_PERCENT`] of the pixels of `rect` in `screen` differ by more than [`STILL_TOLERANCE`] from `now`, the same rectangle's RGB rows.
 fn moved(screen: &Screen, [x, y, w, h]: [i32; 4], now: &[u8]) -> bool {
     let (x, y, w, h) = (x as usize, y as usize, w as usize, h as usize);
     if now.len() != w * h * 3 {
@@ -3677,6 +3656,7 @@ mod tests {
         }
         driver.abort();
     }
+
     #[tokio::test]
     async fn the_settle_sampler_starts_with_the_first_computer_call() {
         let dir = tempfile::tempdir().unwrap();

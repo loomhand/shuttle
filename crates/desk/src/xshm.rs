@@ -287,52 +287,6 @@ impl Grabber {
         self.children(false)
     }
 
-    /// The mapped children of the root with their geometry; the desktop shell's only with `shell`.
-    fn children(&self, shell: bool) -> Result<Vec<Placement>, String> {
-        let tree = self
-            .conn
-            .query_tree(self.root)
-            .map_err(|e| format!("query tree: {e}"))?
-            .reply()
-            .map_err(|e| format!("query tree: {e}"))?;
-        let cookies = tree
-            .children
-            .iter()
-            .map(|&w| {
-                let attrs = self
-                    .conn
-                    .get_window_attributes(w)
-                    .map_err(|e| format!("attributes: {e}"))?;
-                let geometry = self
-                    .conn
-                    .get_geometry(w)
-                    .map_err(|e| format!("geometry: {e}"))?;
-                Ok((w, attrs, geometry))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let known = (!shell).then(|| self.shell());
-        let mut mapped = Vec::new();
-        for (id, attrs, geometry) in cookies {
-            let (Ok(attrs), Ok(g)) = (attrs.reply(), geometry.reply()) else {
-                continue;
-            };
-            if attrs.map_state == MapState::VIEWABLE
-                && known.as_ref().is_none_or(|k| !k.windows.contains(&id))
-            {
-                mapped.push(Placement {
-                    id,
-                    x: g.x,
-                    y: g.y,
-                    width: g.width,
-                    height: g.height,
-                    popup: attrs.override_redirect,
-                    drawn: attrs.class == WindowClass::INPUT_OUTPUT,
-                });
-            }
-        }
-        Ok(mapped)
-    }
-
     /// The title of window `w`, or of the client inside it when `w` is a window manager frame.
     pub fn title(&self, w: Window) -> String {
         let own = self.name(w);
@@ -401,8 +355,7 @@ impl Grabber {
         })
     }
 
-    /// The modal dialogs the screen does not show: hidden, centred off the screen, or under another
-    /// window at their centre.
+    /// The modal dialogs the screen does not show: hidden, centred off the screen, or under another window at their centre.
     pub fn modals(&self) -> Result<Vec<Modal>, String> {
         let clients = self.clients()?;
         let states = clients
@@ -449,37 +402,6 @@ impl Grabber {
         Ok(out)
     }
 
-    /// The windows the window manager manages, bottom to top.
-    fn clients(&self) -> Result<Vec<Window>, String> {
-        Ok(self
-            .conn
-            .get_property(
-                false,
-                self.root,
-                self.net_stacking,
-                AtomEnum::WINDOW,
-                0,
-                1024,
-            )
-            .map_err(|e| format!("get _NET_CLIENT_LIST_STACKING: {e}"))?
-            .reply()
-            .map_err(|e| format!("get _NET_CLIENT_LIST_STACKING: {e}"))?
-            .value32()
-            .map(Iterator::collect)
-            .unwrap_or_default())
-    }
-
-    /// Where the screen does not show the client `c`; `None` when it shows or is not mapped.
-    fn unseen(&self, c: Window) -> Result<Option<String>, String> {
-        let frame = self.top_level(c)?;
-        let screen = (i32::from(self.width), i32::from(self.height));
-        Ok(match cover(frame, &self.children(false)?, screen) {
-            Some(Cover::OffScreen) => Some("off the screen".to_owned()),
-            Some(Cover::Under(w)) => Some(format!("behind \"{}\"", self.title(w))),
-            None => None,
-        })
-    }
-
     /// The WM_CLASS class of `w`, such as `Google-chrome`, or of the client inside it when `w` is a window manager frame.
     pub fn class(&self, w: Window) -> String {
         let children = self.kids(w);
@@ -499,8 +421,7 @@ impl Grabber {
             .unwrap_or_default()
     }
 
-    /// Whether keys sent to the focus reach `window` of `pid`: it is active and focused, no other client's popup shows, no grab
-    /// but a popup of `pid` holds the keyboard, and the core keyboard is the only master, since Chrome drops core input while another exists.
+    /// Whether keys sent to the focus reach `window` of `pid`: it is active and focused, no other client's popup shows, no grab but a popup of `pid` holds the keyboard, and the core keyboard is the only master, since Chrome drops core input while another exists.
     pub fn keyboard(&self, window: Window, pid: u32) -> Result<bool, String> {
         if self.active() != Some(window) || self.masters() != Some(1) {
             return Ok(false);
@@ -532,8 +453,7 @@ impl Grabber {
         Ok(!popups.is_empty() || !self.grabbed(false)?)
     }
 
-    /// Whether another client holds an active grab of the keyboard, or of the pointer with `pointer`;
-    /// a probe grab of this connection that succeeds is released at once.
+    /// Whether another client holds an active grab of the keyboard, or of the pointer with `pointer`; a probe grab of this connection that succeeds is released at once.
     pub fn grabbed(&self, pointer: bool) -> Result<bool, String> {
         let (async_, now) = (GrabMode::ASYNC, x11rb::CURRENT_TIME);
         let status = if pointer {
@@ -564,23 +484,6 @@ impl Grabber {
         Ok(status != GrabStatus::SUCCESS)
     }
 
-    /// The number of master keyboards.
-    fn masters(&self) -> Option<usize> {
-        let reply = self
-            .conn
-            .xinput_xi_query_device(ALL_MASTERS)
-            .ok()?
-            .reply()
-            .ok()?;
-        Some(
-            reply
-                .infos
-                .iter()
-                .filter(|d| d.type_ == DeviceType::MASTER_KEYBOARD)
-                .count(),
-        )
-    }
-
     /// The top drawn child of the root at the screen point `(x, y)`, past a cua-driver cursor overlay, which input passes through.
     pub fn top_at(&self, x: i32, y: i32) -> Result<Option<Placement>, String> {
         Ok(self.children(true)?.into_iter().rev().find(|p| {
@@ -588,8 +491,7 @@ impl Grabber {
         }))
     }
 
-    /// Whether the screen point `(x, y)` shows a window title rather than a window's content: a desktop
-    /// panel, whose task buttons carry the titles, or the band of a window manager frame above its client.
+    /// Whether the screen point `(x, y)` shows a window title rather than a window's content: a desktop panel, whose task buttons carry the titles, or the band of a window manager frame above its client.
     pub fn title_at(&self, x: i32, y: i32) -> Result<bool, String> {
         let Some(top) = self.top_at(x, y)? else {
             return Ok(false);
@@ -601,23 +503,6 @@ impl Grabber {
             return Ok(true);
         }
         Ok(y < i32::from(top.y) + i32::from(self.client_offset(top.id)))
-    }
-
-    /// How far below the top of frame `w` its client starts, the height of its title bar; 0 for a window
-    /// that is its own client.
-    fn client_offset(&self, w: Window) -> i16 {
-        let children = self.kids(w);
-        children
-            .into_iter()
-            .find(|&c| {
-                self.conn
-                    .get_property(false, c, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 1)
-                    .ok()
-                    .and_then(|r| r.reply().ok())
-                    .is_some_and(|r| !r.value.is_empty())
-            })
-            .and_then(|c| self.conn.get_geometry(c).ok()?.reply().ok())
-            .map_or(0, |g| g.y)
     }
 
     /// The child of the root that holds window `w`: its window manager frame, or `w` itself.
@@ -640,6 +525,116 @@ impl Grabber {
             .reply()
             .ok()?;
         reply.value32()?.next()
+    }
+
+    /// The mapped children of the root with their geometry; the desktop shell's only with `shell`.
+    fn children(&self, shell: bool) -> Result<Vec<Placement>, String> {
+        let tree = self
+            .conn
+            .query_tree(self.root)
+            .map_err(|e| format!("query tree: {e}"))?
+            .reply()
+            .map_err(|e| format!("query tree: {e}"))?;
+        let cookies = tree
+            .children
+            .iter()
+            .map(|&w| {
+                let attrs = self
+                    .conn
+                    .get_window_attributes(w)
+                    .map_err(|e| format!("attributes: {e}"))?;
+                let geometry = self
+                    .conn
+                    .get_geometry(w)
+                    .map_err(|e| format!("geometry: {e}"))?;
+                Ok((w, attrs, geometry))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let known = (!shell).then(|| self.shell());
+        let mut mapped = Vec::new();
+        for (id, attrs, geometry) in cookies {
+            let (Ok(attrs), Ok(g)) = (attrs.reply(), geometry.reply()) else {
+                continue;
+            };
+            if attrs.map_state == MapState::VIEWABLE
+                && known.as_ref().is_none_or(|k| !k.windows.contains(&id))
+            {
+                mapped.push(Placement {
+                    id,
+                    x: g.x,
+                    y: g.y,
+                    width: g.width,
+                    height: g.height,
+                    popup: attrs.override_redirect,
+                    drawn: attrs.class == WindowClass::INPUT_OUTPUT,
+                });
+            }
+        }
+        Ok(mapped)
+    }
+
+    /// The windows the window manager manages, bottom to top.
+    fn clients(&self) -> Result<Vec<Window>, String> {
+        Ok(self
+            .conn
+            .get_property(
+                false,
+                self.root,
+                self.net_stacking,
+                AtomEnum::WINDOW,
+                0,
+                1024,
+            )
+            .map_err(|e| format!("get _NET_CLIENT_LIST_STACKING: {e}"))?
+            .reply()
+            .map_err(|e| format!("get _NET_CLIENT_LIST_STACKING: {e}"))?
+            .value32()
+            .map(Iterator::collect)
+            .unwrap_or_default())
+    }
+
+    /// Where the screen does not show the client `c`; `None` when it shows or is not mapped.
+    fn unseen(&self, c: Window) -> Result<Option<String>, String> {
+        let frame = self.top_level(c)?;
+        let screen = (i32::from(self.width), i32::from(self.height));
+        Ok(match cover(frame, &self.children(false)?, screen) {
+            Some(Cover::OffScreen) => Some("off the screen".to_owned()),
+            Some(Cover::Under(w)) => Some(format!("behind \"{}\"", self.title(w))),
+            None => None,
+        })
+    }
+
+    /// The number of master keyboards.
+    fn masters(&self) -> Option<usize> {
+        let reply = self
+            .conn
+            .xinput_xi_query_device(ALL_MASTERS)
+            .ok()?
+            .reply()
+            .ok()?;
+        Some(
+            reply
+                .infos
+                .iter()
+                .filter(|d| d.type_ == DeviceType::MASTER_KEYBOARD)
+                .count(),
+        )
+    }
+
+    /// How far below the top of frame `w` its client starts, the height of its title bar; 0 for a window that is its own client.
+    fn client_offset(&self, w: Window) -> i16 {
+        let children = self.kids(w);
+        children
+            .into_iter()
+            .find(|&c| {
+                self.conn
+                    .get_property(false, c, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 1)
+                    .ok()
+                    .and_then(|r| r.reply().ok())
+                    .is_some_and(|r| !r.value.is_empty())
+            })
+            .and_then(|c| self.conn.get_geometry(c).ok()?.reply().ok())
+            .map_or(0, |g| g.y)
     }
 
     /// Whether `w` is `ancestor` or lies inside it; false for no window and for the pointer root.
@@ -862,8 +857,7 @@ fn dock_mask(docks: &[[i32; 4]], (width, height): (usize, usize)) -> Vec<bool> {
     mask
 }
 
-/// How `mapped`, the drawn root children bottom to top, hide `frame` on a screen of `width` by
-/// `height`: centred off the screen, or under another managed window at its centre.
+/// How `mapped`, the drawn root children bottom to top, hide `frame` on a screen of `width` by `height`: centred off the screen, or under another managed window at its centre.
 fn cover(frame: Window, mapped: &[Placement], (width, height): (i32, i32)) -> Option<Cover> {
     let own = mapped.iter().find(|p| p.id == frame)?;
     let (cx, cy) = (

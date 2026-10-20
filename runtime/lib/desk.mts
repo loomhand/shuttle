@@ -12,6 +12,10 @@ export type Usage = Record<string, { calls: number; input_tokens: number; output
 export type ImagePart = { type: 'image_url'; image_url: { url: string } }
 export type Served = { model: string; image: boolean; build: string | null; id: string | null }
 export type Size = { left?: number; top?: number; width: number; height: number }
+/** The window that background input goes to, by title or process; required with `[desk] input = "background"`, ignored otherwise. */
+export type Target = { window?: string; pid?: number | null }
+/** An input result; background input the driver could not confirm carries `unverified`, so read its effect back before relying on it. */
+export type Sent = { ok: boolean; chars?: number; unverified?: string }
 type Output = { text: string; is_error: boolean; image_b64?: string }
 type Metered = { usage: { model: string; input_tokens: number; output_tokens: number; cached_tokens: number } }
 type Decided = Metered & { answers: Record<string, Judgment>; served: Omit<Served, 'image'> }
@@ -43,10 +47,6 @@ export const read = (id: string, o: { text?: boolean } = {}): Promise<El> => cal
 export const press = (id: string): Promise<{ ok: boolean; how: string; unverified?: string }> => call('press', { id })
 export const act = (id: string, action: 'click' | 'action' | 'select' | 'focus'): Promise<{ ok: boolean }> => call('act', { id, action })
 export const at = (x: number, y: number, window?: string, pid?: number | null): Promise<{ found: El | null; path?: { id: string; role: string; name: string }[] }> => call('at', { x, y, window, pid: pid ?? undefined })
-/** The window that background input goes to, by title or process; required with `[desk] input = "background"`, ignored otherwise. */
-export type Target = { window?: string; pid?: number | null }
-/** An input result; background input the driver could not confirm carries `unverified`, so read its effect back before relying on it. */
-export type Sent = { ok: boolean; chars?: number; unverified?: string }
 export const key = (keys: string, to: Target = {}): Promise<Sent> => call('key', { keys, ...target(to) })
 export const typeText = (text: string, to: Target = {}): Promise<Sent> => call('type', { text, ...target(to) })
 export const click = (x: number, y: number, o: { button?: string; count?: number } & Target = {}): Promise<Sent> => call('click', { x, y, ...o, pid: o.pid ?? undefined })

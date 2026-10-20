@@ -31,8 +31,7 @@ impl Placement {
     }
 }
 
-/// One hash per 16-pixel square of the BGRX rows `bgrx`, `width` pixels wide, so any changed pixel
-/// changes its square's hash; the padding byte and the squares `skip` marks do not count.
+/// One hash per 16-pixel square of the BGRX rows `bgrx`, `width` pixels wide, so any changed pixel changes its square's hash; the padding byte and the squares `skip` marks do not count.
 pub fn block_hashes(bgrx: &[u8], width: usize, height: usize, skip: &[bool]) -> Vec<u64> {
     let columns = width.div_ceil(BLOCK);
     let mut hashes = vec![0u64; columns * height.div_ceil(BLOCK)];
@@ -59,8 +58,7 @@ pub fn block_hashes(bgrx: &[u8], width: usize, height: usize, skip: &[bool]) -> 
     hashes
 }
 
-/// Whether a pixel of block `block` (see [`block_hashes`]) of the BGRX frames `a` and `b`, `width` by
-/// `height`, differs by more than `step` in a colour channel; frames of different sizes always do.
+/// Whether a pixel of block `block` (see [`block_hashes`]) of the BGRX frames `a` and `b`, `width` by `height`, differs by more than `step` in a colour channel; frames of different sizes always do.
 pub fn visible(a: &[u8], b: &[u8], width: usize, height: usize, block: usize, step: u8) -> bool {
     if a.len() != b.len() || a.len() < width * height * 4 {
         return true;
