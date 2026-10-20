@@ -3,6 +3,10 @@
 ## Unreleased
 
 - **MCP cancellation.** `cocoon-shuttle mcp` keeps reading its client while a request runs, and a `notifications/cancelled` drops the request it names, running or queued, without a reply; a running one closes its daemon connection, where the daemon ends the call. Before, the server read the next line only after the call had ended, so an interrupt reached it up to the 110 s run limit late while the desktop kept acting.
+- **Android screenshots from the UI server.** `desk_look`, `desk_shot`, `computer_state` and every `computer_act` take the screen from the UI server's `UiAutomation.takeScreenshot` in place of an `adb exec-out screencap -p` process:
+  - the UI line protocol gains a `shot` request answered by a binary frame, `png N` and then N bytes before the end line; a server that predates it answers a dump, and `screencap` serves for good after that, as it does for one call after a failed shot;
+  - a capture takes 30 ms against 92–104 ms and about 55–60% less CPU on redroid 16;
+  - an uncropped `desk_shot` returns that PNG as it is, with no decode and re-encode; a cropped one is cut as before.
 
 ## 0.1.8 - 2026-10-20
 

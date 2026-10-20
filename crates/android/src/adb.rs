@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use base64::Engine;
@@ -49,6 +50,7 @@ const DEVICE_UI_JAR: &str = "/data/local/tmp/shuttle-ui.jar";
 const UI_TIMEOUT: Duration = Duration::from_secs(10);
 const STATE_TRIES: u32 = 2;
 const UI_END: &str = "<<end>>";
+const MAX_PNG: usize = 32 << 20;
 const UI_STDERR_KEEP: usize = 4096;
 const UI_EXIT_WAIT: Duration = Duration::from_secs(2);
 const UI_LOG_WAIT: Duration = Duration::from_secs(2);
@@ -99,6 +101,7 @@ pub struct Android {
     device: Device,
     points: Mutex<HashMap<String, Saved>>,
     ui: Mutex<Option<UiServer>>,
+    server_shot: AtomicBool,
     control: Mutex<Option<Control>>,
     screen: OnceCell<(i32, i32)>,
 }
@@ -110,6 +113,7 @@ impl Android {
             device,
             points: Mutex::new(HashMap::new()),
             ui: Mutex::new(None),
+            server_shot: AtomicBool::new(true),
             control: Mutex::new(None),
             screen: OnceCell::new(),
         }
@@ -117,13 +121,25 @@ impl Android {
 
     /// The screen as PNG.
     pub async fn look(&self) -> Result<Output, String> {
-        let png = self.adb(&["exec-out", "screencap", "-p"]).await?;
+        let png = self.screenshot().await?;
         let (w, h) = self.screen().await?;
         Ok(Output {
             text: format!("{w}x{h} screen"),
             image_b64: Some(B64.encode(png)),
             ..Output::default()
         })
+    }
+
+    /// The screen as PNG from the UI server, else from `screencap` when the server has no screenshot to give.
+    pub(crate) async fn screenshot(&self) -> Result<Vec<u8>, String> {
+        if self.server_shot.load(Ordering::Relaxed) {
+            match self.served_png().await {
+                Ok(Some(png)) => return Ok(png),
+                Ok(None) => self.server_shot.store(false, Ordering::Relaxed),
+                Err(_) => {}
+            }
+        }
+        self.adb(&["exec-out", "screencap", "-p"]).await
     }
 
     /// The UI elements of the screen, [index] for computer_act, and a screenshot.
@@ -500,6 +516,20 @@ impl Android {
         }
     }
 
+    /// The server's PNG frame; none from a server that predates the `shot` request.
+    async fn served_png(&self) -> Result<Option<Vec<u8>>, String> {
+        let mut slot = self.ui.lock().await;
+        let mut server = match slot.take() {
+            Some(server) => server,
+            None => self.start_ui().await?,
+        };
+        let png = tokio::time::timeout(UI_TIMEOUT, server.ask_png())
+            .await
+            .map_err(|_| "UI server: timed out".to_owned())??;
+        *slot = Some(server);
+        Ok(png)
+    }
+
     async fn start_ui(&self) -> Result<UiServer, String> {
         self.adb(&["push", &self.device.ui_jar.to_string_lossy(), DEVICE_UI_JAR])
             .await?;
@@ -672,6 +702,55 @@ struct UiServer {
 }
 
 impl UiServer {
+    /// The answer to `shot`: `png N`, then N bytes, then the end line. A server that does not know `shot` answers a dump, which this reads to its end; none then.
+    async fn ask_png(&mut self) -> Result<Option<Vec<u8>>, String> {
+        self.stdin
+            .write_all(b"shot\n")
+            .await
+            .map_err(|e| format!("ask UI server: {e}"))?;
+        let mut head = String::new();
+        self.stdout
+            .read_line(&mut head)
+            .await
+            .map_err(|e| format!("read UI server: {e}"))?;
+        let Some(len) = head
+            .strip_prefix("png ")
+            .and_then(|n| n.trim().parse::<usize>().ok())
+            .filter(|n| *n <= MAX_PNG)
+        else {
+            let mut line = head.clone();
+            while line.trim_end() != UI_END {
+                line.clear();
+                let n = self
+                    .stdout
+                    .read_line(&mut line)
+                    .await
+                    .map_err(|e| format!("read UI server: {e}"))?;
+                if n == 0 {
+                    return Err("UI server exited".to_owned());
+                }
+            }
+            return match head.trim().strip_prefix("<error>") {
+                Some(e) => Err(format!("UI server: {}", e.trim_end_matches("</error>"))),
+                None => Ok(None),
+            };
+        };
+        let mut png = vec![0; len];
+        self.stdout
+            .read_exact(&mut png)
+            .await
+            .map_err(|e| format!("read UI server: {e}"))?;
+        let mut end = String::new();
+        self.stdout
+            .read_line(&mut end)
+            .await
+            .map_err(|e| format!("read UI server: {e}"))?;
+        if end.trim_end() != UI_END {
+            return Err("UI server: the PNG frame has no end".to_owned());
+        }
+        Ok(Some(png))
+    }
+
     async fn ask(&mut self, cmd: &str) -> Result<String, String> {
         self.stdin
             .write_all(format!("{cmd}\n").as_bytes())
@@ -1230,7 +1309,7 @@ mod tests {
             let adb = dir.path().join("adb");
             script(
                 &adb,
-                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*screencap*) printf png;;\n*app_process*)\n  echo ready\n  while read l; do\n    case \"$l\" in\n      windows) cat \"$DIR/windows.json\";;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
+                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*screencap*) cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
             );
             let android = Android::new(Device {
                 adb,
@@ -1281,6 +1360,76 @@ mod tests {
                 ),
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_screenshot_is_the_ui_servers_length_prefixed_png() {
+        let fake = Fake::new();
+        fake.windows("");
+        fake.put("shot.frame", "png 11\nx\n<<end>>\ny<<end>>\n");
+        assert_eq!(fake.android.screenshot().await.unwrap(), b"x\n<<end>>\ny");
+        assert!(fake.android.windows().await.unwrap().contains("\"id\":7"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_server_without_shot_is_asked_once_and_screencap_serves() {
+        let fake = Fake::new();
+        assert_eq!(fake.android.screenshot().await.unwrap(), b"png");
+        assert_eq!(fake.android.screenshot().await.unwrap(), b"png");
+        let requests = std::fs::read_to_string(fake.dir.path().join("requests")).unwrap();
+        assert_eq!(requests.matches("shot").count(), 1, "{requests}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_server_that_fails_to_shoot_falls_back_for_that_call_only() {
+        let fake = Fake::new();
+        fake.put(
+            "shot.frame",
+            "<error>java.io.IOException: no screenshot</error>\n<<end>>\n",
+        );
+        assert_eq!(fake.android.screenshot().await.unwrap(), b"png");
+        assert_eq!(fake.android.screenshot().await.unwrap(), b"png");
+        let requests = std::fs::read_to_string(fake.dir.path().join("requests")).unwrap();
+        assert_eq!(requests.matches("shot").count(), 2, "{requests}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_uncropped_shot_passes_the_png_through_and_a_cropped_one_is_cut() {
+        let fake = Fake::new();
+        let mut png = Vec::new();
+        let mut enc = png::Encoder::new(&mut png, 3, 2);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let pixels: Vec<u8> = (0..24).collect();
+        enc.write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
+        std::fs::write(fake.dir.path().join("screen.png"), &png).unwrap();
+        let whole = crate::desk::run(&fake.android, "desk_shot", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(B64.decode(whole.image_b64.unwrap()).unwrap(), png);
+        assert_eq!(
+            serde_json::from_str::<Value>(&whole.text).unwrap()["width"],
+            3
+        );
+        let part = crate::desk::run(
+            &fake.android,
+            "desk_shot",
+            serde_json::json!({"x": 1, "y": 1, "w": 1, "h": 1}),
+        )
+        .await
+        .unwrap();
+        assert_ne!(B64.decode(part.image_b64.unwrap()).unwrap(), png);
+        assert_eq!(
+            serde_json::from_str::<Value>(&part.text).unwrap()["height"],
+            1
+        );
     }
 
     #[cfg(unix)]

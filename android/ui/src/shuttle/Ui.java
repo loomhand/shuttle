@@ -3,6 +3,7 @@ package shuttle;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.UiAutomation;
 import android.app.UiAutomationConnection;
+import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.os.HandlerThread;
 import android.os.Looper;
@@ -15,8 +16,10 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.lang.reflect.Method;
@@ -28,7 +31,8 @@ import java.util.List;
  * editable, password, whether its window has focus, and its text's length, hash and last 32 code points; "focus live"
  * the same, refreshed from the app rather than the accessibility cache; "paste" presses the paste key and answers once
  * the focused window has handled its down event (true) or its injection failed (false), sending the up event either
- * way; "dump" the active window and "dump ID" window ID as uiautomator-style nodes with their child-index path.
+ * way; "shot" the screen as a PNG frame, a line "png N" and then N bytes before the end line; "dump" the active window
+ * and "dump ID" window ID as uiautomator-style nodes with their child-index path.
  */
 public final class Ui {
     private static final int MAX_DEPTH = 64;
@@ -37,6 +41,7 @@ public final class Ui {
     private static final String END = "<<end>>";
     private static final int TAIL = 32;
     private static final int OUT_BUFFER = 1 << 20;
+    private static final int SHOT_BUFFER = 1 << 17;
     private static final int INJECT_ASYNC = 0;
     private static final int INJECT_WAIT_FOR_FINISH = 2;
 
@@ -68,6 +73,8 @@ public final class Ui {
                     out.println(focus(ui, line.equals("focus live")));
                 } else if (line.equals("paste")) {
                     out.println(paste());
+                } else if (line.equals("shot")) {
+                    shot(ui, out);
                 } else {
                     idle(ui);
                     out.println(dump(ui, line.startsWith("dump ") ? line.substring(5).trim() : ""));
@@ -88,6 +95,17 @@ public final class Ui {
         } catch (Exception e) {
             // a screen that never idles is dumped as it is
         }
+    }
+
+    private static void shot(UiAutomation ui, PrintStream out) throws IOException {
+        Bitmap screen = ui.takeScreenshot();
+        if (screen == null) {
+            throw new IOException("no screenshot");
+        }
+        ByteArrayOutputStream png = new ByteArrayOutputStream(SHOT_BUFFER);
+        screen.compress(Bitmap.CompressFormat.PNG, 100, png);
+        out.println("png " + png.size());
+        png.writeTo(out);
     }
 
     private static String windows(UiAutomation ui) {

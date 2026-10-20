@@ -918,7 +918,7 @@ async fn focus(android: &Android, a: WindowArgs) -> Result<String, String> {
 
 /// A PNG of a screen rectangle, the whole screen by default.
 async fn shot(android: &Android, a: ShotArgs) -> Result<Output, String> {
-    let png = android.adb(&["exec-out", "screencap", "-p"]).await?;
+    let png = android.screenshot().await?;
     let (w, h) = android.screen().await?;
     let rect = [
         a.x.unwrap_or(0.0),
@@ -926,7 +926,17 @@ async fn shot(android: &Android, a: ShotArgs) -> Result<Output, String> {
         a.w.unwrap_or(f64::from(w)),
         a.h.unwrap_or(f64::from(h)),
     ];
-    let (w, h, png) = crop(&png, rect)?;
+    let (w, h, png) = match png_size(&png) {
+        Some((iw, ih))
+            if rect[0] <= 0.0
+                && rect[1] <= 0.0
+                && rect[0] + rect[2] >= f64::from(iw)
+                && rect[1] + rect[3] >= f64::from(ih) =>
+        {
+            (iw, ih, png)
+        }
+        _ => crop(&png, rect)?,
+    };
     let mut out = json!({"ok": true, "width": w, "height": h});
     if let Some(path) = a.path {
         write_bytes(std::path::Path::new(&path), &png).await?;
@@ -937,6 +947,13 @@ async fn shot(android: &Android, a: ShotArgs) -> Result<Output, String> {
         image_b64: Some(B64.encode(&png)),
         ..Output::default()
     })
+}
+
+/// The width and height a PNG's header gives.
+fn png_size(png: &[u8]) -> Option<(u32, u32)> {
+    let size = |at: usize| Some(u32::from_be_bytes(png.get(at..at + 4)?.try_into().ok()?));
+    png.starts_with(b"\x89PNG\r\n\x1a\n").then_some(())?;
+    Some((size(16)?, size(20)?))
 }
 
 /// The RGB PNG of rectangle `[x, y, w, h]` of a PNG.
@@ -1467,6 +1484,38 @@ mod tests {
         dec.next_frame(&mut buf).unwrap();
         assert_eq!(&buf[..6], &[16, 17, 18, 20, 21, 22]);
         assert!(crop(&src, [9.0, 9.0, 1.0, 1.0]).is_err());
+    }
+
+    #[test]
+    fn a_png_header_gives_its_size_and_crop_reads_rgb_and_rgba_alike() {
+        let encode = |color, channels: usize| {
+            let data: Vec<u8> = (0..3 * 2 * channels).map(|i| i as u8 + 1).collect();
+            let mut out = Vec::new();
+            let mut enc = png::Encoder::new(&mut out, 3, 2);
+            enc.set_color(color);
+            enc.set_depth(png::BitDepth::Eight);
+            enc.write_header().unwrap().write_image_data(&data).unwrap();
+            out
+        };
+        let rgba = encode(png::ColorType::Rgba, 4);
+        let rgb = encode(png::ColorType::Rgb, 3);
+        assert_eq!(png_size(&rgba), Some((3, 2)));
+        assert_eq!(png_size(&rgb), Some((3, 2)));
+        assert_eq!(png_size(b"not a png at all, but long enough"), None);
+        let pixels = |png: &[u8]| {
+            let (_, _, cut) = crop(png, [0.0, 0.0, 3.0, 2.0]).unwrap();
+            let mut dec = png::Decoder::new(std::io::Cursor::new(cut))
+                .read_info()
+                .unwrap();
+            let mut buf = vec![0; dec.output_buffer_size().unwrap()];
+            dec.next_frame(&mut buf).unwrap();
+            buf
+        };
+        let from_rgba: Vec<u8> = (0..6)
+            .flat_map(|i| [i * 4 + 1, i * 4 + 2, i * 4 + 3])
+            .collect();
+        assert_eq!(pixels(&rgba), from_rgba);
+        assert_eq!(pixels(&rgb), (1..=18).collect::<Vec<u8>>());
     }
 
     #[tokio::test(start_paused = true)]
