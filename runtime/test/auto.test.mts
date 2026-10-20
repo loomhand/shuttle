@@ -93,6 +93,7 @@ test('after auto ran a step in the foreground, a dialog of the app in front fail
   const r = await auto({ steps: [{ app: 'Notepad' }, { key: 'ctrl+shift+s' }, { type: 'name' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(r.trace?.[1]?.input, 'foreground')
+  assert.deepEqual(calls.filter((c) => c.tool === 'desk_type').map((c) => c.args), [{ text: 'name' }])
 })
 
 test('an auto macOS menu step fronts the plan window and runs the entry in the foreground, where background refuses', { skip: process.platform !== 'darwin' }, async (t) => {

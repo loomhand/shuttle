@@ -163,7 +163,7 @@ async function perform(p: Params): Promise<Result> {
         }
       })
       if (BG && unheard && !rec.unverified) rec.unverified = unheard
-      if (desk.foreground.runs + foreground.steps > runs) { rec.fg = true; fronted = true }
+      if (desk.foreground.runs + foreground.steps > runs) { rec.fg = true; fronted = true; BG = false }
       const before = recs[i - 1]
       if (BG && before && (s.wait || s.verify || s.expect)) before.confirmed = true
     } catch (e: unknown) {
@@ -891,7 +891,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       if (AUTO && !shows(was, now, s.type) && unchanged(was, now) && !taken(await desk.windows())) {
         await desk.focus(w.title, w.pid)
         for (const [i, part] of s.type.split(/\r?\n/).entries()) { if (i) await desk.key('Return'); if (part) await desk.typeText(part) }
-        rec.how = 'foreground'; rec.unverified = undefined; fronted = true
+        rec.how = 'foreground'; rec.unverified = undefined; fronted = true; BG = false
       } else if (!shows(was, now, s.type)) throw new Surprise(`"${s.type}" did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
       rec.confirmed = true
     }
