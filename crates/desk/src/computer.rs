@@ -577,7 +577,7 @@ impl Computer {
         let mut base = json!({});
         if let Some((pid, window_id)) = self.key_window(session).await? {
             if !a.foreground && self.keyboard(pid, window_id) {
-                base["target"] = json!({"kind": "desktop", "display_id": "primary"});
+                self.on_desktop(&mut base);
             } else {
                 base["pid"] = pid.into();
                 base["window_id"] = window_id.into();
@@ -1092,7 +1092,6 @@ impl Computer {
         session: &str,
         a: &ActArgs,
     ) -> Result<(&'static str, Value), String> {
-        let desktop = json!({"kind": "desktop", "display_id": "primary"});
         let clicks = matches!(
             a.action.as_str(),
             "click" | "double_click" | "right_click" | "triple_click"
@@ -1162,15 +1161,17 @@ impl Computer {
                 };
                 let k = self.mapped(session, a.scale);
                 let (x, y, tx, ty) = (x * k, y * k, tx * k, ty * k);
-                req = json!({"from_x": x, "from_y": y, "to_x": tx, "to_y": ty, "target": desktop});
+                req = json!({"from_x": x, "from_y": y, "to_x": tx, "to_y": ty});
+                self.on_desktop(&mut req);
                 return Ok(("drag", req));
             }
             other => return Err(format!("unknown action {other}")),
         };
+        let mut desktop = false;
         if let Some((x, y)) = pixel {
             req["x"] = x.into();
             req["y"] = y.into();
-            req["target"] = desktop;
+            desktop = true;
         } else if let Some(index) = a.element {
             let last = self.last.lock().await;
             let snap = last
@@ -1190,12 +1191,12 @@ impl Computer {
             let k = self.mapped(session, a.scale);
             req["x"] = (x * k).into();
             req["y"] = (y * k).into();
-            req["target"] = desktop;
+            desktop = true;
         } else if clicks {
             return Err(format!("{} needs element or x and y", a.action));
         } else if let Some((pid, window_id)) = self.key_window(session).await? {
             if tool != "scroll" && !a.foreground && self.keyboard(pid, window_id) {
-                req["target"] = desktop;
+                desktop = true;
             } else {
                 req["pid"] = pid.into();
                 req["window_id"] = window_id.into();
@@ -1203,7 +1204,10 @@ impl Computer {
         } else if tool == "type_text" {
             return Err(NO_TEXT_TARGET.to_owned());
         } else if tool != "scroll" && !a.foreground {
-            req["target"] = desktop;
+            desktop = true;
+        }
+        if desktop {
+            self.on_desktop(&mut req);
         }
         if a.foreground {
             req["delivery_mode"] = "foreground".into();
@@ -1280,11 +1284,9 @@ impl Computer {
         };
         req.insert("x".to_owned(), x.into());
         req.insert("y".to_owned(), y.into());
-        req.insert(
-            "target".to_owned(),
-            json!({"kind": "desktop", "display_id": "primary"}),
-        );
-        Some(Value::Object(std::mem::take(req)))
+        let mut req = Value::Object(std::mem::take(req));
+        self.on_desktop(&mut req);
+        Some(req)
     }
 
     fn to_dialog(&self, req: &Value) -> bool {
@@ -1602,11 +1604,19 @@ impl Computer {
 
     /// The desktop-addressed input `req` of `tool` in a driver session of its own, whose x,y no capture maps.
     async fn desktop_input(&self, tool: &str, mut req: Value) -> Result<Value, String> {
-        req["target"] = json!({"kind": "desktop", "display_id": "primary"});
+        self.on_desktop(&mut req);
         let once = self.own("input");
         let done = self.request(once.name(), tool, req).await;
         self.end_once(Some(once)).await;
         done
+    }
+
+    fn on_desktop(&self, req: &mut Value) {
+        if self.os == Os::Linux {
+            req["target"] = json!({"kind": "desktop", "display_id": "primary"});
+        } else {
+            req["scope"] = "desktop".into();
+        }
     }
 
     /// [`Self::element_pixel`] once it answers, at most [`MENU_POLLS`] times [`MENU_POLL`] apart.
@@ -2378,9 +2388,13 @@ mod tests {
     use crate::driver::CLICK_SPACING;
 
     fn cua(socket: &Path) -> Computer {
+        cua_on(socket, Os::Linux)
+    }
+
+    fn cua_on(socket: &Path, os: Os) -> Computer {
         Computer::new(
             Arc::new(Driver::new(socket.to_string_lossy().into_owned())),
-            Os::Linux,
+            os,
         )
     }
 
@@ -3232,6 +3246,94 @@ mod tests {
 
     type Clicks = std::sync::Arc<std::sync::Mutex<Vec<(f64, f64)>>>;
 
+    type Landed = std::sync::Arc<std::sync::Mutex<Vec<Vec<f64>>>>;
+
+    fn retina_driver(dir: &Path) -> (PathBuf, Landed, tokio::task::JoinHandle<()>) {
+        let socket = endpoint(dir);
+        let listener = Fake::bind(&socket).unwrap();
+        let landed = Landed::default();
+        let log = std::sync::Arc::clone(&landed);
+        let driver = tokio::spawn(async move {
+            let mut factors = HashMap::<String, f64>::new();
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let args = &req["args"];
+                let session = args["session"].as_str().unwrap_or_default().to_owned();
+                let windowless = args["pid"].is_null() && args["element_token"].is_null();
+                let refused = |text: &str| json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": text}]}});
+                let reply = match req["name"].as_str().unwrap_or_default() {
+                    "get_desktop_state" => {
+                        let width = match args["max_image_dimension"].as_u64() {
+                            None => 120,
+                            Some(0) => 200,
+                            Some(edge) => edge.min(200),
+                        };
+                        let mut state = json!({"screenshot_width": width, "screenshot_height": width / 2, "screen_width": 100, "screen_height": 50, "scale_factor": 2.0});
+                        if width < 200 {
+                            state["screenshot_original_width"] = 200.into();
+                            state["screenshot_original_height"] = 100.into();
+                            factors.insert(session, 200.0 / width as f64);
+                        } else {
+                            factors.remove(&session);
+                        }
+                        let (w, h) = (width as u32, width as u32 / 2);
+                        let image = png_of(w, h, &vec![9; (w * h * 4) as usize]);
+                        json!({"ok": true, "result": {"content": [{"type": "image", "data": image, "mimeType": "image/png"}], "structuredContent": state}})
+                    }
+                    "end_session" => {
+                        factors.remove(&session);
+                        json!({"ok": true, "result": {}})
+                    }
+                    "list_windows" => {
+                        json!({"ok": true, "result": {"structuredContent": {"windows": []}}})
+                    }
+                    _ if args.get("target").is_some() => refused("target is read on Linux only"),
+                    _ if windowless && args["scope"] != "desktop" => {
+                        refused("desktop_scope_disabled: pass scope=\"desktop\"")
+                    }
+                    name => {
+                        if matches!(name, "click" | "drag") {
+                            let factor = factors.get(&session).copied().unwrap_or(1.0);
+                            let points = ["x", "y", "from_x", "from_y", "to_x", "to_y"]
+                                .iter()
+                                .filter_map(|k| args[k].as_f64())
+                                .map(|v| v * factor / 2.0)
+                                .collect();
+                            log.lock().unwrap().push(points);
+                        }
+                        json!({"ok": true, "result": {"structuredContent": {}}})
+                    }
+                };
+                let mut out = serde_json::to_vec(&reply).unwrap();
+                out.push(b'\n');
+                reader.into_inner().write_all(&out).await.unwrap();
+            }
+        });
+        (socket, landed, driver)
+    }
+
+    #[tokio::test]
+    async fn off_linux_windowless_input_goes_with_desktop_scope_and_no_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, landed, driver) = retina_driver(dir.path());
+        let cua = cua_on(&socket, Os::Mac);
+        cua.state(json!({"max_edge": 50})).await.unwrap();
+        for act in [
+            json!({"action": "click", "x": 10.0, "y": 5.0}),
+            json!({"action": "drag", "x": 10.0, "y": 5.0, "to_x": 20.0, "to_y": 10.0}),
+            json!({"action": "key", "key": "escape"}),
+        ] {
+            let out = cua.act(act).await.unwrap();
+            assert!(!out.is_error, "{}", out.text);
+        }
+        assert_eq!(landed.lock().unwrap().len(), 2);
+        driver.abort();
+    }
+
     fn scaling_driver(dir: &Path) -> (PathBuf, Clicks, tokio::task::JoinHandle<()>) {
         let socket = endpoint(dir);
         let listener = Fake::bind(&socket).unwrap();
@@ -3413,7 +3515,7 @@ mod tests {
                 reader.into_inner().write_all(&out).await.unwrap();
             }
         });
-        let cua = cua(&socket);
+        let cua = cua_on(&socket, Os::Mac);
         cua.act(json!({"action": "key", "key": "escape"}))
             .await
             .unwrap();
@@ -3423,7 +3525,8 @@ mod tests {
         let sent = sent.lock().unwrap().clone();
         assert_eq!(sent.len(), 2, "{sent:?}");
         for req in &sent {
-            assert_eq!(req["args"]["target"]["kind"], "desktop", "{req}");
+            assert_eq!(req["args"]["scope"], "desktop", "{req}");
+            assert!(req["args"]["target"].is_null(), "{req}");
             assert!(req["args"]["pid"].is_null(), "{req}");
         }
         driver.abort();
