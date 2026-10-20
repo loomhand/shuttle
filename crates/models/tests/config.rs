@@ -237,4 +237,16 @@ mod tests {
         assert!(Config::load(file(&format!("[safety]\napps = []\n{android}")).path()).is_ok());
         assert!(Config::load(file("[safety]\napps = [\"Settings\"]\n").path()).is_ok());
     }
+
+    #[test]
+    fn an_android_section_refuses_background_input_it_cannot_give() {
+        let android = "[android]\nui_jar = \"/u.jar\"\nscrcpy_jar = \"/s.jar\"\nsu = \"/su\"\n";
+        let err = Config::load(file(&format!("[desk]\ninput = \"background\"\n{android}")).path())
+            .unwrap_err();
+        assert!(
+            err.contains("not available on an [android] device"),
+            "{err}"
+        );
+        assert!(Config::load(file(&format!("[desk]\ninput = \"auto\"\n{android}")).path()).is_ok());
+    }
 }
