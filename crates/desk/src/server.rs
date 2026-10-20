@@ -1132,12 +1132,13 @@ mod pipe_tests {
         let accepted = server.connect();
         let mut client = connect(&name).await.unwrap();
         accepted.await.unwrap();
-        let data = vec![7u8; 1 << 20];
-        {
-            let mut write = std::pin::pin!(client.write_all(&data));
-            let _ =
-                std::future::poll_fn(|cx| std::task::Poll::Ready(write.as_mut().poll(cx))).await;
-        }
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.write_all(&vec![7u8; 1 << 20]),
+        )
+        .await
+        .expect("the pipe took no write without a reader")
+        .unwrap();
         drop(client);
         let started = std::time::Instant::now();
         let mut hung_up = false;
