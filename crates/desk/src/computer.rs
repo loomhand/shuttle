@@ -2499,7 +2499,7 @@ mod tests {
     #[tokio::test]
     async fn background_input_never_reaches_the_xtest_typer() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
+        let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         let mut cua = cua(&socket).background(true);
