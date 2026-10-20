@@ -106,6 +106,7 @@ pub struct Computer {
     /// Screen pixels per image pixel of the latest screenshot of any session, one-shot included.
     last_scale: std::sync::Mutex<f64>,
     backing: std::sync::Mutex<f64>,
+    unmapped: std::sync::Mutex<HashSet<String>>,
     /// The screen blocks that change while no action runs, which the settle ignores; sampled from the first computer call.
     volatile: OnceLock<Volatile>,
     ids: AtomicU64,
@@ -129,6 +130,7 @@ impl Computer {
             scales: std::sync::Mutex::new(HashMap::new()),
             last_scale: std::sync::Mutex::new(1.0),
             backing: std::sync::Mutex::new(1.0),
+            unmapped: std::sync::Mutex::new(HashSet::new()),
             volatile: OnceLock::new(),
             ids: AtomicU64::new(0),
             defaults: AtomicU64::new(0),
@@ -508,6 +510,7 @@ impl Computer {
         self.request(&session, "end_session", json!({})).await?;
         self.last.lock().await.remove(&session);
         self.scales().remove(&session);
+        lock(&self.unmapped).remove(&session);
         Ok(format!("ended session {session}"))
     }
 
@@ -559,12 +562,13 @@ impl Computer {
         if let Some(smaller) = image.as_deref().and_then(shrink) {
             image = Some(smaller);
         }
-        self.keep_scale(session, scale, shared);
         // the driver rescales later desktop clicks by its last capture; a full-size one keeps it at 1
-        if capped {
-            let full = json!({"max_image_dimension": 0});
-            let _ = self.request(session, "get_desktop_state", full).await;
+        if capped && let Err(e) = self.full_capture(session).await {
+            lock(&self.unmapped).insert(session.to_owned());
+            return Err(format!("the screenshot's click mapping is unknown: {e}"));
         }
+        lock(&self.unmapped).remove(session);
+        self.keep_scale(session, scale, shared);
         Ok((image, scale, None))
     }
 
@@ -1658,6 +1662,12 @@ impl Computer {
     }
 
     async fn request(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
+        if lock(&self.unmapped).contains(session) && desktop_point(&args) {
+            self.full_capture(session).await.map_err(|e| {
+                format!("{name}: the click mapping of session {session} is unknown: {e}")
+            })?;
+            lock(&self.unmapped).remove(session);
+        }
         let point = match (args["x"].as_f64(), args["y"].as_f64()) {
             (Some(x), Some(y)) if name == "click" => Some((x, y)),
             _ => None,
@@ -1677,6 +1687,15 @@ impl Computer {
             crate::desk::adopt(result.clone()).await;
         }
         Ok(result)
+    }
+
+    async fn full_capture(&self, session: &str) -> Result<(), String> {
+        let full = json!({"max_image_dimension": 0});
+        let v = self.call(session, "get_desktop_state", full).await?;
+        if v["isError"] == true {
+            return Err(format!("get_desktop_state: {}", text_of(&v)));
+        }
+        Ok(())
     }
 
     /// One driver call; a result the driver marks isError comes back as is.
@@ -2114,6 +2133,11 @@ fn window_list(result: &Value) -> Vec<Window> {
         .collect();
     out.sort_by_key(|w| std::cmp::Reverse(w.z));
     out
+}
+
+fn desktop_point(args: &Value) -> bool {
+    (args["scope"] == "desktop" || args["target"]["kind"] == "desktop")
+        && ["x", "from_x"].iter().any(|k| args[k].is_number())
 }
 
 fn window_id_of(state: &Value) -> Option<i64> {
@@ -3291,7 +3315,10 @@ mod tests {
 
     type Landed = std::sync::Arc<std::sync::Mutex<Vec<Vec<f64>>>>;
 
-    fn retina_driver(dir: &Path) -> (PathBuf, Landed, tokio::task::JoinHandle<()>) {
+    fn retina_driver(
+        dir: &Path,
+        full_fails: bool,
+    ) -> (PathBuf, Landed, tokio::task::JoinHandle<()>) {
         let socket = endpoint(dir);
         let listener = Fake::bind(&socket).unwrap();
         let landed = Landed::default();
@@ -3309,6 +3336,9 @@ mod tests {
                 let windowless = args["pid"].is_null() && args["element_token"].is_null();
                 let refused = |text: &str| json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": text}]}});
                 let reply = match req["name"].as_str().unwrap_or_default() {
+                    "get_desktop_state" if full_fails && args["max_image_dimension"] == 0 => {
+                        refused("Desktop screenshot failed: the display is asleep")
+                    }
                     "get_desktop_state" => {
                         let width = match args["max_image_dimension"].as_u64() {
                             None => 120,
@@ -3370,9 +3400,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_capture_whose_full_size_reset_fails_fails_and_no_click_goes_with_its_scaling() {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, landed, driver) = retina_driver(dir.path(), true);
+        let cua = cua_on(&socket, Os::Mac);
+        let shot = cua.state(json!({"max_edge": 50})).await;
+        assert!(
+            shot.as_ref()
+                .is_err_and(|e| e.contains("mapping is unknown")),
+            "{:?}",
+            shot.map(|o| o.text)
+        );
+        let click = json!({"action": "click", "x": 10.0, "y": 5.0, "scale": 2.0});
+        let out = cua.act(click).await;
+        assert!(
+            out.as_ref().map_or(true, |o| o.is_error),
+            "{:?}",
+            out.map(|o| o.text)
+        );
+        assert!(
+            landed.lock().unwrap().is_empty(),
+            "{:?}",
+            landed.lock().unwrap()
+        );
+        driver.abort();
+    }
+
+    #[tokio::test]
     async fn off_linux_windowless_input_goes_with_desktop_scope_and_no_target() {
         let dir = tempfile::tempdir().unwrap();
-        let (socket, landed, driver) = retina_driver(dir.path());
+        let (socket, landed, driver) = retina_driver(dir.path(), false);
         let cua = cua_on(&socket, Os::Mac);
         cua.state(json!({"max_edge": 50})).await.unwrap();
         for act in [
@@ -3391,7 +3448,7 @@ mod tests {
     async fn a_retina_desktop_click_lands_where_the_screenshot_showed_after_a_shot_a_zoom_or_a_full_shot()
      {
         let dir = tempfile::tempdir().unwrap();
-        let (socket, landed, driver) = retina_driver(dir.path());
+        let (socket, landed, driver) = retina_driver(dir.path(), false);
         let cua = cua_on(&socket, Os::Mac);
         let click = json!({"action": "click", "x": 10.0, "y": 5.0, "max_edge": 50});
         cua.state(json!({"max_edge": 50})).await.unwrap();
