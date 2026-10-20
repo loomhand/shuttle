@@ -22,8 +22,8 @@ use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GA_ROOT, GW_OWNER, GetAncestor, GetForegroundWindow, GetWindow, GetWindowTextW,
-    GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_CLOSE, WindowFromPoint,
+    EnumWindows, GW_OWNER, GetForegroundWindow, GetWindow, GetWindowTextW,
+    GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_CLOSE,
 };
 use windows::core::{BOOL, PWSTR};
 
@@ -37,7 +37,6 @@ use crate::uia_roles::{self, Facts, Kind};
 const CACHE_TRIES: u32 = 3;
 const CACHE_RETRY: Duration = Duration::from_millis(40);
 const TITLE_CHARS: usize = 512;
-const HIT_DEPTH: usize = 6;
 const PROPS: [UIA_PROPERTY_ID; 24] = [
     UIA_ControlTypePropertyId,
     UIA_NamePropertyId,
@@ -493,54 +492,6 @@ impl Access for Uia {
         }
         .map_err(|e| format!("close {:?}: {e}", frame.title))
     }
-}
-
-/// The pid and top-level window at the screen point `(x, y)`.
-pub fn window_at(x: f64, y: f64) -> Option<(i64, i64)> {
-    let mut pid = 0u32;
-    // SAFETY: the window calls take a point or a handle; `pid` is a live u32 they write.
-    let root = unsafe {
-        let root = GetAncestor(
-            WindowFromPoint(POINT {
-                x: x.round() as i32,
-                y: y.round() as i32,
-            }),
-            GA_ROOT,
-        );
-        GetWindowThreadProcessId(root, Some(&raw mut pid));
-        root
-    };
-    (!root.is_invalid()).then_some((i64::from(pid), root.0 as i64))
-}
-
-/// The frames of the element at the screen point `(x, y)` and of its ancestors, innermost first.
-pub fn frames_at(x: f64, y: f64) -> Vec<[f64; 4]> {
-    // SAFETY: `CUIAutomation` is a static CLSID; a repeated COM setup returns S_FALSE.
-    let auto: Result<IUIAutomation, _> = unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-        CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
-    };
-    let Ok(auto) = auto else {
-        return Vec::new();
-    };
-    // SAFETY: `auto` is a live IUIAutomation of this thread.
-    let Ok(walker) = (unsafe { auto.ControlViewWalker() }) else {
-        return Vec::new();
-    };
-    let mut el = element_at(&auto, x.round() as i32, y.round() as i32);
-    let mut frames = Vec::new();
-    for _ in 0..HIT_DEPTH {
-        let Some(e) = el else {
-            break;
-        };
-        // SAFETY: `e` is a live element of `auto`.
-        if let Ok(r) = unsafe { e.CurrentBoundingRectangle() } {
-            frames.push([r.left, r.top, r.right - r.left, r.bottom - r.top].map(f64::from));
-        }
-        // SAFETY: `walker` and `e` are live objects of `auto`.
-        el = unsafe { walker.GetParentElement(&e) }.ok();
-    }
-    frames
 }
 
 struct Top {

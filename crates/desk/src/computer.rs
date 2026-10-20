@@ -83,17 +83,8 @@ const NO_TEXT_TARGET: &str =
     "no application window is on the screen to type into; open or focus one first";
 #[cfg(target_os = "macos")]
 const UNDER: Under = crate::ax::window_at;
-#[cfg(windows)]
-const UNDER: Under = crate::uia::window_at;
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(not(target_os = "macos"))]
 const UNDER: Under = |_, _| None;
-#[cfg(target_os = "macos")]
-const HIT: Hit = crate::ax::frames_at;
-#[cfg(windows)]
-const HIT: Hit = crate::uia::frames_at;
-#[cfg(not(any(target_os = "macos", windows)))]
-const HIT: Hit = |_, _| Vec::new();
-const SAME_FRAME: f64 = 2.0;
 const RETRIED: [&str; 4] = [
     "list_windows",
     "get_window_state",
@@ -102,7 +93,6 @@ const RETRIED: [&str; 4] = [
 ];
 
 type Under = fn(f64, f64) -> Option<(i64, i64)>;
-type Hit = fn(f64, f64) -> Vec<[f64; 4]>;
 
 /// The computer verbs' state: the element tokens of each session's latest window state and the scale of its latest screenshot.
 pub struct Computer {
@@ -110,7 +100,6 @@ pub struct Computer {
     os: Os,
     typer: Typer,
     under: Under,
-    hit: Hit,
     last: Mutex<HashMap<String, Snapshot>>,
     input: Arc<Mutex<()>>,
     /// The MIT-SHM grabber, opened on first use and again after a failure.
@@ -139,7 +128,6 @@ impl Computer {
             os,
             typer: crate::desk::TYPER,
             under: UNDER,
-            hit: HIT,
             last: Mutex::new(HashMap::new()),
             input: Arc::new(Mutex::new(())),
             grabber: std::sync::Mutex::new(None),
@@ -375,7 +363,6 @@ impl Computer {
         {
             return self.type_mixed(session, &a).await;
         }
-        let input: Turn = Arc::new(self.input.clone().lock_owned().await);
         let (tool, mut req) = self.action_request(session, &a).await?;
         let line = req["text"]
             .as_str()
@@ -388,12 +375,22 @@ impl Computer {
         if enter && let Some(line) = line {
             req["text"] = line.into();
         }
+        let input: Turn = Arc::new(self.input.clone().lock_owned().await);
         let before = self.before_input(Some(&a)).await;
         let once = self.once(&req);
         let target = once.as_ref().map_or(session, Owned::name);
         let typed = enter.then(|| req.clone());
-        let pressed = req.get("element_token").is_some().then(|| req.clone());
+        let mut pressed = req.get("element_token").is_some().then(|| req.clone());
+        if let Some(p) = pressed.as_mut().and_then(Value::as_object_mut) {
+            p.remove("verify_hit");
+        }
+        let verified = req.get("verify_hit").is_some();
         let mut result = self.send(target, tool, req, enter, &input).await;
+        if let (true, Some(pressed), Err(e)) = (verified, &pressed, &result)
+            && e.contains("verify_hit")
+        {
+            result = self.request(target, "click", pressed.clone()).await;
+        }
         if let (Some(pressed), Err(e)) = (pressed, &result)
             && e.contains(AX_UNSUPPORTED)
             && let Some(retry) = self.unpressable(session, &a, pressed).await
@@ -1136,9 +1133,6 @@ impl Computer {
             "click" | "double_click" | "right_click" | "triple_click"
         );
         let pixel = match a.element {
-            Some(index) if self.os != Os::Linux && a.action == "click" => {
-                self.field_point(session, index).await?
-            }
             Some(index) if clicks && !a.foreground => {
                 match self.element_pixel(session, index, false).await {
                     None if presses(a) => match self.open_menus(session, index).await {
@@ -1229,6 +1223,14 @@ impl Computer {
             if let Some(id) = snap.window_id {
                 req["window_id"] = id.into();
             }
+            if self.os != Os::Linux
+                && tool == "click"
+                && a.action == "click"
+                && a.button.as_deref().is_none_or(|b| b == "left")
+                && FIELDS.contains(&element.role.as_str())
+            {
+                req["verify_hit"] = true.into();
+            }
         } else if let (Some(x), Some(y)) = (a.x, a.y) {
             let k = self.mapped(session, a.scale);
             req["x"] = (x * k).into();
@@ -1288,41 +1290,6 @@ impl Computer {
         })
         .await
         .map_err(|e| format!("XTest: {e}"))?
-    }
-
-    /// Off Linux, the centre of text field `index` of `session`'s snapshot once its window is in front, when the field itself, still where the snapshot saw it, is under that point: a press does not focus a field.
-    async fn field_point(&self, session: &str, index: i64) -> Result<Option<(f64, f64)>, String> {
-        let (pid, window, frame) = {
-            let last = self.last.lock().await;
-            let Some(snap) = last.get(session) else {
-                return Ok(None);
-            };
-            let Some(element) = snap
-                .elements
-                .get(&index)
-                .filter(|e| FIELDS.contains(&e.role.as_str()))
-            else {
-                return Ok(None);
-            };
-            let (Some(frame), Some(window)) = (element.frame, snap.window_id) else {
-                return Ok(None);
-            };
-            (snap.pid, window, frame)
-        };
-        let [x, y] = [frame[0] + frame[2] / 2.0, frame[1] + frame[3] / 2.0];
-        self.request(
-            session,
-            "bring_to_front",
-            json!({"pid": pid, "window_id": window}),
-        )
-        .await?;
-        let shown = (self.under)(x, y).is_some_and(|(_, top)| top == window)
-            && (self.hit)(x, y).iter().any(|f| {
-                f.iter()
-                    .zip(frame)
-                    .all(|(a, b)| (a - b).abs() <= SAME_FRAME)
-            });
-        Ok(shown.then_some((x, y)))
     }
 
     /// A desktop click at the centre of the element `a` names, when the topmost window there is the element's own.
@@ -2977,23 +2944,11 @@ mod tests {
         assert_eq!(got, [(7, 180, 97, 920, 436), (8, 57, 52, 950, 538)]);
     }
 
-    type Gate = std::sync::Arc<(tokio::sync::Notify, tokio::sync::Notify)>;
-
     fn press_driver(
         socket: &Path,
         calls: &std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
         refusal: &'static str,
         role: &'static str,
-    ) -> tokio::task::JoinHandle<()> {
-        gated_driver(socket, calls, refusal, role, None)
-    }
-
-    fn gated_driver(
-        socket: &Path,
-        calls: &std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
-        refusal: &'static str,
-        role: &'static str,
-        gate: Option<Gate>,
     ) -> tokio::task::JoinHandle<()> {
         let listener = Fake::bind(socket).unwrap();
         let log = std::sync::Arc::clone(calls);
@@ -3011,15 +2966,15 @@ mod tests {
                     "get_window_state" => {
                         json!({"ok": true, "result": {"structuredContent": {"window_id": 9, "elements": [{"element_index": 0, "element_token": "t0", "role": role, "label": "", "frame": {"x": 100.0, "y": 100.0, "w": 200.0, "h": 40.0}}]}}})
                     }
+                    "click" if req["args"]["verify_hit"] == true => {
+                        if refusal.contains("verify_hit") {
+                            json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": refusal}]}})
+                        } else {
+                            json!({"ok": true, "result": {"content": [{"type": "text", "text": "hit"}]}})
+                        }
+                    }
                     "click" if req["args"]["element_token"].is_string() => {
                         json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": refusal}]}})
-                    }
-                    "bring_to_front" => {
-                        if let Some(gate) = &gate {
-                            gate.0.notify_one();
-                            gate.1.notified().await;
-                        }
-                        json!({"ok": true, "result": {"structuredContent": {}}})
                     }
                     _ => json!({"ok": true, "result": {"structuredContent": {}}}),
                 };
@@ -3074,21 +3029,18 @@ mod tests {
         assert!(clicks[1]["element_token"].is_null(), "{clicks:?}");
     }
 
-    const FIELD: Hit = |_, _| vec![[100.0, 100.0, 200.0, 40.0], [0.0, 0.0, 800.0, 600.0]];
+    const MISMATCH: &str = "click.verify_hit: the element on top at (200,120) is not element [0] or inside it; nothing was sent.";
 
     async fn field(
         role: &'static str,
         action: &str,
-        under: Under,
-        hit: Hit,
+        refusal: &'static str,
     ) -> (Output, Vec<Value>) {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
-        let driver = press_driver(&socket, &calls, "", role);
-        let mut cua = cua_on(&socket, Os::Mac);
-        cua.under = under;
-        cua.hit = hit;
+        let driver = press_driver(&socket, &calls, refusal, role);
+        let cua = cua_on(&socket, Os::Mac);
         cua.state(json!({"pid": 7})).await.unwrap();
         calls.lock().unwrap().clear();
         let out = cua
@@ -3101,116 +3053,43 @@ mod tests {
             .unwrap()
             .iter()
             .filter(|c| !RETRIED.iter().any(|r| c["name"] == *r))
-            .cloned()
+            .map(|c| c["args"].clone())
             .collect();
         (out, sent)
     }
 
     #[tokio::test]
-    async fn off_linux_a_click_on_a_text_field_fronts_its_window_and_clicks_its_centre() {
-        let (out, sent) = field(
-            "AXTextField",
-            "left_click",
-            |x, y| ((x, y) == (200.0, 120.0)).then_some((7, 9)),
-            FIELD,
-        )
-        .await;
+    async fn off_linux_a_click_on_a_text_field_asks_the_driver_for_a_hit_checked_click() {
+        let (out, sent) = field("AXTextField", "left_click", "").await;
         assert!(!out.is_error, "{}", out.text);
-        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert_eq!(sent.len(), 1, "{sent:?}");
         assert_eq!(
             (
-                &sent[0]["name"],
-                &sent[0]["args"]["pid"],
-                &sent[0]["args"]["window_id"]
+                &sent[0]["element_token"],
+                &sent[0]["verify_hit"],
+                &sent[0]["window_id"]
             ),
-            (&json!("bring_to_front"), &json!(7), &json!(9))
+            (&json!("t0"), &json!(true), &json!(9))
         );
-        let click = &sent[1]["args"];
-        assert_eq!(
-            (&sent[1]["name"], &click["x"], &click["y"], &click["scope"]),
-            (
-                &json!("click"),
-                &json!(200.0),
-                &json!(120.0),
-                &json!("desktop")
-            )
-        );
-        assert!(click["element_token"].is_null(), "{sent:?}");
     }
 
     #[tokio::test]
-    async fn off_linux_a_covered_or_moved_field_is_pressed_and_other_elements_and_buttons_are_not_fronted()
+    async fn off_linux_a_refused_hit_checked_click_falls_back_to_the_press_and_other_elements_are_pressed()
      {
-        let on: Under = |_, _| Some((7, 9));
-        let behind: Under = |_, _| Some((8, 10));
-        let header: Hit = |_, _| vec![[0.0, 90.0, 800.0, 60.0], [0.0, 0.0, 800.0, 600.0]];
-        let moved: Hit = |_, _| vec![[100.0, 60.0, 200.0, 40.0], [0.0, 0.0, 800.0, 600.0]];
-        for (under, hit) in [(behind, FIELD), (on, header), (on, moved)] {
-            let (_, covered) = field("AXTextField", "click", under, hit).await;
-            assert_eq!(covered.len(), 2, "{covered:?}");
-            assert_eq!(covered[0]["name"], "bring_to_front");
-            assert_eq!(covered[1]["args"]["element_token"], "t0", "{covered:?}");
-        }
+        let (_, sent) = field("AXTextField", "click", MISMATCH).await;
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert_eq!(sent[0]["verify_hit"], true, "{sent:?}");
+        assert!(sent[1].get("verify_hit").is_none(), "{sent:?}");
+        assert_eq!(sent[1]["element_token"], "t0", "{sent:?}");
         for (role, action) in [("AXButton", "click"), ("AXTextField", "right_click")] {
-            let (_, sent) = field(role, action, on, FIELD).await;
+            let (_, sent) = field(role, action, "").await;
             assert_eq!(sent.len(), 1, "{role} {action}: {sent:?}");
-            assert_eq!(
-                sent[0]["name"],
-                json!(action.replace("left_", "")),
-                "{sent:?}"
+            assert!(
+                sent[0].get("verify_hit").is_none(),
+                "{role} {action}: {sent:?}"
             );
-            assert_eq!(sent[0]["args"]["element_token"], "t0", "{sent:?}");
+            assert_eq!(sent[0]["element_token"], "t0", "{sent:?}");
         }
-    }
-
-    #[tokio::test]
-    async fn a_field_click_holds_the_input_turn_from_fronting_to_its_click() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = endpoint(dir.path());
-        let calls = std::sync::Arc::default();
-        let gate = Gate::default();
-        let driver = gated_driver(
-            &socket,
-            &calls,
-            "",
-            "AXTextField",
-            Some(std::sync::Arc::clone(&gate)),
-        );
-        let mut cua = cua_on(&socket, Os::Mac);
-        cua.under = |_, _| Some((7, 9));
-        cua.hit = FIELD;
-        cua.state(json!({"pid": 7})).await.unwrap();
-        calls.lock().unwrap().clear();
-        let mut field = std::pin::pin!(cua.act(json!({"action": "click", "element": 0})));
-        let mut other = std::pin::pin!(cua.act(json!({"action": "click", "x": 10.0, "y": 10.0})));
-        tokio::select! {
-            _ = &mut field => panic!("the field click ended before its window came to the front"),
-            () = gate.0.notified() => {}
-        }
-        tokio::select! {
-            biased;
-            _ = &mut other => panic!("the other click ended while the window was coming to the front"),
-            () = std::future::ready(()) => {}
-        }
-        gate.1.notify_one();
-        let (field, other) = tokio::join!(field, other);
-        driver.abort();
-        assert!(!field.unwrap().is_error && !other.unwrap().is_error);
-        let order: Vec<String> = calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|c| c["name"] == "bring_to_front" || c["name"] == "click")
-            .map(|c| format!("{} {}", c["name"], c["args"]["x"]))
-            .collect();
-        assert_eq!(
-            order,
-            [
-                "\"bring_to_front\" null",
-                "\"click\" 200.0",
-                "\"click\" 10.0"
-            ]
-        );
     }
 
     #[tokio::test]
