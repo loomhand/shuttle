@@ -830,6 +830,7 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
             break;
         };
         if ask {
+            ask = false;
             if android.show(&frame.id, &node.path).await {
                 let (refreshed, mut nodes) = app_tree(android, &frame.package).await?;
                 frame = refreshed;
@@ -842,7 +843,6 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
                     }
                 }
             }
-            ask = false;
         }
         let (cx, from, to) = frame
             .swipe([sx, sy, sw, sh], node.bounds[1])

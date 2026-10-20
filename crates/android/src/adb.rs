@@ -1516,6 +1516,20 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn an_element_that_moves_and_stays_off_the_screen_is_asked_once_then_swiped_for() {
+        let fake = Fake::new();
+        fake.windows("");
+        fake.put("show.answer", "true");
+        list(&fake, "dump.xml", "[0,1300][720,1400]");
+        list(&fake, "after-show.xml", "[0,1250][720,1350]");
+        list(&fake, "after-swipe.xml", "[0,600][720,700]");
+        assert_eq!(press_target(&fake).await["y"].as_i64(), Some(650));
+        assert_eq!(log(&fake, "requests").matches("show ").count(), 1);
+        assert_eq!(log(&fake, "adbinput").matches("swipe").count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_refusing_element_is_swiped_for() {
         let fake = Fake::new();
         fake.windows("");
