@@ -49,7 +49,7 @@ impl Grabber {
         match *self {}
     }
 
-    pub fn title(&self, _: u32) -> String {
+    pub fn title(&self, _: u32) -> Option<String> {
         match *self {}
     }
 
