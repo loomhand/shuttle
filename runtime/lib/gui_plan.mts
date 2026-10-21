@@ -676,9 +676,10 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
     const p = await peek(shot.value, [(x - left) * k, (y - top) * k])
     const out: Grounding = { what, ok: p >= CROP_BAR, check: 'jev-image', p }
     if (out.ok) return out
-    const b = under.found?.bounds ?? (under.found?.id ? (await desk.read(under.found.id).catch(() => null))?.bounds : undefined)
+    const [read, full] = await Promise.all([under.found.bounds || !under.found.id ? null : desk.read(under.found.id).catch(() => null), desk.shot()])
+    const b = under.found.bounds ?? read?.bounds
     const el = b && b[2] > 0 && b[3] > 0 ? b : null
-    const screen = unpng(await desk.shot()), s = screen.w / area.width
+    const screen = unpng(full), s = screen.w / area.width
     const crop = async (cw: number, ch: number, k: number) => {
       const [left, top] = fit(cw, ch)
       return peek(cut(screen, Math.round((left - ox) * s), Math.round((top - oy) * s), Math.round(cw * s), Math.round(ch * s), k), [(x - left) * s * k, (y - top) * s * k])

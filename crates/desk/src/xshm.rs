@@ -918,15 +918,19 @@ mod tests {
 
     use super::*;
 
+    fn property(value: &[u8], offset: u32) -> Option<(Vec<u8>, u32)> {
+        let from = (offset as usize * 4).min(value.len());
+        let to = (from + 256).min(value.len());
+        Some((value[from..to].to_vec(), (value.len() - to) as u32))
+    }
+
     #[test]
     fn a_window_name_longer_than_one_read_comes_back_whole() {
         let title: Vec<u8> = (0..600u32).map(|i| b'a' + (i % 26) as u8).collect();
         let mut offsets = Vec::new();
         let got = whole(|offset| {
             offsets.push(offset);
-            let from = (offset as usize * 4).min(title.len());
-            let to = (from + 256).min(title.len());
-            Some((title[from..to].to_vec(), (title.len() - to) as u32))
+            property(&title, offset)
         });
         assert_eq!(got, Some(title));
         assert_eq!(offsets, [0, 64, 128]);
@@ -943,18 +947,11 @@ mod tests {
         let mut reads = 0;
         let got = whole(|offset| {
             reads += 1;
-            let from = (offset as usize * 4).min(title.len());
-            let to = (from + 256).min(title.len());
-            Some((title[from..to].to_vec(), (title.len() - to) as u32))
+            property(&title, offset)
         });
         assert_eq!((got, reads), (None, 16));
         let fits = vec![b'a'; 4096];
-        let got = whole(|offset| {
-            let from = (offset as usize * 4).min(fits.len());
-            let to = (from + 256).min(fits.len());
-            Some((fits[from..to].to_vec(), (fits.len() - to) as u32))
-        });
-        assert_eq!(got, Some(fits));
+        assert_eq!(whole(|offset| property(&fits, offset)), Some(fits));
     }
 
     #[test]
