@@ -23,7 +23,7 @@ The desk runtime calls models in four roles, each a model name on that endpoint:
 |---|---|---|---|
 | `decide` | `typesafe/jev-1.14` | Picks one element from candidates, or answers a yes/no question, with probabilities, over text | `gui_plan` window checks, `expect` steps, `find`, and the text pick when the screenshot pick fails; `desk.decide` in scripts |
 | `verify` | the `decide` model | Answers the same over a screenshot, within 5 s | `gui_plan` when a step's target matches more than one element, and its check after a grounded click; `desk.look` in scripts |
-| `ground` | `qwen/qwen3-vl-235b-a22b-instruct` | Returns the point of a described element in a screenshot, as `point_2d` from 0 to 1000 | `gui_plan` when the accessibility tree has no match; `desk.ground` |
+| `ground` | `qwen/qwen3-vl-235b-a22b-instruct` | Returns the point of a described element in a screenshot, as `point_2d` from 0 to 1000 | `gui_plan` when the accessibility tree has no match, for a point where the accessibility tree has an element (an app with no tree, such as desktop Chrome without accessibility on Linux, goes to `computer_act`); `desk.ground` |
 | `ask` | `anthropic/claude-sonnet-5` | Answers a free-form question about screenshots | `gui_plan` `expect` steps the text check does not confirm, and toggle states the accessibility tree does not report; `desk.ask` |
 
 Every field is optional; this file spells out the defaults:
