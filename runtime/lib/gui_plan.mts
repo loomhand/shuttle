@@ -56,6 +56,7 @@ const FIELDS = 'textbox|searchbox|spinbutton|slider|combobox'
 const FIELD_ROLES = new Set(FIELDS.split('|'))
 const SHOWN_ROLES = new Set([...ACTIVE, 'dialog', 'alert'])
 const ROOT_ROLES = new Set(['window', 'frame', 'application', 'dialog', 'document'])
+const WINDOW_ROLES = new Set(['window', 'frame', 'dialog'])
 const REFUSED: Partial<Record<string, string>> = { 'root-hit': ', a window or document root', 'foreign-hit': ', which belongs to another process', 'unknown-pid': ', whose process is unknown' }
 const MARGIN = 0.25
 const CROP = { w: 640, h: 400 }
@@ -667,19 +668,25 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
   try {
     if (spot.status === 'rejected') return { what, ok: false, check: 'at-error', why: String(spot.reason).slice(0, 120) }
     if (!under.found) return { what, ok: false, check: 'no-hit' }
-    const inside = (under.path ?? []).some((n) => n.id === w.id)
-    if (!inside && (w.pid === null || under.pid == null)) return { what, ok: false, check: 'unknown-pid' }
-    if (!inside && under.pid !== w.pid) return { what, ok: false, check: 'foreign-hit' }
+    const path = under.path ?? []
+    const inside = path.some((n) => n.id === w.id)
+    const others = inside ? [] : path.filter((n) => WINDOW_ROLES.has(n.role)).map((n) => n.id)
+    if (others.length) {
+      const owned = new Set((await desk.windows()).filter((x) => x.owner === w.id).map((x) => x.id))
+      if (!others.every((id) => owned.has(id))) return { what, ok: false, check: 'foreign-hit' }
+    } else if (!inside) {
+      if (w.pid === null || under.pid == null) return { what, ok: false, check: 'unknown-pid' }
+      if (under.pid !== w.pid) return { what, ok: false, check: 'foreign-hit' }
+    }
     if (ROOT_ROLES.has(under.found.role) || under.found.id === w.id) return { what, ok: false, check: 'root-hit' }
     if (shot.status === 'rejected') throw shot.reason
     const k = shot.value.readUInt32BE(16) / cw
     const p = await peek(shot.value, [(x - left) * k, (y - top) * k])
     const out: Grounding = { what, ok: p >= CROP_BAR, check: 'jev-image', p }
     if (out.ok) return out
-    const [read, full] = await Promise.all([under.found.bounds || !under.found.id ? null : desk.read(under.found.id).catch(() => null), desk.shot()])
-    const b = under.found.bounds ?? read?.bounds
+    const b = under.found.bounds ?? (under.found.id ? (await desk.read(under.found.id).catch(() => null))?.bounds : undefined)
     const el = b && b[2] > 0 && b[3] > 0 ? b : null
-    const screen = unpng(full), s = screen.w / area.width
+    const screen = unpng(await desk.shot()), s = screen.w / area.width
     const crop = async (cw: number, ch: number, k: number) => {
       const [left, top] = fit(cw, ch)
       return peek(cut(screen, Math.round((left - ox) * s), Math.round((top - oy) * s), Math.round(cw * s), Math.round(ch * s), k), [(x - left) * s * k, (y - top) * s * k])

@@ -15,7 +15,7 @@ type RunStep = { checked?: string; p?: number; p_zoom?: number | null; p_full?: 
 
 const win = { id: '1.1/1', title: 'Portal', role: 'frame', pid: process.pid, active: true }
 const nodes: El[] = []
-const shell: { win: { id: string; title: string; role: string; pid: number; active: boolean }; nodes: El[] }[] = []
+const shell: { win: { id: string; title: string; role: string; pid: number; active: boolean; owner?: string }; nodes: El[] }[] = []
 const pressed: string[] = []
 const clicked: string[] = []
 const atPids: unknown[] = []
@@ -410,6 +410,22 @@ test('a grounded point inside the plan window counts as its own whatever the pro
   hitPid = null
   const unknown = await plan('the multiply key', tree, {})
   assert.equal(unknown.ok, true, JSON.stringify(unknown))
+})
+
+test('a grounded point in another window of the plan\'s own process is refused, unless the plan window owns that window', async (t) => {
+  const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
+  build = BUILD
+  on = 0.99
+  under = { role: 'push button', name: 'OK' }
+  path = [{ id: '1.1/7', role: 'dialog', name: 'Options' }]
+  const other = await plan('the OK button', tree, {})
+  assert.equal(other.ok, false, JSON.stringify(other))
+  assert.deepEqual([clicked, looks, other.trace?.[0]?.ground?.check], [[], [], 'foreign-hit'])
+  t.after(() => { shell.length = 0 })
+  shell.push({ win: { id: '1.1/7', title: 'Options', role: 'dialog', pid: process.pid, active: false, owner: '1.1/1' }, nodes: [] })
+  const owned = await plan('the OK button', tree, {})
+  assert.equal(owned.ok, true, JSON.stringify(owned))
+  assert.deepEqual(clicked, ['640,400'])
 })
 
 test('a failed read of the element under a grounded point is refused with its reason, not as no element', async () => {

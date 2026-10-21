@@ -1576,6 +1576,7 @@ mod tests {
             pid.is_some() && hit["pid"].as_u64() == pid,
             "{hit} {windows}"
         );
+        assert_eq!(hit["path"][0]["id"], windows[0]["id"], "{hit} {windows}");
     }
 
     #[cfg(unix)]
