@@ -889,7 +889,12 @@ async fn at(android: &Android, a: AtArgs) -> Result<String, String> {
     let mut p = hit.parent;
     while p >= 0 {
         let n = &nodes[p as usize];
-        path.push(json!({"id": n.id(&frame.package), "role": n.role, "name": n.name}));
+        let id = if p == 0 {
+            frame.id.clone()
+        } else {
+            n.id(&frame.package)
+        };
+        path.push(json!({"id": id, "role": n.role, "name": n.name}));
         p = n.parent;
     }
     let mut out = json!({});
