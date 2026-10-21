@@ -178,7 +178,7 @@ fn settle_active(frames: &mut [Frame], (pid, title): (Option<u32>, String)) {
     };
     let named = frames
         .iter()
-        .filter(|f| f.pid == Some(pid) && f.title == title)
+        .filter(|f| !title.is_empty() && f.pid == Some(pid) && f.title == title)
         .count();
     for f in frames.iter_mut() {
         let own = f.pid == Some(pid);
@@ -415,6 +415,17 @@ mod tests {
             settle_active(&mut frames, (Some(7), "Untitled".to_owned()));
             assert!(actives(&frames).is_empty(), "{marked:?}");
         }
+    }
+
+    #[test]
+    fn an_untitled_x_active_window_never_names_an_untitled_popup_active() {
+        let mut frames = vec![
+            window("a.txt - Mousepad", 7, true),
+            window("", 7, false),
+            window("Terminal", 9, true),
+        ];
+        settle_active(&mut frames, (Some(7), String::new()));
+        assert_eq!(actives(&frames), ["a.txt - Mousepad"]);
     }
 
     #[test]
