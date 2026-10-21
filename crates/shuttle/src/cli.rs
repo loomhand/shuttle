@@ -32,7 +32,7 @@ use crate::services::{self, Services};
 use crate::tools::{self, DESK_VERBS};
 #[cfg(windows)]
 use crate::win as controls;
-use crate::{NAME, VERSION, log, mcp, plugins};
+use crate::{NAME, VENDOR, VERSION, home, log, mcp, plugins};
 
 /// Runs the command in `args` (the program name excluded) and returns its exit code.
 pub fn run(args: &[String]) -> ExitCode {
@@ -46,7 +46,7 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         "mcp" => {
             let endpoint = desk_endpoint();
-            let path = default_path(NAME);
+            let path = default_path(home());
             let config = Config::load(&path);
             let mut listed = plugins::configured(&config, &path, &tools::NAMES);
             if !config.as_ref().is_ok_and(|c| c.tools.script_run) {
@@ -75,7 +75,12 @@ pub fn run(args: &[String]) -> ExitCode {
 }
 
 fn desk_endpoint() -> String {
-    server::cache_endpoint("SHUTTLE_SOCKET", &format!("{NAME}-desk"), NAME, "desk.sock")
+    server::cache_endpoint(
+        "SHUTTLE_SOCKET",
+        &format!("{VENDOR}-{NAME}-desk"),
+        &format!("{VENDOR}/{NAME}"),
+        "desk.sock",
+    )
 }
 
 fn safety(cmd: &str) -> ExitCode {
@@ -195,7 +200,7 @@ async fn serve(
         InputMode,
     ),
 ) -> Result<(), String> {
-    let path = default_path(NAME);
+    let path = default_path(home());
     let mut config = Config::load(&path);
     let android = config.as_mut().ok().and_then(|c| c.android.take());
     let local = android::local_controls(android.as_ref());

@@ -55,13 +55,13 @@ pub fn run(ui: Ui) -> ! {
             let class = WNDCLASSW {
                 lpfnWndProc: Some(procedure),
                 hInstance: module.into(),
-                lpszClassName: w!("ShuttleControls"),
+                lpszClassName: w!("LoomhandShuttleControls"),
                 ..Default::default()
             };
             RegisterClassW(&class);
             CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
-                w!("ShuttleControls"),
+                w!("LoomhandShuttleControls"),
                 w!("Shuttle"),
                 WINDOW_STYLE::default(),
                 0,

@@ -99,10 +99,10 @@ mod tests {
 
     #[test]
     fn only_a_macos_binary_inside_an_app_bundle_starts_through_its_app() {
-        let inside = Path::new("/Users/u/Applications/Shuttle.app/Contents/MacOS/shuttle");
+        let inside = Path::new("/Users/u/Applications/Loomhand/Shuttle.app/Contents/MacOS/shuttle");
         let bare = Path::new("/Users/u/.local/bin/shuttle");
-        let want =
-            cfg!(target_os = "macos").then_some(Path::new("/Users/u/Applications/Shuttle.app"));
+        let want = cfg!(target_os = "macos")
+            .then_some(Path::new("/Users/u/Applications/Loomhand/Shuttle.app"));
         assert_eq!(app_bundle(inside), want);
         assert_eq!(app_bundle(bare), None);
     }

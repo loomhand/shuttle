@@ -94,7 +94,7 @@ fn ask(mtm: MainThreadMarker, question: &str, tx: oneshot::Sender<bool>) {
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "ShuttleConfirmWatch"]
+    #[name = "LoomhandShuttleConfirmWatch"]
     #[ivars = RefCell<Option<oneshot::Sender<bool>>>]
     struct Watch;
 
@@ -218,7 +218,7 @@ impl Shown {
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "ShuttleControls"]
+    #[name = "LoomhandShuttleControls"]
     #[ivars = Shown]
     struct Target;
 

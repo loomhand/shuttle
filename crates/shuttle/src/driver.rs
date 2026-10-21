@@ -9,7 +9,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::{NAME, log};
+use crate::{home, log};
 
 const TELEMETRY: &str = "CUA_DRIVER_RS_TELEMETRY_ENABLED";
 const GLIDE_MS: &str = "1";
@@ -237,7 +237,7 @@ fn pid_file(endpoint: &str) -> Result<PathBuf, String> {
     if !cfg!(windows) {
         return Ok(Path::new(endpoint).with_extension("pid"));
     }
-    let dir = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join(NAME);
+    let dir = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join(home());
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let pipe = endpoint.rsplit('\\').next().unwrap_or(endpoint);
     Ok(dir.join(format!("{pipe}.pid")))
@@ -246,6 +246,7 @@ fn pid_file(endpoint: &str) -> Result<PathBuf, String> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::NAME;
 
     const FAKE: &str = r#"#!/usr/bin/env python3
 import os, socket, sys, time
