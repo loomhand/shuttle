@@ -31,7 +31,7 @@ use crate::still::{Frame as StillFrame, Watch};
 use crate::worker::Worker;
 
 pub const TURN_WAIT: Duration = Duration::from_secs(15);
-/// The verbs a vision agent drives the screen with, which the Linux X11 desk answers.
+/// The verbs a vision agent drives the screen with, which the Linux X11, macOS and Windows desks answer.
 pub const COMPUTER_VERBS: [&str; 6] = [
     "desk_computer_state",
     "desk_computer_act",
