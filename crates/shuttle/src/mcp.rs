@@ -17,6 +17,7 @@ const INVALID_PARAMS: i64 = -32602;
 const INSTRUCTIONS: &str = "These tools act on the user's own desktop. GUI work in a desktop app goes to gui_plan, the whole plan in one call; a loop or logic a plan cannot hold goes to one script_run; one look or one click goes to desk or screenshot.";
 
 type Answer<'a> = Pin<Box<dyn Future<Output = Option<Value>> + Send + 'a>>;
+type Message = Result<Map<String, Value>, String>;
 
 /// Answers MCP requests from `input` on `output` in order, one JSON line each way; desk and plugin tools go to the daemon at `endpoint`; a `notifications/cancelled` drops the request it names without a reply, and a running one closes its daemon connection.
 pub async fn serve<R, W>(
@@ -30,24 +31,27 @@ where
     W: AsyncWrite + Unpin,
 {
     let mut lines = input.lines();
-    let mut queued: VecDeque<String> = VecDeque::new();
+    let mut queued: VecDeque<Message> = VecDeque::new();
     let mut running: Option<(Option<String>, Answer<'_>)> = None;
     let mut open = true;
     while open || running.is_some() || !queued.is_empty() {
         if running.is_none()
-            && let Some(line) = queued.pop_front()
+            && let Some(msg) = queued.pop_front()
         {
-            running = Some((request_id(&line), Box::pin(answer(line, endpoint, plugins))));
+            running = Some((request_id(&msg), Box::pin(answer(msg, endpoint, plugins))));
         }
         tokio::select! {
             line = lines.next_line(), if open => match line.map_err(|e| format!("read stdin: {e}"))? {
                 None => open = false,
                 Some(line) if line.trim().is_empty() => {}
-                Some(line) => match cancelled(&line) {
-                    Some(id) if running.as_ref().is_some_and(|(r, _)| r.as_ref() == Some(&id)) => running = None,
-                    Some(id) => queued.retain(|q| request_id(q).as_ref() != Some(&id)),
-                    None => queued.push_back(line),
-                },
+                Some(line) => {
+                    let msg: Message = serde_json::from_str(&line).map_err(|e| format!("parse: {e}"));
+                    match cancelled(&msg) {
+                        Some(id) if running.as_ref().is_some_and(|(r, _)| r.as_ref() == Some(&id)) => running = None,
+                        Some(id) => queued.retain(|q| request_id(q).as_ref() != Some(&id)),
+                        None => queued.push_back(msg),
+                    }
+                }
             },
             reply = async {
                 match running.as_mut() {
@@ -76,30 +80,26 @@ async fn write<W: AsyncWrite + Unpin>(output: &mut W, reply: &Value) -> Result<(
         .map_err(|e| format!("write stdout: {e}"))
 }
 
-/// The id of the request on `line` as JSON text; none for a notification or a line that does not parse.
-fn request_id(line: &str) -> Option<String> {
-    let msg: Value = serde_json::from_str(line).ok()?;
-    msg.get("id").map(Value::to_string)
+/// The id of the request `msg` as JSON text; none for a notification or a line that does not parse.
+fn request_id(msg: &Message) -> Option<String> {
+    msg.as_ref().ok()?.get("id").map(Value::to_string)
 }
 
-/// The request id a `notifications/cancelled` on `line` names, as JSON text.
-fn cancelled(line: &str) -> Option<String> {
-    let msg: Value = serde_json::from_str(line).ok()?;
-    if msg["method"] != "notifications/cancelled" || msg.get("id").is_some() {
+/// The request id a `notifications/cancelled` names, as JSON text.
+fn cancelled(msg: &Message) -> Option<String> {
+    let msg = msg.as_ref().ok()?;
+    if msg.get("method").and_then(Value::as_str) != Some("notifications/cancelled")
+        || msg.contains_key("id")
+    {
         return None;
     }
-    msg["params"].get("requestId").map(Value::to_string)
+    msg.get("params")?.get("requestId").map(Value::to_string)
 }
 
-async fn answer(line: String, endpoint: &str, plugins: &Plugins) -> Option<Value> {
-    let mut msg: Map<String, Value> = match serde_json::from_str(&line) {
+async fn answer(msg: Message, endpoint: &str, plugins: &Plugins) -> Option<Value> {
+    let mut msg = match msg {
         Ok(m) => m,
-        Err(e) => {
-            return Some(reply(
-                Value::Null,
-                Err((PARSE_ERROR, format!("parse: {e}"))),
-            ));
-        }
+        Err(e) => return Some(reply(Value::Null, Err((PARSE_ERROR, e)))),
     };
     let id = msg.remove("id")?;
     let Some(Value::String(method)) = msg.remove("method") else {
@@ -223,6 +223,24 @@ mod tests {
             .filter(|l| !l.is_empty())
             .map(|l| serde_json::from_slice(l).unwrap())
             .collect()
+    }
+
+    #[cfg(unix)]
+    async fn daemon<H: Handler>(
+        handler: H,
+        endpoint: &str,
+    ) -> tokio::task::JoinHandle<Result<(), String>> {
+        let daemon = tokio::spawn({
+            let endpoint = endpoint.to_owned();
+            async move { server::serve(Arc::new(handler), server::bind(&endpoint).await?).await }
+        });
+        for _ in 0..50 {
+            if server::connect(endpoint).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        daemon
     }
 
     #[tokio::test]
@@ -367,16 +385,7 @@ mod tests {
     async fn a_cancel_drops_a_queued_request_and_replies_keep_their_order() {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
-        let daemon = tokio::spawn({
-            let endpoint = endpoint.clone();
-            async move { server::serve(Arc::new(Slow), server::bind(&endpoint).await?).await }
-        });
-        for _ in 0..50 {
-            if server::connect(&endpoint).await.is_ok() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        let daemon = daemon(Slow, &endpoint).await;
         let windows = |id: i64| json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": "desk", "arguments": {"verb": "windows"}}});
         let out = session(
             &[
@@ -417,16 +426,7 @@ mod tests {
     async fn desk_and_screenshot_go_to_the_daemon() {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
-        let daemon = tokio::spawn({
-            let endpoint = endpoint.clone();
-            async move { server::serve(Arc::new(Fake), server::bind(&endpoint).await?).await }
-        });
-        for _ in 0..50 {
-            if server::connect(&endpoint).await.is_ok() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        let daemon = daemon(Fake, &endpoint).await;
         let out = session(
             &[
                 json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "desk", "arguments": {"verb": "windows"}}}),
@@ -467,16 +467,7 @@ mod tests {
             "resources": [{"uri": "demo://GUIDE.md", "path": guide, "mime": "text/markdown", "description": "The demo guide"}]
         }))
         .unwrap();
-        let daemon = tokio::spawn({
-            let endpoint = endpoint.clone();
-            async move { server::serve(Arc::new(Fake), server::bind(&endpoint).await?).await }
-        });
-        for _ in 0..50 {
-            if server::connect(&endpoint).await.is_ok() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        let daemon = daemon(Fake, &endpoint).await;
         let lines = [
             json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}}),
             json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
