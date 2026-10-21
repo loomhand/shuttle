@@ -4,8 +4,8 @@ import { test, type TestContext } from 'node:test'
 import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
-async function unfocused(t: TestContext, titles: string[]) {
-  const wins = [{ id: '1', title: 'StreamView - Google Chrome', role: 'frame', pid: process.pid, active: false }, ...titles.map((title, i) => ({ id: String(i + 2), title, role: 'dialog', pid: process.pid, active: false }))]
+async function unfocused(t: TestContext, titles: string[], role = 'dialog') {
+  const wins = [{ id: '1', title: 'StreamView - Google Chrome', role: 'frame', pid: process.pid, active: false }, ...titles.map((title, i) => ({ id: String(i + 2), title, role, pid: process.pid, active: false }))]
   const calls: string[] = []
   await daemon(t, ({ tool, args }) => {
     calls.push(tool === 'desk_focus' || tool === 'desk_press' ? `${tool} ${String(args.window ?? args.id)}` : tool)
@@ -34,5 +34,22 @@ test('with no window in front, a wait step does not choose between two windows o
   assert.equal(waited.escalate?.reason, 'expected window "Open File" did not appear', JSON.stringify(waited))
   const clicked = await main({ steps: [{ click: 'Cancel' }] })
   assert.equal(clicked.escalate?.reason, 'no focused window', JSON.stringify(clicked))
+  assert.ok(!calls.some((c) => c.startsWith('desk_focus') || c.startsWith('desk_press')), calls.join(' '))
+})
+
+test('a plan does not take the last window of the plan before it when no window is in front', async (t) => {
+  const calls = await unfocused(t, ['Open File'])
+  const first = await main({ steps: [{ wait: 'Open File', timeout_ms: 1000 }] })
+  assert.equal(first.ok, true, JSON.stringify(first))
+  const before = calls.length
+  const next = await main({ steps: [{ click: 'Cancel' }] })
+  assert.equal(next.escalate?.reason, 'no focused window', JSON.stringify(next))
+  assert.ok(!calls.slice(before).some((c) => c.startsWith('desk_focus') || c.startsWith('desk_press')), calls.slice(before).join(' '))
+})
+
+test('with no window in front, a wait step never takes an alert that carries its title', async (t) => {
+  const calls = await unfocused(t, ['Confirm Save As'], 'alert')
+  const r = await main({ steps: [{ wait: 'Save As', timeout_ms: 600 }, { click: 'Cancel' }] })
+  assert.equal(r.escalate?.reason, 'expected window "Save As" did not appear', JSON.stringify(r))
   assert.ok(!calls.some((c) => c.startsWith('desk_focus') || c.startsWith('desk_press')), calls.join(' '))
 })

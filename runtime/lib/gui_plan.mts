@@ -118,6 +118,7 @@ async function perform(p: Params): Promise<Result> {
   const plan: Step[] = (flow ? flow.steps : p.steps ?? []).filter((s) => !Object.keys(s).every((k) => ['screenshot', 'timeout_s', 'max_edge'].includes(k)))
   if (!plan.length) return { ok: false, error: 'pass steps, flow or find' }
   recording = !flow && !!plan[0]?.app && !p.start
+  lastSeen = ''
   if (p.save && !flow && !p.start && !idempotent(plan)) {
     const c = pending()
     const was = c?.steps.filter((s) => !s.close) ?? []; const now = plan.filter((s) => !s.close)
@@ -539,7 +540,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string): Pro
       const bg = ws.find((x) => named(x) && x.pid === t?.pid) ?? ws.find(named)
       if (bg) { follow(bg, ws); return found(bg, t0) }
     } else if ((!w || known.has(w.title)) && Date.now() - t0 > 150) {
-      const hits = ws.filter((x) => norm(x.title).includes(norm(want)))
+      const hits = ws.filter((x) => norm(x.title).includes(norm(want)) && (!!w || x.role !== 'alert'))
       const bg = w || hits.length === 1 ? hits[0] : undefined
       if (bg) { await desk.focus(bg.title, bg.pid); return found(bg, t0) }
     }
