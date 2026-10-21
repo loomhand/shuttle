@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.13 - 2026-10-21
 
 - **Bundled:** cua-driver v0.37.0-loomhand.5 (was v0.37.0-loomhand.4): an element `click` can ask for `verify_hit`, which hit-tests the element's centre after fronting its window and a 150 ms (Windows) / 40 ms (macOS) hover settle and clicks only when the element is there, refusing with `hit_mismatch` otherwise; on macOS background text to kitty goes in as an accessibility value write, which kitty takes without being the key window, and a blank kitty read-back reports unverified instead of zero delivered; a macOS window on another Space is found through its app's focused or main window, and an off-Space window of an app with its own renderer (WeChat, Electron, Chromium, Qt) carries a note that its pixels can be stale.
 - **Off-Space note.** The `unverified` note on background input to a macOS window on another Space now says that background input cannot read that window back; after typed text, not to type the text again, and to ask the user to confirm the text before submitting it with Return or Send; after a key, click, scroll or drag, not to send the input again, and to ask the user to confirm its effect. Before, "read it back on its Space before sending the input again" read to an agent as a stop before the Return too.
