@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use std::io::Write as _;
+    use std::path::{Path, PathBuf};
 
     use shuttle_models::config::{Config, Confirm, DecideApi, InputMode, default_path};
 
@@ -186,8 +187,8 @@ mod tests {
     }
 
     #[test]
-    fn the_config_path_is_per_program() {
-        let path = default_path(std::path::Path::new("loomhand").join("shuttle"));
+    fn the_config_path_is_the_program_directory_under_the_config_root() {
+        let path = default_path(Path::new("loomhand").join("shuttle"));
         assert!(
             path.ends_with("loomhand/shuttle/config.toml"),
             "{}",
@@ -214,10 +215,10 @@ mod tests {
         )
         .unwrap();
         let a = c.android.unwrap();
-        assert_eq!(a.adb, std::path::PathBuf::from("adb"));
+        assert_eq!(a.adb, PathBuf::from("adb"));
         assert_eq!(a.serial.as_deref(), Some("127.0.0.1:5555"));
-        assert_eq!(a.ui_jar, Some(std::path::PathBuf::from("/u.jar")));
-        assert_eq!(a.su, Some(std::path::PathBuf::from("/su")));
+        assert_eq!(a.ui_jar, Some(PathBuf::from("/u.jar")));
+        assert_eq!(a.su, Some(PathBuf::from("/su")));
         let phone = Config::load(file("[android]\nscrcpy_jar = \"/s.jar\"\n").path())
             .unwrap()
             .android

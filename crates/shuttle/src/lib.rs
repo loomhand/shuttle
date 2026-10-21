@@ -21,6 +21,7 @@ pub mod win;
 
 use std::fmt::Display;
 use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 #[cfg(unix)]
 use std::sync::{Mutex, PoisonError};
@@ -44,8 +45,8 @@ pub(crate) static ENDING: AtomicBool = AtomicBool::new(false);
 static GRACED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
 /// Shuttle's directory under a config or cache root: `loomhand/shuttle`.
-pub fn home() -> std::path::PathBuf {
-    std::path::Path::new(VENDOR).join(NAME)
+pub fn home() -> PathBuf {
+    Path::new(VENDOR).join(NAME)
 }
 
 pub(crate) fn log(line: impl Display) {

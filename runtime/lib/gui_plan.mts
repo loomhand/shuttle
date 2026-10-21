@@ -30,8 +30,8 @@ type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
 type Text = { value?: string; field: boolean }
 type Escalation = Seen & { reason: string; step?: number; plan_step?: Step }
-type Checked = { what: string; ok: boolean; check: string; p?: number; p_zoom?: number | null; p_full?: number | null; why?: string }
-type Ground = { check: string; p?: number; p_zoom?: number | null; p_full?: number | null; hit: string }
+type Grounding = { what: string; ok: boolean; check: string; p?: number; p_zoom?: number | null; p_full?: number | null; why?: string }
+type Ground = Omit<Grounding, 'what' | 'ok' | 'why'> & { hit: string }
 type Trace = { i: number; op?: string; how?: string; input?: 'foreground'; ms?: number; was?: 'on' | 'off' | 'mixed'; now?: 'on' | 'off'; noop?: boolean; ground?: Ground }
 export type Result = { ok?: boolean; done?: number; ms?: number; trace?: Trace[]; escalate?: Escalation; served?: desk.Served[]; [key: string]: unknown }
 
@@ -56,6 +56,7 @@ const FIELDS = 'textbox|searchbox|spinbutton|slider|combobox'
 const FIELD_ROLES = new Set(FIELDS.split('|'))
 const SHOWN_ROLES = new Set([...ACTIVE, 'dialog', 'alert'])
 const ROOT_ROLES = new Set(['window', 'frame', 'application', 'dialog', 'document'])
+const REFUSED: Partial<Record<string, string>> = { 'root-hit': ', a window or document root', 'foreign-hit': ', which belongs to another process', 'unknown-pid': ', whose process is unknown' }
 const MARGIN = 0.25
 const CROP = { w: 640, h: 400 }
 const SMALL = 5_000
@@ -181,7 +182,7 @@ async function perform(p: Params): Promise<Result> {
     }
     rec.ms = Date.now() - ts; if (desk.served.length > calls) rec.served = desk.served.slice(calls)
     log.push({ ...rec, ...T }); recs[i] = rec
-    trace.push({ i, op: rec.op, how: rec.how, ...(rec.fg || rec.how === 'foreground' ? { input: 'foreground' as const } : {}), ms: rec.ms, ...(rec.was !== undefined ? { was: rec.was === 'mixed' ? 'mixed' : rec.was ? 'on' : 'off', now: rec.noop || s.verify || escalate ? undefined : s.on === false ? 'off' : 'on' } : {}), ...(rec.now !== undefined ? { now: rec.now ? 'on' : 'off' } : {}), ...(rec.noop ? { noop: true } : {}), ...(rec.checked !== undefined ? { ground: { check: rec.checked, p: rec.p, p_zoom: rec.p_zoom, p_full: rec.p_full, hit: rec.ground_hit ?? '' } } : {}) })
+    trace.push(traced(i, rec, s, !!escalate))
     if (escalate) break
   }
   const last = plan.at(-1) ?? {}
@@ -359,6 +360,18 @@ function at(w: Win | null): desk.Target {
 function unique(w: Win) {
   if (BG && listed.some((y) => y.id !== w.id && y.pid === w.pid && y.title === w.title)) throw new Surprise(`another window of the app is also titled "${w.title}", and background input names its window by title, so it never guesses which one gets it`)
 }
+function traced(i: number, rec: Rec, s: Step, escalated: boolean): Trace {
+  return {
+    i, op: rec.op, how: rec.how,
+    ...(rec.fg || rec.how === 'foreground' ? { input: 'foreground' as const } : {}),
+    ms: rec.ms,
+    ...(rec.was !== undefined ? { was: rec.was === 'mixed' ? 'mixed' : rec.was ? 'on' : 'off', now: rec.noop || s.verify || escalated ? undefined : s.on === false ? 'off' : 'on' } : {}),
+    ...(rec.now !== undefined ? { now: rec.now ? 'on' : 'off' } : {}),
+    ...(rec.noop ? { noop: true } : {}),
+    ...(rec.checked !== undefined ? { ground: { check: rec.checked, p: rec.p, p_zoom: rec.p_zoom, p_full: rec.p_full, hit: rec.ground_hit ?? '' } } : {}),
+  }
+}
+
 function heard(r: desk.Sent, rec: Rec) { if (BG && r.unverified && !rec.unverified) rec.unverified = r.unverified }
 async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
   let ws = seed ?? await desk.windows()
@@ -638,7 +651,7 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>) 
   } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
 
-async function grounded(x: number, y: number, target: string, w: Win, area: desk.Size): Promise<Checked> {
+async function grounded(x: number, y: number, target: string, w: Win, area: desk.Size): Promise<Grounding> {
   const t0 = Date.now()
   const [ox, oy] = [area.left ?? 0, area.top ?? 0]
   const fit = (cw: number, ch: number): [number, number] => [Math.max(ox, Math.min(ox + area.width - cw, Math.round(x - cw / 2))), Math.max(oy, Math.min(oy + area.height - ch, Math.round(y - ch / 2)))]
@@ -650,7 +663,7 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
   const [cw, ch] = [Math.min(CROP.w, area.width), Math.min(CROP.h, area.height)], [left, top] = fit(cw, ch)
   const [spot, shot] = await Promise.allSettled([desk.at(x, y, w.title, w.pid), desk.shot({ x: left - ox, y: top - oy, w: cw, h: ch })])
   const under = spot.status === 'fulfilled' ? spot.value : { found: null, path: [] }
-  const what = under.found ? [under.found, ...(under.path ?? []).toReversed()].filter((n, i) => i === 0 || n.name).map((n) => n.name ? `${n.role} "${n.name}"` : n.role).join(' under ') : ''
+  const what = under.found ? [under.found, ...(under.path ?? []).toReversed()].filter((n, i) => i === 0 || !!n.name).map((n) => n.name ? `${n.role} "${n.name}"` : n.role).join(' under ') : ''
   try {
     if (spot.status === 'rejected') return { what, ok: false, check: 'at-error', why: String(spot.reason).slice(0, 120) }
     if (!under.found) return { what, ok: false, check: 'no-hit' }
@@ -661,7 +674,7 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
     if (shot.status === 'rejected') throw shot.reason
     const k = shot.value.readUInt32BE(16) / cw
     const p = await peek(shot.value, [(x - left) * k, (y - top) * k])
-    const out: Checked = { what, ok: p >= CROP_BAR, check: 'jev-image', p }
+    const out: Grounding = { what, ok: p >= CROP_BAR, check: 'jev-image', p }
     if (out.ok) return out
     const b = under.found?.bounds ?? (under.found?.id ? (await desk.read(under.found.id).catch(() => null))?.bounds : undefined)
     const el = b && b[2] > 0 && b[3] > 0 ? b : null
@@ -684,7 +697,7 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
     }
     return out
   } catch (e: unknown) {
-    const p = what.trim() ? prob((await decide({ element_under_point: what, window_title: w.title }, { is: desk.yes(`Is this element "${target}"?`) })).is) : 0
+    const p = prob((await decide({ element_under_point: what, window_title: w.title }, { is: desk.yes(`Is this element "${target}"?`) })).is)
     return { what, ok: p >= 0.7, check: `jev (${(e instanceof Error ? e.message : String(e)).slice(0, 80)})`, p: +p.toFixed(2) }
   } finally { tick('check', t0) }
 }
@@ -1063,8 +1076,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     tick('ground', t0)
     const { what, ok, check, p, p_zoom, p_full, why } = await grounded(x, y, target, w, area)
     rec.ground_hit = what.slice(0, 80); rec.checked = check; rec.p = p; rec.p_zoom = p_zoom; rec.p_full = p_full
-    const off = { 'root-hit': ', a window or document root', 'foreign-hit': ', which belongs to another process', 'unknown-pid': ', whose process is unknown' }[check] ?? ''
-    const at = why ? `a point whose element could not be read: ${why}` : what ? `${what.slice(0, 80)}${off}` : 'no accessible element'
+    const at = why ? `a point whose element could not be read: ${why}` : what ? `${rec.ground_hit}${REFUSED[check] ?? ''}` : 'no accessible element'
     if (!ok) throw new Surprise(`no element matches "${target}"; grounding pointed at ${at}`, await seen(), true)
     t0 = Date.now(); await desk.click(x, y); tick('act', t0)
     rec.how = 'ground'; rec.unsaved = true; await settle(w.title); return
