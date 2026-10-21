@@ -530,9 +530,9 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string): Pro
   const end = Date.now() + ms; let asked: string | null = null
   for (;;) {
     const ws = await desk.windows(); const w = frontOf(ws)
-    if (w && (norm(w.title).includes(norm(want)) || (saw && w.title === saw))) return found(w, t0)
+    if (w && awaited(w.title, want, saw)) return found(w, t0)
     if (BG) {
-      const named = (x: Win) => norm(x.title).includes(norm(want)) || (!!saw && x.title === saw)
+      const named = (x: Win) => awaited(x.title, want, saw)
       const t = target
       const bg = ws.find((x) => named(x) && x.pid === t?.pid) ?? ws.find(named)
       if (bg) { follow(bg, ws); return found(bg, t0) }
