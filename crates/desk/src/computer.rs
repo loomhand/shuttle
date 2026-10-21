@@ -82,6 +82,7 @@ const SKIPPED: &str = "had no keycode";
 const WM_WAIT: Duration = Duration::from_secs(10);
 const WM_POLL: Duration = Duration::from_millis(100);
 const AX_UNSUPPORTED: &str = "returned -25206";
+const PRESSED_INSTEAD: &str = "the field got its press action instead, which may not move the keyboard focus to it: read the field before typing into it";
 const OFF_SCREEN: &str = "the rectangle is off the screen";
 const XTEST_TYPED: &str = "Typed text into the focused desktop application.";
 const NO_TEXT_TARGET: &str =
@@ -410,7 +411,7 @@ impl Computer {
         if let (Some(pressed), Err(e)) = (pressed, &result)
             && e.contains(AX_UNSUPPORTED)
         {
-            if let Some(refused) = refused {
+            if let Some(refused) = refused.take() {
                 result = Err(refused);
             } else if let Some(retry) = self.unpressable(session, &a, pressed).await {
                 result = self.request(target, "click", retry).await;
@@ -427,7 +428,12 @@ impl Computer {
         let shot = self.screenshot(session, a.max_edge).await?;
         drop(input);
         let (text, is_error) = match result {
-            Ok(v) => (shot_points(&text_of(&v), k) + &changes, false),
+            Ok(v) => {
+                let pressed = refused
+                    .map(|r| format!("\n{r}\n{PRESSED_INSTEAD}"))
+                    .unwrap_or_default();
+                (shot_points(&text_of(&v), k) + &pressed + &changes, false)
+            }
             Err(e) => (e, true),
         };
         Ok(Output {
@@ -1241,14 +1247,9 @@ impl Computer {
             req["element_token"] = element.token.as_str().into();
             if let Some(id) = snap.window_id {
                 req["window_id"] = id.into();
-            }
-            if self.os != Os::Linux
-                && tool == "click"
-                && a.action == "click"
-                && a.button.as_deref().is_none_or(|b| b == "left")
-                && FIELDS.contains(&element.role.as_str())
-            {
-                req["verify_hit"] = true.into();
+                if self.os != Os::Linux && presses(a) && FIELDS.contains(&element.role.as_str()) {
+                    req["verify_hit"] = true.into();
+                }
             }
         } else if let (Some(x), Some(y)) = (a.x, a.y) {
             let k = self.mapped(session, a.scale);
@@ -2239,7 +2240,7 @@ fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
 /// For a refused `verify_hit` click that sent nothing, whether the driver refused it on identity (`true`) or does not know `verify_hit` (`false`); none for any other failure.
 fn hit_refusal(result: &Value) -> Option<bool> {
     let s = &result["structuredContent"];
-    let code = s["refusal"]["code"].as_str();
+    let code = s["refusal"]["code"].as_str().or(s["code"].as_str());
     if s["effect"] == "refused" && code.is_some_and(|c| HIT_REFUSALS.contains(&c)) {
         return Some(true);
     }
@@ -2990,18 +2991,26 @@ mod tests {
                 reader.read_line(&mut line).await.unwrap();
                 let req: Value = serde_json::from_str(&line).unwrap();
                 let reply = match req["name"].as_str().unwrap_or_default() {
+                    "list_windows" if hit == "windowless" => {
+                        json!({"ok": true, "result": {"structuredContent": {"windows": []}}})
+                    }
                     "list_windows" => {
                         json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "TextEdit", "title": "t", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 2}]}}})
                     }
                     "get_window_state" => {
-                        json!({"ok": true, "result": {"structuredContent": {"window_id": 9, "elements": [{"element_index": 0, "element_token": "t0", "role": role, "label": "", "frame": {"x": 100.0, "y": 100.0, "w": 200.0, "h": 40.0}}]}}})
+                        let window = if hit == "windowless" {
+                            Value::Null
+                        } else {
+                            json!(9)
+                        };
+                        json!({"ok": true, "result": {"structuredContent": {"window_id": window, "elements": [{"element_index": 0, "element_token": "t0", "role": role, "label": "", "frame": {"x": 100.0, "y": 100.0, "w": 200.0, "h": 40.0}}]}}})
                     }
                     "click" if req["args"]["verify_hit"] == true => match hit {
                         "" => {
                             json!({"ok": true, "result": {"content": [{"type": "text", "text": "hit"}]}})
                         }
                         "unknown" => {
-                            json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "click: unknown argument verify_hit; accepted: pid"}], "structuredContent": {"status": "refused", "refusal": {"code": "invalid_arguments"}}}})
+                            json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "click: unknown argument verify_hit; accepted: pid"}], "structuredContent": {"code": "invalid_arguments"}}})
                         }
                         "posted" => {
                             json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "click.verify_hit: the click failed: mouse up"}]}})
@@ -3010,6 +3019,9 @@ mod tests {
                             json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "click.verify_hit: nothing was sent."}], "structuredContent": {"status": "refused", "code": code, "effect": "refused", "refusal": {"code": code}}}})
                         }
                     },
+                    "click" if req["args"]["element_token"].is_string() && refusal.is_empty() => {
+                        json!({"ok": true, "result": {"content": [{"type": "text", "text": "pressed"}]}})
+                    }
                     "click" if req["args"]["element_token"].is_string() => {
                         json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": refusal}]}})
                     }
@@ -3115,12 +3127,22 @@ mod tests {
     #[tokio::test]
     async fn off_linux_a_hit_refusal_falls_back_to_the_press_and_other_elements_are_pressed() {
         for code in HIT_REFUSALS.into_iter().chain(["unknown"]) {
-            let (_, sent) = field("AXTextField", "click", "", code).await;
+            let (out, sent) = field("AXTextField", "click", "", code).await;
             assert_eq!(sent.len(), 2, "{code}: {sent:?}");
             assert_eq!(sent[0]["verify_hit"], true, "{code}: {sent:?}");
             assert!(sent[1].get("verify_hit").is_none(), "{code}: {sent:?}");
             assert_eq!(sent[1]["element_token"], "t0", "{code}: {sent:?}");
+            assert!(!out.is_error, "{code}: {}", out.text);
+            assert_eq!(
+                out.text.contains(PRESSED_INSTEAD),
+                code != "unknown",
+                "{code}: {}",
+                out.text
+            );
         }
+        let (_, windowless) = field("AXTextField", "click", "", "windowless").await;
+        assert_eq!(windowless.len(), 1, "{windowless:?}");
+        assert!(windowless[0].get("verify_hit").is_none(), "{windowless:?}");
         for (role, action) in [("AXButton", "click"), ("AXTextField", "right_click")] {
             let (_, sent) = field(role, action, "", "").await;
             assert_eq!(sent.len(), 1, "{role} {action}: {sent:?}");
