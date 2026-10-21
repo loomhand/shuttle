@@ -22,7 +22,7 @@ test('a grounded check on a screen whose origin is left of zero crops around the
     if (tool === 'model_decide') {
       const a = args as { state: Part[]; questions: Record<string, { type: string }> }
       for (const p of a.state ?? []) if (typeof p === 'string') prompts.push(p)
-      const answers = Object.fromEntries(Object.keys(a.questions).map((k) => [k, a.questions[k]?.type === 'noul' ? { probability: 0.8 } : { choice: 'none', confidence: 1, probabilities: { none: 1 } }]))
+      const answers = Object.fromEntries(Object.keys(a.questions).map((k) => [k, a.questions[k]?.type === 'noul' ? { probability: 0.92 } : { choice: 'none', confidence: 1, probabilities: { none: 1 } }]))
       return JSON.stringify({ answers, served: { model: 'decider', build: BUILD, id: null }, usage })
     }
     if (tool === 'desk_click') clicked.push(`${args.x},${args.y}`)
