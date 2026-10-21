@@ -29,6 +29,8 @@ use std::time::Duration;
 
 /// The program name in usage lines, endpoints and the MCP server info.
 pub const NAME: &str = "shuttle";
+/// The namespace of shuttle's directories and Windows global names, so another `shuttle` does not collide.
+pub const VENDOR: &str = "loomhand";
 /// The release version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The answer to every call while the user has stopped shuttle.
@@ -40,6 +42,11 @@ const GROUP_POLL: Duration = Duration::from_millis(20);
 pub(crate) static ENDING: AtomicBool = AtomicBool::new(false);
 #[cfg(unix)]
 static GRACED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+/// Shuttle's directory under a config or cache root: `loomhand/shuttle`.
+pub fn home() -> std::path::PathBuf {
+    std::path::Path::new(VENDOR).join(NAME)
+}
 
 pub(crate) fn log(line: impl Display) {
     let _ = writeln!(std::io::stderr(), "{NAME}: {line}");

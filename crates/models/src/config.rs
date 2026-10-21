@@ -273,8 +273,9 @@ impl fmt::Debug for Secret {
     }
 }
 
-/// The configuration file of program `name`: under `$XDG_CONFIG_HOME` or `~/.config`, `%APPDATA%` on Windows.
-pub fn default_path(name: &str) -> PathBuf {
+/// The configuration file in directory `dir`: under `$XDG_CONFIG_HOME` or `~/.config`, `%APPDATA%` on Windows.
+pub fn default_path(dir: impl AsRef<Path>) -> PathBuf {
+    let dir_path = dir.as_ref();
     let dir = if cfg!(windows) {
         std::env::var_os("APPDATA").map(PathBuf::from)
     } else {
@@ -283,7 +284,7 @@ pub fn default_path(name: &str) -> PathBuf {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
     };
-    dir.unwrap_or_default().join(name).join("config.toml")
+    dir.unwrap_or_default().join(dir_path).join("config.toml")
 }
 
 #[cfg(unix)]

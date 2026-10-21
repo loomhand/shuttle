@@ -195,7 +195,7 @@ jobs:
         run: |
           $env:SHUTTLE_VERSION = $env:GITHUB_REF_NAME
           irm "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME/install.ps1" | iex
-          "$env:LOCALAPPDATA\Programs\shuttle" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          "$env:LOCALAPPDATA\Programs\loomhand\shuttle" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
       - name: Status over MCP
         shell: bash

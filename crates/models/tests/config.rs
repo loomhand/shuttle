@@ -187,7 +187,12 @@ mod tests {
 
     #[test]
     fn the_config_path_is_per_program() {
-        assert!(default_path("shuttle").ends_with("shuttle/config.toml"));
+        let path = default_path(std::path::Path::new("loomhand").join("shuttle"));
+        assert!(
+            path.ends_with("loomhand/shuttle/config.toml"),
+            "{}",
+            path.display()
+        );
     }
 
     #[test]
