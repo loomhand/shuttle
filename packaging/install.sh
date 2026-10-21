@@ -62,20 +62,25 @@ tar -xzf "$tmp/$asset" -C "$tmp"
 if [ "$os" = macos ]; then new="$tmp/$APP.app/Contents/MacOS/$NAME"; else new="$tmp/$NAME/$NAME"; fi
 installed=$("$new" --version) || die "the new $NAME does not start on this system; nothing was changed"
 
+if [ "$os" = macos ]; then home="$APP_DIR/$APP.app" && bin="$home/Contents/MacOS/$NAME"; else home="$PREFIX/lib/loomhand/$NAME" && bin="$home/$NAME"; fi
+link="$PREFIX/bin/$NAME"
+if [ -L "$link" ]; then
+	[ "$(readlink "$link")" = "$bin" ] || die "$link is a link to $(readlink "$link"), not to this install; nothing was changed: remove it, or set SHUTTLE_PREFIX to another directory"
+elif [ -e "$link" ]; then
+	die "$link is another program's file; nothing was changed: remove it, or set SHUTTLE_PREFIX to another directory"
+fi
+
 mkdir -p "$PREFIX/bin"
 if [ "$os" = macos ]; then
 	mkdir -p "$APP_DIR"
-	rm -rf "${APP_DIR:?}/$APP.app"
-	mv "$tmp/$APP.app" "$APP_DIR/$APP.app"
-	ln -sf "$APP_DIR/$APP.app/Contents/MacOS/$NAME" "$PREFIX/bin/$NAME"
-	home="$APP_DIR/$APP.app"
+	rm -rf "${home:?}"
+	mv "$tmp/$APP.app" "$home"
 else
 	mkdir -p "$PREFIX/lib/loomhand"
-	rm -rf "${PREFIX:?}/lib/loomhand/$NAME"
-	mv "$tmp/$NAME" "$PREFIX/lib/loomhand/$NAME"
-	ln -sf "$PREFIX/lib/loomhand/$NAME/$NAME" "$PREFIX/bin/$NAME"
-	home="$PREFIX/lib/loomhand/$NAME"
+	rm -rf "${home:?}"
+	mv "$tmp/$NAME" "$home"
 fi
+ln -sf "$bin" "$link"
 
 say "installed $installed in $home"
 case ":$PATH:" in
