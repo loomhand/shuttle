@@ -1,6 +1,6 @@
 # Safety
 
-shuttle acts on your own desktop, with your accounts signed in. The controls below are built on macOS (P1) and Windows (P2). On Linux, with its desk backend, `cocoon-shuttle stop` and `resume`, the `script_run` switch and the app allowlist are built; its hotkey, indicator and confirm dialog are not yet.
+shuttle acts on your own desktop, with your accounts signed in. The controls below are built on macOS (P1) and Windows (P2). On Linux, with its desk backend, `shuttle stop` and `resume`, the `script_run` switch and the app allowlist are built; its hotkey, indicator and confirm dialog are not yet.
 
 ## What these controls are
 
@@ -8,7 +8,7 @@ The kill switch, the app allowlist and the confirm mode are guard rails for an a
 
 ## Kill switch
 
-`cocoon-shuttle stop` stops shuttle at once: it ends the running `gui_plan` or `script_run` process with every process it started, ends the desk and model calls in flight, and halts. On macOS and Linux the run's process group gets SIGTERM, so a script can release the keys it holds, and whatever is left 2 s later gets SIGKILL; on Linux the apps the desk moved into scopes of their own are spared. Its desk calls already fail during those 2 s. On Windows the run's Job object ends at once, since Windows has no SIGTERM. Every tool call except `status` then fails with `stopped by the user` until you resume, with `cocoon-shuttle resume` or the indicator's Resume. The stop lives in the running daemon; a daemon that starts again starts running. Only you stop and resume, from the command line, the hotkey or the indicator's menu: no MCP tool and no `gui_plan` step reaches them. A desk action that the driver or the accessibility API has already started ends on its own, so at most one action in flight completes after the stop. Likewise a window list or tree read in flight cannot be cancelled: a call after resume can queue behind it, at most until its own accessibility limit (3 s; 10 s for `snapshot`, `find` and `press`), and then fails with `no accessibility answer`.
+`shuttle stop` stops shuttle at once: it ends the running `gui_plan` or `script_run` process with every process it started, ends the desk and model calls in flight, and halts. On macOS and Linux the run's process group gets SIGTERM, so a script can release the keys it holds, and whatever is left 2 s later gets SIGKILL; on Linux the apps the desk moved into scopes of their own are spared. Its desk calls already fail during those 2 s. On Windows the run's Job object ends at once, since Windows has no SIGTERM. Every tool call except `status` then fails with `stopped by the user` until you resume, with `shuttle resume` or the indicator's Resume. The stop lives in the running daemon; a daemon that starts again starts running. Only you stop and resume, from the command line, the hotkey or the indicator's menu: no MCP tool and no `gui_plan` step reaches them. A desk action that the driver or the accessibility API has already started ends on its own, so at most one action in flight completes after the stop. Likewise a window list or tree read in flight cannot be cancelled: a call after resume can queue behind it, at most until its own accessibility limit (3 s; 10 s for `snapshot`, `find` and `press`), and then fails with `no accessibility answer`.
 
 A global hotkey does the same stop, and the indicator's menu has Stop and Resume. The hotkey is built on macOS and Windows; Linux does not have it yet, and its row is the planned default:
 
@@ -18,7 +18,7 @@ A global hotkey does the same stop, and the indicator's menu has Stop and Resume
 | Windows | Ctrl+Alt+Shift+Esc | `RegisterHotKey` |
 | Linux (X11) | Ctrl+Alt+Shift+Esc | `XGrabKey` |
 
-Set `kill_hotkey` in [config.md](config.md) to change it, or to `off` to register no global hotkey (the menu's Stop and `cocoon-shuttle stop` remain). On macOS a system permission prompt in front holds the hotkey until the prompt closes; `cocoon-shuttle stop` works regardless. On Wayland a global hotkey depends on the compositor's GlobalShortcuts portal; where there is none, `cocoon-shuttle stop` from a terminal is the kill switch.
+Set `kill_hotkey` in [config.md](config.md) to change it, or to `off` to register no global hotkey (the menu's Stop and `shuttle stop` remain). On macOS a system permission prompt in front holds the hotkey until the prompt closes; `shuttle stop` works regardless. On Wayland a global hotkey depends on the compositor's GlobalShortcuts portal; where there is none, `shuttle stop` from a terminal is the kill switch.
 
 ## Indicator
 
@@ -61,7 +61,7 @@ The daemon reads the user of each connection's peer and answers `safety_stop` an
 ## Service plugins
 
 A [service plugin](wire.md#service-plugins) is a program you install in the plugin directory; the daemon runs it as your user and hands it the calls of its tools. Installing it is what turns it on: `script_run = false` does not turn it off, so that the tools it serves keep working where scripts are off.
-- **Stop.** `cocoon-shuttle stop` refuses new calls of its tools and closes every one in flight. The service itself keeps running, and work it started for a call, such as a shell command, is its own to end when the connection closes; shuttle does not end it.
+- **Stop.** `shuttle stop` refuses new calls of its tools and closes every one in flight. The service itself keeps running, and work it started for a call, such as a shell command, is its own to end when the connection closes; shuttle does not end it.
 - **App allowlist and confirm.** They do not cover what a service does itself, such as reading files or running commands. Only the desk calls it makes on `SHUTTLE_SOCKET` pass them, as any other desk call.
 - **Reach.** Its socket is in a directory only your user reaches (0700), so a call reaches it only through the daemon, with the stop applied.
 

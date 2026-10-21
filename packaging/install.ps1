@@ -1,12 +1,12 @@
-# Installs cocoon-shuttle on Windows from a GitHub release, after checking the archive against the release's SHA256SUMS.
+# Installs shuttle on Windows from a GitHub release, after checking the archive against the release's SHA256SUMS.
 # usage: irm https://github.com/loomhand/shuttle/releases/latest/download/install.ps1 | iex
-# env: SHUTTLE_VERSION (a tag, default the latest release), SHUTTLE_HOME (default %LOCALAPPDATA%\Programs\cocoon-shuttle)
+# env: SHUTTLE_VERSION (a tag, default the latest release), SHUTTLE_HOME (default %LOCALAPPDATA%\Programs\shuttle)
 & {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-    $Name = 'cocoon-shuttle'
+    $Name = 'shuttle'
     $Repo = 'loomhand/shuttle'
     $InstallDir = $(if ($env:SHUTTLE_HOME) { $env:SHUTTLE_HOME } else { Join-Path $env:LOCALAPPDATA "Programs\$Name" }).TrimEnd('\', '/')
 

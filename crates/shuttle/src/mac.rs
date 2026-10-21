@@ -67,7 +67,7 @@ fn ask(mtm: MainThreadMarker, question: &str, tx: oneshot::Sender<bool>) {
     #[allow(deprecated)]
     NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
     let alert = NSAlert::new(mtm);
-    alert.setMessageText(&NSString::from_str("Cocoon Shuttle"));
+    alert.setMessageText(&NSString::from_str("Shuttle"));
     alert.setInformativeText(&NSString::from_str(question));
     alert.addButtonWithTitle(&NSString::from_str("Cancel"));
     alert.addButtonWithTitle(&NSString::from_str("Allow"));
@@ -94,7 +94,7 @@ fn ask(mtm: MainThreadMarker, question: &str, tx: oneshot::Sender<bool>) {
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "CocoonShuttleConfirmWatch"]
+    #[name = "ShuttleConfirmWatch"]
     #[ivars = RefCell<Option<oneshot::Sender<bool>>>]
     struct Watch;
 
@@ -218,7 +218,7 @@ impl Shown {
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "CocoonShuttleControls"]
+    #[name = "ShuttleControls"]
     #[ivars = Shown]
     struct Target;
 
@@ -252,7 +252,7 @@ fn icon(name: &str, pdf: &[u8]) -> Option<Retained<NSImage>> {
     let image = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(pdf))?;
     image.setTemplate(true);
     image.setSize(NSSize::new(ICON_PT, ICON_PT));
-    image.setAccessibilityDescription(Some(&NSString::from_str(&format!("Cocoon Shuttle {name}"))));
+    image.setAccessibilityDescription(Some(&NSString::from_str(&format!("Shuttle {name}"))));
     Some(image)
 }
 
@@ -326,7 +326,7 @@ fn register(hotkey: Hotkey, controls: Arc<dyn Controls>) {
     };
     if installed != 0 || registered != 0 {
         log(format_args!(
-            "the kill hotkey did not register (handler {installed}, hotkey {registered}); cocoon-shuttle stop still works"
+            "the kill hotkey did not register (handler {installed}, hotkey {registered}); shuttle stop still works"
         ));
     }
 }

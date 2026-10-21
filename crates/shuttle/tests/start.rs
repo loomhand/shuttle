@@ -8,8 +8,8 @@ use std::time::Duration;
 #[test]
 fn the_daemon_an_mcp_session_starts_holds_none_of_its_stdio() {
     let home = tempfile::tempdir().unwrap();
-    let pipe = format!("cocoon-shuttle-test-{}", std::process::id());
-    let mut mcp = Command::new(env!("CARGO_BIN_EXE_cocoon-shuttle"))
+    let pipe = format!("shuttle-test-{}", std::process::id());
+    let mut mcp = Command::new(env!("CARGO_BIN_EXE_shuttle"))
         .arg("mcp")
         .env("SHUTTLE_SOCKET", format!(r"\\.\pipe\{pipe}"))
         .env("APPDATA", home.path())
@@ -38,7 +38,7 @@ fn the_daemon_an_mcp_session_starts_holds_none_of_its_stdio() {
     let killed = Command::new("powershell")
         .args(["-NoProfile", "-Command"])
         .arg(format!(
-            "(Get-CimInstance Win32_Process -Filter \"Name = 'cocoon-shuttle.exe' AND CommandLine LIKE '%{pipe}%'\" | Invoke-CimMethod -MethodName Terminate | Measure-Object).Count"
+            "(Get-CimInstance Win32_Process -Filter \"Name = 'shuttle.exe' AND CommandLine LIKE '%{pipe}%'\" | Invoke-CimMethod -MethodName Terminate | Measure-Object).Count"
         ))
         .output()
         .unwrap();

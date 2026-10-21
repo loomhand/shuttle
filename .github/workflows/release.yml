@@ -195,13 +195,13 @@ jobs:
         run: |
           $env:SHUTTLE_VERSION = $env:GITHUB_REF_NAME
           irm "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME/install.ps1" | iex
-          "$env:LOCALAPPDATA\Programs\cocoon-shuttle" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          "$env:LOCALAPPDATA\Programs\shuttle" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
       - name: Status over MCP
         shell: bash
         run: |
           [ "$RUNNER_OS" = Windows ] || export PATH="$HOME/.local/bin:$PATH"
-          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"status","arguments":{}}}' | cocoon-shuttle mcp | tee status.json
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"status","arguments":{}}}' | shuttle mcp | tee status.json
           grep -F "\\\"version\\\":\\\"${GITHUB_REF_NAME#v}\\\"" status.json
 
   promote:

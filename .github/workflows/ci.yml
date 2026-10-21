@@ -44,14 +44,14 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           cargo build --release --locked -p shuttle
-          packaging/crt.ps1 target/release/cocoon-shuttle.exe
+          packaging/crt.ps1 target/release/shuttle.exe
 
       - name: Upload the Windows binary
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: cocoon-shuttle-windows-x64
-          path: target/release/cocoon-shuttle.exe
+          name: shuttle-windows-x64
+          path: target/release/shuttle.exe
           retention-days: 7
 
   android-ui:

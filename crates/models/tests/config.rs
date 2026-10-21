@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn the_config_path_is_per_program() {
-        assert!(default_path("cocoon-shuttle").ends_with("cocoon-shuttle/config.toml"));
+        assert!(default_path("shuttle").ends_with("shuttle/config.toml"));
     }
 
     #[test]

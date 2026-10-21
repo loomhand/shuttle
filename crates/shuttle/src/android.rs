@@ -95,7 +95,7 @@ mod tests {
                 scrcpy_jar: "/s.jar".into(),
                 su: None,
             },
-            Path::new("/cocoon-shuttle"),
+            Path::new("/shuttle"),
         )
         .unwrap();
         let out = answer(
@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn an_unset_ui_jar_is_the_bundled_one_and_a_set_one_wins() {
         let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("cocoon-shuttle");
+        let exe = dir.path().join("shuttle");
         let err = ui_jar(None, &exe).unwrap_err();
         assert!(err.contains("sets no ui_jar"), "{err}");
         let bundled = dir.path().join("android/shuttle-ui.jar");
