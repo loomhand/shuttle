@@ -112,7 +112,7 @@ function screen(tree: Spec[], probabilities: Record<string, number>) {
 
 await daemon({ after }, answer)
 beforeEach(() => {
-  build = null; on = 0; looked = {}; pick = {}; under = null; yes = 0; tones = []; scale = 1
+  build = null; on = 0; looked = {}; pick = {}; under = { role: 'image', name: '' }; yes = 0; tones = []; scale = 1
 })
 
 test('a click whose jev pick has a close runner-up escalates as ambiguous instead of pressing the pick', async () => {
@@ -341,7 +341,7 @@ test('a grounded click the 640x400 crop refuses is checked on the small element\
   assert.equal(big.ok, true, JSON.stringify(big))
   assert.deepEqual(looks, ['640x400', '1280x800 ring'])
   assert.equal(lastStep()?.checked, 'jev-image+full')
-  under = null
+  under = { role: 'image', name: '' }
   process.env.DESK_FULL_CHECK = 'off'
   t.after(() => { delete process.env.DESK_FULL_CHECK })
   on = [0.3, 0.6, 0.96]
@@ -349,6 +349,18 @@ test('a grounded click the 640x400 crop refuses is checked on the small element\
   assert.equal(off.ok, false, JSON.stringify(off))
   assert.deepEqual(looks, ['640x400', '384x288'])
   assert.equal(lastStep()?.checked, 'jev-image+zoom')
+})
+
+test('a grounded point with no accessible element under it is refused before any check, and the trace says so', async () => {
+  const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
+  build = BUILD
+  on = 0.99
+  under = null
+  const missing = await plan('Zzqx missing control', tree, {})
+  assert.equal(missing.ok, false, JSON.stringify(missing))
+  assert.match(missing.escalate?.reason ?? '', /^no element matches "Zzqx missing control"; grounding pointed at no accessible element/)
+  assert.deepEqual([clicked, looks], [[], []])
+  assert.deepEqual(missing.trace?.[0]?.ground, { check: 'no-hit', p: undefined, p_zoom: undefined, p_full: undefined, hit: '' })
 })
 
 test('a near-even 640x400 crop answer no longer takes a grounded click alone: the zoom and ring checks decide, and the trace carries every score and the element under the point', async () => {
@@ -359,7 +371,7 @@ test('a near-even 640x400 crop answer no longer takes a grounded click alone: th
   assert.equal(missing.ok, false, JSON.stringify(missing))
   assert.deepEqual(clicked, [])
   assert.deepEqual(looks, ['640x400', '384x288', '1280x800 ring'])
-  assert.deepEqual(missing.trace?.[0]?.ground, { check: 'jev-image+zoom+full', p: 0.56, p_zoom: 0.5, p_full: 0.6, hit: '' })
+  assert.deepEqual(missing.trace?.[0]?.ground, { check: 'jev-image+zoom+full', p: 0.56, p_zoom: 0.5, p_full: 0.6, hit: 'image' })
   under = { role: 'push button', name: 'Open Parent', bounds: [700, 380, 40, 40] }
   on = [0.3, 0.74]
   const real = await plan('the up arrow icon in the toolbar', tree, {})

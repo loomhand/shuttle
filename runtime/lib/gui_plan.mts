@@ -29,7 +29,8 @@ type Rec = {
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
 type Escalation = Seen & { reason: string; step?: number; plan_step?: Step }
-type Ground = { check: string; p: number; p_zoom?: number | null; p_full?: number | null; hit: string }
+type Checked = { what: string; ok: boolean; check: string; p?: number; p_zoom?: number | null; p_full?: number | null }
+type Ground = { check: string; p?: number; p_zoom?: number | null; p_full?: number | null; hit: string }
 type Trace = { i: number; op?: string; how?: string; input?: 'foreground'; ms?: number; was?: 'on' | 'off' | 'mixed'; now?: 'on' | 'off'; noop?: boolean; ground?: Ground }
 export type Result = { ok?: boolean; done?: number; ms?: number; trace?: Trace[]; escalate?: Escalation; served?: desk.Served[]; [key: string]: unknown }
 
@@ -178,7 +179,7 @@ async function perform(p: Params): Promise<Result> {
     }
     rec.ms = Date.now() - ts; if (desk.served.length > calls) rec.served = desk.served.slice(calls)
     log.push({ ...rec, ...T }); recs[i] = rec
-    trace.push({ i, op: rec.op, how: rec.how, ...(rec.fg || rec.how === 'foreground' ? { input: 'foreground' as const } : {}), ms: rec.ms, ...(rec.was !== undefined ? { was: rec.was === 'mixed' ? 'mixed' : rec.was ? 'on' : 'off', now: rec.noop || s.verify || escalate ? undefined : s.on === false ? 'off' : 'on' } : {}), ...(rec.now !== undefined ? { now: rec.now ? 'on' : 'off' } : {}), ...(rec.noop ? { noop: true } : {}), ...(rec.checked !== undefined ? { ground: { check: rec.checked, p: rec.p ?? 0, p_zoom: rec.p_zoom, p_full: rec.p_full, hit: rec.ground_hit ?? '' } } : {}) })
+    trace.push({ i, op: rec.op, how: rec.how, ...(rec.fg || rec.how === 'foreground' ? { input: 'foreground' as const } : {}), ms: rec.ms, ...(rec.was !== undefined ? { was: rec.was === 'mixed' ? 'mixed' : rec.was ? 'on' : 'off', now: rec.noop || s.verify || escalate ? undefined : s.on === false ? 'off' : 'on' } : {}), ...(rec.now !== undefined ? { now: rec.now ? 'on' : 'off' } : {}), ...(rec.noop ? { noop: true } : {}), ...(rec.checked !== undefined ? { ground: { check: rec.checked, p: rec.p, p_zoom: rec.p_zoom, p_full: rec.p_full, hit: rec.ground_hit ?? '' } } : {}) })
     if (escalate) break
   }
   const last = plan.at(-1) ?? {}
@@ -635,7 +636,7 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>) 
   } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
 
-async function grounded(x: number, y: number, target: string, w: Win, area: desk.Size) {
+async function grounded(x: number, y: number, target: string, w: Win, area: desk.Size): Promise<Checked> {
   const t0 = Date.now()
   const [ox, oy] = [area.left ?? 0, area.top ?? 0]
   const fit = (cw: number, ch: number): [number, number] => [Math.max(ox, Math.min(ox + area.width - cw, Math.round(x - cw / 2))), Math.max(oy, Math.min(oy + area.height - ch, Math.round(y - ch / 2)))]
@@ -647,12 +648,13 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
   const [cw, ch] = [Math.min(CROP.w, area.width), Math.min(CROP.h, area.height)], [left, top] = fit(cw, ch)
   const [spot, shot] = await Promise.allSettled([desk.at(x, y, w.title, w.pid), desk.shot({ x: left - ox, y: top - oy, w: cw, h: ch })])
   const under = spot.status === 'fulfilled' ? spot.value : { found: null, path: [] }
-  const what = under.found ? [under.found, ...(under.path ?? []).toReversed()].filter((n) => n.name).map((n) => `${n.role} "${n.name}"`).join(' under ') : ''
+  const what = under.found ? [under.found, ...(under.path ?? []).toReversed()].filter((n, i) => i === 0 || n.name).map((n) => n.name ? `${n.role} "${n.name}"` : n.role).join(' under ') : ''
   try {
+    if (!what) return { what, ok: false, check: 'no-hit' }
     if (shot.status === 'rejected') throw shot.reason
     const k = shot.value.readUInt32BE(16) / cw
     const p = await peek(shot.value, [(x - left) * k, (y - top) * k])
-    const out: { what: string; ok: boolean; check: string; p: number; p_zoom?: number | null; p_full?: number | null } = { what, ok: p >= CROP_BAR, check: 'jev-image', p }
+    const out: Checked = { what, ok: p >= CROP_BAR, check: 'jev-image', p }
     if (out.ok) return out
     const b = under.found?.bounds ?? (under.found?.id ? (await desk.read(under.found.id).catch(() => null))?.bounds : undefined)
     const el = b && b[2] > 0 && b[3] > 0 ? b : null
@@ -1055,7 +1057,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     tick('ground', t0)
     const { what, ok, check, p, p_zoom, p_full } = await grounded(x, y, target, w, area)
     rec.ground_hit = what.slice(0, 80); rec.checked = check; rec.p = p; rec.p_zoom = p_zoom; rec.p_full = p_full
-    if (!ok) throw new Surprise(`no element matches "${target}"${what.trim() ? `; grounding pointed at ${what.slice(0, 80)}` : ''}`, await seen(), true)
+    if (!ok) throw new Surprise(`no element matches "${target}"; grounding pointed at ${what ? what.slice(0, 80) : 'no accessible element'}`, await seen(), true)
     t0 = Date.now(); await desk.click(x, y); tick('act', t0)
     rec.how = 'ground'; rec.unsaved = true; await settle(w.title); return
   }
