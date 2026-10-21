@@ -6,11 +6,17 @@ use desk_core::wire::{Call, Output, read_body, read_frame, tool_of, write_frame}
 use tokio::io::{AsyncRead, AsyncReadExt};
 use zeroize::Zeroizing;
 
+#[cfg(target_os = "macos")]
+use crate::ax::Ax as Backend;
 use crate::computer::Computer;
 use crate::desk::{COMPUTER_VERBS, Desk};
 use crate::driver::{Driver, Input};
 use crate::keys::Os;
 use crate::model::Access;
+#[cfg(target_os = "linux")]
+use crate::spi::Spi as Backend;
+#[cfg(windows)]
+use crate::uia::Uia as Backend;
 
 #[cfg(unix)]
 const BACKLOG: u32 = 1024;
@@ -18,6 +24,12 @@ const BACKLOG: u32 = 1024;
 const SUN_PATH: usize = 108;
 #[cfg(all(unix, not(target_os = "linux")))]
 const SUN_PATH: usize = 104;
+#[cfg(target_os = "macos")]
+const HOST: Os = Os::Mac;
+#[cfg(target_os = "linux")]
+const HOST: Os = Os::Linux;
+#[cfg(windows)]
+const HOST: Os = Os::Windows;
 
 const ALLOWLIST_REFUSED: &str = "the computer verbs see and click the whole screen, which an app allowlist does not bound: empty [safety] apps in config.toml to use them";
 // a group may read and write the pipe but not create instances of it: FILE_GENERIC_READ and FILE_GENERIC_WRITE less FILE_CREATE_PIPE_INSTANCE
@@ -329,48 +341,8 @@ pub async fn exchange(mut conn: Conn, call: &Call) -> Result<Output, String> {
     read_frame(&mut conn).await
 }
 
-/// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
-#[cfg(target_os = "macos")]
-pub fn native(
-    driver: String,
-    apps: &[String],
-    _overlay: bool,
-    background: bool,
-    auto: bool,
-) -> impl Handler {
-    let driver = Arc::new(Driver::new(driver));
-    Native {
-        desk: Desk::new(crate::ax::Ax::open, Arc::clone(&driver), Os::Mac)
-            .allow(apps)
-            .background(background || auto)
-            .auto(auto),
-        computer: Computer::new(driver, Os::Mac).background(background),
-        open: apps.is_empty(),
-    }
-}
-
-/// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
-#[cfg(windows)]
-pub fn native(
-    driver: String,
-    apps: &[String],
-    _overlay: bool,
-    background: bool,
-    auto: bool,
-) -> impl Handler {
-    let driver = Arc::new(Driver::new(driver));
-    Native {
-        desk: Desk::new(crate::uia::Uia::open, Arc::clone(&driver), Os::Windows)
-            .allow(apps)
-            .background(background || auto)
-            .auto(auto),
-        computer: Computer::new(driver, Os::Windows).background(background),
-        open: apps.is_empty(),
-    }
-}
-
 /// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty; `overlay` says whether that driver may show its cursor overlay.
-#[cfg(target_os = "linux")]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 pub fn native(
     driver: String,
     apps: &[String],
@@ -380,12 +352,12 @@ pub fn native(
 ) -> impl Handler {
     let driver = Arc::new(Driver::new(driver));
     Native {
-        desk: Desk::new(crate::spi::Spi::open, Arc::clone(&driver), Os::Linux)
+        desk: Desk::new(Backend::open, Arc::clone(&driver), HOST)
             .allow(apps)
             .overlay(overlay)
             .background(background || auto)
             .auto(auto),
-        computer: Computer::new(driver, Os::Linux).background(background),
+        computer: Computer::new(driver, HOST).background(background),
         open: apps.is_empty(),
     }
 }
