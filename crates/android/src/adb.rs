@@ -1551,6 +1551,35 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn at_names_the_process_of_the_window_it_hits() {
+        let fake = Fake::new();
+        fake.windows("");
+        list(&fake, "dump.xml", "[0,600][720,700]");
+        let run = |verb: &'static str, args: Value| crate::desk::run(&fake.android, verb, args);
+        let windows: Value = serde_json::from_str(
+            &run("desk_windows", serde_json::json!({}))
+                .await
+                .unwrap()
+                .text,
+        )
+        .unwrap();
+        let pid = windows[0]["pid"].as_u64();
+        let hit: Value = serde_json::from_str(
+            &run("desk_at", serde_json::json!({"x": 360, "y": 650}))
+                .await
+                .unwrap()
+                .text,
+        )
+        .unwrap();
+        assert_eq!(hit["found"]["name"], "Target", "{hit}");
+        assert!(
+            pid.is_some() && hit["pid"].as_u64() == pid,
+            "{hit} {windows}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn an_element_that_shows_itself_is_tapped_without_a_swipe() {
         let fake = Fake::new();
         fake.windows("");

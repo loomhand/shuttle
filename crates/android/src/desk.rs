@@ -895,6 +895,7 @@ async fn at(android: &Android, a: AtArgs) -> Result<String, String> {
     let mut out = json!({});
     out["found"] = hit.json(i, &frame.package);
     out["path"] = Value::Array(path);
+    out["pid"] = frame.pid.into();
     Ok(out.to_string())
 }
 
