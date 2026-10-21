@@ -51,7 +51,7 @@ ask = "anthropic/claude-sonnet-5"
 
 ### `decide` without a decisions endpoint
 
-`gui_plan` was tuned against a decisions endpoint, which returns calibrated probabilities per answer. With `decide_api = "chat"`, shuttle asks the chat model for the same answers as JSON and reads the probabilities it writes. Those numbers are self-reported, not calibrated, and the plan executor's thresholds (a 0.7 bar for a pick, 0.5 for a `set` field, a 0.6 runner-up margin, 0.5 to 0.95 for a crop check) were set on calibrated ones. Expect more escalations and more wrong picks than with a decisions endpoint.
+`gui_plan` was tuned against a decisions endpoint, which returns calibrated probabilities per answer. With `decide_api = "chat"`, shuttle asks the chat model for the same answers as JSON and reads the probabilities it writes. Those numbers are self-reported, not calibrated, and the plan executor's thresholds (a 0.7 bar for a pick, 0.5 for a `set` field, a 0.6 runner-up margin, 0.9 for the 640x400 crop check of a grounded click, 0.65 for its zoomed crop, 0.95 for its full-screen check) were set on calibrated ones. Expect more escalations and more wrong picks than with a decisions endpoint.
 
 ## Keys
 

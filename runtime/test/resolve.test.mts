@@ -32,6 +32,7 @@ let looked: Record<string, number> = {}
 let build: string | null = null
 let on: number | number[] = 0
 let under: { role: string; name: string; bounds?: number[] } | null = null
+let hitPid: number | null = process.pid
 let yes = 0
 
 function answer({ tool, args }: Call): Reply {
@@ -53,7 +54,7 @@ function answer({ tool, args }: Call): Reply {
     return { text: '{"ok":true}', image: image.toString('base64') }
   }
   if (tool === 'desk_screen') return '{"width":1280,"height":800}'
-  if (tool === 'desk_at') { atPids.push(args.pid); return JSON.stringify({ found: under, path: [] }) }
+  if (tool === 'desk_at') { atPids.push(args.pid); return JSON.stringify({ found: under, path: [], pid: hitPid }) }
   if (tool === 'desk_click') clicked.push(`${args.x},${args.y}`)
   return '{"ok":true}'
 }
@@ -112,7 +113,7 @@ function screen(tree: Spec[], probabilities: Record<string, number>) {
 
 await daemon({ after }, answer)
 beforeEach(() => {
-  build = null; on = 0; looked = {}; pick = {}; under = { role: 'image', name: '' }; yes = 0; tones = []; scale = 1
+  build = null; on = 0; looked = {}; pick = {}; under = { role: 'image', name: '' }; hitPid = process.pid; yes = 0; tones = []; scale = 1
 })
 
 test('a click whose jev pick has a close runner-up escalates as ambiguous instead of pressing the pick', async () => {
@@ -361,6 +362,29 @@ test('a grounded point with no accessible element under it is refused before any
   assert.match(missing.escalate?.reason ?? '', /^no element matches "Zzqx missing control"; grounding pointed at no accessible element/)
   assert.deepEqual([clicked, looks], [[], []])
   assert.deepEqual(missing.trace?.[0]?.ground, { check: 'no-hit', p: undefined, p_zoom: undefined, p_full: undefined, hit: '' })
+})
+
+test('a grounded point whose element is the window root, or belongs to another process, is refused before any check', async () => {
+  const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
+  build = BUILD
+  on = 0.99
+  for (const role of ['frame', 'window', 'application', 'dialog']) {
+    under = { role, name: 'Portal' }
+    const root = await plan('Zzqx missing control', tree, {})
+    assert.equal(root.ok, false, JSON.stringify(root))
+    assert.match(root.escalate?.reason ?? '', new RegExp(`grounding pointed at ${role} "Portal", the window itself`))
+    assert.deepEqual([clicked, looks, root.trace?.[0]?.ground?.check], [[], [], 'root-hit'])
+  }
+  under = { role: 'push button', name: 'Pay' }
+  hitPid = process.pid + 1
+  const foreign = await plan('the pay button', tree, {})
+  assert.equal(foreign.ok, false, JSON.stringify(foreign))
+  assert.match(foreign.escalate?.reason ?? '', /grounding pointed at push button "Pay", which belongs to another process/)
+  assert.deepEqual([clicked, looks, foreign.trace?.[0]?.ground?.check], [[], [], 'foreign-hit'])
+  hitPid = process.pid
+  const own = await plan('the pay button', tree, {})
+  assert.equal(own.ok, true, JSON.stringify(own))
+  assert.deepEqual(clicked, ['640,400'])
 })
 
 test('a near-even 640x400 crop answer no longer takes a grounded click alone: the zoom and ring checks decide, and the trace carries every score and the element under the point', async () => {

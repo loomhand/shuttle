@@ -33,7 +33,7 @@ Desk calls name `desk_<verb>` tools:
 | `read` | `id`, `text?` | one node with its value and text |
 | `press` | `id` | presses a node: select a tab or row; a menu entry runs its action; a hidden menu opens the menus above it and a menu is clicked at its centre; another node is clicked at its centre when a hit test there finds it, else runs its default action |
 | `act` | `id`, `action` (`click`, `action`, `select`, `focus`) | one action on a node |
-| `at` | `x`, `y`, `window?`, `pid?` | the node at a screen point and its ancestors |
+| `at` | `x`, `y`, `window?`, `pid?` | the node at a screen point, its ancestors, and the `pid` of its process |
 | `key` | `keys` (`ctrl+s`, `cmd+shift+t`, ...), `window?`, `pid?` | sends a key combination; with background input ([config.md](config.md#desk-input)) to the window that `window` (a title) or `pid` names, which is then required |
 | `type` | `text`, `window?`, `pid?` | types text, to the named window with background input as `key`; on an Android device `typed` says whether the field shows it (null: not checked, for a password field, a web view, or text the field changed otherwise) |
 | `click` | `x`, `y`, `button?`, `count?`, `window?`, `pid?` | clicks a screen point; with background input in the window under it, or in the named window, without raising it |
