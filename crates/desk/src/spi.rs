@@ -50,7 +50,11 @@ impl Spi {
 
 impl Access for Spi {
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
-        Ok(self.listed()?.into_iter().map(frame).collect())
+        let mut frames: Vec<Frame> = self.listed()?.into_iter().map(frame).collect();
+        if let Some(Some(front)) = self.shm(|g| Ok(g.active().map(|w| (g.pid(w), g.title(w))))) {
+            settle_active(&mut frames, front);
+        }
+        Ok(frames)
     }
 
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
@@ -162,6 +166,25 @@ fn frame(f: atspi::Frame) -> Frame {
         unlisted: !FRAME_ROLES.contains(&f.role),
         framed: f.role != WINDOW_ROLE,
         title: f.name,
+    }
+}
+
+/// Leaves active only the frames of the X active window, `_NET_ACTIVE_WINDOW`'s pid and title, or, when no frame has that title, the AT-SPI active ones of its pid: GTK keeps a window's AT-SPI active state after the keyboard focus moved to another X window.
+fn settle_active(frames: &mut [Frame], (pid, title): (Option<u32>, String)) {
+    let Some(pid) = pid else {
+        return;
+    };
+    let named: Vec<bool> = frames
+        .iter()
+        .map(|f| f.pid == Some(pid) && f.title == title)
+        .collect();
+    let any = named.contains(&true);
+    for (f, named) in frames.iter_mut().zip(named) {
+        f.active = if any {
+            named
+        } else {
+            f.active && f.pid == Some(pid)
+        };
     }
 }
 
@@ -331,6 +354,53 @@ fn reuse<G, T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn window(title: &str, pid: u32, active: bool) -> Frame {
+        Frame {
+            title: title.to_owned(),
+            pid: Some(pid),
+            active,
+            ..Frame::default()
+        }
+    }
+
+    fn actives(frames: &[Frame]) -> Vec<&str> {
+        frames
+            .iter()
+            .filter(|f| f.active)
+            .map(|f| f.title.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn the_x_active_window_wins_over_a_stale_at_spi_active_state() {
+        let mut frames = vec![
+            window("a.txt - Mousepad", 7, true),
+            window("b.txt - Mousepad", 7, false),
+            window("Terminal", 9, false),
+        ];
+        settle_active(&mut frames, (Some(7), "b.txt - Mousepad".to_owned()));
+        assert_eq!(actives(&frames), ["b.txt - Mousepad"]);
+        let mut frames = vec![
+            window("a.txt - Mousepad", 7, true),
+            window("Terminal", 9, false),
+        ];
+        settle_active(&mut frames, (Some(9), "Terminal".to_owned()));
+        assert_eq!(actives(&frames), ["Terminal"]);
+    }
+
+    #[test]
+    fn an_x_active_window_without_a_frame_of_its_title_keeps_only_its_pids_at_spi_actives() {
+        let mut frames = vec![
+            window("a.txt - Mousepad", 7, true),
+            window("Terminal", 9, true),
+        ];
+        settle_active(&mut frames, (Some(9), "Desktop".to_owned()));
+        assert_eq!(actives(&frames), ["Terminal"]);
+        let mut frames = vec![window("a.txt - Mousepad", 7, true)];
+        settle_active(&mut frames, (None, "a.txt - Mousepad".to_owned()));
+        assert_eq!(actives(&frames), ["a.txt - Mousepad"]);
+    }
 
     struct Seg {
         id: usize,
