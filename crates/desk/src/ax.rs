@@ -477,6 +477,35 @@ impl Access for Ax {
             .and_then(|p| u32::try_from(p).ok()))
     }
 
+    fn covering(
+        &mut self,
+        frame: &Frame,
+        x: i32,
+        y: i32,
+    ) -> Result<Option<(String, Option<u32>)>, String> {
+        let Some(mut at) = hit(&system_wide(), x, y, display_scale()) else {
+            return Ok(None);
+        };
+        let target = self.element(&frame.id)?;
+        let mut window = None;
+        for _ in 0..MAX_DEPTH {
+            if at == target {
+                return Ok(None);
+            }
+            if window.is_none() && string(attr(&at, "AXRole")) == "AXWindow" {
+                window = Some(at.clone());
+            }
+            let Some(parent) = attr(&at, "AXParent") else {
+                break;
+            };
+            at = parent;
+        }
+        Ok(window.map(|w| {
+            let pid = pid(&w).and_then(|p| u32::try_from(p).ok());
+            (string(attr(&w, "AXTitle")), pid)
+        }))
+    }
+
     fn menu_at(&mut self, x: i32, y: i32) -> Result<Option<String>, String> {
         Ok(hit(&system_wide(), x, y, display_scale())
             .filter(|h| string(attr(h, "AXRole")) == "AXMenuItem")

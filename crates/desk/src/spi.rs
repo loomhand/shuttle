@@ -107,6 +107,18 @@ impl Access for Spi {
         Ok(hit.as_ref().map(Obj::id))
     }
 
+    fn covering(
+        &mut self,
+        frame: &Frame,
+        x: i32,
+        y: i32,
+    ) -> Result<Option<(String, Option<u32>)>, String> {
+        Ok(self
+            .shm(|g| g.client_at(x, y))
+            .flatten()
+            .filter(|top| !is_frame(frame, top)))
+    }
+
     fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
         let obj = Obj::parse(id)?;
         Ok(self.rt.block_on(self.atspi.pid(&obj.bus)).ok())
@@ -192,6 +204,11 @@ fn settle_active(frames: &mut [Frame], pid: Option<u32>, title: &str) {
             _ => false,
         };
     }
+}
+
+/// Whether the X window `(title, pid)` is `frame`'s own, matched by process and title as [`settle_active`] does.
+fn is_frame(frame: &Frame, (title, pid): &(String, Option<u32>)) -> bool {
+    *pid == frame.pid && *title == frame.title
 }
 
 fn node(n: atspi::Node) -> Node {
@@ -430,6 +447,22 @@ mod tests {
         ];
         settle_active(&mut frames, Some(7), "");
         assert_eq!(actives(&frames), ["a.txt - Mousepad"]);
+    }
+
+    #[test]
+    fn only_another_x_window_covers_a_frame() {
+        let mousepad = window("a.txt - Mousepad", 7, true);
+        assert!(is_frame(
+            &mousepad,
+            &("a.txt - Mousepad".to_owned(), Some(7))
+        ));
+        for other in [
+            ("tmp - Thunar".to_owned(), Some(9)),
+            ("Save As".to_owned(), Some(7)),
+            ("a.txt - Mousepad".to_owned(), Some(8)),
+        ] {
+            assert!(!is_frame(&mousepad, &other), "{other:?}");
+        }
     }
 
     #[test]

@@ -93,6 +93,10 @@ impl Grabber {
         match *self {}
     }
 
+    pub fn client_at(&self, _: i32, _: i32) -> Result<Option<(String, Option<u32>)>, String> {
+        match *self {}
+    }
+
     pub fn pid(&self, _: u32) -> Option<u32> {
         match *self {}
     }

@@ -30,8 +30,8 @@ type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
 type Text = { value?: string; field: boolean }
 type Escalation = Seen & { reason: string; step?: number; plan_step?: Step }
-type Grounding = { what: string; ok: boolean; check: string; p?: number; p_zoom?: number | null; p_full?: number | null; why?: string }
-type Ground = Omit<Grounding, 'what' | 'ok' | 'why'> & { hit: string }
+type Grounding = { what: string; ok: boolean; check: string; p?: number; p_zoom?: number | null; p_full?: number | null; why?: string; cover?: string }
+type Ground = Omit<Grounding, 'what' | 'ok' | 'why' | 'cover'> & { hit: string }
 type Trace = { i: number; op?: string; how?: string; input?: 'foreground'; ms?: number; was?: 'on' | 'off' | 'mixed'; now?: 'on' | 'off'; noop?: boolean; ground?: Ground }
 export type Result = { ok?: boolean; done?: number; ms?: number; trace?: Trace[]; escalate?: Escalation; served?: desk.Served[]; [key: string]: unknown }
 
@@ -669,6 +669,7 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
   try {
     if (spot.status === 'rejected') return { what, ok: false, check: 'at-error', why: String(spot.reason).slice(0, 120) }
     if (!under.found) return { what, ok: false, check: 'no-hit' }
+    if (under.covered) return { what, ok: false, check: 'covered-hit', cover: under.covered.title }
     const path = under.path ?? []
     const inside = path.some((n) => n.id === w.id)
     const others = inside ? [] : path.filter((n) => WINDOW_ROLES.has(n.role)).map((n) => n.id)
@@ -1083,9 +1084,9 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const area = await desk.screen()
     const [x, y] = await desk.ground(await desk.shot(), `${target} in the "${w.title}" window`, area)
     tick('ground', t0)
-    const { what, ok, check, p, p_zoom, p_full, why } = await grounded(x, y, target, w, area)
+    const { what, ok, check, p, p_zoom, p_full, why, cover } = await grounded(x, y, target, w, area)
     rec.ground_hit = what.slice(0, 80); rec.checked = check; rec.p = p; rec.p_zoom = p_zoom; rec.p_full = p_full
-    const at = why ? `a point whose element could not be read: ${why}` : what ? `${rec.ground_hit}${REFUSED[check] ?? ''}` : 'no accessible element'
+    const at = why ? `a point whose element could not be read: ${why}` : what ? `${rec.ground_hit}${cover !== undefined ? `, under the window "${cover}"` : REFUSED[check] ?? ''}` : 'no accessible element'
     if (!ok) throw new Surprise(`no element matches "${target}"; grounding pointed at ${at}`, await seen(), true)
     t0 = Date.now(); await desk.click(x, y); tick('act', t0)
     rec.how = 'ground'; rec.unsaved = true; await settle(w.title); return
