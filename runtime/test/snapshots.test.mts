@@ -63,6 +63,21 @@ test('a wait step whose window is already in front takes it without reading its 
   assert.ok(!after.includes('desk_snapshot'), after.join(' '))
 })
 
+test('a wait step whose front window is an alert of that title still stops at the alert', async (t) => {
+  const doc = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
+  const alert = { id: '2', title: 'Confirm Save As', role: 'alert', pid: process.pid, active: false }
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify(alert.active ? [{ ...doc, active: false }, alert] : [doc])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: alert.active ? alert : doc, truncated: false, nodes: [root(alert.active ? 'alert' : 'window', alert.active ? alert.title : doc.title)] })
+    if (tool === 'desk_key' && args.keys === 'ctrl+shift+s') alert.active = true
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ key: 'ctrl+shift+s' }, { wait: 'Save As' }, { key: 'Return' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /alert "Confirm Save As" is in front/)
+  assert.equal(r.escalate?.step, 1, JSON.stringify(r))
+})
+
 test('a plan whose last step cannot open anything ends in a plain window without a tree read', async (t) => {
   const d = desktop()
   await daemon(t, d.answer)
