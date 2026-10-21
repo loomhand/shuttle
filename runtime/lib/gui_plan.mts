@@ -153,7 +153,7 @@ async function perform(p: Params): Promise<Result> {
       const m = s.close ? null : await hiddenModal(ws, f)
       if (m) throw new Surprise(modalBlocks(m), await seen())
       const r = reads(s)
-      const pre = f && (!known.has(f.title) || !f.title.trim()) && !vetted.has(`${f.id} ${f.pid} ${f.title}`) && !(i === (p.start ?? 0) && startAlert) && !(s.window && norm(f.title).includes(norm(s.window))) ? await look(f, r) : null
+      const pre = f && (!known.has(f.title) || !f.title.trim()) && !vetted.has(`${f.id} ${f.pid} ${f.title}`) && !(i === (p.start ?? 0) && startAlert) && !(s.window && norm(f.title).includes(norm(s.window))) && !(s.wait && awaited(f.title, s.wait, s.seen)) ? await look(f, r) : null
       const o = pre?.text ?? ''
       if (f && blocked(o)) throw new Surprise(unanswered(f.title), await seen())
       if (f && isAlert(o)) throw new Surprise(`alert "${f.title}" is in front`, await seen())
@@ -553,6 +553,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string): Pro
     await sleep(30)
   }
 }
+function awaited(title: string, want: string, saw?: string) { return norm(title).includes(norm(want)) || (!!saw && title === saw) }
 function found(w: Win, t0: number): Win { known.add(w.title); tick('wait', t0); return w }
 
 function named(nodes: Node[], i: number) { for (const [, a] of up(nodes, nodes[i]?.parent ?? -1)) if (a.name) return a.name; return '' }

@@ -46,6 +46,23 @@ test('a step in a dialog this plan already read reads no tree when its op needs 
   assert.equal(step.filter((t) => t === 'desk_snapshot').length, 1, step.join(' '))
 })
 
+test('a wait step whose window is already in front takes it without reading its tree first', async (t) => {
+  const doc = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
+  const opened = { id: '2', title: 'Save As', role: 'window', pid: process.pid, active: false }
+  const calls: string[] = []
+  await daemon(t, ({ tool, args }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify(opened.active ? [{ ...doc, active: false }, opened] : [doc])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: opened.active ? opened : doc, truncated: false, nodes: [root('window', opened.active ? opened.title : doc.title)] })
+    if (tool === 'desk_key' && args.keys === 'ctrl+shift+s') opened.active = true
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ key: 'ctrl+shift+s' }, { wait: 'Save As' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  const after = calls.slice(calls.indexOf('desk_key') + 1)
+  assert.ok(!after.includes('desk_snapshot'), after.join(' '))
+})
+
 test('a plan whose last step cannot open anything ends in a plain window without a tree read', async (t) => {
   const d = desktop()
   await daemon(t, d.answer)
