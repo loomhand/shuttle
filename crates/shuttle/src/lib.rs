@@ -28,6 +28,8 @@ use std::sync::{Mutex, PoisonError};
 #[cfg(unix)]
 use std::time::Duration;
 
+use tokio::process::Child;
+
 /// The program name in usage lines, endpoints and the MCP server info.
 pub const NAME: &str = "shuttle";
 /// The namespace of shuttle's directories and Windows global names, so another `shuttle` does not collide.
@@ -43,6 +45,64 @@ const GROUP_POLL: Duration = Duration::from_millis(20);
 pub(crate) static ENDING: AtomicBool = AtomicBool::new(false);
 #[cfg(unix)]
 static GRACED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+/// A child that leads its own process group, whose other members die with it.
+pub(crate) struct Running {
+    pub(crate) child: Child,
+    #[cfg(unix)]
+    group: Option<u32>,
+    #[cfg(windows)]
+    pub(crate) job: Option<std::sync::Arc<crate::job::Job>>,
+}
+
+impl Running {
+    pub(crate) fn new(child: Child) -> Self {
+        Self {
+            #[cfg(unix)]
+            group: child.id(),
+            #[cfg(windows)]
+            job: None,
+            child,
+        }
+    }
+
+    /// Like [`Running::new`]; on Windows the child alone also goes into a job that ends it with this value, and the apps it starts stay out of it.
+    pub(crate) fn alone(child: Child) -> Result<Self, String> {
+        #[cfg(windows)]
+        {
+            let job = crate::job::Job::hold_alone(child.raw_handle())?;
+            Ok(Self {
+                job: Some(std::sync::Arc::new(job)),
+                ..Self::new(child)
+            })
+        }
+        #[cfg(not(windows))]
+        Ok(Self::new(child))
+    }
+
+    /// Like [`Running::new`]; on Windows the child also goes into a job that ends its whole tree with it.
+    pub(crate) fn jobbed(child: Child) -> Result<Self, String> {
+        #[cfg(windows)]
+        {
+            let job = crate::job::Job::hold(child.raw_handle())?;
+            Ok(Self {
+                job: Some(std::sync::Arc::new(job)),
+                ..Self::new(child)
+            })
+        }
+        #[cfg(not(windows))]
+        Ok(Self::new(child))
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Running {
+    fn drop(&mut self) {
+        if let Some(g) = self.group {
+            crate::signal_group(g, libc::SIGKILL);
+        }
+    }
+}
 
 /// Shuttle's directory under a config or cache root: `loomhand/shuttle`.
 pub fn home() -> PathBuf {

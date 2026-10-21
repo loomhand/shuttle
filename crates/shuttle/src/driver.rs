@@ -5,11 +5,11 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use shuttle_desk::server;
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::{home, log};
+use crate::{Running, home, log};
 
 const TELEMETRY: &str = "CUA_DRIVER_RS_TELEMETRY_ENABLED";
 const GLIDE_MS: &str = "1";
@@ -59,64 +59,6 @@ impl Bundled {
     pub async fn stop(self) {
         let _ = self.stop.send(());
         let _ = self.task.await;
-    }
-}
-
-/// A child that leads its own process group, whose other members die with it.
-pub(crate) struct Running {
-    pub(crate) child: Child,
-    #[cfg(unix)]
-    group: Option<u32>,
-    #[cfg(windows)]
-    pub(crate) job: Option<std::sync::Arc<crate::job::Job>>,
-}
-
-impl Running {
-    pub(crate) fn new(child: Child) -> Self {
-        Self {
-            #[cfg(unix)]
-            group: child.id(),
-            #[cfg(windows)]
-            job: None,
-            child,
-        }
-    }
-
-    /// Like [`Running::new`]; on Windows the child alone also goes into a job that ends it with this value, and the apps it starts stay out of it.
-    pub(crate) fn alone(child: Child) -> Result<Self, String> {
-        #[cfg(windows)]
-        {
-            let job = crate::job::Job::hold_alone(child.raw_handle())?;
-            Ok(Self {
-                job: Some(std::sync::Arc::new(job)),
-                ..Self::new(child)
-            })
-        }
-        #[cfg(not(windows))]
-        Ok(Self::new(child))
-    }
-
-    /// Like [`Running::new`]; on Windows the child also goes into a job that ends its whole tree with it.
-    pub(crate) fn jobbed(child: Child) -> Result<Self, String> {
-        #[cfg(windows)]
-        {
-            let job = crate::job::Job::hold(child.raw_handle())?;
-            Ok(Self {
-                job: Some(std::sync::Arc::new(job)),
-                ..Self::new(child)
-            })
-        }
-        #[cfg(not(windows))]
-        Ok(Self::new(child))
-    }
-}
-
-#[cfg(unix)]
-impl Drop for Running {
-    fn drop(&mut self) {
-        if let Some(g) = self.group {
-            crate::signal_group(g, libc::SIGKILL);
-        }
     }
 }
 
