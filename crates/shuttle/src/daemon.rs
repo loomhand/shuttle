@@ -996,15 +996,7 @@ mod tests {
             .write_all(&line(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "script_run", "arguments": {"code": code, "timeout_s": 30}}})))
             .await
             .unwrap();
-        let mut child = None;
-        for _ in 0..200 {
-            if let Ok(pid) = std::fs::read_to_string(&pid_file) {
-                child = pid.trim().parse::<i32>().ok();
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        let child = child.expect("the run started its child");
+        let child = started_child(&pid_file).await;
         to_mcp
             .write_all(&line(json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}})))
             .await
@@ -1037,6 +1029,20 @@ mod tests {
     }
 
     #[cfg(unix)]
+    async fn started_child(pid_file: &std::path::Path) -> i32 {
+        for _ in 0..200 {
+            if let Some(pid) = std::fs::read_to_string(pid_file)
+                .ok()
+                .and_then(|pid| pid.trim().parse().ok())
+            {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("the run started no child");
+    }
+
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_closed_connection_kills_its_run_with_its_children_and_frees_the_turn() {
         let (d, _keys, dir) = served(Duration::from_secs(10)).await;
@@ -1050,15 +1056,7 @@ mod tests {
         desk_core::wire::write_frame(&mut conn, &script(&code))
             .await
             .unwrap();
-        let mut child = None;
-        for _ in 0..200 {
-            if let Ok(pid) = std::fs::read_to_string(&pid_file) {
-                child = pid.trim().parse::<i32>().ok();
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        let child = child.expect("the run started its child");
+        let child = started_child(&pid_file).await;
         drop(conn);
         let started = std::time::Instant::now();
         // SAFETY: kill with signal 0 only checks that the process exists.
