@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Faster `gui_plan` wait for a window already in front.** A `wait` step whose window is already the front one no longer reads that window's tree first. A dialog that has just opened, such as Save As, is still being built then, and that first read cost 67–70 ms (about 5 ms once built), so `ctrl+shift+s` then `wait: "Save As"` took 75–113 ms and now takes about 20 ms on a cbcore desktop. Since 0.1.13 the front window on Linux follows the X active window, which made the dialog front by the time the step started; 0.1.12 had skipped the read only because its stale front still named the editor.
+- **computer_act on an element without a press action (macOS).** A left click or double click on an element whose app refuses its press action with `-25206` (a window, sheet, toolbar, list or native text field) is sent once more as a `verify_hit` click: cua-driver brings the element's window to the front and clicks the element's centre only when the accessibility hit test there finds that element or one inside it. When the driver refuses, the result carries the press error and the refusal, and nothing is clicked. Before, shuttle clicked the element's centre on the desktop whenever its window was on top there, so it clicked whatever covered that centre inside the window (a toolbar's centre over a heading below it), and it refused when another window covered the element. A press that succeeds costs nothing more.
 
 ## 0.1.13 - 2026-10-21
 
