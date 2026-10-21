@@ -396,8 +396,8 @@ impl Computer {
                 Ok(v) if v["isError"] == true => {
                     let text = format!("{tool}: {}", text_of(&v));
                     match (hit_refusal(&v), &pressed) {
-                        (Some(identity), Some(pressed)) => {
-                            refused = identity.then_some(text);
+                        (Some(before_sending), Some(pressed)) => {
+                            refused = before_sending.then_some(text);
                             self.request(target, "click", pressed.clone()).await
                         }
                         _ => Err(text),
@@ -2246,7 +2246,7 @@ fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
     (tree, by_index)
 }
 
-/// For a refused `verify_hit` click that sent nothing, whether the driver refused it on identity (`true`) or does not know `verify_hit` (`false`); none for any other failure.
+/// For a `verify_hit` click that sent nothing, whether the driver refused it before sending (`true`) or does not know `verify_hit` (`false`); none for any other failure.
 fn hit_refusal(result: &Value) -> Option<bool> {
     let s = &result["structuredContent"];
     let code = s["refusal"]["code"].as_str().or(s["code"].as_str());

@@ -54,7 +54,7 @@ impl Access for Spi {
         if let Some(Some(front)) =
             self.shm(|g| Ok(g.active().and_then(|w| Some((g.pid(w), g.title(w)?)))))
         {
-            settle_active(&mut frames, front);
+            settle_active(&mut frames, (front.0, &front.1));
         }
         Ok(frames)
     }
@@ -172,7 +172,7 @@ fn frame(f: atspi::Frame) -> Frame {
 }
 
 /// Leaves active only the frame of the X active window, `_NET_ACTIVE_WINDOW`'s pid and title, since GTK keeps a window's AT-SPI active state after the keyboard focus moved to another X window; title twins of that pid leave none active, a title of no frame (or one that changed between the AT-SPI and X reads) keeps that pid's AT-SPI actives, and a pid of no frame keeps AT-SPI's state.
-fn settle_active(frames: &mut [Frame], (pid, title): (Option<u32>, String)) {
+fn settle_active(frames: &mut [Frame], (pid, title): (Option<u32>, &str)) {
     let Some(pid) = pid.filter(|&p| p != 0 && frames.iter().any(|f| f.pid == Some(p))) else {
         return;
     };
@@ -381,13 +381,13 @@ mod tests {
             window("b.txt - Mousepad", 7, false),
             window("Terminal", 9, false),
         ];
-        settle_active(&mut frames, (Some(7), "b.txt - Mousepad".to_owned()));
+        settle_active(&mut frames, (Some(7), "b.txt - Mousepad"));
         assert_eq!(actives(&frames), ["b.txt - Mousepad"]);
         let mut frames = vec![
             window("a.txt - Mousepad", 7, true),
             window("Terminal", 9, false),
         ];
-        settle_active(&mut frames, (Some(9), "Terminal".to_owned()));
+        settle_active(&mut frames, (Some(9), "Terminal"));
         assert_eq!(actives(&frames), ["Terminal"]);
     }
 
@@ -397,10 +397,10 @@ mod tests {
             window("a.txt - Mousepad", 7, true),
             window("Terminal", 9, true),
         ];
-        settle_active(&mut frames, (Some(9), "Desktop".to_owned()));
+        settle_active(&mut frames, (Some(9), "Desktop"));
         assert_eq!(actives(&frames), ["Terminal"]);
         let mut frames = vec![window("a.txt - Mousepad", 7, true)];
-        settle_active(&mut frames, (None, "a.txt - Mousepad".to_owned()));
+        settle_active(&mut frames, (None, "a.txt - Mousepad"));
         assert_eq!(actives(&frames), ["a.txt - Mousepad"]);
     }
 
@@ -412,7 +412,7 @@ mod tests {
                 window("Untitled", 7, marked[1]),
                 window("Terminal", 9, true),
             ];
-            settle_active(&mut frames, (Some(7), "Untitled".to_owned()));
+            settle_active(&mut frames, (Some(7), "Untitled"));
             assert!(actives(&frames).is_empty(), "{marked:?}");
         }
     }
@@ -424,7 +424,7 @@ mod tests {
             window("", 7, false),
             window("Terminal", 9, true),
         ];
-        settle_active(&mut frames, (Some(7), String::new()));
+        settle_active(&mut frames, (Some(7), ""));
         assert_eq!(actives(&frames), ["a.txt - Mousepad"]);
     }
 
@@ -435,7 +435,7 @@ mod tests {
                 window("a.txt - Mousepad", 7, true),
                 window("Terminal", 9, true),
             ];
-            settle_active(&mut frames, (Some(pid), "Terminal".to_owned()));
+            settle_active(&mut frames, (Some(pid), "Terminal"));
             assert_eq!(actives(&frames), ["a.txt - Mousepad", "Terminal"]);
         }
     }

@@ -288,7 +288,7 @@ impl Grabber {
         self.children(false)
     }
 
-    /// The title of window `w`, or of the client inside it when `w` is a window manager frame; `None` when it is longer than 4 KiB.
+    /// The title of window `w`, or of the client inside it when `w` is a window manager frame; `None` when `w`'s own name is longer than 4 KiB.
     pub fn title(&self, w: Window) -> Option<String> {
         let own = self.name(w)?;
         if !own.is_empty() {

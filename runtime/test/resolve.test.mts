@@ -423,7 +423,7 @@ test('a failed read of the element under a grounded point is refused with its re
   assert.deepEqual([clicked, looks, out.trace?.[0]?.ground?.check], [[], [], 'at-error'])
 })
 
-test('a near-even 640x400 crop answer no longer takes a grounded click alone: the zoom and ring checks decide, and the trace carries every score and the element under the point', async () => {
+test('a 640x400 crop answer below 0.9 leaves a grounded click to the zoom and ring checks, and the trace carries every score and the element under the point', async () => {
   const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
   build = BUILD
   on = [0.56, 0.5, 0.6]
