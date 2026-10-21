@@ -14,9 +14,8 @@ use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::driver::Running;
-use crate::log;
 use crate::plugins::Service;
+use crate::{Running, log};
 
 const SOCKET_VAR: &str = "SHUTTLE_SERVICE_SOCKET";
 #[cfg(unix)]

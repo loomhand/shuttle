@@ -17,12 +17,12 @@ use shuttle_models::config::Confirm;
 use tokio::sync::oneshot;
 use zeroize::Zeroizing;
 
-use crate::{NAME, STOPPED};
 #[cfg(any(target_os = "macos", windows))]
 use crate::hotkey::Hotkey;
 use crate::plugins::Plugin;
 use crate::runner::Runner;
 use crate::services;
+use crate::{NAME, STOPPED};
 
 const BUSY: &str = "desk busy: another run or action is still going";
 const SCRIPT_RUN_OFF: &str =
