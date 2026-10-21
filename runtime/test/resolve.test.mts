@@ -227,12 +227,12 @@ test('a jev pick on the screenshot that fails falls back to the pick on the text
 test('a grounded click is taken when jev sees the target at the point in a crop, and without that answer when jev says the element under it is the target; the run log keeps the check and its score', async () => {
   const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
   build = BUILD
-  on = 0.8
+  on = 0.92
   const seen = await plan('the yellow star', tree, {})
   assert.equal(seen.ok, true, JSON.stringify(seen))
   assert.deepEqual(clicked, ['640,400'])
   const step = lastStep()
-  assert.deepEqual([step?.checked, step?.p, step?.served?.length], ['jev-image', 0.8, 1], JSON.stringify(step))
+  assert.deepEqual([step?.checked, step?.p, step?.served?.length], ['jev-image', 0.92, 1], JSON.stringify(step))
   on = 0.2
   const unseen = await plan('the yellow star', tree, {})
   assert.equal(unseen.ok, false, JSON.stringify(unseen))
@@ -351,6 +351,23 @@ test('a grounded click the 640x400 crop refuses is checked on the small element\
   assert.equal(lastStep()?.checked, 'jev-image+zoom')
 })
 
+test('a near-even 640x400 crop answer no longer takes a grounded click alone: the zoom and ring checks decide, and the trace carries every score and the element under the point', async () => {
+  const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
+  build = BUILD
+  on = [0.56, 0.5, 0.6]
+  const missing = await plan('Zzqx missing control', tree, {})
+  assert.equal(missing.ok, false, JSON.stringify(missing))
+  assert.deepEqual(clicked, [])
+  assert.deepEqual(looks, ['640x400', '384x288', '1280x800 ring'])
+  assert.deepEqual(missing.trace?.[0]?.ground, { check: 'jev-image+zoom+full', p: 0.56, p_zoom: 0.5, p_full: 0.6, hit: '' })
+  under = { role: 'push button', name: 'Open Parent', bounds: [700, 380, 40, 40] }
+  on = [0.3, 0.74]
+  const real = await plan('the up arrow icon in the toolbar', tree, {})
+  assert.equal(real.ok, true, JSON.stringify(real))
+  assert.deepEqual(clicked, ['640,400'])
+  assert.deepEqual(real.trace?.[0], { i: 0, op: 'click', how: 'ground', ms: real.trace?.[0]?.ms, ground: { check: 'jev-image+zoom', p: 0.3, p_zoom: 0.74, p_full: undefined, hit: 'push button "Open Parent"' } })
+})
+
 test('a grounded step checks fresh captures taken after grounding: the crop, then one screen capture that the zoom and ring are cut from', async () => {
   const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
   build = BUILD
@@ -360,7 +377,7 @@ test('a grounded step checks fresh captures taken after grounding: the crop, the
   assert.equal(full.ok, true, JSON.stringify(full))
   assert.deepEqual(looks, ['640x400', '384x288', '1280x800 ring'])
   assert.deepEqual([shots, shades], [3, [200, 200, 200]])
-  on = 0.8
+  on = 0.92
   tones = [60, 200]
   await plan('the yellow star', tree, {})
   assert.deepEqual([shots, shades], [2, [200]])
