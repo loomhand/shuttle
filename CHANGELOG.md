@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **`gui_plan` with no window in front.** When no window is in front, as on GNOME while `_NET_ACTIVE_WINDOW` names none and no listed window is active, a `wait` step takes the one listed window that carries its title and brings it to the front, and a step that names no window acts in the plan's last window when one listed window has its title, bringing it to the front first. Before, `wait` failed with `expected window "…" did not appear` while its own window list held that title, and the next step failed with `no focused window`. Two listed windows with the awaited title still fail the step, and a plan with no window yet still stops at `no focused window`. Background plans are unchanged.
+- **`gui_plan` with no window in front.** When no window is in front, as on GNOME while `_NET_ACTIVE_WINDOW` names none and no listed window is active, a `wait` step takes the one listed window that carries its title and brings it to the front, and a step that names no window acts in the plan's last window when one listed window has its title, bringing it to the front first. Before, `wait` failed with `expected window "…" did not appear` while its own window list held that title, and the next step failed with `no focused window`. Two listed windows with the awaited title still fail the step, an alert is never taken for the awaited window, and a plan with no window of its own yet still stops at `no focused window`. Background plans are unchanged.
 
 ## 0.1.14 - 2026-10-22
 
