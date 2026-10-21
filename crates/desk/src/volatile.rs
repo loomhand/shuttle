@@ -1,5 +1,4 @@
-//! Volatile screen blocks: the ones that change while no action runs, such as a clock, a caret,
-//! a spinner or a video, learned from a low-rate MIT-SHM sampler that runs while tools are in use.
+//! Volatile screen blocks: the ones that change while no action runs, such as a clock, a caret, a spinner or a video, learned from a low-rate MIT-SHM sampler that runs while tools are in use.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -12,8 +11,7 @@ const SAMPLE_EVERY: Duration = Duration::from_millis(200);
 const WINDOW: Duration = Duration::from_secs(2);
 const IDLE: Duration = Duration::from_secs(30);
 
-/// The contents each block showed during a settle; a block back at its contents from before the
-/// action toggles among them from then on, like a caret or a flicker the sampler did not catch.
+/// The contents each block showed during a settle; a block back at its contents from before the action toggles among them from then on, like a caret or a flicker the sampler did not catch.
 #[derive(Default)]
 pub struct Shown {
     states: HashMap<usize, Vec<u64>>,
@@ -57,8 +55,7 @@ struct State {
     acting: bool,
     /// Block hashes sampled since the last action ended, oldest first.
     samples: VecDeque<(Instant, Vec<u64>)>,
-    /// The samples of the pauses before earlier actions, newest first, kept while the newer ones
-    /// span less than [`WINDOW`] by more than [`SAMPLE_EVERY`].
+    /// The samples of the pauses before earlier actions, newest first, kept while the newer ones span less than [`WINDOW`] by more than [`SAMPLE_EVERY`].
     pauses: VecDeque<Vec<(Instant, Vec<u64>)>>,
 }
 
@@ -85,8 +82,7 @@ impl Volatile {
         self.shared.wake.notify_one();
     }
 
-    /// Marks an action begun and returns what each block did in the last [`WINDOW`] of samples, in `now` (the hashes
-    /// just before the action) and in the kept [`State::pauses`].
+    /// Marks an action begun and returns what each block did in the last [`WINDOW`] of samples, in `now` (the hashes just before the action) and in the kept [`State::pauses`].
     pub fn begin(&self, now: &[u64]) -> Vec<Block> {
         let mut s = self.shared.lock();
         s.actions += 1;
