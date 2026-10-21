@@ -29,7 +29,7 @@ type Rec = {
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
 type Escalation = Seen & { reason: string; step?: number; plan_step?: Step }
-type Checked = { what: string; ok: boolean; check: string; p?: number; p_zoom?: number | null; p_full?: number | null }
+type Checked = { what: string; ok: boolean; check: string; p?: number; p_zoom?: number | null; p_full?: number | null; why?: string }
 type Ground = { check: string; p?: number; p_zoom?: number | null; p_full?: number | null; hit: string }
 type Trace = { i: number; op?: string; how?: string; input?: 'foreground'; ms?: number; was?: 'on' | 'off' | 'mixed'; now?: 'on' | 'off'; noop?: boolean; ground?: Ground }
 export type Result = { ok?: boolean; done?: number; ms?: number; trace?: Trace[]; escalate?: Escalation; served?: desk.Served[]; [key: string]: unknown }
@@ -651,10 +651,12 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
   const under = spot.status === 'fulfilled' ? spot.value : { found: null, path: [] }
   const what = under.found ? [under.found, ...(under.path ?? []).toReversed()].filter((n, i) => i === 0 || n.name).map((n) => n.name ? `${n.role} "${n.name}"` : n.role).join(' under ') : ''
   try {
-    if (!what) return { what, ok: false, check: 'no-hit' }
-    if (under.found && (ROOT_ROLES.has(under.found.role) || under.found.id === w.id)) return { what, ok: false, check: 'root-hit' }
-    if (w.pid === null || under.pid == null) return { what, ok: false, check: 'unknown-pid' }
-    if (under.pid !== w.pid) return { what, ok: false, check: 'foreign-hit' }
+    if (spot.status === 'rejected') return { what, ok: false, check: 'at-error', why: String(spot.reason).slice(0, 120) }
+    if (!under.found) return { what, ok: false, check: 'no-hit' }
+    const inside = (under.path ?? []).some((n) => n.id === w.id)
+    if (!inside && (w.pid === null || under.pid == null)) return { what, ok: false, check: 'unknown-pid' }
+    if (!inside && under.pid !== w.pid) return { what, ok: false, check: 'foreign-hit' }
+    if (ROOT_ROLES.has(under.found.role) || under.found.id === w.id) return { what, ok: false, check: 'root-hit' }
     if (shot.status === 'rejected') throw shot.reason
     const k = shot.value.readUInt32BE(16) / cw
     const p = await peek(shot.value, [(x - left) * k, (y - top) * k])
@@ -1059,10 +1061,11 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const area = await desk.screen()
     const [x, y] = await desk.ground(await desk.shot(), `${target} in the "${w.title}" window`, area)
     tick('ground', t0)
-    const { what, ok, check, p, p_zoom, p_full } = await grounded(x, y, target, w, area)
+    const { what, ok, check, p, p_zoom, p_full, why } = await grounded(x, y, target, w, area)
     rec.ground_hit = what.slice(0, 80); rec.checked = check; rec.p = p; rec.p_zoom = p_zoom; rec.p_full = p_full
     const off = { 'root-hit': ', a window or document root', 'foreign-hit': ', which belongs to another process', 'unknown-pid': ', whose process is unknown' }[check] ?? ''
-    if (!ok) throw new Surprise(`no element matches "${target}"; grounding pointed at ${what ? `${what.slice(0, 80)}${off}` : 'no accessible element'}`, await seen(), true)
+    const at = why ? `a point whose element could not be read: ${why}` : what ? `${what.slice(0, 80)}${off}` : 'no accessible element'
+    if (!ok) throw new Surprise(`no element matches "${target}"; grounding pointed at ${at}`, await seen(), true)
     t0 = Date.now(); await desk.click(x, y); tick('act', t0)
     rec.how = 'ground'; rec.unsaved = true; await settle(w.title); return
   }

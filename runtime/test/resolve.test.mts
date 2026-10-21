@@ -31,7 +31,9 @@ let pick: Record<string, number> = {}
 let looked: Record<string, number> = {}
 let build: string | null = null
 let on: number | number[] = 0
-let under: { role: string; name: string; bounds?: number[] } | null = null
+let under: { id?: string; role: string; name: string; bounds?: number[] } | null = null
+let path: { id: string; role: string; name: string }[] = []
+let atFails = false
 let hitPid: number | null = process.pid
 let yes = 0
 
@@ -54,7 +56,7 @@ function answer({ tool, args }: Call): Reply {
     return { text: '{"ok":true}', image: image.toString('base64') }
   }
   if (tool === 'desk_screen') return '{"width":1280,"height":800}'
-  if (tool === 'desk_at') { atPids.push(args.pid); return JSON.stringify({ found: under, path: [], pid: hitPid }) }
+  if (tool === 'desk_at') { atPids.push(args.pid); return atFails ? { text: 'access call timed out', error: true } : JSON.stringify({ found: under, path, pid: hitPid }) }
   if (tool === 'desk_click') clicked.push(`${args.x},${args.y}`)
   return '{"ok":true}'
 }
@@ -113,7 +115,7 @@ function screen(tree: Spec[], probabilities: Record<string, number>) {
 
 await daemon({ after }, answer)
 beforeEach(() => {
-  build = null; on = 0; looked = {}; pick = {}; under = { role: 'image', name: '' }; hitPid = process.pid; yes = 0; tones = []; scale = 1
+  build = null; on = 0; looked = {}; pick = {}; under = { role: 'image', name: '' }; path = []; atFails = false; hitPid = process.pid; yes = 0; tones = []; scale = 1
 })
 
 test('a click whose jev pick has a close runner-up escalates as ambiguous instead of pressing the pick', async () => {
@@ -390,6 +392,35 @@ test('a grounded point whose element is a window or document root, belongs to an
   const own = await plan('the pay button', tree, {})
   assert.equal(own.ok, true, JSON.stringify(own))
   assert.deepEqual(clicked, ['640,400'])
+  under = { id: '1.1/1', role: 'panel', name: 'Portal' }
+  const self = await plan('the pay button', tree, {})
+  assert.deepEqual([self.ok, self.trace?.[0]?.ground?.check], [false, 'root-hit'])
+})
+
+test('a grounded point inside the plan window counts as its own whatever the process, as a UWP app shows its content from another process', async () => {
+  const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
+  build = BUILD
+  on = 0.99
+  under = { role: 'push button', name: 'Multiply by' }
+  hitPid = process.pid + 1
+  path = [{ id: '1.1/9', role: 'group', name: '' }, { id: '1.1/1', role: 'window', name: 'Portal' }]
+  const uwp = await plan('the multiply key', tree, {})
+  assert.equal(uwp.ok, true, JSON.stringify(uwp))
+  assert.deepEqual(clicked, ['640,400'])
+  hitPid = null
+  const unknown = await plan('the multiply key', tree, {})
+  assert.equal(unknown.ok, true, JSON.stringify(unknown))
+})
+
+test('a failed read of the element under a grounded point is refused with its reason, not as no element', async () => {
+  const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
+  build = BUILD
+  on = 0.99
+  atFails = true
+  const out = await plan('the pay button', tree, {})
+  assert.equal(out.ok, false, JSON.stringify(out))
+  assert.match(out.escalate?.reason ?? '', /grounding pointed at a point whose element could not be read: .*access call timed out/)
+  assert.deepEqual([clicked, looks, out.trace?.[0]?.ground?.check], [[], [], 'at-error'])
 })
 
 test('a near-even 640x400 crop answer no longer takes a grounded click alone: the zoom and ring checks decide, and the trace carries every score and the element under the point', async () => {
