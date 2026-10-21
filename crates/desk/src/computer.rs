@@ -391,31 +391,35 @@ impl Computer {
             p.remove("verify_hit");
         }
         let mut refused = None;
-        let mut result = if req.get("verify_hit").is_some() {
-            match self.call(target, tool, req).await {
-                Ok(v) if v["isError"] == true => {
-                    let text = format!("{tool}: {}", text_of(&v));
-                    match (hit_refusal(&v), &pressed) {
-                        (Some(before_sending), Some(pressed)) => {
-                            refused = before_sending.then_some(text);
-                            self.request(target, "click", pressed.clone()).await
+        let mut result = match &pressed {
+            Some(pressed) if req.get("verify_hit").is_some() => {
+                match self.call(target, tool, req).await {
+                    Ok(v) if v["isError"] == true => {
+                        let text = format!("{tool}: {}", text_of(&v));
+                        match hit_refusal(&v) {
+                            Some(true) => {
+                                match self.request(target, "click", pressed.clone()).await {
+                                    Err(e) if e.contains(AX_UNSUPPORTED) => Err(text),
+                                    done => {
+                                        refused = Some(text);
+                                        done
+                                    }
+                                }
+                            }
+                            Some(false) => self.request(target, "click", pressed.clone()).await,
+                            None => Err(text),
                         }
-                        _ => Err(text),
                     }
+                    done => done,
                 }
-                done => done,
             }
-        } else {
-            self.send(target, tool, req, enter, &input).await
+            _ => self.send(target, tool, req, enter, &input).await,
         };
         if let (Some(pressed), Err(e)) = (pressed, &result)
             && e.contains(AX_UNSUPPORTED)
+            && let Some(retry) = self.unpressable(session, &a, pressed).await
         {
-            if let Some(refused) = refused.take() {
-                result = Err(refused);
-            } else if let Some(retry) = self.unpressable(session, &a, pressed).await {
-                result = self.request(target, "click", retry).await;
-            }
+            result = self.request(target, "click", retry).await;
         }
         if let Some(typed) = typed
             && result.is_ok()

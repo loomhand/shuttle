@@ -78,7 +78,7 @@ fn desk_endpoint() -> String {
     server::cache_endpoint(
         "SHUTTLE_SOCKET",
         &format!("{VENDOR}-{NAME}-desk"),
-        &format!("{VENDOR}/{NAME}"),
+        &home().to_string_lossy(),
         "desk.sock",
     )
 }
