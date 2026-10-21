@@ -55,14 +55,14 @@ pub fn run(ui: Ui) -> ! {
             let class = WNDCLASSW {
                 lpfnWndProc: Some(procedure),
                 hInstance: module.into(),
-                lpszClassName: w!("CocoonShuttleControls"),
+                lpszClassName: w!("ShuttleControls"),
                 ..Default::default()
             };
             RegisterClassW(&class);
             CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
-                w!("CocoonShuttleControls"),
-                w!("Cocoon Shuttle"),
+                w!("ShuttleControls"),
+                w!("Shuttle"),
                 WINDOW_STYLE::default(),
                 0,
                 0,
@@ -79,7 +79,7 @@ pub fn run(ui: Ui) -> ! {
         Ok(w) => w,
         Err(e) => {
             log(format_args!(
-                "the Windows controls did not start: {e}; cocoon-shuttle stop still works"
+                "the Windows controls did not start: {e}; shuttle stop still works"
             ));
             loop {
                 std::thread::park();
@@ -91,7 +91,7 @@ pub fn run(ui: Ui) -> ! {
         // SAFETY: `window` is this thread's window; the hotkey id is unique to it.
         if let Err(e) = unsafe { RegisterHotKey(Some(window), 1, modifiers, hotkey.code) } {
             log(format_args!(
-                "the kill hotkey did not register: {e}; cocoon-shuttle stop still works"
+                "the kill hotkey did not register: {e}; shuttle stop still works"
             ));
         }
     }
@@ -174,7 +174,7 @@ fn ask(question: &str, tx: oneshot::Sender<bool>) {
     let text = HSTRING::from(format!("{question}\n\nOK allows it; Cancel refuses."));
     let style = MB_OKCANCEL | MB_DEFBUTTON2 | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND;
     // SAFETY: both strings outlive the call; the dialog has no owner window.
-    let answer = unsafe { MessageBoxW(None, &text, w!("Cocoon Shuttle"), style) };
+    let answer = unsafe { MessageBoxW(None, &text, w!("Shuttle"), style) };
     if let Some(tx) = call.lock().unwrap_or_else(PoisonError::into_inner).take() {
         let _ = tx.send(answer == IDOK);
     }

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Builds one release archive from the cocoon-shuttle binary in a cargo release directory, the runtime, and cua-driver and Node from packaging/pins;
+# Builds one release archive from the shuttle binary in a cargo release directory, the runtime, and cua-driver and Node from packaging/pins;
 # a linux archive also carries the Android UI server jar that UI_JAR names (android/ui/build.sh builds it).
 set -euo pipefail
 
-NAME=cocoon-shuttle
-APP="Cocoon Shuttle"
-BUNDLE_ID=io.github.loomhand.cocoon-shuttle
+NAME=shuttle
+APP="Shuttle"
+BUNDLE_ID=io.github.loomhand.shuttle
 
 usage() {
 	echo "usage: $0 PLATFORM RELEASE_DIR VERSION OUT_DIR; PLATFORM: macos-arm64, macos-x64, linux-x64, linux-arm64, windows-x64" >&2
@@ -22,7 +22,7 @@ OUT=$(cd "$4" && pwd)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-# licenses DIR NODE CUA: the license of cocoon-shuttle and of each bundled component
+# licenses DIR NODE CUA: the license of shuttle and of each bundled component
 licenses() {
 	mkdir -p "$1"
 	cp "$ROOT/LICENSE" "$1/LICENSE"

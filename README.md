@@ -1,6 +1,6 @@
 # shuttle
 
-shuttle (binary `cocoon-shuttle`, app Cocoon Shuttle) is a computer-use host that runs on your own machine. Local agents such as Claude Code, Codex and Cursor start it as an MCP server over stdio and drive your desktop through it: whole GUI plans in one call (`gui_plan`), scripts against a desk API (`script_run`), single accessibility-tree calls (`desk`) and screenshots. Model calls for target picking, grounding and checks go to an OpenAI-compatible endpoint and key you configure, OpenRouter by default (bring your own key).
+shuttle (binary `shuttle`, app Shuttle) is a computer-use host that runs on your own machine. Local agents such as Claude Code, Codex and Cursor start it as an MCP server over stdio and drive your desktop through it: whole GUI plans in one call (`gui_plan`), scripts against a desk API (`script_run`), single accessibility-tree calls (`desk`) and screenshots. Model calls for target picking, grounding and checks go to an OpenAI-compatible endpoint and key you configure, OpenRouter by default (bring your own key).
 
 shuttle is part of [loomhand](https://github.com/loomhand). Its input, capture and window layer is [cua-driver](https://github.com/loomhand/cua) (MIT).
 
@@ -13,7 +13,7 @@ shuttle is part of [loomhand](https://github.com/loomhand). Its input, capture a
 | Phase | What | State |
 |---|---|---|
 | P0 | Workspace, CI, release archives, installers, MCP skeleton | done in v0.0.1 |
-| P1 | macOS: daemon in `Cocoon Shuttle.app`, desk tools, `gui_plan`, `script_run`, BYOK models, safety controls | done in v0.1.0 |
+| P1 | macOS: daemon in `Shuttle.app`, desk tools, `gui_plan`, `script_run`, BYOK models, safety controls | done in v0.1.0 |
 | P2 | Windows: the same over UI Automation, with its safety controls | done in v0.1.0; starts without the Visual C++ Redistributable from v0.1.1 |
 | P3 | Linux: the same over AT-SPI on X11 | done in v0.1.5, without the kill hotkey, indicator and confirm dialog |
 
@@ -38,21 +38,21 @@ The installers check the archive against the release's `SHA256SUMS`. The binarie
 ## Use it from an agent
 
 ```sh
-claude mcp add shuttle -- cocoon-shuttle mcp
+claude mcp add shuttle -- shuttle mcp
 ```
 
 Codex (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.shuttle]
-command = "cocoon-shuttle"
+command = "shuttle"
 args = ["mcp"]
 ```
 
 Cursor (`~/.cursor/mcp.json`):
 
 ```json
-{ "mcpServers": { "shuttle": { "command": "cocoon-shuttle", "args": ["mcp"] } } }
+{ "mcpServers": { "shuttle": { "command": "shuttle", "args": ["mcp"] } } }
 ```
 
 ## Tools
@@ -67,7 +67,7 @@ Cursor (`~/.cursor/mcp.json`):
 
 ## Safety
 
-shuttle drives your real machine. On macOS and Windows it has `cocoon-shuttle stop`, a global kill hotkey (macOS ⌃⌥⌘⎋, Windows Ctrl+Alt+Shift+Esc), a menu-bar item or tray icon that shows it acting or stopped, an optional confirm mode that asks before a click at a point or before every action, and an app allowlist that also blacks out other apps in screenshots. These are guard rails for tool use, not a sandbox: `script_run`, which is on by default, runs code with your user's rights, so they hold only with `script_run = false` under `[tools]`. Linux has `stop`, `resume` and the `script_run` switch now, and not yet the hotkey, indicator and confirm mode. [docs/safety.md](docs/safety.md) has the detail and the limits, and how input works on macOS, where there is only one pointer.
+shuttle drives your real machine. On macOS and Windows it has `shuttle stop`, a global kill hotkey (macOS ⌃⌥⌘⎋, Windows Ctrl+Alt+Shift+Esc), a menu-bar item or tray icon that shows it acting or stopped, an optional confirm mode that asks before a click at a point or before every action, and an app allowlist that also blacks out other apps in screenshots. These are guard rails for tool use, not a sandbox: `script_run`, which is on by default, runs code with your user's rights, so they hold only with `script_run = false` under `[tools]`. Linux has `stop`, `resume` and the `script_run` switch now, and not yet the hotkey, indicator and confirm mode. [docs/safety.md](docs/safety.md) has the detail and the limits, and how input works on macOS, where there is only one pointer.
 
 ## Documentation
 

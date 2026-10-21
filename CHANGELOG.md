@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Renamed to shuttle.** The binary is `shuttle`, the macOS app `Shuttle.app` with bundle id `io.github.loomhand.shuttle`, and the release archives `shuttle-vX.Y.Z-<target>`. Every path follows: the config in `~/.config/shuttle` (`%APPDATA%\shuttle`), the daemon socket in `~/Library/Caches/shuttle` or `~/.cache/shuttle` (`\\.\pipe\shuttle-desk`), the install in `~/.local/bin/shuttle`, `~/.local/lib/shuttle` and `%LOCALAPPDATA%\Programs\shuttle`. There is no fallback to the old names. To upgrade: quit the old daemon (`pkill -f 'cocoon-shuttle serve'`), install, move `~/.config/cocoon-shuttle` to `~/.config/shuttle` (Windows: `%APPDATA%\cocoon-shuttle` to `%APPDATA%\shuttle`), point your agent's MCP entry at `shuttle mcp`, grant Accessibility and Screen Recording to `Shuttle.app`, and remove `Cocoon Shuttle.app`, `~/.local/bin/cocoon-shuttle` and its old grants. Other tools also install a `shuttle` command (`cargo-shuttle`, Homebrew `shuttle-cli`), so check `which shuttle`; and another macOS app is named Shuttle, so shuttle starts its app by path.
+
 ## 0.1.12 - 2026-10-20
 
 - **Quieter serve log off Linux.** On macOS and Windows the computer verbs no longer try the Linux MIT-SHM grabber on each call, so the serve log no longer repeats `desk: MIT-SHM capture unavailable, using cua-driver` for every computer call.

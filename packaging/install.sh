@@ -1,11 +1,11 @@
 #!/bin/sh
-# Installs cocoon-shuttle on macOS or Linux from a GitHub release, after checking the archive against the release's SHA256SUMS.
+# Installs shuttle on macOS or Linux from a GitHub release, after checking the archive against the release's SHA256SUMS.
 # usage: curl -fsSL https://github.com/loomhand/shuttle/releases/latest/download/install.sh | sh
 # env: SHUTTLE_VERSION (a tag, default the latest release), SHUTTLE_PREFIX (default ~/.local), SHUTTLE_APP_DIR (macOS, default ~/Applications)
 set -eu
 
-NAME=cocoon-shuttle
-APP="Cocoon Shuttle"
+NAME=shuttle
+APP="Shuttle"
 REPO=loomhand/shuttle
 PREFIX=${SHUTTLE_PREFIX:-$HOME/.local}
 APP_DIR=${SHUTTLE_APP_DIR:-$HOME/Applications}

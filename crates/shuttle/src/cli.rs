@@ -133,7 +133,7 @@ fn save_png(b64: &str) -> Result<PathBuf, String> {
         .decode(b64)
         .map_err(|e| format!("decode screenshot: {e}"))?;
     let mut file = tempfile::Builder::new()
-        .prefix("cocoon-shuttle-")
+        .prefix("shuttle-")
         .suffix(".png")
         .tempfile()
         .map_err(|e| format!("create screenshot file: {e}"))?;
@@ -163,7 +163,7 @@ fn controls_serve(endpoint: String) -> ExitCode {
                     None => "Stop".to_owned(),
                 },
                 indicator: safety.indicator,
-                about: format!("Cocoon Shuttle {VERSION}, {input} input"),
+                about: format!("Shuttle {VERSION}, {input} input"),
             });
         };
         let done = block_on(

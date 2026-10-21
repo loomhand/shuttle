@@ -28,11 +28,11 @@ use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 /// The program name in usage lines, endpoints and the MCP server info.
-pub const NAME: &str = "cocoon-shuttle";
+pub const NAME: &str = "shuttle";
 /// The release version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The answer to every call while the user has stopped shuttle.
-pub const STOPPED: &str = "stopped by the user: run `cocoon-shuttle resume` to go on";
+pub const STOPPED: &str = "stopped by the user: run `shuttle resume` to go on";
 
 #[cfg(unix)]
 const GROUP_POLL: Duration = Duration::from_millis(20);
