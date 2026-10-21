@@ -400,9 +400,10 @@ impl Computer {
                             Some(true) => {
                                 match self.request(target, "click", pressed.clone()).await {
                                     Err(e) if e.contains(AX_UNSUPPORTED) => Err(text),
-                                    done => {
+                                    Err(e) => Err(format!("{text}\n{e}")),
+                                    Ok(v) => {
                                         refused = Some(text);
-                                        done
+                                        Ok(v)
                                     }
                                 }
                             }
@@ -3171,6 +3172,21 @@ mod tests {
         let (_, old) = field("AXTextField", "click", UNSUPPORTED, "unknown").await;
         assert_eq!(old.len(), 3, "{old:?}");
         assert_eq!(old[2]["scope"], "desktop", "{old:?}");
+        let (both, sent) = field(
+            "AXTextField",
+            "click",
+            "the press timed out",
+            "hit_mismatch",
+        )
+        .await;
+        assert!(
+            both.is_error
+                && both.text.contains("nothing was sent")
+                && both.text.contains("the press timed out"),
+            "{}",
+            both.text
+        );
+        assert_eq!(sent.len(), 2, "{sent:?}");
     }
 
     #[tokio::test]
