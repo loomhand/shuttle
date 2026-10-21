@@ -26,7 +26,7 @@ use crate::log;
 const POLL_S: f64 = 0.25;
 const KEYBOARD_CLASS: u32 = u32::from_be_bytes(*b"keyb");
 const HOT_KEY_PRESSED: u32 = 5;
-const SIGNATURE: u32 = u32::from_be_bytes(*b"cshl");
+const SIGNATURE: u32 = u32::from_be_bytes(*b"shtl");
 const ICON_PT: f64 = 18.0;
 const STATES: [(&str, &[u8]); 3] = [
     ("idle", include_bytes!("../assets/idle.pdf")),

@@ -17,7 +17,7 @@ use shuttle_models::config::Confirm;
 use tokio::sync::oneshot;
 use zeroize::Zeroizing;
 
-use crate::STOPPED;
+use crate::{NAME, STOPPED};
 #[cfg(any(target_os = "macos", windows))]
 use crate::hotkey::Hotkey;
 use crate::plugins::Plugin;
@@ -402,7 +402,7 @@ fn question(call: &Call) -> String {
         _ => format!("{verb} {}", call.args),
     };
     let what: String = what.chars().take(QUESTION_CHARS).collect();
-    format!("Allow shuttle to {what}?")
+    format!("Allow {NAME} to {what}?")
 }
 
 /// Whether the computer action `a` can end in a click at a screen point: a pointer action, or typing at an element or a point, which clicks it first.

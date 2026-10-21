@@ -138,7 +138,7 @@ fn save_png(b64: &str) -> Result<PathBuf, String> {
         .decode(b64)
         .map_err(|e| format!("decode screenshot: {e}"))?;
     let mut file = tempfile::Builder::new()
-        .prefix("shuttle-")
+        .prefix(&format!("{NAME}-"))
         .suffix(".png")
         .tempfile()
         .map_err(|e| format!("create screenshot file: {e}"))?;
