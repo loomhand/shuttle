@@ -550,6 +550,15 @@ impl Grabber {
         Ok(None)
     }
 
+    pub fn titles(&self, pid: Option<u32>) -> Result<Vec<String>, String> {
+        Ok(self
+            .clients()?
+            .into_iter()
+            .filter(|&w| self.pid(w) == pid)
+            .map(|w| self.title(w).unwrap_or_default())
+            .collect())
+    }
+
     /// The mapped children of the root with their geometry; the desktop shell's only with `shell`.
     fn children(&self, shell: bool) -> Result<Vec<Placement>, String> {
         let tree = self
