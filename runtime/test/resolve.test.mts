@@ -364,15 +364,15 @@ test('a grounded point with no accessible element under it is refused before any
   assert.deepEqual(missing.trace?.[0]?.ground, { check: 'no-hit', p: undefined, p_zoom: undefined, p_full: undefined, hit: '' })
 })
 
-test('a grounded point whose element is the window root, or belongs to another process, is refused before any check', async () => {
+test('a grounded point whose element is a window or document root, belongs to another process, or has no known process is refused before any check', async () => {
   const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
   build = BUILD
   on = 0.99
-  for (const role of ['frame', 'window', 'application', 'dialog']) {
+  for (const role of ['frame', 'window', 'application', 'dialog', 'document']) {
     under = { role, name: 'Portal' }
     const root = await plan('Zzqx missing control', tree, {})
     assert.equal(root.ok, false, JSON.stringify(root))
-    assert.match(root.escalate?.reason ?? '', new RegExp(`grounding pointed at ${role} "Portal", the window itself`))
+    assert.match(root.escalate?.reason ?? '', new RegExp(`grounding pointed at ${role} "Portal", a window or document root`))
     assert.deepEqual([clicked, looks, root.trace?.[0]?.ground?.check], [[], [], 'root-hit'])
   }
   under = { role: 'push button', name: 'Pay' }
@@ -381,6 +381,11 @@ test('a grounded point whose element is the window root, or belongs to another p
   assert.equal(foreign.ok, false, JSON.stringify(foreign))
   assert.match(foreign.escalate?.reason ?? '', /grounding pointed at push button "Pay", which belongs to another process/)
   assert.deepEqual([clicked, looks, foreign.trace?.[0]?.ground?.check], [[], [], 'foreign-hit'])
+  hitPid = null
+  const unknown = await plan('the pay button', tree, {})
+  assert.equal(unknown.ok, false, JSON.stringify(unknown))
+  assert.match(unknown.escalate?.reason ?? '', /grounding pointed at push button "Pay", whose process is unknown/)
+  assert.deepEqual([clicked, looks, unknown.trace?.[0]?.ground?.check], [[], [], 'unknown-pid'])
   hitPid = process.pid
   const own = await plan('the pay button', tree, {})
   assert.equal(own.ok, true, JSON.stringify(own))
