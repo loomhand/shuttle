@@ -72,7 +72,7 @@ pub(crate) const BACKGROUND_ELEMENT: &str = "background input: the element's own
 pub(crate) const BACKGROUND_TWINS: &str = "background input: the element's own window is ambiguous (same or no title, and no single frame match), and background input never guesses which window to click";
 pub(crate) const BACKGROUND_UIA: &str = "background input: on Windows UI Automation focuses, selects or runs an element only by bringing its window to the front; click it in its window, or use input = \"foreground\"";
 const ANOTHER_SPACE: &str = "accessibility does not reach it there, so a snapshot or an element action needs it on the current Space; background key, type, click, scroll and drag reach it by its title or pid";
-const OFF_SPACE: &str = "the window is on another Space, where its capture may be stale: read it back on its Space before sending the input again";
+const OFF_SPACE: &str = "the window is on another Space, where background input cannot read it back: do not type the text again, and before you submit it with Return or Send, ask the user to confirm that the text is there, unless you can read it back";
 const SCROLL_POINT: &str = "scroll needs both x and y, or neither";
 const OK: &str = r#"{"ok":true}"#;
 const SCROLL_AMOUNT: u32 = 3;
@@ -2401,6 +2401,22 @@ pub(crate) mod tests {
             "{err}"
         );
         assert!(sent(&calls, "type_text").is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_off_space_note_says_not_to_type_again_and_to_ask_the_user_before_submitting() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Spaces(Arc::clone(&calls)), Os::Mac).background(true);
+        let out = desk
+            .run("desk_type", json!({"text": "x", "window": "微信"}))
+            .await
+            .unwrap();
+        let note: Value = serde_json::from_str(&out.text).unwrap();
+        let note = note["unverified"].as_str().unwrap_or_default();
+        assert!(
+            note.ends_with("; the window is on another Space, where background input cannot read it back: do not type the text again, and before you submit it with Return or Send, ask the user to confirm that the text is there, unless you can read it back"),
+            "{note}"
+        );
     }
 
     fn sent(calls: &Arc<Mutex<Vec<(String, Value)>>>, tool: &str) -> Vec<Value> {
