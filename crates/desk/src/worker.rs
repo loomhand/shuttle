@@ -1,5 +1,4 @@
-//! A thread that owns an accessibility backend, since UIA and AX objects stay on the thread that made them;
-//! a call that outlives its limit leaves that thread behind and the next call starts a fresh one.
+//! A thread that owns an accessibility backend, since UIA and AX objects stay on the thread that made them; a call that outlives its limit leaves that thread behind and the next call starts a fresh one.
 
 use std::sync::Mutex;
 use std::sync::mpsc::{Sender, channel};
