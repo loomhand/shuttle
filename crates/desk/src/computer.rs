@@ -1978,6 +1978,15 @@ struct Window {
     z: i64,
 }
 
+/// A screen rectangle's pixels: the rectangle in screen units, its size and RGB rows in image pixels, and the image pixels per screen unit.
+struct Cut {
+    rect: [i32; 4],
+    width: u32,
+    height: u32,
+    rgb: Vec<u8>,
+    per_unit: f64,
+}
+
 fn positive(scale: Option<f64>) -> Result<(), String> {
     match scale {
         Some(k) if !(k.is_finite() && k > 0.0) => {
@@ -2421,15 +2430,6 @@ fn decode_png(data: &[u8]) -> Option<(png::OutputInfo, Vec<u8>)> {
     Some((info, pixels))
 }
 
-/// A screen rectangle's pixels: the rectangle in screen units, its size and RGB rows in image pixels, and the image pixels per screen unit.
-struct Cut {
-    rect: [i32; 4],
-    width: u32,
-    height: u32,
-    rgb: Vec<u8>,
-    per_unit: f64,
-}
-
 /// The RGB rows of the pixel rectangle `[x, y, w, h]` of an 8-bit RGB or RGBA image, clipped to it.
 fn crop(
     info: &png::OutputInfo,
@@ -2476,6 +2476,11 @@ mod tests {
 
     use super::*;
     use crate::driver::CLICK_SPACING;
+
+    const UNSUPPORTED: &str = "AX action failed: AXUIElementPerformAction(AXPress) returned -25206";
+
+    type Clicks = std::sync::Arc<std::sync::Mutex<Vec<(f64, f64)>>>;
+    type Landed = std::sync::Arc<std::sync::Mutex<Vec<Vec<f64>>>>;
 
     fn cua(socket: &Path) -> Computer {
         cua_on(socket, Os::Linux)
@@ -2741,7 +2746,6 @@ mod tests {
         driver.abort();
     }
 
-    /// A driver on `socket` that logs every call in `calls`, lists one Chrome window and types the first `typed` texts.
     fn window_driver(
         socket: &Path,
         calls: &std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
@@ -3060,10 +3064,9 @@ mod tests {
 
     #[tokio::test]
     async fn an_element_without_the_press_action_gets_one_desktop_click_at_its_centre() {
-        let (out, clicks) = press(
-            "AX action failed: AXUIElementPerformAction(AXPress) returned -25206",
-            |x, y| ((x, y) == (200.0, 120.0)).then_some((7, 9)),
-        )
+        let (out, clicks) = press(UNSUPPORTED, |x, y| {
+            ((x, y) == (200.0, 120.0)).then_some((7, 9))
+        })
         .await;
         assert!(!out.is_error, "{}", out.text);
         assert_eq!(clicks.len(), 2, "{clicks:?}");
@@ -3077,8 +3080,6 @@ mod tests {
         );
         assert!(clicks[1]["element_token"].is_null(), "{clicks:?}");
     }
-
-    const UNSUPPORTED: &str = "AX action failed: AXUIElementPerformAction(AXPress) returned -25206";
 
     async fn field(
         role: &'static str,
@@ -3208,11 +3209,7 @@ mod tests {
      {
         let covered: [Under; 3] = [|_, _| Some((8, 10)), |_, _| Some((7, 11)), |_, _| None];
         for under in covered {
-            let (out, clicks) = press(
-                "AX action failed: AXUIElementPerformAction(AXPress) returned -25206",
-                under,
-            )
-            .await;
+            let (out, clicks) = press(UNSUPPORTED, under).await;
             assert!(out.is_error && out.text.contains("-25206"), "{}", out.text);
             assert_eq!(clicks.len(), 1, "{clicks:?}");
         }
@@ -3477,10 +3474,6 @@ mod tests {
         assert_eq!(*clicks.lock().unwrap(), [(200.0, 80.0), (500.0, 200.0)]);
         driver.abort();
     }
-
-    type Clicks = std::sync::Arc<std::sync::Mutex<Vec<(f64, f64)>>>;
-
-    type Landed = std::sync::Arc<std::sync::Mutex<Vec<Vec<f64>>>>;
 
     fn retina_driver(
         dir: &Path,

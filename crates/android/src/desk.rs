@@ -67,18 +67,6 @@ impl Node {
         (x + w / 2, y + h / 2)
     }
 
-    /// The part of the element that shows: its bounds cut to its list and the screen; none when nothing shows.
-    fn shown(&self, (screen_w, screen_h): (i32, i32)) -> Option<[i32; 4]> {
-        let [x, y, w, h] = self.bounds;
-        let (mut left, mut top) = (x.max(0), y.max(0));
-        let (mut right, mut bottom) = ((x + w).min(screen_w), (y + h).min(screen_h));
-        if let Some([sx, sy, sw, sh]) = self.scroller {
-            (left, top) = (left.max(sx), top.max(sy));
-            (right, bottom) = (right.min(sx + sw), bottom.min(sy + sh));
-        }
-        (right > left && bottom > top).then_some([left, top, right - left, bottom - top])
-    }
-
     /// Whether the name, description or value contains lowercase `q`, ignoring their case.
     pub(crate) fn mentions(&self, q: &str) -> bool {
         [
@@ -89,6 +77,18 @@ impl Node {
         .into_iter()
         .flatten()
         .any(|t| t.to_lowercase().contains(q))
+    }
+
+    /// The part of the element that shows: its bounds cut to its list and the screen; none when nothing shows.
+    fn shown(&self, (screen_w, screen_h): (i32, i32)) -> Option<[i32; 4]> {
+        let [x, y, w, h] = self.bounds;
+        let (mut left, mut top) = (x.max(0), y.max(0));
+        let (mut right, mut bottom) = ((x + w).min(screen_w), (y + h).min(screen_h));
+        if let Some([sx, sy, sw, sh]) = self.scroller {
+            (left, top) = (left.max(sx), top.max(sy));
+            (right, bottom) = (right.min(sx + sw), bottom.min(sy + sh));
+        }
+        (right > left && bottom > top).then_some([left, top, right - left, bottom - top])
     }
 
     fn id(&self, app: &str) -> String {
@@ -141,6 +141,17 @@ pub(crate) struct Frame {
 }
 
 impl Frame {
+    pub(crate) fn window(&self) -> &str {
+        &self.id
+    }
+
+    /// Whether a system window covers screen point `(x, y)`.
+    pub(crate) fn covered(&self, (x, y): (i32, i32)) -> bool {
+        self.covers
+            .iter()
+            .any(|&[cx, cy, cw, ch]| (cx..cx + cw).contains(&x) && (cy..cy + ch).contains(&y))
+    }
+
     fn json(&self) -> Value {
         json!({
             "id": self.id,
@@ -168,17 +179,6 @@ impl Frame {
         open.into_iter()
             .filter(|(a, b)| b - a >= MIN_SPAN)
             .max_by_key(|(a, b)| b - a)
-    }
-
-    pub(crate) fn window(&self) -> &str {
-        &self.id
-    }
-
-    /// Whether a system window covers screen point `(x, y)`.
-    pub(crate) fn covered(&self, (x, y): (i32, i32)) -> bool {
-        self.covers
-            .iter()
-            .any(|&[cx, cy, cw, ch]| (cx..cx + cw).contains(&x) && (cy..cy + ch).contains(&y))
     }
 
     /// The part of element `n` a tap reaches: its shown part, less what a bar or keyboard covers at its middle column.
@@ -1335,7 +1335,6 @@ mod tests {
         )
     }
 
-    /// A list at y 200..1184 under a toolbar, with a row cut by the toolbar edge, one in full and one below the list.
     fn list_dump() -> String {
         format!(
             "<hierarchy>{}{}{}{}</hierarchy>",

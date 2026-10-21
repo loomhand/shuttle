@@ -53,6 +53,17 @@ pub const ACTIONS: [&str; 10] = [
     "desk_launch",
 ];
 
+pub(crate) const BACKGROUND_TARGET: &str =
+    "background input needs its target window: pass window or pid";
+pub(crate) const BACKGROUND_DESKTOP: &str = "background input: this window takes no pointer input without the foreground, and background input never brings a window to the front";
+pub(crate) const BACKGROUND_NO_WINDOW: &str = "background input: no window under the point";
+pub(crate) const BACKGROUND_ELEMENT: &str = "background input: the element's own window could not be found, and background input never clicks a window that covers it";
+pub(crate) const BACKGROUND_TWINS: &str = "background input: the element's own window is ambiguous (same or no title, and no single frame match), and background input never guesses which window to click";
+pub(crate) const BACKGROUND_UIA: &str = "background input: on Windows UI Automation focuses, selects or runs an element only by bringing its window to the front; click it in its window, or use input = \"foreground\"";
+#[cfg(target_os = "linux")]
+pub(crate) const TYPER: Typer = crate::xtest::type_mapped;
+#[cfg(not(target_os = "linux"))]
+pub(crate) const TYPER: Typer = |_, _| Ok(false);
 const CALL_LIMIT: Duration = Duration::from_secs(3);
 const TREE_LIMIT: Duration = Duration::from_secs(10);
 const READ_CHARS: usize = 64 << 10;
@@ -64,13 +75,6 @@ const NO_WINDOW_UNDER: &str =
     "no window under the point, and the app allowlist admits only windows";
 const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
 const WINDOW_NEVER_READ: &str = "window_never_read";
-pub(crate) const BACKGROUND_TARGET: &str =
-    "background input needs its target window: pass window or pid";
-pub(crate) const BACKGROUND_DESKTOP: &str = "background input: this window takes no pointer input without the foreground, and background input never brings a window to the front";
-pub(crate) const BACKGROUND_NO_WINDOW: &str = "background input: no window under the point";
-pub(crate) const BACKGROUND_ELEMENT: &str = "background input: the element's own window could not be found, and background input never clicks a window that covers it";
-pub(crate) const BACKGROUND_TWINS: &str = "background input: the element's own window is ambiguous (same or no title, and no single frame match), and background input never guesses which window to click";
-pub(crate) const BACKGROUND_UIA: &str = "background input: on Windows UI Automation focuses, selects or runs an element only by bringing its window to the front; click it in its window, or use input = \"foreground\"";
 const ANOTHER_SPACE: &str = "accessibility does not reach it there, so a snapshot or an element action needs it on the current Space; background key, type, click, scroll and drag reach it by its title or pid";
 const OFF_SPACE: &str = "the window is on another Space, where background input cannot read it back: do not send the input again, and ask the user to confirm its effect unless you can read it back";
 const OFF_SPACE_TYPED: &str = "the window is on another Space, where background input cannot read it back: do not type the text again, and before you submit it with Return or Send, ask the user to confirm that the text is there, unless you can read it back";
@@ -87,10 +91,6 @@ const TYPE_SETTLE: Duration = Duration::from_millis(100);
 const TYPE_POLL: Duration = Duration::from_millis(10);
 const TYPE_TAIL: usize = 16;
 const MAC_TYPE_DELAY_MS: u64 = 0;
-#[cfg(target_os = "linux")]
-pub(crate) const TYPER: Typer = crate::xtest::type_mapped;
-#[cfg(not(target_os = "linux"))]
-pub(crate) const TYPER: Typer = |_, _| Ok(false);
 
 tokio::task_local! {
     static FOREGROUND: bool;
@@ -1460,6 +1460,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 }
 
+/// Sets its flag when dropped, as when a stop drops the call that holds it.
+pub(crate) struct Cancel(pub(crate) Arc<AtomicBool>);
+
+impl Drop for Cancel {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
 struct Under {
     pid: i64,
     id: i64,
@@ -1473,6 +1482,43 @@ struct Read {
     id: i64,
     bounds: [f64; 4],
     k: (f64, f64),
+}
+
+/// Moves a Linux launch into a systemd scope of its own on a task that finishes when the call is dropped; false when the launch stays in the daemon's cgroup.
+#[cfg(target_os = "linux")]
+pub(crate) async fn adopt(launched: Value) -> bool {
+    tokio::spawn(async move {
+        crate::scope::adopt(&launched).await.unwrap_or_else(|e| {
+            eprintln!("desk: scope the launch: {e}");
+            false
+        })
+    })
+    .await
+    .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) async fn adopt(_: Value) -> bool {
+    false
+}
+
+/// Runs of `text` with at most [`RUN_CHARS`] distinct non-ASCII characters; the Linux driver binds a spare keycode to each for the call and has fewer than 20 to lend.
+pub(crate) fn text_runs(text: &str) -> Vec<&str> {
+    let (mut runs, mut start, mut seen) = (Vec::new(), 0, Vec::new());
+    for (i, c) in text.char_indices() {
+        if c.is_ascii() || seen.contains(&c) {
+            continue;
+        }
+        if seen.len() == RUN_CHARS {
+            runs.push(&text[start..i]);
+            (start, seen) = (i, Vec::new());
+        }
+        seen.push(c);
+    }
+    if start < text.len() {
+        runs.push(&text[start..]);
+    }
+    runs
 }
 
 /// The windows a call picks from: the app of `pid` alone, unless the allowlist needs every window to judge the call.
@@ -1541,52 +1587,6 @@ async fn delivered(png: Vec<u8>, w: u32, h: u32, path: Option<String>) -> Result
         image_b64: Some(B64.encode(&png)),
         ..Output::default()
     })
-}
-
-/// Moves a Linux launch into a systemd scope of its own on a task that finishes when the call is dropped; false when the launch stays in the daemon's cgroup.
-#[cfg(target_os = "linux")]
-pub(crate) async fn adopt(launched: Value) -> bool {
-    tokio::spawn(async move {
-        crate::scope::adopt(&launched).await.unwrap_or_else(|e| {
-            eprintln!("desk: scope the launch: {e}");
-            false
-        })
-    })
-    .await
-    .unwrap_or(false)
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) async fn adopt(_: Value) -> bool {
-    false
-}
-
-/// Sets its flag when dropped, as when a stop drops the call that holds it.
-pub(crate) struct Cancel(pub(crate) Arc<AtomicBool>);
-
-impl Drop for Cancel {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
-}
-
-/// Runs of `text` with at most [`RUN_CHARS`] distinct non-ASCII characters; the Linux driver binds a spare keycode to each for the call and has fewer than 20 to lend.
-pub(crate) fn text_runs(text: &str) -> Vec<&str> {
-    let (mut runs, mut start, mut seen) = (Vec::new(), 0, Vec::new());
-    for (i, c) in text.char_indices() {
-        if c.is_ascii() || seen.contains(&c) {
-            continue;
-        }
-        if seen.len() == RUN_CHARS {
-            runs.push(&text[start..i]);
-            (start, seen) = (i, Vec::new());
-        }
-        seen.push(c);
-    }
-    if start < text.len() {
-        runs.push(&text[start..]);
-    }
-    runs
 }
 
 /// The last characters of the last line of `text`, which a field holds once it has read the typing.

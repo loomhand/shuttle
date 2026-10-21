@@ -28,6 +28,7 @@ type Rec = {
 }
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
+type Text = { value?: string; field: boolean }
 type Escalation = Seen & { reason: string; step?: number; plan_step?: Step }
 type Checked = { what: string; ok: boolean; check: string; p?: number; p_zoom?: number | null; p_full?: number | null; why?: string }
 type Ground = { check: string; p?: number; p_zoom?: number | null; p_full?: number | null; hit: string }
@@ -766,7 +767,6 @@ async function typedInto(w: Win, text: string): Promise<Fp | undefined> {
   } catch { return undefined } finally { tick('blank', t0) }
 }
 // the text of each element of `w` that holds text, by id, read before and after typing the driver may not confirm
-type Text = { value?: string; field: boolean }
 async function texts(w: Win): Promise<Map<string, Text> | null> {
   try {
     const out = new Map<string, Text>()
