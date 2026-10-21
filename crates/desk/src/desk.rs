@@ -72,7 +72,8 @@ pub(crate) const BACKGROUND_ELEMENT: &str = "background input: the element's own
 pub(crate) const BACKGROUND_TWINS: &str = "background input: the element's own window is ambiguous (same or no title, and no single frame match), and background input never guesses which window to click";
 pub(crate) const BACKGROUND_UIA: &str = "background input: on Windows UI Automation focuses, selects or runs an element only by bringing its window to the front; click it in its window, or use input = \"foreground\"";
 const ANOTHER_SPACE: &str = "accessibility does not reach it there, so a snapshot or an element action needs it on the current Space; background key, type, click, scroll and drag reach it by its title or pid";
-const OFF_SPACE: &str = "the window is on another Space, where background input cannot read it back: do not type the text again, and before you submit it with Return or Send, ask the user to confirm that the text is there, unless you can read it back";
+const OFF_SPACE: &str = "the window is on another Space, where background input cannot read it back: do not send the input again, and ask the user to confirm its effect unless you can read it back";
+const OFF_SPACE_TYPED: &str = "the window is on another Space, where background input cannot read it back: do not type the text again, and before you submit it with Return or Send, ask the user to confirm that the text is there, unless you can read it back";
 const SCROLL_POINT: &str = "scroll needs both x and y, or neither";
 const OK: &str = r#"{"ok":true}"#;
 const SCROLL_AMOUNT: u32 = 3;
@@ -707,20 +708,23 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     ) -> Result<(), String> {
         let out = self.call(tool, deliver(req, to)).await?;
         if note.is_none() {
-            *note = self.unverified(&out, to);
+            *note = self.unverified(&out, to, tool == "type_text");
         }
         Ok(())
     }
 
     /// The driver's note on background input whose effect it could not confirm, with the escalation it proposes.
-    fn unverified(&self, out: &Value, to: Option<(i64, i64)>) -> Option<String> {
+    fn unverified(&self, out: &Value, to: Option<(i64, i64)>, typed: bool) -> Option<String> {
         let c = &out["structuredContent"];
         let effect = c["effect"]
             .as_str()
             .filter(|e| self.bg() && *e != "confirmed")?;
         let mut note = format!("{effect}: {}", text_of(out));
         if to.is_some_and(|t| self.off_spaced().contains(&t)) {
-            note = format!("{note}; {OFF_SPACE}");
+            note = format!(
+                "{note}; {}",
+                if typed { OFF_SPACE_TYPED } else { OFF_SPACE }
+            );
         }
         let escalation = &c["escalation"];
         Some(
@@ -965,7 +969,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 req["y"] = ly.into();
             }
             let out = self.call("scroll", background(req, to)).await?;
-            return Ok(ok_with(self.unverified(&out, Some(to))));
+            return Ok(ok_with(self.unverified(&out, Some(to), false)));
         }
         let (x, y) = match (a.x, a.y) {
             (Some(x), Some(y)) => (x, y),
@@ -1035,7 +1039,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let (tx, ty) = self.local(&w, (a.to_x, a.to_y)).await?;
             let req = json!({"from_x": fx, "from_y": fy, "to_x": tx, "to_y": ty});
             let out = self.call("drag", background(req, to)).await?;
-            return Ok(ok_with(self.unverified(&out, Some(to))));
+            return Ok(ok_with(self.unverified(&out, Some(to), false)));
         }
         self.admit_point(a.x, a.y).await?;
         self.admit_point(a.to_x, a.to_y).await?;
@@ -1127,7 +1131,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
             done => done?,
         };
-        Ok(self.unverified(&out, Some((w.pid, w.id))))
+        Ok(self.unverified(&out, Some((w.pid, w.id)), false))
     }
 
     /// A click at a screen point, for a window that takes no window click; background input refuses it.
@@ -2304,7 +2308,7 @@ pub(crate) mod tests {
                     {"pid": 5, "window_id": 2, "layer": 0, "title": "Untitled", "app_name": "TextEdit", "is_on_screen": true, "on_current_space": true, "space_ids": [8]},
                     {"pid": 5, "window_id": 3, "layer": 0, "title": "Untitled", "app_name": "TextEdit", "is_on_screen": false, "on_current_space": false, "space_ids": [18]}
                 ]}}),
-                "type_text" => json!({
+                "type_text" | "press_key" => json!({
                     "content": [{"type": "text", "text": "Sent (unverified) 1 char(s) via CGEvent."}],
                     "structuredContent": {"effect": "unverifiable"}
                 }),
@@ -2369,24 +2373,29 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn background_input_to_a_title_twin_goes_to_the_window_on_a_space_and_says_its_capture_may_be_stale()
+    async fn background_input_to_a_title_twin_goes_to_the_window_on_a_space_and_says_it_cannot_read_it_back()
      {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(Apps), Spaces(Arc::clone(&calls)), Os::Mac).background(true);
-        let out = desk
+        let note = |out: Output| {
+            let v: Value = serde_json::from_str(&out.text).unwrap();
+            v["unverified"].as_str().unwrap_or_default().to_owned()
+        };
+        let typed = desk
             .run("desk_type", json!({"text": "x", "window": "微信"}))
             .await
             .unwrap();
-        let typed = sent(&calls, "type_text");
-        assert_eq!(typed.len(), 1, "{typed:?}");
-        assert_eq!(typed[0]["target"]["window_id"], 84080, "{typed:?}");
-        let note: Value = serde_json::from_str(&out.text).unwrap();
-        assert!(
-            note["unverified"]
-                .as_str()
-                .is_some_and(|n| n.contains(OFF_SPACE)),
-            "{note}"
-        );
+        let sent_text = sent(&calls, "type_text");
+        assert_eq!(sent_text.len(), 1, "{sent_text:?}");
+        assert_eq!(sent_text[0]["target"]["window_id"], 84080, "{sent_text:?}");
+        let typed = note(typed);
+        assert!(typed.ends_with(&format!("; {OFF_SPACE_TYPED}")), "{typed}");
+        let key = desk
+            .run("desk_key", json!({"keys": "return", "window": "微信"}))
+            .await
+            .unwrap();
+        let key = note(key);
+        assert!(key.ends_with(&format!("; {OFF_SPACE}")), "{key}");
     }
 
     #[tokio::test]
@@ -2402,22 +2411,6 @@ pub(crate) mod tests {
             "{err}"
         );
         assert!(sent(&calls, "type_text").is_empty());
-    }
-
-    #[tokio::test]
-    async fn the_off_space_note_says_not_to_type_again_and_to_ask_the_user_before_submitting() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let desk = Desk::new(|| Ok(Apps), Spaces(Arc::clone(&calls)), Os::Mac).background(true);
-        let out = desk
-            .run("desk_type", json!({"text": "x", "window": "微信"}))
-            .await
-            .unwrap();
-        let note: Value = serde_json::from_str(&out.text).unwrap();
-        let note = note["unverified"].as_str().unwrap_or_default();
-        assert!(
-            note.ends_with("; the window is on another Space, where background input cannot read it back: do not type the text again, and before you submit it with Return or Send, ask the user to confirm that the text is there, unless you can read it back"),
-            "{note}"
-        );
     }
 
     fn sent(calls: &Arc<Mutex<Vec<(String, Value)>>>, tool: &str) -> Vec<Value> {
