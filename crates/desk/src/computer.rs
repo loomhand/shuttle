@@ -383,43 +383,36 @@ impl Computer {
             p.remove("verify_hit");
         }
         let mut refused = None;
-        let checked = req.get("verify_hit").is_some();
         let mut result = match &pressed {
-            Some(pressed) if checked => match self.call(target, tool, req).await {
-                Ok(v) if v["isError"] == true => {
-                    let text = format!("{tool}: {}", text_of(&v));
-                    match hit_refusal(&v) {
-                        Some(true) => match self.request(target, "click", pressed.clone()).await {
-                            Err(e) if e.contains(AX_UNSUPPORTED) => Err(text),
-                            Err(e) => Err(format!("{text}\n{e}")),
-                            Ok(v) => {
-                                refused = Some(text);
-                                Ok(v)
+            Some(pressed) if req.get("verify_hit").is_some() => {
+                match self.call(target, tool, req).await {
+                    Ok(v) if v["isError"] == true => {
+                        let text = format!("{tool}: {}", text_of(&v));
+                        match hit_refusal(&v) {
+                            Some(true) => {
+                                match self.request(target, "click", pressed.clone()).await {
+                                    Err(e) if e.contains(AX_UNSUPPORTED) => Err(text),
+                                    Err(e) => Err(format!("{text}\n{e}")),
+                                    Ok(v) => {
+                                        refused = Some(text);
+                                        Ok(v)
+                                    }
+                                }
                             }
-                        },
-                        Some(false) => self.request(target, "click", pressed.clone()).await,
-                        None => Err(text),
+                            Some(false) => self.request(target, "click", pressed.clone()).await,
+                            None => Err(text),
+                        }
                     }
+                    done => done,
+                }
+            }
+            _ => match self.send(target, tool, req, enter, &input).await {
+                Err(e) if e.contains(AX_UNSUPPORTED) => {
+                    self.hit_checked(target, &a, pressed.as_ref(), e).await
                 }
                 done => done,
             },
-            _ => self.send(target, tool, req, enter, &input).await,
         };
-        if let (Some(mut retry), Err(e)) = (pressed, &result)
-            && !checked
-            && e.contains(AX_UNSUPPORTED)
-            && clicks_left(&a)
-            && retry.get("window_id").is_some()
-        {
-            retry["verify_hit"] = true.into();
-            if a.action == "double_click" {
-                retry["count"] = 2.into();
-            }
-            result = match self.request(target, "click", retry).await {
-                Err(refusal) => Err(format!("{e}\n{refusal}")),
-                done => done,
-            };
-        }
         if let Some(typed) = typed
             && result.is_ok()
         {
@@ -1313,6 +1306,29 @@ impl Computer {
         })
         .await
         .map_err(|e| format!("XTest: {e}"))?
+    }
+
+    /// One `verify_hit` click on the element `pressed` names, for a left click whose press failed with `e`; `e` and the refusal when the driver refuses.
+    async fn hit_checked(
+        &self,
+        target: &str,
+        a: &ActArgs,
+        pressed: Option<&Value>,
+        e: String,
+    ) -> Result<Value, String> {
+        let Some(mut retry) = pressed
+            .filter(|p| clicks_left(a) && p.get("window_id").is_some())
+            .cloned()
+        else {
+            return Err(e);
+        };
+        retry["verify_hit"] = true.into();
+        if a.action == "double_click" {
+            retry["count"] = 2.into();
+        }
+        self.request(target, "click", retry)
+            .await
+            .map_err(|refusal| format!("{e}\n{refusal}"))
     }
 
     fn to_dialog(&self, req: &Value) -> bool {
@@ -2999,14 +3015,13 @@ mod tests {
                         }
                     },
                     "click" | "double_click" | "right_click"
-                        if req["args"]["element_token"].is_string() && refusal.is_empty() =>
-                    {
-                        json!({"ok": true, "result": {"content": [{"type": "text", "text": "pressed"}]}})
-                    }
-                    "click" | "double_click" | "right_click"
                         if req["args"]["element_token"].is_string() =>
                     {
-                        json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": refusal}]}})
+                        if refusal.is_empty() {
+                            json!({"ok": true, "result": {"content": [{"type": "text", "text": "pressed"}]}})
+                        } else {
+                            json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": refusal}]}})
+                        }
                     }
                     _ => json!({"ok": true, "result": {"structuredContent": {}}}),
                 };
@@ -3018,34 +3033,9 @@ mod tests {
         })
     }
 
-    async fn press(refusal: &'static str, action: &str, hit: &'static str) -> (Output, Vec<Value>) {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = endpoint(dir.path());
-        let calls = std::sync::Arc::default();
-        let driver = press_driver(&socket, &calls, refusal, "AXList", hit);
-        let cua = cua(&socket);
-        cua.state(json!({"pid": 7})).await.unwrap();
-        let out = cua
-            .act(json!({"action": action, "element": 0}))
-            .await
-            .unwrap();
-        driver.abort();
-        let clicks = calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|c| {
-                ["click", "double_click", "right_click"]
-                    .contains(&c["name"].as_str().unwrap_or_default())
-            })
-            .map(|c| c["args"].clone())
-            .collect();
-        (out, clicks)
-    }
-
     #[tokio::test]
     async fn an_element_without_the_press_action_gets_one_hit_checked_click() {
-        let (out, clicks) = press(UNSUPPORTED, "click", "").await;
+        let (out, clicks) = field("AXList", "click", UNSUPPORTED, "").await;
         assert!(!out.is_error, "{}", out.text);
         assert_eq!(clicks.len(), 2, "{clicks:?}");
         assert_eq!(
@@ -3061,7 +3051,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_refused_hit_checked_click_after_an_unsupported_press_returns_both_errors() {
-        let (out, clicks) = press(UNSUPPORTED, "click", "hit_mismatch").await;
+        let (out, clicks) = field("AXList", "click", UNSUPPORTED, "hit_mismatch").await;
         assert!(
             out.is_error && out.text.contains("-25206") && out.text.contains("nothing was sent"),
             "{}",
@@ -3073,7 +3063,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unsupported_double_click_is_retried_as_a_hit_checked_double_click() {
-        let (out, clicks) = press(UNSUPPORTED, "double_click", "").await;
+        let (out, clicks) = field("AXList", "double_click", UNSUPPORTED, "").await;
         assert!(!out.is_error, "{}", out.text);
         assert_eq!(clicks.len(), 2, "{clicks:?}");
         assert_eq!(
@@ -3084,10 +3074,10 @@ mod tests {
 
     #[tokio::test]
     async fn an_unsupported_press_without_a_window_id_or_a_left_button_is_not_retried() {
-        let (out, clicks) = press(UNSUPPORTED, "click", "windowless").await;
+        let (out, clicks) = field("AXList", "click", UNSUPPORTED, "windowless").await;
         assert!(out.is_error && out.text.contains("-25206"), "{}", out.text);
         assert_eq!(clicks.len(), 1, "{clicks:?}");
-        let (out, clicks) = press(UNSUPPORTED, "right_click", "").await;
+        let (out, clicks) = field("AXList", "right_click", UNSUPPORTED, "").await;
         assert!(out.is_error && out.text.contains("-25206"), "{}", out.text);
         assert_eq!(clicks.len(), 1, "{clicks:?}");
     }
@@ -3220,9 +3210,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_press_that_timed_out_is_not_clicked_again() {
-        let (out, clicks) = press(
-            "AX action failed: AXUIElementPerformAction(AXPress) returned -25204",
+        let (out, clicks) = field(
+            "AXList",
             "click",
+            "AX action failed: AXUIElementPerformAction(AXPress) returned -25204",
             "",
         )
         .await;
