@@ -523,6 +523,8 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string): Pro
   if (!want) {
     const ws = await current(); let w = frontOf(ws)
     if (BG && !w) { tick('wait', t0); throw new Surprise('background gui_plan has no target window: start the plan with an app step, or name the window with a wait step') }
+    const [plan, ...twins] = !w && lastSeen ? ws.filter((x) => x.title === lastSeen) : []
+    if (plan && !twins.length) { w = plan; await desk.focus(w.title, w.pid) }
     // an untitled focused window that is no alert (a completion popup) leaves the step in the window the plan was in
     if (w && !w.title.trim() && lastSeen && !isAlert(await outline(w))) { const pid = w.pid; w = ws.find((x) => x.title === lastSeen && x.pid === pid) ?? w }
     tick('wait', t0); if (!w) throw new Surprise('no focused window', {}, true); return w
@@ -536,8 +538,9 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string): Pro
       const t = target
       const bg = ws.find((x) => named(x) && x.pid === t?.pid) ?? ws.find(named)
       if (bg) { follow(bg, ws); return found(bg, t0) }
-    } else if (w && known.has(w.title) && Date.now() - t0 > 150) {
-      const bg = ws.find((x) => norm(x.title).includes(norm(want)))
+    } else if ((!w || known.has(w.title)) && Date.now() - t0 > 150) {
+      const hits = ws.filter((x) => norm(x.title).includes(norm(want)))
+      const bg = w || hits.length === 1 ? hits[0] : undefined
       if (bg) { await desk.focus(bg.title, bg.pid); return found(bg, t0) }
     }
     if (w && !known.has(w.title) && w.title !== asked && Date.now() - t0 > 250) {
