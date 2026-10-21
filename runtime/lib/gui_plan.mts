@@ -54,6 +54,7 @@ const LISTS = new Set(['treegrid', 'list', 'tree', 'table'])
 const FIELDS = 'textbox|searchbox|spinbutton|slider|combobox'
 const FIELD_ROLES = new Set(FIELDS.split('|'))
 const SHOWN_ROLES = new Set([...ACTIVE, 'dialog', 'alert'])
+const ROOT_ROLES = new Set(['window', 'frame', 'application', 'dialog'])
 const MARGIN = 0.25
 const CROP = { w: 640, h: 400 }
 const SMALL = 5_000
@@ -651,6 +652,8 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
   const what = under.found ? [under.found, ...(under.path ?? []).toReversed()].filter((n, i) => i === 0 || n.name).map((n) => n.name ? `${n.role} "${n.name}"` : n.role).join(' under ') : ''
   try {
     if (!what) return { what, ok: false, check: 'no-hit' }
+    if (under.found && (ROOT_ROLES.has(under.found.role) || under.found.id === w.id)) return { what, ok: false, check: 'root-hit' }
+    if (w.pid === null || under.pid !== w.pid) return { what, ok: false, check: 'foreign-hit' }
     if (shot.status === 'rejected') throw shot.reason
     const k = shot.value.readUInt32BE(16) / cw
     const p = await peek(shot.value, [(x - left) * k, (y - top) * k])
@@ -1057,7 +1060,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     tick('ground', t0)
     const { what, ok, check, p, p_zoom, p_full } = await grounded(x, y, target, w, area)
     rec.ground_hit = what.slice(0, 80); rec.checked = check; rec.p = p; rec.p_zoom = p_zoom; rec.p_full = p_full
-    if (!ok) throw new Surprise(`no element matches "${target}"; grounding pointed at ${what ? what.slice(0, 80) : 'no accessible element'}`, await seen(), true)
+    const off = check === 'root-hit' ? ', the window itself' : check === 'foreign-hit' ? ', which belongs to another process' : ''
+    if (!ok) throw new Surprise(`no element matches "${target}"; grounding pointed at ${what ? `${what.slice(0, 80)}${off}` : 'no accessible element'}`, await seen(), true)
     t0 = Date.now(); await desk.click(x, y); tick('act', t0)
     rec.how = 'ground'; rec.unsaved = true; await settle(w.title); return
   }

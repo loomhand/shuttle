@@ -607,8 +607,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 let Some(hit) = b.at(&frame.id, a.x, a.y)? else {
                     return Ok(json!({"found": null, "window": frame}).to_string());
                 };
+                let pid = b.pid_of(&hit)?;
                 if let Some(frames) = &kept {
-                    let pid = b.pid_of(&hit)?;
                     allow.check(app_of(frames, pid))?;
                 }
                 let node = b.node(&hit, Extras::default(), 0)?;
@@ -623,6 +623,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 let mut out = json!({});
                 out["found"] = node.json(0);
                 out["path"] = Value::Array(path);
+                out["pid"] = pid.into();
                 Ok(out.to_string())
             })
             .await
@@ -3463,6 +3464,21 @@ pub(crate) mod tests {
             assert!(err.contains("stale"), "{tool}: {err}");
         }
         assert!(closed(&desk).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn at_names_the_process_of_the_element_under_the_point() {
+        let desk = Desk::new(|| Ok(notepad()), Slow(Arc::default()), Os::Windows);
+        let out = desk
+            .run("desk_at", json!({"x": 140, "y": 110}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(
+            (v["found"]["id"].as_str(), v["pid"].as_u64()),
+            (Some("ok"), Some(4)),
+            "{v}"
+        );
     }
 
     #[tokio::test]
