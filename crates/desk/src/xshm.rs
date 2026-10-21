@@ -769,13 +769,13 @@ impl Grabber {
             (self.net_wm_name, self.utf8),
             (u32::from(AtomEnum::WM_NAME), u32::from(AtomEnum::STRING)),
         ] {
-            let value = self
-                .conn
-                .get_property(false, w, atom, kind, 0, 64)
-                .ok()
-                .and_then(|c| c.reply().ok())
-                .map(|r| r.value)
-                .unwrap_or_default();
+            let value = whole(|offset| {
+                self.conn
+                    .get_property(false, w, atom, kind, offset, 64)
+                    .ok()
+                    .and_then(|c| c.reply().ok())
+                    .map(|r| (r.value, r.bytes_after))
+            });
             if !value.is_empty() {
                 return String::from_utf8_lossy(&value).into_owned();
             }
@@ -876,6 +876,17 @@ fn cover(frame: Window, mapped: &[Placement], (width, height): (i32, i32)) -> Op
 }
 
 /// The reply to a request about a window; `None` when the window closed after it was listed (BadWindow).
+fn whole(mut read: impl FnMut(u32) -> Option<(Vec<u8>, u32)>) -> Vec<u8> {
+    let mut value = Vec::new();
+    while let Some((chunk, after)) = u32::try_from(value.len() / 4).ok().and_then(&mut read) {
+        value.extend_from_slice(&chunk);
+        if after == 0 || chunk.is_empty() {
+            break;
+        }
+    }
+    value
+}
+
 fn alive<T>(reply: Result<T, ReplyError>, what: &str) -> Result<Option<T>, String> {
     match reply {
         Ok(v) => Ok(Some(v)),
@@ -894,6 +905,22 @@ mod tests {
     use x11rb::x11_utils::X11Error;
 
     use super::*;
+
+    #[test]
+    fn a_window_name_longer_than_one_read_comes_back_whole() {
+        let title: Vec<u8> = (0..600u32).map(|i| b'a' + (i % 26) as u8).collect();
+        let mut offsets = Vec::new();
+        let got = whole(|offset| {
+            offsets.push(offset);
+            let from = (offset as usize * 4).min(title.len());
+            let to = (from + 256).min(title.len());
+            Some((title[from..to].to_vec(), (title.len() - to) as u32))
+        });
+        assert_eq!(got, title);
+        assert_eq!(offsets, [0, 64, 128]);
+        assert_eq!(whole(|_| Some((b"short".to_vec(), 0))), b"short");
+        assert!(whole(|_| None).is_empty());
+    }
 
     #[test]
     fn a_root_configure_to_another_size_is_a_resize_and_a_dock_configure_is_not() {
