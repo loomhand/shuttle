@@ -580,6 +580,22 @@ impl Grabber {
         Ok(mapped)
     }
 
+    /// The title and process of the topmost managed window at the screen point `(x, y)`, past the desktop shell's windows.
+    pub fn client_at(&self, x: i32, y: i32) -> Result<Option<(String, Option<u32>)>, String> {
+        let shell = self.shell().windows.clone();
+        for w in self.clients()?.into_iter().rev() {
+            if shell.contains(&w) {
+                continue;
+            }
+            if self.on_root(w).is_some_and(|[left, top, width, height]| {
+                (left..left + width).contains(&x) && (top..top + height).contains(&y)
+            }) {
+                return Ok(Some((self.title(w).unwrap_or_default(), self.pid(w))));
+            }
+        }
+        Ok(None)
+    }
+
     /// The windows the window manager manages, bottom to top.
     fn clients(&self) -> Result<Vec<Window>, String> {
         Ok(self

@@ -612,6 +612,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 if let Some(frames) = &kept {
                     allow.check(app_of(frames, pid))?;
                 }
+                let covered = b.covering(&frame, a.x, a.y).ok().flatten();
                 let node = b.node(&hit, Extras::default(), 0)?;
                 let path: Vec<Value> = b
                     .ancestors(&hit)?
@@ -625,6 +626,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 out["found"] = node.json(0);
                 out["path"] = Value::Array(path);
                 out["pid"] = pid.into();
+                if let Some((title, pid)) = covered {
+                    out["covered"] = json!({"title": title, "pid": pid});
+                }
                 Ok(out.to_string())
             })
             .await
@@ -1708,6 +1712,7 @@ pub(crate) mod tests {
         pub(crate) hits: HashMap<(i32, i32), String>,
         pub(crate) acts: Vec<(String, Act)>,
         pub(crate) ancestry: usize,
+        covers: Option<(String, Option<u32>)>,
         opened: bool,
         menus: Vec<bool>,
         untitled: bool,
@@ -1778,6 +1783,15 @@ pub(crate) mod tests {
 
         fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
             Ok(self.nodes.contains_key(id).then_some(4))
+        }
+
+        fn covering(
+            &mut self,
+            _: &Frame,
+            _: i32,
+            _: i32,
+        ) -> Result<Option<(String, Option<u32>)>, String> {
+            Ok(self.covers.clone())
         }
 
         fn menu_at(&mut self, x: i32, y: i32) -> Result<Option<String>, String> {
@@ -3470,6 +3484,27 @@ pub(crate) mod tests {
         assert_eq!(
             (v["found"]["id"].as_str(), v["pid"].as_u64()),
             (Some("ok"), Some(4)),
+            "{v}"
+        );
+        assert!(v.get("covered").is_none(), "{v}");
+    }
+
+    #[tokio::test]
+    async fn at_names_the_window_that_covers_the_point() {
+        let covered = || {
+            let mut f = notepad();
+            f.covers = Some(("tmp - Thunar".to_owned(), Some(9)));
+            Ok(f)
+        };
+        let desk = Desk::new(covered, Slow(Arc::default()), Os::Linux);
+        let out = desk
+            .run("desk_at", json!({"x": 140, "y": 110}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(
+            v["covered"],
+            json!({"title": "tmp - Thunar", "pid": 9}),
             "{v}"
         );
     }

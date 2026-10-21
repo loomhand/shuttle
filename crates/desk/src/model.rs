@@ -283,6 +283,15 @@ pub trait Access {
     fn pid_at(&mut self, _x: i32, _y: i32) -> Result<Option<u32>, String> {
         Ok(None)
     }
+    /// The title and process of the window over `frame` at the screen pixel `(x, y)`; none when `frame` is on top there or the backend cannot tell.
+    fn covering(
+        &mut self,
+        _frame: &Frame,
+        _x: i32,
+        _y: i32,
+    ) -> Result<Option<(String, Option<u32>)>, String> {
+        Ok(None)
+    }
     /// The process of the element `id`, none when the backend cannot tell.
     fn pid_of(&mut self, _id: &str) -> Result<Option<u32>, String> {
         Ok(None)

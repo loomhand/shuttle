@@ -34,6 +34,7 @@ let on: number | number[] = 0
 let under: { id?: string; role: string; name: string; bounds?: number[] } | null = null
 let path: { id: string; role: string; name: string }[] = []
 let atFails = false
+let covered: { title: string; pid: number | null } | null = null
 let hitPid: number | null = process.pid
 let yes = 0
 
@@ -56,7 +57,7 @@ function answer({ tool, args }: Call): Reply {
     return { text: '{"ok":true}', image: image.toString('base64') }
   }
   if (tool === 'desk_screen') return '{"width":1280,"height":800}'
-  if (tool === 'desk_at') { atPids.push(args.pid); return atFails ? { text: 'access call timed out', error: true } : JSON.stringify({ found: under, path, pid: hitPid }) }
+  if (tool === 'desk_at') { atPids.push(args.pid); return atFails ? { text: 'access call timed out', error: true } : JSON.stringify({ found: under, path, pid: hitPid, ...(covered ? { covered } : {}) }) }
   if (tool === 'desk_click') clicked.push(`${args.x},${args.y}`)
   return '{"ok":true}'
 }
@@ -115,7 +116,7 @@ function screen(tree: Spec[], probabilities: Record<string, number>) {
 
 await daemon({ after }, answer)
 beforeEach(() => {
-  build = null; on = 0; looked = {}; pick = {}; under = { role: 'image', name: '' }; path = []; atFails = false; hitPid = process.pid; yes = 0; tones = []; scale = 1
+  build = null; on = 0; looked = {}; pick = {}; under = { role: 'image', name: '' }; path = []; atFails = false; covered = null; hitPid = process.pid; yes = 0; tones = []; scale = 1
 })
 
 test('a click whose jev pick has a close runner-up escalates as ambiguous instead of pressing the pick', async () => {
@@ -426,6 +427,18 @@ test('a grounded point in another window of the plan\'s own process is refused, 
   const owned = await plan('the OK button', tree, {})
   assert.equal(owned.ok, true, JSON.stringify(owned))
   assert.deepEqual(clicked, ['640,400'])
+})
+
+test('a grounded point that another window covers is refused before any check and names that window', async () => {
+  const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
+  build = BUILD
+  on = 0.99
+  under = { role: 'push button', name: 'Pay' }
+  covered = { title: 'tmp - Thunar', pid: 4242 }
+  const out = await plan('the pay button', tree, {})
+  assert.equal(out.ok, false, JSON.stringify(out))
+  assert.match(out.escalate?.reason ?? '', /grounding pointed at push button "Pay", under the window "tmp - Thunar"/)
+  assert.deepEqual([clicked, looks, out.trace?.[0]?.ground?.check], [[], [], 'covered-hit'])
 })
 
 test('a failed read of the element under a grounded point is refused with its reason, not as no element', async () => {
