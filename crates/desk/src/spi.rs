@@ -51,7 +51,9 @@ impl Spi {
 impl Access for Spi {
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
         let mut frames: Vec<Frame> = self.listed()?.into_iter().map(frame).collect();
-        if let Some(Some(front)) = self.shm(|g| Ok(g.active().map(|w| (g.pid(w), g.title(w))))) {
+        if let Some(Some(front)) =
+            self.shm(|g| Ok(g.active().and_then(|w| Some((g.pid(w), g.title(w)?)))))
+        {
             settle_active(&mut frames, front);
         }
         Ok(frames)
@@ -169,29 +171,21 @@ fn frame(f: atspi::Frame) -> Frame {
     }
 }
 
-/// Leaves active only the frame of the X active window, `_NET_ACTIVE_WINDOW`'s pid and title, since GTK keeps a window's AT-SPI active state after the keyboard focus moved to another X window; with no single such frame, or a title that changed between the AT-SPI and X reads, it keeps the AT-SPI actives of that pid, and with a pid of no frame, AT-SPI's state.
+/// Leaves active only the frame of the X active window, `_NET_ACTIVE_WINDOW`'s pid and title, since GTK keeps a window's AT-SPI active state after the keyboard focus moved to another X window; title twins of that pid leave none active, a title of no frame (or one that changed between the AT-SPI and X reads) keeps that pid's AT-SPI actives, and a pid of no frame keeps AT-SPI's state.
 fn settle_active(frames: &mut [Frame], (pid, title): (Option<u32>, String)) {
     let Some(pid) = pid.filter(|&p| p != 0 && frames.iter().any(|f| f.pid == Some(p))) else {
         return;
     };
-    let named: Vec<usize> = (0..frames.len())
-        .filter(|&i| frames[i].pid == Some(pid) && frames[i].title == title)
-        .collect();
-    let one = match named.as_slice() {
-        [one] => Some(*one),
-        twins => {
-            let active: Vec<usize> = twins
-                .iter()
-                .copied()
-                .filter(|&i| frames[i].active)
-                .collect();
-            (active.len() == 1).then(|| active[0])
-        }
-    };
-    for (i, f) in frames.iter_mut().enumerate() {
-        f.active = match one {
-            Some(one) => i == one,
-            None => f.active && f.pid == Some(pid),
+    let named = frames
+        .iter()
+        .filter(|f| f.pid == Some(pid) && f.title == title)
+        .count();
+    for f in frames.iter_mut() {
+        let own = f.pid == Some(pid);
+        f.active = match named {
+            0 => f.active && own,
+            1 => own && f.title == title,
+            _ => false,
         };
     }
 }
@@ -411,28 +405,15 @@ mod tests {
     }
 
     #[test]
-    fn title_twins_of_the_x_active_window_keep_one_active_only_when_at_spi_marks_one() {
-        let mut frames = vec![
-            window("Untitled", 7, false),
-            window("Untitled", 7, true),
-            window("Terminal", 9, true),
-        ];
-        settle_active(&mut frames, (Some(7), "Untitled".to_owned()));
-        assert_eq!(
-            frames.iter().map(|f| f.active).collect::<Vec<_>>(),
-            [false, true, false]
-        );
-        for marked in [[false, false], [true, true]] {
+    fn title_twins_of_the_x_active_window_leave_no_frame_active() {
+        for marked in [[false, false], [false, true], [true, true]] {
             let mut frames = vec![
                 window("Untitled", 7, marked[0]),
                 window("Untitled", 7, marked[1]),
                 window("Terminal", 9, true),
             ];
             settle_active(&mut frames, (Some(7), "Untitled".to_owned()));
-            assert_eq!(
-                frames.iter().map(|f| f.active).collect::<Vec<_>>(),
-                [marked[0], marked[1], false]
-            );
+            assert!(actives(&frames).is_empty(), "{marked:?}");
         }
     }
 
