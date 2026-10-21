@@ -439,7 +439,7 @@ fn frame(w: WindowInfo, alone: bool, screen: (i32, i32)) -> Frame {
     }
 }
 
-/// A stable stand-in pid for an Android package, above Linux's pid range so it names no box process.
+/// A stable stand-in pid for an Android package, above Linux's pid range so it names no host process.
 fn package_pid(package: &str) -> u32 {
     let hash = package.bytes().fold(2_166_136_261u32, |h, b| {
         (h ^ u32::from(b)).wrapping_mul(16_777_619)
