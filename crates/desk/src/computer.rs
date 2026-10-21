@@ -945,7 +945,7 @@ impl Computer {
             }
             match old {
                 None => {
-                    let title = g.title(p.id);
+                    let title = g.title(p.id).unwrap_or_default();
                     let _ = write!(
                         out,
                         "\nopened window \"{title}\" {:.0}x{:.0} at ({:.0},{:.0})",
@@ -958,7 +958,10 @@ impl Computer {
                     titles.insert(p.id, title);
                 }
                 Some(b) if b != p => {
-                    let title = titles.get(&p.id).cloned().unwrap_or_else(|| g.title(p.id));
+                    let title = titles
+                        .get(&p.id)
+                        .cloned()
+                        .unwrap_or_else(|| g.title(p.id).unwrap_or_default());
                     let _ = write!(
                         out,
                         "\nwindow \"{title}\" is now {:.0}x{:.0} at ({:.0},{:.0})",
@@ -986,7 +989,7 @@ impl Computer {
         if active != was_active
             && let Some(w) = active
         {
-            let title = g.title(w);
+            let title = g.title(w).unwrap_or_default();
             if !title.is_empty() && !opened.contains(&title) {
                 let _ = write!(out, "\nfront window is now \"{title}\"");
             }

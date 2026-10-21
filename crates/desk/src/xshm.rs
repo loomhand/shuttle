@@ -23,6 +23,7 @@ pub use crate::screen::{Placement, block_hashes, clip, visible};
 
 const OVERLAY_NAME: &[u8] = b"Cua.AgentCursorOverlay";
 const ALL_MASTERS: u16 = 1;
+const TITLE_CHUNKS: u32 = 16;
 
 /// One X connection and one shared segment the size of the root window.
 pub struct Grabber {
@@ -287,18 +288,20 @@ impl Grabber {
         self.children(false)
     }
 
-    /// The title of window `w`, or of the client inside it when `w` is a window manager frame.
-    pub fn title(&self, w: Window) -> String {
-        let own = self.name(w);
+    /// The title of window `w`, or of the client inside it when `w` is a window manager frame; `None` when it is longer than 4 KiB.
+    pub fn title(&self, w: Window) -> Option<String> {
+        let own = self.name(w)?;
         if !own.is_empty() {
-            return own;
+            return Some(own);
         }
         let children = self.kids(w);
-        children
-            .iter()
-            .map(|&c| self.name(c))
-            .find(|n| !n.is_empty())
-            .unwrap_or_default()
+        Some(
+            children
+                .iter()
+                .filter_map(|&c| self.name(c))
+                .find(|n| !n.is_empty())
+                .unwrap_or_default(),
+        )
     }
 
     /// The window `_NET_ACTIVE_WINDOW` names, the one with keyboard focus.
@@ -390,10 +393,10 @@ impl Grabber {
                 .and_then(|r| r.reply().ok())
                 .and_then(|r| r.value32().and_then(|mut v| v.next()))
                 .filter(|w| *w != 0)
-                .map(|w| self.title(w))
+                .and_then(|w| self.title(w))
                 .unwrap_or_default();
             out.push(Modal {
-                title: self.title(c),
+                title: self.title(c).unwrap_or_default(),
                 pid: self.pid(c),
                 owner,
                 place,
@@ -487,7 +490,11 @@ impl Grabber {
     /// The top drawn child of the root at the screen point `(x, y)`, past a cua-driver cursor overlay, which input passes through.
     pub fn top_at(&self, x: i32, y: i32) -> Result<Option<Placement>, String> {
         Ok(self.children(true)?.into_iter().rev().find(|p| {
-            p.drawn && p.contains(x, y) && !self.name(p.id).as_bytes().starts_with(OVERLAY_NAME)
+            p.drawn
+                && p.contains(x, y)
+                && !self
+                    .name(p.id)
+                    .is_some_and(|n| n.as_bytes().starts_with(OVERLAY_NAME))
         }))
     }
 
@@ -599,7 +606,9 @@ impl Grabber {
         let screen = (i32::from(self.width), i32::from(self.height));
         Ok(match cover(frame, &self.children(false)?, screen) {
             Some(Cover::OffScreen) => Some("off the screen".to_owned()),
-            Some(Cover::Under(w)) => Some(format!("behind \"{}\"", self.title(w))),
+            Some(Cover::Under(w)) => {
+                Some(format!("behind \"{}\"", self.title(w).unwrap_or_default()))
+            }
             None => None,
         })
     }
@@ -764,7 +773,7 @@ impl Grabber {
             .unwrap_or_default()
     }
 
-    fn name(&self, w: Window) -> String {
+    fn name(&self, w: Window) -> Option<String> {
         for (atom, kind) in [
             (self.net_wm_name, self.utf8),
             (u32::from(AtomEnum::WM_NAME), u32::from(AtomEnum::STRING)),
@@ -775,12 +784,12 @@ impl Grabber {
                     .ok()
                     .and_then(|c| c.reply().ok())
                     .map(|r| (r.value, r.bytes_after))
-            });
+            })?;
             if !value.is_empty() {
-                return String::from_utf8_lossy(&value).into_owned();
+                return Some(String::from_utf8_lossy(&value).into_owned());
             }
         }
-        String::new()
+        Some(String::new())
     }
 
     fn image(&self, [x, y, w, h]: [i32; 4]) -> Result<&[u8], String> {
@@ -875,18 +884,21 @@ fn cover(frame: Window, mapped: &[Placement], (width, height): (i32, i32)) -> Op
         .map(|p| Cover::Under(p.id))
 }
 
-/// The reply to a request about a window; `None` when the window closed after it was listed (BadWindow).
-fn whole(mut read: impl FnMut(u32) -> Option<(Vec<u8>, u32)>) -> Vec<u8> {
+fn whole(mut read: impl FnMut(u32) -> Option<(Vec<u8>, u32)>) -> Option<Vec<u8>> {
     let mut value = Vec::new();
-    while let Some((chunk, after)) = u32::try_from(value.len() / 4).ok().and_then(&mut read) {
+    for _ in 0..TITLE_CHUNKS {
+        let Some((chunk, after)) = u32::try_from(value.len() / 4).ok().and_then(&mut read) else {
+            return Some(value);
+        };
         value.extend_from_slice(&chunk);
         if after == 0 || chunk.is_empty() {
-            break;
+            return Some(value);
         }
     }
-    value
+    None
 }
 
+/// The reply to a request about a window; `None` when the window closed after it was listed (BadWindow).
 fn alive<T>(reply: Result<T, ReplyError>, what: &str) -> Result<Option<T>, String> {
     match reply {
         Ok(v) => Ok(Some(v)),
@@ -916,10 +928,33 @@ mod tests {
             let to = (from + 256).min(title.len());
             Some((title[from..to].to_vec(), (title.len() - to) as u32))
         });
-        assert_eq!(got, title);
+        assert_eq!(got, Some(title));
         assert_eq!(offsets, [0, 64, 128]);
-        assert_eq!(whole(|_| Some((b"short".to_vec(), 0))), b"short");
-        assert!(whole(|_| None).is_empty());
+        assert_eq!(
+            whole(|_| Some((b"short".to_vec(), 0))),
+            Some(b"short".to_vec())
+        );
+        assert_eq!(whole(|_| None), Some(Vec::new()));
+    }
+
+    #[test]
+    fn a_window_name_over_4_kib_is_unavailable_rather_than_cut() {
+        let title = vec![b'a'; 4097];
+        let mut reads = 0;
+        let got = whole(|offset| {
+            reads += 1;
+            let from = (offset as usize * 4).min(title.len());
+            let to = (from + 256).min(title.len());
+            Some((title[from..to].to_vec(), (title.len() - to) as u32))
+        });
+        assert_eq!((got, reads), (None, 16));
+        let fits = vec![b'a'; 4096];
+        let got = whole(|offset| {
+            let from = (offset as usize * 4).min(fits.len());
+            let to = (from + 256).min(fits.len());
+            Some((fits[from..to].to_vec(), (fits.len() - to) as u32))
+        });
+        assert_eq!(got, Some(fits));
     }
 
     #[test]
