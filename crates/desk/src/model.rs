@@ -312,6 +312,10 @@ pub trait Access {
     fn shells(&mut self) -> Vec<u32> {
         Vec::new()
     }
+    /// The window the window manager names active when no frame of its process is listed, as an app that stopped answering leaves it.
+    fn unanswered(&mut self) -> Option<Frame> {
+        None
+    }
 }
 
 /// Whether a caller can act on a node of `role`.
