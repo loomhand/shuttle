@@ -76,6 +76,9 @@ pub struct Frame {
     /// A Linux frame, which stands for the focused window even untitled, unlike a plain window.
     #[serde(skip)]
     pub framed: bool,
+    /// A macOS window that no display shows: minimized, or hidden by its app.
+    #[serde(skip)]
+    pub hidden: bool,
 }
 
 impl Window for Frame {
@@ -97,6 +100,10 @@ impl Window for Frame {
 
     fn focusable(&self) -> bool {
         self.framed || self.role != "window" || !self.title.is_empty()
+    }
+
+    fn shown(&self) -> bool {
+        !self.hidden
     }
 }
 

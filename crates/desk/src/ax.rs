@@ -61,7 +61,14 @@ const APP_ATTRS: [&str; 5] = [
     "AXMainWindow",
     "AXWindows",
 ];
-const FRAME_ATTRS: [&str; 4] = ["AXRole", "AXSubrole", "AXTitle", "AXChildren"];
+const FRAME_ATTRS: [&str; 6] = [
+    "AXRole",
+    "AXSubrole",
+    "AXTitle",
+    "AXChildren",
+    "AXPosition",
+    "AXSize",
+];
 
 static PROMPTED: AtomicBool = AtomicBool::new(false);
 static CGS: OnceLock<Option<Cgs>> = OnceLock::new();
@@ -111,24 +118,26 @@ impl Ax {
         })
     }
 
-    fn listed(&mut self) -> Vec<i32> {
-        let pids = window_pids();
+    fn listed(&mut self) -> Vec<(i32, Vec<[f64; 4]>)> {
+        let shown = shown_windows();
+        let has = |p: &i32| shown.iter().any(|(q, _)| q == p);
         self.hung.retain(|_, at| at.elapsed() < HUNG_SKIP);
-        self.last.retain(|p, _| pids.contains(p));
-        self.slow.retain(|p, _| pids.contains(p));
-        self.listed_at.retain(|p, _| pids.contains(p));
-        for &p in &pids {
-            self.listed_at.entry(p).or_insert_with(Instant::now);
+        self.last.retain(|p, _| has(p));
+        self.slow.retain(|p, _| has(p));
+        self.listed_at.retain(|p, _| has(p));
+        for (p, _) in &shown {
+            self.listed_at.entry(*p).or_insert_with(Instant::now);
         }
         let driver = self.driver.as_ref();
-        pids.into_iter()
-            .filter(|&p| driver.is_none_or(|d| exe_path(p).as_ref() != Some(d)))
+        shown
+            .into_iter()
+            .filter(|(p, _)| driver.is_none_or(|d| exe_path(*p).as_ref() != Some(d)))
             .collect()
     }
 
-    fn app_frames(&mut self, pids: impl IntoIterator<Item = i32>) -> Vec<Frame> {
+    fn app_frames(&mut self, apps: impl IntoIterator<Item = (i32, Vec<[f64; 4]>)>) -> Vec<Frame> {
         let mut frames = Vec::new();
-        for p in pids {
+        for (p, bounds) in apps {
             if self.hung.contains_key(&p) {
                 continue;
             }
@@ -166,7 +175,7 @@ impl Ax {
                 continue;
             };
             for w in windows.iter() {
-                let [role, subrole, title, children] = values(&self.frame_names, w);
+                let [role, subrole, title, children, pos, size] = values(&self.frame_names, w);
                 let children = children.map(|c| items(&c)).unwrap_or_default();
                 let sheets: Vec<&CFType> = children
                     .iter()
@@ -201,6 +210,10 @@ impl Ax {
                     subrole: &subrole,
                     ..Kind::default()
                 };
+                let frame = pos
+                    .and_then(|v| pair(&v, POINT_TYPE))
+                    .zip(size.and_then(|v| pair(&v, SIZE_TYPE)))
+                    .map(|((x, y), (w, h))| [x, y, w, h]);
                 frames.push(Frame {
                     id: owner,
                     title,
@@ -208,6 +221,7 @@ impl Ax {
                     pid: Some(p as u32),
                     active,
                     app: name.clone(),
+                    hidden: !shows(&bounds, frame),
                     ..Frame::default()
                 });
             }
@@ -339,13 +353,13 @@ impl Ax {
 
 impl Access for Ax {
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
-        let pids = self.listed();
-        Ok(self.app_frames(pids))
+        let apps = self.listed();
+        Ok(self.app_frames(apps))
     }
 
     fn frames_of(&mut self, pid: u32) -> Result<Vec<Frame>, String> {
-        let pids = self.listed().into_iter().filter(|&p| p as u32 == pid);
-        Ok(self.app_frames(pids))
+        let apps = self.listed().into_iter().filter(|(p, _)| *p as u32 == pid);
+        Ok(self.app_frames(apps))
     }
 
     fn off_space(&mut self) -> Vec<Frame> {
@@ -859,17 +873,38 @@ fn exe_path(pid: i32) -> Option<PathBuf> {
     Some(PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..n])))
 }
 
-fn window_pids() -> Vec<i32> {
-    let mut pids = Vec::new();
-    let owner = CFString::from_static_string("kCGWindowOwnerPID");
-    for p in on_screen().iter().filter_map(|d| number(d, &owner)) {
-        if let Ok(p) = i32::try_from(p)
-            && !pids.contains(&p)
-        {
-            pids.push(p);
-        }
+/// The processes with a window on screen, front to back, each with the bounds of those windows.
+fn shown_windows() -> Vec<(i32, Vec<[f64; 4]>)> {
+    let mut apps: Vec<(i32, Vec<[f64; 4]>)> = Vec::new();
+    let (owner, bounds) = (
+        CFString::from_static_string("kCGWindowOwnerPID"),
+        CFString::from_static_string("kCGWindowBounds"),
+    );
+    let sides = ["X", "Y", "Width", "Height"].map(CFString::from_static_string);
+    for d in on_screen() {
+        let Some(p) = number(&d, &owner).and_then(|p| i32::try_from(p).ok()) else {
+            continue;
+        };
+        let rect = d.find(&bounds).and_then(|v| dictionary(&v)).and_then(|b| {
+            let [x, y, w, h] = sides.each_ref().map(|k| float(&b, k));
+            Some([x?, y?, w?, h?])
+        });
+        let at = apps.iter().position(|(q, _)| *q == p).unwrap_or_else(|| {
+            apps.push((p, Vec::new()));
+            apps.len() - 1
+        });
+        apps[at].1.extend(rect);
     }
-    pids
+    apps
+}
+
+/// Whether AX window frame `frame` is one of `bounds`, the on-screen windows of its process; an unread frame counts as shown.
+fn shows(bounds: &[[f64; 4]], frame: Option<[f64; 4]>) -> bool {
+    frame.is_none_or(|f| {
+        bounds
+            .iter()
+            .any(|b| b.iter().zip(f).all(|(a, f)| (a - f).abs() <= 1.0))
+    })
 }
 
 /// The layer-0 windows on screen, front to back.
@@ -995,6 +1030,12 @@ fn number(d: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<i64> {
         .and_then(|n| n.to_i64())
 }
 
+fn float(d: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<f64> {
+    d.find(key)
+        .and_then(|v| v.downcast::<CFNumber>())
+        .and_then(|n| n.to_f64())
+}
+
 fn display_scale() -> f64 {
     // SAFETY: the main display id is always valid; the mode is released below when non-null.
     unsafe {
@@ -1024,6 +1065,15 @@ fn text(v: &CFType, chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_frame_shows_when_it_is_one_of_its_process_s_on_screen_windows() {
+        let main = [-1416.0, 0.0, 846.0, 774.0];
+        assert!(shows(&[main], Some([-1416.4, 0.0, 846.0, 774.6])));
+        assert!(!shows(&[main], Some([0.0, 0.0, 280.0, 380.0])));
+        assert!(!shows(&[], Some(main)));
+        assert!(shows(&[], None));
+    }
 
     #[test]
     fn an_app_listed_within_the_launch_grace_is_not_skipped_as_hung() {
