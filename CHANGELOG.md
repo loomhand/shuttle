@@ -1,9 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **`gui_plan` names a front app that stopped answering.** On Linux, when no window is in front because the app of the X active window lists no window in AT-SPI (LibreOffice while it saves or reloads, an app whose accessibility peer hangs), a step that names no window stops with `front app "<app>" (pid N) is not answering accessibility` in place of `no focused window`, and an escalation without a front window shows that line as its outline. The new desk verb `unanswered` gives that window. It is read only when a plan stops.
+
 ## 0.1.15 - 2026-10-22
 
 - **`gui_plan` with no window in front.** When no window is in front, as on GNOME while `_NET_ACTIVE_WINDOW` names none and no listed window is active, a `wait` step takes the one listed window that carries its title and brings it to the front, and a step that names no window acts in the plan's last window when one listed window has its title, bringing it to the front first. Before, `wait` failed with `expected window "…" did not appear` while its own window list held that title, and the next step failed with `no focused window`. Two listed windows with the awaited title still fail the step, with no window in front, an AT-SPI alert is not taken for the awaited window, and a plan with no window of its own yet still stops at `no focused window`. Background plans are unchanged.
-- **`gui_plan` names a front app that stopped answering.** On Linux, when no window is in front because the app of the X active window lists no window in AT-SPI (LibreOffice while it saves or reloads, an app whose accessibility peer hangs), a step that names no window stops with `front app "<app>" (pid N) is not answering accessibility` in place of `no focused window`, and an escalation without a front window shows that line as its outline. The new desk verb `unanswered` gives that window. It is read only when a plan stops.
 
 ## 0.1.14 - 2026-10-22
 
