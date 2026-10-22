@@ -1417,10 +1417,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             a.w.unwrap_or(f64::MAX / 4.0),
             a.h.unwrap_or(f64::MAX / 4.0),
         ];
-        if a.window.is_some() || a.pid.is_some() {
-            return self
-                .window_shot(a.window.as_deref(), a.pid, rect, a.path)
-                .await;
+        if let Some(window) = a.window.as_deref() {
+            return self.window_shot(window, rect, a.path).await;
         }
         let overlay = self.overlay;
         if let Some(c) = self
@@ -1473,15 +1471,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         })
     }
 
-    /// The image of the window picked by `window` or `pid`, as the driver captures that window alone, cropped to `rect` in its pixels.
+    /// The image of the window titled `window`, as the driver captures that window alone, cropped to `rect` in its pixels.
     async fn window_shot(
         &self,
-        window: Option<&str>,
-        pid: Option<u32>,
+        window: &str,
         rect: [f64; 4],
         path: Option<String>,
     ) -> Result<Output, String> {
-        let (_, w) = self.pick_window(window, pid, true).await?;
+        let (_, w) = self.pick_window(Some(window), None, true).await?;
         let read = json!({
             "session": WINDOW_SESSION,
             "pid": w["pid"],
@@ -2526,6 +2523,9 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(size(part), (json!(100), json!(50), true));
+        desk.run("desk_shot", json!({"pid": 9})).await.unwrap();
+        assert_eq!(sent(&calls, "get_window_state").len(), 2);
+        assert_eq!(sent(&calls, "get_desktop_state").len(), 1);
         let off = desk
             .run("desk_shot", json!({"x": -1416, "y": 0, "w": 100, "h": 100}))
             .await
