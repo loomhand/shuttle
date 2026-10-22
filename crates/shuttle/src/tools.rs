@@ -99,14 +99,16 @@ fn builtins() -> Value {
         },
         {
             "name": "screenshot",
-            "description": "A PNG of the screen, or of the rectangle x, y, w, h in screen pixels.",
+            "description": "A PNG of the screen, or of the rectangle x, y, w, h in screen pixels; with window (or pid), that window alone on whichever display shows it, and x, y, w, h crop its image.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "x": {"type": "integer"},
                     "y": {"type": "integer"},
                     "w": {"type": "integer"},
-                    "h": {"type": "integer"}
+                    "h": {"type": "integer"},
+                    "window": {"type": "string", "description": "Title of the window to capture by itself"},
+                    "pid": {"type": "integer", "description": "Process of the window to capture"}
                 }
             }
         },
