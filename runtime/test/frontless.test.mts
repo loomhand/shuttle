@@ -4,7 +4,7 @@ import { test, type TestContext } from 'node:test'
 import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
-async function unfocused(t: TestContext, titles: string[], role = 'dialog') {
+async function unfocused(t: TestContext, titles: string[], role = 'dialog', busy: object | null = null) {
   const wins = [{ id: '1', title: 'StreamView - Google Chrome', role: 'frame', pid: process.pid, active: false }, ...titles.map((title, i) => ({ id: String(i + 2), title, role, pid: process.pid, active: false }))]
   const calls: string[] = []
   await daemon(t, ({ tool, args }) => {
@@ -16,6 +16,7 @@ async function unfocused(t: TestContext, titles: string[], role = 'dialog') {
       return JSON.stringify({ window: w, truncated: false, nodes: [{ ref: 0, id: `${w?.id}/1`, parent: -1, depth: 0, role: 'dialog', name: w?.title, states: ['showing'] }, { ref: 1, id: `${w?.id}/2`, parent: 0, depth: 1, role: 'button', name: 'Cancel', states: ['showing'], bounds: [10, 10, 60, 20] }] })
     }
     if (tool === 'desk_press') return '{"ok":true,"how":"action"}'
+    if (tool === 'desk_unanswered') return JSON.stringify(busy)
     return '{"ok":true}'
   })
   return calls
@@ -52,4 +53,14 @@ test('with no window in front, a wait step never takes an alert that carries its
   const r = await main({ steps: [{ wait: 'Save As', timeout_ms: 600 }, { click: 'Cancel' }] })
   assert.equal(r.escalate?.reason, 'expected window "Save As" did not appear', JSON.stringify(r))
   assert.ok(!calls.some((c) => c.startsWith('desk_focus') || c.startsWith('desk_press')), calls.join(' '))
+})
+
+test('with no window in front, a plan names the front app that is not answering accessibility', async (t) => {
+  await unfocused(t, [], 'dialog', { id: '', title: 'answers.xlsx - LibreOffice Calc', role: 'window', pid: 5173, active: false, app: 'soffice.bin' })
+  const busy = '(pid 5173) is not answering accessibility'
+  const clicked = await main({ steps: [{ click: 'Save' }] })
+  assert.equal(clicked.escalate?.reason, `front app "soffice.bin" ${busy}`, JSON.stringify(clicked))
+  const waited = await main({ steps: [{ wait: 'Keep current format', timeout_ms: 400 }] })
+  assert.equal(waited.escalate?.reason, 'expected window "Keep current format" did not appear', JSON.stringify(waited))
+  assert.equal(waited.escalate?.outline, `(front app "soffice.bin" ${busy})`, JSON.stringify(waited))
 })

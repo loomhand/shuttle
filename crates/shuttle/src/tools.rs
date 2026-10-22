@@ -9,9 +9,27 @@ use crate::{NAME, VERSION, proxy};
 /// The built-in MCP tools, whose names no plugin may take.
 pub const NAMES: [&str; 5] = ["gui_plan", "script_run", "desk", "screenshot", "status"];
 
-pub const DESK_VERBS: [&str; 19] = [
-    "windows", "wait", "snapshot", "find", "read", "press", "act", "at", "key", "type", "click",
-    "scroll", "drag", "still", "focus", "close", "launch", "shot", "screen",
+pub const DESK_VERBS: [&str; 20] = [
+    "windows",
+    "unanswered",
+    "wait",
+    "snapshot",
+    "find",
+    "read",
+    "press",
+    "act",
+    "at",
+    "key",
+    "type",
+    "click",
+    "scroll",
+    "drag",
+    "still",
+    "focus",
+    "close",
+    "launch",
+    "shot",
+    "screen",
 ];
 
 /// The result of `tools/list`: the built-in tools, the script plugins with `script_run`'s arguments, then the service tools the MCP server lists, with their own.
@@ -69,7 +87,7 @@ fn builtins() -> Value {
         },
         {
             "name": "desk",
-            "description": "One desk call on this desktop: list windows or wait for them to change, snapshot or search a window's accessibility tree, read, press or act on an element, send keys, type, click, scroll or drag, wait for the screen to hold still, focus, close or launch, or crop the screen.",
+            "description": "One desk call on this desktop: list windows, name the front window of an app that stopped answering accessibility, or wait for windows to change, snapshot or search a window's accessibility tree, read, press or act on an element, send keys, type, click, scroll or drag, wait for the screen to hold still, focus, close or launch, or crop the screen.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

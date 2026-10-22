@@ -416,13 +416,17 @@ async function outline(w: Win | null, r: Reads = {}, kept?: Kept, max = 1800) {
   if (!w) return '(no focused window)'
   return (await look(w, r, kept, max)).text
 }
+async function frontless() {
+  const u = await desk.unanswered().catch(() => null)
+  return u ? `front app "${u.app ?? u.title}" (pid ${u.pid}) is not answering accessibility` : 'no focused window'
+}
 async function look(w: Win, r: Reads = {}, kept?: Kept, max = 1800): Promise<{ text: string; snap?: desk.Snap; nodes?: Node[] }> {
   try { const k = reuse(kept, w, r); const s = k?.snap ?? await snapOf(w, r); const nodes = k?.nodes ?? parse(s); const full = render(nodes, 100, nodes.length > 60, max + 1); return { text: `${full.slice(0, max)}${s.truncated ? TREE_CUT : full.length > max ? TEXT_CUT : ''}`, snap: s, nodes } } catch (e: unknown) { return { text: String(e) } }
 }
 async function seen(): Promise<Seen> {
   const ws = await desk.windows(); const w = frontOf(ws)
   const windows = ws.filter((x) => x.title && !isShell(x)).map((x) => x.modal ? `${x.title} (modal dialog, ${x.modal})` : x.title)
-  return { window: w?.title ?? null, windows, outline: await outline(w, { keys: true }) }
+  return { window: w?.title ?? null, windows, outline: w ? await outline(w, { keys: true }) : `(${await frontless()})` }
 }
 // a modal dialog of the focused app that the screen does not show takes the app's input: typing lands in it, and clicks do nothing
 async function hiddenModal(ws: Win[], f: Win | null) {
@@ -528,7 +532,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string): Pro
     if (plan && !twins.length) { w = plan; await desk.focus(w.title, w.pid) }
     // an untitled focused window that is no alert (a completion popup) leaves the step in the window the plan was in
     if (w && !w.title.trim() && lastSeen && !isAlert(await outline(w))) { const pid = w.pid; w = ws.find((x) => x.title === lastSeen && x.pid === pid) ?? w }
-    tick('wait', t0); if (!w) throw new Surprise('no focused window', {}, true); return w
+    tick('wait', t0); if (!w) throw new Surprise(await frontless(), {}, true); return w
   }
   const end = Date.now() + ms; let asked: string | null = null
   for (;;) {

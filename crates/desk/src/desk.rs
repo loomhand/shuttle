@@ -274,6 +274,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_drag" => self.drag(parse(args)?).await?,
             "desk_still" => self.still(parse(args)?).await?,
             "desk_focus" => self.focus(parse(args)?).await?,
+            "desk_unanswered" => self.unanswered().await?,
             "desk_close" => self.close(parse(args)?, turn.clone()).await?,
             "desk_launch" => {
                 let app = parse::<LaunchArgs>(args)?.app;
@@ -320,6 +321,17 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let _ = SENT.try_with(|n| n.set(n.get() + 1));
         }
         Ok(out)
+    }
+
+    async fn unanswered(&self) -> Result<String, String> {
+        let allow = self.allow.clone();
+        let front = self
+            .access
+            .run(CALL_LIMIT, (), move |b| {
+                Ok(b.unanswered().filter(|f| allow.admits(f.app.as_deref())))
+            })
+            .await?;
+        serde_json::to_string(&front).map_err(|e| format!("encode unanswered: {e}"))
     }
 
     async fn windows(&self) -> Result<String, String> {
@@ -1871,6 +1883,7 @@ pub(crate) mod tests {
         stalled: bool,
         budgets: Vec<Duration>,
         shells: Vec<u32>,
+        unanswered: Option<Frame>,
     }
 
     impl Stub {
@@ -1955,6 +1968,10 @@ pub(crate) mod tests {
 
         fn shells(&mut self) -> Vec<u32> {
             self.shells.clone()
+        }
+
+        fn unanswered(&mut self) -> Option<Frame> {
+            self.unanswered.clone()
         }
     }
 
@@ -2043,6 +2060,44 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(shell, [("4/1", false), ("8/1", true), ("9/1", true)]);
         assert!(listed[0].get("shell").is_none(), "{out}");
+    }
+
+    #[tokio::test]
+    async fn the_unanswered_front_window_is_named_only_for_an_allowed_app() {
+        let busy = || {
+            Ok(Stub {
+                unanswered: Some(frame(
+                    "",
+                    "answers.xlsx - LibreOffice Calc",
+                    5173,
+                    false,
+                    Some("soffice.bin"),
+                )),
+                ..Stub::default()
+            })
+        };
+        let open = Desk::new(busy, Slow(Arc::default()), Os::Linux);
+        let out = open.run("desk_unanswered", json!({})).await.unwrap().text;
+        let front: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            (&front["title"], &front["pid"], &front["app"]),
+            (
+                &json!("answers.xlsx - LibreOffice Calc"),
+                &json!(5173),
+                &json!("soffice.bin")
+            ),
+            "{out}"
+        );
+        let gated = Desk::new(busy, Slow(Arc::default()), Os::Linux).allow(&["mousepad".into()]);
+        assert_eq!(
+            gated.run("desk_unanswered", json!({})).await.unwrap().text,
+            "null"
+        );
+        let none = Desk::new(|| Ok(Stub::default()), Slow(Arc::default()), Os::Linux);
+        assert_eq!(
+            none.run("desk_unanswered", json!({})).await.unwrap().text,
+            "null"
+        );
     }
 
     async fn closed<D: Input + Sync>(desk: &Desk<Stub, D>) -> Vec<String> {

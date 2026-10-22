@@ -166,6 +166,19 @@ impl Access for Spi {
     fn shells(&mut self) -> Vec<u32> {
         self.shm(|g| Ok(g.shell_pids())).unwrap_or_default()
     }
+
+    fn unanswered(&mut self) -> Option<Frame> {
+        let (pid, title) =
+            self.shm(|g| Ok(g.active().and_then(|w| Some((g.pid(w)?, g.title(w)?)))))??;
+        let frames = self.listed().ok()?;
+        unlisted(frames.iter().map(|f| f.pid), pid).then(|| Frame {
+            title,
+            role: "window",
+            pid: Some(pid),
+            app: app(pid),
+            ..Frame::default()
+        })
+    }
 }
 
 fn frame(f: atspi::Frame) -> Frame {
@@ -208,6 +221,11 @@ fn settle_active(frames: &mut [Frame], pid: Option<u32>, title: &str) {
             _ => false,
         };
     }
+}
+
+/// Whether process `pid` owns none of the frames whose processes are `pids`.
+fn unlisted(mut pids: impl Iterator<Item = Option<u32>>, pid: u32) -> bool {
+    pid != 0 && pids.all(|p| p != Some(pid))
 }
 
 /// Whether the X window `(title, pid)` is `frame`'s own: of its process, and that process's only X window or the one with that title, `titles` being the titles of the process's X windows.
@@ -495,6 +513,15 @@ mod tests {
         let twin = ("a.txt - Mousepad".to_owned(), Some(7));
         let twins = ["a.txt - Mousepad".to_owned(), "a.txt - Mousepad".to_owned()];
         assert!(!is_frame(&mousepad, &twin, &twins));
+    }
+
+    #[test]
+    fn only_a_process_with_no_frame_is_unlisted() {
+        let pids = [Some(814), Some(1649), None, Some(5151)];
+        assert!(unlisted(pids.into_iter(), 5173));
+        assert!(!unlisted(pids.into_iter(), 5151));
+        assert!(!unlisted(pids.into_iter(), 0));
+        assert!(unlisted(std::iter::empty(), 5173));
     }
 
     #[test]

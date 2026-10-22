@@ -34,6 +34,8 @@ export function call<T>(op: string, args: Record<string, unknown> = {}): Promise
 }
 
 export const windows = (): Promise<Win[]> => call('windows')
+/** The window the window manager names active when its app lists no window, as an app that stopped answering leaves it; null when there is none. */
+export const unanswered = (): Promise<Win | null> => call('unanswered')
 /** Waits until the window list differs from `since` or `timeout_ms` of waiting passes, and returns the list. */
 export const wait = (since: Win[], timeout_ms: number): Promise<{ changed: boolean; windows: Win[] }> =>
   call('wait', { since, timeout_ms: Math.max(0, Math.round(timeout_ms)) })
