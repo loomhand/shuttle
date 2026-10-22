@@ -64,3 +64,22 @@ test('with no window in front, a plan names the front app that is not answering 
   assert.equal(waited.escalate?.reason, 'expected window "Keep current format" did not appear', JSON.stringify(waited))
   assert.equal(waited.escalate?.outline, `(front app "soffice.bin" ${busy})`, JSON.stringify(waited))
 })
+
+test('a step that finds no window in front only until the window the key opened shows recovers without asking for an unanswered app', async (t) => {
+  const dialog = { id: '2', title: 'Open File', role: 'dialog', pid: process.pid, active: false }
+  const calls: string[] = []
+  let keyed = 0
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') { if (keyed && Date.now() - keyed > 1000) dialog.active = true; return JSON.stringify(keyed ? [dialog] : [{ ...dialog, id: '1', title: 'a.txt - Editor', role: 'frame', active: true }]) }
+    if (tool === 'desk_key') { keyed = Date.now(); return '{"ok":true}' }
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: dialog, truncated: false, nodes: [{ ref: 0, id: '2/1', parent: -1, depth: 0, role: 'dialog', name: 'Open File', states: ['showing'] }, { ref: 1, id: '2/2', parent: 0, depth: 1, role: 'button', name: 'Cancel', states: ['showing'], bounds: [10, 10, 60, 20] }] })
+    if (tool === 'desk_press') return '{"ok":true,"how":"action"}'
+    if (tool === 'desk_unanswered') return 'null'
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ key: 'ctrl+o' }, { click: 'Cancel' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.ok(calls.includes('desk_press'), calls.join(' '))
+  assert.ok(!calls.includes('desk_unanswered'), calls.join(' '))
+})
