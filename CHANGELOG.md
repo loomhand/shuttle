@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.16 - 2026-10-22
 
 - **Bundled:** cua-driver v0.38.0-loomhand.1 (was v0.37.0-loomhand.5), the fork's patches rebased onto upstream cua-driver 0.38.0 and later fixes: Windows `list_windows` leaves out the driver's own overlay windows, keys for a popup a Linux MPX click opened go through the master keyboard of the session that clicked, and the macOS background gate and window-change detector enumerate windows without the Space snapshot, now upstream ([#5566](https://github.com/trycua/cua/pull/5566), [#5652](https://github.com/trycua/cua/pull/5652), [#5712](https://github.com/trycua/cua/pull/5712)); upstream also tracks the agent cursor's placement explicitly, so negative display coordinates no longer read as an unplaced cursor, keeps a Windows foreground drag off the window that covers its target, and keeps GNOME element actions inside the requested window. `verify_hit`, the kitty AXValue route, the off-Space window lookup, the macOS overlay tile and the X11 core-focus bounce carry over unchanged.
 
