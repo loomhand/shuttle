@@ -1,5 +1,7 @@
 //! The bundled cua-driver: the daemon starts it on its own socket once it holds its endpoint, restarts it when it exits, and stops it when the daemon exits; on Linux the apps it launched into scopes of their own outlive it.
 
+#[cfg(unix)]
+use std::os::unix::fs::FileTypeExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -188,9 +190,11 @@ pub fn endpoint(desk: &str) -> String {
 
 #[cfg(unix)]
 async fn clear_stale(endpoint: &str) {
-    if server::connect(endpoint)
-        .await
-        .is_err_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused)
+    let socket = std::fs::symlink_metadata(endpoint).is_ok_and(|m| m.file_type().is_socket());
+    if socket
+        && server::connect(endpoint)
+            .await
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused)
     {
         let _ = std::fs::remove_file(endpoint);
     }
@@ -470,13 +474,19 @@ while True:
             .join("missing.sock")
             .to_string_lossy()
             .into_owned();
+        let file = dir.path().join("file.sock").to_string_lossy().into_owned();
+        let link = dir.path().join("link.sock").to_string_lossy().into_owned();
         let _listener = std::os::unix::net::UnixListener::bind(&live).unwrap();
         drop(std::os::unix::net::UnixListener::bind(&dead).unwrap());
-        for socket in [&live, &dead, &missing] {
+        std::fs::write(&file, "").unwrap();
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        for socket in [&live, &dead, &missing, &file, &link] {
             clear_stale(socket).await;
         }
         assert!(Path::new(&live).exists());
         assert!(!Path::new(&dead).exists());
         assert!(!Path::new(&missing).exists());
+        assert!(Path::new(&file).exists());
+        assert!(std::fs::symlink_metadata(&link).is_ok());
     }
 }
