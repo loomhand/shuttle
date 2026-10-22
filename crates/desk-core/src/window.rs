@@ -16,9 +16,13 @@ pub trait Window: Clone {
     }
     /// Whether the window may stand for the focused one: a plain window needs a title.
     fn focusable(&self) -> bool;
+    /// Whether the window shows on a display; a backend that cannot tell says it does.
+    fn shown(&self) -> bool {
+        true
+    }
 }
 
-/// The window named `want` (by [`title_matches`] tiers), else the focused one; among equals the active one, else the newest.
+/// The window named `want` (by [`title_matches`] tiers), else the focused one; among equals the active one, else the newest shown one, else the newest.
 pub fn pick<W: Window>(
     mut windows: Vec<W>,
     want: Option<&str>,
@@ -82,10 +86,9 @@ pub fn app_window<W: Window>(windows: &[W], want: &str) -> Result<W, String> {
 }
 
 fn best<W: Window>(candidates: &[&W]) -> Option<W> {
-    candidates
-        .iter()
-        .rev()
-        .find(|w| w.active())
+    let newest = |keep: fn(&W) -> bool| candidates.iter().rev().find(|w| keep(w));
+    newest(W::active)
+        .or_else(|| newest(W::shown))
         .or_else(|| candidates.last())
         .map(|w| W::clone(w))
 }
@@ -100,6 +103,7 @@ mod tests {
         active: bool,
         pid: u32,
         listed: bool,
+        shown: bool,
     }
 
     impl Window for W {
@@ -118,6 +122,9 @@ mod tests {
         fn focusable(&self) -> bool {
             !self.title.is_empty()
         }
+        fn shown(&self) -> bool {
+            self.shown
+        }
     }
 
     fn w(title: &'static str, active: bool, pid: u32) -> W {
@@ -126,7 +133,32 @@ mod tests {
             active,
             pid,
             listed: true,
+            shown: true,
         }
+    }
+
+    fn hidden(title: &'static str, pid: u32) -> W {
+        W {
+            shown: false,
+            ..w(title, false, pid)
+        }
+    }
+
+    #[test]
+    fn among_equal_titles_none_active_the_newest_shown_window_wins_and_a_lone_hidden_one_still_counts()
+     {
+        let title = |windows: Vec<W>, want| {
+            pick(windows, Some(want), None).map(|w| (w.title, w.pid, w.shown))
+        };
+        let twin = vec![w("微信", false, 9), hidden("微信", 9)];
+        assert_eq!(title(twin, "微信").unwrap(), ("微信", 9, true));
+        let lone = vec![w("Untitled - Notepad", false, 4), hidden("Doc", 5)];
+        assert_eq!(title(lone, "Doc").unwrap(), ("Doc", 5, false));
+        let both = vec![w("Report", false, 1), w("Report", false, 2)];
+        assert_eq!(title(both, "Report").unwrap(), ("Report", 2, true));
+        let mut active = vec![hidden("Report", 1), w("Report", false, 2)];
+        active[0].active = true;
+        assert_eq!(title(active, "Report").unwrap(), ("Report", 1, false));
     }
 
     #[test]

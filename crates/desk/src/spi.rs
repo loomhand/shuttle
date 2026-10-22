@@ -196,6 +196,7 @@ fn frame(f: atspi::Frame) -> Frame {
         stale: false,
         unlisted: !FRAME_ROLES.contains(&f.role),
         framed: f.role != WINDOW_ROLE,
+        hidden: false,
         title: f.name,
     }
 }
