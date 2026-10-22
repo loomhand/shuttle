@@ -12,6 +12,7 @@ use tokio::task::JoinHandle;
 use crate::{Running, home, log};
 
 const TELEMETRY: &str = "CUA_DRIVER_RS_TELEMETRY_ENABLED";
+const DRIVER_EMBEDDED: &str = "CUA_DRIVER_EMBEDDED";
 const GLIDE_MS: &str = "1";
 const LISTEN_WAIT: Duration = Duration::from_secs(10);
 const STOP_WAIT: Duration = Duration::from_secs(3);
@@ -25,8 +26,13 @@ pub struct Bundled {
 }
 
 impl Bundled {
-    /// Starts the cua-driver beside `exe` at `endpoint`, after stopping one that a killed daemon left there; none when no driver is bundled. Off macOS `overlay = false` starts it without its agent cursor.
-    pub async fn start(exe: &Path, endpoint: &str, overlay: bool) -> Result<Option<Self>, String> {
+    /// Starts the cua-driver beside `exe` at `endpoint`, after stopping one that a killed daemon left there; none when no driver is bundled. Off macOS `overlay = false` starts it without its agent cursor; `embedded` starts it in cua-driver's embedded mode.
+    pub async fn start(
+        exe: &Path,
+        endpoint: &str,
+        overlay: bool,
+        embedded: bool,
+    ) -> Result<Option<Self>, String> {
         let bin = exe.with_file_name(if cfg!(windows) {
             "cua-driver.exe"
         } else {
@@ -45,6 +51,7 @@ impl Bundled {
             endpoint: endpoint.to_owned(),
             pid_file: pid_file(endpoint)?,
             overlay: overlay || cfg!(target_os = "macos"),
+            embedded,
         };
         if server::connect(endpoint).await.is_ok() {
             proc.stop_stale().await?;
@@ -67,16 +74,20 @@ struct Proc {
     endpoint: String,
     pid_file: PathBuf,
     overlay: bool,
+    embedded: bool,
 }
 
 impl Proc {
     async fn spawn(&self) -> Result<Running, String> {
+        #[cfg(unix)]
+        clear_stale(&self.endpoint).await;
         let mut cmd = Command::new(&self.bin);
         cmd.args(["serve", "--socket", &self.endpoint, "--pid-file"])
             .arg(&self.pid_file)
             .args(["--glide-ms", GLIDE_MS])
             .args((!self.overlay).then_some("--no-overlay"))
             .env(TELEMETRY, "false")
+            .envs(self.embedded.then_some((DRIVER_EMBEDDED, "1")))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -175,6 +186,16 @@ pub fn endpoint(desk: &str) -> String {
     }
 }
 
+#[cfg(unix)]
+async fn clear_stale(endpoint: &str) {
+    if server::connect(endpoint)
+        .await
+        .is_err_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused)
+    {
+        let _ = std::fs::remove_file(endpoint);
+    }
+}
+
 fn pid_file(endpoint: &str) -> Result<PathBuf, String> {
     if !cfg!(windows) {
         return Ok(Path::new(endpoint).with_extension("pid"));
@@ -210,6 +231,9 @@ open(args["--socket"] + ".argv", "w").write(" ".join(sys.argv[1:]))
 open(args["--pid-file"], "w").write(str(os.getpid()))
 if os.path.exists(args["--socket"] + ".slow"):
     time.sleep(3)
+if os.environ.get("CUA_DRIVER_EMBEDDED") == "1" and os.path.exists(args["--socket"]):
+    sys.exit(4)
+open(args["--socket"] + ".env", "w").write(os.environ.get("CUA_DRIVER_EMBEDDED", ""))
 if os.path.exists(args["--socket"]):
     os.remove(args["--socket"])
 s = socket.socket(socket.AF_UNIX)
@@ -250,7 +274,7 @@ while True:
     async fn no_bundled_driver_starts_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let started = Bundled::start(&dir.path().join(NAME), &endpoint, true).await;
+        let started = Bundled::start(&dir.path().join(NAME), &endpoint, true, false).await;
         assert!(matches!(started, Ok(None)));
     }
 
@@ -260,7 +284,7 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, true)
+        let driver = Bundled::start(&exe, &endpoint, true, false)
             .await
             .unwrap()
             .unwrap();
@@ -287,7 +311,7 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, true)
+        let driver = Bundled::start(&exe, &endpoint, true, false)
             .await
             .unwrap()
             .unwrap();
@@ -302,7 +326,7 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, false)
+        let driver = Bundled::start(&exe, &endpoint, false, false)
             .await
             .unwrap()
             .unwrap();
@@ -320,7 +344,7 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, true)
+        let driver = Bundled::start(&exe, &endpoint, true, false)
             .await
             .unwrap()
             .unwrap();
@@ -335,7 +359,7 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, true)
+        let driver = Bundled::start(&exe, &endpoint, true, false)
             .await
             .unwrap()
             .unwrap();
@@ -374,7 +398,7 @@ while True:
             tokio::time::sleep(POLL).await;
         }
         let stale = pid(&endpoint).unwrap();
-        let driver = Bundled::start(&exe, &endpoint, true)
+        let driver = Bundled::start(&exe, &endpoint, true, false)
             .await
             .unwrap()
             .unwrap();
@@ -393,7 +417,7 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), "#!/bin/sh\nexit 3\n").unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let err = Bundled::start(&exe, &endpoint, true)
+        let err = Bundled::start(&exe, &endpoint, true, false)
             .await
             .err()
             .unwrap_or_default();
@@ -401,5 +425,58 @@ while True:
             err.contains("exited with") && err.contains("before it listened"),
             "{err}"
         );
+    }
+
+    #[tokio::test]
+    async fn an_embedded_driver_starts_and_restarts_over_the_socket_a_dead_driver_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake(dir.path(), FAKE).unwrap();
+        let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
+        drop(std::os::unix::net::UnixListener::bind(&endpoint).unwrap());
+        let driver = Bundled::start(&exe, &endpoint, true, true)
+            .await
+            .unwrap()
+            .unwrap();
+        let env = std::fs::read_to_string(format!("{endpoint}.env")).unwrap_or_default();
+        let first = pid(&endpoint).unwrap();
+        // SAFETY: the pid is the fake driver this test started.
+        unsafe { libc::kill(first, libc::SIGKILL) };
+        assert!(gone(first).await);
+        let mut back = false;
+        for _ in 0..100 {
+            tokio::time::sleep(POLL).await;
+            if pid(&endpoint).is_some_and(|p| p != first)
+                && server::connect(&endpoint).await.is_ok()
+            {
+                back = true;
+                break;
+            }
+        }
+        driver.stop().await;
+        assert_eq!(env, "1");
+        assert!(
+            back,
+            "the embedded driver came back over the socket it left"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_a_socket_that_refuses_a_connect_is_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = dir.path().join("live.sock").to_string_lossy().into_owned();
+        let dead = dir.path().join("dead.sock").to_string_lossy().into_owned();
+        let missing = dir
+            .path()
+            .join("missing.sock")
+            .to_string_lossy()
+            .into_owned();
+        let _listener = std::os::unix::net::UnixListener::bind(&live).unwrap();
+        drop(std::os::unix::net::UnixListener::bind(&dead).unwrap());
+        for socket in [&live, &dead, &missing] {
+            clear_stale(socket).await;
+        }
+        assert!(Path::new(&live).exists());
+        assert!(!Path::new(&dead).exists());
+        assert!(!Path::new(&missing).exists());
     }
 }

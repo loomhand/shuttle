@@ -61,6 +61,15 @@ Both installers download the archive and the release's `SHA256SUMS`, refuse an a
 | Android UI server | | `android/shuttle-ui.jar` (Linux only) |
 | licenses | `Contents/Resources/licenses/` | `licenses/` |
 
+## Embedding shuttle in an app
+
+An app that ships shuttle inside its own bundle and starts `shuttle serve` itself, so that the macOS permissions belong to that app and not to `Shuttle.app`, sets `SHUTTLE_EMBEDDED=1` (exactly `1`) in the environment of both `shuttle serve` and the `shuttle mcp` its agents run:
+
+- `serve` starts the bundled cua-driver with `CUA_DRIVER_EMBEDDED=1`, so the driver raises no permission prompts of its own; the app asks for Accessibility and Screen Recording.
+- `mcp` only connects to the daemon. When none answers at the endpoint, it fails at once with `no shuttle daemon answers at <endpoint>` and starts nothing: the app keeps `shuttle serve` running.
+
+Both use the default endpoint unless `SHUTTLE_SOCKET` names another one ([wire.md](wire.md)).
+
 ## Manual install and verification
 
 Download an archive and `SHA256SUMS` from the [releases](https://github.com/loomhand/shuttle/releases), then:

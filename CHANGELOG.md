@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Embedded mode.** An app that ships shuttle inside its own bundle and starts `shuttle serve` itself sets `SHUTTLE_EMBEDDED=1` for `serve` and `mcp`, so the macOS permissions belong to that app ([install.md](docs/install.md#embedding-shuttle-in-an-app)). `serve` then starts the bundled cua-driver with `CUA_DRIVER_EMBEDDED=1`, which raises no permission prompts of its own. `mcp` only connects: when no daemon answers it fails at once with `no shuttle daemon answers at <endpoint>`, and never starts one. Before, `mcp` from a copy of shuttle inside another app's bundle found that app as its own bundle and ran `open -a <that app> --args serve`.
+- **Stale driver socket.** Before each start of the bundled cua-driver, the first one and every restart, the daemon removes a socket file at the driver's endpoint that refuses a connect, as one a killed driver leaves; a socket that answers or any other error leaves the file alone. A cua-driver in embedded mode refuses to start over an existing socket file. Windows pipes are unchanged.
+
 ## 0.1.16 - 2026-10-22
 
 - **Bundled:** cua-driver v0.38.0-loomhand.1 (was v0.37.0-loomhand.5), the fork's patches rebased onto upstream cua-driver 0.38.0 and later fixes: Windows `list_windows` leaves out the driver's own overlay windows, keys for a popup a Linux MPX click opened go through the master keyboard of the session that clicked, and the macOS background gate and window-change detector enumerate windows without the Space snapshot, now upstream ([#5566](https://github.com/trycua/cua/pull/5566), [#5652](https://github.com/trycua/cua/pull/5652), [#5712](https://github.com/trycua/cua/pull/5712)); upstream also tracks the agent cursor's placement explicitly, so negative display coordinates no longer read as an unplaced cursor, keeps a Windows foreground drag off the window that covers its target, and keeps GNOME element actions inside the requested window. `verify_hit`, the kitty AXValue route, the off-Space window lookup, the macOS overlay tile and the X11 core-focus bounce carry over unchanged.

@@ -256,7 +256,7 @@ async fn serve(
     let services = Services::start(&plugins.services, endpoint, &key_vars)?;
     let own = driver::endpoint(endpoint);
     let bundled = if local {
-        Bundled::start(&exe, &own, overlay).await?
+        Bundled::start(&exe, &own, overlay, crate::embedded()).await?
     } else {
         None
     };

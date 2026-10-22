@@ -38,6 +38,8 @@ pub const VENDOR: &str = "loomhand";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The answer to every call while the user has stopped shuttle.
 pub const STOPPED: &str = "stopped by the user: run `shuttle resume` to go on";
+/// The environment variable whose value `1` tells `serve` and `mcp` that a host app owns the daemon, its driver and their permissions.
+pub const EMBEDDED: &str = "SHUTTLE_EMBEDDED";
 
 #[cfg(unix)]
 const GROUP_POLL: Duration = Duration::from_millis(20);
@@ -107,6 +109,11 @@ impl Drop for Running {
 /// Shuttle's directory under a config or cache root: `loomhand/shuttle`.
 pub fn home() -> PathBuf {
     Path::new(VENDOR).join(NAME)
+}
+
+/// Whether [`EMBEDDED`] is exactly `1`.
+pub fn embedded() -> bool {
+    std::env::var(EMBEDDED).is_ok_and(|v| v == "1")
 }
 
 pub(crate) fn log(line: impl Display) {
