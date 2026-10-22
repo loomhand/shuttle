@@ -24,7 +24,7 @@ type Rec = {
   i: number; op?: string; ms?: number; served?: unknown[]; how?: string; via?: string; window?: string; seen?: string; submit?: boolean
   blank?: Fp; fp?: Fp; was?: boolean | 'mixed' | null; now?: boolean; noop?: boolean; state?: string; opened?: number; path?: string[]; pick?: number[]
   focused?: string; p?: number; p_zoom?: number | null; p_full?: number | null; verdict?: Vision; ground_hit?: string; checked?: string; value?: string; ref?: string; unsaved?: boolean
-  unverified?: string; confirmed?: boolean; fg?: boolean
+  unverified?: string; confirmed?: boolean; fg?: boolean; busy?: number
 }
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
@@ -41,6 +41,8 @@ const BEHIND = process.env.SHUTTLE_INPUT === 'background' || process.env.SHUTTLE
 const AUTO = process.env.SHUTTLE_INPUT === 'auto'
 const NO_PIXELS = 'background gui_plan does not read the screen, which shows whatever covers the plan\'s window'
 const NO_FRONT = 'no focused window'
+const BUSY_WAIT = 20000
+const BUSY_POLL = 250
 const FLOWS = process.env.SHUTTLE_FLOWS ?? ''
 const LOG = `${FLOWS}/.runs.jsonl`
 const LOG_MAX = 1024 * 1024
@@ -170,6 +172,14 @@ async function perform(p: Params): Promise<Result> {
         for (const end = Date.now() + 3000; ; await sleep(200)) {
           try { return await run(s, rec) } catch (again: unknown) { if (!late(again) || Date.now() > end) throw again }
         }
+      }).catch(async (e: unknown) => {
+        if (!(e instanceof Surprise) || (e.reason !== NO_FRONT && e.seen.outline !== `(${NO_FRONT})`)) throw e
+        const t0 = Date.now(); const busy = () => desk.unanswered().catch(() => null)
+        if (!await busy()) throw e
+        while (Date.now() - t0 < BUSY_WAIT && await busy()) await sleep(BUSY_POLL)
+        rec.busy = Date.now() - t0
+        if (rec.busy >= BUSY_WAIT) throw e
+        return await run(s, rec)
       })
       if (unheard && !rec.unverified) rec.unverified = unheard
       if (desk.foreground.runs + foreground.steps > runs) { rec.fg = true; fronted = true; BG = false }
@@ -181,7 +191,7 @@ async function perform(p: Params): Promise<Result> {
       const step = e instanceof Stolen ? e.step : i
       const note = step === i ? recs[i - 1]?.unverified : undefined
       const theft = BG && !(e instanceof Stolen) ? taken(await desk.windows()) : null
-      const reason = `${sp.reason}${note ? ` (the step before was sent but not confirmed: ${note})` : ''}${theft ? `; meanwhile ${theft}` : ''}`
+      const reason = `${sp.reason}${rec.busy ? `; waited ${(rec.busy / 1000).toFixed(1)} s for the front app to answer accessibility` : ''}${note ? ` (the step before was sent but not confirmed: ${note})` : ''}${theft ? `; meanwhile ${theft}` : ''}`
       escalate = { step, plan_step: plan[step] ?? planned, reason, ...sp.seen }; done = step
     }
     rec.ms = Date.now() - ts; if (desk.served.length > calls) rec.served = desk.served.slice(calls)
