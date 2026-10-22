@@ -13,10 +13,21 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const START_WAIT: Duration = Duration::from_secs(10);
 const START_POLL: Duration = Duration::from_millis(100);
 
-/// Sends `call` to the daemon at `endpoint`, starting it when nothing listens; a call that may have reached it is never resent.
+/// Sends `call` to the daemon at `endpoint`, starting it when nothing listens unless a host app embeds shuttle; a call that may have reached it is never resent.
 pub async fn call(endpoint: &str, call: &Call) -> Result<Output, String> {
+    reach(endpoint, call, crate::embedded()).await
+}
+
+async fn reach(endpoint: &str, call: &Call, embedded: bool) -> Result<Output, String> {
     let conn = match server::connect(endpoint).await {
         Ok(conn) => conn,
+        Err(_) if embedded => {
+            return Err(format!(
+                "no {NAME} daemon answers at {endpoint}; with {EMBEDDED}=1 the app that embeds {NAME} starts `{NAME} serve` itself",
+                NAME = crate::NAME,
+                EMBEDDED = crate::EMBEDDED
+            ));
+        }
         Err(_) => started(endpoint).await?,
     };
     server::exchange(conn, call).await
@@ -129,5 +140,26 @@ mod tests {
         };
         assert!(call(&endpoint, &ask).await.is_err());
         assert_eq!(*seen.lock().unwrap(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_embedded_mcp_with_no_daemon_fails_at_once_and_starts_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let ask = Call {
+            agent_id: "t".into(),
+            tool: "desk_windows".into(),
+            args: serde_json::json!({}),
+        };
+        let started = std::time::Instant::now();
+        let err = reach(&endpoint, &ask, true).await.unwrap_err();
+        assert!(err.contains("SHUTTLE_EMBEDDED=1"), "{err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(!Path::new(&endpoint).exists());
     }
 }
