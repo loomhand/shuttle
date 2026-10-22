@@ -945,6 +945,11 @@ async fn focus(android: &Android, a: WindowArgs) -> Result<String, String> {
 
 /// A PNG of a screen rectangle, the whole screen by default.
 async fn shot(android: &Android, a: ShotArgs) -> Result<Output, String> {
+    if a.window.is_some() || a.pid.is_some() {
+        return Err(
+            "a device shot takes no window: shoot the screen or a rectangle of it".to_owned(),
+        );
+    }
     let png = android.screenshot().await?;
     let (w, h) = android.screen().await?;
     let rect = [

@@ -26,7 +26,7 @@ use crate::driver::{
 use crate::keys::{Os, key_names, keystroke};
 use crate::model::{Access, Act, Capture, Extras, Frame, Node};
 use crate::press::{Press, plan_press};
-use crate::shot::{crop_png, rgb_png};
+use crate::shot::{OFF_SCREEN, crop_png, rgb_png};
 use crate::still::{Frame as StillFrame, Watch};
 use crate::worker::Worker;
 
@@ -71,6 +71,8 @@ const WAIT_MAX: Duration = Duration::from_secs(5);
 const WAIT_POLL: Duration = Duration::from_millis(10);
 const WAIT_CHECK: Duration = Duration::from_millis(100);
 const FRAME_BORDER: f64 = 16.0;
+const OTHER_DISPLAY: &str =
+    "; name the window with `window` to capture a window on another display";
 const NO_WINDOW_UNDER: &str =
     "no window under the point, and the app allowlist admits only windows";
 const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
@@ -1415,6 +1417,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             a.w.unwrap_or(f64::MAX / 4.0),
             a.h.unwrap_or(f64::MAX / 4.0),
         ];
+        if a.window.is_some() || a.pid.is_some() {
+            return self
+                .window_shot(a.window.as_deref(), a.pid, rect, a.path)
+                .await;
+        }
         let overlay = self.overlay;
         if let Some(c) = self
             .access
@@ -1439,15 +1446,62 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         } else {
             Some(self.mask(factor).await?)
         };
-        let (w, h, png) = crop_png(&png, rect, factor, mask.as_deref())?;
+        let (w, h, png) = crop_png(&png, rect, factor, mask.as_deref()).map_err(|e| {
+            if e == OFF_SCREEN {
+                format!("{e}{OTHER_DISPLAY}")
+            } else {
+                e
+            }
+        })?;
+        self.shot_out(png, w, h, a.path).await
+    }
+
+    async fn shot_out(
+        &self,
+        png: Vec<u8>,
+        w: u32,
+        h: u32,
+        path: Option<String>,
+    ) -> Result<Output, String> {
         if self.os == Os::Linux {
-            return delivered(png, w, h, a.path).await;
+            return delivered(png, w, h, path).await;
         }
         Ok(Output {
             text: json!({"ok": true, "width": w, "height": h}).to_string(),
             image_b64: Some(B64.encode(&png)),
             ..Output::default()
         })
+    }
+
+    /// The image of the window picked by `window` or `pid`, as the driver captures that window alone, cropped to `rect` in its pixels.
+    async fn window_shot(
+        &self,
+        window: Option<&str>,
+        pid: Option<u32>,
+        rect: [f64; 4],
+        path: Option<String>,
+    ) -> Result<Output, String> {
+        let (_, w) = self.pick_window(window, pid, true).await?;
+        let read = json!({
+            "session": WINDOW_SESSION,
+            "pid": w["pid"],
+            "window_id": w["window_id"],
+            "include_accessibility_tree": false,
+            "max_image_dimension": 0
+        });
+        let v = self.call("get_window_state", read).await?;
+        let png = image_of(&v).ok_or("the driver returned no screenshot of the window")?;
+        let png = B64
+            .decode(png)
+            .map_err(|e| format!("decode screenshot: {e}"))?;
+        let (w, h, png) = crop_png(&png, rect, 1.0, None).map_err(|e| {
+            if e == OFF_SCREEN {
+                "the rectangle is off the window".to_owned()
+            } else {
+                e
+            }
+        })?;
+        self.shot_out(png, w, h, path).await
     }
 
     /// A capture the backend read itself, as a PNG image, also written to `path` when one is given.
@@ -2399,6 +2453,100 @@ pub(crate) mod tests {
                 _ => json!({}),
             })
         }
+    }
+
+    struct SecondDisplay(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for SecondDisplay {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            let image = |w: u32, h: u32| {
+                let mut png = Vec::new();
+                let mut enc = png::Encoder::new(&mut png, w, h);
+                enc.set_color(png::ColorType::Rgb);
+                enc.write_header()
+                    .unwrap()
+                    .write_image_data(&vec![200; (w * h * 3) as usize])
+                    .unwrap();
+                json!([{"type": "image", "data": B64.encode(&png)}])
+            };
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 2, "title": "Untitled - Notepad", "app_name": "Notepad", "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}},
+                    {"pid": 9, "window_id": 100, "layer": 0, "z_index": 1, "title": "微信", "app_name": "WeChat", "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": -1416.0, "y": 0.0, "width": 846.0, "height": 774.0}}
+                ]}}),
+                "get_window_state" => {
+                    let mut v = json!({"structuredContent": {"screenshot_width": 846, "screenshot_height": 774}});
+                    v["content"] = image(846, 774);
+                    v
+                }
+                "get_desktop_state" => {
+                    let mut v = json!({"structuredContent": {"screenshot_width": 100, "screenshot_original_width": 100}});
+                    v["content"] = image(100, 60);
+                    v
+                }
+                _ => json!({}),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_shot_by_window_captures_that_window_on_any_display_within_the_allowlist() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), SecondDisplay(Arc::clone(&calls)), Os::Mac);
+        let size = |out: Output| {
+            let v: Value = serde_json::from_str(&out.text).unwrap();
+            (
+                v["width"].clone(),
+                v["height"].clone(),
+                out.image_b64.is_some(),
+            )
+        };
+        let whole = desk
+            .run("desk_shot", json!({"window": "微信"}))
+            .await
+            .unwrap();
+        assert_eq!(size(whole), (json!(846), json!(774), true));
+        let read = sent(&calls, "get_window_state");
+        assert_eq!(read.len(), 1, "{read:?}");
+        assert_eq!(
+            (
+                &read[0]["window_id"],
+                &read[0]["include_accessibility_tree"]
+            ),
+            (&json!(100), &json!(false))
+        );
+        assert!(sent(&calls, "get_desktop_state").is_empty());
+        let part = desk
+            .run(
+                "desk_shot",
+                json!({"window": "微信", "x": 10, "y": 20, "w": 100, "h": 50}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(size(part), (json!(100), json!(50), true));
+        let off = desk
+            .run("desk_shot", json!({"x": -1416, "y": 0, "w": 100, "h": 100}))
+            .await
+            .unwrap_err();
+        assert!(off.ends_with(OTHER_DISPLAY), "{off}");
+        let gated_calls = Arc::new(Mutex::new(Vec::new()));
+        let gated = Desk::new(
+            || Ok(Apps),
+            SecondDisplay(Arc::clone(&gated_calls)),
+            Os::Mac,
+        )
+        .allow(&["notepad".into()]);
+        let refused = gated
+            .run("desk_shot", json!({"window": "微信"}))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refused,
+            "no window \"微信\"; windows: [\"Untitled - Notepad\"]"
+        );
+        assert!(sent(&gated_calls, "get_window_state").is_empty());
     }
 
     struct HiddenTwin(Arc<Mutex<Vec<(String, Value)>>>);

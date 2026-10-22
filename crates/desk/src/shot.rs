@@ -1,5 +1,7 @@
 //! Screenshot crops, with the windows of apps outside the allowlist painted over.
 
+pub(crate) const OFF_SCREEN: &str = "the rectangle is off the screen";
+
 /// A crop of the screen rectangle `[x, y, w, h]` from a screenshot scaled by `factor`, as `(width, height, PNG)`.
 pub(crate) fn crop_png(
     png: &[u8],
@@ -21,7 +23,7 @@ pub(crate) fn crop_png(
     let (left, top) = (clip(x, info.width), clip(y, info.height));
     let (right, bottom) = (clip(x + w, info.width), clip(y + h, info.height));
     if right <= left || bottom <= top {
-        return Err("the rectangle is off the screen".to_owned());
+        return Err(OFF_SCREEN.to_owned());
     }
     let (cw, ch) = (right - left, bottom - top);
     let keep = mask.map(|m| keep_map(m, [left, top, right, bottom]));
