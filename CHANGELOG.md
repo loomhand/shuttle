@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **macOS: a title picks the on-screen window over its hidden twin.** Background input, `focus` and the element click by title or pid no longer pick an app's hidden window that is off screen on the current Space when a window of the same app and title is on screen: WeChat keeps a hidden 280×380 "微信" beside its main window, and a click by title went to the hidden one and failed with "this window takes no pointer input without the foreground". An app's only window with a title, such as a minimized one, can still be picked, and twins across Spaces are still refused.
 - **`gui_plan` names a front app that stopped answering.** On Linux, when no window is in front because the app of the X active window lists no window in AT-SPI (LibreOffice while it saves or reloads, an app whose accessibility peer hangs), a step that names no window stops with `front app "<app>" (pid N) is not answering accessibility` in place of `no focused window`, and an escalation without a front window shows that line as its outline. The new desk verb `unanswered` gives that window. It is read only when a plan stops.
 
 ## 0.1.15 - 2026-10-22

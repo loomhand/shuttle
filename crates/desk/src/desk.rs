@@ -1334,7 +1334,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             _ => Vec::new(),
         };
         let mac = self.os == Os::Mac;
-        raw.retain(|w| !mac || w["is_on_screen"] != false || !w["on_current_space"].is_null());
+        if mac {
+            let keep: Vec<bool> = raw.iter().map(|w| pickable(w, &raw)).collect();
+            let mut keep = keep.into_iter();
+            raw.retain(|_| keep.next().unwrap_or(true));
+        }
         let mut windows: Vec<Frame> = raw
             .iter()
             .map(|w| Frame {
@@ -1627,6 +1631,17 @@ fn key_request(mut keys: Vec<String>) -> (&'static str, Value) {
 /// A driver window's layer, 0 when the driver gives none, as on Linux.
 fn layer(w: &Value) -> i64 {
     w["layer"].as_i64().unwrap_or(0)
+}
+
+/// Whether a title or pid may pick macOS driver window `w` of `all`: one on screen, or one off screen in a known Space with no on-screen window of its process and title.
+fn pickable(w: &Value, all: &[Value]) -> bool {
+    let shown = |o: &Value| o["is_on_screen"] != false;
+    shown(w)
+        || (!w["on_current_space"].is_null()
+            && (w["on_current_space"] != true
+                || !all
+                    .iter()
+                    .any(|o| shown(o) && o["pid"] == w["pid"] && o["title"] == w["title"])))
 }
 
 fn off_space(w: &Value) -> bool {
@@ -2384,6 +2399,54 @@ pub(crate) mod tests {
                 _ => json!({}),
             })
         }
+    }
+
+    struct HiddenTwin(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for HiddenTwin {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let window = args["window_id"].as_i64();
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 9, "window_id": 100, "layer": 0, "z_index": 2, "title": "微信", "app_name": "WeChat", "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": -1416.0, "y": 0.0, "width": 846.0, "height": 774.0}},
+                    {"pid": 9, "window_id": 200, "layer": 0, "z_index": 1, "title": "微信", "app_name": "WeChat", "is_on_screen": false, "on_current_space": true, "space_ids": [8], "bounds": {"x": 0.0, "y": 0.0, "width": 280.0, "height": 380.0}},
+                    {"pid": 5, "window_id": 300, "layer": 0, "z_index": 0, "title": "Doc", "app_name": "TextEdit", "is_on_screen": false, "on_current_space": true, "space_ids": [8], "bounds": {"x": 0.0, "y": 0.0, "width": 500.0, "height": 400.0}}
+                ]}}),
+                "get_window_state" if window == Some(200) => json!({"structuredContent": {
+                    "background_input": {"routes": [{"route": "window_pointer", "status": "refused"}]}
+                }}),
+                "get_window_state" => json!({"structuredContent": {
+                    "screenshot_width": 846, "screenshot_height": 774,
+                    "window_bounds": {"width": 846.0, "height": 774.0}
+                }}),
+                "click" => json!({"structuredContent": {"effect": "unverifiable"}}),
+                _ => json!({}),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_title_picks_the_on_screen_window_over_its_hidden_twin_and_still_reaches_a_lone_minimized_window()
+     {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), HiddenTwin(Arc::clone(&calls)), Os::Mac).background(true);
+        desk.run(
+            "desk_click",
+            json!({"x": -1000.0, "y": 300.0, "window": "微信"}),
+        )
+        .await
+        .unwrap();
+        let clicks = sent(&calls, "click");
+        assert_eq!(clicks.len(), 1, "{clicks:?}");
+        assert_eq!(clicks[0]["window_id"], 100, "{clicks:?}");
+        desk.run("desk_focus", json!({"window": "Doc"}))
+            .await
+            .unwrap();
+        let fronted = sent(&calls, "bring_to_front");
+        assert_eq!(fronted.len(), 1, "{fronted:?}");
+        assert_eq!(fronted[0]["window_id"], 300, "{fronted:?}");
     }
 
     #[tokio::test]
