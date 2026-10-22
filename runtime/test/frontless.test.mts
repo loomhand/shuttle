@@ -91,6 +91,7 @@ test('a step whose front app does not answer accessibility runs again once it an
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.ok(calls.includes('desk_press'), calls.join(' '))
   assert.ok(calls.filter((c) => c === 'desk_unanswered').length >= 2, calls.join(' '))
+  assert.ok((r.trace?.[0]?.busy ?? 0) >= 500, JSON.stringify(r.trace))
 })
 
 test('a step that finds no window in front only until the window the key opened shows recovers without asking for an unanswered app', async (t) => {

@@ -32,7 +32,7 @@ type Text = { value?: string; field: boolean }
 type Escalation = Seen & { reason: string; step?: number; plan_step?: Step }
 type Grounding = { what: string; ok: boolean; check: string; p?: number; p_zoom?: number | null; p_full?: number | null; why?: string; cover?: string }
 type Ground = Omit<Grounding, 'what' | 'ok' | 'why' | 'cover'> & { hit: string }
-type Trace = { i: number; op?: string; how?: string; input?: 'foreground'; ms?: number; was?: 'on' | 'off' | 'mixed'; now?: 'on' | 'off'; noop?: boolean; ground?: Ground }
+type Trace = { i: number; op?: string; how?: string; input?: 'foreground'; ms?: number; was?: 'on' | 'off' | 'mixed'; now?: 'on' | 'off'; noop?: boolean; ground?: Ground; busy?: number }
 export type Result = { ok?: boolean; done?: number; ms?: number; trace?: Trace[]; escalate?: Escalation; served?: desk.Served[]; [key: string]: unknown }
 
 const OS = process.platform
@@ -382,6 +382,7 @@ function traced(i: number, rec: Rec, s: Step, escalated: boolean): Trace {
     ...(rec.was !== undefined ? { was: rec.was === 'mixed' ? 'mixed' : rec.was ? 'on' : 'off', now: rec.noop || s.verify || escalated ? undefined : s.on === false ? 'off' : 'on' } : {}),
     ...(rec.now !== undefined ? { now: rec.now ? 'on' : 'off' } : {}),
     ...(rec.noop ? { noop: true } : {}),
+    ...(rec.busy !== undefined ? { busy: rec.busy } : {}),
     ...(rec.checked !== undefined ? { ground: { check: rec.checked, p: rec.p, p_zoom: rec.p_zoom, p_full: rec.p_full, hit: rec.ground_hit ?? '' } } : {}),
   }
 }
