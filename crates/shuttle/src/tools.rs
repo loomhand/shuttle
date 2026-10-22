@@ -99,7 +99,7 @@ fn builtins() -> Value {
         },
         {
             "name": "screenshot",
-            "description": "A PNG of the screen, or of the rectangle x, y, w, h in screen pixels; with window, that window alone on whichever display shows it, and x, y, w, h crop its image.",
+            "description": "A PNG of the screen, or of the rectangle x, y, w, h in screen pixels; with window, that window alone on whichever display shows it, and x, y, w, h crop its image. A desk click, scroll or drag that names the same window takes x, y in this image's pixels.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
