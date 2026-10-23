@@ -75,6 +75,7 @@ const OTHER_DISPLAY: &str =
     "; name the window with `window` to capture a window on another display";
 const NO_WINDOW_UNDER: &str =
     "no window under the point, and the app allowlist admits only windows";
+const NO_WINDOW_AT: &str = "no app window at the point; name one with window or pid";
 const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
 const WINDOW_NEVER_READ: &str = "window_never_read";
 const ANOTHER_SPACE: &str = "accessibility does not reach it there, so a snapshot or an element action needs it on the current Space; background key, type, click, scroll and drag reach it by its title or pid";
@@ -607,10 +608,21 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(json!({"ok": ok}).to_string())
     }
 
-    async fn at(&self, a: AtArgs) -> Result<String, String> {
+    async fn at(&self, mut a: AtArgs) -> Result<String, String> {
+        let under = a.window.is_none() && a.pid.is_none();
+        if under {
+            let scale = self.scale().await?;
+            let point = (f64::from(a.x) / scale, f64::from(a.y) / scale);
+            let top = self.top_at(point).await?.ok_or(NO_WINDOW_AT)?;
+            a.window = Some(top["title"].as_str().unwrap_or_default().to_owned());
+            a.pid = top["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
+        }
         let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
         self.access
             .run(CALL_LIMIT, (), move |b| {
+                if under && !allow.is_open() {
+                    check_process(b, &allow, a.pid)?;
+                }
                 let frames = frames(b, a.pid, &allow)?;
                 let kept = (!allow.is_open()).then(|| frames.clone());
                 let frame = live(pick(
@@ -1287,24 +1299,29 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn window_at(&self, x: f64, y: f64) -> Result<Option<Under>, String> {
         let scale = self.scale().await?;
-        let listed = self.on_screen().await?;
         let point = (x / scale, y / scale);
-        let top = listed
-            .iter()
+        Ok(self.top_at(point).await?.and_then(|w| {
+            Some(Under {
+                pid: w["pid"].as_i64()?,
+                id: w["window_id"].as_i64()?,
+                bounds: bounds(&w),
+                point,
+            })
+        }))
+    }
+
+    /// The topmost app window the driver lists at `point`, in points.
+    async fn top_at(&self, point: (f64, f64)) -> Result<Option<Value>, String> {
+        Ok(self
+            .on_screen()
+            .await?
+            .into_iter()
             .filter(|w| layer(w) == 0)
             .filter(|w| {
                 let [bx, by, bw, bh] = bounds(w);
                 point.0 >= bx && point.0 < bx + bw && point.1 >= by && point.1 < by + bh
             })
-            .max_by_key(|w| w["z_index"].as_i64().unwrap_or(i64::MIN));
-        Ok(top.and_then(|w| {
-            Some(Under {
-                pid: w["pid"].as_i64()?,
-                id: w["window_id"].as_i64()?,
-                bounds: bounds(w),
-                point,
-            })
-        }))
+            .max_by_key(|w| w["z_index"].as_i64().unwrap_or(i64::MIN)))
     }
 
     async fn on_screen(&self) -> Result<Vec<Value>, String> {
@@ -4174,7 +4191,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn at_names_the_process_of_the_element_under_the_point() {
-        let desk = Desk::new(|| Ok(notepad()), Slow(Arc::default()), Os::Windows);
+        let desk = Desk::new(|| Ok(notepad()), Desktop(Arc::default()), Os::Windows);
         let out = desk
             .run("desk_at", json!({"x": 140, "y": 110}))
             .await
@@ -4189,13 +4206,37 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn at_without_a_window_reads_the_top_window_at_the_point_not_the_front_one() {
+        let open = Desk::new(|| Ok(Apps), Desktop(Arc::default()), Os::Mac);
+        assert_eq!(at_window(&open, 600, 100).await, Ok(json!("Inbox")));
+        assert_eq!(
+            at_window(&open, 300, 700).await,
+            Ok(json!("Untitled - Notepad"))
+        );
+        assert_eq!(
+            at_window(&open, 2000, 2000).await,
+            Err(NO_WINDOW_AT.to_owned())
+        );
+        let notepad =
+            Desk::new(|| Ok(Apps), Desktop(Arc::default()), Os::Mac).allow(&["notepad".into()]);
+        let err = at_window(&notepad, 600, 100).await.unwrap_err();
+        assert!(err.starts_with("Mail is not in the app allowlist"), "{err}");
+    }
+
+    async fn at_window(desk: &Desk<Apps, Desktop>, x: i32, y: i32) -> Result<Value, String> {
+        let out = desk.run("desk_at", json!({"x": x, "y": y})).await?;
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        Ok(v["window"]["title"].clone())
+    }
+
+    #[tokio::test]
     async fn at_names_the_window_that_covers_the_point() {
         let covered = || {
             let mut f = notepad();
             f.covers = Some(("tmp - Thunar".to_owned(), Some(9)));
             Ok(f)
         };
-        let desk = Desk::new(covered, Slow(Arc::default()), Os::Linux);
+        let desk = Desk::new(covered, Desktop(Arc::default()), Os::Linux);
         let out = desk
             .run("desk_at", json!({"x": 140, "y": 110}))
             .await
