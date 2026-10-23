@@ -625,14 +625,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 }
                 let frames = frames(b, a.pid, &allow)?;
                 let kept = (!allow.is_open()).then(|| frames.clone());
-                let frame = live(pick(
-                    b,
-                    &allow,
-                    background,
-                    frames,
-                    a.window.as_deref(),
-                    a.pid,
-                )?)?;
+                let window = a.window.as_deref();
+                let held = under
+                    .then(|| holding(b, &frames, window, a.pid, (a.x, a.y)))
+                    .flatten();
+                let frame = live(match held {
+                    Some(held) => held?,
+                    None => pick(b, &allow, background, frames, window, a.pid)?,
+                })?;
                 let Some(hit) = b.at(&frame.id, a.x, a.y)? else {
                     return Ok(json!({"found": null, "window": frame}).to_string());
                 };
@@ -1715,6 +1715,46 @@ fn frames<B: Access>(b: &mut B, pid: Option<u32>, allow: &Allow) -> Result<Vec<F
         Some(p) if allow.is_open() => b.frames_of(p),
         _ => b.frames(),
     }
+}
+
+fn holding<B: Access>(
+    b: &mut B,
+    frames: &[Frame],
+    window: Option<&str>,
+    pid: Option<u32>,
+    (x, y): (i32, i32),
+) -> Option<Result<Frame, String>> {
+    let want = window?;
+    let alike: Vec<&Frame> = (0..TITLE_TIERS)
+        .map(|tier| {
+            frames
+                .iter()
+                .filter(|f| {
+                    pid.is_none_or(|p| f.pid == Some(p)) && title_matches(tier, &f.title, want)
+                })
+                .collect::<Vec<_>>()
+        })
+        .find(|alike| !alike.is_empty())?;
+    if alike.len() < 2 {
+        return None;
+    }
+    let held: Vec<&Frame> = alike
+        .iter()
+        .copied()
+        .filter(|f| {
+            b.node(&f.id, Extras::FRAME, 0)
+                .ok()
+                .and_then(|n| n.bounds)
+                .is_some_and(|[l, t, w, h]| x >= l && x < l + w && y >= t && y < t + h)
+        })
+        .collect();
+    Some(match held.as_slice() {
+        [one] => Ok(Frame::clone(one)),
+        _ => Err(format!(
+            "{} windows match the title {want:?}, and their bounds do not single out the one at the point; give one of them a title of its own",
+            alike.len()
+        )),
+    })
 }
 
 fn check_process<B: Access>(b: &mut B, allow: &Allow, pid: Option<u32>) -> Result<(), String> {
@@ -4221,6 +4261,94 @@ pub(crate) mod tests {
             Desk::new(|| Ok(Apps), Desktop(Arc::default()), Os::Mac).allow(&["notepad".into()]);
         let err = at_window(&notepad, 600, 100).await.unwrap_err();
         assert!(err.starts_with("Mail is not in the app allowlist"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn at_without_a_window_reads_the_twin_whose_bounds_hold_the_point() {
+        let desk = Desk::new(|| Ok(TwinFrames), Pair, Os::Linux);
+        let out = desk
+            .run("desk_at", json!({"x": 600, "y": 100}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(
+            (&v["found"]["id"], &v["pid"]),
+            (&json!("5/b1"), &json!(5)),
+            "{v}"
+        );
+        let err = desk
+            .run("desk_at", json!({"x": 450, "y": 100}))
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("2 windows match the title"), "{err}");
+    }
+
+    struct Pair;
+
+    impl Input for Pair {
+        async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 5, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled", "bounds": {"x": 0.0, "y": 0.0, "width": 400.0, "height": 300.0}},
+                    {"pid": 5, "window_id": 2, "layer": 0, "z_index": 2, "title": "Untitled", "bounds": {"x": 500.0, "y": 0.0, "width": 400.0, "height": 300.0}},
+                    {"pid": 5, "window_id": 3, "layer": 0, "z_index": 3, "title": "Untitled", "bounds": {"x": 400.0, "y": 0.0, "width": 100.0, "height": 300.0}}
+                ]}}),
+                _ => json!({}),
+            })
+        }
+    }
+
+    struct TwinFrames;
+
+    impl Access for TwinFrames {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            Ok(vec![
+                frame("5/a", "Untitled", 5, true, Some("Mousepad")),
+                frame("5/b", "Untitled", 5, false, Some("Mousepad")),
+            ])
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            Ok(Tree {
+                frame: frame.clone(),
+                ..Tree::default()
+            })
+        }
+
+        fn node(&mut self, id: &str, _: Extras, _: usize) -> Result<Node, String> {
+            let bounds = match id {
+                "5/a" => Some([0, 0, 400, 300]),
+                "5/b" => Some([500, 0, 400, 300]),
+                _ => None,
+            };
+            Ok(Node {
+                id: id.into(),
+                role: "button",
+                bounds,
+                ..Node::default()
+            })
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
+
+        fn at(&mut self, window: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok((window == "5/b").then(|| "5/b1".into()))
+        }
+
+        fn pid_of(&mut self, _: &str) -> Result<Option<u32>, String> {
+            Ok(Some(5))
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Ok(false)
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     async fn at_window(desk: &Desk<Apps, Desktop>, x: i32, y: i32) -> Result<Value, String> {
