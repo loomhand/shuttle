@@ -111,6 +111,7 @@ pub struct Desk<B, D> {
     acting: Arc<tokio::sync::Mutex<()>>,
     turn_wait: Duration,
     read: std::sync::Mutex<Option<Read>>,
+    session: tokio::sync::Mutex<()>,
     allow: Allow,
     overlay: bool,
     background: bool,
@@ -131,6 +132,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             acting: Arc::new(tokio::sync::Mutex::new(())),
             turn_wait: TURN_WAIT,
             read: std::sync::Mutex::new(None),
+            session: tokio::sync::Mutex::new(()),
             allow: Allow::default(),
             overlay: true,
             background: false,
@@ -810,10 +812,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn click(&self, a: ClickArgs) -> Result<String, String> {
-        let named = if a.window.is_some() || (self.bg() && a.pid.is_some()) {
-            Some(self.pick_window(a.window.as_deref(), a.pid, true).await?.1)
-        } else {
-            None
+        let named = match a.window.as_deref() {
+            Some(window) => Some(self.shot_window(window, a.pid).await?.1),
+            None if self.bg() && a.pid.is_some() => {
+                Some(self.pick_window(None, a.pid, true).await?.1)
+            }
+            None => None,
         };
         let (x, y) = match &named {
             Some(w) if a.window.is_some() => self.desk_point(w, (a.x, a.y)).await?,
@@ -990,7 +994,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let mut req =
             json!({"direction": a.direction, "amount": a.amount.unwrap_or(SCROLL_AMOUNT)});
         if self.bg() {
-            let (to, w) = self.background_window(a.window.as_deref(), a.pid).await?;
+            let (to, w) = match (a.window.as_deref(), a.x) {
+                (Some(window), Some(_)) => self.shot_window(window, a.pid).await?,
+                _ => self.background_window(a.window.as_deref(), a.pid).await?,
+            };
+            let _session = self.session.lock().await;
             if let (Some(x), Some(y)) = (a.x, a.y) {
                 let point = match a.window {
                     Some(_) => self.desk_point(&w, (x, y)).await?,
@@ -1006,7 +1014,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let (x, y) = match (a.x, a.y) {
             (Some(x), Some(y)) => match a.window.as_deref() {
                 Some(window) => {
-                    let (_, w) = self.pick_window(Some(window), a.pid, true).await?;
+                    let (_, w) = self.shot_window(window, a.pid).await?;
                     self.desk_point(&w, (x, y)).await?
                 }
                 None => (x, y),
@@ -1073,7 +1081,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn drag(&self, a: DragArgs) -> Result<String, String> {
         let (mut from, mut to) = ((a.x, a.y), (a.to_x, a.to_y));
         if self.bg() {
-            let (target, w) = self.background_window(a.window.as_deref(), a.pid).await?;
+            let (target, w) = match a.window.as_deref() {
+                Some(window) => self.shot_window(window, a.pid).await?,
+                None => self.background_window(None, a.pid).await?,
+            };
+            let _session = self.session.lock().await;
             if a.window.is_some() {
                 from = self.desk_point(&w, from).await?;
                 to = self.desk_point(&w, to).await?;
@@ -1085,7 +1097,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return Ok(ok_with(self.unverified(&out, Some(target), false)));
         }
         if let Some(window) = a.window.as_deref() {
-            let (_, w) = self.pick_window(Some(window), a.pid, true).await?;
+            let (_, w) = self.shot_window(window, a.pid).await?;
             from = self.desk_point(&w, from).await?;
             to = self.desk_point(&w, to).await?;
         }
@@ -1137,6 +1149,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn click_window(&self, req: Value, w: &Under) -> Result<Option<String>, String> {
+        let _session = self.session.lock().await;
         if !self.bg() {
             let front = json!({"pid": w.pid, "window_id": w.id});
             self.call("bring_to_front", front).await?;
@@ -1217,6 +1230,23 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .zip(w["window_id"].as_i64())
             .ok_or(BACKGROUND_TARGET)?;
         Ok((to, w))
+    }
+
+    /// The window input with `window` goes to, its points pixels of that window's shot; a title two listed windows share is refused, since the shot may show the other one.
+    async fn shot_window(
+        &self,
+        window: &str,
+        pid: Option<u32>,
+    ) -> Result<((i64, i64), Value), String> {
+        let (_, w, same) = self.pick_listed(Some(window), pid, true).await?;
+        if same > 1 {
+            return Err(format!(
+                "{same} windows are titled {:?}, so the pixels of a shot by that title may be another window's: give the window a title of its own, or pass desk coordinates without window",
+                w["title"].as_str().unwrap_or(window)
+            ));
+        }
+        let (pid, id, _) = window_key(&w)?;
+        Ok(((pid, id), w))
     }
 
     /// The desk point `(x, y)` in the screenshot pixels of driver window `w`, which the driver reads first as for a click.
@@ -1378,6 +1408,17 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         pid: Option<u32>,
         by_title: bool,
     ) -> Result<(Frame, Value), String> {
+        let (frame, w, _) = self.pick_listed(window, pid, by_title).await?;
+        Ok((frame, w))
+    }
+
+    /// Like [`Self::pick_window`], with how many listed windows carry the picked window's title.
+    async fn pick_listed(
+        &self,
+        window: Option<&str>,
+        pid: Option<u32>,
+        by_title: bool,
+    ) -> Result<(Frame, Value, usize), String> {
         let mut listed = self.call("list_windows", json!({})).await?;
         let mut raw = match listed["structuredContent"]["windows"].take() {
             Value::Array(windows) => windows,
@@ -1455,7 +1496,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 off.remove(&to);
             }
         }
-        Ok((w, listed))
+        let same = raw.iter().filter(|r| r["title"] == listed["title"]).count();
+        Ok((w, listed, same))
     }
 
     async fn shot(&self, a: ShotArgs) -> Result<Output, String> {
@@ -1528,10 +1570,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     ) -> Result<Output, String> {
         let (_, w) = self.pick_window(Some(window), None, true).await?;
         let key = window_key(&w)?;
+        let session = self.session.lock().await;
         let v = self
             .call("get_window_state", full_read(key.0, key.1))
             .await?;
         let _ = self.remember(key, &v, true);
+        drop(session);
         let png = image_of(&v).ok_or("the driver returned no screenshot of the window")?;
         let png = B64
             .decode(png)
@@ -1543,7 +1587,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 e
             }
         })?;
-        self.shot_out(png, w, h, path).await
+        let mut out = self.shot_out(png, w, h, path).await?;
+        if let Ok(mut v) = serde_json::from_str::<Value>(&out.text) {
+            v["origin"] = json!([rect[0].max(0.0) as u32, rect[1].max(0.0) as u32]);
+            out.text = v.to_string();
+        }
+        Ok(out)
     }
 
     /// A capture the backend read itself, as a PNG image, also written to `path` when one is given.
@@ -2644,7 +2693,10 @@ pub(crate) mod tests {
     struct Wide {
         calls: Mutex<Vec<(String, Value)>>,
         main: f64,
+        twin: bool,
+        slow: bool,
         ratio: Mutex<f64>,
+        landed: Mutex<Vec<(f64, f64)>>,
     }
 
     impl Wide {
@@ -2653,10 +2705,17 @@ pub(crate) mod tests {
         const CAP: f64 = 1280.0;
 
         fn new(main: f64) -> Arc<Self> {
+            Self::with(main, false, false)
+        }
+
+        fn with(main: f64, twin: bool, slow: bool) -> Arc<Self> {
             Arc::new(Self {
                 calls: Mutex::new(Vec::new()),
                 main,
+                twin,
+                slow,
                 ratio: Mutex::new(0.0),
+                landed: Mutex::new(Vec::new()),
             })
         }
 
@@ -2671,15 +2730,7 @@ pub(crate) mod tests {
         }
 
         fn landed(&self) -> Vec<(f64, f64)> {
-            let ratio = *self.ratio.lock().unwrap();
-            self.sent("click")
-                .iter()
-                .map(|c| {
-                    let [x, y, ..] = Self::BOUNDS;
-                    let at = |v: &Value| v.as_f64().unwrap() * ratio / Self::BACKING;
-                    (x + at(&c["x"]), y + at(&c["y"]))
-                })
-                .collect()
+            self.landed.lock().unwrap().clone()
         }
     }
 
@@ -2692,9 +2743,14 @@ pub(crate) mod tests {
             let [x, y, w, h] = Wide::BOUNDS;
             Ok(match tool {
                 "get_screen_size" => json!({"structuredContent": {"scale_factor": self.main}}),
-                "list_windows" => json!({"structuredContent": {"windows": [
-                    {"pid": 7, "window_id": 40, "layer": 0, "z_index": 5, "title": "Wide", "is_on_screen": true, "bounds": {"x": x, "y": y, "width": w, "height": h}}
-                ]}}),
+                "list_windows" => {
+                    let window = |id: i64, z: i64| json!({"pid": 7, "window_id": id, "layer": 0, "z_index": z, "title": "Wide", "is_on_screen": true, "bounds": {"x": x, "y": y, "width": w, "height": h}});
+                    let mut windows = vec![window(40, 5)];
+                    if self.twin {
+                        windows.push(window(41, 4));
+                    }
+                    json!({"structuredContent": {"windows": windows}})
+                }
                 "get_window_state" => {
                     let native = w * Wide::BACKING;
                     let shown = if args["max_image_dimension"] == 0 {
@@ -2703,11 +2759,23 @@ pub(crate) mod tests {
                         Wide::CAP
                     };
                     *self.ratio.lock().unwrap() = native / shown;
+                    if self.slow && shown < native {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
                     let k = shown / w;
                     json!({"structuredContent": {
                         "screenshot_width": shown, "screenshot_height": h * k,
                         "window_bounds": {"x": x, "y": y, "width": w, "height": h}
                     }, "content": [{"type": "image", "data": B64.encode(rgb_png(vec![0; 3], [0, 0, 1, 1], None).unwrap())}]})
+                }
+                "click" => {
+                    let ratio = *self.ratio.lock().unwrap();
+                    let at = |v: &Value| v.as_f64().unwrap() * ratio / Wide::BACKING;
+                    self.landed
+                        .lock()
+                        .unwrap()
+                        .push((x + at(&args["x"]), y + at(&args["y"])));
+                    json!({})
                 }
                 _ => json!({}),
             })
@@ -2828,6 +2896,65 @@ pub(crate) mod tests {
                 &json!(-1600.0),
                 &json!(800.0)
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_title_two_windows_share_takes_no_points_in_shot_pixels() {
+        let driver = Wide::with(1.0, true, false);
+        let desk = Desk::new(|| Ok(notepad()), driver.clone(), Os::Mac).background(true);
+        for (tool, args) in [
+            (
+                "desk_click",
+                json!({"x": 10.0, "y": 10.0, "window": "Wide"}),
+            ),
+            (
+                "desk_scroll",
+                json!({"direction": "down", "x": 10.0, "y": 10.0, "window": "Wide"}),
+            ),
+            (
+                "desk_drag",
+                json!({"x": 10.0, "y": 10.0, "to_x": 20.0, "to_y": 20.0, "window": "Wide"}),
+            ),
+        ] {
+            let err = desk.run(tool, args).await.unwrap_err();
+            assert!(err.contains("a title of its own"), "{tool}: {err}");
+        }
+        assert!(driver.sent("click").is_empty() && driver.sent("scroll").is_empty());
+        desk.run("desk_click", json!({"x": -800.0, "y": 400.0}))
+            .await
+            .unwrap();
+        assert_eq!(driver.landed(), [(-800.0, 400.0)]);
+    }
+
+    #[tokio::test]
+    async fn a_window_shot_during_a_click_does_not_change_the_scale_the_click_is_sent_by() {
+        let driver = Wide::with(2.0, false, true);
+        let desk = Desk::new(|| Ok(notepad()), driver.clone(), Os::Mac).background(true);
+        let (clicked, shot) = tokio::join!(
+            desk.run("desk_click", json!({"x": -1600.0, "y": 800.0})),
+            async {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                desk.run("desk_shot", json!({"window": "Wide"})).await
+            }
+        );
+        clicked.unwrap();
+        shot.unwrap();
+        assert_eq!(driver.landed(), [(-800.0, 400.0)]);
+    }
+
+    #[tokio::test]
+    async fn a_cropped_window_shot_names_its_origin_in_the_window_pixels() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), SecondDisplay(Arc::clone(&calls)), Os::Mac);
+        let origin = |args: Value| async {
+            let out = desk.run("desk_shot", args).await.unwrap();
+            serde_json::from_str::<Value>(&out.text).unwrap()["origin"].clone()
+        };
+        assert_eq!(origin(json!({"window": "微信"})).await, json!([0, 0]));
+        assert_eq!(
+            origin(json!({"window": "微信", "x": 10.5, "y": 20, "w": 100, "h": 50})).await,
+            json!([10, 20])
         );
     }
 
