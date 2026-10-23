@@ -48,6 +48,7 @@ pub fn pick<W: Window>(
     app_window(&windows, want)
 }
 
+/// How many of `windows` [`pick`] weighs as equals for `want`: those at the first tier any matches, else those its app part names.
 pub fn rivals<'a, W: Window + 'a>(
     windows: impl IntoIterator<Item = &'a W>,
     want: &str,
