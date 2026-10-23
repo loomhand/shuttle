@@ -48,6 +48,26 @@ pub fn pick<W: Window>(
     app_window(&windows, want)
 }
 
+pub fn rivals<'a, W: Window + 'a>(
+    windows: impl IntoIterator<Item = &'a W>,
+    want: &str,
+    pid: Option<u32>,
+) -> usize {
+    let windows: Vec<&W> = windows
+        .into_iter()
+        .filter(|w| w.listed() && pid.is_none_or(|p| w.pid() == Some(p)))
+        .collect();
+    (0..TITLE_TIERS)
+        .map(|tier| {
+            windows
+                .iter()
+                .filter(|w| title_matches(tier, w.title(), want))
+                .count()
+        })
+        .find(|&n| n > 0)
+        .unwrap_or_else(|| windows.iter().filter(|w| of_app(w.title(), want)).count())
+}
+
 /// Whether `title` matches `want` at `tier`: 0 equal, 1 equal ignoring case and outer spaces, 2 containing it ignoring case.
 pub fn title_matches(tier: usize, title: &str, want: &str) -> bool {
     match tier {
@@ -59,16 +79,7 @@ pub fn title_matches(tier: usize, title: &str, want: &str) -> bool {
 
 /// The only, else the active, window titled with the app part of `want` (` - Thunar` of `inbox - Thunar`); else an error naming them.
 pub fn app_window<W: Window>(windows: &[W], want: &str) -> Result<W, String> {
-    let lower = want.trim().to_lowercase();
-    let app = TITLE_SEPARATORS
-        .iter()
-        .filter_map(|s| lower.rfind(s))
-        .max()
-        .map(|i| &lower[i..]);
-    let hits: Vec<&W> = windows
-        .iter()
-        .filter(|w| app.is_some_and(|app| w.title().trim_end().to_lowercase().ends_with(app)))
-        .collect();
+    let hits: Vec<&W> = windows.iter().filter(|w| of_app(w.title(), want)).collect();
     let active: Vec<&W> = hits.iter().copied().filter(|w| w.active()).collect();
     match (hits.as_slice(), active.as_slice()) {
         ([one], _) | (_, [one]) => Ok(W::clone(one)),
@@ -83,6 +94,15 @@ pub fn app_window<W: Window>(windows: &[W], want: &str) -> Result<W, String> {
             ))
         }
     }
+}
+
+fn of_app(title: &str, want: &str) -> bool {
+    let lower = want.trim().to_lowercase();
+    TITLE_SEPARATORS
+        .iter()
+        .filter_map(|s| lower.rfind(s))
+        .max()
+        .is_some_and(|i| title.trim_end().to_lowercase().ends_with(&lower[i..]))
 }
 
 fn best<W: Window>(candidates: &[&W]) -> Option<W> {
