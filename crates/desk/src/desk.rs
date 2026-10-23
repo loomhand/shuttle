@@ -14,7 +14,7 @@ use desk_core::args::{
     ScrollArgs, ShotArgs, SnapArgs, StillArgs, TypeArgs, WaitArgs, WindowArgs, parse,
 };
 use desk_core::text::{MAX_FOUND, NAME_CHARS, matches, ms, quote};
-use desk_core::window::{TITLE_TIERS, title_matches};
+use desk_core::window::{self, TITLE_TIERS, title_matches};
 use desk_core::wire::Output;
 use serde_json::{Map, Value, json};
 
@@ -1232,17 +1232,16 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok((to, w))
     }
 
-    /// The window input with `window` goes to, its points pixels of that window's shot; a title two listed windows share is refused, since the shot may show the other one.
+    /// The window input with `window` goes to, its points pixels of that window's shot; a title that matches two listed windows equally is refused, since the shot may show the other one.
     async fn shot_window(
         &self,
         window: &str,
         pid: Option<u32>,
     ) -> Result<((i64, i64), Value), String> {
-        let (_, w, same) = self.pick_listed(Some(window), pid, true).await?;
-        if same > 1 {
+        let (_, w, rivals) = self.pick_listed(Some(window), pid, true).await?;
+        if rivals > 1 {
             return Err(format!(
-                "{same} windows are titled {:?}, so the pixels of a shot by that title may be another window's: give the window a title of its own, or pass desk coordinates without window",
-                w["title"].as_str().unwrap_or(window)
+                "{rivals} windows match the title {window:?}, so the pixels of a shot by that title may be another window's: pass a longer title that only one window matches, give the window a title of its own, or pass desk coordinates without window"
             ));
         }
         let (pid, id, _) = window_key(&w)?;
@@ -1412,7 +1411,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok((frame, w))
     }
 
-    /// Like [`Self::pick_window`], with how many listed windows carry the picked window's title.
+    /// Like [`Self::pick_window`], with how many listed windows its title picks among.
     async fn pick_listed(
         &self,
         window: Option<&str>,
@@ -1455,6 +1454,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     .any(|f| f.active && f.pid == w.pid && f.title == w.title);
             }
         }
+        let rivals = window.map_or(1, |want| {
+            let open = self.allow.is_open();
+            let admitted = windows
+                .iter()
+                .filter(|w| open || self.allow.admits(w.app.as_deref()));
+            window::rivals(admitted, want, pid)
+        });
         let w = self.allow.pick(windows, window, pid)?;
         let id = w.id.parse::<i64>().ok();
         let listed = raw
@@ -1496,8 +1502,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 off.remove(&to);
             }
         }
-        let same = raw.iter().filter(|r| r["title"] == listed["title"]).count();
-        Ok((w, listed, same))
+        Ok((w, listed, rivals))
     }
 
     async fn shot(&self, a: ShotArgs) -> Result<Output, String> {
@@ -2693,7 +2698,7 @@ pub(crate) mod tests {
     struct Wide {
         calls: Mutex<Vec<(String, Value)>>,
         main: f64,
-        twin: bool,
+        titles: (&'static str, Option<&'static str>),
         slow: bool,
         ratio: Mutex<f64>,
         landed: Mutex<Vec<(f64, f64)>>,
@@ -2705,14 +2710,14 @@ pub(crate) mod tests {
         const CAP: f64 = 1280.0;
 
         fn new(main: f64) -> Arc<Self> {
-            Self::with(main, false, false)
+            Self::with(main, ("Wide", None), false)
         }
 
-        fn with(main: f64, twin: bool, slow: bool) -> Arc<Self> {
+        fn with(main: f64, titles: (&'static str, Option<&'static str>), slow: bool) -> Arc<Self> {
             Arc::new(Self {
                 calls: Mutex::new(Vec::new()),
                 main,
-                twin,
+                titles,
                 slow,
                 ratio: Mutex::new(0.0),
                 landed: Mutex::new(Vec::new()),
@@ -2744,10 +2749,10 @@ pub(crate) mod tests {
             Ok(match tool {
                 "get_screen_size" => json!({"structuredContent": {"scale_factor": self.main}}),
                 "list_windows" => {
-                    let window = |id: i64, z: i64| json!({"pid": 7, "window_id": id, "layer": 0, "z_index": z, "title": "Wide", "is_on_screen": true, "bounds": {"x": x, "y": y, "width": w, "height": h}});
-                    let mut windows = vec![window(40, 5)];
-                    if self.twin {
-                        windows.push(window(41, 4));
+                    let window = |id: i64, z: i64, title: &str| json!({"pid": 7, "window_id": id, "layer": 0, "z_index": z, "title": title, "is_on_screen": true, "bounds": {"x": x, "y": y, "width": w, "height": h}});
+                    let mut windows = vec![window(40, 5, self.titles.0)];
+                    if let Some(title) = self.titles.1 {
+                        windows.push(window(41, 4, title));
                     }
                     json!({"structuredContent": {"windows": windows}})
                 }
@@ -2901,7 +2906,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_title_two_windows_share_takes_no_points_in_shot_pixels() {
-        let driver = Wide::with(1.0, true, false);
+        let driver = Wide::with(1.0, ("Wide", Some("Wide")), false);
         let desk = Desk::new(|| Ok(notepad()), driver.clone(), Os::Mac).background(true);
         for (tool, args) in [
             (
@@ -2928,8 +2933,25 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_title_that_matches_two_windows_at_one_tier_takes_no_points_in_shot_pixels() {
+        let driver = Wide::with(1.0, ("Draft — Chrome", Some("Inbox — Chrome")), false);
+        let desk = Desk::new(|| Ok(notepad()), driver.clone(), Os::Mac).background(true);
+        let click = |window: &'static str| {
+            desk.run(
+                "desk_click",
+                json!({"x": 1000.0, "y": 600.0, "window": window}),
+            )
+        };
+        let err = click("Chrome").await.unwrap_err();
+        assert!(err.contains("a longer title"), "{err}");
+        assert!(driver.landed().is_empty());
+        click("Draft").await.unwrap();
+        assert_eq!(driver.landed(), [(-800.0, 400.0)]);
+    }
+
+    #[tokio::test]
     async fn a_window_shot_during_a_click_does_not_change_the_scale_the_click_is_sent_by() {
-        let driver = Wide::with(2.0, false, true);
+        let driver = Wide::with(2.0, ("Wide", None), true);
         let desk = Desk::new(|| Ok(notepad()), driver.clone(), Os::Mac).background(true);
         let (clicked, shot) = tokio::join!(
             desk.run("desk_click", json!({"x": -1600.0, "y": 800.0})),
