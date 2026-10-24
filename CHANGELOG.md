@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.18 - 2026-10-24
 
 - **Bundled:** cua-driver v0.38.0-loomhand.2 (was v0.38.0-loomhand.1). macOS: background typing into a native search field now triggers the app's search. A background accessibility write into a single-line native field outside web content, whose window is the app's key window, is followed by a net-zero key edit (space, backspace), so search-as-you-type fields such as WeChat's search box run their search. When that edit changes the field's text, as an accepted inline completion does, the result carries a warning.
 
