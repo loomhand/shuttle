@@ -64,7 +64,7 @@ pub struct AtArgs {
 #[derive(Deserialize)]
 pub struct KeyArgs {
     pub keys: String,
-    /// The window that background input goes to, by title.
+    /// The window that background input goes to, by title; foreground input on macOS brings it to the front first.
     pub window: Option<String>,
     pub pid: Option<u32>,
 }
@@ -72,7 +72,7 @@ pub struct KeyArgs {
 #[derive(Deserialize)]
 pub struct TypeArgs {
     pub text: String,
-    /// The window that background input goes to, by title.
+    /// The window that background input goes to, by title; foreground input on macOS brings it to the front first.
     pub window: Option<String>,
     pub pid: Option<u32>,
 }
@@ -83,7 +83,7 @@ pub struct ClickArgs {
     pub y: f64,
     pub button: Option<String>,
     pub count: Option<u32>,
-    /// The window that background input goes to, by title; `x` and `y` are then pixels of its `shot`.
+    /// The window that background input goes to, by title, and foreground input on macOS after it brings it to the front; `x` and `y` are then pixels of its `shot`.
     pub window: Option<String>,
     pub pid: Option<u32>,
 }
