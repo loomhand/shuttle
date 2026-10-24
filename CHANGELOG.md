@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.19 - 2026-10-24
 
 - macOS: foreground click, type and key with a window bring that window to the front first and refuse when it cannot, instead of going to the frontmost app.
 
