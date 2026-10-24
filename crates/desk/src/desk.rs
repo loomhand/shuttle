@@ -677,6 +677,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn key(&self, a: KeyArgs) -> Result<String, String> {
         let (tool, req) = key_request(key_names(&a.keys, self.os)?);
         let to = self.target(a.window.as_deref(), a.pid).await?;
+        let raised = self.raised_window(a.window.as_deref(), a.pid).await?;
+        self.raise(raised).await?;
         let mut note = None;
         self.send(tool, req, to, &mut note).await?;
         Ok(ok_with(note))
@@ -685,8 +687,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn type_text(&self, a: TypeArgs, turn: Option<Turn>) -> Result<String, String> {
         let text = a.text.as_str();
         let to = self.target(a.window.as_deref(), a.pid).await?;
+        let raised = self.raised_window(a.window.as_deref(), a.pid).await?;
         let mut note = None;
         for (i, line) in text.split('\n').enumerate() {
+            self.raise(raised).await?;
             if i > 0 {
                 self.send("press_key", json!({"key": "return"}), to, &mut note)
                     .await?;
@@ -842,7 +846,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if let Some(count) = a.count {
             req["count"] = count.into();
         }
-        if self.bg()
+        if (self.bg() || self.os == Os::Mac)
             && let Some(w) = named
         {
             let note = self.click_in(req, &w, (x, y)).await?;
@@ -852,7 +856,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(ok_with(note))
     }
 
-    /// A background click at desk point `(x, y)` in driver window `w`, which the allowlist already admitted when it was picked.
+    /// A click at desk point `(x, y)` in driver window `w`, which the allowlist already admitted when it was picked.
     async fn click_in(
         &self,
         req: Value,
@@ -1226,6 +1230,30 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return Ok(None);
         }
         Ok(Some(self.background_window(window, pid).await?.0))
+    }
+
+    async fn raised_window(
+        &self,
+        window: Option<&str>,
+        pid: Option<u32>,
+    ) -> Result<Option<(i64, i64)>, String> {
+        if self.bg() || self.os != Os::Mac || (window.is_none() && pid.is_none()) {
+            return Ok(None);
+        }
+        let (_, w) = self.pick_window(window, pid, true).await?;
+        let (pid, id, _) = window_key(&w)?;
+        Ok(Some((pid, id)))
+    }
+
+    async fn raise(&self, window: Option<(i64, i64)>) -> Result<(), String> {
+        if let Some((pid, window_id)) = window {
+            self.call(
+                "bring_to_front",
+                json!({"pid": pid, "window_id": window_id}),
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn background_window(
@@ -3606,6 +3634,11 @@ pub(crate) mod tests {
         desk.run("desk_key", json!({"keys": "ctrl+s", "window": "Inbox"}))
             .await
             .unwrap();
+        assert_eq!(order(&calls), ["bring_to_front -", "hotkey desktop"]);
+        assert_eq!(
+            sent(&calls, "bring_to_front"),
+            [json!({"pid": 8, "window_id": 2})]
+        );
         assert_eq!(
             sent(&calls, "hotkey"),
             [json!({"keys": ["ctrl", "s"], "scope": "desktop"})]
@@ -3660,6 +3693,59 @@ pub(crate) mod tests {
                 ),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_foreground_click_on_a_covered_point_goes_to_the_named_window_on_macos() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Overlaid(Arc::clone(&calls)), Os::Mac);
+        desk.run(
+            "desk_click",
+            json!({"x": 50.0, "y": 60.0, "window": "Untitled"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            sent(&calls, "bring_to_front"),
+            [json!({"pid": 4, "window_id": 1})]
+        );
+        let clicks = sent(&calls, "click");
+        assert_eq!(clicks.len(), 1, "{clicks:?}");
+        assert_eq!(
+            (&clicks[0]["pid"], &clicks[0]["window_id"]),
+            (&json!(4), &json!(1)),
+            "{clicks:?}"
+        );
+    }
+
+    struct Unfronted(Behind);
+
+    impl Input for Unfronted {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            if tool == "bring_to_front" {
+                self.0.0.lock().unwrap().push((tool.to_owned(), args));
+                return Err("bring_to_front: window 2 is not frontmost".to_owned());
+            }
+            self.0.call(tool, args).await
+        }
+    }
+
+    #[tokio::test]
+    async fn foreground_input_to_a_window_that_cannot_come_to_the_front_sends_nothing_on_macos() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Unfronted(Behind(Arc::clone(&calls))), Os::Mac);
+        let err = desk
+            .run("desk_type", json!({"text": "hi\nthere", "window": "Inbox"}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("is not frontmost"), "{err}");
+        let err = desk
+            .run("desk_key", json!({"keys": "ctrl+s", "window": "Inbox"}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("is not frontmost"), "{err}");
+        assert_eq!(order(&calls), ["bring_to_front -", "bring_to_front -"]);
+        assert!(sent(&calls, "type_text").is_empty());
     }
 
     struct Slow(Arc<Mutex<Vec<String>>>);
