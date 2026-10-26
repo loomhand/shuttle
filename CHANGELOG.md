@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **macOS: a window shot says when its pixels may be stale.** An app may not repaint a window nobody sees, as WeChat does not, so a shot of it can show the window as it was before a click that landed. `screenshot {window}` (`desk shot` with `window`) now adds `stale: true` and a `note` when the window is on another Space, minimized or hidden, or covered all over by the on-screen windows above it, read from the window list the call already fetches, with no extra capture: the pixels may be stale, so do not conclude from them that an action failed. Background input to such a window that the driver could not confirm says in `unverified` why nobody sees the window, that the input may have taken effect even if a screenshot looks unchanged, not to send it again, and to confirm its effect by a read-back the agent can trust or by asking the user. Before, the note said this only for a window on another Space, and nothing said that a window shot may be stale. Neither is an error. Linux and Windows shots are unchanged.
+
 ## 0.1.19 - 2026-10-24
 
 - macOS: foreground click, type and key with a window bring that window to the front first and refuse when it cannot, instead of going to the frontmost app.

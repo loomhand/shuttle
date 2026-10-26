@@ -1,7 +1,7 @@
 //! The desk calls: snapshots and element actions through the OS backend; input, windows, launch and capture through cua-driver.
 
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -79,8 +79,8 @@ const NO_WINDOW_AT: &str = "no app window at the point; name one with window or 
 const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
 const WINDOW_NEVER_READ: &str = "window_never_read";
 const ANOTHER_SPACE: &str = "accessibility does not reach it there, so a snapshot or an element action needs it on the current Space; background key, type, click, scroll and drag reach it by its title or pid";
-const OFF_SPACE: &str = "the window is on another Space, where background input cannot read it back: do not send the input again, and ask the user to confirm its effect unless you can read it back";
-const OFF_SPACE_TYPED: &str = "the window is on another Space, where background input cannot read it back: do not type the text again, and before you submit it with Return or Send, ask the user to confirm that the text is there, unless you can read it back";
+const UNSEEN_SENT: &str = "the app may not repaint a window nobody sees, so the input may have taken effect even if a screenshot looks unchanged: do not send it again, and confirm its effect by a read-back you can trust or by asking the user";
+const UNSEEN_TYPED: &str = "the app may not repaint a window nobody sees, so the text may be there even if a screenshot looks unchanged: do not type it again, and before you submit it with Return or Send, confirm that it is there by a read-back you can trust or by asking the user";
 const SCROLL_POINT: &str = "scroll needs both x and y, or neither";
 const OK: &str = r#"{"ok":true}"#;
 const SCROLL_AMOUNT: u32 = 3;
@@ -117,7 +117,7 @@ pub struct Desk<B, D> {
     overlay: bool,
     background: bool,
     auto: bool,
-    off_space: std::sync::Mutex<HashSet<(i64, i64)>>,
+    unseen: std::sync::Mutex<HashMap<(i64, i64), Unseen>>,
     typer: Typer,
     #[cfg(test)]
     skew: Arc<std::sync::atomic::AtomicU64>,
@@ -138,7 +138,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             overlay: true,
             background: false,
             auto: false,
-            off_space: std::sync::Mutex::new(HashSet::new()),
+            unseen: std::sync::Mutex::new(HashMap::new()),
             typer: TYPER,
             #[cfg(test)]
             skew: Arc::default(),
@@ -756,11 +756,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .as_str()
             .filter(|e| self.bg() && *e != "confirmed")?;
         let mut note = format!("{effect}: {}", text_of(out));
-        if to.is_some_and(|t| self.off_spaced().contains(&t)) {
-            note = format!(
-                "{note}; {}",
-                if typed { OFF_SPACE_TYPED } else { OFF_SPACE }
-            );
+        if let Some(u) = to.and_then(|t| self.unseens().get(&t).copied()) {
+            let then = if typed { UNSEEN_TYPED } else { UNSEEN_SENT };
+            note = format!("{note}; {}: {then}", u.why());
         }
         let escalation = &c["escalation"];
         Some(
@@ -1419,8 +1417,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn off_spaced(&self) -> std::sync::MutexGuard<'_, HashSet<(i64, i64)>> {
-        self.off_space
+    fn unseens(&self) -> std::sync::MutexGuard<'_, HashMap<(i64, i64), Unseen>> {
+        self.unseen
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -1540,12 +1538,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
         }
         if let Some(to) = listed["pid"].as_i64().zip(listed["window_id"].as_i64()) {
-            let mut off = self.off_spaced();
-            if off_space(&listed) {
-                off.insert(to);
-            } else {
-                off.remove(&to);
-            }
+            let mut unseen = self.unseens();
+            match unseen_of(&listed, &raw, mac) {
+                Some(u) => unseen.insert(to, u),
+                None => unseen.remove(&to),
+            };
         }
         Ok((w, listed, rivals))
     }
@@ -1620,6 +1617,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     ) -> Result<Output, String> {
         let (_, w) = self.pick_window(Some(window), None, true).await?;
         let key = window_key(&w)?;
+        let stale = self
+            .unseens()
+            .get(&(key.0, key.1))
+            .filter(|_| self.os == Os::Mac)
+            .map(|u| {
+                let app = w["app_name"].as_str().filter(|a| !a.is_empty());
+                format!(
+                    "pixels may be stale: {} repaints only when visible, and {}; do not conclude an action failed from this image",
+                    app.unwrap_or("the app"),
+                    u.why()
+                )
+            });
         let session = self.session.lock().await;
         let v = self
             .call("get_window_state", full_read(key.0, key.1))
@@ -1640,6 +1649,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let mut out = self.shot_out(png, w, h, path).await?;
         if let Ok(mut v) = serde_json::from_str::<Value>(&out.text) {
             v["origin"] = json!([rect[0].max(0.0) as u32, rect[1].max(0.0) as u32]);
+            if let Some(note) = stale {
+                v["stale"] = true.into();
+                v["note"] = note.into();
+            }
             out.text = v.to_string();
         }
         Ok(out)
@@ -1698,6 +1711,24 @@ struct Read {
     bounds: [f64; 4],
     k: (f64, f64),
     full: bool,
+}
+
+/// Why nobody sees a window, which its app then may not repaint.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Unseen {
+    OffSpace,
+    Hidden,
+    Covered,
+}
+
+impl Unseen {
+    fn why(self) -> &'static str {
+        match self {
+            Self::OffSpace => "the window is on another Space",
+            Self::Hidden => "the window is minimized or hidden",
+            Self::Covered => "other windows cover the window",
+        }
+    }
 }
 
 /// Moves a Linux launch into a systemd scope of its own on a task that finishes when the call is dropped; false when the launch stays in the daemon's cgroup.
@@ -1926,6 +1957,54 @@ fn pickable(w: &Value, all: &[Value]) -> bool {
 
 fn off_space(w: &Value) -> bool {
     w["on_current_space"] == false && w["space_ids"].as_array().is_some_and(|s| !s.is_empty())
+}
+
+/// Why nobody sees driver window `w` of `all`: on another Space, and on macOS also off screen or covered by the on-screen windows above it.
+fn unseen_of(w: &Value, all: &[Value], mac: bool) -> Option<Unseen> {
+    if off_space(w) {
+        return Some(Unseen::OffSpace);
+    }
+    if !mac {
+        return None;
+    }
+    if w["is_on_screen"] == false {
+        return Some(Unseen::Hidden);
+    }
+    let z = w["z_index"].as_i64()?;
+    let mut open = vec![bounds(w)];
+    for above in all
+        .iter()
+        .filter(|o| o["is_on_screen"] != false && o["z_index"].as_i64().is_some_and(|top| top > z))
+    {
+        open = open
+            .into_iter()
+            .flat_map(|r| outside(r, bounds(above)))
+            .collect();
+        if open.is_empty() {
+            return Some(Unseen::Covered);
+        }
+    }
+    None
+}
+
+/// The parts of rectangle `r` outside rectangle `c`, both `[x, y, width, height]`.
+fn outside(r: [f64; 4], c: [f64; 4]) -> Vec<[f64; 4]> {
+    let ([x, y, w, h], [cx, cy, cw, ch]) = (r, c);
+    let (right, bottom) = (x + w, y + h);
+    if cx >= right || cx + cw <= x || cy >= bottom || cy + ch <= y {
+        return vec![r];
+    }
+    let (top, low) = (cy.max(y), (cy + ch).min(bottom));
+    let (left, end) = (cx.max(x), (cx + cw).min(right));
+    [
+        [x, y, w, top - y],
+        [x, low, w, bottom - low],
+        [x, top, left - x, low - top],
+        [end, top, right - end, low - top],
+    ]
+    .into_iter()
+    .filter(|p| p[2] > 0.0 && p[3] > 0.0)
+    .collect()
 }
 
 /// `{"ok":true}`, with the driver's note when it could not confirm background input.
@@ -2688,16 +2767,6 @@ pub(crate) mod tests {
     impl Input for SecondDisplay {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
             self.0.lock().unwrap().push((tool.to_owned(), args));
-            let image = |w: u32, h: u32| {
-                let mut png = Vec::new();
-                let mut enc = png::Encoder::new(&mut png, w, h);
-                enc.set_color(png::ColorType::Rgb);
-                enc.write_header()
-                    .unwrap()
-                    .write_image_data(&vec![200; (w * h * 3) as usize])
-                    .unwrap();
-                json!([{"type": "image", "data": B64.encode(&png)}])
-            };
             Ok(match tool {
                 "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
                 "list_windows" => json!({"structuredContent": {"windows": [
@@ -2706,17 +2775,28 @@ pub(crate) mod tests {
                 ]}}),
                 "get_window_state" => {
                     let mut v = json!({"structuredContent": {"screenshot_width": 846, "screenshot_height": 774}});
-                    v["content"] = image(846, 774);
+                    v["content"] = png_content(846, 774);
                     v
                 }
                 "get_desktop_state" => {
                     let mut v = json!({"structuredContent": {"screenshot_width": 100, "screenshot_original_width": 100}});
-                    v["content"] = image(100, 60);
+                    v["content"] = png_content(100, 60);
                     v
                 }
                 _ => json!({}),
             })
         }
+    }
+
+    fn png_content(w: u32, h: u32) -> Value {
+        let mut png = Vec::new();
+        let mut enc = png::Encoder::new(&mut png, w, h);
+        enc.set_color(png::ColorType::Rgb);
+        enc.write_header()
+            .unwrap()
+            .write_image_data(&vec![200; (w * h * 3) as usize])
+            .unwrap();
+        json!([{"type": "image", "data": B64.encode(&png)}])
     }
 
     #[tokio::test]
@@ -3065,6 +3145,170 @@ pub(crate) mod tests {
         );
     }
 
+    struct Stack(Arc<Mutex<Vec<(String, Value)>>>, Value);
+
+    impl Input for Stack {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
+                "list_windows" => {
+                    let mut doc = json!({"pid": 5, "window_id": 3, "layer": 0, "z_index": 1, "title": "Doc", "app_name": "TextEdit", "is_on_screen": true, "on_current_space": true, "space_ids": [8]});
+                    for (k, v) in self.1.as_object().unwrap() {
+                        doc[k] = v.clone();
+                    }
+                    json!({"structuredContent": {"windows": [
+                        {"pid": 4, "window_id": 1, "layer": 0, "z_index": 3, "title": "Untitled - Notepad", "app_name": "Notepad", "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": 0.0, "y": 0.0, "width": 300.0, "height": 600.0}},
+                        {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "title": "Inbox", "app_name": "Mail", "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": 250.0, "y": 0.0, "width": 550.0, "height": 600.0}},
+                        doc
+                    ]}})
+                }
+                "get_window_state" => {
+                    let mut v = json!({"structuredContent": {
+                        "screenshot_width": 400, "screenshot_height": 300,
+                        "window_bounds": {"width": 400.0, "height": 300.0}
+                    }});
+                    v["content"] = png_content(400, 300);
+                    v
+                }
+                "click" | "type_text" => json!({
+                    "content": [{"type": "text", "text": "Posted via CGEvent."}],
+                    "structuredContent": {"effect": "unverifiable"}
+                }),
+                _ => json!({}),
+            })
+        }
+    }
+
+    fn doc_at(x: f64) -> Value {
+        json!({"bounds": {"x": x, "y": 100.0, "width": 400.0, "height": 300.0}})
+    }
+
+    #[tokio::test]
+    async fn a_macos_window_shot_says_its_pixels_may_be_stale_when_nobody_sees_the_window() {
+        let away = json!({"is_on_screen": false, "on_current_space": false, "space_ids": [18], "bounds": {"x": 900.0, "y": 100.0, "width": 400.0, "height": 300.0}});
+        let mut minimized = doc_at(900.0);
+        minimized["is_on_screen"] = false.into();
+        for (os, doc, why) in [
+            (Os::Mac, doc_at(100.0), Some(Unseen::Covered)),
+            (Os::Mac, away.clone(), Some(Unseen::OffSpace)),
+            (Os::Mac, minimized, Some(Unseen::Hidden)),
+            (Os::Mac, doc_at(900.0), None),
+            (Os::Windows, doc_at(100.0), None),
+            (Os::Windows, away, None),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(Apps), Stack(Arc::clone(&calls), doc.clone()), os);
+            let out = desk
+                .run("desk_shot", json!({"window": "Doc"}))
+                .await
+                .unwrap();
+            assert!(out.image_b64.is_some(), "{os:?} {doc}");
+            let v: Value = serde_json::from_str(&out.text).unwrap();
+            match why {
+                Some(why) => {
+                    assert_eq!(v["stale"], true, "{os:?} {doc} {v}");
+                    assert_eq!(
+                        v["note"],
+                        format!(
+                            "pixels may be stale: TextEdit repaints only when visible, and {}; do not conclude an action failed from this image",
+                            why.why()
+                        ),
+                        "{doc}"
+                    );
+                }
+                None => {
+                    assert!(
+                        v.get("stale").is_none() && v.get("note").is_none(),
+                        "{os:?} {doc} {v}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unconfirmed_background_input_to_a_covered_window_may_have_taken_effect_and_is_not_sent_again()
+     {
+        for (x, covered) in [(100.0, true), (900.0, false)] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(Apps), Stack(Arc::clone(&calls), doc_at(x)), Os::Mac)
+                .background(true);
+            let note = |out: Output| {
+                let v: Value = serde_json::from_str(&out.text).unwrap();
+                v["unverified"].as_str().unwrap_or_default().to_owned()
+            };
+            let clicked = desk
+                .run("desk_click", json!({"x": 10.0, "y": 10.0, "window": "Doc"}))
+                .await
+                .unwrap();
+            let typed = desk
+                .run("desk_type", json!({"text": "x", "window": "Doc"}))
+                .await
+                .unwrap();
+            let (clicked, typed) = (note(clicked), note(typed));
+            if covered {
+                let why = Unseen::Covered.why();
+                assert_eq!(
+                    clicked,
+                    format!("unverifiable: Posted via CGEvent.; {why}: {UNSEEN_SENT}")
+                );
+                assert_eq!(
+                    typed,
+                    format!("unverifiable: Posted via CGEvent.; {why}: {UNSEEN_TYPED}")
+                );
+            } else {
+                assert_eq!(clicked, "unverifiable: Posted via CGEvent.");
+                assert_eq!(typed, "unverifiable: Posted via CGEvent.");
+            }
+            assert_eq!(sent(&calls, "click").len(), 1, "{x}");
+            assert_eq!(sent(&calls, "type_text").len(), 1, "{x}");
+        }
+    }
+
+    #[test]
+    fn a_macos_window_is_unseen_on_another_space_off_screen_or_under_windows_that_cover_all_of_it()
+    {
+        let w = |z: i64, [x, y, width, height]: [f64; 4]| json!({"z_index": z, "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": x, "y": y, "width": width, "height": height}});
+        let doc = w(1, [100.0, 100.0, 400.0, 300.0]);
+        let left = w(2, [0.0, 0.0, 300.0, 600.0]);
+        let right = w(3, [250.0, 0.0, 550.0, 600.0]);
+        let with = |above: Value| [doc.clone(), left.clone(), above];
+        assert_eq!(
+            unseen_of(&doc, &with(right.clone()), true),
+            Some(Unseen::Covered)
+        );
+        assert_eq!(unseen_of(&doc, &with(right.clone()), false), None);
+        assert_eq!(unseen_of(&right, &with(right.clone()), true), None);
+        assert_eq!(unseen_of(&doc, &[doc.clone(), left.clone()], true), None);
+        let mut lower = right.clone();
+        lower["z_index"] = 0.into();
+        assert_eq!(unseen_of(&doc, &with(lower), true), None);
+        let mut gone = right.clone();
+        gone["is_on_screen"] = false.into();
+        assert_eq!(unseen_of(&doc, &with(gone), true), None);
+        let short = w(3, [250.0, 0.0, 550.0, 399.0]);
+        assert_eq!(unseen_of(&doc, &with(short), true), None);
+        let same = w(2, [100.0, 100.0, 400.0, 300.0]);
+        assert_eq!(
+            unseen_of(&doc, &[doc.clone(), same], true),
+            Some(Unseen::Covered)
+        );
+        let beside = w(2, [500.0, 100.0, 400.0, 300.0]);
+        assert_eq!(unseen_of(&doc, &[doc.clone(), beside], true), None);
+        let mut away = doc.clone();
+        away["is_on_screen"] = false.into();
+        away["on_current_space"] = false.into();
+        away["space_ids"] = json!([18]);
+        for mac in [true, false] {
+            assert_eq!(unseen_of(&away, &[], mac), Some(Unseen::OffSpace));
+        }
+        let mut minimized = doc.clone();
+        minimized["is_on_screen"] = false.into();
+        assert_eq!(unseen_of(&minimized, &[], true), Some(Unseen::Hidden));
+        assert_eq!(unseen_of(&minimized, &[], false), None);
+    }
+
     struct HiddenTwin(Arc<Mutex<Vec<(String, Value)>>>);
 
     impl Input for HiddenTwin {
@@ -3169,7 +3413,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn background_input_to_a_title_twin_goes_to_the_window_on_a_space_and_says_it_cannot_read_it_back()
+    async fn background_input_to_a_title_twin_goes_to_the_window_on_a_space_and_says_not_to_send_it_again()
      {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(Apps), Spaces(Arc::clone(&calls)), Os::Mac).background(true);
@@ -3185,13 +3429,17 @@ pub(crate) mod tests {
         assert_eq!(sent_text.len(), 1, "{sent_text:?}");
         assert_eq!(sent_text[0]["target"]["window_id"], 84080, "{sent_text:?}");
         let typed = note(typed);
-        assert!(typed.ends_with(&format!("; {OFF_SPACE_TYPED}")), "{typed}");
+        let away = Unseen::OffSpace.why();
+        assert!(
+            typed.ends_with(&format!("; {away}: {UNSEEN_TYPED}")),
+            "{typed}"
+        );
         let key = desk
             .run("desk_key", json!({"keys": "return", "window": "微信"}))
             .await
             .unwrap();
         let key = note(key);
-        assert!(key.ends_with(&format!("; {OFF_SPACE}")), "{key}");
+        assert!(key.ends_with(&format!("; {away}: {UNSEEN_SENT}")), "{key}");
     }
 
     #[tokio::test]

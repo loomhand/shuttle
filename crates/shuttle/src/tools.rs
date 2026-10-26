@@ -99,7 +99,7 @@ fn builtins() -> Value {
         },
         {
             "name": "screenshot",
-            "description": "A PNG of the screen, or of the rectangle x, y, w, h in screen pixels; with window, that window alone on whichever display shows it, and x, y, w, h crop its image. A desk click, scroll or drag that names the same window takes x, y in pixels of the whole image; pixel (px, py) of a cropped one is (origin[0] + px, origin[1] + py).",
+            "description": "A PNG of the screen, or of the rectangle x, y, w, h in screen pixels; with window, that window alone on whichever display shows it, and x, y, w, h crop its image. A desk click, scroll or drag that names the same window takes x, y in pixels of the whole image; pixel (px, py) of a cropped one is (origin[0] + px, origin[1] + py). A window shot with stale: true may show the window as it was before your last action, since its app does not repaint a window nobody sees; do not conclude from it that the action failed.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
