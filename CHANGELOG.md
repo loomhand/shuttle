@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.22 - 2026-10-26
 
 - **Linux: a press on a LibreOffice control in a dialog clicks it.** `press`, and an element click through the computer verbs, on a LibreOffice control whose window is a dialog or an alert now click the control's centre when a hit test there finds it, instead of running its accessibility action. An action that opens a modal makes LibreOffice run the modal inside that call, and the app then answers neither accessibility nor input until the modal closes: Discard All in Document Recovery opened its confirm question, the desk then listed only the Desktop, and nothing could answer it. Controls in the main window, such as toolbar buttons, whose extents can sit above the drawn button, run their action as before.
 - **Linux: a dialog under the question it opened is not hidden.** The modal check no longer reports a modal dialog as hidden behind a window that is transient for it, such as the untitled question Discard All in Document Recovery opens over its dialog, so a `gui_plan` step that answers the question does not end in that escalation.
