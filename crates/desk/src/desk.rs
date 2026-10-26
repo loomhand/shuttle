@@ -749,17 +749,17 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(())
     }
 
-    /// The driver's note on background input whose effect it could not confirm, with the escalation it proposes.
+    /// The driver's note on background input whose effect it could not confirm, with the escalation it proposes; for a window nobody sees, why and not to send it again in their place.
     fn unverified(&self, out: &Value, to: Option<(i64, i64)>, typed: bool) -> Option<String> {
         let c = &out["structuredContent"];
         let effect = c["effect"]
             .as_str()
             .filter(|e| self.bg() && *e != "confirmed")?;
-        let mut note = format!("{effect}: {}", text_of(out));
         if let Some(u) = to.and_then(|t| self.unseens().get(&t).copied()) {
             let then = if typed { UNSEEN_TYPED } else { UNSEEN_SENT };
-            note = format!("{note}; {}: {then}", u.why());
+            return Some(format!("{effect}; {}: {then}", u.why()));
         }
+        let note = format!("{effect}: {}", text_of(out));
         let escalation = &c["escalation"];
         Some(
             match (escalation["reason"].as_str(), escalation["target"].as_str()) {
@@ -3255,14 +3255,8 @@ pub(crate) mod tests {
             let (clicked, typed) = (note(clicked), note(typed));
             if covered {
                 let why = Unseen::Covered.why();
-                assert_eq!(
-                    clicked,
-                    format!("unverifiable: Posted via CGEvent.; {why}: {UNSEEN_SENT}")
-                );
-                assert_eq!(
-                    typed,
-                    format!("unverifiable: Posted via CGEvent.; {why}: {UNSEEN_TYPED}")
-                );
+                assert_eq!(clicked, format!("unverifiable; {why}: {UNSEEN_SENT}"));
+                assert_eq!(typed, format!("unverifiable; {why}: {UNSEEN_TYPED}"));
             } else {
                 assert_eq!(clicked, "unverifiable: Posted via CGEvent.");
                 assert_eq!(typed, "unverifiable: Posted via CGEvent.");
