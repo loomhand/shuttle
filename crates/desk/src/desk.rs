@@ -1538,13 +1538,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
         }
         if let Some(to) = listed["pid"].as_i64().zip(listed["window_id"].as_i64()) {
-            let shown = if mac && listed["is_on_screen"] == true {
-                self.on_screen().await?
-            } else {
-                Vec::new()
-            };
             let mut unseen = self.unseens();
-            match unseen_of(&listed, &shown, mac) {
+            match unseen_of(&listed, mac) {
                 Some(u) => unseen.insert(to, u),
                 None => unseen.remove(&to),
             };
@@ -1723,7 +1718,6 @@ struct Read {
 enum Unseen {
     OffSpace,
     Hidden,
-    Covered,
 }
 
 impl Unseen {
@@ -1731,7 +1725,6 @@ impl Unseen {
         match self {
             Self::OffSpace => "the window is on another Space",
             Self::Hidden => "the window is minimized or hidden",
-            Self::Covered => "other windows cover the window",
         }
     }
 }
@@ -1964,53 +1957,12 @@ fn off_space(w: &Value) -> bool {
     w["on_current_space"] == false && w["space_ids"].as_array().is_some_and(|s| !s.is_empty())
 }
 
-/// Why nobody sees driver window `w`: on another Space, and on macOS also off screen or covered by the windows above it in `shown`, the driver's on-screen list.
-fn unseen_of(w: &Value, shown: &[Value], mac: bool) -> Option<Unseen> {
+/// Why nobody sees driver window `w`: on another Space, and on macOS also off screen.
+fn unseen_of(w: &Value, mac: bool) -> Option<Unseen> {
     if off_space(w) {
         return Some(Unseen::OffSpace);
     }
-    if !mac {
-        return None;
-    }
-    if w["is_on_screen"] == false {
-        return Some(Unseen::Hidden);
-    }
-    // the full list's z_index is not the stacking order; the on-screen list's is
-    let z = shown.iter().find(|o| o["window_id"] == w["window_id"])?["z_index"].as_i64()?;
-    let mut open = vec![bounds(w)];
-    for above in shown
-        .iter()
-        .filter(|o| o["z_index"].as_i64().is_some_and(|top| top > z))
-    {
-        open = open
-            .into_iter()
-            .flat_map(|r| outside(r, bounds(above)))
-            .collect();
-        if open.is_empty() {
-            return Some(Unseen::Covered);
-        }
-    }
-    None
-}
-
-/// The parts of rectangle `r` outside rectangle `c`, both `[x, y, width, height]`.
-fn outside(r: [f64; 4], c: [f64; 4]) -> Vec<[f64; 4]> {
-    let ([x, y, w, h], [cx, cy, cw, ch]) = (r, c);
-    let (right, bottom) = (x + w, y + h);
-    if cx >= right || cx + cw <= x || cy >= bottom || cy + ch <= y {
-        return vec![r];
-    }
-    let (top, low) = (cy.max(y), (cy + ch).min(bottom));
-    let (left, end) = (cx.max(x), (cx + cw).min(right));
-    [
-        [x, y, w, top - y],
-        [x, low, w, bottom - low],
-        [x, top, left - x, low - top],
-        [end, top, right - end, low - top],
-    ]
-    .into_iter()
-    .filter(|p| p[2] > 0.0 && p[3] > 0.0)
-    .collect()
+    (mac && w["is_on_screen"] == false).then_some(Unseen::Hidden)
 }
 
 /// `{"ok":true}`, with the driver's note when it could not confirm background input.
@@ -3191,12 +3143,13 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_macos_window_shot_says_its_pixels_may_be_stale_when_nobody_sees_the_window() {
+    async fn a_macos_window_shot_says_its_pixels_may_be_stale_on_another_space_or_minimized_and_not_when_covered()
+     {
         let away = json!({"is_on_screen": false, "on_current_space": false, "space_ids": [18], "bounds": {"x": 900.0, "y": 100.0, "width": 400.0, "height": 300.0}});
         let mut minimized = doc_at(900.0);
         minimized["is_on_screen"] = false.into();
         for (os, doc, why) in [
-            (Os::Mac, doc_at(100.0), Some(Unseen::Covered)),
+            (Os::Mac, doc_at(100.0), None),
             (Os::Mac, away.clone(), Some(Unseen::OffSpace)),
             (Os::Mac, minimized, Some(Unseen::Hidden)),
             (Os::Mac, doc_at(900.0), None),
@@ -3234,11 +3187,13 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn unconfirmed_background_input_to_a_covered_window_may_have_taken_effect_and_is_not_sent_again()
+    async fn unconfirmed_background_input_to_a_minimized_window_may_have_taken_effect_and_to_a_covered_one_keeps_the_driver_note()
      {
-        for (x, covered) in [(100.0, true), (900.0, false)] {
+        let mut minimized = doc_at(900.0);
+        minimized["is_on_screen"] = false.into();
+        for (doc, hidden) in [(minimized, true), (doc_at(100.0), false)] {
             let calls = Arc::new(Mutex::new(Vec::new()));
-            let desk = Desk::new(|| Ok(Apps), Stack(Arc::clone(&calls), doc_at(x)), Os::Mac)
+            let desk = Desk::new(|| Ok(Apps), Stack(Arc::clone(&calls), doc.clone()), Os::Mac)
                 .background(true);
             let note = |out: Output| {
                 let v: Value = serde_json::from_str(&out.text).unwrap();
@@ -3253,64 +3208,34 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
             let (clicked, typed) = (note(clicked), note(typed));
-            if covered {
-                let why = Unseen::Covered.why();
+            if hidden {
+                let why = Unseen::Hidden.why();
                 assert_eq!(clicked, format!("unverifiable; {why}: {UNSEEN_SENT}"));
                 assert_eq!(typed, format!("unverifiable; {why}: {UNSEEN_TYPED}"));
             } else {
                 assert_eq!(clicked, "unverifiable: Posted via CGEvent.");
                 assert_eq!(typed, "unverifiable: Posted via CGEvent.");
             }
-            assert_eq!(sent(&calls, "click").len(), 1, "{x}");
-            assert_eq!(sent(&calls, "type_text").len(), 1, "{x}");
+            assert_eq!(sent(&calls, "click").len(), 1, "{doc}");
+            assert_eq!(sent(&calls, "type_text").len(), 1, "{doc}");
         }
     }
 
     #[test]
-    fn a_macos_window_is_unseen_on_another_space_off_screen_or_under_windows_that_cover_all_of_it()
-    {
-        let w = |id: i64, z: i64, [x, y, width, height]: [f64; 4]| json!({"window_id": id, "z_index": z, "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": x, "y": y, "width": width, "height": height}});
-        let doc = w(1, 1, [100.0, 100.0, 400.0, 300.0]);
-        let left = w(2, 2, [0.0, 0.0, 300.0, 600.0]);
-        let right = w(3, 3, [250.0, 0.0, 550.0, 600.0]);
-        let with = |above: Value| [doc.clone(), left.clone(), above];
-        assert_eq!(
-            unseen_of(&doc, &with(right.clone()), true),
-            Some(Unseen::Covered)
-        );
-        let mut listed = doc.clone();
-        listed["z_index"] = 99.into();
-        assert_eq!(
-            unseen_of(&listed, &with(right.clone()), true),
-            Some(Unseen::Covered)
-        );
-        assert_eq!(unseen_of(&doc, &with(right.clone()), false), None);
-        assert_eq!(unseen_of(&right, &with(right.clone()), true), None);
-        assert_eq!(unseen_of(&doc, &[doc.clone(), left.clone()], true), None);
-        assert_eq!(unseen_of(&doc, &[left.clone(), right.clone()], true), None);
-        let mut lower = right.clone();
-        lower["z_index"] = 0.into();
-        assert_eq!(unseen_of(&doc, &with(lower), true), None);
-        let short = w(3, 3, [250.0, 0.0, 550.0, 399.0]);
-        assert_eq!(unseen_of(&doc, &with(short), true), None);
-        let same = w(2, 2, [100.0, 100.0, 400.0, 300.0]);
-        assert_eq!(
-            unseen_of(&doc, &[doc.clone(), same], true),
-            Some(Unseen::Covered)
-        );
-        let beside = w(2, 2, [500.0, 100.0, 400.0, 300.0]);
-        assert_eq!(unseen_of(&doc, &[doc.clone(), beside], true), None);
+    fn a_window_is_unseen_on_another_space_and_on_macos_also_off_screen() {
+        let doc = json!({"window_id": 1, "is_on_screen": true, "on_current_space": true, "space_ids": [8]});
         let mut away = doc.clone();
         away["is_on_screen"] = false.into();
         away["on_current_space"] = false.into();
         away["space_ids"] = json!([18]);
-        for mac in [true, false] {
-            assert_eq!(unseen_of(&away, &[], mac), Some(Unseen::OffSpace));
-        }
         let mut minimized = doc.clone();
         minimized["is_on_screen"] = false.into();
-        assert_eq!(unseen_of(&minimized, &[], true), Some(Unseen::Hidden));
-        assert_eq!(unseen_of(&minimized, &[], false), None);
+        for mac in [true, false] {
+            assert_eq!(unseen_of(&doc, mac), None);
+            assert_eq!(unseen_of(&away, mac), Some(Unseen::OffSpace));
+        }
+        assert_eq!(unseen_of(&minimized, true), Some(Unseen::Hidden));
+        assert_eq!(unseen_of(&minimized, false), None);
     }
 
     struct HiddenTwin(Arc<Mutex<Vec<(String, Value)>>>);
