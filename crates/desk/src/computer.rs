@@ -1386,24 +1386,25 @@ impl Computer {
         web && self.element_pixel(session, index, false).await.is_some()
     }
 
-    /// The point where a pixel click reaches element `index` of `session`'s snapshot, skipping the driver's 270 ms click and an AT-SPI dispatch a modal dialog deadlocks; none unless it looks as in the snapshot (a `menu` to open need not) under its active window or an own popup, and none for LibreOffice outside menus.
+    /// The point where a pixel click reaches element `index` of `session`'s snapshot, skipping the driver's 270 ms click and an AT-SPI dispatch a modal dialog deadlocks; none unless it looks as in the snapshot (a `menu` to open need not) under its active window or an own popup, and none for LibreOffice outside menus and dialogs.
     async fn element_pixel(&self, session: &str, index: i64, menu: bool) -> Option<(f64, f64)> {
         let last = self.last.lock().await;
         let snap = last.get(session)?;
         let (element, screen) = (snap.elements.get(&index)?, snap.screen.as_ref()?);
+        let (pid, window) = (
+            u32::try_from(snap.pid).ok()?,
+            u32::try_from(snap.window_id?).ok()?,
+        );
         if !menu
             && !element.role.starts_with("menu")
-            && u32::try_from(snap.pid).is_ok_and(libreoffice)
+            && libreoffice(pid)
+            && !self.shm(|g| Ok(g.dialog(window))).unwrap_or(false)
         {
             return None;
         }
         let [x, y, w, h] = element.frame?;
         let (cx, cy) = ((x + w / 2.0).floor(), (y + h / 2.0).floor());
         let rect = clip([x, y, w, h], screen.size())?;
-        let (pid, window) = (
-            u32::try_from(snap.pid).ok()?,
-            u32::try_from(snap.window_id?).ok()?,
-        );
         let reached = self.shm(|g| {
             let Some(top) = g.top_at(cx as i32, cy as i32)? else {
                 return Ok(false);
