@@ -36,6 +36,7 @@ const POINT_TYPE: u32 = 1;
 const SIZE_TYPE: u32 = 2;
 const ON_SCREEN_ONLY: u32 = 1;
 const EXCLUDE_DESKTOP: u32 = 1 << 4;
+const OVERLAY_LEVEL: i64 = 102;
 const PATH_MAX: usize = 4096;
 const ATTRS: [&str; 17] = [
     "AXRole",
@@ -494,6 +495,17 @@ impl Access for Ax {
             .and_then(|p| u32::try_from(p).ok()))
     }
 
+    fn listed_owner_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
+        let scale = display_scale();
+        let point = (f64::from(x) / scale, f64::from(y) / scale);
+        let own = std::process::id();
+        Ok(top_listed(&stacked(), point, |pid| {
+            pid == own
+                || self.driver.is_some()
+                    && i32::try_from(pid).is_ok_and(|p| exe_path(p) == self.driver)
+        }))
+    }
+
     fn pid_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
         Ok(hit(&system_wide(), x, y, display_scale())
             .and_then(|h| pid(&h))
@@ -929,6 +941,58 @@ fn shows(bounds: &[[f64; 4]], frame: Option<[f64; 4]>) -> bool {
     })
 }
 
+/// An on-screen window as the window server lists it: process, level, alpha and bounds in points.
+struct Listed {
+    pid: u32,
+    layer: i64,
+    alpha: f64,
+    bounds: [f64; 4],
+}
+
+/// The windows on screen on every level, front to back.
+fn stacked() -> Vec<Listed> {
+    // SAFETY: the window list is returned at +1, or null, and wrapped once under the create rule.
+    let list = unsafe { CGWindowListCopyWindowInfo(ON_SCREEN_ONLY | EXCLUDE_DESKTOP, 0) };
+    if list.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: `list` is a non-null CFArray at +1.
+    let list: CFArray<CFDictionary<CFString, CFType>> =
+        unsafe { CFArray::wrap_under_create_rule(list) };
+    let (owner, layer, alpha, bounds) = (
+        CFString::from_static_string("kCGWindowOwnerPID"),
+        CFString::from_static_string("kCGWindowLayer"),
+        CFString::from_static_string("kCGWindowAlpha"),
+        CFString::from_static_string("kCGWindowBounds"),
+    );
+    let sides = ["X", "Y", "Width", "Height"].map(CFString::from_static_string);
+    list.iter()
+        .filter_map(|d| {
+            let b = d.find(&bounds).and_then(|v| dictionary(&v))?;
+            let [x, y, w, h] = sides.each_ref().map(|k| float(&b, k));
+            Some(Listed {
+                pid: u32::try_from(number(&d, &owner)?).ok()?,
+                layer: number(&d, &layer)?,
+                alpha: float(&d, &alpha).unwrap_or(1.0),
+                bounds: [x?, y?, w?, h?],
+            })
+        })
+        .collect()
+}
+
+/// The process of the first window in `windows` (front to back) that holds `point` and shows to the user: a visible window below the overlay levels, not one of `skip`'s.
+fn top_listed(windows: &[Listed], (px, py): (f64, f64), skip: impl Fn(u32) -> bool) -> Option<u32> {
+    windows
+        .iter()
+        .filter(|w| (0..OVERLAY_LEVEL).contains(&w.layer) && w.alpha > 0.0)
+        .filter(|w| {
+            let [x, y, width, height] = w.bounds;
+            (x..x + width).contains(&px) && (y..y + height).contains(&py)
+        })
+        .find(|w| !skip(w.pid))
+        .map(|w| w.pid)
+}
+
 /// The layer-0 windows on screen, front to back.
 fn on_screen() -> Vec<CFDictionary<CFString, CFType>> {
     // SAFETY: the window list is returned at +1, or null, and wrapped once under the create rule.
@@ -1095,6 +1159,32 @@ mod tests {
         assert!(!shows(&[main], Some([0.0, 0.0, 280.0, 380.0])));
         assert!(!shows(&[], Some(main)));
         assert!(shows(&[], None));
+    }
+
+    fn listed(pid: u32, layer: i64, alpha: f64, bounds: [f64; 4]) -> Listed {
+        Listed {
+            pid,
+            layer,
+            alpha,
+            bounds,
+        }
+    }
+
+    #[test]
+    fn the_top_listed_window_at_a_point_is_the_first_visible_one_below_the_overlays() {
+        let windows = [
+            listed(5, 2000, 1.0, [0.0, 0.0, 1280.0, 800.0]),
+            listed(6, 3, 0.0, [0.0, 0.0, 1280.0, 800.0]),
+            listed(7, 25, 1.0, [0.0, 0.0, 1280.0, 30.0]),
+            listed(8, 3, 1.0, [400.0, 300.0, 200.0, 100.0]),
+            listed(9, 0, 1.0, [100.0, 100.0, 800.0, 600.0]),
+        ];
+        let none = |_| false;
+        assert_eq!(top_listed(&windows, (500.0, 350.0), none), Some(8));
+        assert_eq!(top_listed(&windows, (200.0, 200.0), none), Some(9));
+        assert_eq!(top_listed(&windows, (200.0, 10.0), none), Some(7));
+        assert_eq!(top_listed(&windows, (1000.0, 750.0), none), None);
+        assert_eq!(top_listed(&windows, (500.0, 350.0), |p| p == 8), Some(9));
     }
 
     #[test]

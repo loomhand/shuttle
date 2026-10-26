@@ -294,6 +294,10 @@ pub trait Access {
     fn owner_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
         self.pid_at(x, y)
     }
+    /// The process of the topmost window the window server lists on screen at the screen pixel `(x, y)`, for when [`Self::owner_at`] fails.
+    fn listed_owner_at(&mut self, _x: i32, _y: i32) -> Result<Option<u32>, String> {
+        Ok(None)
+    }
     /// The title and process of the window over `frame` at the screen pixel `(x, y)`; none when `frame` is on top there or the backend cannot tell.
     fn covering(
         &mut self,
