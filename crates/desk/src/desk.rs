@@ -1366,7 +1366,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn pixels(&self, w: &Under) -> Result<Option<(f64, f64)>, String> {
-        let read = json!({"session": WINDOW_SESSION, "pid": w.pid, "window_id": w.id});
+        let read = json!({
+            "session": WINDOW_SESSION,
+            "pid": w.pid,
+            "window_id": w.id,
+            "include_accessibility_tree": false
+        });
         let v = self.call("get_window_state", read).await?;
         self.remember((w.pid, w.id, w.bounds), &v, false)
     }
@@ -5266,8 +5271,7 @@ pub(crate) mod tests {
             .filter(|(t, _)| t == "click" || t == "get_window_state" || t == "bring_to_front")
             .cloned()
             .collect();
-        let window =
-            |pid: u32, id: u32| json!({"session": WINDOW_SESSION, "pid": pid, "window_id": id});
+        let window = |pid: u32, id: u32| json!({"session": WINDOW_SESSION, "pid": pid, "window_id": id, "include_accessibility_tree": false});
         assert_eq!(
             sent,
             [
