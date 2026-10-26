@@ -1184,9 +1184,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         win["session"] = WINDOW_SESSION.into();
         win["pid"] = w.pid.into();
         win["window_id"] = w.id.into();
-        if self.bg() {
-            win["delivery_mode"] = "background".into();
+        win["delivery_mode"] = if self.bg() {
+            "background"
+        } else {
+            "foreground"
         }
+        .into();
         let at = |win: &mut Value, (kx, ky): (f64, f64)| {
             win["x"] = ((w.point.0 - w.bounds[0]) * kx).into();
             win["y"] = ((w.point.1 - w.bounds[1]) * ky).into();
@@ -5282,7 +5285,7 @@ pub(crate) mod tests {
                 ("get_window_state".to_owned(), window(8, 41)),
                 (
                     "click".to_owned(),
-                    json!({"x": 20.0, "y": 80.0, "session": WINDOW_SESSION, "pid": 8, "window_id": 41})
+                    json!({"x": 20.0, "y": 80.0, "session": WINDOW_SESSION, "pid": 8, "window_id": 41, "delivery_mode": "foreground"})
                 ),
                 (
                     "bring_to_front".to_owned(),
@@ -5291,7 +5294,7 @@ pub(crate) mod tests {
                 ("get_window_state".to_owned(), window(7, 40)),
                 (
                     "click".to_owned(),
-                    json!({"x": 45.0, "y": 150.0, "count": 2, "session": WINDOW_SESSION, "pid": 7, "window_id": 40})
+                    json!({"x": 45.0, "y": 150.0, "count": 2, "session": WINDOW_SESSION, "pid": 7, "window_id": 40, "delivery_mode": "foreground"})
                 ),
                 (
                     "click".to_owned(),
