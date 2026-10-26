@@ -99,7 +99,7 @@ fn builtins() -> Value {
         },
         {
             "name": "screenshot",
-            "description": "A PNG of the screen, or of the rectangle x, y, w, h in screen pixels; with window, that window alone on whichever display shows it, and x, y, w, h crop its image. A desk click, scroll or drag that names the same window takes x, y in pixels of the whole image; pixel (px, py) of a cropped one is (origin[0] + px, origin[1] + py). A window shot with stale: true may show the window as it was before your last action, since its app does not repaint a window nobody sees; do not conclude from it that the action failed.",
+            "description": "A PNG of the screen, or of the rectangle x, y, w, h in screen pixels; with window, that window alone on whichever display shows it, and x, y, w, h crop its image. A desk click, scroll or drag that names the same window takes x, y in pixels of the whole image; pixel (px, py) of a cropped one is (origin[0] + px, origin[1] + py). In an app whose list reorders live, such as a chat app, take the shot right before a click at its pixels and confirm the effect after. A window shot with stale: true may show the window as it was before your last action, since its app may not repaint a window on another Space or minimized; do not conclude from it that the action failed.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
