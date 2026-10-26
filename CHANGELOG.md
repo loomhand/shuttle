@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **macOS: a foreground click into an app with little accessibility, such as WeChat, takes the real click.** When the accessibility hit test at the point fails, as it does over WeChat 4.1 (Qt), the cover check now reads the window server's on-screen window list, front to back, and takes the first visible window at the point below the overlay levels, skipping shuttle's and the driver's own: when it belongs to the target's app, the click goes in the foreground as for an uncovered point; when it belongs to another app, the click goes in the background with that app's name in `unverified`. Only when the list names no window there does the click still go in the background with the note that the point could not be checked. Before, every foreground click into WeChat took the background route, which can land off target there.
+
 ## 0.1.22 - 2026-10-26
 
 - **Linux: a press on a LibreOffice control in a dialog clicks it.** `press`, and an element click through the computer verbs, on a LibreOffice control whose window is a dialog or an alert now click the control's centre when a hit test there finds it, instead of running its accessibility action. An action that opens a modal makes LibreOffice run the modal inside that call, and the app then answers neither accessibility nor input until the modal closes: Discard All in Document Recovery opened its confirm question, the desk then listed only the Desktop, and nothing could answer it. Controls in the main window, such as toolbar buttons, whose extents can sit above the drawn button, run their action as before.

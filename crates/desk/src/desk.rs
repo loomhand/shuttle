@@ -1232,7 +1232,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .await
         {
             Ok(top) => top,
-            Err(_) => return Ok(Some(COVER_UNKNOWN.to_owned())),
+            Err(_) => match self
+                .access
+                .run(CALL_LIMIT, (), move |b| b.listed_owner_at(x, y))
+                .await
+            {
+                Ok(Some(top)) => Some(top),
+                _ => return Ok(Some(COVER_UNKNOWN.to_owned())),
+            },
         };
         let Some(top) = top.filter(|&t| i64::from(t) != pid) else {
             return Ok(None);
@@ -2110,6 +2117,7 @@ pub(crate) mod tests {
         untitled: bool,
         top: Option<u32>,
         blind: bool,
+        listed: Option<u32>,
         pub(crate) behind: bool,
         pub(crate) pid: Option<u32>,
     }
@@ -2190,6 +2198,10 @@ pub(crate) mod tests {
                 return Err("accessibility hit test failed with -25204".into());
             }
             self.pid_at(x, y)
+        }
+
+        fn listed_owner_at(&mut self, _: i32, _: i32) -> Result<Option<u32>, String> {
+            Ok(self.listed)
         }
 
         fn covering(
@@ -5403,6 +5415,36 @@ pub(crate) mod tests {
         assert_eq!(text["unverified"].as_str(), Some(COVER_UNKNOWN), "{text}");
         let click = sent(&calls, "click");
         assert_eq!(click[0]["delivery_mode"], "background", "{click:?}");
+    }
+
+    #[tokio::test]
+    async fn a_macos_foreground_click_where_the_hit_test_fails_follows_the_window_list() {
+        fn listing(top: u32) -> Result<Fake, String> {
+            let mut f = notepad();
+            f.blind = true;
+            f.listed = Some(top);
+            Ok(f)
+        }
+        async fn click(fake: fn() -> Result<Fake, String>) -> (Value, Value) {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(fake, Screen(calls.clone()), Os::Mac);
+            let out = desk
+                .run("desk_click", json!({"x": 300.0, "y": 200.0}))
+                .await
+                .unwrap();
+            let text: Value = serde_json::from_str(&out.text).unwrap();
+            (text, sent(&calls, "click")[0].clone())
+        }
+        let (text, sent_click) = click(|| listing(8)).await;
+        assert!(text.get("unverified").is_none(), "{text}");
+        assert_eq!(sent_click["delivery_mode"], "foreground", "{sent_click}");
+        let (text, sent_click) = click(|| listing(9)).await;
+        assert_eq!(
+            text["unverified"].as_str(),
+            Some(format!("Panel {COVERED}").as_str()),
+            "{text}"
+        );
+        assert_eq!(sent_click["delivery_mode"], "background", "{sent_click}");
     }
 
     #[tokio::test]
