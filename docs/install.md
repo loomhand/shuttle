@@ -10,7 +10,7 @@ curl -fsSL https://github.com/loomhand/shuttle/releases/latest/download/install.
 
 | Variable | Default | |
 |---|---|---|
-| `SHUTTLE_VERSION` | the latest release | a tag such as `v0.1.20` |
+| `SHUTTLE_VERSION` | the latest release | a tag such as `v0.1.21` |
 | `SHUTTLE_PREFIX` | `~/.local` | `shuttle` goes in `$SHUTTLE_PREFIX/bin`, the Linux files in `$SHUTTLE_PREFIX/lib/loomhand/shuttle` |
 | `SHUTTLE_APP_DIR` | `~/Applications/Loomhand` | where `Shuttle.app` goes on macOS |
 
@@ -76,7 +76,7 @@ Download an archive and `SHA256SUMS` from the [releases](https://github.com/loom
 
 ```sh
 shasum -a 256 -c SHA256SUMS --ignore-missing     # macOS; sha256sum -c on Linux
-gh attestation verify shuttle-v0.1.20-linux-x64.tar.gz -R loomhand/shuttle
+gh attestation verify shuttle-v0.1.21-linux-x64.tar.gz -R loomhand/shuttle
 ```
 
 The attestation shows that the archive was built by this repository's release workflow from the tagged commit. It is build provenance, not a code signature, and macOS and Windows do not read it.
