@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.21 - 2026-10-26
 
 - **Bundled:** cua-driver v0.38.0-loomhand.4 (was v0.38.0-loomhand.2).
   - macOS `list_windows` without `on_screen_only` ranks `z_index` by the live front-to-back order and gives off-screen windows `null` ([trycua/cua#5395](https://github.com/trycua/cua/pull/5395)), so the highest `z_index` is the frontmost window. Before, a TextEdit window covered by Safari ranked above it, and an off-screen window could hold the highest value. The order comes from a list of window ids, read only where `z_index` is read, so clicks and window reads cost what they did.
