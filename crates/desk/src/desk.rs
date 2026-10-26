@@ -2111,6 +2111,7 @@ pub(crate) mod tests {
         top: Option<u32>,
         blind: bool,
         pub(crate) behind: bool,
+        pub(crate) pid: Option<u32>,
     }
 
     impl Fake {
@@ -2177,7 +2178,7 @@ pub(crate) mod tests {
         }
 
         fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
-            Ok(self.nodes.contains_key(id).then_some(4))
+            Ok(self.nodes.contains_key(id).then_some(self.pid.unwrap_or(4)))
         }
 
         fn pid_at(&mut self, _: i32, _: i32) -> Result<Option<u32>, String> {

@@ -17,7 +17,7 @@ pub(crate) enum Press {
     Acted(bool),
 }
 
-/// Presses `id` the way a user would; a menu entry runs its action, since a click right after its popup opens misses it, except on Linux, where it takes a click once it shows and a LibreOffice control runs its action; a Windows tree item takes a click first, since Explorer can ignore its select. With `background` input an element runs its action before any click, which needs no pointer, and so does a macOS button, check box, switch or link in the front window.
+/// Presses `id` the way a user would; a menu entry runs its action, since a click right after its popup opens misses it, except on Linux, where it takes a click once it shows and a LibreOffice control outside a dialog runs its action; a Windows tree item takes a click first, since Explorer can ignore its select. With `background` input an element runs its action before any click, which needs no pointer, and so does a macOS button, check box, switch or link in the front window.
 pub(crate) fn plan_press<B: Access>(
     b: &mut B,
     id: &str,
@@ -59,7 +59,8 @@ pub(crate) fn plan_press<B: Access>(
     }
     let pixel = !linux
         || node.role.starts_with("menu")
-        || !b.pid_of(id).ok().flatten().is_some_and(libreoffice);
+        || !b.pid_of(id).ok().flatten().is_some_and(libreoffice)
+        || in_dialog(b, &chain);
     if pixel && let Some((x, y)) = reachable(b, id, &node, &chain, linux, background) {
         return Ok(Press::Click(x, y));
     }
@@ -85,6 +86,14 @@ fn in_front<B: Access>(b: &mut B, id: &str) -> Result<bool, String> {
 /// Whether process `pid` is LibreOffice, whose control extents can sit above the control.
 pub(crate) fn libreoffice(pid: u32) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim() == "soffice.bin")
+}
+
+/// Whether the top-level window of `chain` is a dialog or an alert, where LibreOffice draws its controls at their extents and a control's action that opens a modal blocks the app until the modal closes.
+fn in_dialog<B: Access>(b: &mut B, chain: &[String]) -> bool {
+    chain
+        .first()
+        .and_then(|w| b.node(w, Extras::default(), 0).ok())
+        .is_some_and(|w| matches!(w.role, "dialog" | "alert"))
 }
 
 fn open_menus<B: Access>(b: &mut B, chain: &[String]) -> bool {
@@ -372,6 +381,49 @@ mod tests {
             plan_press(&mut f, "downloads", Os::Mac, false).unwrap(),
             Press::Selected
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_libreoffice_dialog_button_takes_a_click_and_a_main_window_button_its_action() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("soffice.bin");
+        std::os::unix::fs::symlink("/bin/sleep", &bin).unwrap();
+        let mut office = std::process::Command::new(&bin).arg("30").spawn().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !libreoffice(office.id()) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let mut f = notepad();
+        f.pid = Some(office.id());
+        f.add(
+            "d",
+            None,
+            "dialog",
+            &["showing"],
+            Some([500, 300, 400, 200]),
+        );
+        f.add(
+            "discard",
+            Some("d"),
+            "button",
+            &["showing"],
+            Some([800, 450, 80, 20]),
+        );
+        f.hits.insert((840, 460), "discard".into());
+        f.hits.insert((140, 110), "ok".into());
+        assert_eq!(
+            plan_press(&mut f, "discard", Os::Linux, false).unwrap(),
+            Press::Click(840, 460)
+        );
+        assert!(f.acts.is_empty());
+        assert_eq!(
+            plan_press(&mut f, "ok", Os::Linux, false).unwrap(),
+            Press::Acted(true)
+        );
+        assert_eq!(f.acts, [("ok".to_owned(), Act::Action)]);
+        office.kill().unwrap();
+        office.wait().unwrap();
     }
 
     #[cfg(target_os = "linux")]
