@@ -29,6 +29,7 @@ const HUNG_SKIP: Duration = Duration::from_secs(10);
 const HUNG_AFTER: Duration = Duration::from_secs(2);
 const LAUNCH_GRACE: Duration = Duration::from_secs(10);
 const AX_SUCCESS: i32 = 0;
+const AX_NO_VALUE: i32 = -25212;
 
 const POINT_TYPE: u32 = 1;
 const SIZE_TYPE: u32 = 2;
@@ -485,6 +486,13 @@ impl Access for Ax {
         Ok(pid(&self.element(id)?).and_then(|p| u32::try_from(p).ok()))
     }
 
+    fn owner_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
+        Ok(checked_hit(&system_wide(), x, y, display_scale())
+            .map_err(|e| format!("accessibility hit test at ({x}, {y}) failed with {e}"))?
+            .and_then(|h| pid(&h))
+            .and_then(|p| u32::try_from(p).ok()))
+    }
+
     fn pid_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
         Ok(hit(&system_wide(), x, y, display_scale())
             .and_then(|h| pid(&h))
@@ -776,17 +784,25 @@ fn pair(v: &CFType, kind: u32) -> Option<(f64, f64)> {
 }
 
 fn hit(el: &CFType, x: i32, y: i32, scale: f64) -> Option<CFType> {
+    checked_hit(el, x, y, scale).ok().flatten()
+}
+
+/// The element at `(x, y)`; none when nothing is there, the AX error code when the hit test fails.
+fn checked_hit(el: &CFType, x: i32, y: i32, scale: f64) -> Result<Option<CFType>, i32> {
     let mut hit: CFTypeRef = std::ptr::null();
     let (px, py) = (f64::from(x) / scale, f64::from(y) / scale);
     // SAFETY: `el` is a live AXUIElement and `hit` a valid out pointer for one CF object.
     let err = unsafe {
         AXUIElementCopyElementAtPosition(el.as_CFTypeRef(), px as f32, py as f32, &mut hit)
     };
-    if err != AX_SUCCESS || hit.is_null() {
-        return None;
+    match err {
+        AX_SUCCESS if !hit.is_null() => {
+            // SAFETY: a successful copy returns the element at +1, wrapped once under the create rule.
+            Ok(Some(unsafe { CFType::wrap_under_create_rule(hit) }))
+        }
+        AX_SUCCESS | AX_NO_VALUE => Ok(None),
+        e => Err(e),
     }
-    // SAFETY: a successful copy returns the element at +1, wrapped once under the create rule.
-    Some(unsafe { CFType::wrap_under_create_rule(hit) })
 }
 
 fn attr(el: &CFType, name: &'static str) -> Option<CFType> {

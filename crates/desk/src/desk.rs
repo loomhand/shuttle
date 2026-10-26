@@ -79,6 +79,7 @@ const NO_WINDOW_AT: &str = "no app window at the point; name one with window or 
 const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
 const WINDOW_NEVER_READ: &str = "window_never_read";
 const COVERED: &str = "covers the point, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
+const COVER_UNKNOWN: &str = "the point could not be checked for another app's window on top, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
 const ANOTHER_SPACE: &str = "accessibility does not reach it there, so a snapshot or an element action needs it on the current Space; background key, type, click, scroll and drag reach it by its title or pid";
 const UNSEEN_SENT: &str = "the app may not repaint a window nobody sees, so the input may have taken effect even if a screenshot looks unchanged: do not send it again, and confirm its effect by a read-back you can trust or by asking the user";
 const UNSEEN_TYPED: &str = "the app may not repaint a window nobody sees, so the text may be there even if a screenshot looks unchanged: do not type it again, and before you submit it with Return or Send, confirm that it is there by a read-back you can trust or by asking the user";
@@ -1213,31 +1214,34 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
             done => done?,
         };
-        if let Some(app) = cover {
-            return Ok(Some(format!("{app} {COVERED}")));
+        if cover.is_some() {
+            return Ok(cover);
         }
         Ok(self.unverified(&out, Some((w.pid, w.id)), false))
     }
 
-    /// The app whose window is on top at the point of `req`, on any window level, when it is not process `pid`.
+    /// Why the point of `req` takes no foreground click into process `pid`: another app's window on top there, on any window level, or a hit test that failed.
     async fn cover(&self, req: &Value, pid: i64) -> Result<Option<String>, String> {
         let Some((x, y)) = req["x"].as_f64().zip(req["y"].as_f64()) else {
             return Ok(None);
         };
         let (x, y) = (x as i32, y as i32);
-        let top = self
+        let top = match self
             .access
-            .run(CALL_LIMIT, (), move |b| b.pid_at(x, y))
-            .await?;
+            .run(CALL_LIMIT, (), move |b| b.owner_at(x, y))
+            .await
+        {
+            Ok(top) => top,
+            Err(_) => return Ok(Some(COVER_UNKNOWN.to_owned())),
+        };
         let Some(top) = top.filter(|&t| i64::from(t) != pid) else {
             return Ok(None);
         };
         let v = self.call("list_windows", json!({"pid": top})).await?;
-        Ok(Some(
-            v["structuredContent"]["windows"][0]["app_name"]
-                .as_str()
-                .map_or_else(|| format!("process {top}"), str::to_owned),
-        ))
+        let app = v["structuredContent"]["windows"][0]["app_name"]
+            .as_str()
+            .map_or_else(|| format!("process {top}"), str::to_owned);
+        Ok(Some(format!("{app} {COVERED}")))
     }
 
     /// A click at a screen point, for a window that takes no window click; background input refuses it.
@@ -2105,6 +2109,7 @@ pub(crate) mod tests {
         menus: Vec<bool>,
         untitled: bool,
         top: Option<u32>,
+        blind: bool,
     }
 
     impl Fake {
@@ -2176,6 +2181,13 @@ pub(crate) mod tests {
 
         fn pid_at(&mut self, _: i32, _: i32) -> Result<Option<u32>, String> {
             Ok(self.top)
+        }
+
+        fn owner_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
+            if self.blind {
+                return Err("accessibility hit test failed with -25204".into());
+            }
+            self.pid_at(x, y)
         }
 
         fn covering(
@@ -5369,6 +5381,26 @@ pub(crate) mod tests {
         let click = sent(&calls, "click");
         assert_eq!(click[0]["delivery_mode"], "background", "{click:?}");
         assert_eq!(sent(&calls, "bring_to_front").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_macos_foreground_click_where_the_hit_test_fails_goes_in_the_background_and_says_so()
+    {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let fake = || {
+            let mut f = notepad();
+            f.blind = true;
+            Ok(f)
+        };
+        let desk = Desk::new(fake, Screen(calls.clone()), Os::Mac);
+        let out = desk
+            .run("desk_click", json!({"x": 300.0, "y": 200.0}))
+            .await
+            .unwrap();
+        let text: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(text["unverified"].as_str(), Some(COVER_UNKNOWN), "{text}");
+        let click = sent(&calls, "click");
+        assert_eq!(click[0]["delivery_mode"], "background", "{click:?}");
     }
 
     #[tokio::test]
