@@ -7,6 +7,8 @@ use crate::model::{Access, Act, Extras, Node};
 
 pub(crate) const BACKGROUND_NO_POINT: &str = "background input: the element shows no point to click in its window, and on Windows its UI Automation action would bring the window to the front";
 
+const PRESSABLE_ROLES: [&str; 4] = ["button", "checkbox", "switch", "link"];
+
 /// What a press comes to after the backend's part of it.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Press {
@@ -15,7 +17,7 @@ pub(crate) enum Press {
     Acted(bool),
 }
 
-/// Presses `id` the way a user would; a menu entry runs its action, since a click right after its popup opens misses it, except on Linux, where it takes a click once it shows and a LibreOffice control runs its action; a Windows tree item takes a click first, since Explorer can ignore its select. With `background` input an element runs its action before any click, which needs no pointer.
+/// Presses `id` the way a user would; a menu entry runs its action, since a click right after its popup opens misses it, except on Linux, where it takes a click once it shows and a LibreOffice control runs its action; a Windows tree item takes a click first, since Explorer can ignore its select. With `background` input an element runs its action before any click, which needs no pointer, and so does a macOS button, check box, switch or link in the front window.
 pub(crate) fn plan_press<B: Access>(
     b: &mut B,
     id: &str,
@@ -36,7 +38,9 @@ pub(crate) fn plan_press<B: Access>(
     if node.role.starts_with("menuitem") && !linux && !uia_behind {
         return Ok(Press::Acted(b.act(id, Act::Action)?));
     }
-    if background && !uia_behind && b.act(id, Act::Action)? {
+    let front_pressable =
+        os == Os::Mac && !background && PRESSABLE_ROLES.contains(&node.role) && in_front(b, id)?;
+    if (front_pressable || background && !uia_behind) && b.act(id, Act::Action)? {
         return Ok(Press::Acted(true));
     }
     let chain = b.ancestors(id)?;
@@ -66,6 +70,16 @@ pub(crate) fn plan_press<B: Access>(
         return Ok(Press::Selected);
     }
     Ok(Press::Acted(b.act(id, Act::Action)?))
+}
+
+fn in_front<B: Access>(b: &mut B, id: &str) -> Result<bool, String> {
+    let Some(pid) = b.pid_of(id)? else {
+        return Ok(false);
+    };
+    let root = b.ancestors(id)?.into_iter().next();
+    Ok(b.frames_of(pid)?
+        .into_iter()
+        .any(|f| f.active && root.as_ref() == Some(&f.id)))
 }
 
 /// Whether process `pid` is LibreOffice, whose control extents can sit above the control.
@@ -130,12 +144,53 @@ mod tests {
 
     #[test]
     fn a_shown_control_that_a_hit_test_finds_takes_a_click() {
+        for os in [Os::Windows, Os::Linux] {
+            let mut f = notepad();
+            assert_eq!(
+                plan_press(&mut f, "ok", os, false).unwrap(),
+                Press::Click(140, 110)
+            );
+            assert!(f.acts.is_empty(), "{os:?}");
+        }
+    }
+
+    #[test]
+    fn a_macos_button_in_the_front_window_runs_its_action() {
         let mut f = notepad();
+        assert_eq!(
+            plan_press(&mut f, "ok", Os::Mac, false).unwrap(),
+            Press::Acted(true)
+        );
+        assert_eq!(f.acts, [("ok".to_owned(), Act::Action)]);
+    }
+
+    #[test]
+    fn a_macos_button_in_a_window_behind_takes_a_click() {
+        let mut f = notepad();
+        f.behind = true;
         assert_eq!(
             plan_press(&mut f, "ok", Os::Mac, false).unwrap(),
             Press::Click(140, 110)
         );
         assert!(f.acts.is_empty());
+    }
+
+    #[test]
+    fn a_macos_button_that_refuses_its_action_takes_a_click() {
+        let mut f = notepad();
+        f.add(
+            "dead",
+            Some("w"),
+            "button",
+            &["showing"],
+            Some([500, 100, 80, 20]),
+        );
+        f.hits.insert((540, 110), "dead".into());
+        assert_eq!(
+            plan_press(&mut f, "dead", Os::Mac, false).unwrap(),
+            Press::Click(540, 110)
+        );
+        assert_eq!(f.acts, [("dead".to_owned(), Act::Action)]);
     }
 
     #[test]
