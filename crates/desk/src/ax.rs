@@ -29,6 +29,7 @@ const HUNG_SKIP: Duration = Duration::from_secs(10);
 const HUNG_AFTER: Duration = Duration::from_secs(2);
 const LAUNCH_GRACE: Duration = Duration::from_secs(10);
 const AX_SUCCESS: i32 = 0;
+const AX_CANNOT_COMPLETE: i32 = -25204;
 const AX_NO_VALUE: i32 = -25212;
 
 const POINT_TYPE: u32 = 1;
@@ -537,9 +538,7 @@ impl Access for Ax {
     fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
         let el = self.element(id)?;
         Ok(match act {
-            Act::Action => {
-                perform(&el, "AXPress") || perform(&el, "AXConfirm") || perform(&el, "AXPick")
-            }
+            Act::Action => pressed(&el) || perform(&el, "AXConfirm") || perform(&el, "AXPick"),
             Act::Select if string(attr(&el, "AXRole")) == "AXRadioButton" => {
                 perform(&el, "AXPress")
             }
@@ -820,11 +819,18 @@ fn attr(el: &CFType, name: &'static str) -> Option<CFType> {
 }
 
 fn perform(el: &CFType, action: &'static str) -> bool {
+    perform_code(el, action) == AX_SUCCESS
+}
+
+/// Whether `el` took its press; an app that does not answer in time, as one in the modal loop the press opened, has taken it.
+fn pressed(el: &CFType) -> bool {
+    matches!(perform_code(el, "AXPress"), AX_SUCCESS | AX_CANNOT_COMPLETE)
+}
+
+fn perform_code(el: &CFType, action: &'static str) -> i32 {
     let action = CFString::from_static_string(action);
     // SAFETY: `el` is a live AXUIElement and `action` a live CFString.
-    unsafe {
-        AXUIElementPerformAction(el.as_CFTypeRef(), action.as_concrete_TypeRef()) == AX_SUCCESS
-    }
+    unsafe { AXUIElementPerformAction(el.as_CFTypeRef(), action.as_concrete_TypeRef()) }
 }
 
 fn set_true(el: &CFType, name: &'static str) -> bool {
