@@ -2110,6 +2110,7 @@ pub(crate) mod tests {
         untitled: bool,
         top: Option<u32>,
         blind: bool,
+        pub(crate) behind: bool,
     }
 
     impl Fake {
@@ -2140,7 +2141,7 @@ pub(crate) mod tests {
             } else {
                 "Untitled - Notepad"
             };
-            Ok(vec![frame("w", title, 4, true, Some("Notepad"))])
+            Ok(vec![frame("w", title, 4, !self.behind, Some("Notepad"))])
         }
 
         fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {

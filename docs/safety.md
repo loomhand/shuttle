@@ -69,7 +69,7 @@ A [service plugin](wire.md#service-plugins) is a program you install in the plug
 
 macOS has one pointer and one keyboard focus, shared by you and shuttle:
 
-1. **Accessibility actions.** A press runs a menu entry's AX action, clicks any other element's centre when a hit test there finds it, and runs its AX action otherwise. A click at a point on an open menu item runs that item's AX action.
+1. **Accessibility actions.** A press runs a menu entry's AX action and the AX press action of a button, check box, switch or link in the front window, clicks any other element's centre when a hit test there finds it, and runs its AX action otherwise. A press action the app does not answer within 500 ms, as when it opens a modal alert, counts as done and is never followed by a click. A click at a point on an open menu item runs that item's AX action.
 2. **Keys to the desktop.** Keys and typed text go through cua-driver to the focused window, so the target window must be in front.
 3. **Coordinate clicks.** A click at a point goes through cua-driver to the window under it, which shuttle brings to the front first, and moves your pointer there; when another app's window, such as a floating panel, covers the point, the click goes to the window in the background instead and says so; a window that refuses pointer input, such as a sheet, gets a desktop click. shuttle does not wait for you to stop using the mouse or keyboard, so a click can land on something you opened in that instant.
 4. **Computer actions.** `desk computer_act` input at a screen point acts like a human click: it drives the real pointer and may bring the app it clicks to the front. Background input refuses it.
