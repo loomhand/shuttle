@@ -78,6 +78,7 @@ const NO_WINDOW_UNDER: &str =
 const NO_WINDOW_AT: &str = "no app window at the point; name one with window or pid";
 const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
 const WINDOW_NEVER_READ: &str = "window_never_read";
+const COVERED: &str = "covers the point, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
 const ANOTHER_SPACE: &str = "accessibility does not reach it there, so a snapshot or an element action needs it on the current Space; background key, type, click, scroll and drag reach it by its title or pid";
 const UNSEEN_SENT: &str = "the app may not repaint a window nobody sees, so the input may have taken effect even if a screenshot looks unchanged: do not send it again, and confirm its effect by a read-back you can trust or by asking the user";
 const UNSEEN_TYPED: &str = "the app may not repaint a window nobody sees, so the text may be there even if a screenshot looks unchanged: do not type it again, and before you submit it with Return or Send, confirm that it is there by a read-back you can trust or by asking the user";
@@ -1165,9 +1166,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn click_window(&self, req: Value, w: &Under) -> Result<Option<String>, String> {
         let _session = self.session.lock().await;
+        let mut cover = None;
         if !self.bg() {
             let front = json!({"pid": w.pid, "window_id": w.id});
             self.call("bring_to_front", front).await?;
+            cover = self.cover(&req, w.pid).await?;
         }
         let cached = self
             .reads()
@@ -1184,7 +1187,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         win["session"] = WINDOW_SESSION.into();
         win["pid"] = w.pid.into();
         win["window_id"] = w.id.into();
-        win["delivery_mode"] = if self.bg() {
+        win["delivery_mode"] = if self.bg() || cover.is_some() {
             "background"
         } else {
             "foreground"
@@ -1210,7 +1213,31 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
             done => done?,
         };
+        if let Some(app) = cover {
+            return Ok(Some(format!("{app} {COVERED}")));
+        }
         Ok(self.unverified(&out, Some((w.pid, w.id)), false))
+    }
+
+    /// The app whose window is on top at the point of `req`, on any window level, when it is not process `pid`.
+    async fn cover(&self, req: &Value, pid: i64) -> Result<Option<String>, String> {
+        let Some((x, y)) = req["x"].as_f64().zip(req["y"].as_f64()) else {
+            return Ok(None);
+        };
+        let (x, y) = (x as i32, y as i32);
+        let top = self
+            .access
+            .run(CALL_LIMIT, (), move |b| b.pid_at(x, y))
+            .await?;
+        let Some(top) = top.filter(|&t| i64::from(t) != pid) else {
+            return Ok(None);
+        };
+        let v = self.call("list_windows", json!({"pid": top})).await?;
+        Ok(Some(
+            v["structuredContent"]["windows"][0]["app_name"]
+                .as_str()
+                .map_or_else(|| format!("process {top}"), str::to_owned),
+        ))
     }
 
     /// A click at a screen point, for a window that takes no window click; background input refuses it.
@@ -2077,6 +2104,7 @@ pub(crate) mod tests {
         opened: bool,
         menus: Vec<bool>,
         untitled: bool,
+        top: Option<u32>,
     }
 
     impl Fake {
@@ -2144,6 +2172,10 @@ pub(crate) mod tests {
 
         fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
             Ok(self.nodes.contains_key(id).then_some(4))
+        }
+
+        fn pid_at(&mut self, _: i32, _: i32) -> Result<Option<u32>, String> {
+            Ok(self.top)
         }
 
         fn covering(
@@ -4033,6 +4065,9 @@ pub(crate) mod tests {
             self.0.lock().unwrap().push((tool.to_owned(), args.clone()));
             Ok(match tool {
                 "get_screen_size" => json!({"structuredContent": {"scale_factor": 2.0}}),
+                "list_windows" if args["pid"] == 9 => json!({"structuredContent": {"windows": [
+                    {"pid": 9, "window_id": 43, "app_name": "Panel", "layer": 3, "z_index": 31, "bounds": {"x": 100.0, "y": 50.0, "width": 200.0, "height": 100.0}}
+                ]}}),
                 "list_windows" => json!({"structuredContent": {"windows": [
                     {"pid": 7, "window_id": 40, "layer": 0, "z_index": 5, "bounds": {"x": 100.0, "y": 50.0, "width": 300.0, "height": 200.0}},
                     {"pid": 8, "window_id": 41, "layer": 0, "z_index": 9, "bounds": {"x": 140.0, "y": 60.0, "width": 50.0, "height": 50.0}},
@@ -5309,6 +5344,31 @@ pub(crate) mod tests {
             .filter(|(t, _)| t == "get_screen_size")
             .count();
         assert_eq!(sizes, 3);
+    }
+
+    #[tokio::test]
+    async fn a_macos_foreground_click_under_another_apps_window_goes_in_the_background_and_says_so()
+    {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let fake = || {
+            let mut f = notepad();
+            f.top = Some(9);
+            Ok(f)
+        };
+        let desk = Desk::new(fake, Screen(calls.clone()), Os::Mac);
+        let out = desk
+            .run("desk_click", json!({"x": 300.0, "y": 200.0}))
+            .await
+            .unwrap();
+        let text: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(
+            text["unverified"].as_str(),
+            Some(format!("Panel {COVERED}").as_str()),
+            "{text}"
+        );
+        let click = sent(&calls, "click");
+        assert_eq!(click[0]["delivery_mode"], "background", "{click:?}");
+        assert_eq!(sent(&calls, "bring_to_front").len(), 1);
     }
 
     #[tokio::test]
