@@ -342,19 +342,14 @@ impl Grabber {
         let (kind, dialog) = (self.net_wm_type, self.type_dialog);
         let children = self.kids(w);
         std::iter::once(w).chain(children).any(|c| {
-            let get = |property: u32, kind: u32| {
-                self.conn
-                    .get_property(false, c, property, kind, 0, 16)
+            self.transient_for(c).is_some()
+                || self
+                    .conn
+                    .get_property(false, c, kind, AtomEnum::ATOM, 0, 16)
                     .ok()
                     .and_then(|r| r.reply().ok())
-            };
-            let transient = get(AtomEnum::WM_TRANSIENT_FOR.into(), AtomEnum::WINDOW.into())
-                .and_then(|r| r.value32().and_then(|mut v| v.next()))
-                .is_some_and(|v| v != 0);
-            let typed = get(kind, AtomEnum::ATOM.into())
-                .and_then(|r| r.value32().map(|v| v.collect::<Vec<_>>()))
-                .is_some_and(|v| v.contains(&dialog));
-            transient || typed
+                    .and_then(|r| r.value32().map(|mut v| v.any(|a| a == dialog)))
+                    .unwrap_or(false)
         })
     }
 
@@ -387,12 +382,7 @@ impl Grabber {
                 }
             };
             let owner = self
-                .conn
-                .get_property(false, c, AtomEnum::WM_TRANSIENT_FOR, AtomEnum::WINDOW, 0, 1)
-                .ok()
-                .and_then(|r| r.reply().ok())
-                .and_then(|r| r.value32().and_then(|mut v| v.next()))
-                .filter(|w| *w != 0)
+                .transient_for(c)
                 .and_then(|w| self.title(w))
                 .unwrap_or_default();
             out.push(Modal {
@@ -629,13 +619,31 @@ impl Grabber {
     fn unseen(&self, c: Window) -> Result<Option<String>, String> {
         let frame = self.top_level(c)?;
         let screen = (i32::from(self.width), i32::from(self.height));
-        Ok(match cover(frame, &self.children(false)?, screen) {
+        let opened = |w| self.opened_by(w, c);
+        Ok(match cover(frame, &self.children(false)?, screen, opened) {
             Some(Cover::OffScreen) => Some("off the screen".to_owned()),
             Some(Cover::Under(w)) => {
                 Some(format!("behind \"{}\"", self.title(w).unwrap_or_default()))
             }
             None => None,
         })
+    }
+
+    /// The window `w` is transient for, if any.
+    fn transient_for(&self, w: Window) -> Option<Window> {
+        self.conn
+            .get_property(false, w, AtomEnum::WM_TRANSIENT_FOR, AtomEnum::WINDOW, 0, 1)
+            .ok()
+            .and_then(|r| r.reply().ok())
+            .and_then(|r| r.value32().and_then(|mut v| v.next()))
+            .filter(|w| *w != 0)
+    }
+
+    /// Whether frame `w` or the client inside it is transient for `owner`, as a dialog that `owner` opened is.
+    fn opened_by(&self, w: Window, owner: Window) -> bool {
+        std::iter::once(w)
+            .chain(self.kids(w))
+            .any(|c| self.transient_for(c) == Some(owner))
     }
 
     /// The number of master keyboards.
@@ -891,8 +899,13 @@ fn dock_mask(docks: &[[i32; 4]], (width, height): (usize, usize)) -> Vec<bool> {
     mask
 }
 
-/// How `mapped`, the drawn root children bottom to top, hide `frame` on a screen of `width` by `height`: centred off the screen, or under another managed window at its centre.
-fn cover(frame: Window, mapped: &[Placement], (width, height): (i32, i32)) -> Option<Cover> {
+/// How `mapped`, the drawn root children bottom to top, hide `frame` on a screen of `width` by `height`: centred off the screen, or under another managed window at its centre that is not a dialog `opened` says the frame's own window opened.
+fn cover(
+    frame: Window,
+    mapped: &[Placement],
+    (width, height): (i32, i32),
+    opened: impl Fn(Window) -> bool,
+) -> Option<Cover> {
     let own = mapped.iter().find(|p| p.id == frame)?;
     let (cx, cy) = (
         i32::from(own.x) + i32::from(own.width) / 2,
@@ -905,7 +918,7 @@ fn cover(frame: Window, mapped: &[Placement], (width, height): (i32, i32)) -> Op
         .iter()
         .rev()
         .find(|p| p.drawn && !p.popup && p.contains(cx, cy))
-        .filter(|p| p.id != frame)
+        .filter(|p| p.id != frame && !opened(p.id))
         .map(|p| Cover::Under(p.id))
 }
 
@@ -1103,32 +1116,52 @@ mod tests {
             drawn: true,
         };
         let screen = (1280, 800);
+        let none = |_| false;
         let dialog = at(9, 100, 100, false);
         assert_eq!(
-            cover(9, &[at(5, 0, 0, false), dialog.clone()], screen),
+            cover(9, &[at(5, 0, 0, false), dialog.clone()], screen, none),
             None
         );
         assert_eq!(
-            cover(9, &[dialog.clone(), at(5, 150, 150, false)], screen),
+            cover(9, &[dialog.clone(), at(5, 150, 150, false)], screen, none),
             Some(Cover::Under(5))
         );
         assert_eq!(
-            cover(9, &[dialog.clone(), at(5, 150, 150, true)], screen),
+            cover(9, &[dialog.clone(), at(5, 150, 150, true)], screen, none),
             None
         );
         assert_eq!(
-            cover(9, &[dialog.clone(), at(5, 600, 150, false)], screen),
+            cover(9, &[dialog.clone(), at(5, 600, 150, false)], screen, none),
             None
         );
         assert_eq!(
-            cover(9, &[at(9, 1100, 100, false)], screen),
+            cover(9, &[at(9, 1100, 100, false)], screen, none),
             Some(Cover::OffScreen)
         );
         assert_eq!(
-            cover(9, &[at(9, -250, 100, false)], screen),
+            cover(9, &[at(9, -250, 100, false)], screen, none),
             Some(Cover::OffScreen)
         );
-        assert_eq!(cover(9, &[at(5, 0, 0, false)], screen), None);
+        assert_eq!(cover(9, &[at(5, 0, 0, false)], screen, none), None);
+    }
+
+    #[test]
+    fn a_frame_under_a_dialog_its_window_opened_is_not_hidden() {
+        let at = |id: Window, x: i16, y: i16| Placement {
+            id,
+            x,
+            y,
+            width: 400,
+            height: 300,
+            popup: false,
+            drawn: true,
+        };
+        let mapped = [at(9, 100, 100), at(5, 150, 150)];
+        assert_eq!(cover(9, &mapped, (1280, 800), |w| w == 5), None);
+        assert_eq!(
+            cover(9, &mapped, (1280, 800), |w| w == 7),
+            Some(Cover::Under(5))
+        );
     }
 
     #[test]
