@@ -15,6 +15,8 @@ use crate::{Running, home, log};
 
 const TELEMETRY: &str = "CUA_DRIVER_RS_TELEMETRY_ENABLED";
 const DRIVER_EMBEDDED: &str = "CUA_DRIVER_EMBEDDED";
+const WINDOW_WATCH: &str = "CUA_DRIVER_WINDOW_CHANGE_TIMEOUT_MS";
+const WINDOW_WATCH_MS: &str = "50";
 const GLIDE_MS: &str = "1";
 const LISTEN_WAIT: Duration = Duration::from_secs(10);
 const STOP_WAIT: Duration = Duration::from_secs(3);
@@ -28,12 +30,13 @@ pub struct Bundled {
 }
 
 impl Bundled {
-    /// Starts the cua-driver beside `exe` at `endpoint`, after stopping one that a killed daemon left there; none when no driver is bundled. Off macOS `overlay = false` starts it without its agent cursor; `embedded` starts it in cua-driver's embedded mode.
+    /// Starts the cua-driver beside `exe` at `endpoint`, after stopping one that a killed daemon left there; none when no driver is bundled. Off macOS `overlay = false` starts it without its agent cursor; `embedded` starts it in cua-driver's embedded mode; on macOS `foreground` input bounds its window watch after an action, which foreground input holds no focus lease on and nobody reads.
     pub async fn start(
         exe: &Path,
         endpoint: &str,
         overlay: bool,
         embedded: bool,
+        foreground: bool,
     ) -> Result<Option<Self>, String> {
         let bin = exe.with_file_name(if cfg!(windows) {
             "cua-driver.exe"
@@ -54,6 +57,7 @@ impl Bundled {
             pid_file: pid_file(endpoint)?,
             overlay: overlay || cfg!(target_os = "macos"),
             embedded,
+            watch: foreground && cfg!(target_os = "macos"),
         };
         if server::connect(endpoint).await.is_ok() {
             proc.stop_stale().await?;
@@ -77,6 +81,7 @@ struct Proc {
     pid_file: PathBuf,
     overlay: bool,
     embedded: bool,
+    watch: bool,
 }
 
 impl Proc {
@@ -90,6 +95,7 @@ impl Proc {
             .args((!self.overlay).then_some("--no-overlay"))
             .env(TELEMETRY, "false")
             .envs(self.embedded.then_some((DRIVER_EMBEDDED, "1")))
+            .envs(self.watch.then_some((WINDOW_WATCH, WINDOW_WATCH_MS)))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -238,6 +244,7 @@ if os.path.exists(args["--socket"] + ".slow"):
 if os.environ.get("CUA_DRIVER_EMBEDDED") == "1" and os.path.exists(args["--socket"]):
     sys.exit(4)
 open(args["--socket"] + ".env", "w").write(os.environ.get("CUA_DRIVER_EMBEDDED", ""))
+open(args["--socket"] + ".watch", "w").write(os.environ.get("CUA_DRIVER_WINDOW_CHANGE_TIMEOUT_MS", ""))
 if os.path.exists(args["--socket"]):
     os.remove(args["--socket"])
 s = socket.socket(socket.AF_UNIX)
@@ -278,7 +285,7 @@ while True:
     async fn no_bundled_driver_starts_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let started = Bundled::start(&dir.path().join(NAME), &endpoint, true, false).await;
+        let started = Bundled::start(&dir.path().join(NAME), &endpoint, true, false, false).await;
         assert!(matches!(started, Ok(None)));
     }
 
@@ -288,7 +295,7 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, true, false)
+        let driver = Bundled::start(&exe, &endpoint, true, false, false)
             .await
             .unwrap()
             .unwrap();
@@ -315,7 +322,7 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, true, false)
+        let driver = Bundled::start(&exe, &endpoint, true, false, false)
             .await
             .unwrap()
             .unwrap();
@@ -330,7 +337,7 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, false, false)
+        let driver = Bundled::start(&exe, &endpoint, false, false, false)
             .await
             .unwrap()
             .unwrap();
@@ -344,11 +351,29 @@ while True:
     }
 
     #[tokio::test]
+    async fn foreground_input_bounds_the_window_watch_of_the_macos_driver() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake(dir.path(), FAKE).unwrap();
+        let bounded = if cfg!(target_os = "macos") { "50" } else { "" };
+        for (foreground, want) in [(true, bounded), (false, "")] {
+            let sock = dir.path().join(format!("{foreground}.sock"));
+            let endpoint = endpoint(&sock.to_string_lossy());
+            let driver = Bundled::start(&exe, &endpoint, true, false, foreground)
+                .await
+                .unwrap()
+                .unwrap();
+            let watch = std::fs::read_to_string(format!("{endpoint}.watch")).unwrap_or_default();
+            driver.stop().await;
+            assert_eq!(watch, want, "foreground {foreground}");
+        }
+    }
+
+    #[tokio::test]
     async fn a_stop_the_driver_never_answers_still_leaves_no_driver() {
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, true, false)
+        let driver = Bundled::start(&exe, &endpoint, true, false, false)
             .await
             .unwrap()
             .unwrap();
@@ -363,7 +388,7 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, true, false)
+        let driver = Bundled::start(&exe, &endpoint, true, false, false)
             .await
             .unwrap()
             .unwrap();
@@ -402,7 +427,7 @@ while True:
             tokio::time::sleep(POLL).await;
         }
         let stale = pid(&endpoint).unwrap();
-        let driver = Bundled::start(&exe, &endpoint, true, false)
+        let driver = Bundled::start(&exe, &endpoint, true, false, false)
             .await
             .unwrap()
             .unwrap();
@@ -421,7 +446,7 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), "#!/bin/sh\nexit 3\n").unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let err = Bundled::start(&exe, &endpoint, true, false)
+        let err = Bundled::start(&exe, &endpoint, true, false, false)
             .await
             .err()
             .unwrap_or_default();
@@ -437,7 +462,7 @@ while True:
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
         drop(std::os::unix::net::UnixListener::bind(&endpoint).unwrap());
-        let driver = Bundled::start(&exe, &endpoint, true, true)
+        let driver = Bundled::start(&exe, &endpoint, true, true, false)
             .await
             .unwrap()
             .unwrap();
