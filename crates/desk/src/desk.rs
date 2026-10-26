@@ -749,7 +749,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(())
     }
 
-    /// The driver's note on background input whose effect it could not confirm, with the escalation it proposes; for a window nobody sees, why and not to send it again in their place.
+    /// The driver's note on background input whose effect it could not confirm, with its escalation; for a window nobody sees, ours instead.
     fn unverified(&self, out: &Value, to: Option<(i64, i64)>, typed: bool) -> Option<String> {
         let c = &out["structuredContent"];
         let effect = c["effect"]
@@ -861,6 +861,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         w: &Value,
         (x, y): (f64, f64),
     ) -> Result<Option<String>, String> {
+        self.classify(w);
         let scale = self.scale().await?;
         let under = Under {
             pid: w["pid"].as_i64().ok_or(BACKGROUND_TARGET)?,
@@ -1338,7 +1339,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     /// The topmost app window the driver lists at `point`, in points.
     async fn top_at(&self, point: (f64, f64)) -> Result<Option<Value>, String> {
-        Ok(self
+        let top = self
             .on_screen()
             .await?
             .into_iter()
@@ -1347,7 +1348,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 let [bx, by, bw, bh] = bounds(w);
                 point.0 >= bx && point.0 < bx + bw && point.1 >= by && point.1 < by + bh
             })
-            .max_by_key(|w| w["z_index"].as_i64().unwrap_or(i64::MIN)))
+            .max_by_key(|w| w["z_index"].as_i64().unwrap_or(i64::MIN));
+        if let Some(w) = &top {
+            self.classify(w);
+        }
+        Ok(top)
     }
 
     async fn on_screen(&self) -> Result<Vec<Value>, String> {
@@ -1415,6 +1420,17 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.read
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Keeps why nobody sees driver window `w`, which the note on unconfirmed input to it gives.
+    fn classify(&self, w: &Value) {
+        if let Some(to) = w["pid"].as_i64().zip(w["window_id"].as_i64()) {
+            let mut unseen = self.unseens();
+            match unseen_of(w, self.os == Os::Mac) {
+                Some(u) => unseen.insert(to, u),
+                None => unseen.remove(&to),
+            };
+        }
     }
 
     fn unseens(&self) -> std::sync::MutexGuard<'_, HashMap<(i64, i64), Unseen>> {
@@ -1537,13 +1553,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 ));
             }
         }
-        if let Some(to) = listed["pid"].as_i64().zip(listed["window_id"].as_i64()) {
-            let mut unseen = self.unseens();
-            match unseen_of(&listed, mac) {
-                Some(u) => unseen.insert(to, u),
-                None => unseen.remove(&to),
-            };
-        }
+        self.classify(&listed);
         Ok((w, listed, rivals))
     }
 
@@ -1957,7 +1967,6 @@ fn off_space(w: &Value) -> bool {
     w["on_current_space"] == false && w["space_ids"].as_array().is_some_and(|s| !s.is_empty())
 }
 
-/// Why nobody sees driver window `w`: on another Space, and on macOS also off screen.
 fn unseen_of(w: &Value, mac: bool) -> Option<Unseen> {
     if off_space(w) {
         return Some(Unseen::OffSpace);
@@ -3103,7 +3112,7 @@ pub(crate) mod tests {
         );
     }
 
-    struct Stack(Arc<Mutex<Vec<(String, Value)>>>, Value);
+    struct Stack(Arc<Mutex<Vec<(String, Value)>>>, Mutex<Value>);
 
     impl Input for Stack {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
@@ -3112,7 +3121,7 @@ pub(crate) mod tests {
                 "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
                 "list_windows" => {
                     let mut doc = json!({"pid": 5, "window_id": 3, "layer": 0, "z_index": 1, "title": "Doc", "app_name": "TextEdit", "is_on_screen": true, "on_current_space": true, "space_ids": [8]});
-                    for (k, v) in self.1.as_object().unwrap() {
+                    for (k, v) in self.1.lock().unwrap().as_object().unwrap() {
                         doc[k] = v.clone();
                     }
                     json!({"structuredContent": {"windows": [
@@ -3157,7 +3166,11 @@ pub(crate) mod tests {
             (Os::Windows, away, None),
         ] {
             let calls = Arc::new(Mutex::new(Vec::new()));
-            let desk = Desk::new(|| Ok(Apps), Stack(Arc::clone(&calls), doc.clone()), os);
+            let desk = Desk::new(
+                || Ok(Apps),
+                Stack(Arc::clone(&calls), Mutex::new(doc.clone())),
+                os,
+            );
             let out = desk
                 .run("desk_shot", json!({"window": "Doc"}))
                 .await
@@ -3193,8 +3206,12 @@ pub(crate) mod tests {
         minimized["is_on_screen"] = false.into();
         for (doc, hidden) in [(minimized, true), (doc_at(100.0), false)] {
             let calls = Arc::new(Mutex::new(Vec::new()));
-            let desk = Desk::new(|| Ok(Apps), Stack(Arc::clone(&calls), doc.clone()), Os::Mac)
-                .background(true);
+            let desk = Desk::new(
+                || Ok(Apps),
+                Stack(Arc::clone(&calls), Mutex::new(doc.clone())),
+                Os::Mac,
+            )
+            .background(true);
             let note = |out: Output| {
                 let v: Value = serde_json::from_str(&out.text).unwrap();
                 v["unverified"].as_str().unwrap_or_default().to_owned()
@@ -3219,6 +3236,32 @@ pub(crate) mod tests {
             assert_eq!(sent(&calls, "click").len(), 1, "{doc}");
             assert_eq!(sent(&calls, "type_text").len(), 1, "{doc}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_restored_window_clicked_by_its_point_keeps_the_driver_note() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut minimized = doc_at(900.0);
+        minimized["is_on_screen"] = false.into();
+        let desk = Desk::new(
+            || Ok(Apps),
+            Stack(Arc::clone(&calls), Mutex::new(minimized)),
+            Os::Mac,
+        )
+        .background(true);
+        let shot = desk
+            .run("desk_shot", json!({"window": "Doc"}))
+            .await
+            .unwrap();
+        assert!(shot.text.contains("\"stale\":true"), "{}", shot.text);
+        *desk.driver.1.lock().unwrap() = doc_at(900.0);
+        let out = desk
+            .run("desk_click", json!({"x": 1000.0, "y": 200.0}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(v["unverified"], "unverifiable: Posted via CGEvent.");
+        assert_eq!(sent(&calls, "click")[0]["window_id"], 3);
     }
 
     #[test]
@@ -3691,6 +3734,43 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("cannot tell them apart"), "{err}");
+    }
+
+    struct AwayTwin(Twins);
+
+    impl Input for AwayTwin {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let mut out = self.0.call(tool, args).await?;
+            if tool == "click" {
+                out = json!({"structuredContent": {"effect": "unverifiable"}});
+            }
+            if let Value::Array(windows) = &mut out["structuredContent"]["windows"] {
+                for w in windows {
+                    let here = w["window_id"] == 3;
+                    w["is_on_screen"] = here.into();
+                    w["on_current_space"] = here.into();
+                    w["space_ids"] = json!([if here { 8 } else { 18 }]);
+                }
+            }
+            Ok(out)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_background_element_click_into_its_window_on_another_space_says_so() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let twins = AwayTwin(Twins(Arc::clone(&calls), 900.0, "Untitled - Notepad", 0.0));
+        let desk = Desk::new(|| Ok(notepad()), twins, Os::Mac).background(true);
+        let out = desk
+            .run("desk_act", json!({"id": "ok", "action": "click"}))
+            .await
+            .unwrap();
+        assert_eq!(sent(&calls, "click")[0]["window_id"], 1);
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(
+            v["unverified"],
+            format!("unverifiable; {}: {UNSEEN_SENT}", Unseen::OffSpace.why())
+        );
     }
 
     #[tokio::test]
