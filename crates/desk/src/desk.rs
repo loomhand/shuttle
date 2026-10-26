@@ -1538,8 +1538,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
         }
         if let Some(to) = listed["pid"].as_i64().zip(listed["window_id"].as_i64()) {
+            let shown = if mac && listed["is_on_screen"] == true {
+                self.on_screen().await?
+            } else {
+                Vec::new()
+            };
             let mut unseen = self.unseens();
-            match unseen_of(&listed, &raw, mac) {
+            match unseen_of(&listed, &shown, mac) {
                 Some(u) => unseen.insert(to, u),
                 None => unseen.remove(&to),
             };
@@ -1959,8 +1964,8 @@ fn off_space(w: &Value) -> bool {
     w["on_current_space"] == false && w["space_ids"].as_array().is_some_and(|s| !s.is_empty())
 }
 
-/// Why nobody sees driver window `w` of `all`: on another Space, and on macOS also off screen or covered by the on-screen windows above it.
-fn unseen_of(w: &Value, all: &[Value], mac: bool) -> Option<Unseen> {
+/// Why nobody sees driver window `w`: on another Space, and on macOS also off screen or covered by the windows above it in `shown`, the driver's on-screen list.
+fn unseen_of(w: &Value, shown: &[Value], mac: bool) -> Option<Unseen> {
     if off_space(w) {
         return Some(Unseen::OffSpace);
     }
@@ -1970,11 +1975,12 @@ fn unseen_of(w: &Value, all: &[Value], mac: bool) -> Option<Unseen> {
     if w["is_on_screen"] == false {
         return Some(Unseen::Hidden);
     }
-    let z = w["z_index"].as_i64()?;
+    // the full list's z_index is not the stacking order; the on-screen list's is
+    let z = shown.iter().find(|o| o["window_id"] == w["window_id"])?["z_index"].as_i64()?;
     let mut open = vec![bounds(w)];
-    for above in all
+    for above in shown
         .iter()
-        .filter(|o| o["is_on_screen"] != false && o["z_index"].as_i64().is_some_and(|top| top > z))
+        .filter(|o| o["z_index"].as_i64().is_some_and(|top| top > z))
     {
         open = open
             .into_iter()
@@ -3269,32 +3275,36 @@ pub(crate) mod tests {
     #[test]
     fn a_macos_window_is_unseen_on_another_space_off_screen_or_under_windows_that_cover_all_of_it()
     {
-        let w = |z: i64, [x, y, width, height]: [f64; 4]| json!({"z_index": z, "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": x, "y": y, "width": width, "height": height}});
-        let doc = w(1, [100.0, 100.0, 400.0, 300.0]);
-        let left = w(2, [0.0, 0.0, 300.0, 600.0]);
-        let right = w(3, [250.0, 0.0, 550.0, 600.0]);
+        let w = |id: i64, z: i64, [x, y, width, height]: [f64; 4]| json!({"window_id": id, "z_index": z, "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": x, "y": y, "width": width, "height": height}});
+        let doc = w(1, 1, [100.0, 100.0, 400.0, 300.0]);
+        let left = w(2, 2, [0.0, 0.0, 300.0, 600.0]);
+        let right = w(3, 3, [250.0, 0.0, 550.0, 600.0]);
         let with = |above: Value| [doc.clone(), left.clone(), above];
         assert_eq!(
             unseen_of(&doc, &with(right.clone()), true),
             Some(Unseen::Covered)
         );
+        let mut listed = doc.clone();
+        listed["z_index"] = 99.into();
+        assert_eq!(
+            unseen_of(&listed, &with(right.clone()), true),
+            Some(Unseen::Covered)
+        );
         assert_eq!(unseen_of(&doc, &with(right.clone()), false), None);
         assert_eq!(unseen_of(&right, &with(right.clone()), true), None);
         assert_eq!(unseen_of(&doc, &[doc.clone(), left.clone()], true), None);
+        assert_eq!(unseen_of(&doc, &[left.clone(), right.clone()], true), None);
         let mut lower = right.clone();
         lower["z_index"] = 0.into();
         assert_eq!(unseen_of(&doc, &with(lower), true), None);
-        let mut gone = right.clone();
-        gone["is_on_screen"] = false.into();
-        assert_eq!(unseen_of(&doc, &with(gone), true), None);
-        let short = w(3, [250.0, 0.0, 550.0, 399.0]);
+        let short = w(3, 3, [250.0, 0.0, 550.0, 399.0]);
         assert_eq!(unseen_of(&doc, &with(short), true), None);
-        let same = w(2, [100.0, 100.0, 400.0, 300.0]);
+        let same = w(2, 2, [100.0, 100.0, 400.0, 300.0]);
         assert_eq!(
             unseen_of(&doc, &[doc.clone(), same], true),
             Some(Unseen::Covered)
         );
-        let beside = w(2, [500.0, 100.0, 400.0, 300.0]);
+        let beside = w(2, 2, [500.0, 100.0, 400.0, 300.0]);
         assert_eq!(unseen_of(&doc, &[doc.clone(), beside], true), None);
         let mut away = doc.clone();
         away["is_on_screen"] = false.into();
