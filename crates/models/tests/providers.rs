@@ -322,6 +322,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failed_send_names_the_url_it_requested_not_where_a_redirect_led() {
+        let (base, _) = serve(|_| {
+            "HTTP/1.1 308 Permanent Redirect\r\nlocation: http://127.0.0.1:9/elsewhere\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_owned()
+        })
+        .await;
+        let err = Models::new(gateway(&base))
+            .ask(AskArgs {
+                prompt: "x".into(),
+                images: vec![],
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            err.starts_with(&format!(
+                "anthropic/claude-sonnet-5 request to {base}/v1/chat/completions: "
+            )),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
     async fn an_empty_or_partial_reply_is_an_error() {
         let (base, _) = fake(json!({"choices": []})).await;
         let err = Models::new(gateway(&base))
