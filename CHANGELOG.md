@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Bundled:** cua-driver v0.38.0-loomhand.5 (was v0.38.0-loomhand.4).
+  - macOS: a background left click at a point stamps the event's window location with the point in the window, as a real click carries it, instead of the screen point ([loomhand/cua#8](https://github.com/loomhand/cua/pull/8)). An app that reads that field, as WeChat 4.1 appears to on a Mac with two displays, took such a click off by the window's origin. Chrome, Safari, TextEdit, Finder and a Qt app, which ignore the field, click where they did, and the click costs what it did.
+
 - **macOS: a foreground click into an app with little accessibility, such as WeChat, takes the real click.** When the accessibility hit test at the point fails, as it does over WeChat 4.1 (Qt), the cover check now reads the window server's on-screen window list, front to back, and takes the first visible window at the point below the overlay levels, skipping shuttle's and the driver's own: when it belongs to the target's app, the click goes in the foreground as for an uncovered point; when it belongs to another app, the click goes in the background with that app's name in `unverified`. Only when the list names no window there does the click still go in the background with the note that the point could not be checked. Before, every foreground click into WeChat took the background route, which can land off target there.
 
 ## 0.1.22 - 2026-10-26
