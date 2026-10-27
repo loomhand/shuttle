@@ -211,6 +211,10 @@ const ROLE_NAMES: [&str; 130] = [
 static HUNG: LazyLock<std::sync::Mutex<HashMap<String, Instant>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
+/// The apps, by bus name, already asked for their attributes by [`Atspi::wake`].
+static WOKEN: LazyLock<std::sync::Mutex<HashSet<String>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
+
 /// An accessible object: the bus name of its app and its object path.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Obj {
@@ -424,6 +428,7 @@ impl Atspi {
             phases.push((name, clock.elapsed().as_micros()));
             clock = Instant::now();
         };
+        self.wake(&frame.obj.bus).await;
         let items = self.items(&frame.obj.bus).await.unwrap_or_default();
         lap("items", &mut phases);
         let mut raw: HashMap<Obj, Raw> = HashMap::with_capacity(items.len());
@@ -816,6 +821,17 @@ impl Atspi {
         })
     }
 
+    /// Asks the app on `bus` for its root's attributes once, as a screen reader does: Chromium builds its tree only after that.
+    async fn wake(&self, bus: &str) {
+        if first_wake(bus) {
+            let root = Obj {
+                bus: bus.to_owned(),
+                path: ROOT.to_owned(),
+            };
+            let _ = self.reply(&root, ACCESSIBLE, "GetAttributes", &()).await;
+        }
+    }
+
     /// The app's cached objects, from the cache of at-spi2-core 2.46 and later or from the older one, which lists the children of each object instead of its index and child count.
     async fn items(&self, bus: &str) -> Result<Vec<Item>, String> {
         let cache = Obj {
@@ -955,6 +971,13 @@ pub fn key_combos(binding: &str) -> (Option<String>, Option<String>) {
     let mnemonic = parts.next().and_then(gtk_combo);
     let shortcut = parts.nth(1).and_then(gtk_combo);
     (mnemonic, shortcut)
+}
+
+fn first_wake(bus: &str) -> bool {
+    WOKEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(bus.to_owned())
 }
 
 fn mark_hung(bus: &str) {
@@ -1237,6 +1260,23 @@ mod tests {
         assert!(Atspi::new().is_hung(":9.99"));
         let answered = capped(":9.98", async { Vec::new() }).await;
         assert!(answered.is_empty() && !Atspi::new().is_hung(":9.98"));
+    }
+
+    #[test]
+    fn each_app_is_woken_once_per_bus_name() {
+        assert!(first_wake(":9.97"));
+        assert!(!first_wake(":9.97"));
+        assert!(first_wake(":9.96"));
+        assert!(!first_wake(":9.96"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_app_costs_its_wake_no_wait_and_is_not_asked_again() {
+        let started = tokio::time::Instant::now();
+        mark_hung(":9.95");
+        Atspi::new().wake(":9.95").await;
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        assert!(!first_wake(":9.95"));
     }
 
     #[test]
