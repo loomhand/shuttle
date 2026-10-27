@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.26 - 2026-10-27
 
 - **Bundled:** cua-driver v0.38.0-loomhand.7 (was v0.38.0-loomhand.6).
   - Linux: a session whose GNOME Shell owns its bus name counts as GNOME even when the driver's environment names no desktop (no `XDG_CURRENT_DESKTOP`, `XDG_SESSION_DESKTOP` or `DESKTOP_SESSION`, as in a service started on OSWorld's Ubuntu 22.04 guests), so the driver advertises only `IsEnabled` and no longer sets `ScreenReaderEnabled` ([loomhand/cua#10](https://github.com/loomhand/cua/pull/10)). GNOME then starts no Orca, and at-spi2-registryd 2.44 no longer aborts under key-heavy input: on an OSWorld guest it stayed alive through 20 key-heavy LibreOffice and Shotcut plans, where it died before.
