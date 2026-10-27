@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Bundled:** cua-driver v0.38.0-loomhand.7 (was v0.38.0-loomhand.6).
+  - Linux: a session whose GNOME Shell owns its bus name counts as GNOME even when the driver's environment names no desktop (no `XDG_CURRENT_DESKTOP`, `XDG_SESSION_DESKTOP` or `DESKTOP_SESSION`, as in a service started on OSWorld's Ubuntu 22.04 guests), so the driver advertises only `IsEnabled` and no longer sets `ScreenReaderEnabled` ([loomhand/cua#10](https://github.com/loomhand/cua/pull/10)). GNOME then starts no Orca, and at-spi2-registryd 2.44 no longer aborts under key-heavy input: on an OSWorld guest it stayed alive through 20 key-heavy LibreOffice and Shotcut plans, where it died before.
+- **Linux: desk wakes Chromium's accessibility tree.** desk asks each app's root for its attributes once, before the first tree read of that app, so a Chromium started without `--force-renderer-accessibility`, for example by a task setup, builds its accessibility tree: 1 → 156 nodes on OSWorld guests and on XFCE. The cost is one round trip per app.
 - **A model error names the endpoint.** A model call that fails to connect or times out now names the URL it requested, as `anthropic/claude-sonnet-5 request to http://127.0.0.1:9/v1/chat/completions: ...`, and one that gets an error status names the URL that answered, after any redirect, as `anthropic/claude-sonnet-5 at https://gw.example/v1/chat/completions returned 502 Bad Gateway: ...`, so a misrouted `base_url` shows in the error. The URL is printed without credentials, query or fragment, so a key in it stays out.
 
 ## 0.1.25 - 2026-10-27
