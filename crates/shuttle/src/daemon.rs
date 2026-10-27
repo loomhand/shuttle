@@ -646,7 +646,7 @@ mod tests {
         assert!(
             model.is_error
                 && model.text.starts_with(
-                    "anthropic/claude-sonnet-5 at http://127.0.0.1:9/v1/chat/completions: "
+                    "anthropic/claude-sonnet-5 request to http://127.0.0.1:9/v1/chat/completions: "
                 ),
             "{}",
             model.text

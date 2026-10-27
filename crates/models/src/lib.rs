@@ -108,12 +108,13 @@ impl Models {
             req = req.bearer_auth(k.expose());
         }
         let res = req.send().await.map_err(|e| {
-            let at = e
-                .url()
-                .map_or_else(|| model.to_owned(), |u| reached(model, u));
-            failed(&at, e)
+            let to = e.url().map_or_else(
+                || model.to_owned(),
+                |u| format!("{model} request to {}", bare(u)),
+            );
+            failed(&to, e)
         })?;
-        let at = reached(model, res.url());
+        let at = format!("{model} at {}", bare(res.url()));
         let status = res.status();
         let text = res.text().await.map_err(|e| failed(&at, e))?;
         if !status.is_success() {
@@ -283,13 +284,13 @@ fn snippet(text: &str, n: usize) -> String {
     text.chars().take(n).collect()
 }
 
-fn reached(model: &str, url: &reqwest::Url) -> String {
+fn bare(url: &reqwest::Url) -> reqwest::Url {
     let mut u = url.clone();
     let _ = u.set_username("");
     let _ = u.set_password(None);
     u.set_query(None);
     u.set_fragment(None);
-    format!("{model} at {u}")
+    u
 }
 
 // a reqwest error prints only its kind; its sources name the cause, and without_url keeps any key in a query out
@@ -347,8 +348,8 @@ mod tests {
             reqwest::Url::parse("https://user:secret@gw.example/v1/chat/completions?key=sk-1#k")
                 .unwrap();
         assert_eq!(
-            reached("m", &url),
-            "m at https://gw.example/v1/chat/completions"
+            bare(&url).as_str(),
+            "https://gw.example/v1/chat/completions"
         );
     }
 
