@@ -644,7 +644,10 @@ mod tests {
         );
         let model = d.answer(call("model_ask", json!({"prompt": "x"}))).await;
         assert!(
-            model.is_error && model.text.starts_with("anthropic/claude-sonnet-5: "),
+            model.is_error
+                && model.text.starts_with(
+                    "anthropic/claude-sonnet-5 at http://127.0.0.1:9/v1/chat/completions: "
+                ),
             "{}",
             model.text
         );
