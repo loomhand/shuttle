@@ -862,14 +862,13 @@ impl Atspi {
             bus: bus.to_owned(),
             path: ROOT.to_owned(),
         };
-        let (name, version) = tokio::join!(
+        let (Ok(name), Ok(version)) = tokio::join!(
             self.prop::<String>(&root, APPLICATION, "ToolkitName"),
             self.prop::<String>(&root, APPLICATION, "Version")
-        );
-        let known = answers_screen_coords(
-            name.as_deref().unwrap_or_default(),
-            version.as_deref().unwrap_or_default(),
-        );
+        ) else {
+            return true;
+        };
+        let known = answers_screen_coords(&name, &version);
         SCREEN_COORDS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
