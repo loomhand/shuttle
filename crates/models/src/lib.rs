@@ -107,8 +107,13 @@ impl Models {
         if let Some(k) = &self.key {
             req = req.bearer_auth(k.expose());
         }
-        let at = format!("{model} at {}", endpoint(url));
-        let res = req.send().await.map_err(|e| failed(&at, e))?;
+        let res = req.send().await.map_err(|e| {
+            let at = e
+                .url()
+                .map_or_else(|| model.to_owned(), |u| reached(model, u));
+            failed(&at, e)
+        })?;
+        let at = reached(model, res.url());
         let status = res.status();
         let text = res.text().await.map_err(|e| failed(&at, e))?;
         if !status.is_success() {
@@ -278,14 +283,13 @@ fn snippet(text: &str, n: usize) -> String {
     text.chars().take(n).collect()
 }
 
-fn endpoint(url: &str) -> String {
-    let Ok(mut u) = reqwest::Url::parse(url) else {
-        return String::from("an unparsable URL");
-    };
+fn reached(model: &str, url: &reqwest::Url) -> String {
+    let mut u = url.clone();
     let _ = u.set_username("");
     let _ = u.set_password(None);
     u.set_query(None);
-    u.to_string()
+    u.set_fragment(None);
+    format!("{model} at {u}")
 }
 
 // a reqwest error prints only its kind; its sources name the cause, and without_url keeps any key in a query out
@@ -338,12 +342,14 @@ mod tests {
     }
 
     #[test]
-    fn an_error_names_the_endpoint_without_its_credentials_or_query() {
+    fn an_error_names_the_endpoint_without_its_credentials_query_or_fragment() {
+        let url =
+            reqwest::Url::parse("https://user:secret@gw.example/v1/chat/completions?key=sk-1#k")
+                .unwrap();
         assert_eq!(
-            endpoint("https://user:secret@gw.example/v1/chat/completions?key=sk-1"),
-            "https://gw.example/v1/chat/completions"
+            reached("m", &url),
+            "m at https://gw.example/v1/chat/completions"
         );
-        assert_eq!(endpoint("not a url"), "an unparsable URL");
     }
 
     fn area(left: f64, top: f64, width: f64, height: f64) -> Area {
