@@ -29,6 +29,19 @@ mod tests {
     }
 
     async fn fake(reply: Value) -> (String, Arc<Mutex<Vec<Seen>>>) {
+        let text = reply.to_string();
+        serve(move |_| {
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{text}",
+                text.len()
+            )
+        })
+        .await
+    }
+
+    async fn serve(
+        respond: impl Fn(&str) -> String + Send + 'static,
+    ) -> (String, Arc<Mutex<Vec<Seen>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -66,16 +79,12 @@ mod tests {
                             .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_owned()))
                     })
                     .collect();
+                let res = respond(&path);
                 log.lock().unwrap().push(Seen {
                     path,
                     headers,
                     body: String::from_utf8(body).unwrap(),
                 });
-                let text = reply.to_string();
-                let res = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{text}",
-                    text.len()
-                );
                 s.write_all(res.as_bytes()).await.unwrap();
             }
         });
@@ -284,6 +293,32 @@ mod tests {
                 .unwrap();
             assert_eq!((out.x, out.y), want, "{said}");
         }
+    }
+
+    #[tokio::test]
+    async fn an_error_status_names_the_endpoint_that_answered_it_after_a_redirect() {
+        let (base, seen) = serve(|path| {
+            if path == "/v1/chat/completions" {
+                "HTTP/1.1 308 Permanent Redirect\r\nlocation: /moved?key=sk-1\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_owned()
+            } else {
+                "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 4\r\nconnection: close\r\n\r\noops".to_owned()
+            }
+        })
+        .await;
+        let err = Models::new(gateway(&base))
+            .ask(AskArgs {
+                prompt: "x".into(),
+                images: vec![],
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            format!(
+                "anthropic/claude-sonnet-5 at {base}/moved returned 500 Internal Server Error: oops"
+            )
+        );
+        assert_eq!(seen.lock().unwrap()[1].path, "/moved?key=sk-1");
     }
 
     #[tokio::test]
