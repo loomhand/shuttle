@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.24 - 2026-10-27
 
 - **Linux: an app named as its menu shows it launches as that app.** `launch_app` (gui_plan `app`, `desk launch`, the computer verbs) with a name of more than one word that equals the name of an installed, shown application entry, ignoring case, now launches that entry, as `libreoffice calc` opens LibreOffice Calc. Before, such a name ran as a command line: LibreOffice started with a file named `calc`, showed "calc does not exist." after a 20 s launch wait, and LibreOffice 7.3 then answered no accessibility call until the alert closed. Command lines such as `libreoffice --calc file`, and one-word names, launch as before.
 
