@@ -107,14 +107,12 @@ impl Models {
         if let Some(k) = &self.key {
             req = req.bearer_auth(k.expose());
         }
-        let res = req.send().await.map_err(|e| failed(model, e))?;
+        let at = format!("{model} at {}", endpoint(url));
+        let res = req.send().await.map_err(|e| failed(&at, e))?;
         let status = res.status();
-        let text = res.text().await.map_err(|e| failed(model, e))?;
+        let text = res.text().await.map_err(|e| failed(&at, e))?;
         if !status.is_success() {
-            return Err(format!(
-                "{model} returned {status}: {}",
-                snippet(&text, 300)
-            ));
+            return Err(format!("{at} returned {status}: {}", snippet(&text, 300)));
         }
         serde_json::from_str(&text).map_err(|e| format!("{model}: {e}: {}", snippet(&text, 120)))
     }
@@ -280,6 +278,16 @@ fn snippet(text: &str, n: usize) -> String {
     text.chars().take(n).collect()
 }
 
+fn endpoint(url: &str) -> String {
+    let Ok(mut u) = reqwest::Url::parse(url) else {
+        return String::from("an unparsable URL");
+    };
+    let _ = u.set_username("");
+    let _ = u.set_password(None);
+    u.set_query(None);
+    u.to_string()
+}
+
 // a reqwest error prints only its kind; its sources name the cause, and without_url keeps any key in a query out
 fn failed(model: &str, e: reqwest::Error) -> String {
     let e = e.without_url();
@@ -327,6 +335,15 @@ mod tests {
         ] {
             assert!(!build_matches(other, p), "{other}");
         }
+    }
+
+    #[test]
+    fn an_error_names_the_endpoint_without_its_credentials_or_query() {
+        assert_eq!(
+            endpoint("https://user:secret@gw.example/v1/chat/completions?key=sk-1"),
+            "https://gw.example/v1/chat/completions"
+        );
+        assert_eq!(endpoint("not a url"), "an unparsable URL");
     }
 
     fn area(left: f64, top: f64, width: f64, height: f64) -> Area {

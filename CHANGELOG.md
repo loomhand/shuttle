@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **A model error names the endpoint it reached.** A model call that fails to connect, times out or gets an error status now says where it went, as `anthropic/claude-sonnet-5 at http://127.0.0.1:9/v1/chat/completions: ...`, so a misrouted `base_url` shows in the error. The endpoint is printed without credentials or query, so a key in the URL stays out.
+
 ## 0.1.25 - 2026-10-27
 
 - **Bundled:** cua-driver v0.38.0-loomhand.6 (was v0.38.0-loomhand.5).
