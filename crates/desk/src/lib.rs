@@ -8,6 +8,8 @@ pub mod ax_roles;
 pub mod computer;
 pub mod desk;
 pub mod driver;
+#[cfg(target_os = "linux")]
+pub mod entry;
 pub mod keys;
 pub mod model;
 #[cfg(windows)]

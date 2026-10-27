@@ -18,7 +18,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use crate::desk::{Cancel, Turn, Typer, text_runs};
+use crate::desk::{Cancel, Turn, Typer, launch_name, text_runs};
 use crate::driver::{Driver, image_of, text_of};
 use crate::keys::{Os, key_names};
 use crate::model::Modal;
@@ -713,7 +713,7 @@ impl Computer {
                 })
             }
             None => match self
-                .request(session, "launch_app", json!({"name": app}))
+                .request(session, "launch_app", json!({"name": launch_name(app)}))
                 .await
             {
                 Ok(v) => Ok(text_of(&v)),

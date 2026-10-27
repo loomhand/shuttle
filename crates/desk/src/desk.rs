@@ -1,5 +1,6 @@
 //! The desk calls: snapshots and element actions through the OS backend; input, windows, launch and capture through cua-driver.
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -285,7 +286,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_close" => self.close(parse(args)?, turn.clone()).await?,
             "desk_launch" => {
                 let app = parse::<LaunchArgs>(args)?.app;
-                let v = self.call("launch_app", json!({"name": app})).await?;
+                let v = self
+                    .call("launch_app", json!({"name": launch_name(&app)}))
+                    .await?;
                 let mut out = json!({"ok": true, "launched": text_of(&v)});
                 if self.os == Os::Mac {
                     out["background"] = true.into();
@@ -1801,6 +1804,17 @@ pub(crate) async fn adopt(launched: Value) -> bool {
 #[cfg(not(target_os = "linux"))]
 pub(crate) async fn adopt(_: Value) -> bool {
     false
+}
+
+/// The name a `launch_app` call gets for `app`: on Linux, the desktop file id of the application whose menu name `app` repeats, else `app`.
+#[cfg(target_os = "linux")]
+pub(crate) fn launch_name(app: &str) -> Cow<'_, str> {
+    crate::entry::id_for(app).map_or(Cow::Borrowed(app), Cow::Owned)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn launch_name(app: &str) -> Cow<'_, str> {
+    Cow::Borrowed(app)
 }
 
 /// Runs of `text` with at most [`RUN_CHARS`] distinct non-ASCII characters; the Linux driver binds a spare keycode to each for the call and has fewer than 20 to lend.
