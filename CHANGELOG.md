@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.25 - 2026-10-27
 
 - **Bundled:** cua-driver v0.38.0-loomhand.6 (was v0.38.0-loomhand.5).
   - Linux: a launch by command line whose launcher stays alive while a process it forked draws the window, as LibreOffice's `oosplash` does for `soffice.bin`, now settles on that window ([loomhand/cua#9](https://github.com/loomhand/cua/pull/9)). `libreoffice --calc /tmp/x.ods` and `localc` return in about 0.23 s instead of waiting the whole 20 s launch budget.
