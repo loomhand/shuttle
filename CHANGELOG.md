@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.23 - 2026-10-27
 
 - **Bundled:** cua-driver v0.38.0-loomhand.5 (was v0.38.0-loomhand.4).
   - macOS: a background left click at a point stamps the event's window location with the point in the window, as a real click carries it, instead of the screen point ([loomhand/cua#8](https://github.com/loomhand/cua/pull/8)). An app that reads that field, as WeChat 4.1 appears to on a Mac with two displays, took such a click off by the window's origin. Chrome, Safari, TextEdit, Finder and a Qt app, which ignore the field, click where they did, and the click costs what it did.
