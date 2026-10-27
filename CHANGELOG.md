@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Bundled:** cua-driver v0.38.0-loomhand.6 (was v0.38.0-loomhand.5).
+  - Linux: a launch by command line whose launcher stays alive while a process it forked draws the window, as LibreOffice's `oosplash` does for `soffice.bin`, now settles on that window ([loomhand/cua#9](https://github.com/loomhand/cua/pull/9)). `libreoffice --calc /tmp/x.ods` and `localc` return in about 0.23 s instead of waiting the whole 20 s launch budget.
+  - Linux: a command line matches a window by its program instead of the last path segment, so with LibreOffice already running (Writer open), `libreoffice --calc /tmp/x.ods` resolves the new Calc window in about 0.22 s instead of an 8 s `launch_handoff_timeout` refusal. Launches by desktop entry or display name take the same time as before.
+
 ## 0.1.24 - 2026-10-27
 
 - **Linux: an app named as its menu shows it launches as that app.** `launch_app` (gui_plan `app`, `desk launch`, the computer verbs) with a name of more than one word that equals the name of an installed, shown application entry, ignoring case, now launches that entry, as `libreoffice calc` opens LibreOffice Calc. Before, such a name ran as a command line: LibreOffice started with a file named `calc`, showed "calc does not exist." after a 20 s launch wait, and LibreOffice 7.3 then answered no accessibility call until the alert closed. Command lines such as `libreoffice --calc file`, and one-word names, launch as before.
