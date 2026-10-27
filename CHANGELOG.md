@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.27 - 2026-10-28
+
+- **Linux: desk reads GTK 4 apps' controls as usable.** A node is now disabled only when it is neither enabled nor sensitive. GTK 4 marks a usable widget sensitive and never enabled, so before, desk called every control of a GTK 4 app disabled and `gui_plan` refused to click it, as with the Save button of Chrome's GTK 4 "Save File" dialog. GTK 3, Chromium, Qt, Firefox and LibreOffice set both states together, so their greyed-out controls still read as disabled: Mousepad's Save As refuses Save while the name is empty.
+- **Linux: a GTK 4 app gives no screen position.** GTK 4 answers every screen point and extent with the origin, so for an app whose toolkit is GTK 4, elements carry no `bounds`, `desk_at` refuses its windows, and a press runs the element's action. The toolkit is read once per app; a failed read is retried on the next call.
+
 ## 0.1.26 - 2026-10-27
 
 - **Bundled:** cua-driver v0.38.0-loomhand.7 (was v0.38.0-loomhand.6).
