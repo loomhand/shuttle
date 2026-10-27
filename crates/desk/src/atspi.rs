@@ -28,6 +28,7 @@ const MATCH_ALL: i32 = 1;
 const SORT_CANONICAL: u32 = 1;
 const VALUE: &str = "org.a11y.atspi.Value";
 const SELECTION: &str = "org.a11y.atspi.Selection";
+const APPLICATION: &str = "org.a11y.atspi.Application";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 const DBUS: &str = "org.freedesktop.DBus";
 const DBUS_PATH: &str = "/org/freedesktop/DBus";
@@ -44,6 +45,7 @@ const IF_VALUE: u8 = 8;
 const ACTIVE: u32 = 1;
 const CHECKED: u32 = 4;
 const ENABLED: u32 = 8;
+const SENSITIVE: u32 = 24;
 const INDETERMINATE: u32 = 32;
 /// The state of the node that holds the keyboard focus.
 pub const FOCUSED: u32 = 12;
@@ -215,6 +217,10 @@ static HUNG: LazyLock<std::sync::Mutex<HashMap<String, Instant>>> =
 static WOKEN: LazyLock<std::sync::Mutex<HashSet<String>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
 
+/// Whether each app, by bus name, answers screen coordinates.
+static SCREEN_COORDS: LazyLock<std::sync::Mutex<HashMap<String, bool>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
 /// An accessible object: the bus name of its app and its object path.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Obj {
@@ -289,9 +295,9 @@ impl Node {
         self.has(CHECKED)
     }
 
-    /// Whether the node is greyed out.
+    /// Whether the node is greyed out: neither enabled nor sensitive, since GTK 4 marks a usable widget sensitive only.
     pub fn disabled(&self) -> bool {
-        !self.has(ENABLED)
+        !self.has(ENABLED) && !self.has(SENSITIVE)
     }
 
     /// The names of the node's states that matter to a caller.
@@ -630,6 +636,9 @@ impl Atspi {
 
     /// The screen rectangle of `obj` as `[x, y, width, height]`.
     pub async fn extents(&self, obj: &Obj) -> Result<[i32; 4], String> {
+        if !self.screen_coords(&obj.bus).await {
+            return Err(no_screen_coords(obj));
+        }
         let (x, y, w, h): (i32, i32, i32, i32) =
             self.call(obj, COMPONENT, "GetExtents", &(SCREEN,)).await?;
         Ok([x, y, w, h])
@@ -663,6 +672,9 @@ impl Atspi {
 
     /// The deepest object under the screen point `(x, y)` inside `within`.
     pub async fn at_point(&self, within: &Obj, x: i32, y: i32) -> Result<Option<Obj>, String> {
+        if !self.screen_coords(&within.bus).await {
+            return Err(no_screen_coords(within));
+        }
         let mut at: Option<Obj> = None;
         let mut current = within.clone();
         for _ in 0..MAX_DEPTH {
@@ -742,6 +754,11 @@ impl Atspi {
     }
 
     async fn extras(&self, nodes: &mut [Node], extras: Extras) {
+        if extras.bounds
+            && let Some(first) = nodes.first().and_then(|n| n.obj.as_ref())
+        {
+            self.screen_coords(&first.bus).await;
+        }
         let all = &*nodes;
         let reads = join_all(nodes.iter().map(|n| async move {
             let Some(obj) = n.obj.as_ref() else {
@@ -830,6 +847,34 @@ impl Atspi {
             };
             let _ = self.reply(&root, ACCESSIBLE, "GetAttributes", &()).await;
         }
+    }
+
+    /// Whether the app on `bus` answers screen coordinates, read once from its toolkit name and version.
+    async fn screen_coords(&self, bus: &str) -> bool {
+        if let Some(known) = SCREEN_COORDS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(bus)
+        {
+            return *known;
+        }
+        let root = Obj {
+            bus: bus.to_owned(),
+            path: ROOT.to_owned(),
+        };
+        let (name, version) = tokio::join!(
+            self.prop::<String>(&root, APPLICATION, "ToolkitName"),
+            self.prop::<String>(&root, APPLICATION, "Version")
+        );
+        let known = answers_screen_coords(
+            name.as_deref().unwrap_or_default(),
+            version.as_deref().unwrap_or_default(),
+        );
+        SCREEN_COORDS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(bus.to_owned(), known);
+        known
     }
 
     /// The app's cached objects, from the cache of at-spi2-core 2.46 and later or from the older one, which lists the children of each object instead of its index and child count.
@@ -978,6 +1023,11 @@ fn first_wake(bus: &str) -> bool {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(bus.to_owned())
+}
+
+/// Whether a toolkit answers screen coordinates; GTK 4 answers every screen point and extent with the origin.
+fn answers_screen_coords(toolkit: &str, version: &str) -> bool {
+    !(toolkit == "GTK" && version.split('.').next() == Some("4"))
 }
 
 fn mark_hung(bus: &str) {
@@ -1241,6 +1291,13 @@ fn labelled_by(set: Vec<(u32, Vec<(String, OwnedObjectPath)>)>) -> Option<Obj> {
         .into_iter()
         .next()
         .map(Obj::of)
+}
+
+fn no_screen_coords(obj: &Obj) -> String {
+    format!(
+        "{}: its GTK 4 app reports no screen position; press it by its action",
+        obj.id()
+    )
 }
 
 fn not_responding(bus: &str) -> String {
@@ -1568,6 +1625,33 @@ mod tests {
         };
         assert_eq!(n(7).state_names(), vec!["indeterminate", "mixed"]);
         assert_eq!(n(42).state_names(), vec!["indeterminate"]);
+    }
+
+    #[test]
+    fn a_node_is_disabled_only_when_neither_enabled_nor_sensitive() {
+        let n = |states: u64| Node {
+            states,
+            ..Node::default()
+        };
+        assert!(!n(1 << SENSITIVE).disabled());
+        assert!(!n((1 << ENABLED) | (1 << SENSITIVE)).disabled());
+        assert!(!n(1 << ENABLED).disabled());
+        assert!(n(1 << SHOWING).disabled());
+        assert_eq!(n(1 << SHOWING).state_names(), vec!["showing", "disabled"]);
+        assert_eq!(
+            n((1 << SHOWING) | (1 << SENSITIVE)).state_names(),
+            vec!["showing"]
+        );
+    }
+
+    #[test]
+    fn only_gtk_4_lacks_screen_coordinates() {
+        assert!(!answers_screen_coords("GTK", "4.14.5"));
+        assert!(!answers_screen_coords("GTK", "4.20.1"));
+        assert!(answers_screen_coords("GTK", "3.24.41"));
+        assert!(answers_screen_coords("Chromium", "156.0.8078.47"));
+        assert!(answers_screen_coords("Qt", "6.4.2"));
+        assert!(answers_screen_coords("", ""));
     }
 
     #[test]
