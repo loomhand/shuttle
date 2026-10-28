@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs'
 import { createConnection } from 'node:net'
 
 export type Win = { id: string; title: string; role: string; pid: number | null; active: boolean; app?: string; owner?: string; modal?: string; blocks?: string; shell?: boolean }
@@ -134,6 +135,7 @@ async function model<T extends Metered>(tool: string, args: Record<string, unkno
   u.input_tokens += r.usage.input_tokens
   u.output_tokens += r.usage.output_tokens
   u.cached_tokens += r.usage.cached_tokens
+  if (process.env.SHUTTLE_RUN) writeFileSync(`${process.env.SHUTTLE_RUN}/usage.json`, JSON.stringify(usage))
   return r
 }
 
