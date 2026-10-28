@@ -2149,13 +2149,13 @@ fn unseen_of(w: &Value, mac: bool) -> Option<Unseen> {
     (mac && w["is_on_screen"] == false).then_some(Unseen::Hidden)
 }
 
-/// `{"ok":true}`, with the driver's note when it could not confirm background input.
 /// Whether node `n` covers desk point `at`; none when it has no bounds.
 fn holds(n: &Node, (x, y): (f64, f64)) -> Option<bool> {
     let [l, t, w, h] = n.bounds?.map(f64::from);
     Some(x >= l && x < l + w && y >= t && y < t + h)
 }
 
+/// `{"ok":true}`, with the driver's note when it could not confirm background input.
 fn ok_with(unverified: Option<String>) -> String {
     match unverified {
         Some(note) => json!({"ok": true, "unverified": note}).to_string(),
