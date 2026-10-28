@@ -171,6 +171,13 @@ impl Input for std::sync::Arc<Driver> {
     }
 }
 
+#[derive(Serialize)]
+struct Request<'a> {
+    method: &'static str,
+    name: &'a str,
+    args: &'a Value,
+}
+
 /// `req` addressed to the screen, not to a window.
 pub fn desktop(mut req: Value) -> Value {
     req["scope"] = "desktop".into();
@@ -203,13 +210,6 @@ pub fn image_of(v: &Value) -> Option<&str> {
         .iter()
         .find(|c| c["type"] == "image")
         .and_then(|c| c["data"].as_str())
-}
-
-#[derive(Serialize)]
-struct Request<'a> {
-    method: &'static str,
-    name: &'a str,
-    args: &'a Value,
 }
 
 fn result(tool: &str, reply: &str) -> Result<Value, String> {

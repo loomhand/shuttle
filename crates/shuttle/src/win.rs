@@ -42,6 +42,75 @@ static SHOWN: OnceLock<Shown> = OnceLock::new();
 static TASKBAR_CREATED: OnceLock<u32> = OnceLock::new();
 static TRAY: AtomicIsize = AtomicIsize::new(0);
 
+struct Shown {
+    controls: Arc<dyn Controls>,
+    stop_label: String,
+    title: Mutex<&'static str>,
+}
+
+impl Shown {
+    fn tray(&self, window: HWND, action: NOTIFY_ICON_MESSAGE) {
+        let (title, icon) = if self.controls.halted() {
+            ("Shuttle stopped", IDI_ERROR)
+        } else if self.controls.acting() {
+            ("Shuttle acting", IDI_INFORMATION)
+        } else {
+            ("Shuttle", IDI_APPLICATION)
+        };
+        let mut last = self.title.lock().unwrap_or_else(PoisonError::into_inner);
+        if action == NIM_MODIFY && *last == title {
+            return;
+        }
+        *last = title;
+        let mut data = NOTIFYICONDATAW {
+            cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+            hWnd: window,
+            uID: 1,
+            uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
+            uCallbackMessage: TRAY_MESSAGE,
+            // SAFETY: a stock icon needs no module and lives for the process.
+            hIcon: unsafe { LoadIconW(None, icon) }.unwrap_or_default(),
+            ..Default::default()
+        };
+        for (slot, unit) in data.szTip.iter_mut().zip(title.encode_utf16()) {
+            *slot = unit;
+        }
+        // SAFETY: `data` is a filled NOTIFYICONDATAW for this thread's window.
+        let _ = unsafe { Shell_NotifyIconW(action, &data) };
+    }
+
+    fn menu(&self, window: HWND) {
+        let stop = HSTRING::from(self.stop_label.as_str());
+        // SAFETY: the menu is created, shown and destroyed on this thread; both labels outlive it.
+        let picked = unsafe {
+            let Ok(menu) = CreatePopupMenu() else {
+                return;
+            };
+            let _ = AppendMenuW(menu, MF_STRING, STOP, &stop);
+            let _ = AppendMenuW(menu, MF_STRING, RESUME, w!("Resume"));
+            let mut at = POINT::default();
+            let _ = GetCursorPos(&mut at);
+            let _ = SetForegroundWindow(window);
+            let picked = TrackPopupMenu(
+                menu,
+                TPM_RETURNCMD | TPM_NONOTIFY,
+                at.x,
+                at.y,
+                None,
+                window,
+                None,
+            );
+            let _ = DestroyMenu(menu);
+            picked.0 as usize
+        };
+        match picked {
+            STOP => self.controls.halt(true),
+            RESUME => self.controls.halt(false),
+            _ => {}
+        }
+    }
+}
+
 /// Runs the controls on this thread until the process exits.
 pub fn run(ui: Ui) -> ! {
     let shown = SHOWN.get_or_init(|| Shown {
@@ -205,73 +274,4 @@ extern "system" fn procedure(
     }
     // SAFETY: the arguments are the ones Windows passed to this window procedure.
     unsafe { DefWindowProcW(window, message, wparam, lparam) }
-}
-
-struct Shown {
-    controls: Arc<dyn Controls>,
-    stop_label: String,
-    title: Mutex<&'static str>,
-}
-
-impl Shown {
-    fn tray(&self, window: HWND, action: NOTIFY_ICON_MESSAGE) {
-        let (title, icon) = if self.controls.halted() {
-            ("Shuttle stopped", IDI_ERROR)
-        } else if self.controls.acting() {
-            ("Shuttle acting", IDI_INFORMATION)
-        } else {
-            ("Shuttle", IDI_APPLICATION)
-        };
-        let mut last = self.title.lock().unwrap_or_else(PoisonError::into_inner);
-        if action == NIM_MODIFY && *last == title {
-            return;
-        }
-        *last = title;
-        let mut data = NOTIFYICONDATAW {
-            cbSize: size_of::<NOTIFYICONDATAW>() as u32,
-            hWnd: window,
-            uID: 1,
-            uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
-            uCallbackMessage: TRAY_MESSAGE,
-            // SAFETY: a stock icon needs no module and lives for the process.
-            hIcon: unsafe { LoadIconW(None, icon) }.unwrap_or_default(),
-            ..Default::default()
-        };
-        for (slot, unit) in data.szTip.iter_mut().zip(title.encode_utf16()) {
-            *slot = unit;
-        }
-        // SAFETY: `data` is a filled NOTIFYICONDATAW for this thread's window.
-        let _ = unsafe { Shell_NotifyIconW(action, &data) };
-    }
-
-    fn menu(&self, window: HWND) {
-        let stop = HSTRING::from(self.stop_label.as_str());
-        // SAFETY: the menu is created, shown and destroyed on this thread; both labels outlive it.
-        let picked = unsafe {
-            let Ok(menu) = CreatePopupMenu() else {
-                return;
-            };
-            let _ = AppendMenuW(menu, MF_STRING, STOP, &stop);
-            let _ = AppendMenuW(menu, MF_STRING, RESUME, w!("Resume"));
-            let mut at = POINT::default();
-            let _ = GetCursorPos(&mut at);
-            let _ = SetForegroundWindow(window);
-            let picked = TrackPopupMenu(
-                menu,
-                TPM_RETURNCMD | TPM_NONOTIFY,
-                at.x,
-                at.y,
-                None,
-                window,
-                None,
-            );
-            let _ = DestroyMenu(menu);
-            picked.0 as usize
-        };
-        match picked {
-            STOP => self.controls.halt(true),
-            RESUME => self.controls.halt(false),
-            _ => {}
-        }
-    }
 }
