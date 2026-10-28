@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **macOS: background typing refuses a field the click did not focus.** A background `type` reads the app's focused element first, names it in `focused`, and refuses, sending nothing, when the last background click into the same window left a text field focused that does not contain the click point. Before, a click on a Qt search field that left the focus in the chat input sent the typed text into the chat input, and the driver even confirmed it there. A background `click` result names the focused element afterwards, with `at_click` for a text field. When accessibility shows no focused text field in the app, as in WeChat, `type` still sends and its `unverified` says to confirm the field in a screenshot before Return or Send. The check costs one accessibility read per background click and type.
+- **A `delivery_mode` the desk does not use is refused.** A desk action that passes `delivery_mode` other than the mode `[desk] input` sends input in is refused before anything is sent. Before, shuttle ignored the argument, so a `click` asking for `"foreground"` on a background desk went in the background and reported success.
 
 ## 0.1.27 - 2026-10-28
 

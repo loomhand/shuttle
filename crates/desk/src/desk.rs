@@ -192,8 +192,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         } else {
             None
         };
-        if ACTIONS.contains(&tool) && tool != "desk_type" {
-            *self.clicks() = None;
+        if ACTIONS.contains(&tool) {
+            self.check_mode(&args)?;
+            if tool != "desk_type" {
+                *self.clicks() = None;
+            }
         }
         if !self.allow.is_open() {
             self.admit(tool, &args).await?;
@@ -202,6 +205,21 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return self.auto_run(tool, args, turn).await;
         }
         self.dispatch(tool, args, turn).await
+    }
+
+    /// Refuses a call whose `delivery_mode` is not the mode this desk sends input in.
+    fn check_mode(&self, args: &Value) -> Result<(), String> {
+        let input = if self.background {
+            "background"
+        } else {
+            "foreground"
+        };
+        match args["delivery_mode"].as_str() {
+            Some(mode) if mode != input => Err(format!(
+                "delivery_mode {mode:?} refused, nothing was sent: this desk sends input in the {input}, as the user's [desk] input setting says, and a call cannot change that"
+            )),
+            _ => Ok(()),
+        }
     }
 
     async fn auto_run(
@@ -3751,6 +3769,36 @@ pub(crate) mod tests {
                 .is_some_and(|n| n.ends_with(FOCUS_UNKNOWN)),
             "{typed}"
         );
+    }
+
+    #[tokio::test]
+    async fn input_asking_for_a_delivery_mode_the_desk_does_not_use_is_refused_before_it_is_sent() {
+        for background in [true, false] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk =
+                Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Mac).background(background);
+            let (other, same) = if background {
+                ("foreground", "background")
+            } else {
+                ("background", "foreground")
+            };
+            let click = |mode: &str| {
+                desk.run(
+                    "desk_click",
+                    json!({"x": 300.0, "y": 250.0, "window": "Untitled", "delivery_mode": mode}),
+                )
+            };
+            let err = click(other).await.unwrap_err();
+            assert!(
+                err.contains(&format!(
+                    "delivery_mode \"{other}\" refused, nothing was sent"
+                )),
+                "{err}"
+            );
+            assert!(sent(&calls, "click").is_empty());
+            click(same).await.unwrap();
+            assert_eq!(sent(&calls, "click").len(), 1);
+        }
     }
 
     #[tokio::test]
