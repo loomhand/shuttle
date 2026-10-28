@@ -447,6 +447,24 @@ impl Access for Ax {
         Ok(self.node_of(&el, &a, extras, chars, display_scale()))
     }
 
+    fn keyboard_focus(&mut self, pid: u32) -> Result<Option<Node>, String> {
+        let pid = i32::try_from(pid).map_err(|_| format!("no process {pid}"))?;
+        let Some(el) = attr(&application(pid), "AXFocusedUIElement") else {
+            return Ok(None);
+        };
+        let a = attrs(&self.names, &el);
+        if a.role.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(self.node_of(
+            &el,
+            &a,
+            Extras::FRAME,
+            VALUE_CHARS,
+            display_scale(),
+        )))
+    }
+
     fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
         let mut chain = Vec::new();
         let mut at = self.element(id)?;

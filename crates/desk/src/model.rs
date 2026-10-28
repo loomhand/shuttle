@@ -279,6 +279,10 @@ pub trait Access {
     fn focused(&mut self, frame: &Frame, _within: Duration) -> Result<Option<String>, String> {
         focused_by_tree(self, frame)
     }
+    /// The element with the keyboard focus in the app of process `pid`, with its screen bounds; none when it has none or the backend cannot tell.
+    fn keyboard_focus(&mut self, _pid: u32) -> Result<Option<Node>, String> {
+        Ok(None)
+    }
     /// The ids above `id`, from its top-level window down to its parent.
     fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String>;
     /// The deepest element of the window `window` under the screen pixel `(x, y)`.

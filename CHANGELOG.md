@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **macOS: background typing refuses a field the click did not focus.** A background `type` reads the app's focused element first, names it in `focused`, and refuses, sending nothing, when the last background click into the same window left a text field focused that does not contain the click point. Before, a click on a Qt search field that left the focus in the chat input sent the typed text into the chat input, and the driver even confirmed it there. A background `click` result names the focused element afterwards, with `at_click` for a text field. When accessibility shows no focused text field in the app, as in WeChat, `type` still sends and its `unverified` says to confirm the field in a screenshot before Return or Send. The check costs one accessibility read per background click and type.
+
 ## 0.1.27 - 2026-10-28
 
 - **Linux: desk reads GTK 4 apps' controls as usable.** A node is now disabled only when it is neither enabled nor sensitive. GTK 4 marks a usable widget sensitive and never enabled, so before, desk called every control of a GTK 4 app disabled and `gui_plan` refused to click it, as with the Save button of Chrome's GTK 4 "Save File" dialog. GTK 3, Chromium, Qt, Firefox and LibreOffice set both states together, so their greyed-out controls still read as disabled: Mousepad's Save As refuses Save while the name is empty.

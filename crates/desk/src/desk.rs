@@ -97,6 +97,8 @@ const TYPE_SETTLE: Duration = Duration::from_millis(100);
 const TYPE_POLL: Duration = Duration::from_millis(10);
 const TYPE_TAIL: usize = 16;
 const MAC_TYPE_DELAY_MS: u64 = 0;
+const FIELD_ROLES: [&str; 2] = ["textbox", "searchbox"];
+const FOCUS_UNKNOWN: &str = "accessibility shows no focused text field in the app, so which field took the text is unknown: confirm it in a screenshot before you press Return or Send";
 
 tokio::task_local! {
     static FOREGROUND: bool;
@@ -121,6 +123,7 @@ pub struct Desk<B, D> {
     background: bool,
     auto: bool,
     unseen: std::sync::Mutex<HashMap<(i64, i64), Unseen>>,
+    clicked: std::sync::Mutex<Option<Clicked>>,
     typer: Typer,
     #[cfg(test)]
     skew: Arc<std::sync::atomic::AtomicU64>,
@@ -142,6 +145,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             background: false,
             auto: false,
             unseen: std::sync::Mutex::new(HashMap::new()),
+            clicked: std::sync::Mutex::new(None),
             typer: TYPER,
             #[cfg(test)]
             skew: Arc::default(),
@@ -188,6 +192,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         } else {
             None
         };
+        if ACTIONS.contains(&tool) && tool != "desk_type" {
+            *self.clicks() = None;
+        }
         if !self.allow.is_open() {
             self.admit(tool, &args).await?;
         }
@@ -692,6 +699,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn type_text(&self, a: TypeArgs, turn: Option<Turn>) -> Result<String, String> {
         let text = a.text.as_str();
         let to = self.target(a.window.as_deref(), a.pid).await?;
+        let focus = match to {
+            Some(to) if self.os == Os::Mac => Some(self.typing_focus(to).await?),
+            _ => None,
+        };
         let raised = self.raised_window(a.window.as_deref(), a.pid).await?;
         let mut note = None;
         for (i, line) in text.split('\n').enumerate() {
@@ -733,10 +744,47 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             self.typed(text).await;
         }
         let mut out = json!({"ok": true, "chars": text.chars().count()});
+        if let Some((focused, field)) = focus {
+            out["focused"] = focused;
+            if !field {
+                note = Some(note.map_or_else(
+                    || FOCUS_UNKNOWN.to_owned(),
+                    |n| format!("{n}; {FOCUS_UNKNOWN}"),
+                ));
+            }
+        }
         if let Some(note) = note {
             out["unverified"] = note.into();
         }
         Ok(out.to_string())
+    }
+
+    /// The focused element of window `to`'s app as `{role, name}` and whether it is a text field; refuses a field that a background click into `to` missed.
+    async fn typing_focus(&self, to: (i64, i64)) -> Result<(Value, bool), String> {
+        let clicked = self.clicks().filter(|c| c.to == to).map(|c| c.at);
+        let Some(n) = self.keyboard_focus(to.0).await else {
+            return Ok((Value::Null, false));
+        };
+        let field = FIELD_ROLES.contains(&n.role);
+        if field && clicked.and_then(|at| holds(&n, at)) == Some(false) {
+            return Err(format!(
+                "type refused, nothing was typed: the keyboard focus is in {} {:?}, not in the field of the last click into this window, so the text would go there; click the field to type into, then type again",
+                n.role, n.name
+            ));
+        }
+        let mut focused = json!({"role": n.role});
+        focused["name"] = n.name.into();
+        Ok((focused, field))
+    }
+
+    /// The element with the keyboard focus in the app of process `pid`; none when it cannot be read.
+    async fn keyboard_focus(&self, pid: i64) -> Option<Node> {
+        let pid = u32::try_from(pid).ok()?;
+        self.access
+            .run(CALL_LIMIT, (), move |b| b.keyboard_focus(pid))
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Sends `req` to window `to`, or in the foreground to the focused window, and keeps the first note of background input the driver could not confirm.
@@ -849,14 +897,30 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if let Some(count) = a.count {
             req["count"] = count.into();
         }
-        if (self.bg() || self.os == Os::Mac)
-            && let Some(w) = named
-        {
-            let note = self.click_in(req, &w, (x, y)).await?;
-            return Ok(ok_with(note));
+        let note = match named {
+            Some(w) if self.bg() || self.os == Os::Mac => self.click_in(req, &w, (x, y)).await?,
+            _ => self.click_at(req).await?,
+        };
+        let mut out = json!({"ok": true});
+        if let Some(note) = note {
+            out["unverified"] = note.into();
         }
-        let note = self.click_at(req).await?;
-        Ok(ok_with(note))
+        let clicked = *self.clicks();
+        if let Some(c) = clicked.filter(|_| self.os == Os::Mac)
+            && let Some(n) = self.keyboard_focus(c.to.0).await
+        {
+            let at = FIELD_ROLES
+                .contains(&n.role)
+                .then(|| holds(&n, c.at))
+                .flatten();
+            let mut focused = json!({"role": n.role});
+            focused["name"] = n.name.into();
+            if let Some(at) = at {
+                focused["at_click"] = at.into();
+            }
+            out["focused"] = focused;
+        }
+        Ok(out.to_string())
     }
 
     /// A click at desk point `(x, y)` in driver window `w`, which the allowlist already admitted when it was picked.
@@ -1220,6 +1284,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if cover.is_some() {
             return Ok(cover);
         }
+        if self.bg()
+            && let Some(at) = req["x"].as_f64().zip(req["y"].as_f64())
+        {
+            *self.clicks() = Some(Clicked {
+                to: (w.pid, w.id),
+                at,
+            });
+        }
         Ok(self.unverified(&out, Some((w.pid, w.id)), false))
     }
 
@@ -1484,6 +1556,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     fn unseens(&self) -> std::sync::MutexGuard<'_, HashMap<(i64, i64), Unseen>> {
         self.unseen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn clicks(&self) -> std::sync::MutexGuard<'_, Option<Clicked>> {
+        self.clicked
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -1763,6 +1841,13 @@ struct Under {
     point: (f64, f64),
 }
 
+/// The window of the last background click and its desk point, which typing into that window checks the focus against.
+#[derive(Clone, Copy)]
+struct Clicked {
+    to: (i64, i64),
+    at: (f64, f64),
+}
+
 #[derive(Clone, Copy)]
 struct Read {
     pid: i64,
@@ -2035,6 +2120,12 @@ fn unseen_of(w: &Value, mac: bool) -> Option<Unseen> {
 }
 
 /// `{"ok":true}`, with the driver's note when it could not confirm background input.
+/// Whether node `n` covers desk point `at`; none when it has no bounds.
+fn holds(n: &Node, (x, y): (f64, f64)) -> Option<bool> {
+    let [l, t, w, h] = n.bounds?.map(f64::from);
+    Some(x >= l && x < l + w && y >= t && y < t + h)
+}
+
 fn ok_with(unverified: Option<String>) -> String {
     match unverified {
         Some(note) => json!({"ok": true, "unverified": note}).to_string(),
@@ -3593,6 +3684,76 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn background_typing_after_a_click_the_keyboard_focus_did_not_follow_is_refused() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk =
+            Desk::new(|| Ok(Chat("textbox")), Behind(Arc::clone(&calls)), Os::Mac).background(true);
+        let click = |y: f64| {
+            desk.run(
+                "desk_click",
+                json!({"x": 300.0, "y": y, "window": "Untitled"}),
+            )
+        };
+        let type_cmgs = || desk.run("desk_type", json!({"text": "cmgs", "window": "Untitled"}));
+        let missed: Value = serde_json::from_str(&click(30.0).await.unwrap().text).unwrap();
+        assert_eq!(
+            missed["focused"],
+            json!({"role": "textbox", "name": "Message", "at_click": false})
+        );
+        let err = type_cmgs().await.unwrap_err();
+        assert!(
+            err.contains("nothing was typed") && err.contains("textbox \"Message\""),
+            "{err}"
+        );
+        assert!(sent(&calls, "type_text").is_empty());
+        let hit: Value = serde_json::from_str(&click(480.0).await.unwrap().text).unwrap();
+        assert_eq!(hit["focused"]["at_click"], true, "{hit}");
+        let typed: Value = serde_json::from_str(&type_cmgs().await.unwrap().text).unwrap();
+        assert_eq!(
+            typed["focused"],
+            json!({"role": "textbox", "name": "Message"})
+        );
+        assert_eq!(sent(&calls, "type_text").len(), 1);
+        click(30.0).await.unwrap();
+        desk.run("desk_key", json!({"keys": "tab", "window": "Untitled"}))
+            .await
+            .unwrap();
+        type_cmgs().await.unwrap();
+        assert_eq!(sent(&calls, "type_text").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn background_typing_into_an_app_with_no_focused_text_field_says_the_field_is_unknown() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk =
+            Desk::new(|| Ok(Chat("window")), Behind(Arc::clone(&calls)), Os::Mac).background(true);
+        desk.run(
+            "desk_click",
+            json!({"x": 300.0, "y": 30.0, "window": "Untitled"}),
+        )
+        .await
+        .unwrap();
+        let typed: Value = serde_json::from_str(
+            &desk
+                .run("desk_type", json!({"text": "cmgs", "window": "Untitled"}))
+                .await
+                .unwrap()
+                .text,
+        )
+        .unwrap();
+        assert_eq!(
+            typed["focused"],
+            json!({"role": "window", "name": "Message"})
+        );
+        assert!(
+            typed["unverified"]
+                .as_str()
+                .is_some_and(|n| n.ends_with(FOCUS_UNKNOWN)),
+            "{typed}"
+        );
+    }
+
+    #[tokio::test]
     async fn background_input_without_a_target_or_into_a_window_that_refuses_the_pointer_is_refused()
      {
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -4253,6 +4414,13 @@ pub(crate) mod tests {
             }
         }
 
+        fn keyboard_focus(&mut self, _: u32) -> Result<Option<Node>, String> {
+            Ok(Some(Node {
+                role: "textbox",
+                ..Node::default()
+            }))
+        }
+
         fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
             Ok(Vec::new())
         }
@@ -4271,6 +4439,57 @@ pub(crate) mod tests {
 
         fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
             Ok(id.split('/').next().and_then(|p| p.parse().ok()))
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct Chat(&'static str);
+
+    impl Access for Chat {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            Ok(vec![frame(
+                "4/1",
+                "Untitled - Notepad",
+                4,
+                false,
+                Some("Notepad"),
+            )])
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            Ok(Tree {
+                frame: frame.clone(),
+                ..Tree::default()
+            })
+        }
+
+        fn node(&mut self, id: &str, _: Extras, _: usize) -> Result<Node, String> {
+            Err(format!("no node {id}"))
+        }
+
+        fn keyboard_focus(&mut self, pid: u32) -> Result<Option<Node>, String> {
+            Ok((pid == 4).then(|| Node {
+                id: "4/7".into(),
+                role: self.0,
+                name: "Message".into(),
+                bounds: Some([100, 500, 800, 100]),
+                ..Node::default()
+            }))
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok(None)
         }
 
         fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
