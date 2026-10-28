@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use desk_core::args::{
-    ActArgs, AtArgs, ClickArgs, DragArgs, FindArgs, IdArgs, KeyArgs, LaunchArgs, ReadArgs,
+    ActArgs, AtArgs, ClickArgs, DragArgs, FindArgs, Focus, IdArgs, KeyArgs, LaunchArgs, ReadArgs,
     ScrollArgs, ShotArgs, SnapArgs, StillArgs, TypeArgs, WaitArgs, WindowArgs, parse,
 };
 use desk_core::text::{MAX_FOUND, NAME_CHARS, matches, ms, quote};
@@ -98,7 +98,8 @@ const TYPE_POLL: Duration = Duration::from_millis(10);
 const TYPE_TAIL: usize = 16;
 const MAC_TYPE_DELAY_MS: u64 = 0;
 const FIELD_ROLES: [&str; 2] = ["textbox", "searchbox"];
-const FOCUS_UNKNOWN: &str = "accessibility shows no focused text field in the app, so which field took the text is unknown: confirm it in a screenshot before you press Return or Send";
+const FOCUS_UNREAD: &str = "type refused, nothing was typed: the keyboard focus cannot be read in this window, so the text could go into another field than the one clicked; confirm the focused field in a screenshot, then call type again with focus: \"unverified\"";
+const FOCUS_UNKNOWN: &str = "focus unverified: accessibility shows no focused text field in the app, so which field took the text is unknown: confirm it in a screenshot before you press Return or Send";
 
 tokio::task_local! {
     static FOREGROUND: bool;
@@ -718,7 +719,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let text = a.text.as_str();
         let to = self.target(a.window.as_deref(), a.pid).await?;
         let focus = match to {
-            Some(to) if self.os == Os::Mac => Some(self.typing_focus(to).await?),
+            Some(to) if self.os == Os::Mac => Some(
+                self.typing_focus(to, a.focus == Some(Focus::Unverified))
+                    .await?,
+            ),
             _ => None,
         };
         let raised = self.raised_window(a.window.as_deref(), a.pid).await?;
@@ -777,13 +781,21 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(out.to_string())
     }
 
-    /// The focused element of window `to`'s app as `{role, name}` and whether it is a text field; refuses a field that a background click into `to` missed.
-    async fn typing_focus(&self, to: (i64, i64)) -> Result<(Value, bool), String> {
+    /// The focused element of window `to`'s app as `{role, name}` and whether it is a text field; after a background click into `to`, refuses a field the click missed, and an unreadable focus unless `unverified`.
+    async fn typing_focus(
+        &self,
+        to: (i64, i64),
+        unverified: bool,
+    ) -> Result<(Value, bool), String> {
         let clicked = self.clicks().filter(|c| c.to == to).map(|c| c.at);
-        let Some(n) = self.keyboard_focus(to.0).await else {
+        let n = self.keyboard_focus(to.0).await;
+        let field = n.as_ref().is_some_and(|n| FIELD_ROLES.contains(&n.role));
+        if !field && clicked.is_some() && !unverified {
+            return Err(FOCUS_UNREAD.to_owned());
+        }
+        let Some(n) = n else {
             return Ok((Value::Null, false));
         };
-        let field = FIELD_ROLES.contains(&n.role);
         if field && clicked.and_then(|at| holds(&n, at)) == Some(false) {
             return Err(format!(
                 "type refused, nothing was typed: the keyboard focus is in {} {:?}, not in the field of the last click into this window, so the text would go there; click the field to type into, then type again",
@@ -3741,7 +3753,8 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn background_typing_into_an_app_with_no_focused_text_field_says_the_field_is_unknown() {
+    async fn background_typing_after_a_click_into_an_app_with_no_focused_text_field_needs_focus_unverified()
+     {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk =
             Desk::new(|| Ok(Chat("window")), Behind(Arc::clone(&calls)), Os::Mac).background(true);
@@ -3751,14 +3764,24 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
+        let err = desk
+            .run("desk_type", json!({"text": "cmgs", "window": "Untitled"}))
+            .await
+            .unwrap_err();
+        assert_eq!(err, FOCUS_UNREAD);
+        assert!(sent(&calls, "type_text").is_empty());
         let typed: Value = serde_json::from_str(
             &desk
-                .run("desk_type", json!({"text": "cmgs", "window": "Untitled"}))
+                .run(
+                    "desk_type",
+                    json!({"text": "cmgs", "window": "Untitled", "focus": "unverified"}),
+                )
                 .await
                 .unwrap()
                 .text,
         )
         .unwrap();
+        assert_eq!(sent(&calls, "type_text").len(), 1);
         assert_eq!(
             typed["focused"],
             json!({"role": "window", "name": "Message"})
