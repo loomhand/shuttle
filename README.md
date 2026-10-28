@@ -61,7 +61,7 @@ Cursor (`~/.cursor/mcp.json`):
 |---|---|
 | `gui_plan` | Runs a GUI plan in one call: each step (`app`, `menu`, `click`, `check`, `set`, `type`, `key`, `wait`, `expect`, `verify`, `close`) resolves on the accessibility tree, is checked, and the plan stops at the first surprise; a passing plan can be saved as a flow and replayed |
 | `script_run` | Runs one JavaScript or TypeScript module on the bundled Node runtime with the desk API |
-| `desk` | One desk call: windows, wait, snapshot, find, read, press, act, at, key, type, click, scroll, drag, still, focus, close, launch, shot, screen |
+| `desk` | One desk call: windows, unanswered, wait, snapshot, find, read, press, act, at, key, type, click, scroll, drag, still, focus, close, launch, shot, screen |
 | `screenshot` | A PNG of the screen or a rectangle |
 | `status` | Name, version, OS and architecture |
 
