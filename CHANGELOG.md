@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Bundled:** cua-driver v0.38.0-loomhand.9 (was v0.38.0-loomhand.8), the same fork patches rebased onto upstream trycua/cua main 6097f4938.
+  - Windows: an element click whose element was read while its window was minimized is refused as stale, instead of being posted at the iconic position, where it reported success while nothing or another element got the click (upstream #5686, #6049).
+  - macOS: `get_window_state` can return a JPEG screenshot (`screenshot_format`), and captures keep raw pixels so a screenshot is encoded once; the default PNG is byte-identical (upstream #6042).
+  - On shuttle's micro set and background-latency loop, pass rates and timings match .8 on macOS and .7 on Linux and Windows.
+
 ## 0.1.28 - 2026-10-28
 
 - **Bundled:** cua-driver v0.38.0-loomhand.8 (was v0.38.0-loomhand.7).
