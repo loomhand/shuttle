@@ -215,7 +215,8 @@ async function perform(p: Params): Promise<Result> {
   const jevs = recs.filter((r) => r?.pick).length
   const settled = !escalate && !opened
   if (flow) {
-    putPending(null)
+    const front = escalate ? await focused() : null
+    putPending(escalate ? { at: Date.now(), window: front?.title ?? null, pid: front && !isShell(front) ? front.pid : null, name: flow.name, named: true, params, steps: plan.slice(0, done), dirty: recs.some((r) => r?.unsaved), escalated: true, saved: false, usage: plus({}, desk.usage) } : null)
     if (settled && recs.every((r) => !r?.unsaved)) {
       const rewrites = recs.filter((r, i) => r?.fp && !isDeepStrictEqual(r.fp, flow.steps[i]?.fp))
       flow.runs += 1
@@ -927,7 +928,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const chooser = isChooser(o); const sub = chooser && nl
     const first = !typed; typed = true
     const was = BG && w ? await texts(w) : null
-    if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field, then replay the flow`, await seen())
+    if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field in a plan that continues the flow from this step, which saves the fix into the flow`, await seen())
     // GTK preselects the name up to its last dot: a bare name keeps the extension, a path or a name with its own extension replaces the whole field
     if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine(w)
     // a line break goes as Return, which GTK text views take where they ignore a Linefeed
