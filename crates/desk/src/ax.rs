@@ -969,14 +969,6 @@ struct Listed {
 
 /// The windows on screen on every level, front to back.
 fn stacked() -> Vec<Listed> {
-    // SAFETY: the window list is returned at +1, or null, and wrapped once under the create rule.
-    let list = unsafe { CGWindowListCopyWindowInfo(ON_SCREEN_ONLY | EXCLUDE_DESKTOP, 0) };
-    if list.is_null() {
-        return Vec::new();
-    }
-    // SAFETY: `list` is a non-null CFArray at +1.
-    let list: CFArray<CFDictionary<CFString, CFType>> =
-        unsafe { CFArray::wrap_under_create_rule(list) };
     let (owner, layer, alpha, bounds) = (
         CFString::from_static_string("kCGWindowOwnerPID"),
         CFString::from_static_string("kCGWindowLayer"),
@@ -984,14 +976,15 @@ fn stacked() -> Vec<Listed> {
         CFString::from_static_string("kCGWindowBounds"),
     );
     let sides = ["X", "Y", "Width", "Height"].map(CFString::from_static_string);
-    list.iter()
+    window_list()
+        .iter()
         .filter_map(|d| {
             let b = d.find(&bounds).and_then(|v| dictionary(&v))?;
             let [x, y, w, h] = sides.each_ref().map(|k| float(&b, k));
             Some(Listed {
-                pid: u32::try_from(number(&d, &owner)?).ok()?,
-                layer: number(&d, &layer)?,
-                alpha: float(&d, &alpha).unwrap_or(1.0),
+                pid: u32::try_from(number(d, &owner)?).ok()?,
+                layer: number(d, &layer)?,
+                alpha: float(d, &alpha).unwrap_or(1.0),
                 bounds: [x?, y?, w?, h?],
             })
         })
@@ -1013,6 +1006,13 @@ fn top_listed(windows: &[Listed], (px, py): (f64, f64), skip: impl Fn(u32) -> bo
 
 /// The layer-0 windows on screen, front to back.
 fn on_screen() -> Vec<CFDictionary<CFString, CFType>> {
+    let layer = CFString::from_static_string("kCGWindowLayer");
+    let mut list = window_list();
+    list.retain(|d| number(d, &layer) == Some(0));
+    list
+}
+
+fn window_list() -> Vec<CFDictionary<CFString, CFType>> {
     // SAFETY: the window list is returned at +1, or null, and wrapped once under the create rule.
     let list = unsafe { CGWindowListCopyWindowInfo(ON_SCREEN_ONLY | EXCLUDE_DESKTOP, 0) };
     if list.is_null() {
@@ -1021,11 +1021,7 @@ fn on_screen() -> Vec<CFDictionary<CFString, CFType>> {
     // SAFETY: `list` is a non-null CFArray at +1.
     let list: CFArray<CFDictionary<CFString, CFType>> =
         unsafe { CFArray::wrap_under_create_rule(list) };
-    let layer = CFString::from_static_string("kCGWindowLayer");
-    list.iter()
-        .filter(|d| number(d, &layer) == Some(0))
-        .map(|d| (*d).clone())
-        .collect()
+    list.iter().map(|d| (*d).clone()).collect()
 }
 
 fn off_space_windows() -> Vec<CFDictionary<CFString, CFType>> {
