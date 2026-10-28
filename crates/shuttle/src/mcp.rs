@@ -168,7 +168,9 @@ async fn read(params: &Value, plugins: &Plugins) -> Result<Value, (i64, String)>
     let text = tokio::fs::read_to_string(&r.path)
         .await
         .map_err(|e| (INVALID_PARAMS, format!("read {}: {e}", r.path.display())))?;
-    Ok(json!({"contents": [{"uri": r.uri, "mimeType": r.mime, "text": text}]}))
+    let mut out = json!({"contents": [{"uri": r.uri, "mimeType": r.mime}]});
+    out["contents"][0]["text"] = text.into();
+    Ok(out)
 }
 
 fn reply(id: Value, result: Result<Value, (i64, String)>) -> Value {

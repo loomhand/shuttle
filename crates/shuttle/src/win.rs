@@ -45,8 +45,8 @@ static TRAY: AtomicIsize = AtomicIsize::new(0);
 /// Runs the controls on this thread until the process exits.
 pub fn run(ui: Ui) -> ! {
     let shown = SHOWN.get_or_init(|| Shown {
-        controls: Arc::clone(&ui.controls),
-        stop_label: ui.stop_label.clone(),
+        controls: ui.controls,
+        stop_label: ui.stop_label,
         title: Mutex::new(""),
     });
     // SAFETY: the window class and window live until the process exits; `procedure` reads only `SHOWN`, set above.
