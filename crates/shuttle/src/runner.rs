@@ -246,6 +246,11 @@ impl Runner {
                 .unwrap_or_else(|_| String::from_utf8_lossy(&raw).into_owned().into()),
             Err(_) => Value::Null,
         };
+        if let Ok(raw) = tokio::fs::read(scratch.join("usage.json")).await
+            && let Ok(usage) = serde_json::from_slice::<Value>(&raw)
+        {
+            report["usage"] = usage;
+        }
         Ok(report)
     }
 
@@ -389,6 +394,23 @@ mod tests {
         assert!(report.get("error").is_none());
         let defaulted = r.script(json!({"code": code}), "run-test").await.unwrap();
         assert_eq!(defaulted["result"]["n"], 1, "{defaulted}");
+    }
+
+    #[tokio::test]
+    async fn a_run_reports_the_model_usage_it_left_and_none_without_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = runner(dir.path());
+        let usage = json!({"vision-1": {"calls": 1, "input_tokens": 10, "output_tokens": 2, "cached_tokens": 0}});
+        let code = format!(
+            "import {{ writeFileSync }} from 'node:fs'\nexport function main() {{ writeFileSync(`${{process.env.SHUTTLE_RUN}}/usage.json`, '{usage}') }}"
+        );
+        let metered = r.script(json!({"code": code}), "run-test").await.unwrap();
+        assert_eq!(metered["usage"], usage, "{metered}");
+        let none = r
+            .script(json!({"code": "export function main() {}"}), "run-test")
+            .await
+            .unwrap();
+        assert!(none.get("usage").is_none(), "{none}");
     }
 
     #[tokio::test]
