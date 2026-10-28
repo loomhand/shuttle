@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.28 - 2026-10-28
 
 - **Bundled:** cua-driver v0.38.0-loomhand.8 (was v0.38.0-loomhand.7).
   - macOS: a background pixel click on a text input whose accessibility press leaves it unfocused now gives it the keyboard focus, as a real click does ([loomhand/cua#11](https://github.com/loomhand/cua/pull/11)). A Qt line edit takes the press and does nothing, so a click on a Qt search field left the focus in the chat input, and the text typed next went there. On a Qt chat window in the background, a click on its search field followed by `type` now puts the text in the search field, 3/3 on the main display and 3/3 on a second display; AppKit fields, which mostly decline the press, take the routed click as before.
