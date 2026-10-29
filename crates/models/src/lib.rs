@@ -16,6 +16,7 @@ use crate::chat::Part;
 use crate::config::{Config, DecideApi, Secret};
 
 const ASK_MAX_TOKENS: u32 = 400;
+const CREDITS_USED_UP: &str = "model credits are used up";
 const GROUND_MAX_TOKENS: u32 = 100;
 const GROUND_SCALE: f64 = 1000.0;
 
@@ -117,6 +118,17 @@ impl Models {
         let at = format!("{model} at {}", bare(res.url()));
         let status = res.status();
         let text = res.text().await.map_err(|e| failed(&at, e))?;
+        if status == reqwest::StatusCode::PAYMENT_REQUIRED {
+            let why = snippet(text.trim(), 300);
+            let why = if why.is_empty() {
+                why
+            } else {
+                format!(": {why}")
+            };
+            return Err(format!(
+                "{CREDITS_USED_UP}: {at} returned {status}{why}; add credit or upgrade the plan, then try again"
+            ));
+        }
         if !status.is_success() {
             return Err(format!("{at} returned {status}: {}", snippet(&text, 300)));
         }
