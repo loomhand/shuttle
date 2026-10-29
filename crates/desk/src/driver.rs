@@ -1,5 +1,6 @@
 //! cua-driver client: one line of JSON each way over its daemon socket, a named pipe on Windows.
 
+use std::io::ErrorKind;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -9,11 +10,15 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
+use crate::server::Conn;
+
 pub const WINDOW_SESSION: &str = "desk-window";
 pub const CAPTURE_SESSION: &str = "desk-capture";
 pub(crate) const CLICK_SPACING: Duration = Duration::from_millis(500);
+pub(crate) const CONNECT_RETRY: Duration = Duration::from_millis(250);
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_WAIT: Duration = Duration::from_secs(10);
 const SESSION: &str = "desk";
 const ENDED: &str = "session has ended";
 const CLICK_DISTANCE: f64 = 16.0;
@@ -55,10 +60,6 @@ impl Driver {
             "cua-driver",
             "cua-driver.sock",
         )
-    }
-
-    pub(crate) fn endpoint(&self) -> &str {
-        &self.endpoint
     }
 
     /// Runs `click` at `(x, y)` once [`CLICK_SPACING`] has passed since a click within [`CLICK_DISTANCE`] of it, and records it before the next click may check, so two clicks never make a double click.
@@ -105,11 +106,25 @@ impl Driver {
         Ok(())
     }
 
+    /// Connects to the daemon, waiting out a restart: the one each desktop session start triggers, or the supervisor's after the driver died.
+    pub(crate) async fn connect(&self) -> Result<Conn, String> {
+        let deadline = Instant::now() + CONNECT_WAIT;
+        loop {
+            match crate::server::connect(&self.endpoint).await {
+                Ok(stream) => return Ok(stream),
+                Err(e)
+                    if matches!(e.kind(), ErrorKind::ConnectionRefused | ErrorKind::NotFound)
+                        && Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(CONNECT_RETRY).await;
+                }
+                Err(e) => return Err(format!("connect cua-driver {}: {e}", self.endpoint)),
+            }
+        }
+    }
+
     async fn exchange(&self, line: Vec<u8>) -> Result<String, String> {
-        let stream = crate::server::connect(&self.endpoint)
-            .await
-            .map_err(|e| format!("connect cua-driver {}: {e}", self.endpoint))?;
-        let mut stream = BufReader::new(stream);
+        let mut stream = BufReader::new(self.connect().await?);
         stream
             .get_mut()
             .write_all(&line)
@@ -261,6 +276,32 @@ mod tests {
             "click: window_never_read: No screenshot of window 491"
         );
         assert!(result("click", "").is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_call_waits_out_a_driver_restart_behind_its_stale_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+        let restarted = socket.clone();
+        let daemon = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            std::fs::remove_file(&restarted).unwrap();
+            let listener = tokio::net::UnixListener::bind(&restarted).unwrap();
+            let (s, _) = listener.accept().await.unwrap();
+            let mut s = BufReader::new(s);
+            let mut line = String::new();
+            s.read_line(&mut line).await.unwrap();
+            s.get_mut()
+                .write_all(b"{\"ok\":true,\"result\":{\"width\":1280}}\n")
+                .await
+                .unwrap();
+        });
+        let d = Driver::new(socket.to_string_lossy().into_owned());
+        let got = d.send("get_screen_size", &json!({})).await.unwrap();
+        assert_eq!(got["width"], 1280);
+        daemon.await.unwrap();
     }
 
     #[cfg(target_os = "macos")]

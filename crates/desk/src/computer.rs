@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::io::ErrorKind;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -19,11 +18,10 @@ use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 use crate::desk::{Cancel, Turn, Typer, launch_name, text_runs};
-use crate::driver::{Driver, image_of, text_of};
+use crate::driver::{CONNECT_RETRY, Driver, image_of, text_of};
 use crate::keys::{Os, key_names};
 use crate::model::Modal;
 use crate::press::libreoffice;
-use crate::server::Conn;
 use crate::still::{Block, VISIBLE_STEP};
 use crate::volatile::{Shown, Volatile};
 use crate::xshm::{self, Grabber, Placement, clip};
@@ -75,8 +73,6 @@ const PHOTO_COLORS: usize = 2500;
 const COLOR_STRIDE: usize = 7;
 const MAX_WAIT_SECS: f64 = 10.0;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
-const CONNECT_RETRY: Duration = Duration::from_millis(250);
-const CONNECT_WAIT: Duration = Duration::from_secs(10);
 const DEFAULT_SESSION: &str = "computer";
 const SKIPPED: &str = "had no keycode";
 const WM_WAIT: Duration = Duration::from_secs(10);
@@ -1747,7 +1743,7 @@ impl Computer {
     /// Sends one call and returns the raw reply line, empty when the driver closed without one.
     async fn exchange(&self, session: &str, name: &str, args: Value) -> Result<String, String> {
         let exchange = async {
-            let mut stream = self.connect().await?;
+            let mut stream = self.driver.connect().await?;
             let mut line = json!({"method": "call", "name": name});
             line["args"] = args;
             line["args"]["session"] = session.into();
@@ -1767,28 +1763,6 @@ impl Computer {
         tokio::time::timeout(REQUEST_TIMEOUT, exchange)
             .await
             .map_err(|_| format!("cua-driver {name} timed out"))?
-    }
-
-    /// Connects to the driver, waiting out the restart that each desktop session start triggers.
-    async fn connect(&self) -> Result<Conn, String> {
-        let deadline = tokio::time::Instant::now() + CONNECT_WAIT;
-        loop {
-            match crate::server::connect(self.driver.endpoint()).await {
-                Ok(stream) => return Ok(stream),
-                Err(e)
-                    if matches!(e.kind(), ErrorKind::ConnectionRefused | ErrorKind::NotFound)
-                        && tokio::time::Instant::now() < deadline =>
-                {
-                    tokio::time::sleep(CONNECT_RETRY).await;
-                }
-                Err(e) => {
-                    return Err(format!(
-                        "connect cua-driver {}: {e}",
-                        self.driver.endpoint()
-                    ));
-                }
-            }
-        }
     }
 }
 
