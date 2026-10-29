@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **A model endpoint out of credit says so.** When the model endpoint answers 402 Payment Required, `model_decide`, `model_ask` and `model_ground` fail with `model credits are used up: <model> at <endpoint> returned 402 Payment Required[: <reason>]; add credit or upgrade the plan, then try again`, and a `gui_plan` step that gets it stops the plan as a tool error with that message. Before, the error read `<model> at <endpoint> returned 402 Payment Required: <body>`, and in a plan a 402 on a screenshot pick or on the check of a grounded point fell back to more model calls and could end as a generic "no element matches".
 - **The desk tool says where background typing in WeChat goes wrong.** Its description and safety.md note that in a macOS Qt app with no accessibility focus, such as WeChat, background typing into a search field can land in another field, and to reach a chat by scrolling its list or with foreground input.
 
 ## 0.1.29 - 2026-10-29
