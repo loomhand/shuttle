@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.29 - 2026-10-29
 
 - **Bundled:** cua-driver v0.38.0-loomhand.9 (was v0.38.0-loomhand.8), the same fork patches rebased onto upstream trycua/cua main 6097f4938.
   - Windows: an element click whose element was read while its window was minimized is refused as stale, instead of being posted at the iconic position, where it reported success while nothing or another element got the click (upstream #5686, #6049).
