@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.30 - 2026-10-29
 
 - **Bundled:** cua-driver v0.38.0-loomhand.10 (was v0.38.0-loomhand.9).
   - macOS: background typing into a window with no focused accessibility element no longer makes that window lose and regain key before the first key ([loomhand/cua#13](https://github.com/loomhand/cua/pull/13)). WeChat is such a window, and so is any Qt app drawn without an accessibility tree. The driver sent a defocus and a focus record for the window it was about to make key, and a Qt app that resets its focus on focus-in sent the text meant for its search field into the chat input. A chat-like Qt fixture with that reset now takes the text in its search field 3/3, where it took it in the chat input 4/4, and a LibreOffice Writer that was never active still takes background text, 2/2.
@@ -9,6 +9,8 @@
 - **macOS: background typing and single keys can work under a locked screen.** `[desk] locked_input = true`, off by default, sends a background `type` or single-key `key` while the screen is locked instead of refusing; the result is unverified, and the keys go to the app's key window as it was before the lock, since the lock hides every window from accessibility. Key combinations, clicks and every other action still refuse. An older cua-driver refuses the setting before anything is sent. [config.md](docs/config.md#desk-input) lists the caveats.
 - **A model endpoint out of credit says so.** When the model endpoint answers 402 Payment Required, `model_decide`, `model_ask` and `model_ground` fail with `model credits are used up: <model> at <endpoint> returned 402 Payment Required[: <reason>]; add credit or upgrade the plan, then try again`, and a `gui_plan` step that gets it stops the plan as a tool error with that message. Before, the error read `<model> at <endpoint> returned 402 Payment Required: <body>`, and in a plan a 402 on a screenshot pick or on the check of a grounded point fell back to more model calls and could end as a generic "no element matches".
 - **The desk tool says where background typing in WeChat goes wrong.** Its description and safety.md note that in a macOS Qt app with no accessibility focus, such as WeChat, background typing into a search field can land in another field, and to reach a chat by scrolling its list or with foreground input.
+- **A run that dies without reporting its error names its stderr.** When Node exits nonzero without writing its error (an uncaught exception outside `main`, or a runtime that cannot start or write its run directory), the `gui_plan` and `script_run` error now ends with the last 2 KiB of the run's stderr. Before, it said only `node exited with exit status: 1`.
+- **A desk call waits out a cua-driver restart.** After cua-driver dies, the daemon starts it again; a desk call made meanwhile now waits up to 10 seconds for the restarted driver instead of failing at once with `Connection refused`.
 
 ## 0.1.29 - 2026-10-29
 
