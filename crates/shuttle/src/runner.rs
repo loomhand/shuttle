@@ -14,6 +14,7 @@ use tokio::process::Command;
 const DEFAULT_TIMEOUT_S: u64 = 90;
 const MAX_TIMEOUT_S: u64 = 110;
 const MAX_OUTPUT: usize = 32 << 10;
+const STDERR_TAIL: usize = 2 << 10;
 const PIPE_GRACE: Duration = Duration::from_millis(500);
 #[cfg(unix)]
 const END_GRACE: Duration = Duration::from_secs(2);
@@ -220,8 +221,8 @@ impl Runner {
         let mut report = json!({
             "duration_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         });
+        let stderr = text(&stderr);
         report["logs"] = text(&logs).into();
-        report["stderr"] = text(&stderr).into();
         match status {
             Err(Ended::Stopped) => {
                 report["error"] = json!({"kind": "stopped", "message": crate::STOPPED});
@@ -237,10 +238,13 @@ impl Runner {
                     report["error"] = thrown
                         .ok()
                         .and_then(|raw| serde_json::from_slice(&raw).ok())
-                        .unwrap_or_else(|| json!({"kind": "exit", "message": format!("{} exited with {status}", program.file_name().unwrap_or_default().to_string_lossy())}));
+                        .unwrap_or_else(
+                            || json!({"kind": "exit", "message": exited(program, status, &stderr)}),
+                        );
                 }
             }
         }
+        report["stderr"] = stderr.into();
         report["result"] = match tokio::fs::read(scratch.join("result.json")).await {
             Ok(raw) => serde_json::from_slice(&raw)
                 .unwrap_or_else(|_| String::from_utf8_lossy(&raw).into_owned().into()),
@@ -332,6 +336,17 @@ async fn capture(mut r: impl AsyncRead + Unpin, into: Captured) {
         let room = MAX_OUTPUT.saturating_sub(buf.len());
         buf.extend_from_slice(&chunk[..n.min(room)]);
     }
+}
+
+/// Why a run that left no error of its own failed: its exit status and the end of its stderr, where Node prints an uncaught exception.
+fn exited(program: &Path, status: std::process::ExitStatus, stderr: &str) -> String {
+    let name = program.file_name().unwrap_or_default().to_string_lossy();
+    let stderr = stderr.trim_end();
+    if stderr.is_empty() {
+        return format!("{name} exited with {status}");
+    }
+    let tail = &stderr[stderr.ceil_char_boundary(stderr.len().saturating_sub(STDERR_TAIL))..];
+    format!("{name} exited with {status}; stderr: {tail}")
 }
 
 fn text(captured: &Captured) -> String {
@@ -729,6 +744,22 @@ mod tests {
             .args(["/F", "/PID", &pid])
             .output();
         assert!(kept, "{pid} died with a run that finished");
+    }
+
+    #[tokio::test]
+    async fn a_run_that_dies_without_reporting_names_its_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = runner(dir.path());
+        let crash = "export function main() { setTimeout(() => { throw new Error('late boom') }, 0); return 1 }";
+        let report = r.script(json!({"code": crash}), "run-test").await.unwrap();
+        assert_eq!(report["error"]["kind"], "exit", "{report}");
+        let message = report["error"]["message"].as_str().unwrap();
+        assert!(message.starts_with("node exited with "), "{message}");
+        assert!(message.contains("Error: late boom"), "{message}");
+        std::fs::write(dir.path().join("gui_plan.mts"), crash).unwrap();
+        let plan = r.plan(json!({"steps": []}), "run-test").await.unwrap_err();
+        assert!(plan.starts_with("gui_plan: node exited with "), "{plan}");
+        assert!(plan.contains("Error: late boom"), "{plan}");
     }
 
     #[cfg(unix)]
