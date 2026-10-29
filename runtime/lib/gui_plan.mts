@@ -41,6 +41,7 @@ const BEHIND = process.env.SHUTTLE_INPUT === 'background' || process.env.SHUTTLE
 const AUTO = process.env.SHUTTLE_INPUT === 'auto'
 const NO_PIXELS = 'background gui_plan does not read the screen, which shows whatever covers the plan\'s window'
 const NO_FRONT = 'no focused window'
+const SPENT = 'model credits are used up'
 const FLOWS = process.env.SHUTTLE_FLOWS ?? ''
 const LOG = `${FLOWS}/.runs.jsonl`
 const LOG_MAX = 1024 * 1024
@@ -252,6 +253,7 @@ async function perform(p: Params): Promise<Result> {
   if (flow?.usage) out.recorded_usage = flow.usage
   if (escalate) out.escalate = escalate
   else out.window = end?.title ?? null
+  if (escalate?.reason.startsWith(SPENT)) out.error = escalate.reason
   const notes = recs.filter((r) => r?.unverified && !r.confirmed).map((r) => ({ step: r.i, note: r.unverified }))
   if (notes.length) out.unverified = notes
   return out
@@ -283,6 +285,8 @@ function* up<N extends { parent: number }>(nodes: N[], from: number): Generator<
   for (let p = from; p >= 0;) { const n = nodes[p]; if (!n) return; yield [p, n]; p = n.parent }
 }
 function prob(j: desk.Judgment | undefined): number { return j?.probability ?? 0 }
+function spent(e: unknown) { return e instanceof Error && e.message.startsWith(SPENT) }
+function unspent(e: unknown): null { if (spent(e)) throw e; return null }
 function menus(nodes: Node[], from: number): Node[] {
   const out: Node[] = []
   for (const [, q] of up(nodes, from)) { if (q.role !== 'menu') break; out.push(q) }
@@ -659,7 +663,8 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>) 
     const list = `Elements of the focused window, with their centres as fractions of the screenshot:\n${pool.map((n) => placed[`r${n.ref}`]).join('\n')}`
     const d = await desk.look([list, desk.image(await desk.shot())], { pick: desk.choice(`Which element is "${target}"? Use the screenshot to tell apart elements with the same name.`, placed) })
     return { d, viewed: true }
-  } catch {
+  } catch (e: unknown) {
+    if (spent(e)) throw e
     return { d: await desk.decide(pool.map((n) => opts[`r${n.ref}`]).join('\n'), { pick: desk.choice(`Which element is "${target}"?`, opts) }), viewed: false }
   } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
@@ -707,17 +712,18 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
     if (!el || el[2] * el[3] < SMALL) {
       const rw = Math.min(area.width, el ? Math.min(384, Math.max(96, Math.round(1.5 * el[2]), Math.round(5 * el[3] * 4 / 3))) : 192)
       const rh = Math.min(area.height, el ? Math.round(rw * 3 / 4) : 144)
-      out.check += '+zoom'; out.p_zoom = await crop(rw, rh, Math.max(1, Math.ceil(Math.max(384 / (rw * s), 288 / (rh * s))))).catch(() => null)
+      out.check += '+zoom'; out.p_zoom = await crop(rw, rh, Math.max(1, Math.ceil(Math.max(384 / (rw * s), 288 / (rh * s))))).catch(unspent)
       out.ok = (out.p_zoom ?? 0) >= ZOOM_BAR
     }
     if (!out.ok && desk.setting('DESK_FULL_CHECK') !== 'off') {
       const [px, py] = [Math.round((x - ox) * s), Math.round((y - oy) * s)]
       const full = async () => yes([`The screen, ${screen.w}x${screen.h}. A red ring with four ticks marks the spot a click is about to land on, centred at pixel (${px}, ${py}).`, desk.image(ring(screen, px, py, Math.round(RING * s)))], `Is the spot marked by the red ring on ${target}?`)
-      out.check += '+full'; out.p_full = await full().catch(() => null)
+      out.check += '+full'; out.p_full = await full().catch(unspent)
       out.ok = (out.p_full ?? 0) >= FULL_BAR
     }
     return out
   } catch (e: unknown) {
+    if (spent(e)) throw e
     const p = prob((await decide({ element_under_point: what, window_title: w.title }, { is: desk.yes(`Is this element "${target}"?`) })).is)
     return { what, ok: p >= 0.7, check: `jev (${(e instanceof Error ? e.message : String(e)).slice(0, 80)})`, p: +p.toFixed(2) }
   } finally { tick('check', t0) }
