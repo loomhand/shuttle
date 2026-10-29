@@ -322,6 +322,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_402_from_decide_ground_or_ask_says_the_model_credits_are_used_up() {
+        for (body, why) in [
+            (
+                r#"{"error":"daily credit exhausted"}"#,
+                r#": {"error":"daily credit exhausted"}"#,
+            ),
+            ("", ""),
+        ] {
+            let (base, seen) = serve(move |_| {
+                format!(
+                    "HTTP/1.1 402 Payment Required\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            })
+            .await;
+            let m = Models::new(gateway(&base));
+            let decided = m
+                .decide(DecideArgs {
+                    state: json!("x"),
+                    questions: questions(json!({"on": {"type": "noul", "instructions": "On?"}})),
+                    image: false,
+                    timeout_ms: None,
+                })
+                .await
+                .unwrap_err();
+            let grounded = m
+                .ground(GroundArgs {
+                    png_b64: "UE5H".into(),
+                    target: "OK button".into(),
+                    area: serde_json::from_value(json!({"width": 1280, "height": 800})).unwrap(),
+                })
+                .await
+                .unwrap_err();
+            let asked = m
+                .ask(AskArgs {
+                    prompt: "x".into(),
+                    images: vec![],
+                })
+                .await
+                .unwrap_err();
+            let spent = |model: &str, path: &str| {
+                format!(
+                    "model credits are used up: {model} at {base}{path} returned 402 Payment Required{why}; add credit or upgrade the plan, then try again"
+                )
+            };
+            assert_eq!(decided, spent("typesafe/jev-1.14", "/v1/decisions"));
+            assert_eq!(
+                grounded,
+                spent("qwen/qwen3-vl-235b-a22b-instruct", "/v1/chat/completions")
+            );
+            assert_eq!(
+                asked,
+                spent("anthropic/claude-sonnet-5", "/v1/chat/completions")
+            );
+            assert_eq!(seen.lock().unwrap().len(), 3);
+        }
+    }
+
+    #[tokio::test]
     async fn a_failed_send_names_the_url_it_requested_not_where_a_redirect_led() {
         let (base, _) = serve(|_| {
             "HTTP/1.1 308 Permanent Redirect\r\nlocation: http://127.0.0.1:9/elsewhere\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_owned()
