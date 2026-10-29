@@ -99,6 +99,8 @@ const TYPE_TAIL: usize = 16;
 const MAC_TYPE_DELAY_MS: u64 = 0;
 const FIELD_ROLES: [&str; 2] = ["textbox", "searchbox"];
 const FOCUS_UNREAD: &str = "type refused, nothing was typed: the keyboard focus cannot be read in this window, so the text could go into another field than the one clicked; confirm the focused field in a screenshot, then call type again with focus: \"unverified\"";
+const LOCKED_TOOLS: [&str; 2] = ["type_text", "press_key"];
+const LOCKED_INPUT_UNSUPPORTED: &str = "nothing was sent: [desk] locked_input is on, but this cua-driver does not take locked_input; update shuttle, whose bundled driver does";
 const FOCUS_UNKNOWN: &str = "focus unverified: accessibility shows no focused text field in the app, so which field took the text is unknown: confirm it in a screenshot before you press Return or Send";
 
 tokio::task_local! {
@@ -123,6 +125,7 @@ pub struct Desk<B, D> {
     overlay: bool,
     background: bool,
     auto: bool,
+    locked_input: bool,
     unseen: std::sync::Mutex<HashMap<(i64, i64), Unseen>>,
     clicked: std::sync::Mutex<Option<Clicked>>,
     typer: Typer,
@@ -145,6 +148,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             overlay: true,
             background: false,
             auto: false,
+            locked_input: false,
             unseen: std::sync::Mutex::new(HashMap::new()),
             clicked: std::sync::Mutex::new(None),
             typer: TYPER,
@@ -180,6 +184,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     /// Whether a background action refused before any input was sent runs once more in the foreground, its target window brought to the front.
     pub fn auto(mut self, on: bool) -> Self {
         self.auto = on;
+        self
+    }
+
+    /// Whether background keys and typing on macOS may reach their window while the screen is locked, unverified.
+    pub fn locked_input(mut self, on: bool) -> Self {
+        self.locked_input = on;
         self
     }
 
@@ -825,7 +835,22 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         to: Option<(i64, i64)>,
         note: &mut Option<String>,
     ) -> Result<(), String> {
-        let out = self.call(tool, deliver(req, to)).await?;
+        let mut req = deliver(req, to);
+        let locked = self.locked_input
+            && self.os == Os::Mac
+            && to.is_some()
+            && self.bg()
+            && LOCKED_TOOLS.contains(&tool);
+        if locked {
+            req["locked_input"] = true.into();
+        }
+        let out = self.call(tool, req).await.map_err(|e| {
+            if locked && e.contains("locked_input") {
+                format!("{tool}: {LOCKED_INPUT_UNSUPPORTED}")
+            } else {
+                e
+            }
+        })?;
         if note.is_none() {
             *note = self.unverified(&out, to, tool == "type_text");
         }
@@ -3792,6 +3817,64 @@ pub(crate) mod tests {
                 .is_some_and(|n| n.ends_with(FOCUS_UNKNOWN)),
             "{typed}"
         );
+    }
+
+    struct NoLockedInput(Behind);
+
+    impl Input for NoLockedInput {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            if args.get("locked_input").is_some() {
+                return Err(format!(
+                    "{tool}: argument locked_input; accepted: text, pid, window_id, delivery_mode"
+                ));
+            }
+            self.0.call(tool, args).await
+        }
+    }
+
+    #[tokio::test]
+    async fn locked_input_asks_the_driver_to_send_background_keys_and_typing_only() {
+        for (background, on) in [(true, false), (true, true), (false, true)] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Mac)
+                .background(background)
+                .locked_input(on);
+            desk.run("desk_key", json!({"keys": "return", "pid": 4}))
+                .await
+                .unwrap();
+            desk.run("desk_type", json!({"text": "a", "pid": 4}))
+                .await
+                .unwrap();
+            desk.run("desk_click", json!({"x": 300.0, "y": 250.0, "pid": 4}))
+                .await
+                .unwrap();
+            let asked = background && on;
+            for tool in ["press_key", "type_text"] {
+                let all = sent(&calls, tool);
+                assert!(!all.is_empty(), "{tool}");
+                for a in all {
+                    assert_eq!(a.get("locked_input").is_some(), asked, "{tool} {a}");
+                }
+            }
+            assert!(
+                sent(&calls, "click")
+                    .iter()
+                    .all(|a| a.get("locked_input").is_none())
+            );
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let old = Desk::new(
+            || Ok(Apps),
+            NoLockedInput(Behind(Arc::clone(&calls))),
+            Os::Mac,
+        )
+        .background(true)
+        .locked_input(true);
+        let err = old
+            .run("desk_type", json!({"text": "a", "pid": 4}))
+            .await
+            .unwrap_err();
+        assert_eq!(err, format!("type_text: {LOCKED_INPUT_UNSUPPORTED}"));
     }
 
     #[tokio::test]

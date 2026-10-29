@@ -112,6 +112,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let none = Config::load(&dir.path().join("config.toml")).unwrap();
         assert_eq!(none.desk.input, InputMode::Foreground);
+        assert!(!none.desk.locked_input);
+        let locked = file("[desk]\ninput = \"background\"\nlocked_input = true\n");
+        assert!(Config::load(locked.path()).unwrap().desk.locked_input);
         for (text, mode) in [
             ("foreground", InputMode::Foreground),
             ("background", InputMode::Background),

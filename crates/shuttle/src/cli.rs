@@ -239,6 +239,7 @@ async fn serve(
             .as_ref()
             .is_ok_and(|c| c.desk.input == InputMode::Auto && c.android.is_none());
     let overlay = !config.as_ref().is_ok_and(|c| !c.driver.overlay);
+    let locked_input = config.as_ref().is_ok_and(|c| c.desk.locked_input);
     let group = config
         .as_mut()
         .ok()
@@ -299,6 +300,7 @@ async fn serve(
             overlay,
             guard.background,
             auto,
+            locked_input,
         )),
     };
     let daemon = Arc::new(
