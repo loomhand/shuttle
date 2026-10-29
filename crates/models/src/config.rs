@@ -213,11 +213,12 @@ impl Default for DriverSettings {
     }
 }
 
-/// How desk input reaches an app.
+/// How desk input reaches an app; `locked_input` lets background keys and typing on macOS go to their window while the screen is locked.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DeskSettings {
     pub input: InputMode,
+    pub locked_input: bool,
 }
 
 /// `foreground` fronts the target app as a person would; `background` acts without moving the pointer or the focus and refuses what it cannot do so; `auto` acts as `background` and takes the foreground for an action refused before anything was sent, on macOS and Windows.

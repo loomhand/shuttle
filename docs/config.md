@@ -94,12 +94,21 @@ The MCP server reads the plugin directory and `script_run` when the agent starts
 ```toml
 [desk]
 input = "foreground"                  # or "background", "auto"
+# locked_input = true                 # macOS: background typing and single keys go through a locked screen
 ```
 
 `input` says how desk input reaches an app:
 - `foreground`, the default, works as a person does: a click brings its window to the front, and keys and typed text go to the focused window. On macOS, foreground input that names a window first brings that window to the front, and refuses if it cannot.
 - `background` acts without moving your pointer or taking the focus. Keys, typed text, scrolls and drags go to the window that the call's `window` or `pid` names, which is required. A click at a point goes to the window under it, or to the window the call names, without raising it. A press runs the element's own action before any click, and a press or element click that does click goes to the element's own window, even under another window. An action that cannot be done this way fails with the reason, and shuttle never falls back to the foreground: you chose not to be interrupted. `focus` still brings a window to the front; it is the only call that does. The computer actions refuse, since they send desktop input. `gui_plan` drives the window its app or wait step names, and the dialogs that window owns, instead of the front window; on Linux it refuses, since background plans are not measured there. Scripts use the desk API with a `window` or `pid` on each input call.
 - `auto` sends input as `background` does, and takes the foreground only for an action that background input refused before anything reached the app: shuttle brings the action's window to the front and runs that action once more as `foreground`, and the result says `"input": "foreground"`. A drag on Windows runs in the foreground from the start. Input the driver could not confirm comes back with `unverified`, as in `background`, and is never sent twice. `gui_plan` drives its target window as in `background`; when typing the driver could not confirm left every text of the window unchanged and the front alone, it brings the window to the front and types that step once more. A plan step that background refuses before sending anything (a macOS menu-bar entry, an element found on the screen, a state read from pixels, an `expect` checked by vision) brings the plan's window to the front and runs in the foreground. After any step of a plan took the foreground this way, or through a desk action, the rest of that plan runs in the foreground. The computer actions run in the foreground. On Linux, and with an `[android]` section, `auto` acts as `foreground`. [safety.md](safety.md#background-input) lists the refusals that take the foreground.
+
+`locked_input = true`, off by default, lets background `type` and a single-key `key` on macOS reach their window while the screen is locked; without it the driver refuses them there, as it refuses every other action. The lock hides every window from accessibility, so:
+- place the keyboard focus before you lock: the keys go to the app's key window as it was then, and shuttle can neither read nor move the focus;
+- only typing and single keys work: key combinations, clicks, presses, menus and every other action still refuse, and `gui_plan` cannot read the window;
+- the result is unverified: confirm it in a screenshot of the window;
+- a window screenshot works only while the display is on. The bundled driver keeps the display on for 10 minutes after each call, so an agent that keeps working keeps it on; after a longer pause the display turns off within about 30 seconds, and window screenshots fail until the Mac is woken.
+
+It needs the cua-driver bundled with this shuttle; an older driver refuses before anything is sent.
 
 With an [`[android]`](#android-over-adb) section, `background` fails to load: input on a device always reaches its screen.
 

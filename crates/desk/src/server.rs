@@ -341,7 +341,7 @@ pub async fn exchange(mut conn: Conn, call: &Call) -> Result<Output, String> {
     read_frame(&mut conn).await
 }
 
-/// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty; `overlay` says whether that driver may show its cursor overlay.
+/// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty; `overlay` says whether that driver may show its cursor overlay, `locked_input` whether background keys may reach a window while the screen is locked.
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 pub fn native(
     driver: String,
@@ -349,6 +349,7 @@ pub fn native(
     overlay: bool,
     background: bool,
     auto: bool,
+    locked_input: bool,
 ) -> impl Handler {
     let driver = Arc::new(Driver::new(driver));
     Native {
@@ -356,7 +357,8 @@ pub fn native(
             .allow(apps)
             .overlay(overlay)
             .background(background || auto)
-            .auto(auto),
+            .auto(auto)
+            .locked_input(locked_input),
         computer: Computer::new(driver, HOST).background(background),
         open: apps.is_empty(),
     }
@@ -364,7 +366,7 @@ pub fn native(
 
 /// This OS's desk: none yet.
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
-pub fn native(_: String, _: &[String], _: bool, _: bool, _: bool) -> impl Handler {
+pub fn native(_: String, _: &[String], _: bool, _: bool, _: bool, _: bool) -> impl Handler {
     NoDesk
 }
 
@@ -1038,7 +1040,14 @@ mod tests {
             tool: tool.into(),
             args,
         };
-        let open = native("/nonexistent/driver.sock".into(), &[], false, false, false);
+        let open = native(
+            "/nonexistent/driver.sock".into(),
+            &[],
+            false,
+            false,
+            false,
+            false,
+        );
         let title = open
             .answer(ask("desk_title_at", json!({"x": 10, "y": 10})))
             .await;
@@ -1054,6 +1063,7 @@ mod tests {
             false,
             false,
             false,
+            false,
         );
         for tool in COMPUTER_VERBS {
             let out = listed.answer(ask(tool, json!({}))).await;
@@ -1064,7 +1074,14 @@ mod tests {
         }
         let other = listed.answer(ask("shell", json!({}))).await;
         assert_eq!(other.text, "unknown desk tool shell");
-        let background = native("/nonexistent/driver.sock".into(), &[], false, true, false);
+        let background = native(
+            "/nonexistent/driver.sock".into(),
+            &[],
+            false,
+            true,
+            false,
+            false,
+        );
         let act = background
             .answer(ask(
                 "desk_computer_act",
