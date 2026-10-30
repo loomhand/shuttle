@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **`computer_state` element lines leave out U+FFFC.** Accessibility text holds U+FFFC where an embedded object sits, and an element line showed it, as in `panel "￼￼￼￼"`. The lines now leave it out of names and values; the element kept for later actions keeps the driver's name.
+- **A desktop click reply names its point in screenshot pixels.** `computer_act`'s reply to a click at x,y read `Sent screen-absolute click at (…)` on Linux and `Sent screen-absolute click at desktop-pixel (…) → screen-point (…)` on macOS, though x,y are read in the caller's screenshot and the reply's point is mapped back to it. It now reads `Sent click at screenshot point (x,y)` on both, with the driver's scope note after it.
 
 ## 0.1.32 - 2026-10-30
 
