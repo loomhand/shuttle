@@ -140,6 +140,7 @@ impl Ax {
 
     fn app_frames(&mut self, apps: impl IntoIterator<Item = (i32, Vec<[f64; 4]>)>) -> Vec<Frame> {
         let mut frames = Vec::new();
+        let scale = display_scale();
         for (p, bounds) in apps {
             if self.hung.contains_key(&p) {
                 continue;
@@ -223,6 +224,7 @@ impl Ax {
                     app: name.clone(),
                     hidden: !shows(&bounds, frame),
                     number: number_of(w),
+                    bounds: frame.map(|f| f.map(|v| (v * scale).round() as i32)),
                     ..Frame::default()
                 });
             }
