@@ -151,11 +151,12 @@ extern "C" fn heard(
 }
 
 fn focused(secret: bool) -> Option<Field> {
-    ax::focused().map(|(role, name, frame, secure)| Field {
-        role: role.to_owned(),
-        name,
-        frame: frame.to_owned(),
-        secure: secure || secret,
+    ax::focused().map(|f| Field {
+        role: f.role.to_owned(),
+        name: f.name,
+        frame: f.frame.to_owned(),
+        window: f.window,
+        secure: f.secure || secret,
     })
 }
 

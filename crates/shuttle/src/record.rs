@@ -71,12 +71,14 @@ pub enum Input {
     Note(String),
 }
 
-/// The element with the keyboard focus, as a snapshot names it, the role of its window or sheet, and whether it takes a password.
+/// The element with the keyboard focus, as a snapshot names it, the role of its window or sheet, the title of its window, and whether it takes a password.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct Field {
     pub role: String,
     pub name: String,
     pub frame: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub window: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub secure: bool,
 }
@@ -900,6 +902,7 @@ mod tests {
             role: "textbox".into(),
             name: "Save As:".into(),
             frame: "dialog".into(),
+            window: "Untitled".into(),
             ..Field::default()
         };
         let r = run(
@@ -911,7 +914,7 @@ mod tests {
         let e = &r["events"];
         assert_eq!(
             e[0]["focus"],
-            json!({"role": "textbox", "name": "Save As:", "frame": "dialog"}),
+            json!({"role": "textbox", "name": "Save As:", "frame": "dialog", "window": "Untitled"}),
             "{e}"
         );
         assert!(e[1].get("focus").is_none(), "{e}");
