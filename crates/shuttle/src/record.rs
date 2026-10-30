@@ -169,7 +169,7 @@ impl Recorder {
         let (notes, inputs) = unbounded_channel();
         let tap = listen(notes.clone())?;
         let id = format!("rec-{}", now_ms());
-        let path = self.dir.join(format!("{id}.json"));
+        let path = self.path(&id);
         let (done, made) = oneshot::channel();
         self.queue
             .send(Session {
@@ -209,6 +209,10 @@ impl Recorder {
                 made: Some(made),
             });
         }
+    }
+
+    pub fn path(&self, id: &str) -> PathBuf {
+        self.dir.join(format!("{id}.json"))
     }
 
     /// Ends the running recording, or takes the last one, and answers it as saved.

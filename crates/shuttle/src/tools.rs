@@ -7,7 +7,16 @@ use crate::plugins::Plugins;
 use crate::{NAME, VERSION, proxy};
 
 /// The built-in MCP tools, whose names no plugin may take.
-pub const NAMES: [&str; 5] = ["gui_plan", "script_run", "desk", "screenshot", "status"];
+pub const NAMES: [&str; 8] = [
+    "gui_plan",
+    "script_run",
+    "desk",
+    "screenshot",
+    "status",
+    "record_start",
+    "record_note",
+    "record_stop",
+];
 
 pub const DESK_VERBS: [&str; 20] = [
     "windows",
@@ -115,6 +124,35 @@ fn builtins() -> Value {
             "name": "status",
             "description": "This host's version, OS and architecture.",
             "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "record_start",
+            "description": "macOS: start recording what the user does on this desktop, so that it can be replayed with other values; the user stops it from the menu bar or you call record_stop. Keys typed into password fields, and input in password managers, Keychain Access, Passwords and System Settings, are left out.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "apps": {"type": "array", "items": {"type": "string"}, "description": "Record only these apps, by the names desk windows lists"}
+                }
+            }
+        },
+        {
+            "name": "record_note",
+            "description": "Add the user's note to the running recording at the point it has reached, such as which typed value changes from run to run.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"]
+            }
+        },
+        {
+            "name": "record_stop",
+            "description": "Stop the running recording, or take the last one the user stopped, and answer its draft: gui_plan steps with an intent each, the window each step left in front as after, and each click's recorded crop and point for replay where the accessibility tree misses; params maps each typed value you name to {{name}}, and a password the user typed becomes a secret param to pass at replay. Run or save it with gui_plan.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "params": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Parameter names and the values the user typed or clicked for them in the recording"}
+                }
+            }
         }
     ]})
 }
@@ -162,7 +200,7 @@ fn route(name: &str, mut args: Value) -> Option<Result<(String, Value), String>>
         },
         "screenshot" => ("desk_shot".to_owned(), args),
         "script_run" => (name.to_owned(), absolute_script(args)),
-        "gui_plan" => (name.to_owned(), args),
+        "gui_plan" | "record_start" | "record_note" | "record_stop" => (name.to_owned(), args),
         _ => return None,
     }))
 }
@@ -254,7 +292,7 @@ mod tests {
         assert_eq!(names[..NAMES.len()], NAMES);
         assert_eq!(names[NAMES.len()..], ["demo_run"]);
         assert_eq!(
-            listed["tools"][5]["inputSchema"],
+            listed["tools"][NAMES.len()]["inputSchema"],
             listed["tools"][1]["inputSchema"]
         );
         assert_eq!(listed["tools"][1]["name"], "script_run");
