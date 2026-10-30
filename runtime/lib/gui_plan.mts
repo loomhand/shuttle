@@ -721,6 +721,17 @@ function pointer(s: Step) {
   return { ...(s.button && s.button !== 'left' ? { button: s.button } : {}), ...(s.count && s.count > 1 ? { count: s.count } : {}), ...(s.mods?.length ? { modifiers: s.mods } : {}) }
 }
 
+async function inWindow(w: Win, x: number, y: number): Promise<[number, number, desk.Target]> {
+  if (!BG) return [x, y, {}]
+  const t = at(w); const to = listed.find((v) => v.title === t.window && v.pid === t.pid)
+  if (!to?.bounds) {
+    if (!AUTO) throw new Surprise(`"${w.title}" has no screen bounds, and a background click with a button, count or modifiers needs them to reach its window`, await seen())
+    await front(w); return [x, y, {}]
+  }
+  const k = (await desk.shot({ window: t.window })).readUInt32BE(16) / to.bounds[2]
+  return [(x - to.bounds[0]) * k, (y - to.bounds[1]) * k, t]
+}
+
 function told(g: Pick<Grounding, 'what' | 'check' | 'why' | 'cover'>) {
   if (g.why) return `a point whose element could not be read: ${g.why}`
   return g.what ? `${g.what.slice(0, 80)}${g.cover !== undefined ? `, under the window "${g.cover}"` : REFUSED[g.check] ?? ''}` : 'no accessible element'
@@ -1203,7 +1214,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.click && Object.keys(pointer(s)).length) {
     const b = (await desk.read(hit.n.id)).bounds ?? hit.n.bounds
     if (!b) throw new Surprise(`${rec.ref} has no screen position for a ${s.button ?? ''} click`, await seen())
-    t0 = Date.now(); await desk.click(b[0] + b[2] / 2, b[1] + b[3] / 2, pointer(s)); tick('act', t0)
+    const [x, y, into] = await inWindow(w, b[0] + b[2] / 2, b[1] + b[3] / 2)
+    t0 = Date.now(); await desk.click(x, y, { ...pointer(s), ...into }); tick('act', t0)
     await settle(w.title); return
   }
   if (s.click && hit.n.role === 'menuitem') {
