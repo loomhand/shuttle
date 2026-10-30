@@ -323,6 +323,10 @@ pub trait Access {
     fn pid_of(&mut self, _id: &str) -> Result<Option<u32>, String> {
         Ok(None)
     }
+    /// The name that launches the running app whose windows list `app`, where it differs, as Chrome's windows list "Chrome" for "Google Chrome".
+    fn bundle_name(&mut self, _app: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
     /// The page URL and DOM id of the web element `id`, each none where the backend reads no web content.
     fn web_of(&mut self, _id: &str) -> Result<(Option<String>, Option<String>), String> {
         Ok((None, None))

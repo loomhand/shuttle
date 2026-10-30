@@ -499,6 +499,27 @@ impl Access for Ax {
         Ok(pid(&self.element(id)?).and_then(|p| u32::try_from(p).ok()))
     }
 
+    fn bundle_name(&mut self, app: &str) -> Result<Option<String>, String> {
+        let pid = self
+            .frames()?
+            .into_iter()
+            .find(|f| {
+                f.app
+                    .as_deref()
+                    .is_some_and(|a| a.eq_ignore_ascii_case(app))
+            })
+            .and_then(|f| f.pid);
+        Ok(pid
+            .and_then(|p| exe_path(i32::try_from(p).ok()?))
+            .and_then(|exe| {
+                let bundle = exe
+                    .ancestors()
+                    .find(|a| a.extension().is_some_and(|e| e == "app"))?;
+                Some(bundle.file_stem()?.to_string_lossy().into_owned())
+            })
+            .filter(|name| !name.eq_ignore_ascii_case(app)))
+    }
+
     fn web_of(&mut self, id: &str) -> Result<(Option<String>, Option<String>), String> {
         let el = self.element(id)?;
         let dom_id = Some(string(attr(&el, "AXDOMIdentifier"))).filter(|d| !d.is_empty());
