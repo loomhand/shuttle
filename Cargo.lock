@@ -1216,6 +1216,7 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "png",
  "serde",
  "serde_json",
  "shuttle-android",

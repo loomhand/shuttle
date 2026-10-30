@@ -82,6 +82,18 @@ When the accessibility tree has no match for such a click, the step tries, in th
 A target that a parameter changed skips the crop and the point, since both show the recorded target. Each point must pass the hit test of a grounded click: inside the plan's window or a window it owns, under no other window. The trace names the one that clicked in `how`: `crop`, `ground` or `point`. A click without `recorded` grounds as before and refuses a point on a window or document root.
 
 
+## Recordings
+
+`record_start` (`apps`, optional app names as `windows` lists them) starts recording the user's input on macOS and answers `{"ok": true, "id"}`; it fails while a recording runs, on other OSes, and while macOS refuses the event tap. `record_note` (`text`) adds a note at the current point of the running recording. `record_stop` ends the running recording, or takes the last one the menu-bar item ended, saves it and answers it: `{id, started_ms, stopped_ms, apps, events}`, where each event has `t` (ms since the start) and `kind`:
+
+- `click`: `x`, `y` (desk coordinates), `button`, `count`, `mods`, `app`, `element` (`role`, `name`, `description` as a snapshot names them), `path` (the ancestors up to the window, innermost first), `root` (the point hit no element but a window or document), `window` (`title`, `bounds`), and `crop` (a base64 PNG centred on the point) at `crop_scale` pixels per desk unit, with `late` when the crop had to be taken after the click;
+- `key`: `code`, `text`, `mods`, `app`, or `secret: true` with no text for a key typed into a password field;
+- `after`: `window`, `role`, `app` of a new window in front once the input settled for 0.7 s;
+- `note`: `text`;
+- `skipped`: input in an app the recording leaves out, with no detail.
+
+[safety.md](safety.md#recording) says what a recording holds and leaves out.
+
 ## Plugins
 
 A plugin adds one tool that runs scripts with `script_run`'s contract and its own program in place of Node. This section is the schema's source of truth.

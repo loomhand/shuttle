@@ -303,11 +303,20 @@ async fn serve(
             locked_input,
         )),
     };
+    let recordings = server::cache_endpoint(
+        "SHUTTLE_RECORDINGS",
+        "",
+        &format!("{VENDOR}/{NAME}"),
+        "recordings",
+    );
     let daemon = Arc::new(
         Daemon::new(desk, models, runner, guard)
             .with_plugins(plugins.runs)
-            .with_services(routes),
+            .with_services(routes)
+            .with_recordings(recordings.into()),
     );
+    let recorder = Arc::clone(&daemon);
+    tokio::spawn(async move { recorder.recordings().await });
     #[cfg(any(target_os = "macos", windows))]
     ready(daemon.clone(), safety, hotkey.filter(|_| local), input);
     let served = tokio::select! {

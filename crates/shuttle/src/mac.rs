@@ -1,4 +1,4 @@
-//! The macOS controls on the main thread's AppKit loop: the kill hotkey, the menu-bar indicator with Stop and Resume, and the confirm dialog.
+//! The macOS controls on the main thread's AppKit loop: the kill hotkey, the menu-bar indicator with Stop, Resume and the recording toggle, and the confirm dialog.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -28,11 +28,13 @@ const KEYBOARD_CLASS: u32 = u32::from_be_bytes(*b"keyb");
 const HOT_KEY_PRESSED: u32 = 5;
 const SIGNATURE: u32 = u32::from_be_bytes(*b"shtl");
 const ICON_PT: f64 = 18.0;
-const STATES: [(&str, &[u8]); 3] = [
+const STATES: [(&str, &[u8]); 4] = [
     ("idle", include_bytes!("../assets/idle.pdf")),
     ("acting", include_bytes!("../assets/acting.pdf")),
     ("stopped", include_bytes!("../assets/stopped.pdf")),
+    ("recording", include_bytes!("../assets/recording.pdf")),
 ];
+const RECORD: [&str; 2] = ["Start recording", "Stop recording"];
 
 /// Runs the controls on this, the main, thread until the process exits.
 pub fn run(ui: Ui) -> ! {
@@ -140,6 +142,7 @@ fn indicator(
     header.setTitle(&NSString::from_str(&about));
     menu.addItem(&header);
     menu.addItem(&NSMenuItem::separatorItem(mtm));
+    let record = entry(mtm, RECORD[0], sel!(record:));
     let target = Target::new(
         mtm,
         Shown {
@@ -147,25 +150,18 @@ fn indicator(
             item: item.clone(),
             icons,
             about,
+            record: record.clone(),
             state: Cell::new(None),
         },
     );
-    for (title, action) in [
-        (stop.to_owned(), sel!(stop:)),
-        ("Resume".to_owned(), sel!(resume:)),
+    for e in [
+        entry(mtm, stop, sel!(stop:)),
+        entry(mtm, "Resume", sel!(resume:)),
+        record,
     ] {
-        // SAFETY: the item is a fresh NSMenuItem; the action names a method `Target` defines.
-        let entry = unsafe {
-            NSMenuItem::initWithTitle_action_keyEquivalent(
-                NSMenuItem::alloc(mtm),
-                &NSString::from_str(&title),
-                Some(action),
-                &NSString::from_str(""),
-            )
-        };
         // SAFETY: `target` outlives the menu: the indicator holds both until the process exits.
-        unsafe { entry.setTarget(Some(&target)) };
-        menu.addItem(&entry);
+        unsafe { e.setTarget(Some(&target)) };
+        menu.addItem(&e);
     }
     item.setMenu(Some(&menu));
     target.ivars().show(mtm);
@@ -187,21 +183,39 @@ fn indicator(
     }
 }
 
+fn entry(mtm: MainThreadMarker, title: &str, action: objc2::runtime::Sel) -> Retained<NSMenuItem> {
+    // SAFETY: the item is a fresh NSMenuItem; the action names a method `Target` defines.
+    unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &NSString::from_str(title),
+            Some(action),
+            &NSString::from_str(""),
+        )
+    }
+}
+
 struct Shown {
     controls: Arc<dyn Controls>,
     item: Retained<NSStatusItem>,
-    icons: [Retained<NSImage>; 3],
+    icons: [Retained<NSImage>; 4],
     about: String,
+    record: Retained<NSMenuItem>,
     state: Cell<Option<usize>>,
 }
 
 impl Shown {
     fn show(&self, mtm: MainThreadMarker) {
+        let recording = self.controls.recording();
         let state = if self.controls.halted() {
             2
+        } else if recording {
+            3
         } else {
             usize::from(self.controls.acting())
         };
+        self.record
+            .setTitle(&NSString::from_str(RECORD[usize::from(recording)]));
         if self.state.replace(Some(state)) == Some(state) {
             return;
         }
@@ -231,6 +245,13 @@ define_class!(
         #[unsafe(method(resume:))]
         fn resume(&self, _sender: Option<&AnyObject>) {
             self.ivars().controls.halt(false);
+        }
+
+        #[unsafe(method(record:))]
+        fn record(&self, _sender: Option<&AnyObject>) {
+            let on = !self.ivars().controls.recording();
+            self.ivars().controls.record(on);
+            self.ivars().show(self.mtm());
         }
 
         #[unsafe(method(tick:))]
