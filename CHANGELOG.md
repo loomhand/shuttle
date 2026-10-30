@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **macOS: a window is found by its whole title.** Input that names a window by the title `desk_windows` lists now finds it where cua-driver lists a shorter title. Chrome gives the window server a title elided in the middle and without its app and profile suffix, so a key, type or `gui_plan` step naming a long Chrome window by its full title was refused with "no window", and the error listed the elided titles. Titles now come from accessibility, matched to the driver's windows by window number, in the error too. It costs nothing: the accessibility window list is already read whenever a title is not unique in the driver's list.
+
 ## 0.1.31 - 2026-10-30
 
 - **Input that names an app goes to that app or nowhere.** `key`, `type`, `click`, `scroll` and `drag` take `app`, the app name a window lists, and send to that app's window as with its `pid`; when the app has no window, the call fails and sends nothing. Before, the desk ignored `app`, so a call naming an app that had just been launched in the background, with no window yet, went to no target; with `input = "auto"` it then ran in the foreground and the keys reached whichever app was in front.

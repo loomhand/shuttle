@@ -1683,7 +1683,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(out.to_string())
     }
 
-    /// The driver window titled like `window` or of `pid`, as a frame and as the driver lists it; the allowlist picks among them, and a title alone does not pick between twins on two Spaces.
+    /// The driver window titled like `window` or of `pid`, as a frame and as the driver lists it, titled as accessibility names it where the driver lists an elided title; the allowlist picks among them, and a title alone does not pick between twins on two Spaces.
     async fn pick_window(
         &self,
         window: Option<&str>,
@@ -1732,9 +1732,21 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let frames = self.access.run(CALL_LIMIT, (), |b| b.frames()).await?;
             for w in &mut windows {
                 w.app = app_of(&frames, w.pid).map(str::to_owned);
-                w.active = frames
+                let number = w.id.parse::<u32>().ok();
+                match frames
                     .iter()
-                    .any(|f| f.active && f.pid == w.pid && f.title == w.title);
+                    .find(|f| f.number.is_some() && f.number == number)
+                {
+                    Some(f) => {
+                        w.title.clone_from(&f.title);
+                        w.active = f.active;
+                    }
+                    None => {
+                        w.active = frames
+                            .iter()
+                            .any(|f| f.active && f.pid == w.pid && f.title == w.title);
+                    }
+                }
             }
         }
         let rivals = window.map_or(1, |want| {
@@ -4003,6 +4015,24 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn input_names_a_window_by_its_whole_accessibility_title_where_the_driver_lists_it_elided()
+     {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Long), Elided(Arc::clone(&calls)), Os::Mac).background(true);
+        desk.run("desk_key", json!({"keys": "cmd+t", "window": LONG_TITLE}))
+            .await
+            .unwrap();
+        let sent = sent(&calls, "hotkey");
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0]["target"]["window_id"], 41, "{sent:?}");
+        let err = desk
+            .run("desk_key", json!({"keys": "cmd+t", "window": "Nope"}))
+            .await
+            .unwrap_err();
+        assert!(err.contains(LONG_TITLE), "{err}");
+    }
+
+    #[tokio::test]
     async fn background_input_without_a_target_or_into_a_window_that_refuses_the_pointer_is_refused()
      {
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -4696,6 +4726,73 @@ pub(crate) mod tests {
 
         fn close(&mut self, _: &Frame) -> Result<(), String> {
             Ok(())
+        }
+    }
+
+    const LONG_TITLE: &str = "Example Competitive Analysis: Pricing and GTM (October 2026) - Example Docs - Google Chrome \u{2013} Work (example.com)";
+
+    struct Long;
+
+    impl Access for Long {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            Ok(vec![
+                Frame {
+                    number: Some(41),
+                    ..frame("4/1", LONG_TITLE, 4, false, Some("Google Chrome"))
+                },
+                Frame {
+                    number: Some(42),
+                    ..frame(
+                        "4/2",
+                        "New Tab - Google Chrome \u{2013} Home",
+                        4,
+                        false,
+                        Some("Google Chrome"),
+                    )
+                },
+            ])
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            Ok(Tree {
+                frame: frame.clone(),
+                ..Tree::default()
+            })
+        }
+
+        fn node(&mut self, id: &str, _: Extras, _: usize) -> Result<Node, String> {
+            Err(format!("no node {id}"))
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct Elided(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for Elided {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 4, "window_id": 41, "layer": 0, "z_index": 1, "is_on_screen": true, "title": "Example Competitive Analy\u{2026}(October 2026) - Example Docs", "app_name": "Google Chrome", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}},
+                    {"pid": 4, "window_id": 42, "layer": 0, "z_index": 2, "is_on_screen": true, "title": "New Tab", "app_name": "Google Chrome", "bounds": {"x": 40.0, "y": 40.0, "width": 800.0, "height": 600.0}}
+                ]}}),
+                _ => json!({}),
+            })
         }
     }
 
