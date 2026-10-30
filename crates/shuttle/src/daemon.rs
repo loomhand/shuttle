@@ -9,7 +9,7 @@ use std::time::Duration;
 use desk_core::args::parse;
 use desk_core::wire::{Call, Output, write_frame};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use shuttle_desk::desk::{ACTIONS, TURN_WAIT};
 use shuttle_desk::server::{Accepted, Handler};
 use shuttle_models::Models;
@@ -174,14 +174,27 @@ impl<H: Handler> Daemon<H> {
                     })
                     .unwrap_or_default();
                 r.start(apps)
-                    .map(|id| serde_json::json!({"ok": true, "id": id}).to_string())
+                    .map(|id| json!({"ok": true, "id": id}).to_string())
             }
             "record_note" => {
                 let text = args["text"].as_str().ok_or("record_note needs text")?;
                 r.note(text.to_owned())
                     .map(|()| r#"{"ok":true}"#.to_owned())
             }
-            _ => r.stop().await.map(|v| v.to_string()),
+            _ => {
+                let recording = r.stop().await?;
+                let id = recording["id"].as_str().unwrap_or_default().to_owned();
+                let params = args.get("params").cloned().unwrap_or_else(|| json!({}));
+                let mut draft = self
+                    .runner
+                    .draft(
+                        json!({"recording": recording, "params": params}),
+                        &format!("record-{id}"),
+                    )
+                    .await?;
+                draft["recording"] = r.path(&id).to_string_lossy().into_owned().into();
+                Ok(draft.to_string())
+            }
         }
     }
 
@@ -285,7 +298,7 @@ impl<H: Handler> Daemon<H> {
 
     fn stop(&self, stopped: bool) -> Output {
         self.halt(stopped);
-        Output::text(serde_json::json!({"ok": true, "stopped": stopped}).to_string())
+        Output::text(json!({"ok": true, "stopped": stopped}).to_string())
     }
 
     fn running(&self) -> std::sync::MutexGuard<'_, Option<String>> {
@@ -505,7 +518,6 @@ fn encode<T: Serialize>(v: &T) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
     use shuttle_models::config::Config;
 
     use super::*;

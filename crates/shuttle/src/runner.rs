@@ -114,12 +114,21 @@ impl Runner {
 
     /// `gui_plan` for `agent`: the plan executor of the runtime with `args`; its result comes back as is.
     pub async fn plan(&self, args: Value, agent: &str) -> Result<Value, String> {
+        self.module_result("gui_plan", args, agent).await
+    }
+
+    /// The draft plan of a recording for `agent`: the runtime's draft builder with `args`.
+    pub async fn draft(&self, args: Value, agent: &str) -> Result<Value, String> {
+        self.module_result("draft", args, agent).await
+    }
+
+    async fn module_result(&self, name: &str, args: Value, agent: &str) -> Result<Value, String> {
         let timeout_s = args.get("timeout_s").and_then(Value::as_u64);
         let scratch = scratch()?;
         let mut report = self
             .run(
                 &self.node,
-                &self.module("gui_plan"),
+                &self.module(name),
                 &args,
                 timeout_s,
                 scratch.path(),
@@ -127,7 +136,7 @@ impl Runner {
             )
             .await?;
         match report["error"]["message"].as_str() {
-            Some(e) => Err(format!("gui_plan: {e}")),
+            Some(e) => Err(format!("{name}: {e}")),
             None => Ok(report["result"].take()),
         }
     }
@@ -798,6 +807,8 @@ mod tests {
             [
                 "desk.mjs",
                 "desk.mts",
+                "draft.mjs",
+                "draft.mts",
                 "entry.mjs",
                 "entry.mts",
                 "gui_plan.mjs",

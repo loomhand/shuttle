@@ -84,7 +84,7 @@ A target that a parameter changed skips the crop and the point, since both show 
 
 ## Recordings
 
-`record_start` (`apps`, optional app names as `windows` lists them) starts recording the user's input on macOS and answers `{"ok": true, "id"}`; it fails while a recording runs, on other OSes, and while macOS refuses the event tap. `record_note` (`text`) adds a note at the current point of the running recording. `record_stop` ends the running recording, or takes the last one the menu-bar item ended, saves it and answers it: `{id, started_ms, stopped_ms, apps, events}`, where each event has `t` (ms since the start) and `kind`:
+`record_start` (`apps`, optional app names as `windows` lists them) starts recording the user's input on macOS and answers `{"ok": true, "id"}`; it fails while a recording runs, on other OSes, and while macOS refuses the event tap. `record_note` (`text`) adds a note at the current point of the running recording. `record_stop` (`params`, optional parameter names with the values the user typed or clicked for them) ends the running recording, or takes the last one the menu-bar item ended, and answers its draft (below). The recording itself stays in its file, `{id, started_ms, stopped_ms, apps, events}`, where each event has `t` (ms since the start) and `kind`:
 
 - `click`: `x`, `y` (desk coordinates), `button`, `count`, `mods`, `app`, `element` (`role`, `name`, `description` as a snapshot names them), `path` (the ancestors up to the window, innermost first), `root` (the point hit no element but a window or document), `window` (`title`, `bounds`), and `crop` (a base64 PNG of the window around the point, from that window's own capture, cut at its edges; none while a sheet shows on the window, since the capture by its title then shows the sheet) at `crop_scale` pixels per desk unit with `crop_offset`, the point's offset in desk units from the crop's centre, with `late` when the crop had to be taken after the click, and `secret` when the element is a password field;
 - `key`: `code`, `text`, `mods`, `app`, and on the first key of a run of typing `focus`, the element it went to (`role`, `name` as a snapshot names it, `frame`, the role of its window or sheet, `window`, the title of its window,`secure: true` for a password field) or null when none could be read; or `secret: true` with no text for a key typed into a password field;
@@ -92,6 +92,17 @@ A target that a parameter changed skips the crop and the point, since both show 
 - `after`: `window`, `role`, `app` of a new window in front once the input settled for 0.7 s;
 - `note`: `text`;
 - `skipped`: input in an app the recording leaves out, with no detail.
+
+The draft is `{id, apps, params, steps, notes, gaps, recording}`: `steps` is a `gui_plan` plan with an `intent` on each step, which `gui_plan` runs as given or saves as a flow with `save`; `recording` is the file's path. The runtime builds it from the events:
+
+- The first click's app, or the app a first click in the Dock opened, becomes an `app` step, at the first click's window when it names one.
+- A click on a menu-bar entry and the click on the menu item after it become one `menu` step, such as `File > New`.
+- Other clicks become `click` steps on the element's name, with its `role` for a named button, check box, radio button, tab, link, switch or menu item. A click on no named element, or on a window or document, takes a name the `ask` model gives its crop with the point ringed and the element's role, such as `the Green button`; the model can name the wrong one of two similar controls, so check these names in the draft. Each click carries `recorded` ([Recorded steps](#recorded-steps)): its target text, crop, scale and offset, its point relative to its window and that window's size, and `root` for a click on a window or document.
+- Keys with no modifier other than Shift become one `type` step per run, and other keys `key` steps, such as `cmd+w` or `return`. A click into a password field, a `password` event, and keys a password field took become one `type: "{{password}}"`, since a recording holds no password: `password` (then `password_2` and so on) is in `params` as `{"secret": true}`, and the replay needs its value.
+- Each `type` step carries the `focus` its first key recorded, so the replay stops where the focus is elsewhere; where the recording read no focus it carries `focus: "unverified"`.
+- An `after` event with a window title not seen before in the recording becomes the `after` of the step before it.
+- Each value `params` names, wherever it appears in a typed run, a click target or an `after` title, becomes `{{name}}`, and `params` in the draft holds `{"example": value}` for it. Other typed text stays literal.
+- `notes` holds each note with the index of the step it came before, and `gaps` the step indexes where the recording skipped input.
 
 [safety.md](safety.md#recording) says what a recording holds and leaves out.
 
@@ -101,7 +112,7 @@ A plugin adds one tool that runs scripts with `script_run`'s contract and its ow
 
 - **Where.** One `*.json` file per tool in the plugin directory: `tools.d` next to `config.toml`, or the directory `[tools] plugins` names ([config.md](config.md)). The daemon reads it when it starts and the MCP server when an agent starts it, in file-name order.
 - **Spec.** `{"name": string, "description": string, "bin": string, "resources"?: [{"uri": string, "path": string, "mime": string, "description": string}]}`, and no other field.
-  - `name` matches `^[a-z][a-z0-9_]*_run$` and is no built-in tool (`gui_plan`, `script_run`, `desk`, `screenshot`, `status`) and no earlier file's name.
+  - `name` matches `^[a-z][a-z0-9_]*_run$` and is no built-in tool (`gui_plan`, `script_run`, `desk`, `screenshot`, `status`, `record_start`, `record_note`, `record_stop`) and no earlier file's name.
   - `description` is at most 2048 characters.
   - `bin` and each resource `path` are absolute.
   - A file that breaks any rule, does not parse or holds an unknown field is skipped whole, with one log line naming the file and the reason; no part of it loads.
@@ -123,7 +134,7 @@ A service plugin is a long-lived program that serves its own tools on the desk w
 - **Spec.** `{"service": string, "bin": string, "args"?: [string], "tools": [{"name": string, "description": string, "input_schema": object, "mcp"?: bool}]}`, and no other field, in the file or in a tool.
   - `service` matches `^[a-z][a-z0-9_]*$`, is at most 32 characters and is no earlier file's service.
   - `bin` is absolute; `args` defaults to none.
-  - `tools` holds at least one tool. Each `name` matches `^[a-z][a-z0-9_]*$` and is at most 64 characters. It is no built-in tool (`gui_plan`, `script_run`, `desk`, `screenshot`, `status`), starts with none of `desk_`, `model_` and `safety_`, does not end in `_run`, which plugins take, and is no other tool of this file or an earlier service.
+  - `tools` holds at least one tool. Each `name` matches `^[a-z][a-z0-9_]*$` and is at most 64 characters. It is no built-in tool (`gui_plan`, `script_run`, `desk`, `screenshot`, `status`, `record_start`, `record_note`, `record_stop`), starts with none of `desk_`, `model_` and `safety_`, does not end in `_run`, which plugins take, and is no other tool of this file or an earlier service.
   - `description` is at most 2048 characters; `input_schema` is a JSON Schema whose `type` is `object`.
   - `mcp`, default `true`, lists the tool on MCP; with `false` the tool is reached on the desk wire only, which suits a tool that streams frames.
   - A file that breaks any rule is skipped whole, with one log line.

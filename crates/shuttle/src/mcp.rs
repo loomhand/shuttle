@@ -14,7 +14,7 @@ const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
-const INSTRUCTIONS: &str = "These tools act on the user's own desktop. GUI work in a desktop app goes to gui_plan, the whole plan in one call; a loop or logic a plan cannot hold goes to one script_run; one look or one click goes to desk or screenshot.";
+const INSTRUCTIONS: &str = "These tools act on the user's own desktop. GUI work in a desktop app goes to gui_plan, the whole plan in one call; a loop or logic a plan cannot hold goes to one script_run; one look or one click goes to desk or screenshot. To learn a task by watching the user, record_start, let them do it, then record_stop and run its draft with gui_plan.";
 
 type Answer<'a> = Pin<Box<dyn Future<Output = Option<Value>> + Send + 'a>>;
 type Message = Result<Map<String, Value>, String>;
@@ -246,7 +246,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn initialize_lists_five_tools_and_status_runs() {
+    async fn initialize_lists_the_built_in_tools_and_status_runs() {
         let out = session(
             &[
                 json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}}),
@@ -267,10 +267,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(
-            names,
-            ["gui_plan", "script_run", "desk", "screenshot", "status"]
-        );
+        assert_eq!(names, crate::tools::NAMES);
         assert_eq!(out[2]["id"], 3);
         assert_eq!(out[2]["result"]["isError"], false);
         let status: Value =
@@ -486,7 +483,10 @@ mod tests {
         let without = session(&lines[..3], &endpoint).await;
         daemon.abort();
         assert_eq!(out[0]["result"]["capabilities"]["resources"], json!({}));
-        assert_eq!(out[1]["result"]["tools"][5]["name"], "demo_run");
+        assert_eq!(
+            out[1]["result"]["tools"][crate::tools::NAMES.len()]["name"],
+            "demo_run"
+        );
         assert_eq!(out[2]["result"]["content"][0]["text"], "demo ran \"x\"");
         assert_eq!(
             out[3]["result"]["resources"],
@@ -502,7 +502,10 @@ mod tests {
                 .get("resources")
                 .is_none()
         );
-        assert_eq!(without[1]["result"]["tools"].as_array().unwrap().len(), 5);
+        assert_eq!(
+            without[1]["result"]["tools"].as_array().unwrap().len(),
+            crate::tools::NAMES.len()
+        );
         assert_eq!(without[2]["error"]["message"], "unknown tool demo_run");
     }
 }

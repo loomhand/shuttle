@@ -64,6 +64,7 @@ Cursor (`~/.cursor/mcp.json`):
 | `desk` | One desk call: windows, unanswered, wait, snapshot, find, read, press, act, at, key, type, click, scroll, drag, still, focus, close, launch, shot, screen |
 | `screenshot` | A PNG of the screen or a rectangle |
 | `status` | Name, version, OS and architecture |
+| `record_start`, `record_note`, `record_stop` | macOS: record what the user does, with notes, and answer a draft `gui_plan` that replays it with other values |
 
 ## Safety
 
