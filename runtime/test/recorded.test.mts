@@ -132,3 +132,10 @@ test('a recorded after-window open behind the front one fails the step and is ne
   assert.match(String(r.error), /recording saw "Green clicked" in front, and the replay did not/)
   assert.equal(calls.includes('desk_focus'), false, calls.join(' '))
 })
+
+test('a plan whose recorded click took its crop is saved as a flow', async (t) => {
+  await canvas(t, { shown: screen(800, 600, [300, 250]) })
+  const r = await main({ steps: [{ app: 'Browser' }, { click: 'the Green button', recorded: { text: 'the Green button', crop: crop(), root: true } }], save: 'green on canvas' })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.saved, 'green-on-canvas', JSON.stringify(r))
+})

@@ -1178,7 +1178,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (BG) await front(w)
     const [x, y] = await spot(s.recorded, target, w, rec)
     t0 = Date.now(); await desk.click(x, y); tick('act', t0)
-    rec.unsaved = true; await settle(w.title); return
+    if (!s.recorded) rec.unsaved = true
+    await settle(w.title); return
   }
   rec.how = hit.how; rec.ref = `${hit.n.role} "${hit.n.name}"`; rec.fp = fingerprint(nodes, hit)
   if (hit.p !== undefined) rec.pick = [+hit.p.toFixed(2), +(hit.margin ?? 0).toFixed(2)]
