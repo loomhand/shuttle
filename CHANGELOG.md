@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **`computer_state` element lines leave out U+FFFC.** Accessibility text holds U+FFFC where an embedded object sits, and an element line showed it, as in `panel "￼￼￼￼"`. The lines now leave it out of names and values; the element kept for later actions keeps the driver's name.
+
 ## 0.1.32 - 2026-10-30
 
 - **macOS: a window is found by its whole title.** Input that names a window by the title `desk_windows` lists now finds it where cua-driver lists a shorter title. Chrome gives the window server a title elided in the middle and without its app and profile suffix, so a key, type or `gui_plan` step naming a long Chrome window by its full title was refused with "no window", and the error listed the elided titles. Titles now come from accessibility, matched to the driver's windows by window number, in the error too. It costs nothing: the accessibility window list is already read whenever a title is not unique in the driver's list.

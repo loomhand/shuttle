@@ -2149,6 +2149,11 @@ fn window_id_of(state: &Value) -> Option<i64> {
     state["structuredContent"]["window_id"].as_i64()
 }
 
+/// `text` without U+FFFC, which accessibility text holds where an embedded object (an image, a widget) sits.
+fn readable(text: &str) -> String {
+    text.replace('\u{fffc}', "")
+}
+
 fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
     let mut by_index = HashMap::new();
     let mut tree = String::new();
@@ -2183,11 +2188,11 @@ fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
             "{:indent$}[{index}] {} \"{}\"",
             "",
             e["role"].as_str().unwrap_or("?"),
-            e["label"].as_str().unwrap_or_default(),
+            readable(e["label"].as_str().unwrap_or_default()),
             indent = depth * 2
         );
         if let Some(v) = e["value"].as_str().filter(|v| !v.is_empty()) {
-            let v: String = v.chars().take(60).collect();
+            let v: String = readable(v).chars().take(60).collect();
             let _ = write!(tree, " value=\"{v}\"");
         }
         if let Some([x, y, w, h]) = frame {
@@ -3922,6 +3927,20 @@ mod tests {
             ["computer-a", "computer-b-c", "computer-a", "computer-a-1"]
         );
         driver.abort();
+    }
+
+    #[test]
+    fn element_lines_leave_out_object_replacement_characters() {
+        let state = json!({"structuredContent": {"elements": [
+            {"element_index": 0, "element_token": "t0", "role": "panel", "label": "\u{fffc}\u{fffc}\u{fffc}\u{fffc}"},
+            {"element_index": 1, "element_token": "t1", "role": "text", "label": "Note\u{fffc} body", "value": "a\u{fffc}b"},
+        ]}});
+        let (tree, elements) = element_tree(&state, 1.0);
+        assert_eq!(
+            tree,
+            "[0] panel \"\"\n[1] text \"Note body\" value=\"ab\"\n"
+        );
+        assert_eq!(elements[&0].label, "\u{fffc}\u{fffc}\u{fffc}\u{fffc}");
     }
 
     #[test]
