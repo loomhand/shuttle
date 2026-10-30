@@ -83,6 +83,8 @@ When the accessibility tree has no match for such a click, the step tries, in th
 A target that a parameter changed skips the crop and the point, since both show the recorded target. Each point must pass the hit test of a grounded click: inside the plan's window or a window it owns, under no other window. The trace names the one that clicked in `how`: `crop`, `ground` or `point`. A click without `recorded` grounds as before and refuses a point on a window or document root.
 
 
+When a recorded check stops the plan (an `after` window that does not come, a `focus` elsewhere, a `web` page that differs, or a recorded click whose crop, grounding and point all miss), the result carries `error` and `stopped: {step, intent, reason, remaining}`: the step's index, its `intent` (null when the step has none), the reason, and the steps from that one on, without their `recorded` crops and fingerprints, so an agent can do the rest of the task itself. Other stops carry no `stopped`.
+
 ### Web steps
 
 On macOS a step can name the web page it acts on, for a page in Chrome or another Chromium browser, or in Safari:
