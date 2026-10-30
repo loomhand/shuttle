@@ -30,6 +30,7 @@ export async function main(p: Params): Promise<Draft> {
   const seen = new Set<string>()
   let typed = ''; let secrets = 0; let secret = false; let filled = false
   let into: Field | null | undefined
+  let clicked: { e: Event; step: Step } | undefined
   // a run whose recording read no focus checks none on replay; one it never read keeps the plan's own rules
   const focus = (f: Field | null | undefined) => f === null ? { focus: 'unverified' } : f ? { focus: f } : {}
   const password = (f?: Field | null) => {
@@ -87,7 +88,10 @@ export async function main(p: Params): Promise<Draft> {
         draft.steps.push({ menu, intent: `choose ${menu}` })
         continue
       }
-      draft.steps.push(await click(e, templ))
+      const again = (e.count ?? 1) > 1 && clicked && draft.steps.at(-1) === clicked.step && Math.hypot((e.x ?? 0) - (clicked.e.x ?? 0), (e.y ?? 0) - (clicked.e.y ?? 0)) <= 4
+      if (again) draft.steps.pop()
+      clicked = { e, step: await click(e, templ) }
+      draft.steps.push(clicked.step)
       filled = !!e.secret
       if (filled) password()
     }
@@ -108,6 +112,9 @@ async function click(e: Event, templ: (s: string) => string): Promise<Step> {
   if (b && e.x !== undefined && e.y !== undefined) Object.assign(recorded, { at: [Math.round(e.x - b[0]), Math.round(e.y - b[1])], size: [b[2], b[3]] })
   return {
     click: target,
+    ...(e.button && e.button !== 'left' ? { button: e.button } : {}),
+    ...((e.count ?? 1) > 1 ? { count: e.count } : {}),
+    ...(e.mods?.length ? { mods: e.mods } : {}),
     ...(own && el.role && NAMED_ROLES.has(el.role) ? { role: el.role } : {}),
     recorded,
     intent: `click ${own ? `the ${el.role} "${own}"` : said}${win?.title ? ` in "${win.title}"` : ''}`,
