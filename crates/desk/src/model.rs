@@ -43,6 +43,7 @@ const FIELD_ROLES: [&str; 6] = [
     "combobox",
     "progressbar",
 ];
+const WEB_SWITCH: &str = "the web accessibility switch runs only on macOS";
 
 /// A top-level window of an app.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -321,6 +322,14 @@ pub trait Access {
     /// The process of the element `id`, none when the backend cannot tell.
     fn pid_of(&mut self, _id: &str) -> Result<Option<u32>, String> {
         Ok(None)
+    }
+    /// The page URL and DOM id of the web element `id`, each none where the backend reads no web content.
+    fn web_of(&mut self, _id: &str) -> Result<(Option<String>, Option<String>), String> {
+        Ok((None, None))
+    }
+    /// Turns the web accessibility tree of the browser of process `pid` on or off; answers whether it was on.
+    fn web(&mut self, _pid: u32, _on: bool) -> Result<bool, String> {
+        Err(WEB_SWITCH.to_owned())
     }
     /// Runs `act` on the element `id`.
     fn act(&mut self, id: &str, act: Act) -> Result<bool, String>;

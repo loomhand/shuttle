@@ -18,7 +18,7 @@ pub const NAMES: [&str; 8] = [
     "record_stop",
 ];
 
-pub const DESK_VERBS: [&str; 20] = [
+pub const DESK_VERBS: [&str; 21] = [
     "windows",
     "unanswered",
     "wait",
@@ -39,6 +39,7 @@ pub const DESK_VERBS: [&str; 20] = [
     "launch",
     "shot",
     "screen",
+    "web",
 ];
 
 /// The result of `tools/list`: the built-in tools, the script plugins with `script_run`'s arguments, then the service tools the MCP server lists, with their own.
