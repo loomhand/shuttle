@@ -5,6 +5,7 @@ export type Win = { id: string; title: string; role: string; pid: number | null;
 export type El = {
   ref: number; id: string; parent: number; depth: number; role: string; name: string; states: string[]
   value?: string; keys?: string; shortcut?: string; mnemonic?: string; native_role?: string; description?: string; bounds?: [number, number, number, number]
+  url?: string; dom_id?: string
 }
 export type Snap = { window: Win; nodes: El[]; truncated: boolean; ms: number }
 export type Question = { type: 'noul'; instructions: string } | { type: 'choice'; instructions: string; criteria: Record<string, string> }
@@ -48,7 +49,7 @@ export const snapshot = (window?: string, o: { pid?: number | null; id?: string;
   call('snapshot', { window, pid: o.pid ?? undefined, id: o.id, keys: o.keys, menus: o.menus, bounds: o.bounds })
 export const outline = async (window?: string): Promise<string> => (await call<{ text: string }>('snapshot', { window, text: true })).text
 export const find = (name: string, o: { role?: string; window?: string } = {}): Promise<{ window: Win; found: El[] }> => call('find', { name, ...o })
-export const read = (id: string, o: { text?: boolean } = {}): Promise<El> => call('read', { id, text: o.text })
+export const read = (id: string, o: { text?: boolean; web?: boolean } = {}): Promise<El> => call('read', { id, text: o.text, web: o.web })
 export const press = async (id: string): Promise<{ ok: boolean; how: string; unverified?: string; input?: 'foreground' }> => ran(await call('press', { id }))
 export const act = async (id: string, action: 'click' | 'action' | 'select' | 'focus'): Promise<{ ok: boolean; input?: 'foreground' }> => ran(await call('act', { id, action }))
 export const at = (x: number, y: number, window?: string, pid?: number | null): Promise<{ found: El | null; path?: { id: string; role: string; name: string }[]; pid?: number | null; covered?: { title: string; pid: number | null } }> => call('at', { x, y, window, pid: pid ?? undefined })
@@ -57,7 +58,9 @@ export const typeText = async (text: string, to: Target = {}): Promise<Sent> => 
 export const click = async (x: number, y: number, o: { button?: string; count?: number; modifiers?: string[] } & Target = {}): Promise<Sent> => ran(await call('click', { x, y, ...o, pid: o.pid ?? undefined }))
 export const focus = (window: string, pid?: number | null): Promise<{ ok: boolean; title: string; pid: number | null; path?: string; front?: number | null }> => call('focus', { window, pid: pid ?? undefined })
 export const close = (window: string, pid?: number | null): Promise<unknown> => call('close', { window, pid: pid ?? undefined })
-export const launch = (app: string): Promise<{ ok: boolean; launched: string; background?: boolean }> => call('launch', { app })
+export const launch = (app: string, args?: string[]): Promise<{ ok: boolean; launched: string; background?: boolean }> => call('launch', { app, args })
+/** Turns the web accessibility tree of the browser of process `pid` on or off; `was` says whether it was on. */
+export const web = (pid: number, on: boolean): Promise<{ ok: boolean; was: boolean }> => call('web', { pid, on })
 export async function screen(): Promise<Size> {
   screenSize ??= await call<Size>('screen')
   return screenSize
