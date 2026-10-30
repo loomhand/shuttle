@@ -107,7 +107,7 @@ test('a step whose recorded after-window does not come stops the plan as an erro
   await canvas(t, { shown: screen(800, 600, [300, 250]) })
   const r = await main({ steps: [{ click: 'the Green button', after: 'Green clicked', timeout_ms: 300, recorded: { text: 'the Green button', crop: crop(), root: true } }] })
   assert.equal(r.ok, false, JSON.stringify(r))
-  assert.match(String(r.error), /after this step the recording saw "Green clicked"/)
+  assert.match(String(r.error), /after this step the recording saw "Green clicked" in front, and the replay did not: "Canvas" is in front/)
   assert.equal(r.escalate?.step, 0)
 })
 
@@ -116,4 +116,19 @@ test('a step whose recorded after-window comes passes', async (t) => {
   const r = await main({ steps: [{ click: 'the Green button', after: 'Green clicked', recorded: { text: 'the Green button', crop: crop(), root: true } }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(seen.clicks.length, 1)
+})
+
+test('a recorded after-window open behind the front one fails the step and is never focused to pass it', async (t) => {
+  const calls: string[] = []
+  const front = { id: '1/1', title: 'Canvas', role: 'window', pid: process.pid, active: true, app: 'Browser', bounds: [0, 0, 800, 600] }
+  const behind = { id: '2/1', title: 'Green clicked', role: 'window', pid: process.pid, active: false, app: 'Browser', bounds: [0, 0, 800, 600] }
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify([front, behind])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: front, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: 'Canvas', states: ['showing'] }, { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'Green', states: ['showing'], bounds: [10, 10, 50, 20] }] })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ click: 'Green', after: 'Green clicked', timeout_ms: 300 }] })
+  assert.match(String(r.error), /recording saw "Green clicked" in front, and the replay did not/)
+  assert.equal(calls.includes('desk_focus'), false, calls.join(' '))
 })

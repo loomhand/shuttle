@@ -731,10 +731,11 @@ async function typingInto(want: Focus, w: Win | null) {
 }
 
 async function landed(want: string, ms: number) {
-  try { await windowFor(want, ms) } catch (e: unknown) {
-    if (e instanceof Surprise && !(e instanceof Diverged)) throw new Diverged(`after this step the recording saw "${want}", and the replay did not: ${e.reason}`, e.seen)
-    throw e
-  }
+  const t0 = Date.now()
+  const f = frontOf(await until((ws) => { const f = frontOf(ws); return !!f && awaited(f.title, want) }, ms))
+  tick('wait', t0)
+  if (!f || !awaited(f.title, want)) throw new Diverged(`after this step the recording saw "${want}" in front, and the replay did not: ${f ? `"${f.title}"` : 'no window'} is in front`, await seen())
+  known.add(f.title); lastSeen = f.title
 }
 
 // where a click at (x, y) lands: refused under another window, in another window or app, and on a window or document root unless a recording clicked one
