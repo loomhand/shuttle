@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.33 - 2026-10-30
 
 - **MCP tools to record a demonstration and replay it.** `record_start`, `record_note` and `record_stop` start and stop a recording on macOS, as the menu-bar item does. `record_stop` answers a draft `gui_plan`: an `app` step, and one more each time the input moves to another app or window, menu clicks merged into `menu` steps, clicks with their button, count, modifiers, recorded crop and point, typed runs and keys, the window each step left in front as `after`, and each value the caller names in `params` as `{{name}}`; a password the user typed becomes a secret parameter to pass at replay, typed only into a password field. [wire.md](docs/wire.md#recordings) has the rules.
 - **macOS: recordings of what you do.** Start recording from the menu-bar item (or `record_start` on the desk wire), work, and stop it: shuttle keeps each click with the element under it, read before the app handles the click, its window and a crop around it from that window's own capture as it was before the click, each key, the window that came after each action, and your notes, in a 0600 file under `~/Library/Caches/loomhand/shuttle/recordings`. Keys typed into password fields, input in password managers, Keychain Access, Passwords and System Settings, and shuttle's own menu are left out. [safety.md](docs/safety.md#recording) has what a recording holds.
