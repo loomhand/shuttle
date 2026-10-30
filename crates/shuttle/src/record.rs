@@ -71,7 +71,7 @@ pub enum Input {
     Note(String),
 }
 
-/// The element with the keyboard focus, as a snapshot names it, the role of its window or sheet, the title of its window, and whether it takes a password.
+/// The element with the keyboard focus, as a snapshot names it, the role of its window or sheet, the title of its window, whether it takes a password, and the address of its web page with its DOM id.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct Field {
     pub role: String,
@@ -81,9 +81,13 @@ pub struct Field {
     pub window: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub secure: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub url: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub id: String,
 }
 
-/// An element under a click: its role and name as a snapshot names them, its help, its process, and the role and name of its ancestors up to its window, innermost first.
+/// An element under a click: its role and name as a snapshot names them, its help, its process, the role and name of its ancestors up to its window, innermost first, and the address of its web page with its DOM id.
 #[derive(Debug, Default)]
 pub struct Hit {
     pub role: String,
@@ -92,6 +96,7 @@ pub struct Hit {
     pub pid: Option<u32>,
     pub path: Vec<(String, String)>,
     pub secret: bool,
+    pub page: Option<(String, Option<String>)>,
 }
 
 /// The recordings of this daemon: at most one running, and the last one made.
@@ -260,6 +265,8 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
     let started = now_ms();
     let t0 = Instant::now();
     let mut windows = list(desk).await;
+    let (mut asked, mut lit) = (Vec::new(), Vec::new());
+    light(desk, &windows, &apps, &mut asked, &mut lit).await;
     let mut front = front_of(&windows);
     let mut frame = framed(desk, &windows, front.as_ref(), &apps).await;
     let mut acted = t0;
@@ -278,13 +285,22 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                     }
                     _ if acting() => continue,
                     Input::Click { x, y, right, count, mods, found } => {
-                        let at = match found {
-                            Some(h) => json!({
-                                "found": {"role": h.role, "name": h.name, "description": h.description},
-                                "path": h.path.into_iter().map(|(role, name)| json!({"role": role, "name": name})).collect::<Vec<_>>(),
-                                "pid": h.pid,
-                                "secret": h.secret,
-                            }),
+                        let mut at = match found {
+                            Some(h) => {
+                                let mut at = json!({
+                                    "found": {"role": h.role, "name": h.name, "description": h.description},
+                                    "path": h.path.into_iter().map(|(role, name)| json!({"role": role, "name": name})).collect::<Vec<_>>(),
+                                    "pid": h.pid,
+                                    "secret": h.secret,
+                                });
+                                if let Some((url, id)) = h.page {
+                                    at["web"] = json!({"url": url});
+                                    if let Some(id) = id {
+                                        at["web"]["id"] = id.into();
+                                    }
+                                }
+                                at
+                            }
                             None => call(desk, "desk_at", json!({"x": x.round() as i32, "y": y.round() as i32})).await.unwrap_or_default(),
                         };
                         let pid = at["pid"].as_u64();
@@ -292,6 +308,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                             continue;
                         }
                         windows = list(desk).await;
+                        light(desk, &windows, &apps, &mut asked, &mut lit).await;
                         let win = window_of(&windows, &at);
                         let app = win.as_ref().and_then(|w| w["app"].as_str()).map(str::to_owned).or_else(|| app_of(&windows, pid));
                         if kept(app.as_deref(), &apps) {
@@ -305,6 +322,9 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                             });
                             if at["secret"] == true {
                                 e["secret"] = true.into();
+                            }
+                            if at["web"].is_object() {
+                                e["web"] = at["web"].take();
                             }
                             if let Some(w) = &win {
                                 e["window"] = json!({"title": w["title"], "bounds": w["bounds"]});
@@ -363,6 +383,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
             () = tokio::time::sleep_until(wake), if settle.is_some() => {
                 settle = None;
                 windows = list(desk).await;
+                light(desk, &windows, &apps, &mut asked, &mut lit).await;
                 let now = front_of(&windows);
                 if let Some(w) = &now
                     && now.as_ref().map(|w| &w["title"]) != front.as_ref().map(|w| &w["title"])
@@ -374,6 +395,9 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                 front = now;
             }
         }
+    }
+    for pid in lit {
+        let _ = call(desk, "desk_web", json!({"pid": pid, "on": false})).await;
     }
     let recording = json!({"id": id, "started_ms": started, "stopped_ms": now_ms(), "apps": apps, "events": events});
     if let Err(e) = save(&path, &recording) {
@@ -457,6 +481,29 @@ fn front_of(windows: &[Value]) -> Option<Value> {
         .iter()
         .find(|w| w["active"] == true && (w["title"] != "" || w["role"] != "window"))
         .cloned()
+}
+
+// a Chromium browser builds its page tree only for an assistive app that asks: each app the recording keeps is asked once, and the ones it turned on go back off at its end
+async fn light<H: Handler>(
+    desk: &H,
+    windows: &[Value],
+    apps: &[String],
+    asked: &mut Vec<u64>,
+    lit: &mut Vec<u64>,
+) {
+    for w in windows {
+        let Some(pid) = w["pid"].as_u64().filter(|p| !asked.contains(p)) else {
+            continue;
+        };
+        if !kept(w["app"].as_str(), apps) {
+            continue;
+        }
+        asked.push(pid);
+        let on = call(desk, "desk_web", json!({"pid": pid, "on": true})).await;
+        if on.is_ok_and(|v| v["was"] == false) {
+            lit.push(pid);
+        }
+    }
 }
 
 async fn list<H: Handler>(desk: &H) -> Vec<Value> {
@@ -583,6 +630,8 @@ mod tests {
         front: Mutex<&'static str>,
         hit: Value,
         shots: Mutex<Vec<Value>>,
+        webs: Mutex<Vec<Value>>,
+        was: bool,
     }
 
     impl Desk {
@@ -591,6 +640,8 @@ mod tests {
                 front: Mutex::new("Untitled"),
                 hit,
                 shots: Mutex::default(),
+                webs: Mutex::default(),
+                was: false,
             }
         }
     }
@@ -608,6 +659,10 @@ mod tests {
                 ),
                 "desk_at" if call.args["x"].is_i64() && call.args["y"].is_i64() => {
                     Output::text(self.hit.to_string())
+                }
+                "desk_web" if call.args["pid"] == 7 => {
+                    lock(&self.webs).push(call.args);
+                    Output::text(json!({"ok": true, "was": self.was}).to_string())
                 }
                 "desk_shot" => {
                     lock(&self.shots).push(call.args);
@@ -755,6 +810,7 @@ mod tests {
                     ("window".into(), "Untitled".into()),
                 ],
                 secret: false,
+                page: None,
             }),
         };
         let r = run(&desk, &[], vec![menu]).await;
@@ -762,6 +818,67 @@ mod tests {
         assert_eq!(
             (&e["element"]["name"], &e["app"], &e["window"]["title"]),
             (&json!("New"), &json!("TextEdit"), &json!("Untitled")),
+            "{e}"
+        );
+        assert!(e.get("web").is_none(), "{e}");
+    }
+
+    #[tokio::test]
+    async fn a_recording_turns_a_browser_page_tree_on_and_back_off_and_leaves_one_that_was_on() {
+        let desk = Desk::new(Value::Null);
+        run(&desk, &[], vec![click(5.0, 5.0)]).await;
+        assert_eq!(
+            *lock(&desk.webs),
+            [
+                json!({"pid": 7, "on": true}),
+                json!({"pid": 7, "on": false})
+            ]
+        );
+        let was_on = Desk {
+            was: true,
+            ..Desk::new(Value::Null)
+        };
+        run(&was_on, &[], vec![click(5.0, 5.0)]).await;
+        assert_eq!(*lock(&was_on.webs), [json!({"pid": 7, "on": true})]);
+        let other = Desk::new(Value::Null);
+        run(&other, &["Notes"], vec![click(5.0, 5.0)]).await;
+        assert!(lock(&other.webs).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_click_in_a_web_page_keeps_the_page_address_and_the_dom_id() {
+        let desk = Desk::new(Value::Null);
+        let field = |page| Input::Click {
+            x: 120.0,
+            y: 80.0,
+            right: false,
+            count: 1,
+            mods: Vec::new(),
+            found: Some(Hit {
+                role: "button".into(),
+                name: "Pay".into(),
+                pid: Some(7),
+                path: vec![("window".into(), "Untitled".into())],
+                page,
+                ..Hit::default()
+            }),
+        };
+        let r = run(
+            &desk,
+            &[],
+            vec![
+                field(Some(("https://shop.test/cart".into(), Some("pay".into())))),
+                field(Some(("https://shop.test/cart".into(), None))),
+            ],
+        )
+        .await;
+        let e = &r["events"];
+        assert_eq!(
+            (&e[0]["web"], &e[1]["web"]),
+            (
+                &json!({"url": "https://shop.test/cart", "id": "pay"}),
+                &json!({"url": "https://shop.test/cart"})
+            ),
             "{e}"
         );
     }

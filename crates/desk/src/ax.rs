@@ -971,22 +971,47 @@ pub struct Seen {
     pub path: Vec<(&'static str, String)>,
     /// A secure text field: a password, whose keys no listener sees.
     pub secret: bool,
+    /// The address of the web page the element is in, and its DOM id.
+    pub page: Option<Page>,
+}
+
+/// Where a web element is: the address of its page and the element's DOM id, when it has one.
+#[derive(Debug, Default)]
+pub struct Page {
+    pub url: String,
+    pub dom_id: Option<String>,
 }
 
 /// What the hit test finds at desk point `(x, y)` now, read in one call per element so a click can be read before its app handles it.
 pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
     let names = names(ATTRS);
-    let el = hit(&system_wide(), x, y, display_scale())?;
-    let a = attrs(&names, &el);
-    let mut path = Vec::new();
-    let mut up = attr(&el, "AXParent");
-    while let Some(p) = up.take() {
+    let mut el = hit(&system_wide(), x, y, display_scale())?;
+    let mut a = attrs(&names, &el);
+    // the text of a link or button answers the hit test, and the control is what a click means
+    if a.role == "AXStaticText"
+        && let Some(p) = attr(&el, "AXParent")
+    {
         let pa = attrs(&names, &p);
-        path.push((
-            ax_roles::role(kind_of(&pa)).unwrap_or("generic"),
-            name_of(&pa, NAME_CHARS),
-        ));
-        if pa.role == "AXWindow" || path.len() >= PATH_MAX_DEPTH {
+        if matches!(pa.role.as_str(), "AXLink" | "AXButton") {
+            (el, a) = (p, pa);
+        }
+    }
+    let mut path = Vec::new();
+    let mut url = None;
+    let mut up = attr(&el, "AXParent");
+    for _ in 0..MAX_DEPTH {
+        let Some(p) = up.take() else { break };
+        let pa = attrs(&names, &p);
+        if path.len() < PATH_MAX_DEPTH {
+            path.push((
+                ax_roles::role(kind_of(&pa)).unwrap_or("generic"),
+                name_of(&pa, NAME_CHARS),
+            ));
+        }
+        if pa.role == "AXWebArea" && url.is_none() {
+            url = attr(&p, "AXURL").and_then(url_text);
+        }
+        if pa.role == "AXWindow" || (path.len() >= PATH_MAX_DEPTH && url.is_some()) {
             break;
         }
         up = attr(&p, "AXParent");
@@ -1000,7 +1025,15 @@ pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
         secret: [&a.role, &a.subrole]
             .iter()
             .any(|r| *r == "AXSecureTextField"),
+        page: url.map(|url| page(&el, url)),
     })
+}
+
+fn page(el: &CFType, url: String) -> Page {
+    Page {
+        url,
+        dom_id: Some(string(attr(el, "AXDOMIdentifier"))).filter(|d| !d.is_empty()),
+    }
 }
 
 fn kind_of(a: &Attrs) -> Kind<'_> {
@@ -1037,13 +1070,14 @@ pub fn typing() -> (Option<u32>, bool) {
     typing_at(attr(&system_wide(), "AXFocusedUIElement"))
 }
 
-/// The focused element as a snapshot names it, the role of its window or sheet, the title of its window, and whether it is a password field.
+/// The focused element as a snapshot names it, the role of its window or sheet, the title of its window, whether it is a password field, and its web page.
 pub struct Focused {
     pub role: &'static str,
     pub name: String,
     pub frame: &'static str,
     pub window: String,
     pub secure: bool,
+    pub page: Option<Page>,
 }
 
 pub fn focused() -> Option<Focused> {
@@ -1052,12 +1086,16 @@ pub fn focused() -> Option<Focused> {
     let a = attrs(&names, &el);
     let mut frame = None;
     let mut window = String::new();
+    let mut url = None;
     let mut up = attr(&el, "AXParent");
-    for _ in 0..PATH_MAX_DEPTH {
+    for _ in 0..MAX_DEPTH {
         let Some(p) = up.take() else { break };
         let role = string(attr(&p, "AXRole"));
         if role == "AXSheet" {
             frame.get_or_insert("dialog");
+        }
+        if role == "AXWebArea" && url.is_none() {
+            url = attr(&p, "AXURL").and_then(url_text);
         }
         if role == "AXWindow" {
             let subrole = string(attr(&p, "AXSubrole"));
@@ -1082,6 +1120,7 @@ pub fn focused() -> Option<Focused> {
         secure: [&a.role, &a.subrole]
             .iter()
             .any(|r| *r == "AXSecureTextField"),
+        page: url.map(|url| page(&el, url)),
     })
 }
 
