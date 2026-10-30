@@ -63,7 +63,7 @@ export async function screen(): Promise<Size> {
   return screenSize
 }
 
-export async function shot(r: { x?: number; y?: number; w?: number; h?: number } = {}): Promise<Buffer> {
+export async function shot(r: { x?: number; y?: number; w?: number; h?: number; window?: string } = {}): Promise<Buffer> {
   const out = await exchange('desk_shot', r)
   if (out.image_b64 === undefined) throw new Error('desk_shot returned no image')
   return Buffer.from(out.image_b64, 'base64')

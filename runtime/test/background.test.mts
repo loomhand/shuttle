@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { daemon } from './daemon.mts'
-import type { Call } from './daemon.mts'
+import { daemon, gray } from './daemon.mts'
+import type { Call, Reply } from './daemon.mts'
 
 process.env.SHUTTLE_INPUT = 'background'
 const { main } = await import('../lib/gui_plan.mts')
 
 type W = { id: string; title: string; role: string; pid: number; active: boolean; owner?: string }
 
-function desktop(ws: W[], answer: (c: Call) => string | undefined = () => undefined) {
+function desktop(ws: W[], answer: (c: Call) => Reply | undefined = () => undefined) {
   const calls: Call[] = []
-  const reply = (c: Call) => {
+  const reply = (c: Call): Reply => {
     calls.push(c)
     const own = answer(c)
     if (own !== undefined) return own
@@ -216,4 +216,20 @@ test('when the plan window is gone a window of the app with the same title never
   assert.equal(r.escalate?.step, 2)
   assert.match(String(r.escalate?.reason), /is gone/)
   assert.ok(!d.calls.some((c) => c.tool === 'desk_type'))
+})
+
+test('a background click with a button, count or modifiers goes into the plan window in its image pixels, not to the covering window', async (t) => {
+  const report = { id: '1', title: 'Report', role: 'window', pid: 4, active: false, bounds: [100, 50, 600, 400] }
+  const file = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'report.txt', states: ['showing'], bounds: [300, 250, 40, 20] }
+  const d = desktop([user(), report as W], ({ tool }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: report, truncated: false, nodes: [{ ref: 0, id: '1', parent: -1, depth: 0, role: 'window', name: 'Report', states: ['showing'] }, file] })
+    if (tool === 'desk_read') return JSON.stringify(file)
+    if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(1200, 800).toString('base64') }
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Report' }, { click: 'report.txt', count: 2 }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(sent(d.calls, 'desk_click'), [{ x: 440, y: 420, count: 2, window: 'Report', pid: 4 }])
+  assert.deepEqual(sent(d.calls, 'desk_shot'), [{ window: 'Report' }])
 })
