@@ -365,7 +365,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_web" => self.web(parse(args)?).await?,
             "desk_launch" => {
                 let a = parse::<LaunchArgs>(args)?;
-                let mut req = json!({"name": launch_name(&a.app)});
+                let app = a.app.clone();
+                let named = self
+                    .access
+                    .run(CALL_LIMIT, (), move |b| b.bundle_name(&app))
+                    .await?;
+                let mut req = json!({"name": named.as_deref().map_or_else(|| launch_name(&a.app), Cow::Borrowed)});
                 if !a.args.is_empty() {
                     if self.os == Os::Mac {
                         req["creates_new_application_instance"] = true.into();
@@ -4724,6 +4729,17 @@ pub(crate) mod tests {
 
     struct Page;
 
+    struct Launches(Arc<Mutex<Vec<Value>>>);
+
+    impl Input for Launches {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            if tool == "launch_app" {
+                self.0.lock().unwrap().push(args);
+            }
+            Ok(json!({"content": [{"type": "text", "text": "Launched"}]}))
+        }
+    }
+
     impl Access for Page {
         fn frames(&mut self) -> Result<Vec<Frame>, String> {
             Ok(vec![
@@ -4753,6 +4769,10 @@ pub(crate) mod tests {
 
         fn web(&mut self, _: u32, on: bool) -> Result<bool, String> {
             Ok(PAGE_LIT.swap(on, Ordering::SeqCst))
+        }
+
+        fn bundle_name(&mut self, app: &str) -> Result<Option<String>, String> {
+            Ok((app == "Chrome").then(|| "Google Chrome".to_owned()))
         }
 
         fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
@@ -6211,6 +6231,28 @@ pub(crate) mod tests {
         assert!(
             plain.get("url").is_none() && plain.get("dom_id").is_none(),
             "{plain}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_launch_names_a_running_app_by_its_bundle_where_its_windows_list_another_name() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Page), Launches(sent.clone()), Os::Mac);
+        let args = json!({"app": "Chrome", "args": ["https://shop.test/form"]});
+        desk.run("desk_launch", args).await.unwrap();
+        desk.run("desk_launch", json!({"app": "TextEdit"}))
+            .await
+            .unwrap();
+        let names: Vec<Value> = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|a| a["name"].clone())
+            .collect();
+        assert_eq!(names, [json!("Google Chrome"), json!("TextEdit")]);
+        assert_eq!(
+            sent.lock().unwrap()[0]["additional_arguments"],
+            json!(["https://shop.test/form"])
         );
     }
 
