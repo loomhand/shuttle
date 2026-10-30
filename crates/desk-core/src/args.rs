@@ -134,6 +134,9 @@ pub struct WindowArgs {
 #[derive(Deserialize)]
 pub struct LaunchArgs {
     pub app: String,
+    /// Command-line arguments for a new instance of the app, such as a browser profile and a URL.
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 #[derive(Deserialize)]

@@ -363,10 +363,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_unanswered" => self.unanswered().await?,
             "desk_close" => self.close(parse(args)?, turn.clone()).await?,
             "desk_launch" => {
-                let app = parse::<LaunchArgs>(args)?.app;
-                let v = self
-                    .call("launch_app", json!({"name": launch_name(&app)}))
-                    .await?;
+                let a = parse::<LaunchArgs>(args)?;
+                let mut req = json!({"name": launch_name(&a.app)});
+                if !a.args.is_empty() {
+                    if self.os == Os::Mac {
+                        req["creates_new_application_instance"] = true.into();
+                    }
+                    req["additional_arguments"] = a.args.into();
+                }
+                let v = self.call("launch_app", req).await?;
                 let mut out = json!({"ok": true, "launched": text_of(&v)});
                 if self.os == Os::Mac {
                     out["background"] = true.into();
@@ -4011,6 +4016,33 @@ pub(crate) mod tests {
             assert!(sent(&calls, "click").is_empty());
             click(same).await.unwrap();
             assert_eq!(sent(&calls, "click").len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_launch_with_arguments_starts_a_new_instance_on_macos_with_them() {
+        for os in [Os::Mac, Os::Linux, Os::Windows] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), os);
+            let args = json!(["--profile-directory=Profile 1", "https://example.com/"]);
+            desk.run("desk_launch", json!({"app": "Google Chrome", "args": args}))
+                .await
+                .unwrap();
+            desk.run("desk_launch", json!({"app": "Google Chrome"}))
+                .await
+                .unwrap();
+            let sent = sent(&calls, "launch_app");
+            assert_eq!(sent[0]["additional_arguments"], args, "{os:?} {sent:?}");
+            assert_eq!(
+                sent[0].get("creates_new_application_instance").is_some(),
+                os == Os::Mac,
+                "{os:?} {sent:?}"
+            );
+            assert!(sent[1].get("additional_arguments").is_none(), "{sent:?}");
+            assert!(
+                sent[1].get("creates_new_application_instance").is_none(),
+                "{sent:?}"
+            );
         }
     }
 
