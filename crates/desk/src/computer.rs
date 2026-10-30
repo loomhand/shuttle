@@ -424,7 +424,7 @@ impl Computer {
                 let pressed = refused
                     .map(|r| format!("\n{r}\n{PRESSED_INSTEAD}"))
                     .unwrap_or_default();
-                (shot_points(&text_of(&v), k) + &pressed + &changes, false)
+                (shot_reply(&text_of(&v), k) + &pressed + &changes, false)
             }
             Err(e) => (e, true),
         };
@@ -2274,6 +2274,27 @@ fn fit(width: u32, height: u32, rgb: &[u8], edge: u32) -> (u32, u32, Vec<u8>) {
     (tw, th, out)
 }
 
+/// The driver's reply to an input with its points in screenshot pixels, worded as such: a desktop click's
+/// `Sent screen-absolute <click> at (x,y)` (Linux) or `at desktop-pixel (…) → screen-point (x,y)` (macOS, whose
+/// screen point is the one the caller's screenshot point maps to) reads `Sent <click> at screenshot point (x,y)`.
+fn shot_reply(text: &str, scale: f64) -> String {
+    let text = shot_points(text, scale);
+    let Some((head, rest)) = text.split_once("Sent screen-absolute ") else {
+        return text;
+    };
+    let Some((click, rest)) = rest.split_once(" at ") else {
+        return text;
+    };
+    let point = match rest.strip_prefix("desktop-pixel (") {
+        Some(mac) => match mac.split_once(" \u{2192} screen-point ") {
+            Some((_, point)) => point,
+            None => return text,
+        },
+        None => rest,
+    };
+    format!("{head}Sent {click} at screenshot point {point}")
+}
+
 /// `text` with each point `(x,y)` or `(x, y)` divided by `scale`, from screen to screenshot pixels.
 fn shot_points(text: &str, scale: f64) -> String {
     if scale == 1.0 {
@@ -3712,10 +3733,12 @@ mod tests {
         let act = json!({"action": "click", "x": 100.0, "y": 40.0});
         let out = cua.act(act).await.unwrap();
         assert!(
-            out.text.contains("click at (100,40) (desktop"),
+            out.text
+                .contains("Sent click at screenshot point (100,40) (desktop scope)."),
             "{}",
             out.text
         );
+        assert!(!out.text.contains("screen-absolute"), "{}", out.text);
         driver.abort();
     }
 
@@ -3941,6 +3964,35 @@ mod tests {
             "[0] panel \"\"\n[1] text \"Note body\" value=\"ab\"\n"
         );
         assert_eq!(elements[&0].label, "\u{fffc}\u{fffc}\u{fffc}\u{fffc}");
+    }
+
+    #[test]
+    fn a_desktop_click_reply_names_the_screenshot_point_on_linux_and_macos() {
+        assert_eq!(
+            shot_reply(
+                "\u{2705} Sent screen-absolute click at (325,296) (desktop scope).",
+                1.25
+            ),
+            "\u{2705} Sent click at screenshot point (260,237) (desktop scope)."
+        );
+        assert_eq!(
+            shot_reply(
+                "\u{2705} Sent screen-absolute right-click at desktop-pixel (650,592) \u{2192} screen-point (325,296) (desktop scope; not driver-verified).",
+                1.25
+            ),
+            "\u{2705} Sent right-click at screenshot point (260,237) (desktop scope; not driver-verified)."
+        );
+        assert_eq!(
+            shot_reply(
+                "\u{2705} Sent screen-absolute click at desktop-pixel (200,100) \u{2192} screen-point (100,50) (desktop scope; not driver-verified).",
+                1.0
+            ),
+            "\u{2705} Sent click at screenshot point (100,50) (desktop scope; not driver-verified)."
+        );
+        assert_eq!(
+            shot_reply("Clicked at (100.0, 50.0) x 2", 1.25),
+            "Clicked at (80,40) x 2"
+        );
     }
 
     #[test]
