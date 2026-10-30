@@ -269,9 +269,17 @@ async function perform(p: Params): Promise<Result> {
   if (escalate) out.escalate = escalate
   else out.window = end?.title ?? null
   if (escalate && (diverged || escalate.reason.startsWith(SPENT))) out.error = escalate.reason
+  if (escalate && diverged) out.stopped = stopped(plan, escalate)
   const notes = recs.filter((r) => r?.unverified && !r.confirmed).map((r) => ({ step: r.i, note: r.unverified }))
   if (notes.length) out.unverified = notes
   return out
+}
+
+// where a recorded check stopped the plan, for an agent to take over: the step, what it meant, why, and the steps left from it on
+function stopped(plan: Step[], e: Escalation) {
+  const step = e.step ?? 0
+  const remaining = plan.slice(step).map(({ recorded: _, fp: __, blank: ___, ...s }) => s)
+  return { step, intent: (plan[step] as Step & { intent?: string } | undefined)?.intent ?? null, reason: e.reason, remaining }
 }
 
 class Surprise extends Error {
@@ -721,7 +729,7 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec): 
     if (c.ok) { rec.how = 'point'; return [x, y] }
     missed.push(`the recorded point is on ${told(c)}`)
   }
-  throw new Surprise(`no element matches "${target}"; ${missed.join('; ')}`, await seen(), true)
+  throw new (r ? Diverged : Surprise)(`no element matches "${target}"; ${missed.join('; ')}`, await seen(), true)
 }
 
 function pointer(s: Step) {
