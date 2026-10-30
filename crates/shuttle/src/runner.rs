@@ -1,5 +1,6 @@
 //! Scripts and GUI plans on the bundled Node runtime, each run in its own scratch directory with the desk API at hand.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -244,7 +245,11 @@ impl Runner {
                 }
             }
         }
-        report["stderr"] = stderr.into();
+        let local = Local::new(&self.runtime, scratch);
+        if let Some(message) = report["error"]["message"].as_str() {
+            report["error"]["message"] = local.strip(message).into();
+        }
+        report["stderr"] = local.strip(&stderr).into();
         report["result"] = match tokio::fs::read(scratch.join("result.json")).await {
             Ok(raw) => serde_json::from_slice(&raw)
                 .unwrap_or_else(|_| String::from_utf8_lossy(&raw).into_owned().into()),
@@ -349,6 +354,60 @@ fn exited(program: &Path, status: std::process::ExitStatus, stderr: &str) -> Str
     format!("{name} exited with {status}; stderr: {tail}")
 }
 
+/// The install and scratch folders of a run, which its stack traces and stderr name: the runtime's files read as
+/// `runtime/<file>` and the scratch files, such as the `code` module, by their name.
+struct Local {
+    prefixes: Vec<(String, &'static str)>,
+}
+
+impl Local {
+    fn new(runtime: &Path, scratch: &Path) -> Self {
+        let mut prefixes = Vec::new();
+        for (dir, to) in [(runtime, "runtime/"), (scratch, "")] {
+            let real = dir.canonicalize().ok();
+            for dir in std::iter::once(dir).chain(real.as_deref()) {
+                // Windows canonical paths carry the verbatim prefix, which Node does not print
+                let path = dir.to_string_lossy();
+                let path = path.trim_start_matches(r"\\?\");
+                let slashed = path.replace('\\', "/");
+                for url_path in [slashed.clone(), url_encoded(&slashed)] {
+                    let url = if url_path.starts_with('/') {
+                        format!("file://{url_path}/")
+                    } else {
+                        format!("file:///{url_path}/")
+                    };
+                    prefixes.push((url, to));
+                }
+                prefixes.push((format!("{path}{}", std::path::MAIN_SEPARATOR), to));
+            }
+        }
+        // the longest first, so a folder inside another is replaced before its parent
+        prefixes.sort_by_key(|(p, _)| std::cmp::Reverse(p.len()));
+        Self { prefixes }
+    }
+
+    fn strip(&self, text: &str) -> String {
+        self.prefixes
+            .iter()
+            .fold(text.to_owned(), |text, (from, to)| {
+                text.replace(from.as_str(), to)
+            })
+    }
+}
+
+/// `path` as Node's file URLs spell it: bytes outside ASCII letters, digits, `-._/:` percent-encoded, as Windows `~` is.
+fn url_encoded(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for b in path.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._/:".contains(&b) {
+            out.push(char::from(b));
+        } else {
+            let _ = write!(out, "%{b:02X}");
+        }
+    }
+    out
+}
+
 fn text(captured: &Captured) -> String {
     let bytes = std::mem::take(&mut *captured.lock().unwrap_or_else(PoisonError::into_inner));
     String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
@@ -441,7 +500,14 @@ mod tests {
             .unwrap();
         assert_eq!(thrown["error"]["kind"], "exception");
         let stack = thrown["error"]["message"].as_str().unwrap();
-        assert!(stack.starts_with("TypeError: nope\n    at main"), "{stack}");
+        assert!(
+            stack.starts_with("TypeError: nope\n    at main (script.mts:1:"),
+            "{stack}"
+        );
+        assert!(stack.contains("at runtime/entry.mts:"), "{stack}");
+        let runtime = dir.path().canonicalize().unwrap();
+        assert!(!stack.contains(&*runtime.to_string_lossy()), "{stack}");
+        assert!(!stack.contains("file://"), "{stack}");
         let no_main = r
             .script(json!({"code": "export const x = 1"}), "run-test")
             .await
