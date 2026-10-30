@@ -38,3 +38,5 @@ mod screen;
 mod shot;
 mod still;
 mod volatile;
+
+pub use shot::crop_png;

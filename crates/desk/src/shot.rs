@@ -3,7 +3,7 @@
 pub(crate) const OFF_SCREEN: &str = "the rectangle is off the screen";
 
 /// A crop of the screen rectangle `[x, y, w, h]` from a screenshot scaled by `factor`, as `(width, height, PNG)`.
-pub(crate) fn crop_png(
+pub fn crop_png(
     png: &[u8],
     [x, y, w, h]: [f64; 4],
     factor: f64,
