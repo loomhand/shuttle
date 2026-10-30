@@ -8,7 +8,7 @@ shuttle is part of [loomhand](https://github.com/loomhand). Its input, capture a
 
 ## Status
 
-**v0.1.32 is the current release.** On macOS and Windows the daemon drives the desktop through the bundled cua-driver (`desk`, `screenshot`, `gui_plan`, `script_run`), calls models with your own key, and has its safety controls: kill switch and hotkey, indicator, confirm mode and app allowlist. On Linux (X11) the daemon drives the desktop over AT-SPI, with input through the bundled cua-driver, the stop, the `script_run` switch and the app allowlist; its hotkey, indicator and confirm dialog are not built yet. On Linux and macOS the daemon can drive an Android device over adb instead of the desktop ([Android over adb](docs/platforms.md#android-over-adb)). v0.1.0's Windows build needs the Visual C++ Redistributable; later releases do not.
+**v0.1.33 is the current release.** On macOS and Windows the daemon drives the desktop through the bundled cua-driver (`desk`, `screenshot`, `gui_plan`, `script_run`), calls models with your own key, and has its safety controls: kill switch and hotkey, indicator, confirm mode and app allowlist. On Linux (X11) the daemon drives the desktop over AT-SPI, with input through the bundled cua-driver, the stop, the `script_run` switch and the app allowlist; its hotkey, indicator and confirm dialog are not built yet. On Linux and macOS the daemon can drive an Android device over adb instead of the desktop ([Android over adb](docs/platforms.md#android-over-adb)). v0.1.0's Windows build needs the Visual C++ Redistributable; later releases do not.
 
 | Phase | What | State |
 |---|---|---|
