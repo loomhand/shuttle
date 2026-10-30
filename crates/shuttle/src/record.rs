@@ -68,12 +68,14 @@ pub enum Input {
     Note(String),
 }
 
-/// The element with the keyboard focus, as a snapshot names it, and the role of its window or sheet.
+/// The element with the keyboard focus, as a snapshot names it, the role of its window or sheet, and whether it takes a password.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct Field {
     pub role: String,
     pub name: String,
     pub frame: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub secure: bool,
 }
 
 /// An element under a click: its role and name as a snapshot names them, its help, its process, and the role and name of its ancestors up to its window, innermost first.
@@ -801,7 +803,15 @@ mod tests {
         let r = run(
             &desk,
             &[],
-            vec![field, click(5.0, 5.0), Input::Password(None)],
+            vec![
+                field,
+                click(5.0, 5.0),
+                Input::Password(Some(Field {
+                    role: "textbox".into(),
+                    secure: true,
+                    ..Field::default()
+                })),
+            ],
         )
         .await;
         assert_eq!(
@@ -810,8 +820,16 @@ mod tests {
             "{r}"
         );
         assert_eq!(
-            (&r["events"][2]["kind"], &r["events"][2]["app"]),
-            (&json!("password"), &json!("TextEdit")),
+            (
+                &r["events"][2]["kind"],
+                &r["events"][2]["app"],
+                &r["events"][2]["focus"]
+            ),
+            (
+                &json!("password"),
+                &json!("TextEdit"),
+                &json!({"role": "textbox", "name": "", "frame": "", "secure": true})
+            ),
             "{r}"
         );
     }
@@ -841,6 +859,7 @@ mod tests {
             role: "textbox".into(),
             name: "Save As:".into(),
             frame: "dialog".into(),
+            ..Field::default()
         };
         let r = run(
             &desk,

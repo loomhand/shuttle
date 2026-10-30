@@ -97,7 +97,7 @@ impl Tap {
                     CFRunLoopRunInMode(kCFRunLoopDefaultMode, TURN_S, false);
                     let now = ax::secure_input();
                     if now && !secure {
-                        let _ = (*seen).tx.send(Input::Password(focused()));
+                        let _ = (*seen).tx.send(Input::Password(focused(true)));
                     }
                     secure = now;
                 }
@@ -146,11 +146,12 @@ extern "C" fn heard(
     event
 }
 
-fn focused() -> Option<Field> {
-    ax::focused().map(|(role, name, frame)| Field {
+fn focused(secret: bool) -> Option<Field> {
+    ax::focused().map(|(role, name, frame, secure)| Field {
         role: role.to_owned(),
         name,
         frame: frame.to_owned(),
+        secure: secure || secret,
     })
 }
 
@@ -215,7 +216,7 @@ fn read(e: &Event, kind: u32, seen: &Seen) -> Option<Input> {
         KEY_DOWN => {
             let (pid, secret) = ax::typing();
             let read = seen.fresh.get();
-            let focus = if read { focused() } else { None };
+            let focus = if read { focused(secret) } else { None };
             let text = if secret { String::new() } else { e.text() };
             let plain = !text.is_empty()
                 && !text.chars().any(char::is_control)
