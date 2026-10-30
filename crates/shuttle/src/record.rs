@@ -385,17 +385,18 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                 windows = list(desk).await;
                 light(desk, &windows, &apps, &mut asked, &mut lit).await;
                 let now = front_of(&windows);
-                if let Some(w) = &now
-                    && now.as_ref().map(|w| &w["title"]) != front.as_ref().map(|w| &w["title"])
-                    && kept(w["app"].as_str(), &apps)
-                {
-                    events.push(json!({"t": t0.elapsed().as_millis(), "kind": "after", "window": w["title"], "role": w["role"], "app": w["app"]}));
-                }
+                events.extend(came(now.as_ref(), front.as_ref(), &apps, t0));
                 frame = framed(desk, &windows, now.as_ref(), &apps).await;
                 front = now;
             }
         }
     }
+    events.extend(came(
+        front_of(&list(desk).await).as_ref(),
+        front.as_ref(),
+        &apps,
+        t0,
+    ));
     for pid in lit {
         let _ = call(desk, "desk_web", json!({"pid": pid, "on": false})).await;
     }
@@ -481,6 +482,13 @@ fn front_of(windows: &[Value]) -> Option<Value> {
         .iter()
         .find(|w| w["active"] == true && (w["title"] != "" || w["role"] != "window"))
         .cloned()
+}
+
+fn came(now: Option<&Value>, was: Option<&Value>, apps: &[String], t0: Instant) -> Option<Value> {
+    let w = now?;
+    (Some(&w["title"]) != was.map(|w| &w["title"]) && kept(w["app"].as_str(), apps)).then(|| {
+        json!({"t": t0.elapsed().as_millis(), "kind": "after", "window": w["title"], "role": w["role"], "app": w["app"]})
+    })
 }
 
 // a Chromium browser builds its page tree only for an assistive app that asks: each app the recording keeps is asked once, and the ones it turned on go back off at its end
@@ -1100,6 +1108,37 @@ mod tests {
             .map(|e| &e["kind"])
             .collect();
         assert_eq!(kinds, [&json!("key"), &json!("skipped")], "{r}");
+    }
+
+    #[tokio::test]
+    async fn a_window_that_came_after_the_last_input_settled_is_kept_when_the_recording_stops() {
+        let desk = Desk::new(Value::Null);
+        let (tx, rx) = unbounded_channel();
+        let (done, made) = oneshot::channel();
+        let dir = tempfile::tempdir().unwrap();
+        let s = Session {
+            id: "r".into(),
+            apps: Vec::new(),
+            per_point: 1.0,
+            path: dir.path().join("r.json"),
+            inputs: rx,
+            done,
+        };
+        let worker = async { work(&desk, s, || false).await };
+        let user = async {
+            tx.send(key("s", false)).unwrap();
+            tokio::time::sleep(SETTLE + Duration::from_millis(300)).await;
+            *lock(&desk.front) = "Paid";
+            drop(tx);
+        };
+        tokio::join!(worker, user);
+        let r = made.await.unwrap();
+        let last = &r["events"][1];
+        assert_eq!(
+            (&last["kind"], &last["window"]),
+            (&json!("after"), &json!("Paid")),
+            "{r}"
+        );
     }
 
     #[tokio::test]
