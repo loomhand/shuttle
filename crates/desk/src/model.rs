@@ -79,6 +79,9 @@ pub struct Frame {
     /// A macOS window that no display shows: minimized, or hidden by its app.
     #[serde(skip)]
     pub hidden: bool,
+    /// The window server's number of a macOS window, which cua-driver lists it by.
+    #[serde(skip)]
+    pub number: Option<u32>,
 }
 
 impl Window for Frame {

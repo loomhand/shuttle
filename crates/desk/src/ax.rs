@@ -225,6 +225,7 @@ impl Ax {
                     active,
                     app: name.clone(),
                     hidden: !shows(&bounds, frame),
+                    number: number_of(w),
                     ..Frame::default()
                 });
             }
@@ -686,6 +687,7 @@ unsafe extern "C" {
     fn AXUIElementCopyElementAtPosition(app: CFTypeRef, x: f32, y: f32, out: *mut CFTypeRef)
     -> i32;
     fn AXUIElementGetPid(e: CFTypeRef, pid: *mut i32) -> i32;
+    fn _AXUIElementGetWindow(e: CFTypeRef, window: *mut u32) -> i32;
     fn AXUIElementSetMessagingTimeout(e: CFTypeRef, seconds: f32) -> i32;
     fn AXValueGetValue(v: CFTypeRef, kind: u32, out: *mut c_void) -> bool;
 }
@@ -884,6 +886,14 @@ fn pid(el: &CFType) -> Option<i32> {
     let mut p = 0;
     // SAFETY: `el` is a live AXUIElement and `p` a valid out pointer.
     (unsafe { AXUIElementGetPid(el.as_CFTypeRef(), &mut p) } == AX_SUCCESS).then_some(p)
+}
+
+fn number_of(window: &CFType) -> Option<u32> {
+    pid(window)?;
+    let mut n = 0;
+    // SAFETY: `window` is a live AXUIElement and `n` a valid out pointer.
+    (unsafe { _AXUIElementGetWindow(window.as_CFTypeRef(), &mut n) } == AX_SUCCESS && n != 0)
+        .then_some(n)
 }
 
 fn application(p: i32) -> CFType {
