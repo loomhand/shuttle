@@ -985,6 +985,12 @@ fn name_of(a: &Attrs, chars: usize) -> String {
         .to_owned()
 }
 
+/// Whether the session's secure input is on: a password field has the keyboard focus.
+pub fn secure_input() -> bool {
+    // SAFETY: the call only reads the session's secure input state.
+    unsafe { IsSecureEventInputEnabled() }
+}
+
 /// Where typing goes now: the process of the focused element, and whether it is a password field, as a secure text field or under the session's secure input.
 pub fn typing() -> (Option<u32>, bool) {
     let focused = attr(&system_wide(), "AXFocusedUIElement");
@@ -992,8 +998,7 @@ pub fn typing() -> (Option<u32>, bool) {
         .as_ref()
         .and_then(pid)
         .and_then(|p| u32::try_from(p).ok());
-    // SAFETY: the call only reads the session's secure input state.
-    let secure = unsafe { IsSecureEventInputEnabled() };
+    let secure = secure_input();
     let field = focused.is_some_and(|f| {
         [attr(&f, "AXSubrole"), attr(&f, "AXRole")]
             .into_iter()

@@ -86,8 +86,14 @@ impl Tap {
                 CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
                 CGEventTapEnable(port, true);
                 let _ = ready.send(Ok(()));
+                let mut secure = false;
                 while !ended.load(Ordering::Acquire) {
                     CFRunLoopRunInMode(kCFRunLoopDefaultMode, TURN_S, false);
+                    let now = ax::secure_input();
+                    if now && !secure {
+                        let _ = (*seen).tx.send(Input::Password);
+                    }
+                    secure = now;
                 }
                 CGEventTapEnable(port, false);
                 CFMachPortInvalidate(port);
