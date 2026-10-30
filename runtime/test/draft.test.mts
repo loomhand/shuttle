@@ -138,3 +138,21 @@ test('shift stays on a key combo and leaves only typed text', async (t) => {
   const d = await main({ recording: { id: 'rec-8', events } as never })
   assert.deepEqual(d.steps.map(({ intent: _, ...s }) => s), [{ app: 'TextEdit' }, { type: 'Ab' }, { key: 'shift+tab' }, { key: 'cmd+shift+s' }])
 })
+
+test('a right click, a double click and a click with modifiers keep their button, count and mods', async (t) => {
+  await daemon(t, () => '{"ok":true}')
+  const at = (t: number, x: number, more: object) => ({ t, kind: 'click', x, y: 100, app: 'Finder', element: { role: 'cell', name: `f${x}` }, root: false, button: 'left', count: 1, mods: [], window: win('Downloads'), ...more })
+  const events = [
+    at(0, 200, { button: 'right' }),
+    at(1, 300, {}),
+    at(2, 301, { count: 2 }),
+    at(3, 400, { mods: ['cmd'] }),
+  ]
+  const d = await main({ recording: { id: 'rec-9', events } as never })
+  assert.deepEqual(d.steps.map(({ intent: _, recorded: __, ...s }) => s), [
+    { app: 'Finder', title: 'Downloads' },
+    { click: 'f200', button: 'right' },
+    { click: 'f301', count: 2 },
+    { click: 'f400', mods: ['cmd'] },
+  ])
+})
