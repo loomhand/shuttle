@@ -718,7 +718,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_click_into_a_password_field_is_marked_secret() {
+    async fn a_password_field_clicked_or_focused_is_marked() {
         let desk = Desk::new(Value::Null);
         let field = Input::Click {
             x: 20.0,
@@ -733,10 +733,15 @@ mod tests {
                 ..Hit::default()
             }),
         };
-        let r = run(&desk, &[], vec![field, click(5.0, 5.0)]).await;
+        let r = run(&desk, &[], vec![field, click(5.0, 5.0), Input::Password]).await;
         assert_eq!(
             (&r["events"][0]["secret"], r["events"][1].get("secret")),
             (&json!(true), None),
+            "{r}"
+        );
+        assert_eq!(
+            (&r["events"][2]["kind"], &r["events"][2]["app"]),
+            (&json!("password"), &json!("TextEdit")),
             "{r}"
         );
     }
