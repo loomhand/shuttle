@@ -151,12 +151,20 @@ extern "C" fn heard(
 }
 
 fn focused(secret: bool) -> Option<Field> {
-    ax::focused().map(|f| Field {
-        role: f.role.to_owned(),
-        name: f.name,
-        frame: f.frame.to_owned(),
-        window: f.window,
-        secure: f.secure || secret,
+    ax::focused().map(|f| {
+        let (url, id) = f
+            .page
+            .map(|p| (p.url, p.dom_id.unwrap_or_default()))
+            .unwrap_or_default();
+        Field {
+            role: f.role.to_owned(),
+            name: f.name,
+            frame: f.frame.to_owned(),
+            window: f.window,
+            secure: f.secure || secret,
+            url,
+            id,
+        }
     })
 }
 
@@ -207,6 +215,7 @@ fn read(e: &Event, kind: u32, seen: &Seen) -> Option<Input> {
                 pid: s.pid,
                 path: s.path.into_iter().map(|(r, n)| (r.to_owned(), n)).collect(),
                 secret: s.secret,
+                page: s.page.map(|p| (p.url, p.dom_id)),
             });
             seen.fresh.set(true);
             Some(Input::Click {
