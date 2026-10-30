@@ -54,6 +54,13 @@ pub const ACTIONS: [&str; 10] = [
     "desk_launch",
 ];
 
+const APP_INPUT: [&str; 5] = [
+    "desk_key",
+    "desk_type",
+    "desk_click",
+    "desk_scroll",
+    "desk_drag",
+];
 pub(crate) const BACKGROUND_TARGET: &str =
     "background input needs its target window: pass window or pid";
 pub(crate) const BACKGROUND_DESKTOP: &str = "background input: this window takes no pointer input without the foreground, and background input never brings a window to the front";
@@ -194,7 +201,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     /// Runs desk call `tool`, a `desk_<verb>`; actions run one at a time, until their backend calls end, reads alongside them.
-    pub async fn run(&self, tool: &str, args: Value) -> Result<Output, String> {
+    pub async fn run(&self, tool: &str, mut args: Value) -> Result<Output, String> {
+        if APP_INPUT.contains(&tool) {
+            self.app_target(&mut args).await?;
+        }
         let turn = if ACTIONS.contains(&tool) {
             let turn = tokio::time::timeout(self.turn_wait, self.acting.clone().lock_owned())
                 .await
@@ -218,6 +228,33 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.dispatch(tool, args, turn).await
     }
 
+    /// Turns an input call's `app` into the `pid` of that app's window, so its input goes to that app or nowhere.
+    async fn app_target(&self, args: &mut Value) -> Result<(), String> {
+        let Some(app) = args.as_object_mut().and_then(|a| a.remove("app")) else {
+            return Ok(());
+        };
+        let app = app.as_str().unwrap_or_default().to_owned();
+        if args["pid"].is_u64() {
+            return Ok(());
+        }
+        let key = app_key(&app);
+        let pid = self
+            .listed()
+            .await?
+            .into_iter()
+            .find(|f| f.app.as_deref().is_some_and(|a| app_key(a) == key))
+            .and_then(|f| f.pid);
+        match pid {
+            Some(pid) => {
+                args["pid"] = pid.into();
+                Ok(())
+            }
+            None => Err(format!(
+                "app {app:?} has no window to take the input, so nothing was sent"
+            )),
+        }
+    }
+
     /// Refuses a call whose `delivery_mode` is not the mode this desk sends input in.
     fn check_mode(&self, args: &Value) -> Result<(), String> {
         let input = if self.background {
@@ -239,17 +276,22 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         args: Value,
         turn: Option<Turn>,
     ) -> Result<Output, String> {
+        let mut refused = None;
         if !(tool == "desk_drag" && self.os == Os::Windows) {
             let tried = SENT.scope(Cell::new(0), async {
                 let out = self.dispatch(tool, args.clone(), turn.clone()).await;
                 (out, SENT.with(Cell::get))
             });
             match tried.await {
-                (Err(e), 0) if auto::pre_send(tool, self.os, &args, &e) => {}
+                (Err(e), 0) if auto::pre_send(tool, self.os, &args, &e) => refused = Some(e),
                 (out, _) => return out,
             }
         }
-        self.front_target(tool, &args).await?;
+        if !self.front_target(tool, &args).await?
+            && let Some(e) = refused
+        {
+            return Err(e);
+        }
         let mut out = FOREGROUND
             .scope(true, self.dispatch(tool, args, turn))
             .await?;
@@ -262,8 +304,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(out)
     }
 
-    /// Brings the window of an auto action to the front before the foreground runs it: the named window, or an element's own.
-    async fn front_target(&self, tool: &str, args: &Value) -> Result<(), String> {
+    /// Brings the window of an auto action to the front before the foreground runs it: the named window, or an element's own; false when the action names none.
+    async fn front_target(&self, tool: &str, args: &Value) -> Result<bool, String> {
         let (window, pid) = if let Some(id) = args["id"]
             .as_str()
             .filter(|_| tool == "desk_press" || tool == "desk_act")
@@ -286,14 +328,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             (args["window"].as_str().map(str::to_owned), pid)
         };
         if window.is_none() && pid.is_none() {
-            return Ok(());
+            return Ok(false);
         }
         self.focus(WindowArgs {
             window: window.unwrap_or_default(),
             pid,
         })
         .await
-        .map(drop)
+        .map(|_| true)
     }
 
     async fn dispatch(
@@ -2859,6 +2901,59 @@ pub(crate) mod tests {
             ["hotkey background", "bring_to_front -", "hotkey desktop"]
         );
         assert_eq!(sent(&calls, "bring_to_front")[0]["window_id"], 1);
+    }
+
+    #[tokio::test]
+    async fn input_naming_an_app_goes_to_that_app_or_nowhere() {
+        for (background, auto) in [(true, true), (true, false), (false, false)] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Mac)
+                .background(background)
+                .auto(auto);
+            for (tool, args) in [
+                ("desk_key", json!({"keys": "cmd+0", "app": "Notes"})),
+                ("desk_type", json!({"text": "a", "app": "Notes"})),
+                (
+                    "desk_click",
+                    json!({"x": 300.0, "y": 250.0, "app": "Notes"}),
+                ),
+            ] {
+                let err = desk.run(tool, args).await.unwrap_err();
+                assert!(
+                    err.contains("app \"Notes\" has no window") && err.contains("nothing was sent"),
+                    "{background} {auto} {tool}: {err}"
+                );
+            }
+            assert!(
+                order(&calls).is_empty() && sent(&calls, "click").is_empty(),
+                "{background} {auto}: {:?}",
+                order(&calls)
+            );
+            desk.run("desk_key", json!({"keys": "cmd+0", "app": "notepad"}))
+                .await
+                .unwrap();
+            let key = sent(&calls, "hotkey");
+            assert_eq!(key.len(), 1, "{background} {auto}");
+            if background {
+                assert_eq!(key[0]["target"]["pid"], 4, "{}", key[0]);
+            } else {
+                assert_eq!(sent(&calls, "bring_to_front")[0]["pid"], 4);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn auto_input_without_a_window_to_front_stays_refused() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Mac)
+            .background(true)
+            .auto(true);
+        let err = desk
+            .run("desk_key", json!({"keys": "cmd+0"}))
+            .await
+            .unwrap_err();
+        assert!(err.contains(BACKGROUND_TARGET), "{err}");
+        assert!(order(&calls).is_empty(), "{:?}", order(&calls));
     }
 
     #[tokio::test]
