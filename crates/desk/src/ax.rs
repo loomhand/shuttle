@@ -293,6 +293,9 @@ impl Ax {
             editable: matches!(a.role.as_str(), "AXTextField" | "AXTextArea"),
             shown,
             value: if kind.marked { Some(1) } else { number },
+            secure: [&a.role, &a.subrole]
+                .iter()
+                .any(|r| *r == "AXSecureTextField"),
         };
         let static_text = (a.role == "AXStaticText")
             .then(|| a.value.as_ref().map(|v| text(v, chars)))

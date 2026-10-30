@@ -13,8 +13,8 @@ type Step = {
   timeout_ms?: number; enabled?: boolean; fp?: Fp; seen?: string; blank?: Fp; after?: string; recorded?: Recorded; focus?: Focus | 'unverified'
 }
 // a click as a recording saw it: its target text, a crop around the point at scale pixels per desk unit with the point offset from its centre, the point in its window and that window's size, and whether the point hit no element
-// the element a recording typed into, as a snapshot names it, and the role of its window or sheet
-type Focus = { role: string; name: string; frame?: string }
+// the element a recording typed into, as a snapshot names it, the role of its window or sheet, and whether it is a password field
+type Focus = { role: string; name: string; frame?: string; secure?: boolean }
 type Recorded = { text: string; crop?: string; scale?: number; offset?: [number, number]; at?: [number, number]; size?: [number, number]; root?: boolean }
 type Reads = { keys?: boolean; menus?: boolean }
 type Kept = Reads & { id: string; snap: desk.Snap; nodes: Node[] }
@@ -728,6 +728,7 @@ async function typingInto(want: Focus, w: Win | null) {
   const f = nodes.filter((n) => n.depth > 0 && n.states.includes('focused')).at(-1)
   if (!f || !w) throw new Diverged(`the recording typed into ${said}, and no focused element can be read now, so the text could go anywhere`, await seen())
   if (f.role !== want.role || norm(f.name) !== norm(want.name) || (want.frame && w.role !== want.frame)) throw new Diverged(`the recording typed into ${said}, and the focus is on ${f.role} "${f.name}" in the ${w.role} "${w.title}" now`, await seen())
+  if (want.secure && !f.states.includes('protected')) throw new Diverged(`the recording typed into a password field, and the focused ${f.role} "${f.name}" in "${w.title}" is none, so the text would show`, await seen())
 }
 
 async function landed(want: string, ms: number) {

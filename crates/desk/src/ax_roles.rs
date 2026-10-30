@@ -23,6 +23,7 @@ pub struct Facts {
     pub editable: bool,
     pub shown: bool,
     pub value: Option<i64>,
+    pub secure: bool,
 }
 
 /// The ARIA role of `k`, none when ARIA has no match; a nameless container is generic.
@@ -94,6 +95,7 @@ pub fn states(role: &str, f: Facts) -> Vec<&'static str> {
         selected: f.selected,
         shown: f.shown,
         disabled: !f.enabled,
+        protected: f.secure,
         ..States::default()
     })
 }
@@ -142,6 +144,17 @@ mod tests {
         );
         assert_eq!(states("button", f(Some(1))), ["pressed", "showing"]);
         assert_eq!(states("button", f(None)), ["showing"]);
+        assert_eq!(
+            states(
+                "textbox",
+                Facts {
+                    enabled: true,
+                    secure: true,
+                    ..Facts::default()
+                }
+            ),
+            ["protected"]
+        );
         assert_eq!(
             states(
                 "textbox",
