@@ -12,7 +12,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use desk_core::args::{
     ActArgs, AtArgs, ClickArgs, DragArgs, FindArgs, Focus, IdArgs, KeyArgs, LaunchArgs, ReadArgs,
-    ScrollArgs, ShotArgs, SnapArgs, StillArgs, TypeArgs, WaitArgs, WindowArgs, parse,
+    ScrollArgs, ShotArgs, SnapArgs, StillArgs, TypeArgs, WaitArgs, WebArgs, WindowArgs, parse,
 };
 use desk_core::text::{MAX_FOUND, NAME_CHARS, matches, ms, quote};
 use desk_core::window::{self, TITLE_TIERS, title_matches};
@@ -362,6 +362,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_focus" => self.focus(parse(args)?).await?,
             "desk_unanswered" => self.unanswered().await?,
             "desk_close" => self.close(parse(args)?, turn.clone()).await?,
+            "desk_web" => self.web(parse(args)?).await?,
             "desk_launch" => {
                 let a = parse::<LaunchArgs>(args)?;
                 let mut req = json!({"name": launch_name(&a.app)});
@@ -633,11 +634,38 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             frame: false,
         };
         let chars = if a.text { READ_CHARS } else { NAME_CHARS };
-        let node = self
+        let (node, (url, dom_id)) = self
             .access
-            .run(CALL_LIMIT, (), move |b| b.node(&a.id, extras, chars))
+            .run(CALL_LIMIT, (), move |b| {
+                let node = b.node(&a.id, extras, chars)?;
+                let web = if a.web {
+                    b.web_of(&a.id)?
+                } else {
+                    (None, None)
+                };
+                Ok((node, web))
+            })
             .await?;
-        Ok(node.json(0).to_string())
+        let mut out = node.json(0);
+        if let Some(url) = url {
+            out["url"] = url.into();
+        }
+        if let Some(dom_id) = dom_id {
+            out["dom_id"] = dom_id.into();
+        }
+        Ok(out.to_string())
+    }
+
+    async fn web(&self, a: WebArgs) -> Result<String, String> {
+        let allow = self.allow.clone();
+        let was = self
+            .access
+            .run(CALL_LIMIT, (), move |b| {
+                check_process(b, &allow, Some(a.pid))?;
+                b.web(a.pid, a.on)
+            })
+            .await?;
+        Ok(json!({"ok": true, "was": was}).to_string())
     }
 
     async fn press(&self, id: String, turn: Option<Turn>) -> Result<String, String> {
@@ -4692,6 +4720,58 @@ pub(crate) mod tests {
         }
     }
 
+    static PAGE_LIT: AtomicBool = AtomicBool::new(false);
+
+    struct Page;
+
+    impl Access for Page {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            Ok(vec![
+                frame("7/1", "Form - Chrome", 7, true, Some("Google Chrome")),
+                frame("9/1", "Vault", 9, false, Some("1Password")),
+            ])
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            Ok(Tree {
+                frame: frame.clone(),
+                ..Tree::default()
+            })
+        }
+
+        fn node(&mut self, id: &str, _: Extras, _: usize) -> Result<Node, String> {
+            Ok(Node {
+                id: id.into(),
+                role: "document",
+                ..Node::default()
+            })
+        }
+
+        fn web_of(&mut self, id: &str) -> Result<(Option<String>, Option<String>), String> {
+            Ok((Some(format!("https://shop.test/{id}")), Some("pay".into())))
+        }
+
+        fn web(&mut self, _: u32, on: bool) -> Result<bool, String> {
+            Ok(PAGE_LIT.swap(on, Ordering::SeqCst))
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
     struct Apps;
 
     impl Access for Apps {
@@ -6110,6 +6190,47 @@ pub(crate) mod tests {
         assert_eq!(out["changed"], false);
         assert!(took >= Duration::from_millis(300), "{took:?}");
         assert_eq!(lists(&desk).await, 3);
+    }
+
+    #[tokio::test]
+    async fn a_read_with_web_adds_the_page_address_and_dom_id_and_a_plain_read_does_not() {
+        let desk = Desk::new(|| Ok(Page), Slow(Arc::default()), Os::Mac);
+        let read = |args: Value| {
+            let desk = &desk;
+            async move {
+                let out = desk.run("desk_read", args).await.unwrap().text;
+                serde_json::from_str::<Value>(&out).unwrap()
+            }
+        };
+        let web = read(json!({"id": "form", "web": true})).await;
+        assert_eq!(
+            (&web["url"], &web["dom_id"]),
+            (&json!("https://shop.test/form"), &json!("pay"))
+        );
+        let plain = read(json!({"id": "form"})).await;
+        assert!(
+            plain.get("url").is_none() && plain.get("dom_id").is_none(),
+            "{plain}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_web_switch_answers_what_it_was_and_is_refused_for_an_app_outside_the_allowlist() {
+        let desk = Desk::new(|| Ok(Page), Slow(Arc::default()), Os::Mac)
+            .allow(&["Google Chrome".to_owned()]);
+        let switch = |pid: u32, on: bool| desk.run("desk_web", json!({"pid": pid, "on": on}));
+        assert_eq!(
+            switch(7, true).await.unwrap().text,
+            r#"{"ok":true,"was":false}"#
+        );
+        assert!(PAGE_LIT.load(Ordering::SeqCst));
+        assert_eq!(
+            switch(7, false).await.unwrap().text,
+            r#"{"ok":true,"was":true}"#
+        );
+        let refused = switch(9, true).await.unwrap_err();
+        assert!(refused.contains("1Password"), "{refused}");
+        assert!(!PAGE_LIT.load(Ordering::SeqCst));
     }
 
     #[tokio::test]

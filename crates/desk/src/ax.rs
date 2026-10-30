@@ -15,6 +15,7 @@ use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
 use core_foundation::string::{CFString, CFStringRef};
+use core_foundation::url::CFURL;
 
 use crate::ax_roles::{self, Facts, Kind};
 use crate::keys::ax_combo;
@@ -40,6 +41,7 @@ const OVERLAY_LEVEL: i64 = 102;
 const PATH_MAX: usize = 4096;
 const PATH_MAX_DEPTH: usize = 16;
 const NAME_CHARS: usize = 200;
+const WEB_SWITCHES: [&str; 2] = ["AXManualAccessibility", "AXEnhancedUserInterface"];
 const ATTRS: [&str; 17] = [
     "AXRole",
     "AXSubrole",
@@ -497,6 +499,16 @@ impl Access for Ax {
         Ok(pid(&self.element(id)?).and_then(|p| u32::try_from(p).ok()))
     }
 
+    fn web_of(&mut self, id: &str) -> Result<(Option<String>, Option<String>), String> {
+        let el = self.element(id)?;
+        let dom_id = Some(string(attr(&el, "AXDOMIdentifier"))).filter(|d| !d.is_empty());
+        Ok((attr(&el, "AXURL").and_then(url_text), dom_id))
+    }
+
+    fn web(&mut self, pid: u32, on: bool) -> Result<bool, String> {
+        web(pid, on)
+    }
+
     fn owner_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
         Ok(checked_hit(&system_wide(), x, y, display_scale())
             .map_err(|e| format!("accessibility hit test at ({x}, {y}) failed with {e}"))?
@@ -778,6 +790,10 @@ fn string(v: Option<CFType>) -> String {
         .unwrap_or_default()
 }
 
+fn url_text(v: CFType) -> Option<String> {
+    v.downcast::<CFURL>().map(|u| u.get_string().to_string())
+}
+
 fn boolean(v: Option<CFType>) -> Option<bool> {
     v.and_then(|v| v.downcast::<CFBoolean>()).map(bool::from)
 }
@@ -884,8 +900,12 @@ fn perform_code(el: &CFType, action: &'static str) -> i32 {
 }
 
 fn set_true(el: &CFType, name: &'static str) -> bool {
+    set_bool(el, name, true)
+}
+
+fn set_bool(el: &CFType, name: &'static str, on: bool) -> bool {
     let name = CFString::from_static_string(name);
-    let value = CFBoolean::true_value();
+    let value = CFBoolean::from(on);
     // SAFETY: `el` is a live AXUIElement; `name` and `value` are live CF objects.
     unsafe {
         AXUIElementSetAttributeValue(
@@ -1042,6 +1062,43 @@ pub fn focused() -> Option<Focused> {
             .iter()
             .any(|r| *r == "AXSecureTextField"),
     })
+}
+
+/// Whether process `pid` is a Chromium or Electron app, whose bundle holds a framework with helper apps.
+pub fn chromium(pid: u32) -> bool {
+    let Some(exe) = i32::try_from(pid).ok().and_then(exe_path) else {
+        return false;
+    };
+    let Some(contents) = exe.ancestors().find(|a| a.ends_with("Contents")) else {
+        return false;
+    };
+    std::fs::read_dir(contents.join("Frameworks")).is_ok_and(|dir| {
+        dir.flatten().any(|f| {
+            f.path().extension().is_some_and(|e| e == "framework")
+                && f.path().join("Helpers").is_dir()
+        })
+    })
+}
+
+/// Turns the web accessibility tree of Chromium app `pid` on or off and answers whether it was on before.
+pub fn web(pid: u32, on: bool) -> Result<bool, String> {
+    if !chromium(pid) {
+        return Err(format!("process {pid} is no Chromium app"));
+    }
+    let app = application(i32::try_from(pid).map_err(|_| format!("no process {pid}"))?);
+    for switch in WEB_SWITCHES {
+        let Some(was) = boolean(attr(&app, switch)) else {
+            continue;
+        };
+        // chrome answers the set with kAXErrorNotImplemented and applies it, so the read back decides
+        if was != on {
+            set_bool(&app, switch, on);
+        }
+        if boolean(attr(&app, switch)) == Some(on) {
+            return Ok(was);
+        }
+    }
+    Err(format!("process {pid} takes no web accessibility switch"))
 }
 
 fn typing_at(focused: Option<CFType>) -> (Option<u32>, bool) {

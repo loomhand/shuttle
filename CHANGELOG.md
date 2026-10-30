@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Web steps.** On macOS a `gui_plan` `app` step with `url` opens that page in the browser, and a step with `web: {url, id?}` acts only when the plan window shows that page (origin and path; the query, fragment and a trailing slash do not count) and takes the element with the recorded DOM id over another of the same name. Chrome's page tree is turned on for the plan when it is off and off again after it. `desk read` takes `web` for a node's page address and DOM id, and `desk web` turns a Chromium app's page tree on or off. [wire.md](docs/wire.md#web-steps) has the rules.
+
 ## 0.1.33 - 2026-10-30
 
 - **MCP tools to record a demonstration and replay it.** `record_start`, `record_note` and `record_stop` start and stop a recording on macOS, as the menu-bar item does. `record_stop` answers a draft `gui_plan`: an `app` step, and one more each time the input moves to another app or window, menu clicks merged into `menu` steps, clicks with their button, count, modifiers, recorded crop and point, typed runs and keys, the window each step left in front as `after`, and each value the caller names in `params` as `{{name}}`; a password the user typed becomes a secret parameter to pass at replay, typed only into a password field. [wire.md](docs/wire.md#recordings) has the rules.

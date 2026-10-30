@@ -40,6 +40,9 @@ pub struct ReadArgs {
     pub id: String,
     #[serde(default)]
     pub text: bool,
+    /// Adds the page URL and DOM id of a web element.
+    #[serde(default)]
+    pub web: bool,
 }
 
 #[derive(Deserialize)]
@@ -139,6 +142,12 @@ pub struct LaunchArgs {
     /// Command-line arguments for a new instance of the app, such as a browser profile and a URL.
     #[serde(default)]
     pub args: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct WebArgs {
+    pub pid: u32,
+    pub on: bool,
 }
 
 #[derive(Deserialize)]
