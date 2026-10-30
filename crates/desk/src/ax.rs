@@ -1107,19 +1107,33 @@ pub fn web(pid: u32, on: bool) -> Result<bool, String> {
         return Err(format!("process {pid} is no Chromium app"));
     }
     let app = application(i32::try_from(pid).map_err(|_| format!("no process {pid}"))?);
-    for switch in WEB_SWITCHES {
-        let Some(was) = boolean(attr(&app, switch)) else {
-            continue;
-        };
-        // chrome answers the set with kAXErrorNotImplemented and applies it, so the read back decides
-        if was != on {
-            set_bool(&app, switch, on);
+    let read: Vec<(&str, bool)> = WEB_SWITCHES
+        .into_iter()
+        .filter_map(|s| Some((s, boolean(attr(&app, s))?)))
+        .collect();
+    if read.is_empty() {
+        return Err(format!("process {pid} takes no web accessibility switch"));
+    }
+    let was = read.iter().any(|(_, now)| *now);
+    if !on {
+        for (switch, _) in read.iter().filter(|(_, now)| *now) {
+            set_bool(&app, switch, false);
         }
-        if boolean(attr(&app, switch)) == Some(on) {
-            return Ok(was);
+        return Ok(was);
+    }
+    if was {
+        return Ok(true);
+    }
+    for (switch, _) in &read {
+        // chrome answers the set with kAXErrorNotImplemented and applies it, so the read back decides
+        set_bool(&app, switch, true);
+        if boolean(attr(&app, switch)) == Some(true) {
+            return Ok(false);
         }
     }
-    Err(format!("process {pid} takes no web accessibility switch"))
+    Err(format!(
+        "process {pid} kept its web accessibility switches off"
+    ))
 }
 
 fn typing_at(focused: Option<CFType>) -> (Option<u32>, bool) {
