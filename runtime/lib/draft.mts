@@ -53,10 +53,10 @@ export async function main(p: Params): Promise<Draft> {
   if (app) draft.steps.push({ app, ...(opened ? { title: templ(opened) } : {}), intent: `open ${app}${opened ? ` at "${opened}"` : ''}` })
   for (const [i, e] of events.entries()) {
     if (e.kind === 'key') {
-      const mods = (e.mods ?? []).filter((m) => m !== 'shift')
+      const mods = e.mods ?? []
       if (e.secret) { if (typed) flush(); secret = true; continue }
       const named = KEYS[e.code ?? -1]
-      if (!mods.length && !named && e.text) { if (secret) flush(); filled = false; if (!typed && 'focus' in e) into = e.focus; typed += e.text; continue }
+      if (mods.every((m) => m === 'shift') && !named && e.text) { if (secret) flush(); filled = false; if (!typed && 'focus' in e) into = e.focus; typed += e.text; continue }
       flush(); filled = false
       const key = [...mods, named ?? (e.text ?? '').toLowerCase()].join('+')
       draft.steps.push({ key, intent: `press ${key}` })

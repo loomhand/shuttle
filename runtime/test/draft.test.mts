@@ -126,3 +126,15 @@ test('a note in the middle of typing keeps the run one step with its field', asy
   assert.deepEqual(d.steps.filter((s) => 'type' in s).map(({ type, focus }) => ({ type, focus })), [{ type: 'bo', focus: field }])
   assert.deepEqual(d.notes, [{ step: 1, text: 'the address changes' }])
 })
+
+test('shift stays on a key combo and leaves only typed text', async (t) => {
+  await daemon(t, () => '{"ok":true}')
+  const events = [
+    { t: 0, kind: 'key', code: 0, text: 'A', mods: ['shift'], app: 'TextEdit' },
+    { t: 1, kind: 'key', code: 0, text: 'b', mods: [], app: 'TextEdit' },
+    { t: 2, kind: 'key', code: 48, text: '\t', mods: ['shift'], app: 'TextEdit' },
+    { t: 3, kind: 'key', code: 1, text: 's', mods: ['cmd', 'shift'], app: 'TextEdit' },
+  ]
+  const d = await main({ recording: { id: 'rec-8', events } as never })
+  assert.deepEqual(d.steps.map(({ intent: _, ...s }) => s), [{ app: 'TextEdit' }, { type: 'Ab' }, { key: 'shift+tab' }, { key: 'cmd+shift+s' }])
+})
