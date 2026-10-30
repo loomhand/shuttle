@@ -993,7 +993,43 @@ pub fn secure_input() -> bool {
 
 /// Where typing goes now: the process of the focused element, and whether it is a password field, as a secure text field or under the session's secure input.
 pub fn typing() -> (Option<u32>, bool) {
-    let focused = attr(&system_wide(), "AXFocusedUIElement");
+    typing_at(attr(&system_wide(), "AXFocusedUIElement"))
+}
+
+/// The focused element as a snapshot names it, `(role, name, frame)` with the role of its window or sheet; none when no element has the focus.
+pub fn focused() -> Option<(&'static str, String, &'static str)> {
+    let names = names(ATTRS);
+    let el = attr(&system_wide(), "AXFocusedUIElement")?;
+    let a = attrs(&names, &el);
+    let mut frame = "window";
+    let mut up = attr(&el, "AXParent");
+    for _ in 0..PATH_MAX_DEPTH {
+        let Some(p) = up.take() else { break };
+        let role = string(attr(&p, "AXRole"));
+        if role == "AXSheet" {
+            frame = "dialog";
+            break;
+        }
+        if role == "AXWindow" {
+            let subrole = string(attr(&p, "AXSubrole"));
+            frame = ax_roles::role(Kind {
+                role: &role,
+                subrole: &subrole,
+                ..Kind::default()
+            })
+            .unwrap_or("window");
+            break;
+        }
+        up = attr(&p, "AXParent");
+    }
+    Some((
+        ax_roles::role(kind_of(&a)).unwrap_or("generic"),
+        name_of(&a, NAME_CHARS),
+        frame,
+    ))
+}
+
+fn typing_at(focused: Option<CFType>) -> (Option<u32>, bool) {
     let pid = focused
         .as_ref()
         .and_then(pid)

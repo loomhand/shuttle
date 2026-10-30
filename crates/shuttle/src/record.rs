@@ -53,17 +53,27 @@ pub enum Input {
         mods: Vec<&'static str>,
         found: Option<Hit>,
     },
-    /// A key and the process it went to; `secret` when it went to a password field, and then `text` is empty.
+    /// A key and the process it went to; `secret` when it went to a password field, and then `text` is empty. The first key of a run of typing was `read` for its `focus`.
     Key {
         code: i64,
         text: String,
         mods: Vec<&'static str>,
         secret: bool,
         pid: Option<u32>,
+        focus: Option<Field>,
+        read: bool,
     },
     /// A password field took the keyboard focus, so the keys that follow reach no listener.
-    Password,
+    Password(Option<Field>),
     Note(String),
+}
+
+/// The element with the keyboard focus, as a snapshot names it, and the role of its window or sheet.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct Field {
+    pub role: String,
+    pub name: String,
+    pub frame: String,
 }
 
 /// An element under a click: its role and name as a snapshot names them, its help, its process, and the role and name of its ancestors up to its window, innermost first.
@@ -302,10 +312,10 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                             json!({"t": t, "kind": "skipped"})
                         }
                     }
-                    Input::Password => {
+                    Input::Password(focus) => {
                         let app = front_of(&list(desk).await).and_then(|w| w["app"].as_str().map(str::to_owned));
                         if kept(app.as_deref(), &apps) {
-                            json!({"t": t, "kind": "password", "app": app})
+                            json!({"t": t, "kind": "password", "app": app, "focus": focus})
                         } else {
                             json!({"t": t, "kind": "skipped"})
                         }
@@ -316,6 +326,8 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                         mods,
                         secret,
                         pid,
+                        focus,
+                        read,
                     } => {
                         let pid = pid.map(u64::from);
                         if pid.is_some_and(|p| !windows.iter().any(|w| w["pid"].as_u64() == Some(p))) {
@@ -327,7 +339,11 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                         } else if secret {
                             json!({"t": t, "kind": "key", "secret": true, "app": app})
                         } else {
-                            json!({"t": t, "kind": "key", "code": code, "text": text, "mods": mods, "app": app})
+                            let mut e = json!({"t": t, "kind": "key", "code": code, "text": text, "mods": mods, "app": app});
+                            if read {
+                                e["focus"] = json!(focus);
+                            }
+                            e
                         }
                     }
                 };
@@ -642,6 +658,8 @@ mod tests {
             mods: Vec::new(),
             secret,
             pid: None,
+            focus: None,
+            read: false,
         }
     }
 
@@ -753,7 +771,12 @@ mod tests {
                 ..Hit::default()
             }),
         };
-        let r = run(&desk, &[], vec![field, click(5.0, 5.0), Input::Password]).await;
+        let r = run(
+            &desk,
+            &[],
+            vec![field, click(5.0, 5.0), Input::Password(None)],
+        )
+        .await;
         assert_eq!(
             (&r["events"][0]["secret"], r["events"][1].get("secret")),
             (&json!(true), None),
@@ -773,6 +796,40 @@ mod tests {
         );
         let r = run(&desk, &[], vec![click(100.0, 80.0)]).await;
         assert_eq!(r["events"][0]["root"], true);
+    }
+
+    #[tokio::test]
+    async fn the_first_key_of_a_run_keeps_the_field_it_went_to_or_that_none_was_readable() {
+        let desk = Desk::new(Value::Null);
+        let into = |focus: Option<Field>, read: bool| Input::Key {
+            code: 0,
+            text: "a".into(),
+            mods: Vec::new(),
+            secret: false,
+            pid: None,
+            focus,
+            read,
+        };
+        let field = Field {
+            role: "textbox".into(),
+            name: "Save As:".into(),
+            frame: "dialog".into(),
+        };
+        let r = run(
+            &desk,
+            &[],
+            vec![into(Some(field), true), into(None, false), into(None, true)],
+        )
+        .await;
+        let e = &r["events"];
+        assert_eq!(
+            e[0]["focus"],
+            json!({"role": "textbox", "name": "Save As:", "frame": "dialog"}),
+            "{e}"
+        );
+        assert!(e[1].get("focus").is_none(), "{e}");
+        assert_eq!(e[2]["focus"], Value::Null, "{e}");
+        assert!(e[2].as_object().unwrap().contains_key("focus"), "{e}");
     }
 
     #[tokio::test]
@@ -815,6 +872,8 @@ mod tests {
             mods: Vec::new(),
             secret: false,
             pid: Some(9),
+            focus: None,
+            read: false,
         };
         let r = run(&only, &[], vec![key("a", false), vault]).await;
         let kinds: Vec<&Value> = r["events"]

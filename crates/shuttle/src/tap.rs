@@ -1,5 +1,6 @@
 //! A listen-only event tap on macOS: the clicks and keys the user sends while a recording runs.
 
+use std::cell::Cell;
 use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,7 +10,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use shuttle_desk::ax;
 
-use crate::record::{Hit, Input};
+use crate::record::{Field, Hit, Input};
 
 const SESSION_TAP: u32 = 1;
 const HEAD_INSERT: u32 = 0;
@@ -22,9 +23,11 @@ const DISABLED_BY_INPUT: u32 = 0xFFFF_FFFF;
 const CLICK_STATE: u32 = 1;
 const KEY_CODE: u32 = 9;
 const TURN_S: f64 = 0.1;
+const CMD: u64 = 1 << 20;
+const CTRL: u64 = 1 << 18;
 const MODIFIERS: [(u64, &str); 4] = [
-    (1 << 20, "cmd"),
-    (1 << 18, "ctrl"),
+    (CMD, "cmd"),
+    (CTRL, "ctrl"),
     (1 << 19, "alt"),
     (1 << 17, "shift"),
 ];
@@ -39,6 +42,8 @@ struct Seen {
     tx: UnboundedSender<Input>,
     port: *mut c_void,
     scale: f64,
+    /// Whether the next key starts a run of typing, whose target the tap reads.
+    fresh: Cell<bool>,
 }
 
 /// Whether this process may listen to the keyboard (Input Monitoring).
@@ -64,6 +69,7 @@ impl Tap {
                 tx,
                 port: std::ptr::null_mut(),
                 scale: ax::display_scale(),
+                fresh: Cell::new(true),
             }));
             let mask = (1u64 << LEFT_DOWN) | (1u64 << RIGHT_DOWN) | (1u64 << KEY_DOWN);
             // SAFETY: `seen` outlives the tap: it is freed below, after the run loop that calls `heard` ends; the source and port are released after use.
@@ -91,7 +97,7 @@ impl Tap {
                     CFRunLoopRunInMode(kCFRunLoopDefaultMode, TURN_S, false);
                     let now = ax::secure_input();
                     if now && !secure {
-                        let _ = (*seen).tx.send(Input::Password);
+                        let _ = (*seen).tx.send(Input::Password(focused()));
                     }
                     secure = now;
                 }
@@ -134,10 +140,18 @@ extern "C" fn heard(
         unsafe { CGEventTapEnable(seen.port, true) };
         return event;
     }
-    if let Some(input) = read(&Event(event), kind, seen.scale) {
+    if let Some(input) = read(&Event(event), kind, seen) {
         let _ = seen.tx.send(input);
     }
     event
+}
+
+fn focused() -> Option<Field> {
+    ax::focused().map(|(role, name, frame)| Field {
+        role: role.to_owned(),
+        name,
+        frame: frame.to_owned(),
+    })
 }
 
 /// The live event a tap callback gets, for the length of the call.
@@ -168,7 +182,8 @@ impl Event {
     }
 }
 
-fn read(e: &Event, kind: u32, scale: f64) -> Option<Input> {
+fn read(e: &Event, kind: u32, seen: &Seen) -> Option<Input> {
+    let scale = seen.scale;
     let flags = e.flags();
     let mods = MODIFIERS
         .iter()
@@ -187,6 +202,7 @@ fn read(e: &Event, kind: u32, scale: f64) -> Option<Input> {
                 path: s.path.into_iter().map(|(r, n)| (r.to_owned(), n)).collect(),
                 secret: s.secret,
             });
+            seen.fresh.set(true);
             Some(Input::Click {
                 x,
                 y,
@@ -198,12 +214,21 @@ fn read(e: &Event, kind: u32, scale: f64) -> Option<Input> {
         }
         KEY_DOWN => {
             let (pid, secret) = ax::typing();
+            let read = seen.fresh.get();
+            let focus = if read { focused() } else { None };
+            let text = if secret { String::new() } else { e.text() };
+            let plain = !text.is_empty()
+                && !text.chars().any(char::is_control)
+                && flags & (CMD | CTRL) == 0;
+            seen.fresh.set(!plain);
             Some(Input::Key {
                 code: e.field(KEY_CODE),
-                text: if secret { String::new() } else { e.text() },
+                text,
                 mods,
                 secret,
                 pid,
+                focus,
+                read,
             })
         }
         _ => None,
