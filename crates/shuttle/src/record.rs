@@ -119,9 +119,10 @@ struct Ended {
 }
 
 struct Frame {
+    window: String,
     png: Vec<u8>,
     factor: f64,
-    size: [f64; 2],
+    bounds: [f64; 4],
     at: Instant,
 }
 
@@ -247,14 +248,9 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
     } = s;
     let started = now_ms();
     let t0 = Instant::now();
-    let width = call(desk, "desk_screen", json!({}))
-        .await
-        .ok()
-        .and_then(|v| v["width"].as_f64())
-        .unwrap_or(0.0);
     let mut windows = list(desk).await;
     let mut front = front_of(&windows);
-    let mut frame = shot(desk, width).await;
+    let mut frame = framed(desk, &windows, front.as_ref(), &apps).await;
     let mut acted = t0;
     let mut settle: Option<Instant> = None;
     let mut events = Vec::new();
@@ -288,9 +284,9 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                         let win = window_of(&windows, &at);
                         let app = win.as_ref().and_then(|w| w["app"].as_str()).map(str::to_owned).or_else(|| app_of(&windows, pid));
                         if kept(app.as_deref(), &apps) {
-                            let late = frame.as_ref().is_none_or(|f| f.at < acted);
+                            let late = frame.as_ref().is_none_or(|f| f.at < acted || win.as_ref().is_none_or(|w| w["id"] != f.window.as_str()));
                             if late {
-                                frame = shot(desk, width).await;
+                                frame = framed(desk, &windows, win.as_ref(), &apps).await;
                             }
                             let mut e = json!({
                                 "t": t, "kind": "click", "x": x, "y": y, "button": if right { "right" } else { "left" }, "count": count, "mods": mods,
@@ -299,10 +295,11 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                             if at["secret"] == true {
                                 e["secret"] = true.into();
                             }
-                            if let Some(w) = win {
+                            if let Some(w) = &win {
                                 e["window"] = json!({"title": w["title"], "bounds": w["bounds"]});
                             }
-                            if let Some((png, factor, offset)) = frame.as_ref().and_then(|f| crop(f, x, y, per_point)) {
+                            let mine = frame.as_ref().filter(|f| win.as_ref().is_some_and(|w| w["id"] == f.window.as_str()));
+                            if let Some((png, factor, offset)) = mine.and_then(|f| crop(f, x, y, per_point)) {
                                 e["crop"] = png.into();
                                 e["crop_scale"] = factor.into();
                                 e["crop_offset"] = json!(offset);
@@ -361,8 +358,8 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                 {
                     events.push(json!({"t": t0.elapsed().as_millis(), "kind": "after", "window": w["title"], "role": w["role"], "app": w["app"]}));
                 }
+                frame = framed(desk, &windows, now.as_ref(), &apps).await;
                 front = now;
-                frame = shot(desk, width).await;
             }
         }
     }
@@ -380,11 +377,15 @@ fn rooted(found: &Value) -> bool {
             .is_some_and(|r| ROOT_ROLES.contains(&r))
 }
 
-// the crop is CROP_PT points around the point, cut to the screen, with the point's offset from its centre in desk units
+// the crop is CROP_PT points around the point, cut to the window, with the point's offset from its centre in desk units
 fn crop(f: &Frame, x: f64, y: f64, per_point: f64) -> Option<(String, f64, [f64; 2])> {
     let [w, h] = CROP_PT.map(|v| v * per_point);
+    let [x, y] = [x - f.bounds[0], y - f.bounds[1]];
     let [left, top] = [(x - w / 2.0).max(0.0), (y - h / 2.0).max(0.0)];
-    let [right, bottom] = [(x + w / 2.0).min(f.size[0]), (y + h / 2.0).min(f.size[1])];
+    let [right, bottom] = [
+        (x + w / 2.0).min(f.bounds[2]),
+        (y + h / 2.0).min(f.bounds[3]),
+    ];
     let (_, _, png) = shuttle_desk::crop_png(
         &f.png,
         [left, top, right - left, bottom - top],
@@ -454,19 +455,37 @@ async fn list<H: Handler>(desk: &H) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-async fn shot<H: Handler>(desk: &H, width: f64) -> Option<Frame> {
-    let out = desk.answer(asked("desk_shot", json!({}))).await;
+async fn framed<H: Handler>(
+    desk: &H,
+    windows: &[Value],
+    w: Option<&Value>,
+    apps: &[String],
+) -> Option<Frame> {
+    let mut w = w?;
+    for _ in 0..windows.len() {
+        let Some(owner) = w["owner"].as_str() else {
+            break;
+        };
+        w = windows.iter().find(|x| x["id"].as_str() == Some(owner))?;
+    }
+    if !kept(w["app"].as_str(), apps) {
+        return None;
+    }
+    let bounds: [f64; 4] = serde_json::from_value(w["bounds"].clone()).ok()?;
+    let out = desk
+        .answer(asked("desk_shot", json!({"window": w["title"]})))
+        .await;
     let png = B64.decode(out.image_b64?).ok()?;
-    let w = u32::from_be_bytes(png.get(16..20)?.try_into().ok()?);
-    let h = u32::from_be_bytes(png.get(20..24)?.try_into().ok()?);
-    let factor = if width > 0.0 {
-        f64::from(w) / width
-    } else {
-        1.0
-    };
+    let width = u32::from_be_bytes(png.get(16..20)?.try_into().ok()?);
+    let height = u32::from_be_bytes(png.get(20..24)?.try_into().ok()?);
+    let factor = f64::from(width) / bounds[2].max(1.0);
+    if (f64::from(height) / factor - bounds[3]).abs() > 2.0 {
+        return None;
+    }
     Some(Frame {
+        window: w["id"].as_str()?.to_owned(),
         factor,
-        size: [f64::from(w) / factor, f64::from(h) / factor],
+        bounds,
         png,
         at: Instant::now(),
     })
@@ -548,12 +567,10 @@ mod tests {
 
     use super::*;
 
-    const W: u32 = 400;
-    const H: u32 = 300;
-
     struct Desk {
         front: Mutex<&'static str>,
         hit: Value,
+        shots: Mutex<Vec<Value>>,
     }
 
     impl Desk {
@@ -561,6 +578,7 @@ mod tests {
             Self {
                 front: Mutex::new("Untitled"),
                 hit,
+                shots: Mutex::default(),
             }
         }
     }
@@ -569,7 +587,6 @@ mod tests {
         async fn answer(&self, call: Call) -> Output {
             let front = *lock(&self.front);
             match call.tool.as_str() {
-                "desk_screen" => Output::text(json!({"width": W, "height": H}).to_string()),
                 "desk_windows" => Output::text(
                     json!([
                         {"id": "7/1", "title": front, "role": "window", "pid": 7, "active": true, "app": "TextEdit", "bounds": [10, 20, 300, 200]},
@@ -580,25 +597,28 @@ mod tests {
                 "desk_at" if call.args["x"].is_i64() && call.args["y"].is_i64() => {
                     Output::text(self.hit.to_string())
                 }
-                "desk_shot" => Output {
-                    text: r#"{"ok":true}"#.into(),
-                    image_b64: Some(B64.encode(gray())),
-                    ..Output::default()
-                },
+                "desk_shot" => {
+                    lock(&self.shots).push(call.args);
+                    Output {
+                        text: r#"{"ok":true}"#.into(),
+                        image_b64: Some(B64.encode(gray([300, 200]))),
+                        ..Output::default()
+                    }
+                }
                 other => Output::error(format!("{other} is no desk call here")),
             }
         }
     }
 
-    fn gray() -> Vec<u8> {
+    fn gray([w, h]: [u32; 2]) -> Vec<u8> {
         let mut out = Vec::new();
-        let mut enc = png::Encoder::new(&mut out, W, H);
+        let mut enc = png::Encoder::new(&mut out, w, h);
         enc.set_color(png::ColorType::Rgb);
         enc.set_depth(png::BitDepth::Eight);
-        let mut w = enc.write_header().unwrap();
-        w.write_image_data(&vec![128; (W * H * 3) as usize])
+        let mut png = enc.write_header().unwrap();
+        png.write_image_data(&vec![128; (w * h * 3) as usize])
             .unwrap();
-        drop(w);
+        drop(png);
         out
     }
 
@@ -686,13 +706,20 @@ mod tests {
         );
         let crop = B64.decode(e["crop"].as_str().unwrap()).unwrap();
         assert_eq!(&crop[1..4], b"PNG");
-        assert_eq!(u32::from_be_bytes(crop[16..20].try_into().unwrap()), 200);
-        assert_eq!(e["crop_offset"], json!([0.0, 0.0]));
+        assert_eq!(u32::from_be_bytes(crop[16..20].try_into().unwrap()), 190);
+        assert_eq!(e["crop_offset"], json!([-5.0, 0.0]));
         let r = run(&desk, &[], vec![click(30.0, 20.0)]).await;
         let e = &r["events"][0];
         let crop = B64.decode(e["crop"].as_str().unwrap()).unwrap();
-        assert_eq!(u32::from_be_bytes(crop[16..20].try_into().unwrap()), 130);
-        assert_eq!(e["crop_offset"], json!([-35.0, -15.0]), "{e}");
+        assert_eq!(u32::from_be_bytes(crop[16..20].try_into().unwrap()), 120);
+        assert_eq!(e["crop_offset"], json!([-40.0, -25.0]), "{e}");
+        assert!(
+            lock(&desk.shots)
+                .iter()
+                .all(|a| *a == json!({"window": "Untitled"})),
+            "{:?}",
+            lock(&desk.shots)
+        );
     }
 
     #[tokio::test]
@@ -855,6 +882,11 @@ mod tests {
             r["events"][0],
             json!({"t": r["events"][0]["t"], "kind": "skipped"})
         );
+        assert!(
+            lock(&desk.shots).iter().all(|a| a["window"] != "Vault"),
+            "{:?}",
+            lock(&desk.shots)
+        );
         let only = Desk::new(
             json!({"found": {"role": "button", "name": "Save"}, "path": [{"id": "7/1", "role": "window", "name": "Untitled"}], "pid": 7}),
         );
@@ -866,6 +898,7 @@ mod tests {
             .map(|e| &e["kind"])
             .collect();
         assert_eq!(kinds, [&json!("skipped"), &json!("skipped")]);
+        assert!(lock(&only.shots).is_empty());
         let vault = Input::Key {
             code: 0,
             text: "p".into(),
