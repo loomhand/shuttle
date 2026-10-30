@@ -61,6 +61,8 @@ pub enum Input {
         secret: bool,
         pid: Option<u32>,
     },
+    /// A password field took the keyboard focus, so the keys that follow reach no listener.
+    Password,
     Note(String),
 }
 
@@ -294,6 +296,14 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                                 e["crop_scale"] = factor.into();
                             }
                             e
+                        } else {
+                            json!({"t": t, "kind": "skipped"})
+                        }
+                    }
+                    Input::Password => {
+                        let app = front_of(&list(desk).await).and_then(|w| w["app"].as_str().map(str::to_owned));
+                        if kept(app.as_deref(), &apps) {
+                            json!({"t": t, "kind": "password", "app": app})
                         } else {
                             json!({"t": t, "kind": "skipped"})
                         }

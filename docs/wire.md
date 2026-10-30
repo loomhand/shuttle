@@ -88,6 +88,7 @@ A target that a parameter changed skips the crop and the point, since both show 
 
 - `click`: `x`, `y` (desk coordinates), `button`, `count`, `mods`, `app`, `element` (`role`, `name`, `description` as a snapshot names them), `path` (the ancestors up to the window, innermost first), `root` (the point hit no element but a window or document), `window` (`title`, `bounds`), and `crop` (a base64 PNG centred on the point) at `crop_scale` pixels per desk unit, with `late` when the crop had to be taken after the click, and `secret` when the element is a password field;
 - `key`: `code`, `text`, `mods`, `app`, or `secret: true` with no text for a key typed into a password field;
+- `password`: `app`, when a password field took the keyboard focus, after which its keys reach no listener;
 - `after`: `window`, `role`, `app` of a new window in front once the input settled for 0.7 s;
 - `note`: `text`;
 - `skipped`: input in an app the recording leaves out, with no detail.
