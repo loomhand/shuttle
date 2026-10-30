@@ -139,3 +139,21 @@ test('a plan whose recorded click took its crop is saved as a flow', async (t) =
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(r.saved, 'green-on-canvas', JSON.stringify(r))
 })
+
+test('a recorded right click, double click or modifier click clicks the element centre with them instead of pressing it', async (t) => {
+  const calls: { tool: string; args: Record<string, unknown> }[] = []
+  const win = { id: '1/1', title: 'Files', role: 'window', pid: process.pid, active: true, app: 'Finder', bounds: [0, 0, 800, 600] }
+  const file = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'report.txt', states: ['showing'], bounds: [100, 200, 40, 20] }
+  await daemon(t, ({ tool, args }) => {
+    calls.push({ tool, args })
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: 'Files', states: ['showing'] }, file] })
+    if (tool === 'desk_read') return JSON.stringify(file)
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ click: 'report.txt', button: 'right' }, { click: 'report.txt', count: 2, mods: ['cmd'] }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  const clicks = calls.filter((c) => c.tool === 'desk_click').map(({ args }) => ({ x: args.x, y: args.y, button: args.button, count: args.count, modifiers: args.modifiers }))
+  assert.deepEqual(clicks, [{ x: 120, y: 210, button: 'right', count: undefined, modifiers: undefined }, { x: 120, y: 210, button: undefined, count: 2, modifiers: ['cmd'] }])
+  assert.equal(calls.some((c) => c.tool === 'desk_press'), false)
+})

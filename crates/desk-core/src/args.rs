@@ -91,6 +91,8 @@ pub struct ClickArgs {
     pub y: f64,
     pub button: Option<String>,
     pub count: Option<u32>,
+    /// Modifier keys held during the click: `cmd`, `ctrl`, `alt`, `shift`.
+    pub modifiers: Option<Vec<String>>,
     /// The window that background input goes to, by title, and foreground input on macOS after it brings it to the front; `x` and `y` are then pixels of its `shot`.
     pub window: Option<String>,
     pub pid: Option<u32>,
