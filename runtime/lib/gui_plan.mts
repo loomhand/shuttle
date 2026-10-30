@@ -728,7 +728,7 @@ async function inWindow(w: Win, x: number, y: number): Promise<[number, number, 
     if (!AUTO) throw new Surprise(`"${w.title}" has no screen bounds, and a background click with a button, count or modifiers needs them to reach its window`, await seen())
     await front(w); return [x, y, {}]
   }
-  const k = (await desk.shot({ window: t.window })).readUInt32BE(16) / to.bounds[2]
+  const k = (await desk.shot({ window: t.window, pid: t.pid ?? undefined })).readUInt32BE(16) / to.bounds[2]
   return [(x - to.bounds[0]) * k, (y - to.bounds[1]) * k, t]
 }
 

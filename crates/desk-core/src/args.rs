@@ -150,6 +150,7 @@ pub struct ShotArgs {
     pub path: Option<String>,
     /// The window to capture by itself, on whichever display shows it; x, y, w, h then crop its image.
     pub window: Option<String>,
+    pub pid: Option<u32>,
 }
 
 /// Decodes the arguments of one call.
