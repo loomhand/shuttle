@@ -996,8 +996,8 @@ pub fn typing() -> (Option<u32>, bool) {
     typing_at(attr(&system_wide(), "AXFocusedUIElement"))
 }
 
-/// The focused element as a snapshot names it, `(role, name, frame)` with the role of its window or sheet; none when no element has the focus.
-pub fn focused() -> Option<(&'static str, String, &'static str)> {
+/// The focused element as a snapshot names it, `(role, name, frame, secure)` with the role of its window or sheet and whether it is a password field; none when no element has the focus.
+pub fn focused() -> Option<(&'static str, String, &'static str, bool)> {
     let names = names(ATTRS);
     let el = attr(&system_wide(), "AXFocusedUIElement")?;
     let a = attrs(&names, &el);
@@ -1026,6 +1026,9 @@ pub fn focused() -> Option<(&'static str, String, &'static str)> {
         ax_roles::role(kind_of(&a)).unwrap_or("generic"),
         name_of(&a, NAME_CHARS),
         frame,
+        [&a.role, &a.subrole]
+            .iter()
+            .any(|r| *r == "AXSecureTextField"),
     ))
 }
 
