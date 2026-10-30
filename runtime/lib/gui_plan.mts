@@ -12,8 +12,8 @@ type Step = {
   type?: string; key?: string; wait?: string; expect?: string; verify?: string; close?: boolean; role?: string; window?: string
   timeout_ms?: number; enabled?: boolean; fp?: Fp; seen?: string; blank?: Fp; after?: string; recorded?: Recorded
 }
-// a click as a recording saw it: its target text, a crop centred on the point at scale pixels per desk unit, the point in its window and that window's size, and whether the point hit no element
-type Recorded = { text: string; crop?: string; scale?: number; at?: [number, number]; size?: [number, number]; root?: boolean }
+// a click as a recording saw it: its target text, a crop around the point at scale pixels per desk unit with the point offset from its centre, the point in its window and that window's size, and whether the point hit no element
+type Recorded = { text: string; crop?: string; scale?: number; offset?: [number, number]; at?: [number, number]; size?: [number, number]; root?: boolean }
 type Reads = { keys?: boolean; menus?: boolean }
 type Kept = Reads & { id: string; snap: desk.Snap; nodes: Node[] }
 type Fp = { role: string; name: string; parent: string; nth: number; label?: string }
@@ -686,7 +686,7 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec): 
     let t0 = Date.now()
     const screen = unpng(await desk.shot()), k = screen.w / area.width
     const m = match(screen, unpng(Buffer.from(r.crop, 'base64')), k, r.scale ?? 1)
-    const [x, y] = [(area.left ?? 0) + m.x / k, (area.top ?? 0) + m.y / k]
+    const [x, y] = [(area.left ?? 0) + m.x / k + (r.offset?.[0] ?? 0), (area.top ?? 0) + m.y / k + (r.offset?.[1] ?? 0)]
     tick('crop', t0); rec.p = +m.score.toFixed(2)
     t0 = Date.now(); const c = m.score >= MATCH_BAR ? await placed(x, y, w, roots) : null; tick('check', t0)
     if (c?.ok) { rec.how = 'crop'; return [x, y] }

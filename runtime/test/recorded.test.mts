@@ -59,6 +59,14 @@ test('a recorded crop taken at twice the desk scale matches a screen at desk sca
   assert.deepEqual([seen.clicks, r.trace?.[0]?.how], [['360,280'], 'crop'])
 })
 
+test('a recorded crop cut at the screen edge clicks its point, not its centre', async (t) => {
+  const seen = await canvas(t, { shown: screen(800, 600, [300, 250]) })
+  const edge = cut(unpng(screen(800, 600, [100, 100])), 60, 80, 200, 100, 1).toString('base64')
+  const r = await main({ steps: [{ click: 'the Green button', recorded: { text: 'the Green button', crop: edge, offset: [-40, 5], root: true } }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual([seen.clicks, r.trace?.[0]?.how], [['320,285'], 'crop'])
+})
+
 test('a recorded click whose target a parameter changed skips the crop and the point, and grounding may land on the content root', async (t) => {
   const seen = await canvas(t, { shown: screen(800, 600, [100, 100]) })
   const r = await main({ steps: [{ click: 'the Blue button', recorded: { text: 'the Green button', crop: crop(), at: [160, 130], size: [800, 600], root: true } }] })
