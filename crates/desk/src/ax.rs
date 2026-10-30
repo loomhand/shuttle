@@ -38,6 +38,8 @@ const ON_SCREEN_ONLY: u32 = 1;
 const EXCLUDE_DESKTOP: u32 = 1 << 4;
 const OVERLAY_LEVEL: i64 = 102;
 const PATH_MAX: usize = 4096;
+const PATH_MAX_DEPTH: usize = 16;
+const NAME_CHARS: usize = 200;
 const ATTRS: [&str; 17] = [
     "AXRole",
     "AXSubrole",
@@ -268,14 +270,7 @@ impl Ax {
         chars: usize,
         scale: f64,
     ) -> Node {
-        let named = !a.title.is_empty() || !a.description.is_empty();
-        let kind = Kind {
-            role: &a.role,
-            subrole: &a.subrole,
-            named,
-            submenu: a.role == "AXMenuItem" && !a.children.is_empty(),
-            marked: !a.mark.is_empty(),
-        };
+        let kind = kind_of(a);
         let mapped = ax_roles::role(kind);
         let role = mapped.unwrap_or("generic");
         let shown = a.role != "AXMenuItem" && a.size.is_some_and(|(w, h)| w > 0.0 && h > 0.0);
@@ -297,14 +292,7 @@ impl Ax {
                 .iter()
                 .any(|r| *r == "AXSecureTextField"),
         };
-        let static_text = (a.role == "AXStaticText")
-            .then(|| a.value.as_ref().map(|v| text(v, chars)))
-            .flatten()
-            .unwrap_or_default();
-        let name = [&a.title, &a.description, &static_text]
-            .into_iter()
-            .find(|n| !n.is_empty())
-            .map_or("", |n| n.as_str());
+        let name = name_of(a, chars);
         let bounds = match (a.pos, a.size) {
             (Some((x, y)), Some((w, h)))
                 if extras.bounds && shown && (extras.frame || is_active(role)) =>
@@ -317,7 +305,7 @@ impl Ax {
             id: self.id_of(el),
             role,
             native_role: mapped.is_none().then(|| a.role.clone()),
-            name: name.trim_end().to_owned(),
+            name,
             description: a.help.clone(),
             states: ax_roles::states(role, facts),
             value: extras
@@ -698,6 +686,11 @@ unsafe extern "C" {
     fn proc_pidpath(pid: i32, buffer: *mut c_void, size: u32) -> i32;
 }
 
+#[link(name = "Carbon", kind = "framework")]
+unsafe extern "C" {
+    fn IsSecureEventInputEnabled() -> bool;
+}
+
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> CFArrayRef;
@@ -926,6 +919,82 @@ fn application(p: i32) -> CFType {
     let app = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateApplication(p)) };
     set_timeout(&app);
     app
+}
+
+/// An element a hit test found: its role and name as a snapshot names them, its help, its process, and the role and name of each ancestor up to its window, innermost first.
+pub struct Seen {
+    pub role: &'static str,
+    pub name: String,
+    pub description: String,
+    pub pid: Option<u32>,
+    pub path: Vec<(&'static str, String)>,
+}
+
+/// What the hit test finds at desk point `(x, y)` now, read in one call per element so a click can be read before its app handles it.
+pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
+    let names = names(ATTRS);
+    let el = hit(&system_wide(), x, y, display_scale())?;
+    let a = attrs(&names, &el);
+    let mut path = Vec::new();
+    let mut up = attr(&el, "AXParent");
+    while let Some(p) = up.take() {
+        let pa = attrs(&names, &p);
+        path.push((
+            ax_roles::role(kind_of(&pa)).unwrap_or("generic"),
+            name_of(&pa, NAME_CHARS),
+        ));
+        if pa.role == "AXWindow" || path.len() >= PATH_MAX_DEPTH {
+            break;
+        }
+        up = attr(&p, "AXParent");
+    }
+    Some(Seen {
+        role: ax_roles::role(kind_of(&a)).unwrap_or("generic"),
+        name: name_of(&a, NAME_CHARS),
+        description: a.help,
+        pid: pid(&el).and_then(|p| u32::try_from(p).ok()),
+        path,
+    })
+}
+
+fn kind_of(a: &Attrs) -> Kind<'_> {
+    Kind {
+        role: &a.role,
+        subrole: &a.subrole,
+        named: !a.title.is_empty() || !a.description.is_empty(),
+        submenu: a.role == "AXMenuItem" && !a.children.is_empty(),
+        marked: !a.mark.is_empty(),
+    }
+}
+
+fn name_of(a: &Attrs, chars: usize) -> String {
+    let static_text = (a.role == "AXStaticText")
+        .then(|| a.value.as_ref().map(|v| text(v, chars)))
+        .flatten()
+        .unwrap_or_default();
+    [&a.title, &a.description, &static_text]
+        .into_iter()
+        .find(|n| !n.is_empty())
+        .map_or("", |n| n.as_str())
+        .trim_end()
+        .to_owned()
+}
+
+/// Where typing goes now: the process of the focused element, and whether it is a password field, as a secure text field or under the session's secure input.
+pub fn typing() -> (Option<u32>, bool) {
+    let focused = attr(&system_wide(), "AXFocusedUIElement");
+    let pid = focused
+        .as_ref()
+        .and_then(pid)
+        .and_then(|p| u32::try_from(p).ok());
+    // SAFETY: the call only reads the session's secure input state.
+    let secure = unsafe { IsSecureEventInputEnabled() };
+    let field = focused.is_some_and(|f| {
+        [attr(&f, "AXSubrole"), attr(&f, "AXRole")]
+            .into_iter()
+            .any(|a| string(a) == "AXSecureTextField")
+    });
+    (pid, secure || field)
 }
 
 fn system_wide() -> CFType {
@@ -1171,7 +1240,8 @@ fn float(d: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<f64> {
         .and_then(|n| n.to_f64())
 }
 
-fn display_scale() -> f64 {
+/// The main display's backing scale: desk coordinates per point.
+pub fn display_scale() -> f64 {
     // SAFETY: the main display id is always valid; the mode is released below when non-null.
     unsafe {
         let mode = CGDisplayCopyDisplayMode(CGMainDisplayID());
