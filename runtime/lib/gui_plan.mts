@@ -5,13 +5,15 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { isDeepStrictEqual } from 'node:util'
 import * as desk from './desk.mts'
 import type { Win } from './desk.mts'
-import { cut, ring, unpng } from './png.mts'
+import { cut, find as match, ring, unpng } from './png.mts'
 
 type Step = {
   app?: string; title?: string; menu?: string; click?: string; check?: string; on?: boolean; set?: string; value?: string
   type?: string; key?: string; wait?: string; expect?: string; verify?: string; close?: boolean; role?: string; window?: string
-  timeout_ms?: number; enabled?: boolean; fp?: Fp; seen?: string; blank?: Fp
+  timeout_ms?: number; enabled?: boolean; fp?: Fp; seen?: string; blank?: Fp; after?: string; recorded?: Recorded
 }
+// a click as a recording saw it: its target text, a crop centred on the point at scale pixels per desk unit, the point in its window and that window's size, and whether the point hit no element
+type Recorded = { text: string; crop?: string; scale?: number; at?: [number, number]; size?: [number, number]; root?: boolean }
 type Reads = { keys?: boolean; menus?: boolean }
 type Kept = Reads & { id: string; snap: desk.Snap; nodes: Node[] }
 type Fp = { role: string; name: string; parent: string; nth: number; label?: string }
@@ -61,6 +63,7 @@ const ROOT_ROLES = new Set(['window', 'frame', 'application', 'dialog', 'documen
 const WINDOW_ROLES = new Set(['window', 'frame', 'dialog'])
 const REFUSED: Partial<Record<string, string>> = { 'root-hit': ', a window or document root', 'foreign-hit': ', which belongs to another process', 'unknown-pid': ', whose process is unknown' }
 const MARGIN = 0.25
+const MATCH_BAR = 0.8
 const CROP = { w: 640, h: 400 }
 const SMALL = 5_000
 const CROP_BAR = 0.9
@@ -144,7 +147,7 @@ async function perform(p: Params): Promise<Result> {
   const start = frontOf(ws0); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
   const startAlert = !start?.title.trim() && isAlert(await outline(start))
   const recs: Rec[] = []
-  let escalate: Escalation | null = null; let done = plan.length
+  let escalate: Escalation | null = null; let done = plan.length; let diverged = false
   for (const [i, planned] of plan.entries()) {
     if (i < (p.start ?? 0)) continue
     const s = fill(planned, params); T = {}; const rec: Rec = { i, op: OPS.find((k) => k in s) }
@@ -172,6 +175,7 @@ async function perform(p: Params): Promise<Result> {
           try { return await run(s, rec) } catch (again: unknown) { if (!late(again) || Date.now() > end) throw again }
         }
       })
+      if (s.after) await landed(s.after, s.timeout_ms ?? 5000)
       if (unheard && !rec.unverified) rec.unverified = unheard
       if (desk.foreground.runs + foreground.steps > runs) { rec.fg = true; fronted = true; BG = false }
       const before = recs[i - 1]
@@ -184,6 +188,7 @@ async function perform(p: Params): Promise<Result> {
       const theft = BG && !(e instanceof Stolen) ? taken(await desk.windows()) : null
       const reason = `${sp.reason}${note ? ` (the step before was sent but not confirmed: ${note})` : ''}${theft ? `; meanwhile ${theft}` : ''}`
       escalate = { step, plan_step: plan[step] ?? planned, reason, ...sp.seen }; done = step
+      diverged = e instanceof Diverged
     }
     rec.ms = Date.now() - ts; if (desk.served.length > calls) rec.served = desk.served.slice(calls)
     log.push({ ...rec, ...T }); recs[i] = rec
@@ -253,7 +258,7 @@ async function perform(p: Params): Promise<Result> {
   if (flow?.usage) out.recorded_usage = flow.usage
   if (escalate) out.escalate = escalate
   else out.window = end?.title ?? null
-  if (escalate?.reason.startsWith(SPENT)) out.error = escalate.reason
+  if (escalate && (diverged || escalate.reason.startsWith(SPENT))) out.error = escalate.reason
   const notes = recs.filter((r) => r?.unverified && !r.confirmed).map((r) => ({ step: r.i, note: r.unverified }))
   if (notes.length) out.unverified = notes
   return out
@@ -265,6 +270,8 @@ class Surprise extends Error {
   late: boolean
   constructor(reason: string, seen: Seen = {}, late = false) { super(reason); this.reason = reason; this.seen = seen; this.late = late }
 }
+// the window a step's recording saw after it did not come
+class Diverged extends Surprise {}
 // the app of the plan's window came to the front during a step that sent no fronting call
 class Stolen extends Surprise {
   step: number
@@ -669,7 +676,78 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>) 
   } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
 
-async function grounded(x: number, y: number, target: string, w: Win, area: desk.Size): Promise<Grounding> {
+// a click the tree cannot place: a recorded target takes its crop, then grounding, then its point in a window of the recorded size; a changed target takes grounding alone
+async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec): Promise<[number, number]> {
+  const same = !!r && norm(r.text) === norm(target)
+  const roots = !!r?.root
+  const area = await desk.screen()
+  const missed: string[] = []
+  if (same && r.crop) {
+    let t0 = Date.now()
+    const screen = unpng(await desk.shot()), k = screen.w / area.width
+    const m = match(screen, unpng(Buffer.from(r.crop, 'base64')), k, r.scale ?? 1)
+    const [x, y] = [(area.left ?? 0) + m.x / k, (area.top ?? 0) + m.y / k]
+    tick('crop', t0); rec.p = +m.score.toFixed(2)
+    t0 = Date.now(); const c = m.score >= MATCH_BAR ? await placed(x, y, w, roots) : null; tick('check', t0)
+    if (c?.ok) { rec.how = 'crop'; return [x, y] }
+    missed.push(c ? `the recorded crop matched ${told(c)}` : `the recorded crop matched nothing (best ${rec.p})`)
+  }
+  try {
+    const t0 = Date.now()
+    const [x, y] = await desk.ground(await desk.shot(), `${target} in the "${w.title}" window`, area)
+    tick('ground', t0)
+    const g = await grounded(x, y, target, w, area, roots)
+    rec.ground_hit = g.what.slice(0, 80); rec.checked = g.check; rec.p = g.p; rec.p_zoom = g.p_zoom; rec.p_full = g.p_full
+    if (g.ok) { rec.how = 'ground'; return [x, y] }
+    missed.push(`grounding pointed at ${told(g)}`)
+  } catch (e: unknown) {
+    if (!r || spent(e)) throw e
+    missed.push(`grounding failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  const b = w.bounds
+  if (same && r.at && r.size && b && Math.abs(b[2] - r.size[0]) <= 2 && Math.abs(b[3] - r.size[1]) <= 2) {
+    const [x, y] = [b[0] + r.at[0], b[1] + r.at[1]]
+    const t0 = Date.now(); const c = await placed(x, y, w, roots); tick('check', t0)
+    if (c.ok) { rec.how = 'point'; return [x, y] }
+    missed.push(`the recorded point is on ${told(c)}`)
+  }
+  throw new Surprise(`no element matches "${target}"; ${missed.join('; ')}`, await seen(), true)
+}
+
+function told(g: Pick<Grounding, 'what' | 'check' | 'why' | 'cover'>) {
+  if (g.why) return `a point whose element could not be read: ${g.why}`
+  return g.what ? `${g.what.slice(0, 80)}${g.cover !== undefined ? `, under the window "${g.cover}"` : REFUSED[g.check] ?? ''}` : 'no accessible element'
+}
+
+async function landed(want: string, ms: number) {
+  try { await windowFor(want, ms) } catch (e: unknown) {
+    if (e instanceof Surprise && !(e instanceof Diverged)) throw new Diverged(`after this step the recording saw "${want}", and the replay did not: ${e.reason}`, e.seen)
+    throw e
+  }
+}
+
+// where a click at (x, y) lands: refused under another window, in another window or app, and on a window or document root unless a recording clicked one
+async function placed(x: number, y: number, w: Win, roots = false): Promise<Grounding & { found?: desk.El }> {
+  let under: Awaited<ReturnType<typeof desk.at>>
+  try { under = await desk.at(x, y, w.title, w.pid) } catch (e: unknown) { return { what: '', ok: false, check: 'at-error', why: String(e).slice(0, 120) } }
+  const what = under.found ? [under.found, ...(under.path ?? []).toReversed()].filter((n, i) => i === 0 || !!n.name).map((n) => n.name ? `${n.role} "${n.name}"` : n.role).join(' under ') : ''
+  if (!under.found) return { what, ok: false, check: 'no-hit' }
+  if (under.covered) return { what, ok: false, check: 'covered-hit', cover: under.covered.title }
+  const path = under.path ?? []
+  const inside = path.some((n) => n.id === w.id)
+  const others = inside ? [] : path.filter((n) => WINDOW_ROLES.has(n.role)).map((n) => n.id)
+  if (others.length) {
+    const owned = new Set((await desk.windows()).filter((x) => x.owner === w.id).map((x) => x.id))
+    if (!others.every((id) => owned.has(id))) return { what, ok: false, check: 'foreign-hit' }
+  } else if (!inside) {
+    if (w.pid === null || under.pid == null) return { what, ok: false, check: 'unknown-pid' }
+    if (under.pid !== w.pid) return { what, ok: false, check: 'foreign-hit' }
+  }
+  if (!roots && (ROOT_ROLES.has(under.found.role) || under.found.id === w.id)) return { what, ok: false, check: 'root-hit' }
+  return { what, ok: true, check: 'placed', found: under.found }
+}
+
+async function grounded(x: number, y: number, target: string, w: Win, area: desk.Size, roots = false): Promise<Grounding> {
   const t0 = Date.now()
   const [ox, oy] = [area.left ?? 0, area.top ?? 0]
   const fit = (cw: number, ch: number): [number, number] => [Math.max(ox, Math.min(ox + area.width - cw, Math.round(x - cw / 2))), Math.max(oy, Math.min(oy + area.height - ch, Math.round(y - ch / 2)))]
@@ -679,30 +757,18 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
     return yes([`A ${png.readUInt32BE(16)}x${png.readUInt32BE(20)} crop of the screen. A click is about to land on its pixel (${px}, ${py}).`, desk.image(png)], `Is the pixel at (${px}, ${py}) of the image on ${target}?`)
   }
   const [cw, ch] = [Math.min(CROP.w, area.width), Math.min(CROP.h, area.height)], [left, top] = fit(cw, ch)
-  const [spot, shot] = await Promise.allSettled([desk.at(x, y, w.title, w.pid), desk.shot({ x: left - ox, y: top - oy, w: cw, h: ch })])
-  const under = spot.status === 'fulfilled' ? spot.value : { found: null, path: [] }
-  const what = under.found ? [under.found, ...(under.path ?? []).toReversed()].filter((n, i) => i === 0 || !!n.name).map((n) => n.name ? `${n.role} "${n.name}"` : n.role).join(' under ') : ''
+  const shooting = desk.shot({ x: left - ox, y: top - oy, w: cw, h: ch }); shooting.catch(() => {})
+  let what = ''
   try {
-    if (spot.status === 'rejected') return { what, ok: false, check: 'at-error', why: String(spot.reason).slice(0, 120) }
-    if (!under.found) return { what, ok: false, check: 'no-hit' }
-    if (under.covered) return { what, ok: false, check: 'covered-hit', cover: under.covered.title }
-    const path = under.path ?? []
-    const inside = path.some((n) => n.id === w.id)
-    const others = inside ? [] : path.filter((n) => WINDOW_ROLES.has(n.role)).map((n) => n.id)
-    if (others.length) {
-      const owned = new Set((await desk.windows()).filter((x) => x.owner === w.id).map((x) => x.id))
-      if (!others.every((id) => owned.has(id))) return { what, ok: false, check: 'foreign-hit' }
-    } else if (!inside) {
-      if (w.pid === null || under.pid == null) return { what, ok: false, check: 'unknown-pid' }
-      if (under.pid !== w.pid) return { what, ok: false, check: 'foreign-hit' }
-    }
-    if (ROOT_ROLES.has(under.found.role) || under.found.id === w.id) return { what, ok: false, check: 'root-hit' }
-    if (shot.status === 'rejected') throw shot.reason
-    const k = shot.value.readUInt32BE(16) / cw
-    const p = await peek(shot.value, [(x - left) * k, (y - top) * k])
+    const { found, ...hit } = await placed(x, y, w, roots)
+    what = hit.what
+    if (!hit.ok || !found) return hit
+    const shot = await shooting
+    const k = shot.readUInt32BE(16) / cw
+    const p = await peek(shot, [(x - left) * k, (y - top) * k])
     const out: Grounding = { what, ok: p >= CROP_BAR, check: 'jev-image', p }
     if (out.ok) return out
-    const b = under.found.bounds ?? (under.found.id ? (await desk.read(under.found.id).catch(() => null))?.bounds : undefined)
+    const b = found.bounds ?? (found.id ? (await desk.read(found.id).catch(() => null))?.bounds : undefined)
     const el = b && b[2] > 0 && b[3] > 0 ? b : null
     const screen = unpng(await desk.shot()), s = screen.w / area.width
     const crop = async (cw: number, ch: number, k: number) => {
@@ -1097,16 +1163,9 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (!s.click) throw new Surprise(`no element matches "${target}"`, await seen(), true)
     if (BG && !AUTO) throw new Surprise(`no element of "${w.title}" matches "${target}", and finding it on the screen is out: ${NO_PIXELS}`, await seen(), true)
     if (BG) await front(w)
-    t0 = Date.now()
-    const area = await desk.screen()
-    const [x, y] = await desk.ground(await desk.shot(), `${target} in the "${w.title}" window`, area)
-    tick('ground', t0)
-    const { what, ok, check, p, p_zoom, p_full, why, cover } = await grounded(x, y, target, w, area)
-    rec.ground_hit = what.slice(0, 80); rec.checked = check; rec.p = p; rec.p_zoom = p_zoom; rec.p_full = p_full
-    const at = why ? `a point whose element could not be read: ${why}` : what ? `${rec.ground_hit}${cover !== undefined ? `, under the window "${cover}"` : REFUSED[check] ?? ''}` : 'no accessible element'
-    if (!ok) throw new Surprise(`no element matches "${target}"; grounding pointed at ${at}`, await seen(), true)
+    const [x, y] = await spot(s.recorded, target, w, rec)
     t0 = Date.now(); await desk.click(x, y); tick('act', t0)
-    rec.how = 'ground'; rec.unsaved = true; await settle(w.title); return
+    rec.unsaved = true; await settle(w.title); return
   }
   rec.how = hit.how; rec.ref = `${hit.n.role} "${hit.n.name}"`; rec.fp = fingerprint(nodes, hit)
   if (hit.p !== undefined) rec.pick = [+hit.p.toFixed(2), +(hit.margin ?? 0).toFixed(2)]
@@ -1199,7 +1258,7 @@ function templated(steps: Step[], params: Record<string, string>) {
     }
     return t
   })
-  for (const t of out) for (const k of ['wait', 'window'] as const) {
+  for (const t of out) for (const k of ['wait', 'window', 'after'] as const) {
     let v = t[k]; if (!v) continue
     for (const [n, x] of Object.entries(p)) {
       const base = win32.basename(x)

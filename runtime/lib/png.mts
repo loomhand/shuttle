@@ -53,3 +53,50 @@ export function png(w: number, h: number, type: number, bpp: number, px: Buffer)
   ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = type
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))])
 }
+
+/** Where `part` best matches `img`, with `k` and `c` their pixels per desk unit: the centre of the match in `img` pixels and its normalized cross-correlation. */
+export function find(img: Image, part: Image, k = 1, c = 1): { x: number; y: number; score: number } {
+  const coarse = Math.min(4, Math.floor(Math.min(part.w / c, part.h / c) / 8)) || 1
+  const hay = luma(img, k * coarse), pin = luma(part, c * coarse)
+  const [, cx, cy] = best(hay, pin, 0, 0, hay.w - pin.w, hay.h - pin.h)
+  const fine = luma(img, k), pin1 = luma(part, c)
+  const [score, x, y] = best(fine, pin1, cx * coarse - coarse, cy * coarse - coarse, cx * coarse + coarse, cy * coarse + coarse)
+  return { x: (x + pin1.w / 2) * k, y: (y + pin1.h / 2) * k, score }
+}
+
+type Plane = { w: number; h: number; v: Float32Array }
+
+function luma({ w, h, bpp, px }: Image, f: number): Plane {
+  const ow = Math.max(1, Math.floor(w / f)), oh = Math.max(1, Math.floor(h / f)), v = new Float32Array(ow * oh)
+  for (let oy = 0; oy < oh; oy++) {
+    const y0 = Math.min(h - 1, Math.floor(oy * f)), y1 = Math.max(y0 + 1, Math.min(h, Math.floor((oy + 1) * f)))
+    for (let ox = 0; ox < ow; ox++) {
+      const x0 = Math.min(w - 1, Math.floor(ox * f)), x1 = Math.max(x0 + 1, Math.min(w, Math.floor((ox + 1) * f)))
+      let sum = 0
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const i = (y * w + x) * bpp; sum += 0.299 * (px[i] as number) + 0.587 * (px[i + 1] as number) + 0.114 * (px[i + 2] as number) }
+      v[oy * ow + ox] = sum / ((y1 - y0) * (x1 - x0))
+    }
+  }
+  return { w: ow, h: oh, v }
+}
+
+// a flat window, which matches anything, scores -1
+function best(hay: Plane, pin: Plane, x0: number, y0: number, x1: number, y1: number): [number, number, number] {
+  const n = pin.w * pin.h
+  let mean = 0; for (const a of pin.v) mean += a; mean /= n
+  let sq = 0; const t = pin.v.map((a) => a - mean); for (const a of t) sq += a * a
+  const sd = Math.sqrt(sq / n) || 1
+  let top: [number, number, number] = [-1, Math.max(0, x0), Math.max(0, y0)]
+  for (let y = Math.max(0, y0); y <= Math.min(hay.h - pin.h, y1); y++) for (let x = Math.max(0, x0); x <= Math.min(hay.w - pin.w, x1); x++) {
+    let s = 0, s2 = 0, dot = 0
+    for (let j = 0; j < pin.h; j++) {
+      const row = (y + j) * hay.w + x, trow = j * pin.w
+      for (let i = 0; i < pin.w; i++) { const a = hay.v[row + i] as number; s += a; s2 += a * a; dot += a * (t[trow + i] as number) }
+    }
+    const spread = s2 / n - (s / n) ** 2
+    if (spread < 4) continue
+    const score = dot / n / (Math.sqrt(spread) * sd)
+    if (score > top[0]) top = [score, x, y]
+  }
+  return top
+}
