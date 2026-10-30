@@ -72,6 +72,7 @@ pub struct Hit {
     pub description: String,
     pub pid: Option<u32>,
     pub path: Vec<(String, String)>,
+    pub secret: bool,
 }
 
 /// The recordings of this daemon: at most one running, and the last one made.
@@ -262,6 +263,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                                 "found": {"role": h.role, "name": h.name, "description": h.description},
                                 "path": h.path.into_iter().map(|(role, name)| json!({"role": role, "name": name})).collect::<Vec<_>>(),
                                 "pid": h.pid,
+                                "secret": h.secret,
                             }),
                             None => call(desk, "desk_at", json!({"x": x.round() as i32, "y": y.round() as i32})).await.unwrap_or_default(),
                         };
@@ -281,6 +283,9 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                                 "t": t, "kind": "click", "x": x, "y": y, "button": if right { "right" } else { "left" }, "count": count, "mods": mods,
                                 "app": app, "element": at["found"], "path": at["path"], "root": rooted(&at["found"]), "late": late,
                             });
+                            if at["secret"] == true {
+                                e["secret"] = true.into();
+                            }
                             if let Some(w) = win {
                                 e["window"] = json!({"title": w["title"], "bounds": w["bounds"]});
                             }
@@ -662,6 +667,7 @@ mod tests {
                     ("menu".into(), "File".into()),
                     ("window".into(), "Untitled".into()),
                 ],
+                secret: false,
             }),
         };
         let r = run(&desk, &[], vec![menu]).await;
@@ -699,6 +705,30 @@ mod tests {
         tokio::join!(worker, user);
         let r = made.await.unwrap();
         assert_eq!(r["events"][0]["window"]["title"], "report.rtf", "{r}");
+    }
+
+    #[tokio::test]
+    async fn a_click_into_a_password_field_is_marked_secret() {
+        let desk = Desk::new(Value::Null);
+        let field = Input::Click {
+            x: 20.0,
+            y: 20.0,
+            right: false,
+            count: 1,
+            mods: Vec::new(),
+            found: Some(Hit {
+                role: "textbox".into(),
+                pid: Some(7),
+                secret: true,
+                ..Hit::default()
+            }),
+        };
+        let r = run(&desk, &[], vec![field, click(5.0, 5.0)]).await;
+        assert_eq!(
+            (&r["events"][0]["secret"], r["events"][1].get("secret")),
+            (&json!(true), None),
+            "{r}"
+        );
     }
 
     #[tokio::test]

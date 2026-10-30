@@ -179,6 +179,7 @@ fn read(e: &Event, kind: u32, scale: f64) -> Option<Input> {
                 description: s.description,
                 pid: s.pid,
                 path: s.path.into_iter().map(|(r, n)| (r.to_owned(), n)).collect(),
+                secret: s.secret,
             });
             Some(Input::Click {
                 x,

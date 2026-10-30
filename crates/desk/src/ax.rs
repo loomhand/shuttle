@@ -928,6 +928,8 @@ pub struct Seen {
     pub description: String,
     pub pid: Option<u32>,
     pub path: Vec<(&'static str, String)>,
+    /// A secure text field: a password, whose keys no listener sees.
+    pub secret: bool,
 }
 
 /// What the hit test finds at desk point `(x, y)` now, read in one call per element so a click can be read before its app handles it.
@@ -954,6 +956,9 @@ pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
         description: a.help,
         pid: pid(&el).and_then(|p| u32::try_from(p).ok()),
         path,
+        secret: [&a.role, &a.subrole]
+            .iter()
+            .any(|r| *r == "AXSecureTextField"),
     })
 }
 
