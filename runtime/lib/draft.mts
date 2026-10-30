@@ -2,7 +2,7 @@ import * as desk from './desk.mts'
 import { ring, unpng } from './png.mts'
 
 type Hit = { role?: string; name?: string; description?: string }
-type Field = { role: string; name: string; frame: string; secure?: boolean }
+type Field = { role: string; name: string; frame: string; window?: string; secure?: boolean }
 type Event = {
   t: number; kind: 'click' | 'key' | 'after' | 'note' | 'skipped' | 'password'
   x?: number; y?: number; button?: string; count?: number; mods?: string[]; app?: string | null
@@ -50,11 +50,11 @@ export async function main(p: Params): Promise<Draft> {
   const first = events.find((e) => e.kind === 'click' || e.kind === 'key')
   const dock = first?.kind === 'click' && !first.app && first.element?.name ? first.element.name : undefined
   const app = dock ?? events.find((e) => (e.kind === 'click' || e.kind === 'key') && e.app)?.app
-  const opened = first?.kind === 'click' && !dock && typeof first.window === 'object' ? first.window.title : undefined
+  const opened = first && !dock ? windowOf(first) : undefined
   if (app) draft.steps.push({ app, ...(opened ? { title: templ(opened) } : {}), intent: `open ${app}${opened ? ` at "${opened}"` : ''}` })
   let here = { app, window: opened }
   const move = (e: Event) => {
-    const w = typeof e.window === 'object' ? e.window.title : undefined
+    const w = windowOf(e)
     if (!e.app) return
     if (e.app === here.app && (!w || !here.window || w === here.window)) { here.window = w || here.window; return }
     flush()
@@ -109,6 +109,10 @@ export async function main(p: Params): Promise<Draft> {
   }
   flush()
   return draft
+}
+
+function windowOf(e: Event) {
+  return (typeof e.window === 'object' ? e.window.title : e.focus?.window) || undefined
 }
 
 async function click(e: Event, templ: (s: string) => string): Promise<Step> {
