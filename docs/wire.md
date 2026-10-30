@@ -76,7 +76,7 @@ A `type` step can carry `focus`, the element the recording typed into, `{role, n
 When the accessibility tree has no match for such a click, the step tries, in this order:
 
 1. the crop, found on a screenshot with a normalized cross-correlation of at least 0.8, when the step's target is the recorded text;
-2. grounding the target, which may land on the window or document itself when `root` is set;
+2. grounding the target, which may land on the window or document itself when `root` is set. On a target with no accessibility element, such as a button drawn on a canvas, grounding can click a control that looks like the target, or one it takes for a target that is not there; the step's `after` stops the plan then, but the click has happened;
 3. the recorded point in the window, when the step's target is the recorded text and the window has the recorded size, within 2 desk units (macOS, where windows have `bounds`).
 
 A target that a parameter changed skips the crop and the point, since both show the recorded target. Each point must pass the hit test of a grounded click: inside the plan's window or a window it owns, under no other window. The trace names the one that clicked in `how`: `crop`, `ground` or `point`. A click without `recorded` grounds as before and refuses a point on a window or document root.
