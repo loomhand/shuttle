@@ -231,5 +231,21 @@ test('a background click with a button, count or modifiers goes into the plan wi
   const r = await main({ steps: [{ app: 'Report' }, { click: 'report.txt', count: 2 }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(sent(d.calls, 'desk_click'), [{ x: 440, y: 420, count: 2, window: 'Report', pid: 4 }])
-  assert.deepEqual(sent(d.calls, 'desk_shot'), [{ window: 'Report' }])
+  assert.deepEqual(sent(d.calls, 'desk_shot'), [{ window: 'Report', pid: 4 }])
+})
+
+test('a background click with a count takes the image scale from the window of its own app when another app has a window of that title', async (t) => {
+  const finder = { id: '1', title: 'Downloads', role: 'window', pid: 4, active: false, app: 'Finder', bounds: [100, 50, 600, 400] }
+  const browser = { id: '2', title: 'Downloads', role: 'window', pid: 8, active: false, app: 'Browser', bounds: [0, 0, 300, 200] }
+  const file = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'report.txt', states: ['showing'], bounds: [300, 250, 40, 20] }
+  const d = desktop([user(), browser as W, finder as W], ({ tool, args }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: finder, truncated: false, nodes: [{ ref: 0, id: '1', parent: -1, depth: 0, role: 'window', name: 'Downloads', states: ['showing'] }, file] })
+    if (tool === 'desk_read') return JSON.stringify(file)
+    if (tool === 'desk_shot') return { text: '{"ok":true}', image: (args.pid === 4 ? gray(1200, 800) : gray(300, 200)).toString('base64') }
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Finder' }, { click: 'report.txt', count: 2 }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(sent(d.calls, 'desk_click'), [{ x: 440, y: 420, count: 2, window: 'Downloads', pid: 4 }])
 })

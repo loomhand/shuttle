@@ -1809,7 +1809,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             a.h.unwrap_or(f64::MAX / 4.0),
         ];
         if let Some(window) = a.window.as_deref() {
-            return self.window_shot(window, rect, a.path).await;
+            return self.window_shot(window, a.pid, rect, a.path).await;
         }
         let overlay = self.overlay;
         if let Some(c) = self
@@ -1866,10 +1866,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn window_shot(
         &self,
         window: &str,
+        pid: Option<u32>,
         rect: [f64; 4],
         path: Option<String>,
     ) -> Result<Output, String> {
-        let (_, w) = self.pick_window(Some(window), None, true).await?;
+        let (_, w) = self.pick_window(Some(window), pid, true).await?;
         let key = window_key(&w)?;
         let stale = self
             .unseens()
