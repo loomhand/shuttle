@@ -88,7 +88,7 @@ A target that a parameter changed skips the crop and the point, since both show 
 
 - `click`: `x`, `y` (desk coordinates), `button`, `count`, `mods`, `app`, `element` (`role`, `name`, `description` as a snapshot names them), `path` (the ancestors up to the window, innermost first), `root` (the point hit no element but a window or document), `window` (`title`, `bounds`), and `crop` (a base64 PNG of the window around the point, from that window's own capture, cut at its edges; none while a sheet shows on the window, since the capture by its title then shows the sheet) at `crop_scale` pixels per desk unit with `crop_offset`, the point's offset in desk units from the crop's centre, with `late` when the crop had to be taken after the click, and `secret` when the element is a password field;
 - `key`: `code`, `text`, `mods`, `app`, and on the first key of a run of typing `focus`, the element it went to (`role`, `name` as a snapshot names it, `frame`, the role of its window or sheet, `secure: true` for a password field) or null when none could be read; or `secret: true` with no text for a key typed into a password field;
-- `password`: `app` and `focus`, with `secure: true`, when a password field took the keyboard focus, after which its keys reach no listener;
+- `password`: `app`, the app of the focused field, and `focus`, with `secure: true`, when a password field took the keyboard focus (in an app the recording leaves out, or one it cannot name, it is `skipped`), after which its keys reach no listener;
 - `after`: `window`, `role`, `app` of a new window in front once the input settled for 0.7 s;
 - `note`: `text`;
 - `skipped`: input in an app the recording leaves out, with no detail.

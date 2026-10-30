@@ -63,8 +63,11 @@ pub enum Input {
         focus: Option<Field>,
         read: bool,
     },
-    /// A password field took the keyboard focus, so the keys that follow reach no listener.
-    Password(Option<Field>),
+    /// A password field of process `pid` took the keyboard focus, so the keys that follow reach no listener.
+    Password {
+        pid: Option<u32>,
+        focus: Option<Field>,
+    },
     Note(String),
 }
 
@@ -311,9 +314,10 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                             json!({"t": t, "kind": "skipped"})
                         }
                     }
-                    Input::Password(focus) => {
-                        let app = front_of(&list(desk).await).and_then(|w| w["app"].as_str().map(str::to_owned));
-                        if kept(app.as_deref(), &apps) {
+                    Input::Password { pid, focus } => {
+                        windows = list(desk).await;
+                        let app = app_of(&windows, pid.map(u64::from));
+                        if app.is_some() && kept(app.as_deref(), &apps) {
                             json!({"t": t, "kind": "password", "app": app, "focus": focus})
                         } else {
                             json!({"t": t, "kind": "skipped"})
@@ -806,11 +810,14 @@ mod tests {
             vec![
                 field,
                 click(5.0, 5.0),
-                Input::Password(Some(Field {
-                    role: "textbox".into(),
-                    secure: true,
-                    ..Field::default()
-                })),
+                Input::Password {
+                    pid: Some(7),
+                    focus: Some(Field {
+                        role: "textbox".into(),
+                        secure: true,
+                        ..Field::default()
+                    }),
+                },
             ],
         )
         .await;
@@ -832,6 +839,40 @@ mod tests {
             ),
             "{r}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_password_focus_counts_for_the_app_that_has_it_and_not_the_front_one() {
+        let desk = Desk::new(Value::Null);
+        let focus = |pid| Input::Password {
+            pid,
+            focus: Some(Field {
+                secure: true,
+                ..Field::default()
+            }),
+        };
+        let r = run(
+            &desk,
+            &[],
+            vec![focus(Some(9)), focus(None), focus(Some(7))],
+        )
+        .await;
+        let seen: Vec<(&Value, &Value)> = r["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| (&e["kind"], &e["app"]))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (&json!("skipped"), &Value::Null),
+                (&json!("skipped"), &Value::Null),
+                (&json!("password"), &json!("TextEdit")),
+            ]
+        );
+        let r = run(&desk, &["Notes"], vec![focus(Some(7))]).await;
+        assert_eq!(r["events"][0]["kind"], "skipped");
     }
 
     #[tokio::test]

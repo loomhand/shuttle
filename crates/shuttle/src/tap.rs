@@ -97,7 +97,11 @@ impl Tap {
                     CFRunLoopRunInMode(kCFRunLoopDefaultMode, TURN_S, false);
                     let now = ax::secure_input();
                     if now && !secure {
-                        let _ = (*seen).tx.send(Input::Password(focused(true)));
+                        let (pid, _) = ax::typing();
+                        let _ = (*seen).tx.send(Input::Password {
+                            pid,
+                            focus: focused(true),
+                        });
                     }
                     secure = now;
                 }
