@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.31 - 2026-10-30
 
 - **Input that names an app goes to that app or nowhere.** `key`, `type`, `click`, `scroll` and `drag` take `app`, the app name a window lists, and send to that app's window as with its `pid`; when the app has no window, the call fails and sends nothing. Before, the desk ignored `app`, so a call naming an app that had just been launched in the background, with no window yet, went to no target; with `input = "auto"` it then ran in the foreground and the keys reached whichever app was in front.
 - **Auto input never takes the foreground for an action with no window.** An action that background input refused for want of a target window stays refused instead of running in the foreground into the front app.
