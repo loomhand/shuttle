@@ -201,3 +201,19 @@ test('input that moves to another app or another window of the app first switche
     { type: 'y' },
   ])
 })
+
+test('a recording that starts with typing starts at the window it typed into, and a click in another one switches there', async (t) => {
+  await daemon(t, () => '{"ok":true}')
+  const field = { role: 'textbox', name: '', frame: 'window', window: 'a.txt' }
+  const events = [
+    { t: 0, kind: 'key', code: 0, text: 'x', mods: [], app: 'TextEdit', focus: field },
+    { t: 1, kind: 'click', x: 10, y: 10, app: 'TextEdit', element: { role: 'button', name: 'Bold' }, root: false, window: win('b.txt') },
+  ]
+  const d = await main({ recording: { id: 'rec-12', events } as never })
+  assert.deepEqual(d.steps.map(({ intent: _, recorded: __, focus: ___, ...s }) => s), [
+    { app: 'TextEdit', title: 'a.txt' },
+    { type: 'x' },
+    { app: 'TextEdit', title: 'b.txt' },
+    { click: 'Bold', role: 'button' },
+  ])
+})
