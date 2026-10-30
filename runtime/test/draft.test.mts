@@ -47,14 +47,15 @@ test('a recording becomes gui_plan steps with menus merged, typed values and win
     { type: '{{name}}' },
     { click: 'Save', role: 'button', after: '{{name}}' },
     { key: 'cmd+w' },
+    { app: 'Safari', title: 'canvas' },
     { click: 'the {{color}} button', after: '{{color}} clicked' },
     { type: '{{password}}', focus: { secure: true } },
     { key: 'return' },
   ])
   assert.deepEqual(d.steps[5]?.recorded, { text: 'Save', crop, scale: 2, at: [730, 478], size: [600, 400] })
-  assert.deepEqual(d.steps[7]?.recorded, { text: 'the Green button', crop, scale: 1, root: true, at: [334, 200], size: [1240, 697] })
+  assert.deepEqual(d.steps[8]?.recorded, { text: 'the Green button', crop, scale: 1, root: true, at: [334, 200], size: [1240, 697] })
   assert.deepEqual(d.params, { body: { example: 'b4 body' }, name: { example: 'rr-b4' }, color: { example: 'Green' }, password: { secret: true } })
-  assert.deepEqual([d.notes, d.gaps], [[{ step: 2, text: 'the body and the name change each time' }], [10]])
+  assert.deepEqual([d.notes, d.gaps], [[{ step: 2, text: 'the body and the name change each time' }], [11]])
   assert.equal(asked.length, 1)
 })
 
@@ -174,5 +175,29 @@ test('every password step asks for a password field, the one the recording read 
     { type: '{{password}}', focus: pw },
     { type: '{{password_2}}', focus: { secure: true } },
     { type: '{{password_3}}', focus: { ...pw, name: 'PIN' } },
+  ])
+})
+
+test('input that moves to another app or another window of the app first switches there', async (t) => {
+  await daemon(t, () => '{"ok":true}')
+  const at = (t: number, app: string, title: string) => ({ t, kind: 'click', x: 10, y: 10, app, element: { role: 'button', name: 'OK' }, root: false, window: win(title) })
+  const events = [
+    at(0, 'TextEdit', 'a.txt'),
+    ...keys('x'),
+    at(1, 'TextEdit', 'b.txt'),
+    { t: 2, kind: 'after', window: 'c.txt', role: 'window', app: 'TextEdit' },
+    at(3, 'TextEdit', 'c.txt'),
+    ...keys('y', 'Notes'),
+  ]
+  const d = await main({ recording: { id: 'rec-11', events } as never })
+  assert.deepEqual(d.steps.map(({ intent: _, recorded: __, ...s }) => s), [
+    { app: 'TextEdit', title: 'a.txt' },
+    { click: 'OK', role: 'button' },
+    { type: 'x' },
+    { app: 'TextEdit', title: 'b.txt' },
+    { click: 'OK', role: 'button', after: 'c.txt' },
+    { click: 'OK', role: 'button' },
+    { app: 'Notes' },
+    { type: 'y' },
   ])
 })
