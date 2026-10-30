@@ -9,6 +9,7 @@ export type El = {
 export type Snap = { window: Win; nodes: El[]; truncated: boolean; ms: number }
 export type Question = { type: 'noul'; instructions: string } | { type: 'choice'; instructions: string; criteria: Record<string, string> }
 export type Judgment = { probability?: number; choice?: string; confidence?: number; probabilities?: Record<string, number> }
+/** Model calls by role: decide, verify, ground, ask. */
 export type Usage = Record<string, { calls: number; input_tokens: number; output_tokens: number; cached_tokens: number }>
 export type ImagePart = { type: 'image_url'; image_url: { url: string } }
 export type Served = { model: string; image: boolean; build: string | null; id: string | null }
@@ -27,7 +28,7 @@ let screenSize: Size | null = null
 /** How many inputs `[desk] input = "auto"` ran in the foreground after a refusal before anything was sent, their window brought to the front. */
 export const foreground = { runs: 0 }
 export const usage: Usage = {}
-/** One entry per decide/look call: the answering model, whether an image went in, and the build and id it named. */
+/** One entry per decide/look call: the role that answered (decide or verify), whether an image went in, and the build tag and id it named. */
 export const served: Served[] = []
 
 export function call<T>(op: string, args: Record<string, unknown> = {}): Promise<T> {
@@ -89,12 +90,12 @@ export function image(png: Buffer): ImagePart {
 
 export async function ask(prompt: string, images: Buffer | Buffer[] = []): Promise<string> {
   const pngs = Buffer.isBuffer(images) ? [images] : images
-  return (await model<Metered & { text: string }>('model_ask', { prompt, images: pngs.map((p) => p.toString('base64')) })).text
+  return (await model<Metered & { text: string }>('ask', 'model_ask', { prompt, images: pngs.map((p) => p.toString('base64')) })).text
 }
 
 /** The point, in desk coordinates, of a described element in a PNG of the desk rectangle `area`. */
 export async function ground(png: Buffer, target: string, area: Size): Promise<[number, number]> {
-  const r = await model<Metered & { x: number; y: number }>('model_ground', { png_b64: png.toString('base64'), target, area })
+  const r = await model<Metered & { x: number; y: number }>('ground', 'model_ground', { png_b64: png.toString('base64'), target, area })
   return [r.x, r.y]
 }
 
@@ -128,9 +129,10 @@ function exchange(tool: string, args: Record<string, unknown>): Promise<Output> 
   })
 }
 
-async function model<T extends Metered>(tool: string, args: Record<string, unknown>): Promise<T> {
+// tallied by role, not by the model's name: the name is the operator's configuration, not something a run's reader needs
+async function model<T extends Metered>(role: string, tool: string, args: Record<string, unknown>): Promise<T> {
   const r = await request<T>(tool, args)
-  const u = usage[r.usage.model] ??= { calls: 0, input_tokens: 0, output_tokens: 0, cached_tokens: 0 }
+  const u = usage[role] ??= { calls: 0, input_tokens: 0, output_tokens: 0, cached_tokens: 0 }
   u.calls += 1
   u.input_tokens += r.usage.input_tokens
   u.output_tokens += r.usage.output_tokens
@@ -140,10 +142,13 @@ async function model<T extends Metered>(tool: string, args: Record<string, unkno
 }
 
 async function judge(state: unknown, questions: Record<string, Question>, image: boolean, timeout_ms?: number): Promise<Record<string, Judgment>> {
-  const rec: Served = { model: image ? 'verify' : 'decide', image, build: null, id: null }
+  const role = image ? 'verify' : 'decide'
+  const rec: Served = { model: role, image, build: null, id: null }
   served.push(rec)
-  const r = await model<Decided>('model_decide', { state, questions, image, timeout_ms })
-  Object.assign(rec, r.served)
+  const r = await model<Decided>(role, 'model_decide', { state, questions, image, timeout_ms })
+  const { model: name, build, id } = r.served
+  rec.build = build?.startsWith(`${name}-`) ? build.slice(name.length + 1) : build
+  rec.id = id
   return r.answers
 }
 
