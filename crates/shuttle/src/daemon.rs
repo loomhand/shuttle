@@ -20,6 +20,7 @@ use zeroize::Zeroizing;
 #[cfg(any(target_os = "macos", windows))]
 use crate::hotkey::Hotkey;
 use crate::plugins::Plugin;
+use crate::record::{self, Recorder};
 use crate::runner::Runner;
 use crate::services;
 use crate::{NAME, STOPPED};
@@ -77,6 +78,11 @@ pub trait Controls: Send + Sync {
     fn halted(&self) -> bool;
     /// Whether a run or a desk action is in flight.
     fn acting(&self) -> bool;
+    fn recording(&self) -> bool {
+        false
+    }
+    /// Starts or ends a recording of the user's input.
+    fn record(&self, _on: bool) {}
 }
 
 /// What the controls show and how to reach the daemon.
@@ -108,6 +114,7 @@ pub struct Daemon<H> {
     nonce: u64,
     runs: AtomicU64,
     wait: Duration,
+    recorder: Option<Recorder>,
 }
 
 impl<H: Handler> Daemon<H> {
@@ -129,6 +136,52 @@ impl<H: Handler> Daemon<H> {
             nonce: RandomState::new().hash_one(std::process::id()),
             runs: AtomicU64::new(1),
             wait: TURN_WAIT,
+            recorder: None,
+        }
+    }
+
+    /// Adds recordings of the user's input, saved in `dir`.
+    #[must_use]
+    pub fn with_recordings(mut self, dir: std::path::PathBuf) -> Self {
+        self.recorder = Some(Recorder::new(dir));
+        self
+    }
+
+    /// Runs the recordings one after the other until the daemon ends.
+    pub async fn recordings(&self) {
+        let Some(mut sessions) = self.recorder.as_ref().and_then(Recorder::sessions) else {
+            return;
+        };
+        while let Some(s) = sessions.recv().await {
+            record::work(&self.desk, s, || self.acting()).await;
+        }
+    }
+
+    async fn record(&self, tool: &str, args: Value) -> Result<String, String> {
+        let r = self
+            .recorder
+            .as_ref()
+            .ok_or("this daemon makes no recordings")?;
+        match tool {
+            "record_start" => {
+                let apps = args["apps"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                r.start(apps)
+                    .map(|id| serde_json::json!({"ok": true, "id": id}).to_string())
+            }
+            "record_note" => {
+                let text = args["text"].as_str().ok_or("record_note needs text")?;
+                r.note(text.to_owned())
+                    .map(|()| r#"{"ok":true}"#.to_owned())
+            }
+            _ => r.stop().await.map(|v| v.to_string()),
         }
     }
 
@@ -273,6 +326,12 @@ impl<H: Handler> Handler for Daemon<H> {
             return Output::error(CONFIRM_OPEN);
         }
         let tool = call.tool.as_str();
+        if matches!(tool, "record_start" | "record_note" | "record_stop") {
+            return self
+                .record(tool, call.args)
+                .await
+                .map_or_else(Output::error, Output::text);
+        }
         if tool == "gui_plan" || tool == "script_run" || self.plugin(tool).is_some() {
             return self
                 .run(tool, call.args)
@@ -340,6 +399,19 @@ impl<H: Handler> Controls for Daemon<H> {
 
     fn acting(&self) -> bool {
         self.actions.load(Ordering::Relaxed) > 0 || self.running().is_some()
+    }
+
+    fn recording(&self) -> bool {
+        self.recorder.as_ref().is_some_and(Recorder::recording)
+    }
+
+    fn record(&self, on: bool) {
+        let Some(r) = &self.recorder else { return };
+        if !on {
+            r.end();
+        } else if let Err(e) = r.start(Vec::new()) {
+            crate::log(e);
+        }
     }
 }
 

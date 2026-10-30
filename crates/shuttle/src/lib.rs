@@ -13,8 +13,11 @@ pub mod mac;
 pub mod mcp;
 pub mod plugins;
 pub mod proxy;
+pub mod record;
 pub mod runner;
 pub mod services;
+#[cfg(target_os = "macos")]
+mod tap;
 pub mod tools;
 #[cfg(windows)]
 pub mod win;
