@@ -99,6 +99,7 @@ pub fn states(role: &str, f: Facts) -> Vec<&'static str> {
         shown: !f.offscreen,
         read_only: f.read_only == Some(true),
         disabled: !f.enabled,
+        ..States::default()
     })
 }
 

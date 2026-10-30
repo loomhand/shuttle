@@ -196,6 +196,7 @@ pub struct States {
     pub shown: bool,
     pub read_only: bool,
     pub disabled: bool,
+    pub protected: bool,
 }
 
 /// The tree of one window with the time each phase took.
@@ -368,6 +369,7 @@ pub fn states(s: States) -> Vec<&'static str> {
         (s.read_only, "read-only"),
         (s.disabled, "disabled"),
         (s.mixed, "mixed"),
+        (s.protected, "protected"),
     ]
     .into_iter()
     .filter_map(|(on, name)| on.then_some(name))
