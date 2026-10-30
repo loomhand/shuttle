@@ -1,7 +1,7 @@
 import { writeFileSync } from 'node:fs'
 import { createConnection } from 'node:net'
 
-export type Win = { id: string; title: string; role: string; pid: number | null; active: boolean; app?: string; owner?: string; modal?: string; blocks?: string; shell?: boolean }
+export type Win = { id: string; title: string; role: string; pid: number | null; active: boolean; app?: string; owner?: string; modal?: string; blocks?: string; shell?: boolean; bounds?: [number, number, number, number] }
 export type El = {
   ref: number; id: string; parent: number; depth: number; role: string; name: string; states: string[]
   value?: string; keys?: string; shortcut?: string; mnemonic?: string; native_role?: string; description?: string; bounds?: [number, number, number, number]
