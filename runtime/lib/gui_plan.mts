@@ -10,9 +10,11 @@ import { cut, find as match, ring, unpng } from './png.mts'
 type Step = {
   app?: string; title?: string; menu?: string; click?: string; check?: string; on?: boolean; set?: string; value?: string
   type?: string; key?: string; wait?: string; expect?: string; verify?: string; close?: boolean; role?: string; window?: string
-  timeout_ms?: number; enabled?: boolean; fp?: Fp; seen?: string; blank?: Fp; after?: string; recorded?: Recorded
+  timeout_ms?: number; enabled?: boolean; fp?: Fp; seen?: string; blank?: Fp; after?: string; recorded?: Recorded; focus?: Focus | 'unverified'
 }
 // a click as a recording saw it: its target text, a crop around the point at scale pixels per desk unit with the point offset from its centre, the point in its window and that window's size, and whether the point hit no element
+// the element a recording typed into, as a snapshot names it, and the role of its window or sheet
+type Focus = { role: string; name: string; frame?: string }
 type Recorded = { text: string; crop?: string; scale?: number; offset?: [number, number]; at?: [number, number]; size?: [number, number]; root?: boolean }
 type Reads = { keys?: boolean; menus?: boolean }
 type Kept = Reads & { id: string; snap: desk.Snap; nodes: Node[] }
@@ -719,6 +721,15 @@ function told(g: Pick<Grounding, 'what' | 'check' | 'why' | 'cover'>) {
   return g.what ? `${g.what.slice(0, 80)}${g.cover !== undefined ? `, under the window "${g.cover}"` : REFUSED[g.check] ?? ''}` : 'no accessible element'
 }
 
+async function typingInto(want: Focus, w: Win | null) {
+  const said = `${want.role} "${want.name}"${want.frame ? ` in a ${want.frame}` : ''}`
+  let nodes: desk.El[] = []
+  try { if (w) nodes = (await snapOf(w)).nodes } catch {}
+  const f = nodes.filter((n) => n.depth > 0 && n.states.includes('focused')).at(-1)
+  if (!f || !w) throw new Diverged(`the recording typed into ${said}, and no focused element can be read now, so the text could go anywhere`, await seen())
+  if (f.role !== want.role || norm(f.name) !== norm(want.name) || (want.frame && w.role !== want.frame)) throw new Diverged(`the recording typed into ${said}, and the focus is on ${f.role} "${f.name}" in the ${w.role} "${w.title}" now`, await seen())
+}
+
 async function landed(want: string, ms: number) {
   try { await windowFor(want, ms) } catch (e: unknown) {
     if (e instanceof Surprise && !(e instanceof Diverged)) throw new Diverged(`after this step the recording saw "${want}", and the replay did not: ${e.reason}`, e.seen)
@@ -994,6 +1005,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.type !== undefined) {
     const nl = s.type.endsWith('\n'); const ws = await current(nl ? OPENING : SETTLE); const w = frontOf(ws); const t0 = Date.now()
     if (BG && !w) throw new Surprise('background gui_plan has no target window to type into: start the plan with an app step, or name the window with a wait step')
+    if (s.focus && s.focus !== 'unverified') await typingInto(s.focus, w)
     const dialog = !s.type.includes('\n') && !!w && ws.some((x) => x.title !== w.title && x.pid === w.pid)
     const o = (nl || dialog) && w ? await filled(w, kept) : ''
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
