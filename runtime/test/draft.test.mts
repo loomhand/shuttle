@@ -113,3 +113,16 @@ test('each typed run and password keeps the field the recording typed into, or u
   const typed = d.steps.filter((s) => 'type' in s).map(({ type, focus }) => ({ type, focus }))
   assert.deepEqual(typed, [{ type: 'al', focus: field }, { type: '{{password}}', focus: secure }, { type: 'x', focus: 'unverified' }])
 })
+
+test('a note in the middle of typing keeps the run one step with its field', async (t) => {
+  await daemon(t, () => '{"ok":true}')
+  const field = { role: 'textbox', name: 'To', frame: 'window' }
+  const events = [
+    { t: 0, kind: 'key', code: 0, text: 'b', mods: [], app: 'Mail', focus: field },
+    { t: 1, kind: 'note', text: 'the address changes' },
+    { t: 2, kind: 'key', code: 0, text: 'o', mods: [], app: 'Mail' },
+  ]
+  const d = await main({ recording: { id: 'rec-7', events } as never })
+  assert.deepEqual(d.steps.filter((s) => 'type' in s).map(({ type, focus }) => ({ type, focus })), [{ type: 'bo', focus: field }])
+  assert.deepEqual(d.notes, [{ step: 1, text: 'the address changes' }])
+})

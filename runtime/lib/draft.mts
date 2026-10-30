@@ -62,6 +62,7 @@ export async function main(p: Params): Promise<Draft> {
       draft.steps.push({ key, intent: `press ${key}` })
       continue
     }
+    if (e.kind === 'note') { draft.notes.push({ step: draft.steps.length, text: e.text ?? '' }); continue }
     flush()
     if (e.kind === 'password') {
       const last = draft.steps.at(-1)
@@ -69,7 +70,6 @@ export async function main(p: Params): Promise<Draft> {
       else if (last && e.focus && !last.focus) last.focus = e.focus
       filled = true
     }
-    else if (e.kind === 'note') draft.notes.push({ step: draft.steps.length, text: e.text ?? '' })
     else if (e.kind === 'skipped') draft.gaps.push(draft.steps.length)
     else if (e.kind === 'after') {
       const w = typeof e.window === 'string' ? e.window : undefined
