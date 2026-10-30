@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.32 - 2026-10-30
 
 - **macOS: a window is found by its whole title.** Input that names a window by the title `desk_windows` lists now finds it where cua-driver lists a shorter title. Chrome gives the window server a title elided in the middle and without its app and profile suffix, so a key, type or `gui_plan` step naming a long Chrome window by its full title was refused with "no window", and the error listed the elided titles. Titles now come from accessibility, matched to the driver's windows by window number, in the error too. It costs nothing: the accessibility window list is already read whenever a title is not unique in the driver's list.
 - **`launch` takes command-line arguments.** `desk launch` with `args` passes them to the app, so `{"app": "Google Chrome", "args": ["--profile-directory=Profile 1", "--new-window", "https://example.com"]}` opens the URL in a new window of that Chrome profile. On macOS the arguments start a new instance, which Chrome hands to its running instance.
