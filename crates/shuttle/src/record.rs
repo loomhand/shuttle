@@ -111,6 +111,7 @@ struct Ended {
 struct Frame {
     png: Vec<u8>,
     factor: f64,
+    size: [f64; 2],
     at: Instant,
 }
 
@@ -291,9 +292,10 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                             if let Some(w) = win {
                                 e["window"] = json!({"title": w["title"], "bounds": w["bounds"]});
                             }
-                            if let Some((png, factor)) = frame.as_ref().and_then(|f| crop(f, x, y, per_point)) {
+                            if let Some((png, factor, offset)) = frame.as_ref().and_then(|f| crop(f, x, y, per_point)) {
                                 e["crop"] = png.into();
                                 e["crop_scale"] = factor.into();
+                                e["crop_offset"] = json!(offset);
                             }
                             e
                         } else {
@@ -362,12 +364,21 @@ fn rooted(found: &Value) -> bool {
             .is_some_and(|r| ROOT_ROLES.contains(&r))
 }
 
-// the crop is CROP_PT points around the point, in the frame's own pixels
-fn crop(f: &Frame, x: f64, y: f64, per_point: f64) -> Option<(String, f64)> {
+// the crop is CROP_PT points around the point, cut to the screen, with the point's offset from its centre in desk units
+fn crop(f: &Frame, x: f64, y: f64, per_point: f64) -> Option<(String, f64, [f64; 2])> {
     let [w, h] = CROP_PT.map(|v| v * per_point);
-    let (_, _, png) =
-        shuttle_desk::crop_png(&f.png, [x - w / 2.0, y - h / 2.0, w, h], f.factor, None).ok()?;
-    Some((B64.encode(png), f.factor))
+    let [left, top] = [(x - w / 2.0).max(0.0), (y - h / 2.0).max(0.0)];
+    let [right, bottom] = [(x + w / 2.0).min(f.size[0]), (y + h / 2.0).min(f.size[1])];
+    let (_, _, png) = shuttle_desk::crop_png(
+        &f.png,
+        [left, top, right - left, bottom - top],
+        f.factor,
+        None,
+    )
+    .ok()?;
+    let offset =
+        [x - (left + right) / 2.0, y - (top + bottom) / 2.0].map(|v| (v * 10.0).round() / 10.0);
+    Some((B64.encode(png), f.factor, offset))
 }
 
 #[cfg(target_os = "macos")]
@@ -431,12 +442,15 @@ async fn shot<H: Handler>(desk: &H, width: f64) -> Option<Frame> {
     let out = desk.answer(asked("desk_shot", json!({}))).await;
     let png = B64.decode(out.image_b64?).ok()?;
     let w = u32::from_be_bytes(png.get(16..20)?.try_into().ok()?);
+    let h = u32::from_be_bytes(png.get(20..24)?.try_into().ok()?);
+    let factor = if width > 0.0 {
+        f64::from(w) / width
+    } else {
+        1.0
+    };
     Some(Frame {
-        factor: if width > 0.0 {
-            f64::from(w) / width
-        } else {
-            1.0
-        },
+        factor,
+        size: [f64::from(w) / factor, f64::from(h) / factor],
         png,
         at: Instant::now(),
     })
@@ -655,6 +669,12 @@ mod tests {
         let crop = B64.decode(e["crop"].as_str().unwrap()).unwrap();
         assert_eq!(&crop[1..4], b"PNG");
         assert_eq!(u32::from_be_bytes(crop[16..20].try_into().unwrap()), 200);
+        assert_eq!(e["crop_offset"], json!([0.0, 0.0]));
+        let r = run(&desk, &[], vec![click(30.0, 20.0)]).await;
+        let e = &r["events"][0];
+        let crop = B64.decode(e["crop"].as_str().unwrap()).unwrap();
+        assert_eq!(u32::from_be_bytes(crop[16..20].try_into().unwrap()), 130);
+        assert_eq!(e["crop_offset"], json!([-35.0, -15.0]), "{e}");
     }
 
     #[tokio::test]
