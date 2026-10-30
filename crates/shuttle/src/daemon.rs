@@ -389,6 +389,9 @@ impl<H: Handler> Controls for Daemon<H> {
         self.halted.send_replace(stopped);
         if stopped {
             self.stops.send_modify(|n| *n += 1);
+            if let Some(r) = &self.recorder {
+                r.end();
+            }
         }
         self.runner.halt(stopped);
     }
