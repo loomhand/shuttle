@@ -179,21 +179,18 @@ impl Ax {
             };
             for w in windows.iter() {
                 let [role, subrole, title, children, pos, size] = values(&self.frame_names, w);
-                let children = children.map(|c| items(&c)).unwrap_or_default();
-                let sheets: Vec<&CFType> = children
-                    .iter()
-                    .filter(|c| string(attr(c, "AXRole")) == "AXSheet")
-                    .collect();
+                let sheets = sheets(children.map(|c| items(&c)).unwrap_or_default());
                 let mine = focused
                     .as_ref()
-                    .is_some_and(|f| f == w || sheets.contains(&f));
+                    .is_some_and(|f| f == w || sheets.iter().any(|(s, _)| s == f));
                 let mut active = front && mine;
                 let title = string(title).trim().to_owned();
                 let owner = self.id_of(w);
-                for sheet in sheets {
+                let ids: Vec<String> = sheets.iter().map(|(s, _)| self.id_of(s)).collect();
+                for (k, (sheet, parent)) in sheets.iter().enumerate().rev() {
                     let s = attrs(&self.names, sheet);
                     frames.push(Frame {
-                        id: self.id_of(sheet),
+                        id: ids[k].clone(),
                         title: [s.title, s.description]
                             .into_iter()
                             .find(|t| !t.is_empty())
@@ -202,7 +199,7 @@ impl Ax {
                         pid: Some(p as u32),
                         active,
                         app: name.clone(),
-                        owner: Some(owner.clone()),
+                        owner: Some(parent.map_or_else(|| owner.clone(), |at| ids[at].clone())),
                         ..Frame::default()
                     });
                     active = false;
@@ -785,6 +782,29 @@ fn string(v: Option<CFType>) -> String {
 
 fn boolean(v: Option<CFType>) -> Option<bool> {
     v.and_then(|v| v.downcast::<CFBoolean>()).map(bool::from)
+}
+
+fn sheets(children: Vec<CFType>) -> Vec<(CFType, Option<usize>)> {
+    let sheet = |c: &CFType| string(attr(c, "AXRole")) == "AXSheet";
+    let mut out = Vec::new();
+    let mut level: Vec<(CFType, Option<usize>)> = children
+        .into_iter()
+        .filter(sheet)
+        .map(|c| (c, None))
+        .collect();
+    while !level.is_empty() {
+        let mut next = Vec::new();
+        for (s, parent) in level {
+            let at = Some(out.len());
+            let kids = attr(&s, "AXChildren")
+                .map(|c| items(&c))
+                .unwrap_or_default();
+            next.extend(kids.into_iter().filter(sheet).map(|c| (c, at)));
+            out.push((s, parent));
+        }
+        level = next;
+    }
+    out
 }
 
 fn items(v: &CFType) -> Vec<CFType> {
