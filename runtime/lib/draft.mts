@@ -2,13 +2,14 @@ import * as desk from './desk.mts'
 import { ring, unpng } from './png.mts'
 
 type Hit = { role?: string; name?: string; description?: string }
-type Field = { role: string; name: string; frame: string; window?: string; secure?: boolean }
+type Field = { role: string; name: string; frame: string; window?: string; secure?: boolean; url?: string; id?: string }
+type Web = { url: string; id?: string }
 type Event = {
   t: number; kind: 'click' | 'key' | 'after' | 'note' | 'skipped' | 'password'
   x?: number; y?: number; button?: string; count?: number; mods?: string[]; app?: string | null
   element?: Hit | null; path?: { role: string; name: string }[]; root?: boolean
   window?: { title?: string; bounds?: [number, number, number, number] | null } | string
-  crop?: string; crop_scale?: number; crop_offset?: [number, number]; focus?: Field | null; code?: number; text?: string; secret?: boolean; role?: string
+  crop?: string; crop_scale?: number; crop_offset?: [number, number]; focus?: Field | null; code?: number; text?: string; secret?: boolean; role?: string; web?: Web
 }
 type Recording = { id: string; apps?: string[]; events: Event[] }
 type Step = Record<string, unknown> & { intent: string }
@@ -32,11 +33,12 @@ export async function main(p: Params): Promise<Draft> {
   let into: Field | null | undefined
   let clicked: { e: Event; step: Step } | undefined
   // a run whose recording read no focus checks none on replay; one it never read keeps the plan's own rules
-  const focus = (f: Field | null | undefined) => f === null ? { focus: 'unverified' } : f ? { focus: f } : {}
+  const focus = (f: Field | null | undefined) => f === null ? { focus: 'unverified' } : f ? onPage(f, f) : {}
+  const onPage = (f: Partial<Field>, to: Partial<Field>) => { const { url, ...field } = to; return { focus: field, ...(f.url ? { web: { url: templ(f.url) } } : {}) } }
   const password = (f?: Field | null) => {
     const name = `password${secrets ? `_${secrets + 1}` : ''}`; secrets += 1
     params[name] = { secret: true }
-    draft.steps.push({ type: `{{${name}}}`, focus: { ...f, secure: true }, intent: `type the ${name.replace('_', ' ')} (a password field: not recorded, pass it as ${name})` })
+    draft.steps.push({ type: `{{${name}}}`, ...onPage(f ?? {}, { ...f, secure: true }), intent: `type the ${name.replace('_', ' ')} (a password field: not recorded, pass it as ${name})` })
   }
   const flush = () => {
     if (secret) {
@@ -51,7 +53,7 @@ export async function main(p: Params): Promise<Draft> {
   const dock = first?.kind === 'click' && !first.app && first.element?.name ? first.element.name : undefined
   const app = dock ?? events.find((e) => (e.kind === 'click' || e.kind === 'key') && e.app)?.app
   const opened = first && !dock ? windowOf(first) : undefined
-  if (app) draft.steps.push({ app, ...(opened ? { title: templ(opened) } : {}), intent: `open ${app}${opened ? ` at "${opened}"` : ''}` })
+  if (app) draft.steps.push(at(app, first && !dock ? pageOf(first) : undefined, opened, 'open'))
   let here = { app, window: opened }
   const move = (e: Event) => {
     const w = windowOf(e)
@@ -59,7 +61,12 @@ export async function main(p: Params): Promise<Draft> {
     if (e.app === here.app && (!w || !here.window || w === here.window)) { here.window = w || here.window; return }
     flush()
     here = { app: e.app, window: w }
-    draft.steps.push({ app: e.app, ...(w ? { title: templ(w) } : {}), intent: `switch to ${e.app}${w ? ` at "${w}"` : ''}` })
+    draft.steps.push(at(e.app, pageOf(e), w, 'switch to'))
+  }
+  // a step into a web page opens its address, which needs no tab of that title to exist
+  function at(app: string, page: string | undefined, title: string | undefined, verb: string): Step {
+    if (page) return { app, url: templ(page), intent: `${verb} ${page} in ${app}` }
+    return { app, ...(title ? { title: templ(title) } : {}), intent: `${verb} ${app}${title ? ` at "${title}"` : ''}` }
   }
   for (const [i, e] of events.entries()) {
     if (e.kind === 'key' || (e.kind === 'click' && !(e === first && dock))) move(e)
@@ -78,7 +85,7 @@ export async function main(p: Params): Promise<Draft> {
     if (e.kind === 'password') {
       const last = draft.steps.at(-1)
       if (!filled) password(e.focus)
-      else if (last && e.focus && !(last.focus as Partial<Field> | undefined)?.role) last.focus = { ...e.focus, secure: true }
+      else if (last && e.focus && !(last.focus as Partial<Field> | undefined)?.role) Object.assign(last, onPage(e.focus, { ...e.focus, secure: true }))
       filled = true
     }
     else if (e.kind === 'skipped') draft.gaps.push(draft.steps.length)
@@ -111,6 +118,10 @@ export async function main(p: Params): Promise<Draft> {
   return draft
 }
 
+function pageOf(e: Event) {
+  return e.web?.url ?? e.focus?.url
+}
+
 function windowOf(e: Event) {
   return (typeof e.window === 'object' ? e.window.title : e.focus?.window) || undefined
 }
@@ -131,6 +142,7 @@ async function click(e: Event, templ: (s: string) => string): Promise<Step> {
     ...((e.count ?? 1) > 1 ? { count: e.count } : {}),
     ...(e.mods?.length ? { mods: e.mods } : {}),
     ...(own && el.role && NAMED_ROLES.has(el.role) ? { role: el.role } : {}),
+    ...(e.web ? { web: { url: templ(e.web.url), ...(e.web.id ? { id: e.web.id } : {}) } } : {}),
     recorded,
     intent: `click ${own ? `the ${el.role} "${own}"` : said}${win?.title ? ` in "${win.title}"` : ''}`,
   }
