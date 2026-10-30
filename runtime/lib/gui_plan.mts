@@ -680,7 +680,7 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>) 
 
 // a click the tree cannot place: a recorded target takes its crop, then grounding, then its point in a window of the recorded size; a changed target takes grounding alone
 async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec): Promise<[number, number]> {
-  const same = !!r && norm(r.text) === norm(target)
+  const same = r?.text === target
   const roots = !!r?.root
   const area = await desk.screen()
   const missed: string[] = []

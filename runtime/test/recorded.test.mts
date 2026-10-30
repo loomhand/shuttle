@@ -74,6 +74,13 @@ test('a recorded click whose target a parameter changed skips the crop and the p
   assert.deepEqual([seen.clicks, seen.grounds, r.trace?.[0]?.how], [['500,300'], 1, 'ground'])
 })
 
+test('a target a parameter changed only in case is no recorded target, and skips the crop', async (t) => {
+  const seen = await canvas(t, { shown: screen(800, 600, [300, 250]) })
+  const r = await main({ steps: [{ click: 'the GREEN button', recorded: { text: 'the Green button', crop: crop(), at: [160, 130], size: [800, 600], root: true } }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual([seen.clicks, seen.grounds, r.trace?.[0]?.how], [['500,300'], 1, 'ground'])
+})
+
 test('a plan step that no recording made still refuses a grounded point on the content root', async (t) => {
   const seen = await canvas(t, { shown: screen(800, 600, [100, 100]) })
   const r = await main({ steps: [{ click: 'the Green button' }] })
