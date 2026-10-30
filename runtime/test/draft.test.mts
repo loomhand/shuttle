@@ -48,7 +48,7 @@ test('a recording becomes gui_plan steps with menus merged, typed values and win
     { click: 'Save', role: 'button', after: '{{name}}' },
     { key: 'cmd+w' },
     { click: 'the {{color}} button', after: '{{color}} clicked' },
-    { type: '{{password}}' },
+    { type: '{{password}}', focus: { secure: true } },
     { key: 'return' },
   ])
   assert.deepEqual(d.steps[5]?.recorded, { text: 'Save', crop, scale: 2, at: [730, 478], size: [600, 400] })
@@ -73,7 +73,7 @@ test('a click into a password field becomes a click and a secret password step, 
     { t: 2, kind: 'key', code: 36, text: '\r', mods: [], app: 'Safari' },
   ]
   const d = await main({ recording: { id: 'rec-3', events } as never })
-  assert.deepEqual(d.steps.map(({ intent: _, recorded: __, ...s }) => s), [{ app: 'Safari', title: 'pw' }, { click: 'the password field' }, { type: '{{password}}' }, { key: 'return' }])
+  assert.deepEqual(d.steps.map(({ intent: _, recorded: __, ...s }) => s), [{ app: 'Safari', title: 'pw' }, { click: 'the password field' }, { type: '{{password}}', focus: { secure: true } }, { key: 'return' }])
   assert.deepEqual(d.params, { password: { secret: true } })
 })
 
@@ -86,7 +86,7 @@ test('a password field that took the focus with no click becomes one secret pass
     { t: 2, kind: 'password', app: 'Safari' },
   ]
   const d = await main({ recording: { id: 'rec-4', events } as never, params: { user: 'alice' } })
-  assert.deepEqual(d.steps.map(({ intent: _, recorded: __, ...s }) => s), [{ app: 'Safari', title: 'pw' }, { click: 'the user field' }, { type: '{{user}}' }, { key: 'tab' }, { type: '{{password}}' }])
+  assert.deepEqual(d.steps.map(({ intent: _, recorded: __, ...s }) => s), [{ app: 'Safari', title: 'pw' }, { click: 'the user field' }, { type: '{{user}}' }, { key: 'tab' }, { type: '{{password}}', focus: { secure: true } }])
 })
 
 test('a click near the screen edge keeps its crop offset for the replay', async (t) => {
@@ -99,7 +99,7 @@ test('a click near the screen edge keeps its crop offset for the replay', async 
 test('each typed run and password keeps the field the recording typed into, or unverified where it read none', async (t) => {
   await daemon(t, () => JSON.stringify({ text: 'the user field', usage: { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 } }))
   const field = { role: 'textbox', name: '', frame: 'window' }
-  const secure = { role: 'textbox', name: '', frame: 'window' }
+  const secure = { role: 'textbox', name: '', frame: 'window', secure: true }
   const events = [
     { t: 0, kind: 'click', x: 60, y: 173, app: 'Safari', element: { role: 'textbox', name: '' }, root: false, window: win('pw'), crop },
     { t: 1, kind: 'key', code: 0, text: 'a', mods: [], app: 'Safari', focus: field },
@@ -154,5 +154,25 @@ test('a right click, a double click and a click with modifiers keep their button
     { click: 'f200', button: 'right' },
     { click: 'f301', count: 2 },
     { click: 'f400', mods: ['cmd'] },
+  ])
+})
+
+test('every password step asks for a password field, the one the recording read where it read one', async (t) => {
+  await daemon(t, () => '{"ok":true}')
+  const pw = { role: 'textbox', name: 'Password', frame: 'window', secure: true }
+  const events = [
+    { t: 0, kind: 'key', secret: true, app: 'Safari', focus: pw },
+    { t: 1, kind: 'key', secret: true, app: 'Safari' },
+    { t: 2, kind: 'key', code: 36, text: '\r', mods: [], app: 'Safari' },
+    { t: 3, kind: 'password', app: 'Safari', focus: null },
+    { t: 4, kind: 'key', code: 36, text: '\r', mods: [], app: 'Safari' },
+    { t: 5, kind: 'click', x: 85, y: 194, app: 'Safari', element: { role: 'textbox', name: 'PIN' }, root: false, secret: true, window: win('pw'), crop },
+    { t: 6, kind: 'password', app: 'Safari', focus: { ...pw, name: 'PIN' } },
+  ]
+  const d = await main({ recording: { id: 'rec-10', events } as never })
+  assert.deepEqual(d.steps.filter((s) => 'type' in s).map(({ type, focus }) => ({ type, focus })), [
+    { type: '{{password}}', focus: pw },
+    { type: '{{password_2}}', focus: { secure: true } },
+    { type: '{{password_3}}', focus: { ...pw, name: 'PIN' } },
   ])
 })

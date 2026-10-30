@@ -2,7 +2,7 @@ import * as desk from './desk.mts'
 import { ring, unpng } from './png.mts'
 
 type Hit = { role?: string; name?: string; description?: string }
-type Field = { role: string; name: string; frame: string }
+type Field = { role: string; name: string; frame: string; secure?: boolean }
 type Event = {
   t: number; kind: 'click' | 'key' | 'after' | 'note' | 'skipped' | 'password'
   x?: number; y?: number; button?: string; count?: number; mods?: string[]; app?: string | null
@@ -36,11 +36,11 @@ export async function main(p: Params): Promise<Draft> {
   const password = (f?: Field | null) => {
     const name = `password${secrets ? `_${secrets + 1}` : ''}`; secrets += 1
     params[name] = { secret: true }
-    draft.steps.push({ type: `{{${name}}}`, ...focus(f), intent: `type the ${name.replace('_', ' ')} (a password field: not recorded, pass it as ${name})` })
+    draft.steps.push({ type: `{{${name}}}`, focus: { ...f, secure: true }, intent: `type the ${name.replace('_', ' ')} (a password field: not recorded, pass it as ${name})` })
   }
   const flush = () => {
     if (secret) {
-      if (!filled) password()
+      if (!filled) password(into)
     } else if (typed) {
       const text = templ(typed)
       draft.steps.push({ type: text, ...focus(into), intent: text === typed ? `type ${JSON.stringify(typed)}` : `type ${text}` })
@@ -55,7 +55,7 @@ export async function main(p: Params): Promise<Draft> {
   for (const [i, e] of events.entries()) {
     if (e.kind === 'key') {
       const mods = e.mods ?? []
-      if (e.secret) { if (typed) flush(); secret = true; continue }
+      if (e.secret) { if (typed) flush(); if (!secret && e.focus) into = e.focus; secret = true; continue }
       const named = KEYS[e.code ?? -1]
       if (mods.every((m) => m === 'shift') && !named && e.text) { if (secret) flush(); filled = false; if (!typed && 'focus' in e) into = e.focus; typed += e.text; continue }
       flush(); filled = false
@@ -68,7 +68,7 @@ export async function main(p: Params): Promise<Draft> {
     if (e.kind === 'password') {
       const last = draft.steps.at(-1)
       if (!filled) password(e.focus)
-      else if (last && e.focus && !last.focus) last.focus = e.focus
+      else if (last && e.focus && !(last.focus as Partial<Field> | undefined)?.role) last.focus = { ...e.focus, secure: true }
       filled = true
     }
     else if (e.kind === 'skipped') draft.gaps.push(draft.steps.length)
