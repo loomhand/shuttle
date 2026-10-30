@@ -11,11 +11,13 @@ type Step = {
   app?: string; title?: string; menu?: string; click?: string; check?: string; on?: boolean; set?: string; value?: string
   type?: string; key?: string; wait?: string; expect?: string; verify?: string; close?: boolean; role?: string; window?: string
   timeout_ms?: number; enabled?: boolean; fp?: Fp; seen?: string; blank?: Fp; after?: string; recorded?: Recorded; focus?: Focus | 'unverified'
-  button?: string; count?: number; mods?: string[]
+  button?: string; count?: number; mods?: string[]; url?: string; web?: Web
 }
 // a click as a recording saw it: its target text, a crop around the point at scale pixels per desk unit with the point offset from its centre, the point in its window and that window's size, and whether the point hit no element
 // the element a recording typed into, as a snapshot names it, the role of its window or sheet, and whether it is a password field
-type Focus = { role?: string; name?: string; frame?: string; secure?: boolean }
+type Focus = { role?: string; name?: string; frame?: string; secure?: boolean; id?: string }
+// the page a recorded web step acted on, and the DOM id of its element
+type Web = { url: string; id?: string }
 type Recorded = { text: string; crop?: string; scale?: number; offset?: [number, number]; at?: [number, number]; size?: [number, number]; root?: boolean }
 type Reads = { keys?: boolean; menus?: boolean }
 type Kept = Reads & { id: string; snap: desk.Snap; nodes: Node[] }
@@ -76,6 +78,10 @@ const RING = 14
 const PICK_MARGIN = 0.6
 const SETTLE = 150
 const OPENING = 1000
+const WEB_TREE_MS = 4000
+const PAGE_MS = 10_000
+const ON_PAGE_MS = 3000
+const DOM_READS = 60
 const INERT_KEY = /^shift\+[^+]$/i
 const ARROW_KEY = /^(shift\+)?(arrow)?(up|down|left|right)$/i
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
@@ -104,12 +110,13 @@ let unheard: string | undefined
 let userFront: Win | null = null
 let BG = BEHIND
 let fronted = false
+const lit = new Set<number>()
 const foreground = { steps: 0 }
 let T: Record<string, number> = {}
 
 /** Runs one gui_plan call: a plan, a saved flow, or a flow-library verb. */
 export async function main(p: Params): Promise<Result> {
-  return { ...(await perform(p)), usage: desk.usage }
+  try { return { ...(await perform(p)), usage: desk.usage } } finally { await dim() }
 }
 
 async function perform(p: Params): Promise<Result> {
@@ -745,6 +752,66 @@ async function typingInto(want: Focus, w: Win | null) {
   if (!f || !w) throw new Diverged(`the recording typed into ${said}, and no focused element can be read now, so the text could go anywhere`, await seen())
   if ((want.role && (f.role !== want.role || norm(f.name) !== norm(want.name ?? ''))) || (want.frame && w.role !== want.frame)) throw new Diverged(`the recording typed into ${said}, and the focus is on ${f.role} "${f.name}" in the ${w.role} "${w.title}" now`, await seen())
   if (want.secure && !f.states.includes('protected')) throw new Diverged(`the recording typed into a password field, and the focused ${f.role} "${f.name}" in "${w.title}" is none, so the text would show`, await seen())
+  if (want.id && (await desk.read(f.id, { web: true })).dom_id !== want.id) throw new Diverged(`the recording typed into the element with DOM id "${want.id}", and the focused ${f.role} "${f.name}" in "${w.title}" has another`, await seen())
+}
+
+// an app step with a url opens it in that browser and takes the window that shows it
+async function openPage(app: string, url: string, rec: Rec) {
+  const t0 = Date.now(); const name = norm(app)
+  await desk.launch(app, [url])
+  for (const end = Date.now() + PAGE_MS; ; await sleep(250)) {
+    const ws = await desk.windows()
+    for (const w of ws.filter((x) => !!x.app && (norm(x.app).includes(name) || name.includes(norm(x.app)))).sort((a, b) => +b.active - +a.active)) {
+      let at = ''; try { at = (await page(w)).url } catch {}
+      if (!samePage(at, url)) continue
+      tick('launch', t0); known.add(w.title); rec.window = lastSeen = w.title
+      if (BG) { follow(w, ws); return }
+      if (!w.active) await desk.focus(w.title, w.pid)
+      await windowFor(w.title); return
+    }
+    if (Date.now() > end) throw new Surprise(`${app} shows no window at ${url}`, await seen())
+  }
+}
+
+// a web step acts only on the page it was recorded on: the address waits for a navigation to finish, then must match
+async function onPage(want: Web, w: Win, nodes?: Node[]): Promise<Node[]> {
+  let p = await page(w, nodes)
+  for (const end = Date.now() + ON_PAGE_MS; !samePage(p.url, want.url) && Date.now() < end; await sleep(200)) p = await page(w)
+  if (!samePage(p.url, want.url)) throw new Diverged(`the recording acted on ${want.url}, and the plan's window shows ${p.url || 'no address'} now`, await seen())
+  return p.nodes
+}
+
+// the window's page and its address; a browser that keeps its page tree off gets it on until the plan ends
+async function page(w: Win, nodes?: Node[]): Promise<{ nodes: Node[]; url: string }> {
+  let ns = nodes ?? parse(await snapOf(w))
+  let doc = ns.find((n) => n.role === 'document')
+  if (!doc && w.pid !== null && !lit.has(w.pid)) {
+    const r = await desk.web(w.pid, true).catch(() => null)
+    if (r && !r.was) lit.add(w.pid)
+    for (const end = Date.now() + WEB_TREE_MS; r && !doc && Date.now() < end; await sleep(200)) { ns = parse(await snapOf(w)); doc = ns.find((n) => n.role === 'document') }
+  }
+  if (!doc) throw new Surprise(`"${w.title}" shows no web page the accessibility tree reads`, await seen())
+  return { nodes: ns, url: (await desk.read(doc.id, { web: true })).url ?? '' }
+}
+
+async function dim() {
+  for (const pid of lit) await desk.web(pid, false).catch(() => null)
+  lit.clear()
+}
+
+// origin and path decide; the query, the fragment and a trailing slash do not
+function samePage(a: string, b: string) {
+  const at = (u: string) => { try { const x = new URL(u); return `${x.origin}${x.pathname}`.replace(/\/+$/, '') } catch { return u.replace(/[?#].*$/, '').replace(/\/+$/, '') } }
+  return !!a && at(a) === at(b)
+}
+
+// a recorded DOM id picks among the elements; where none has it, the name match stands
+async function byDom(nodes: Node[], id: string, hit: Hit | null, role?: string): Promise<Hit | null> {
+  const idOf = async (n: Node) => (await desk.read(n.id, { web: true }).catch(() => null))?.dom_id
+  if (hit && await idOf(hit.n) === id) return hit
+  const pool = nodes.map((n, i) => ({ n, i })).filter(({ n }) => n.id !== hit?.n.id && (role ? n.role === role : ACTIVE.has(n.role))).slice(0, DOM_READS)
+  for (const c of pool) if (await idOf(c.n) === id) return { ...c, how: 'dom' }
+  return hit
 }
 
 async function landed(want: string, ms: number) {
@@ -995,6 +1062,7 @@ async function cropState(n: Node, unsent = true) {
 }
 
 async function run(s: Step, rec: Rec, kept?: Kept) {
+  if (s.app && s.url) { await openPage(s.app, s.url, rec); return }
   if (s.app) {
     const ws = await desk.windows(); const before = new Set(ws.map((w) => w.title))
     let launched = false; let background = false
@@ -1023,6 +1091,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.type !== undefined) {
     const nl = s.type.endsWith('\n'); const ws = await current(nl ? OPENING : SETTLE); const w = frontOf(ws); const t0 = Date.now()
     if (BG && !w) throw new Surprise('background gui_plan has no target window to type into: start the plan with an app step, or name the window with a wait step')
+    if (s.web && w) await onPage(s.web, w)
     if (s.focus && s.focus !== 'unverified') await typingInto(s.focus, w)
     const dialog = !s.type.includes('\n') && !!w && ws.some((x) => x.title !== w.title && x.pid === w.pid)
     const o = (nl || dialog) && w ? await filled(w, kept) : ''
@@ -1095,6 +1164,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     throw e
   }
   tick('snap', t0)
+  if (s.web) nodes = await onPage(s.web, w, nodes)
   const aim = s.verify ?? s.click ?? s.check
   if (OS === 'darwin' && !r.menus && aim !== undefined) {
     const near = await resolve(nodes, aim, targetRole(s), undefined, 0.7, s.fp, false)
@@ -1188,7 +1258,9 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     await act(hit.n); await settle(w.title); return
   }
   const target = s.click ?? s.check ?? s.set ?? ''
-  const hit = await resolve(nodes, target, targetRole(s), undefined, s.set ? 0.5 : 0.7, s.fp)
+  const least = s.set ? 0.5 : 0.7
+  let hit = await resolve(nodes, target, targetRole(s), undefined, least, s.fp, !s.web?.id)
+  if (s.web?.id) hit = await byDom(nodes, s.web.id, hit, targetRole(s)) ?? await resolve(nodes, target, targetRole(s), undefined, least, s.fp)
   if (!hit) {
     if (!s.click) throw new Surprise(`no element matches "${target}"`, await seen(), true)
     if (BG && !AUTO) throw new Surprise(`no element of "${w.title}" matches "${target}", and finding it on the screen is out: ${NO_PIXELS}`, await seen(), true)
@@ -1280,7 +1352,7 @@ async function menuEntry(w: Win, nodes: Node[], menu: string, fp: Fp | undefined
 
 function fill(s: Step, p: Record<string, string>): Step {
   const sub = (v: string) => v.replace(/\{\{(\w+)(:base)?\}\}/g, (all: string, n: string, b: string | undefined) => { const x = p[n]; return x === undefined ? all : b ? win32.basename(x) : x })
-  return Object.fromEntries(Object.entries(s).map(([k, v]) => [k, typeof v === 'string' ? sub(v) : v])) as Step
+  return Object.fromEntries(Object.entries(s).map(([k, v]) => [k, typeof v === 'string' ? sub(v) : k === 'web' ? { ...(v as Web), url: sub((v as Web).url) } : v])) as Step
 }
 
 function templated(steps: Step[], params: Record<string, string>) {
@@ -1296,7 +1368,7 @@ function templated(steps: Step[], params: Record<string, string>) {
     }
     return t
   })
-  for (const t of out) for (const k of ['wait', 'window', 'after'] as const) {
+  for (const t of out) for (const k of ['wait', 'window', 'after', 'url'] as const) {
     let v = t[k]; if (!v) continue
     for (const [n, x] of Object.entries(p)) {
       const base = win32.basename(x)
