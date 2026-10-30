@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Drafts of web input.** `record_stop` drafts a recording made in a web page into web steps: the first step into a page opens its address (`{app, url}`), and each click and typed run carries `web` with the page address and DOM id, so the replay checks the page and picks the element by its id. Values the caller names are templated in page addresses too.
 - **macOS recordings of web pages.** A click or typing in a page in Chrome, another Chromium browser or Safari keeps the page's address and the element's DOM id (`web` on the event, `url` and `id` on the focus), and a click on the text of a link or button names the link or button. A recording turns Chrome's page tree on for each browser it records and off again at its end where it was off. [safety.md](docs/safety.md#recording) has what a recording holds.
 - **Web steps.** On macOS a `gui_plan` `app` step with `url` opens that page in the browser, and a step with `web: {url, id?}` acts only when the plan window shows that page (origin and path; the query, fragment and a trailing slash do not count) and takes the element with the recorded DOM id over another of the same name. Chrome's page tree is turned on for the plan when it is off and off again after it. `desk read` takes `web` for a node's page address and DOM id, and `desk web` turns a Chromium app's page tree on or off. [wire.md](docs/wire.md#web-steps) has the rules.
 

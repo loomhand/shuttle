@@ -217,3 +217,30 @@ test('a recording that starts with typing starts at the window it typed into, an
     { click: 'Bold', role: 'button' },
   ])
 })
+
+test('a recording in a web page opens its address and keeps the page and DOM id on each step', async (t) => {
+  await daemon(t, () => '{"ok":true}')
+  const url = 'https://shop.test/order?ref=mail'
+  const page = { url }
+  const field = { role: 'textbox', name: 'Customer name:', frame: 'window', window: 'Order - Browser', url, id: 'cust' }
+  const at = (t: number, name: string, role: string, web: object) => ({ t, kind: 'click', x: 10, y: 10, app: 'Browser', element: { role, name }, root: false, window: win('Order - Browser'), web })
+  const events = [
+    at(0, 'Customer name:', 'textbox', { ...page, id: 'cust' }),
+    { t: 1, kind: 'key', code: 0, text: 'b', mods: [], app: 'Browser', focus: field },
+    { t: 2, kind: 'key', code: 0, text: 'o', mods: [], app: 'Browser' },
+    { t: 3, kind: 'key', code: 0, text: 'b', mods: [], app: 'Browser' },
+    { t: 4, kind: 'key', secret: true, app: 'Browser', focus: { role: 'textbox', name: 'PIN', frame: 'window', url, secure: true } },
+    at(5, 'Pay', 'button', page),
+    { t: 6, kind: 'after', window: 'Paid - Browser', role: 'window', app: 'Browser' },
+  ]
+  const d = await main({ recording: { id: 'rec-13', events } as never, params: { who: 'bob', ref: 'mail' } })
+  const web = { url: 'https://shop.test/order?ref={{ref}}' }
+  assert.deepEqual(d.steps.map(({ intent: _, recorded: __, ...s }) => s), [
+    { app: 'Browser', url: 'https://shop.test/order?ref={{ref}}' },
+    { click: 'Customer name:', web: { ...web, id: 'cust' } },
+    { type: '{{who}}', focus: { role: 'textbox', name: 'Customer name:', frame: 'window', window: 'Order - Browser', id: 'cust' }, web },
+    { type: '{{password}}', focus: { role: 'textbox', name: 'PIN', frame: 'window', secure: true }, web },
+    { click: 'Pay', role: 'button', web, after: 'Paid - Browser' },
+  ])
+  assert.equal(d.steps[0]?.intent, 'open https://shop.test/order?ref=mail in Browser')
+})
