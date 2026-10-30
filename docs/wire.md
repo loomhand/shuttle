@@ -71,7 +71,7 @@ A `gui_plan` step can carry fields that a recording writes. `after` names the wi
 
 A `click` step can carry `button` (`right`, `middle`), `count` (2 for a double click) and `mods` (modifier keys held): it then clicks the element's centre, or the point a fallback found, with them, instead of pressing the element.
 
-A `type` step can carry `focus`, the element the recording typed into, `{role, name, frame?, secure?}` as a snapshot names it, with the role of its window or sheet, and `secure` for a password field, which then must show the `protected` state: before typing, the step reads the focused element of the front window, and stops the plan with an error when it is another element or none can be read, since the text would go elsewhere. `focus: "unverified"`, which a draft writes where the recording itself read no focus (an app without accessibility), types without the check.
+A `type` step can carry `focus`, the element the recording typed into, `{role, name, frame?, secure?}` as a snapshot names it, with the role of its window or sheet, and `secure` for a password field, which then must show the `protected` state; `{secure: true}` alone takes any focused password field: before typing, the step reads the focused element of the front window, and stops the plan with an error when it is another element or none can be read, since the text would go elsewhere. `focus: "unverified"`, which a draft writes where the recording itself read no focus (an app without accessibility), types without the check.
 
 When the accessibility tree has no match for such a click, the step tries, in this order:
 
