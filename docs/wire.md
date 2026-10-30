@@ -86,7 +86,7 @@ A target that a parameter changed skips the crop and the point, since both show 
 
 `record_start` (`apps`, optional app names as `windows` lists them) starts recording the user's input on macOS and answers `{"ok": true, "id"}`; it fails while a recording runs, on other OSes, and while macOS refuses the event tap. `record_note` (`text`) adds a note at the current point of the running recording. `record_stop` ends the running recording, or takes the last one the menu-bar item ended, saves it and answers it: `{id, started_ms, stopped_ms, apps, events}`, where each event has `t` (ms since the start) and `kind`:
 
-- `click`: `x`, `y` (desk coordinates), `button`, `count`, `mods`, `app`, `element` (`role`, `name`, `description` as a snapshot names them), `path` (the ancestors up to the window, innermost first), `root` (the point hit no element but a window or document), `window` (`title`, `bounds`), and `crop` (a base64 PNG centred on the point) at `crop_scale` pixels per desk unit, with `late` when the crop had to be taken after the click;
+- `click`: `x`, `y` (desk coordinates), `button`, `count`, `mods`, `app`, `element` (`role`, `name`, `description` as a snapshot names them), `path` (the ancestors up to the window, innermost first), `root` (the point hit no element but a window or document), `window` (`title`, `bounds`), and `crop` (a base64 PNG centred on the point) at `crop_scale` pixels per desk unit, with `late` when the crop had to be taken after the click, and `secret` when the element is a password field;
 - `key`: `code`, `text`, `mods`, `app`, or `secret: true` with no text for a key typed into a password field;
 - `after`: `window`, `role`, `app` of a new window in front once the input settled for 0.7 s;
 - `note`: `text`;
