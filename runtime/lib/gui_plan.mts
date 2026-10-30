@@ -11,6 +11,7 @@ type Step = {
   app?: string; title?: string; menu?: string; click?: string; check?: string; on?: boolean; set?: string; value?: string
   type?: string; key?: string; wait?: string; expect?: string; verify?: string; close?: boolean; role?: string; window?: string
   timeout_ms?: number; enabled?: boolean; fp?: Fp; seen?: string; blank?: Fp; after?: string; recorded?: Recorded; focus?: Focus | 'unverified'
+  button?: string; count?: number; mods?: string[]
 }
 // a click as a recording saw it: its target text, a crop around the point at scale pixels per desk unit with the point offset from its centre, the point in its window and that window's size, and whether the point hit no element
 // the element a recording typed into, as a snapshot names it, the role of its window or sheet, and whether it is a password field
@@ -716,6 +717,10 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec): 
   throw new Surprise(`no element matches "${target}"; ${missed.join('; ')}`, await seen(), true)
 }
 
+function pointer(s: Step) {
+  return { ...(s.button && s.button !== 'left' ? { button: s.button } : {}), ...(s.count && s.count > 1 ? { count: s.count } : {}), ...(s.mods?.length ? { modifiers: s.mods } : {}) }
+}
+
 function told(g: Pick<Grounding, 'what' | 'check' | 'why' | 'cover'>) {
   if (g.why) return `a point whose element could not be read: ${g.why}`
   return g.what ? `${g.what.slice(0, 80)}${g.cover !== undefined ? `, under the window "${g.cover}"` : REFUSED[g.check] ?? ''}` : 'no accessible element'
@@ -1178,7 +1183,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (BG && !AUTO) throw new Surprise(`no element of "${w.title}" matches "${target}", and finding it on the screen is out: ${NO_PIXELS}`, await seen(), true)
     if (BG) await front(w)
     const [x, y] = await spot(s.recorded, target, w, rec)
-    t0 = Date.now(); await desk.click(x, y); tick('act', t0)
+    t0 = Date.now(); await desk.click(x, y, pointer(s)); tick('act', t0)
     if (!s.recorded) rec.unsaved = true
     await settle(w.title); return
   }
@@ -1195,6 +1200,12 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   }
   if (s.click && hit.how !== 'fp' && norm(hit.n.name) !== norm(target) && TOGGLE_ROLES.has(hit.n.role))
     throw new Surprise(`"${target}" is closest to ${hit.n.role} "${hit.n.name}" (${hit.how}), and a click would flip it; use {check: "${hit.n.name}", on: ...} for it, or name the element you mean exactly`, await seen())
+  if (s.click && Object.keys(pointer(s)).length) {
+    const b = (await desk.read(hit.n.id)).bounds ?? hit.n.bounds
+    if (!b) throw new Surprise(`${rec.ref} has no screen position for a ${s.button ?? ''} click`, await seen())
+    t0 = Date.now(); await desk.click(b[0] + b[2] / 2, b[1] + b[3] / 2, pointer(s)); tick('act', t0)
+    await settle(w.title); return
+  }
   if (s.click && hit.n.role === 'menuitem') {
     await choose(nodes, hit.n, rec, true, w); await settle(w.title); return
   }

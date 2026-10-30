@@ -999,6 +999,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if let Some(count) = a.count {
             req["count"] = count.into();
         }
+        if let Some(modifiers) = a.modifiers {
+            req["modifier"] = modifiers.into();
+        }
         let note = match named {
             Some(w) if self.bg() || self.os == Os::Mac => self.click_in(req, &w, (x, y)).await?,
             _ => self.click_at(req).await?,
