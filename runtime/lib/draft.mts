@@ -52,7 +52,17 @@ export async function main(p: Params): Promise<Draft> {
   const app = dock ?? events.find((e) => (e.kind === 'click' || e.kind === 'key') && e.app)?.app
   const opened = first?.kind === 'click' && !dock && typeof first.window === 'object' ? first.window.title : undefined
   if (app) draft.steps.push({ app, ...(opened ? { title: templ(opened) } : {}), intent: `open ${app}${opened ? ` at "${opened}"` : ''}` })
+  let here = { app, window: opened }
+  const move = (e: Event) => {
+    const w = typeof e.window === 'object' ? e.window.title : undefined
+    if (!e.app) return
+    if (e.app === here.app && (!w || !here.window || w === here.window)) { here.window = w || here.window; return }
+    flush()
+    here = { app: e.app, window: w }
+    draft.steps.push({ app: e.app, ...(w ? { title: templ(w) } : {}), intent: `switch to ${e.app}${w ? ` at "${w}"` : ''}` })
+  }
   for (const [i, e] of events.entries()) {
+    if (e.kind === 'key' || (e.kind === 'click' && !(e === first && dock))) move(e)
     if (e.kind === 'key') {
       const mods = e.mods ?? []
       if (e.secret) { if (typed) flush(); if (!secret && e.focus) into = e.focus; secret = true; continue }
@@ -77,8 +87,9 @@ export async function main(p: Params): Promise<Draft> {
       const last = draft.steps.at(-1)
       if (w && last && !last.app && !seen.has(w) && e.role === 'window') last.after = templ(w)
       if (w) seen.add(w)
+      if (w && e.app && e.role === 'window') here = { app: e.app, window: w }
     } else if (e.kind === 'click') {
-      if (i === events.indexOf(first as Event) && dock) continue
+      if (e === first && dock) continue
       const el = e.element ?? {}
       const next = events.slice(i + 1).find((n) => n.kind === 'click')
       if (el.role === 'menu' && next?.element?.role === 'menuitem') continue
