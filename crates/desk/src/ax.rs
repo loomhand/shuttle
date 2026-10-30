@@ -996,40 +996,52 @@ pub fn typing() -> (Option<u32>, bool) {
     typing_at(attr(&system_wide(), "AXFocusedUIElement"))
 }
 
-/// The focused element as a snapshot names it, `(role, name, frame, secure)` with the role of its window or sheet and whether it is a password field; none when no element has the focus.
-pub fn focused() -> Option<(&'static str, String, &'static str, bool)> {
+/// The focused element as a snapshot names it, the role of its window or sheet, the title of its window, and whether it is a password field.
+pub struct Focused {
+    pub role: &'static str,
+    pub name: String,
+    pub frame: &'static str,
+    pub window: String,
+    pub secure: bool,
+}
+
+pub fn focused() -> Option<Focused> {
     let names = names(ATTRS);
     let el = attr(&system_wide(), "AXFocusedUIElement")?;
     let a = attrs(&names, &el);
-    let mut frame = "window";
+    let mut frame = None;
+    let mut window = String::new();
     let mut up = attr(&el, "AXParent");
     for _ in 0..PATH_MAX_DEPTH {
         let Some(p) = up.take() else { break };
         let role = string(attr(&p, "AXRole"));
         if role == "AXSheet" {
-            frame = "dialog";
-            break;
+            frame.get_or_insert("dialog");
         }
         if role == "AXWindow" {
             let subrole = string(attr(&p, "AXSubrole"));
-            frame = ax_roles::role(Kind {
-                role: &role,
-                subrole: &subrole,
-                ..Kind::default()
-            })
-            .unwrap_or("window");
+            frame.get_or_insert(
+                ax_roles::role(Kind {
+                    role: &role,
+                    subrole: &subrole,
+                    ..Kind::default()
+                })
+                .unwrap_or("window"),
+            );
+            window = string(attr(&p, "AXTitle"));
             break;
         }
         up = attr(&p, "AXParent");
     }
-    Some((
-        ax_roles::role(kind_of(&a)).unwrap_or("generic"),
-        name_of(&a, NAME_CHARS),
-        frame,
-        [&a.role, &a.subrole]
+    Some(Focused {
+        role: ax_roles::role(kind_of(&a)).unwrap_or("generic"),
+        name: name_of(&a, NAME_CHARS),
+        frame: frame.unwrap_or("window"),
+        window,
+        secure: [&a.role, &a.subrole]
             .iter()
             .any(|r| *r == "AXSecureTextField"),
-    ))
+    })
 }
 
 fn typing_at(focused: Option<CFType>) -> (Option<u32>, bool) {
