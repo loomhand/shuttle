@@ -56,6 +56,14 @@ pub fn quote(s: &str, max: usize) -> String {
     out
 }
 
+/// `s` cut to at most `max` characters, in place.
+pub fn clip(mut s: String, max: usize) -> String {
+    if let Some((i, _)) = s.char_indices().nth(max) {
+        s.truncate(i);
+    }
+    s
+}
+
 /// Microseconds as milliseconds with one decimal.
 pub fn ms(us: u128) -> Value {
     json!((us as f64 / 100.0).round() / 10.0)
@@ -121,6 +129,8 @@ mod tests {
     fn quoting_cuts_and_escapes() {
         assert_eq!(quote("a \"b\"\nc\\", 80), "a \\\"b\\\"\\nc\\\\");
         assert_eq!(quote("héllo", 2), "hé");
+        assert_eq!(clip("héllo".into(), 2), "hé");
+        assert_eq!(clip("hé".into(), 5), "hé");
         assert_eq!(ms(1_234_567), json!(1234.6));
     }
 

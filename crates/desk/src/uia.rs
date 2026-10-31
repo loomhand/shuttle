@@ -5,6 +5,7 @@ use std::fmt::Write as _;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::{Duration, Instant};
 
+use desk_core::text::clip;
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::System::Com::{
@@ -178,7 +179,7 @@ impl Uia {
             .take()
             .filter(|v| !v.is_empty())
             .or_else(|| r.range.map(format_number))
-            .map(|v| v.chars().take(chars).collect::<String>());
+            .map(|v| clip(v, chars));
         Ok(Node {
             id: self.id_of(el)?,
             role,
