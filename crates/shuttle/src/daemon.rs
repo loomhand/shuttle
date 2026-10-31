@@ -157,41 +157,43 @@ impl<H: Handler> Daemon<H> {
         }
     }
 
-    async fn record(&self, tool: &str, args: Value) -> Result<String, String> {
+    async fn record(&self, tool: &str, mut args: Value) -> Result<String, String> {
         let r = self
             .recorder
             .as_ref()
             .ok_or("this daemon makes no recordings")?;
         match tool {
             "record_start" => {
-                let apps = args["apps"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_owned)
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let apps = match args["apps"].take() {
+                    Value::Array(a) => a
+                        .into_iter()
+                        .filter_map(|v| match v {
+                            Value::String(s) => Some(s),
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
                 r.start(apps)
                     .map(|id| json!({"ok": true, "id": id}).to_string())
             }
             "record_note" => {
-                let text = args["text"].as_str().ok_or("record_note needs text")?;
-                r.note(text.to_owned())
-                    .map(|()| r#"{"ok":true}"#.to_owned())
+                let Value::String(text) = args["text"].take() else {
+                    return Err("record_note needs text".to_owned());
+                };
+                r.note(text).map(|()| r#"{"ok":true}"#.to_owned())
             }
             _ => {
                 let recording = r.stop().await?;
                 let id = recording["id"].as_str().unwrap_or_default().to_owned();
-                let params = args.get("params").cloned().unwrap_or_else(|| json!({}));
-                let mut draft = self
-                    .runner
-                    .draft(
-                        json!({"recording": recording, "params": params}),
-                        &format!("record-{id}"),
-                    )
-                    .await?;
+                let params = match args["params"].take() {
+                    Value::Null => json!({}),
+                    p => p,
+                };
+                let mut input = json!({});
+                input["recording"] = recording;
+                input["params"] = params;
+                let mut draft = self.runner.draft(input, &format!("record-{id}")).await?;
                 draft["recording"] = r.path(&id).to_string_lossy().into_owned().into();
                 Ok(draft.to_string())
             }
