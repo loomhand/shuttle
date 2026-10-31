@@ -1134,8 +1134,8 @@ pub fn chromium(pid: u32) -> bool {
     };
     std::fs::read_dir(contents.join("Frameworks")).is_ok_and(|dir| {
         dir.flatten().any(|f| {
-            f.path().extension().is_some_and(|e| e == "framework")
-                && f.path().join("Helpers").is_dir()
+            let p = f.path();
+            p.extension().is_some_and(|e| e == "framework") && p.join("Helpers").is_dir()
         })
     })
 }
