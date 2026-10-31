@@ -23,6 +23,12 @@ impl<N: Handler> Handler for Desks<N> {
             Self::Android(android) => answer(android, call).await,
         }
     }
+
+    fn release(&self, holder: &str) {
+        if let Self::Native(native) = self {
+            native.release(holder);
+        }
+    }
 }
 
 /// The Android device of `settings`, with its UI server jar from [`ui_jar`].

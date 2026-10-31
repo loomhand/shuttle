@@ -57,6 +57,18 @@ impl<B: 'static> Worker<B> {
         }
     }
 
+    pub fn post<F>(&self, f: F)
+    where
+        F: FnOnce(&mut B) + Send + 'static,
+    {
+        let job: Job<B> = Box::new(move |backend| {
+            if let Ok(b) = backend {
+                f(b);
+            }
+        });
+        let _ = self.sender().send(job);
+    }
+
     fn sender(&self) -> Sender<Job<B>> {
         self.jobs
             .lock()

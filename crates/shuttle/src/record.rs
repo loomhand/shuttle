@@ -265,8 +265,8 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
     let started = now_ms();
     let t0 = Instant::now();
     let mut windows = list(desk).await;
-    let (mut asked, mut lit) = (Vec::new(), Vec::new());
-    light(desk, &windows, &apps, &mut asked, &mut lit).await;
+    let mut asked = Vec::new();
+    light(desk, &windows, &apps, &mut asked).await;
     let mut front = front_of(&windows);
     let mut frame = framed(desk, &windows, front.as_ref(), &apps).await;
     let mut acted = t0;
@@ -308,7 +308,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                             continue;
                         }
                         windows = list(desk).await;
-                        light(desk, &windows, &apps, &mut asked, &mut lit).await;
+                        light(desk, &windows, &apps, &mut asked).await;
                         let win = window_of(&windows, &at);
                         let app = win.as_ref().and_then(|w| w["app"].as_str()).map(str::to_owned).or_else(|| app_of(&windows, pid));
                         if kept(app.as_deref(), &apps) {
@@ -383,7 +383,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
             () = tokio::time::sleep_until(wake), if settle.is_some() => {
                 settle = None;
                 windows = list(desk).await;
-                light(desk, &windows, &apps, &mut asked, &mut lit).await;
+                light(desk, &windows, &apps, &mut asked).await;
                 let now = front_of(&windows);
                 events.extend(came(now.as_ref(), front.as_ref(), &apps, t0));
                 frame = framed(desk, &windows, now.as_ref(), &apps).await;
@@ -397,9 +397,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
         &apps,
         t0,
     ));
-    for pid in lit {
-        let _ = call(desk, "desk_web", json!({"pid": pid, "on": false})).await;
-    }
+    desk.release(AGENT);
     let recording = json!({"id": id, "started_ms": started, "stopped_ms": now_ms(), "apps": apps, "events": events});
     if let Err(e) = save(&path, &recording) {
         crate::log(e);
@@ -491,14 +489,8 @@ fn came(now: Option<&Value>, was: Option<&Value>, apps: &[String], t0: Instant) 
     })
 }
 
-// a Chromium browser builds its page tree only for an assistive app that asks: each app the recording keeps is asked once, and the ones it turned on go back off at its end
-async fn light<H: Handler>(
-    desk: &H,
-    windows: &[Value],
-    apps: &[String],
-    asked: &mut Vec<u64>,
-    lit: &mut Vec<u64>,
-) {
+// a Chromium browser builds its page tree only for an assistive app that asks: each app the recording keeps is asked once, and the desk lets the trees go when the recording ends
+async fn light<H: Handler>(desk: &H, windows: &[Value], apps: &[String], asked: &mut Vec<u64>) {
     for w in windows {
         let Some(pid) = w["pid"].as_u64().filter(|p| !asked.contains(p)) else {
             continue;
@@ -507,10 +499,7 @@ async fn light<H: Handler>(
             continue;
         }
         asked.push(pid);
-        let on = call(desk, "desk_web", json!({"pid": pid, "on": true})).await;
-        if on.is_ok_and(|v| v["was"] == false) {
-            lit.push(pid);
-        }
+        let _ = call(desk, "desk_web", json!({"pid": pid, "on": true})).await;
     }
 }
 
@@ -639,7 +628,7 @@ mod tests {
         hit: Value,
         shots: Mutex<Vec<Value>>,
         webs: Mutex<Vec<Value>>,
-        was: bool,
+        released: Mutex<Vec<String>>,
     }
 
     impl Desk {
@@ -649,7 +638,7 @@ mod tests {
                 hit,
                 shots: Mutex::default(),
                 webs: Mutex::default(),
-                was: false,
+                released: Mutex::default(),
             }
         }
     }
@@ -670,7 +659,7 @@ mod tests {
                 }
                 "desk_web" if call.args["pid"] == 7 => {
                     lock(&self.webs).push(call.args);
-                    Output::text(json!({"ok": true, "was": self.was}).to_string())
+                    Output::text(json!({"ok": true, "was": false}).to_string())
                 }
                 "desk_shot" => {
                     lock(&self.shots).push(call.args);
@@ -682,6 +671,10 @@ mod tests {
                 }
                 other => Output::error(format!("{other} is no desk call here")),
             }
+        }
+
+        fn release(&self, holder: &str) {
+            lock(&self.released).push(holder.to_owned());
         }
     }
 
@@ -832,22 +825,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_recording_turns_a_browser_page_tree_on_and_back_off_and_leaves_one_that_was_on() {
+    async fn a_recording_holds_the_page_tree_of_each_app_it_keeps_and_lets_go_at_its_end() {
         let desk = Desk::new(Value::Null);
         run(&desk, &[], vec![click(5.0, 5.0)]).await;
-        assert_eq!(
-            *lock(&desk.webs),
-            [
-                json!({"pid": 7, "on": true}),
-                json!({"pid": 7, "on": false})
-            ]
-        );
-        let was_on = Desk {
-            was: true,
-            ..Desk::new(Value::Null)
-        };
-        run(&was_on, &[], vec![click(5.0, 5.0)]).await;
-        assert_eq!(*lock(&was_on.webs), [json!({"pid": 7, "on": true})]);
+        assert_eq!(*lock(&desk.webs), [json!({"pid": 7, "on": true})]);
+        assert_eq!(*lock(&desk.released), ["record"]);
         let other = Desk::new(Value::Null);
         run(&other, &["Notes"], vec![click(5.0, 5.0)]).await;
         assert!(lock(&other.webs).is_empty());

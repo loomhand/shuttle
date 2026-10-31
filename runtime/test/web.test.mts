@@ -54,11 +54,11 @@ test('a web step takes the element with its recorded DOM id over another of the 
   assert.equal(r.trace?.[0]?.how, 'dom')
 })
 
-test('a browser with its page tree off gets it on for the plan and off again after it', async (t) => {
+test('a browser with its page tree off gets it on for the plan, which leaves turning it off to the daemon', async (t) => {
   const calls = await browser(t, { url: () => 'https://shop.test/form', on: false, els: [{ id: '7/3', role: 'button', name: 'Submit' }] })
   const r = await main({ steps: [{ click: 'Submit', role: 'button', web: { url: 'https://shop.test/form' } }] })
   assert.equal(r.ok, true, JSON.stringify(r))
-  assert.deepEqual(calls.filter((c) => c.tool === 'desk_web').map((c) => c.args), [{ pid: 7, on: true }, { pid: 7, on: false }])
+  assert.deepEqual(calls.filter((c) => c.tool === 'desk_web').map((c) => c.args), [{ pid: 7, on: true }])
   assert.deepEqual(pressed(calls), ['7/3'])
 })
 
