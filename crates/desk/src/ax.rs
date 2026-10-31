@@ -267,7 +267,7 @@ impl Ax {
     fn node_of(
         &mut self,
         el: &CFType,
-        a: &Attrs,
+        a: &mut Attrs,
         extras: Extras,
         chars: usize,
         scale: f64,
@@ -306,9 +306,9 @@ impl Ax {
         Node {
             id: self.id_of(el),
             role,
-            native_role: mapped.is_none().then(|| a.role.clone()),
+            native_role: mapped.is_none().then(|| std::mem::take(&mut a.role)),
             name,
-            description: a.help.clone(),
+            description: std::mem::take(&mut a.help),
             states: ax_roles::states(role, facts),
             value: extras
                 .values
@@ -331,8 +331,8 @@ impl Ax {
         if depth > MAX_DEPTH || w.path.contains(el) {
             return false;
         }
-        let a = attrs(&self.names, el);
-        let node = self.node_of(el, &a, w.extras, VALUE_CHARS, w.scale);
+        let mut a = attrs(&self.names, el);
+        let node = self.node_of(el, &mut a, w.extras, VALUE_CHARS, w.scale);
         let (parent, depth) = place(&mut w.nodes, node, parent, depth);
         w.path.push(el.clone());
         let mut truncated = false;
@@ -433,11 +433,11 @@ impl Access for Ax {
 
     fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String> {
         let el = self.element(id)?;
-        let a = attrs(&self.names, &el);
+        let mut a = attrs(&self.names, &el);
         if a.role.is_empty() {
             return Err(format!("element {id} is gone"));
         }
-        Ok(self.node_of(&el, &a, extras, chars, display_scale()))
+        Ok(self.node_of(&el, &mut a, extras, chars, display_scale()))
     }
 
     fn keyboard_focus(&mut self, pid: u32) -> Result<Option<Node>, String> {
@@ -445,13 +445,13 @@ impl Access for Ax {
         let Some(el) = attr(&application(pid), "AXFocusedUIElement") else {
             return Ok(None);
         };
-        let a = attrs(&self.names, &el);
+        let mut a = attrs(&self.names, &el);
         if a.role.is_empty() {
             return Ok(None);
         }
         Ok(Some(self.node_of(
             &el,
-            &a,
+            &mut a,
             Extras::FRAME,
             VALUE_CHARS,
             display_scale(),
