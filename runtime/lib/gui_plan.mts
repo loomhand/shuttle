@@ -78,6 +78,7 @@ const RING = 14
 const PICK_MARGIN = 0.6
 const SETTLE = 150
 const OPENING = 1000
+const LIST_REUSE = 25
 const WEB_TREE_MS = 4000
 const PAGE_MS = 10_000
 const ON_PAGE_MS = 3000
@@ -115,6 +116,7 @@ let fronted = false
 const asked = new Set<number>()
 const foreground = { steps: 0 }
 let T: Record<string, number> = {}
+let stepWs: { ws: Win[]; at: number } | null = null
 
 /** Runs one gui_plan call: a plan, a saved flow, or a flow-library verb. */
 export async function main(p: Params): Promise<Result> {
@@ -166,6 +168,7 @@ async function perform(p: Params): Promise<Result> {
     const ts = Date.now(); const calls = desk.served.length
     try {
       const ws = i === (p.start ?? 0) ? ws0 : await desk.windows(); const f = BG ? frontOf(ws) : desk.front(ws)
+      stepWs = { ws, at: Date.now() }
       if (BG && doubt && !s.app && !s.wait) throw new Surprise(doubt, await seen())
       if (BG && i > (p.start ?? 0)) stolen(ws, i - 1)
       const m = s.close ? null : await hiddenModal(ws, f)
@@ -204,6 +207,7 @@ async function perform(p: Params): Promise<Result> {
       escalate = { step, plan_step: plan[step] ?? planned, reason, ...sp.seen }; done = step
       diverged = e instanceof Diverged
     }
+    stepWs = null
     rec.ms = Date.now() - ts; if (desk.served.length > calls) rec.served = desk.served.slice(calls)
     log.push({ ...rec, ...T }); recs[i] = rec
     trace.push(traced(i, rec, s, !!escalate))
@@ -339,6 +343,10 @@ function parse(snap: desk.Snap): Node[] {
 }
 
 async function focused() { return frontOf(await desk.windows()) }
+async function listNow(): Promise<Win[]> {
+  const k = stepWs; stepWs = null
+  return k && Date.now() - k.at < LIST_REUSE ? k.ws : desk.windows()
+}
 function focusedIn(ws: Win[]) {
   const f = desk.front(ws); if (f) return f
   const own = ws.filter((x) => x.title.trim() && ws.some((p) => p.active && !p.title.trim() && p.pid === x.pid))
@@ -420,7 +428,7 @@ async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
 }
 async function current(bound = SETTLE) {
   const k = pressed; pressed = null; const t0 = Date.now()
-  const ws = k ? await until((ws) => { const f = frontOf(ws); return !!f && f.title !== k.title }, bound - (t0 - k.at)) : await desk.windows()
+  const ws = k ? await until((ws) => { const f = frontOf(ws); return !!f && f.title !== k.title }, bound - (t0 - k.at), await listNow()) : await listNow()
   tick('settle', t0); return ws
 }
 function isShell(w: Win) { return !!w.shell || (OS === 'win32' && w.title === 'Program Manager') }
@@ -1078,7 +1086,7 @@ async function cropState(n: Node, unsent = true) {
 async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.app && s.url) { await openPage(s.app, s.url, rec); return }
   if (s.app) {
-    const ws = await desk.windows(); const before = new Set(ws.map((w) => w.title))
+    const ws = await listNow(); const before = new Set(ws.map((w) => w.title))
     let launched = false; let background = false
     const name = norm(s.title ?? s.app); const word = !s.title && /^[\w.-]+$/.test(s.app)
     const entries = word ? entryNames(s.app) : []
@@ -1142,7 +1150,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     return
   }
   if (s.key) {
-    const w = await focused()
+    const w = frontOf(await listNow())
     if (BG && !w) throw new Surprise('background gui_plan has no target window for the key: start the plan with an app step, or name the window with a wait step')
     const o = /^(enter|return)$/i.test(s.key) && w ? await filled(w, kept) : ''
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
@@ -1155,7 +1163,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.wait) { const w = await windowFor(s.wait, s.timeout_ms ?? 5000, s.seen); rec.seen = lastSeen = w.title; return }
   if (s.close) {
     // close shuts a dialog: the named window, else the focused dialog, else a dialog of the focused app; never an app's main window unless named
-    const t0 = Date.now(); const ws = s.window ? [] : await desk.windows(); let w: Win | null = s.window ? await windowFor(s.window, 3000, s.seen) : frontOf(ws)
+    const t0 = Date.now(); const ws = s.window ? [] : await listNow(); let w: Win | null = s.window ? await windowFor(s.window, 3000, s.seen) : frontOf(ws)
     const o = w && !s.window ? await outline(w, {}, kept) : ''
     const self = w
     const others = self ? ws.filter((x) => x.pid === self.pid && x.title !== self.title && (!BG || ours(x, ws))) : []
