@@ -22,6 +22,22 @@ const CONNECT_WAIT: Duration = Duration::from_secs(10);
 const SESSION: &str = "desk";
 const ENDED: &str = "session has ended";
 const CLICK_DISTANCE: f64 = 16.0;
+const INPUT_TOOLS: [&str; 9] = [
+    "click",
+    "double_click",
+    "right_click",
+    "drag",
+    "scroll",
+    "move_cursor",
+    "type_text",
+    "press_key",
+    "hotkey",
+];
+const USER_IDLE: Duration = Duration::from_secs(1);
+#[cfg(all(target_os = "macos", not(test)))]
+const HID_SYSTEM_STATE: i32 = 1;
+#[cfg(all(target_os = "macos", not(test)))]
+const USER_EVENTS: [u32; 10] = [1, 3, 5, 6, 7, 10, 12, 22, 25, 27];
 
 /// The driver calls the desk makes: input, windows, launch and capture.
 pub trait Input {
@@ -36,6 +52,7 @@ pub struct Driver {
     started: [AtomicBool; 3],
     calls: AtomicU64,
     last_click: Mutex<Option<(Instant, f64, f64)>>,
+    last_input: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 impl Driver {
@@ -49,6 +66,7 @@ impl Driver {
             ],
             calls: AtomicU64::new(0),
             last_click: Mutex::new(None),
+            last_input: std::sync::Mutex::new(None),
         }
     }
 
@@ -137,6 +155,34 @@ impl Driver {
             .map_err(|e| format!("read cua-driver: {e}"))?;
         Ok(reply)
     }
+
+    fn since_own_input(&self) -> Option<Duration> {
+        self.last_input
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .map(|at| at.elapsed())
+    }
+
+    async fn call_session(&self, tool: &str, mut args: Value) -> Result<Value, String> {
+        let kind = match args["session"].as_str() {
+            Some(WINDOW_SESSION) => 1,
+            Some(CAPTURE_SESSION) => 2,
+            _ => {
+                args["session"] = SESSION.into();
+                0
+            }
+        };
+        if !self.started[kind].load(Ordering::Relaxed) {
+            self.start(kind).await?;
+        }
+        match self.send(tool, &args).await {
+            Err(e) if e.contains(ENDED) => {
+                self.start(kind).await?;
+                self.send(tool, &args).await
+            }
+            done => done,
+        }
+    }
 }
 
 impl Input for Driver {
@@ -159,24 +205,24 @@ impl Input for Driver {
             let _ = self.send("end_session", &json!({"session": once})).await;
             return done;
         }
-        let kind = match args["session"].as_str() {
-            Some(WINDOW_SESSION) => 1,
-            Some(CAPTURE_SESSION) => 2,
-            _ => {
-                args["session"] = SESSION.into();
-                0
+        let input = INPUT_TOOLS.contains(&tool);
+        if input && args["delivery_mode"] != "background" {
+            let since = since_user_input();
+            if user_busy(since, self.since_own_input()) {
+                return Err(format!(
+                    "{tool}: the user used the mouse or keyboard {since:.1} s ago, and foreground input would take them over; nothing was sent: try again once they stop"
+                ));
             }
-        };
-        if !self.started[kind].load(Ordering::Relaxed) {
-            self.start(kind).await?;
         }
-        match self.send(tool, &args).await {
-            Err(e) if e.contains(ENDED) => {
-                self.start(kind).await?;
-                self.send(tool, &args).await
-            }
-            done => done,
+        let done = self.call_session(tool, args).await;
+        if input {
+            *self
+                .last_input
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(std::time::Instant::now());
         }
+        done
     }
 }
 
@@ -191,6 +237,33 @@ struct Request<'a> {
     method: &'static str,
     name: &'a str,
     args: &'a Value,
+}
+
+/// Whether HID input `since` seconds ago is the user's: it is within [`USER_IDLE`] and after the end of the driver's own last input, which also counts as HID input.
+fn user_busy(since: f64, own: Option<Duration>) -> bool {
+    since < USER_IDLE.as_secs_f64() && own.is_none_or(|own| since < own.as_secs_f64())
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn since_user_input() -> f64 {
+    USER_EVENTS
+        .iter()
+        .map(|&kind| {
+            // SAFETY: CGEventSourceSecondsSinceLastEventType reads a counter and takes two plain integers.
+            unsafe { CGEventSourceSecondsSinceLastEventType(HID_SYSTEM_STATE, kind) }
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+#[cfg(not(all(target_os = "macos", not(test))))]
+fn since_user_input() -> f64 {
+    f64::INFINITY
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGEventSourceSecondsSinceLastEventType(state: i32, kind: u32) -> f64;
 }
 
 /// `req` addressed to the screen, not to a window.
@@ -249,6 +322,15 @@ fn result(tool: &str, reply: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_input_after_the_drivers_own_and_within_a_second_is_the_users() {
+        assert!(user_busy(0.2, None));
+        assert!(!user_busy(1.5, None));
+        assert!(!user_busy(f64::INFINITY, None));
+        assert!(!user_busy(0.2, Some(Duration::from_millis(100))));
+        assert!(user_busy(0.05, Some(Duration::from_millis(100))));
+    }
 
     #[test]
     fn replies_become_results_or_errors() {
