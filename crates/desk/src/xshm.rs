@@ -236,13 +236,7 @@ impl Grabber {
 
     /// RGB rows of the screen rectangle `[x, y, w, h]`, which lies inside the screen.
     pub fn region(&self, rect: [i32; 4]) -> Result<Vec<u8>, String> {
-        Ok(self
-            .image(rect)?
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .flat_map(|p| [p[2], p[1], p[0]])
-            .collect())
+        self.image(rect).map(bgrx_rgb)
     }
 
     /// The root window as one hash per 16-pixel square, row-major; the squares docks cover hash as empty.
@@ -950,6 +944,14 @@ fn resized(event: &Event, root: Window, size: (u16, u16)) -> bool {
     matches!(event, Event::ConfigureNotify(c) if c.window == root && (c.width, c.height) != size)
 }
 
+fn bgrx_rgb(px: &[u8]) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(px.len() / 4 * 3);
+    for p in px.as_chunks::<4>().0 {
+        rgb.extend_from_slice(&[p[2], p[1], p[0]]);
+    }
+    rgb
+}
+
 #[cfg(test)]
 mod tests {
     use x11rb::x11_utils::X11Error;
@@ -960,6 +962,11 @@ mod tests {
         let from = (offset as usize * 4).min(value.len());
         let to = (from + 256).min(value.len());
         Some((value[from..to].to_vec(), (value.len() - to) as u32))
+    }
+
+    #[test]
+    fn bgrx_pixels_become_rgb_and_a_trailing_partial_pixel_drops() {
+        assert_eq!(bgrx_rgb(&[1, 2, 3, 0, 4, 5, 6, 9, 7]), [3, 2, 1, 6, 5, 4]);
     }
 
     #[test]
