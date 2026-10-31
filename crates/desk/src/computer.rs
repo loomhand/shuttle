@@ -756,15 +756,14 @@ impl Computer {
         if let Some((pixels, blocks, windows, active, page, wait)) = self.shm(|g| {
             let active = g.active();
             let page = commit && active.is_some_and(|w| g.class(w) == CHROME_CLASS);
-            let confirm = a.is_some_and(|a| {
-                confirms(a) || (clicks_left(a) && active.is_some_and(|w| g.dialog(w)))
-            });
+            let confirm = a.is_some_and(confirms);
+            let dialog_click = a.is_some_and(clicks_left) && active.is_some_and(|w| g.dialog(w));
             let (width, height) = g.size();
             let pixels = g.pixels()?.to_vec();
             let blocks = xshm::block_hashes(&pixels, width, height, &g.docks());
             let wait = if confirm {
                 COMMIT_FIRST
-            } else if page || a.is_none() {
+            } else if page || dialog_click || a.is_none() {
                 SETTLE
             } else {
                 NO_CHANGE
