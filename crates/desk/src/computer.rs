@@ -2324,12 +2324,10 @@ fn shrink(b64: &str) -> Option<String> {
     if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
         return None;
     }
-    let rgb: Vec<u8> = rgba
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .flat_map(|p| [p[0], p[1], p[2]])
-        .collect();
+    let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
+    for p in rgba.as_chunks::<4>().0 {
+        rgb.extend_from_slice(&p[..3]);
+    }
     let out = encode(info.width, info.height, &rgb)?;
     (out.len() < data.len()).then(|| B64.encode(&out))
 }
