@@ -84,3 +84,23 @@ test('a recorded type step stops where the focused field has another DOM id', as
   assert.match(String(r.error), /DOM id "name"/)
   assert.deepEqual(calls.filter((c) => c.tool === 'desk_type'), [])
 })
+
+test('the page check reads the nodes the step acts on, after the menu bar read replaces them', { skip: process.platform !== 'darwin' }, async (t) => {
+  const calls: Call[] = []
+  const win = { id: '7/1', title: 'Form - Browser', role: 'window', pid: 7, active: true, app: 'Browser' }
+  await daemon(t, (c) => {
+    calls.push(c)
+    if (c.tool === 'desk_windows') return JSON.stringify([win])
+    if (c.tool === 'desk_snapshot') {
+      const menus = c.args.menus === true
+      const nodes = [{ ref: 0, id: '7/1', parent: -1, depth: 0, role: 'window', name: win.title, states: ['showing'] }, { ref: 1, id: menus ? '7/9' : '7/2', parent: 0, depth: 1, role: 'document', name: '', states: ['showing'] }]
+      if (menus) nodes.push({ ref: 2, id: '7/3', parent: 1, depth: 2, role: 'button', name: 'Pay', states: ['showing'], bounds: [10, 10, 40, 20] } as never)
+      return JSON.stringify({ window: win, truncated: false, nodes })
+    }
+    if (c.tool === 'desk_read') return JSON.stringify({ ref: 0, id: c.args.id, role: 'document', name: '', states: [], url: c.args.id === '7/9' ? 'https://shop.test/login' : 'https://shop.test/form' })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ click: 'Pay', role: 'button', web: { url: 'https://shop.test/form' } }] })
+  assert.match(String(r.error), /shows https:\/\/shop\.test\/login now/)
+  assert.deepEqual(pressed(calls), [])
+})

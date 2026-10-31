@@ -782,21 +782,21 @@ async function openPage(app: string, url: string, rec: Rec) {
 }
 
 // a web step acts only on the page it was recorded on: the address waits for a navigation to finish, then must match
-async function onPage(want: Web, w: Win, nodes?: Node[]): Promise<Node[]> {
-  let p = await page(w, nodes)
-  for (const end = Date.now() + ON_PAGE_MS; !samePage(p.url, want.url) && Date.now() < end; await sleep(200)) p = await page(w)
+async function onPage(want: Web, w: Win, nodes?: Node[], read: Reads = {}): Promise<Node[]> {
+  let p = await page(w, nodes, read)
+  for (const end = Date.now() + ON_PAGE_MS; !samePage(p.url, want.url) && Date.now() < end; await sleep(200)) p = await page(w, undefined, read)
   if (!samePage(p.url, want.url)) throw new Diverged(`the recording acted on ${want.url}, and the plan's window shows ${p.url || 'no address'} now`, await seen())
   return p.nodes
 }
 
 // the window's page and its address; a browser that keeps its page tree off gets it on, and the daemon lets it go when the plan ends
-async function page(w: Win, nodes?: Node[]): Promise<{ nodes: Node[]; url: string }> {
-  let ns = nodes ?? parse(await snapOf(w))
+async function page(w: Win, nodes?: Node[], read: Reads = {}): Promise<{ nodes: Node[]; url: string }> {
+  let ns = nodes ?? parse(await snapOf(w, read))
   let doc = ns.find((n) => n.role === 'document')
   if (!doc && w.pid !== null && !asked.has(w.pid)) {
     asked.add(w.pid)
     const r = await desk.web(w.pid, true).catch(() => null)
-    for (const end = Date.now() + WEB_TREE_MS; r && !doc && Date.now() < end; await sleep(200)) { ns = parse(await snapOf(w)); doc = ns.find((n) => n.role === 'document') }
+    for (const end = Date.now() + WEB_TREE_MS; r && !doc && Date.now() < end; await sleep(200)) { ns = parse(await snapOf(w, read)); doc = ns.find((n) => n.role === 'document') }
   }
   if (!doc) throw new Surprise(`"${w.title}" shows no web page the accessibility tree reads`, await seen())
   return { nodes: ns, url: (await desk.read(doc.id, { web: true })).url ?? '' }
@@ -1167,12 +1167,13 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     throw e
   }
   tick('snap', t0)
-  if (s.web) nodes = await onPage(s.web, w, nodes)
   const aim = s.verify ?? s.click ?? s.check
+  let read = r
   if (OS === 'darwin' && !r.menus && aim !== undefined) {
     const near = await resolve(nodes, aim, targetRole(s), undefined, 0.7, s.fp, false)
-    if (!near || (near.how !== 'fp' && norm(near.n.name) !== norm(aim))) nodes = parse(await snapOf(w, { ...r, menus: true }))
+    if (!near || (near.how !== 'fp' && norm(near.n.name) !== norm(aim))) { read = { ...r, menus: true }; nodes = parse(await snapOf(w, read)) }
   }
+  if (s.web) nodes = await onPage(s.web, w, nodes, read)
   if (s.expect) {
     const d = await decide({ window_title: w.title, contents: render(nodes, 60, false, 4000) }, { ok: desk.yes(s.expect) })
     rec.p = +prob(d.ok).toFixed(2)
