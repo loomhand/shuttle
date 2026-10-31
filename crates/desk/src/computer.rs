@@ -22,9 +22,15 @@ use crate::desk::{Cancel, Turn, Typer, launch_name, text_runs};
 use crate::driver::{CONNECT_RETRY, Driver, image_of, text_of};
 use crate::keys::{Os, key_names};
 use crate::model::Modal;
+#[cfg(target_os = "linux")]
+use crate::model::{Access, Extras, Node};
 use crate::press::libreoffice;
+#[cfg(target_os = "linux")]
+use crate::spi::Spi;
 use crate::still::{Block, VISIBLE_STEP};
 use crate::volatile::{Shown, Volatile};
+#[cfg(target_os = "linux")]
+use crate::worker::Worker;
 use crate::xshm::{self, Grabber, Placement, clip};
 
 const STATE_ELEMENTS: u64 = 300;
@@ -43,6 +49,8 @@ const WINDOW_STILL_FOR: Duration = Duration::from_millis(150);
 const COMMIT_STILL_FOR: Duration = Duration::from_millis(400);
 const COMMIT_FIRST: Duration = Duration::from_millis(1500);
 const RETURN_GAP: Duration = Duration::from_millis(300);
+#[cfg(target_os = "linux")]
+const RETURN_POLL: Duration = Duration::from_millis(10);
 const STILL_EDGE: u32 = 160;
 const STILL_TOLERANCE: u8 = 48;
 const MOVED_PERCENT: usize = 5;
@@ -116,6 +124,8 @@ pub struct Computer {
     /// How many default sessions were ended, which names every caller's next default.
     defaults: AtomicU64,
     background: bool,
+    #[cfg(target_os = "linux")]
+    spi: OnceLock<Worker<Spi>>,
 }
 
 impl Computer {
@@ -137,6 +147,8 @@ impl Computer {
             ids: AtomicU64::new(0),
             defaults: AtomicU64::new(0),
             background: false,
+            #[cfg(target_os = "linux")]
+            spi: OnceLock::new(),
         }
     }
 
@@ -1337,7 +1349,7 @@ impl Computer {
     }
 
     async fn press_return(&self, session: &str, mut req: Value) -> Result<Value, String> {
-        tokio::time::sleep(RETURN_GAP).await;
+        self.wait_default().await;
         if let Some(fields) = req.as_object_mut() {
             for k in ["text", "x", "y"] {
                 fields.remove(k);
@@ -1345,6 +1357,24 @@ impl Computer {
         }
         req["key"] = "return".into();
         self.request(session, "press_key", req).await
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn wait_default(&self) {
+        let spi = self.spi.get_or_init(|| Worker::new(Spi::open));
+        let end = Instant::now() + RETURN_GAP;
+        while Instant::now() < end {
+            match spi.run(end - Instant::now(), (), default_enabled).await {
+                Ok(true) => return,
+                Ok(false) => tokio::time::sleep(RETURN_POLL).await,
+                Err(_) => return tokio::time::sleep_until(end).await,
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn wait_default(&self) {
+        tokio::time::sleep(RETURN_GAP).await;
     }
 
     /// A one-call driver session for the pid-addressed input `req`, ended by [`Self::end_once`]: its virtual master keyboard would outlive the call, and while one exists Chrome drops core keyboard input from XTest and VNC.
@@ -2054,6 +2084,22 @@ fn modal_line(m: &Modal) -> String {
         "! modal dialog \"{}\"{pid} is open but {}: {owner} takes no input until it closes. Bring it to the front with launch_app of its app, then finish it or press Escape to cancel it.\n",
         m.title, m.place
     )
+}
+
+#[cfg(target_os = "linux")]
+fn default_enabled<B: Access>(b: &mut B) -> Result<bool, String> {
+    let Some(frame) = b.frames()?.into_iter().find(|f| f.active) else {
+        return Ok(true);
+    };
+    Ok(!default_disabled(&b.tree(&frame, Extras::default())?.nodes))
+}
+
+#[cfg(target_os = "linux")]
+fn default_disabled(nodes: &[Node]) -> bool {
+    nodes
+        .iter()
+        .rfind(|n| n.depth == 1 && n.role == "button" && n.has("showing"))
+        .is_some_and(|n| n.has("disabled"))
 }
 
 fn confirms(a: &ActArgs) -> bool {
@@ -4449,5 +4495,22 @@ mod tests {
         assert_eq!(norm("Go to..."), "go to");
         assert_eq!(norm("Find and Replace..."), "find and replace");
         assert_ne!(norm("Save"), norm("Save As..."));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_dialog_holds_return_while_its_last_shown_button_is_insensitive() {
+        let button = |states: Vec<&'static str>| Node {
+            depth: 1,
+            role: "button",
+            states,
+            ..Node::default()
+        };
+        let on = || button(vec!["showing"]);
+        let off = || button(vec!["showing", "disabled"]);
+        assert!(default_disabled(&[on(), off()]));
+        assert!(!default_disabled(&[off(), on()]));
+        assert!(!default_disabled(&[on(), button(vec!["disabled"])]));
+        assert!(!default_disabled(&[]));
     }
 }
