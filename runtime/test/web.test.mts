@@ -104,3 +104,17 @@ test('the page check reads the nodes the step acts on, after the menu bar read r
   assert.match(String(r.error), /shows https:\/\/shop\.test\/login now/)
   assert.deepEqual(pressed(calls), [])
 })
+
+test('a set step takes the field with its recorded DOM id among fields of the same name', async (t) => {
+  const calls = await browser(t, { url: () => 'https://shop.test/form', els: [{ id: '7/3', role: 'textbox', name: 'Email', dom_id: 'work' }, { id: '7/4', role: 'textbox', name: 'Email', dom_id: 'home' }] })
+  await main({ steps: [{ set: 'Email', value: 'a@b.test', web: { url: 'https://shop.test/form', id: 'home' } }] })
+  assert.deepEqual(calls.filter((c) => c.tool === 'desk_act').map((c) => c.args.id), ['7/4'])
+})
+
+test('a DOM id finds a same-named control past the read cap on a long form', async (t) => {
+  const many = Array.from({ length: 70 }, (_, i) => ({ id: `7/${i + 10}`, role: 'button', name: `Other ${i}` }))
+  const calls = await browser(t, { url: () => 'https://shop.test/form', els: [...many, { id: '7/90', role: 'button', name: 'Go', dom_id: 'a' }, { id: '7/91', role: 'button', name: 'Go', dom_id: 'b' }] })
+  const r = await main({ steps: [{ click: 'Go', role: 'button', web: { url: 'https://shop.test/form', id: 'b' } }] })
+  assert.equal(r.ok, true, JSON.stringify(r).slice(0, 300))
+  assert.deepEqual(pressed(calls), ['7/91'])
+})

@@ -809,10 +809,12 @@ function samePage(a: string, b: string) {
 }
 
 // a recorded DOM id picks among the elements; where none has it, the name match stands
-async function byDom(nodes: Node[], id: string, hit: Hit | null, role?: string): Promise<Hit | null> {
+async function byDom(nodes: Node[], id: string, hit: Hit | null, target: string, role?: string): Promise<Hit | null> {
   const idOf = async (n: Node) => (await desk.read(n.id, { web: true }).catch(() => null))?.dom_id
   if (hit && await idOf(hit.n) === id) return hit
-  const pool = nodes.map((n, i) => ({ n, i })).filter(({ n }) => n.id !== hit?.n.id && (role ? n.role === role : ACTIVE.has(n.role))).slice(0, DOM_READS)
+  const roles = role ? new Set(role.split('|')) : ACTIVE
+  const named = (n: Node) => +(norm(n.name) === norm(target))
+  const pool = nodes.map((n, i) => ({ n, i })).filter(({ n }) => n.id !== hit?.n.id && roles.has(n.role)).sort((a, b) => named(b.n) - named(a.n)).slice(0, DOM_READS)
   for (const c of pool) if (await idOf(c.n) === id) return { ...c, how: 'dom' }
   return hit
 }
@@ -1264,7 +1266,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   const target = s.click ?? s.check ?? s.set ?? ''
   const least = s.set ? 0.5 : 0.7
   let hit = await resolve(nodes, target, targetRole(s), undefined, least, s.fp, !s.web?.id)
-  if (s.web?.id) hit = await byDom(nodes, s.web.id, hit, targetRole(s)) ?? await resolve(nodes, target, targetRole(s), undefined, least, s.fp)
+  if (s.web?.id) hit = await byDom(nodes, s.web.id, hit, target, targetRole(s)) ?? await resolve(nodes, target, targetRole(s), undefined, least, s.fp)
   if (!hit) {
     if (!s.click) throw new Surprise(`no element matches "${target}"`, await seen(), true)
     if (BG && !AUTO) throw new Surprise(`no element of "${w.title}" matches "${target}", and finding it on the screen is out: ${NO_PIXELS}`, await seen(), true)
