@@ -110,13 +110,13 @@ let unheard: string | undefined
 let userFront: Win | null = null
 let BG = BEHIND
 let fronted = false
-const lit = new Set<number>()
+const asked = new Set<number>()
 const foreground = { steps: 0 }
 let T: Record<string, number> = {}
 
 /** Runs one gui_plan call: a plan, a saved flow, or a flow-library verb. */
 export async function main(p: Params): Promise<Result> {
-  try { return { ...(await perform(p)), usage: desk.usage } } finally { await dim() }
+  return { ...(await perform(p)), usage: desk.usage }
 }
 
 async function perform(p: Params): Promise<Result> {
@@ -781,22 +781,17 @@ async function onPage(want: Web, w: Win, nodes?: Node[]): Promise<Node[]> {
   return p.nodes
 }
 
-// the window's page and its address; a browser that keeps its page tree off gets it on until the plan ends
+// the window's page and its address; a browser that keeps its page tree off gets it on, and the daemon lets it go when the plan ends
 async function page(w: Win, nodes?: Node[]): Promise<{ nodes: Node[]; url: string }> {
   let ns = nodes ?? parse(await snapOf(w))
   let doc = ns.find((n) => n.role === 'document')
-  if (!doc && w.pid !== null && !lit.has(w.pid)) {
+  if (!doc && w.pid !== null && !asked.has(w.pid)) {
+    asked.add(w.pid)
     const r = await desk.web(w.pid, true).catch(() => null)
-    if (r && !r.was) lit.add(w.pid)
     for (const end = Date.now() + WEB_TREE_MS; r && !doc && Date.now() < end; await sleep(200)) { ns = parse(await snapOf(w)); doc = ns.find((n) => n.role === 'document') }
   }
   if (!doc) throw new Surprise(`"${w.title}" shows no web page the accessibility tree reads`, await seen())
   return { nodes: ns, url: (await desk.read(doc.id, { web: true })).url ?? '' }
-}
-
-async function dim() {
-  for (const pid of lit) await desk.web(pid, false).catch(() => null)
-  lit.clear()
 }
 
 // origin and path decide; the query, the fragment and a trailing slash do not

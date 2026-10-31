@@ -148,6 +148,8 @@ pub struct LaunchArgs {
 pub struct WebArgs {
     pub pid: u32,
     pub on: bool,
+    #[serde(default)]
+    pub holder: String,
 }
 
 #[derive(Deserialize)]

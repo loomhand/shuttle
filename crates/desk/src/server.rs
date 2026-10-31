@@ -119,6 +119,8 @@ pub trait Handler: Send + Sync + 'static {
     /// Answers `call`; a failure is an error output, never a dropped connection.
     fn answer(&self, call: Call) -> impl Future<Output = Output> + Send;
 
+    fn release(&self, _holder: &str) {}
+
     /// Whether some tool takes its whole connection through [`Handler::splice`], which costs every call a read of its tool.
     fn splicing(&self) -> bool {
         false
@@ -169,9 +171,17 @@ impl Peer for tokio::net::windows::named_pipe::NamedPipeServer {
 
 impl<B: Access + 'static, D: Input + Send + Sync + 'static> Handler for Desk<B, D> {
     async fn answer(&self, call: Call) -> Output {
-        self.run(&call.tool, call.args)
+        let mut args = call.args;
+        if call.tool == "desk_web" {
+            args["holder"] = call.agent_id.into();
+        }
+        self.run(&call.tool, args)
             .await
             .unwrap_or_else(Output::error)
+    }
+
+    fn release(&self, holder: &str) {
+        Desk::release(self, holder);
     }
 }
 
@@ -225,6 +235,10 @@ impl<B: Access + 'static> Handler for Native<B> {
             .run(&call.agent_id, tool, call.args)
             .await
             .unwrap_or_else(Output::error)
+    }
+
+    fn release(&self, holder: &str) {
+        self.desk.release(holder);
     }
 }
 

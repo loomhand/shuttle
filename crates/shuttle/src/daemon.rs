@@ -232,6 +232,7 @@ impl<H: Handler> Daemon<H> {
         let agent = format!("run-{:x}-{n}", self.nonce);
         *self.running() = Some(agent.clone());
         let _running = Running(&self.running, &agent);
+        let _held = Held(&self.desk, &agent);
         let report = match plugin {
             Some(p) => self.runner.plugin(&p.bin, args, &agent).await,
             None if tool == "gui_plan" => self.runner.plan(args, &agent).await,
@@ -439,6 +440,14 @@ impl Drop for Asking<'_> {
     }
 }
 
+struct Held<'a, H: Handler>(&'a H, &'a str);
+
+impl<H: Handler> Drop for Held<'_, H> {
+    fn drop(&mut self) {
+        self.0.release(self.1);
+    }
+}
+
 struct Running<'a>(&'a Mutex<Option<String>>, &'a str);
 
 impl Drop for Running<'_> {
@@ -527,6 +536,19 @@ mod tests {
     impl Handler for Echo {
         async fn answer(&self, call: Call) -> Output {
             Output::text(format!("desk answered {}", call.tool))
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct Releases(Arc<Mutex<Vec<String>>>);
+
+    impl Handler for Releases {
+        async fn answer(&self, call: Call) -> Output {
+            Output::text(format!("desk answered {}", call.tool))
+        }
+
+        fn release(&self, holder: &str) {
+            self.0.lock().unwrap().push(holder.to_owned());
         }
     }
 
@@ -1025,6 +1047,40 @@ mod tests {
         run.abort();
         let _ = run.await;
         assert!(!d.acting());
+    }
+
+    #[tokio::test]
+    async fn a_run_lets_go_of_its_desk_holds_when_it_ends_or_is_dropped() {
+        let released = Releases::default();
+        let d = Arc::new(daemon(released.clone(), Guard::default()));
+        d.answer(call(
+            "script_run",
+            json!({"code": "export function main() { return 1 }"}),
+        ))
+        .await;
+        assert_eq!(released.0.lock().unwrap().len(), 1);
+        let run = tokio::spawn({
+            let d = d.clone();
+            async move {
+                d.answer(call(
+                    "script_run",
+                    json!({"code": "export async function main() { await new Promise((r) => setTimeout(r, 30000)) }"}),
+                ))
+                .await
+            }
+        });
+        for _ in 0..200 {
+            if d.acting() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        run.abort();
+        let _ = run.await;
+        let holders = released.0.lock().unwrap().clone();
+        assert_eq!(holders.len(), 2, "{holders:?}");
+        assert!(holders.iter().all(|h| h.starts_with("run-")), "{holders:?}");
+        assert_ne!(holders[0], holders[1]);
     }
 
     #[tokio::test]

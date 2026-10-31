@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -135,6 +135,7 @@ pub struct Desk<B, D> {
     locked_input: bool,
     unseen: std::sync::Mutex<HashMap<(i64, i64), Unseen>>,
     clicked: std::sync::Mutex<Option<Clicked>>,
+    webs: std::sync::Mutex<HashMap<u32, Held>>,
     typer: Typer,
     #[cfg(test)]
     skew: Arc<std::sync::atomic::AtomicU64>,
@@ -158,6 +159,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             locked_input: false,
             unseen: std::sync::Mutex::new(HashMap::new()),
             clicked: std::sync::Mutex::new(None),
+            webs: std::sync::Mutex::new(HashMap::new()),
             typer: TYPER,
             #[cfg(test)]
             skew: Arc::default(),
@@ -662,15 +664,57 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn web(&self, a: WebArgs) -> Result<String, String> {
-        let allow = self.allow.clone();
-        let was = self
-            .access
-            .run(CALL_LIMIT, (), move |b| {
-                check_process(b, &allow, Some(a.pid))?;
-                b.web(a.pid, a.on)
-            })
-            .await?;
+        let held = self.webs().get(&a.pid).map(|h| h.was);
+        let was = match (a.on, held) {
+            (true, Some(was)) => was,
+            (false, Some(was)) if !self.release_one(a.pid, &a.holder) => was,
+            (on, held) => {
+                let (allow, pid) = (self.allow.clone(), a.pid);
+                let was = self
+                    .access
+                    .run(CALL_LIMIT, (), move |b| {
+                        check_process(b, &allow, Some(pid))?;
+                        b.web(pid, on)
+                    })
+                    .await?;
+                held.unwrap_or(was)
+            }
+        };
+        if a.on {
+            let mut webs = self.webs();
+            let h = webs.entry(a.pid).or_insert_with(|| Held {
+                was,
+                holders: HashSet::new(),
+            });
+            h.holders.insert(a.holder);
+        }
         Ok(json!({"ok": true, "was": was}).to_string())
+    }
+
+    pub fn release(&self, holder: &str) {
+        let pids: Vec<u32> = self.webs().keys().copied().collect();
+        for pid in pids.into_iter().filter(|&p| self.release_one(p, holder)) {
+            self.access.post(move |b| drop(b.web(pid, false)));
+        }
+    }
+
+    fn release_one(&self, pid: u32, holder: &str) -> bool {
+        let mut webs = self.webs();
+        let Some(h) = webs.get_mut(&pid) else {
+            return false;
+        };
+        h.holders.remove(holder);
+        let last = h.holders.is_empty() && !h.was;
+        if h.holders.is_empty() {
+            webs.remove(&pid);
+        }
+        last
+    }
+
+    fn webs(&self) -> std::sync::MutexGuard<'_, HashMap<u32, Held>> {
+        self.webs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     async fn press(&self, id: String, turn: Option<Turn>) -> Result<String, String> {
@@ -1997,6 +2041,11 @@ struct Under {
 struct Clicked {
     to: (i64, i64),
     at: (f64, f64),
+}
+
+struct Held {
+    was: bool,
+    holders: HashSet<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -6257,22 +6306,30 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn the_web_switch_answers_what_it_was_and_is_refused_for_an_app_outside_the_allowlist() {
+    async fn a_page_tree_stays_on_while_anyone_holds_it_and_goes_off_with_the_last_hold() {
         let desk = Desk::new(|| Ok(Page), Slow(Arc::default()), Os::Mac)
             .allow(&["Google Chrome".to_owned()]);
-        let switch = |pid: u32, on: bool| desk.run("desk_web", json!({"pid": pid, "on": on}));
-        assert_eq!(
-            switch(7, true).await.unwrap().text,
-            r#"{"ok":true,"was":false}"#
-        );
-        assert!(PAGE_LIT.load(Ordering::SeqCst));
-        assert_eq!(
-            switch(7, false).await.unwrap().text,
-            r#"{"ok":true,"was":true}"#
-        );
-        let refused = switch(9, true).await.unwrap_err();
+        let switch = |pid: u32, on: bool, holder: &str| {
+            desk.run("desk_web", json!({"pid": pid, "on": on, "holder": holder}))
+        };
+        let lit = || PAGE_LIT.load(Ordering::SeqCst);
+        let off = r#"{"ok":true,"was":false}"#;
+        assert_eq!(switch(7, true, "run-1").await.unwrap().text, off);
+        assert_eq!(switch(7, true, "record").await.unwrap().text, off);
+        assert!(lit());
+        assert_eq!(switch(7, false, "run-1").await.unwrap().text, off);
+        assert!(lit(), "the recording still holds it");
+        desk.release("record");
+        for _ in 0..50 {
+            if !lit() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!lit());
+        let refused = switch(9, true, "run-2").await.unwrap_err();
         assert!(refused.contains("1Password"), "{refused}");
-        assert!(!PAGE_LIT.load(Ordering::SeqCst));
+        assert!(!lit());
     }
 
     #[tokio::test]
