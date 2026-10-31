@@ -424,7 +424,7 @@ fn crop(f: &Frame, x: f64, y: f64, per_point: f64) -> Option<(String, f64, [f64;
         (x + w / 2.0).min(f.bounds[2]),
         (y + h / 2.0).min(f.bounds[3]),
     ];
-    let (_, _, png) = shuttle_desk::crop_png(
+    let (_, _, png) = desk_core::shot::crop_png(
         &f.png,
         [left, top, right - left, bottom - top],
         f.factor,

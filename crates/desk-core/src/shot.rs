@@ -1,6 +1,6 @@
 //! Screenshot crops, with the windows of apps outside the allowlist painted over.
 
-pub(crate) const OFF_SCREEN: &str = "the rectangle is off the screen";
+pub const OFF_SCREEN: &str = "the rectangle is off the screen";
 
 /// A crop of the screen rectangle `[x, y, w, h]` from a screenshot scaled by `factor`, as `(width, height, PNG)`.
 pub fn crop_png(
@@ -47,7 +47,7 @@ pub fn crop_png(
 }
 
 /// The RGB rows of the screen rectangle `[x, y, w, h]` as a PNG, with the windows outside `mask`'s admitted ones painted black.
-pub(crate) fn rgb_png(
+pub fn rgb_png(
     mut rgb: Vec<u8>,
     [x, y, w, h]: [u32; 4],
     mask: Option<&[([f64; 4], bool)]>,
@@ -115,6 +115,24 @@ mod tests {
             crop_png(&png, [0.0, 0.0, f64::MAX / 4.0, f64::MAX / 4.0], 1.0, None).unwrap();
         assert_eq!((w, h), (4, 2));
         assert!(crop_png(&png, [100.0, 0.0, 4.0, 4.0], 1.0, None).is_err());
+    }
+
+    #[test]
+    fn crop_cuts_an_rgb_rectangle() {
+        let rgba: Vec<u8> = (0..4 * 3 * 2).map(|i| i as u8).collect();
+        let mut src = Vec::new();
+        let mut enc = png::Encoder::new(&mut src, 3, 2);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().unwrap().write_image_data(&rgba).unwrap();
+        let (w, h, out) = crop_png(&src, [1.0, 1.0, 5.0, 5.0], 1.0, None).unwrap();
+        assert_eq!((w, h), (2, 1));
+        let mut dec = png::Decoder::new(std::io::Cursor::new(out))
+            .read_info()
+            .unwrap();
+        let mut buf = vec![0; dec.output_buffer_size().unwrap()];
+        dec.next_frame(&mut buf).unwrap();
+        assert_eq!(&buf[..6], &[16, 17, 18, 20, 21, 22]);
     }
 
     #[test]

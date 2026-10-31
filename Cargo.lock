@@ -1268,6 +1268,7 @@ dependencies = [
 name = "shuttle-desk-core"
 version = "0.1.35"
 dependencies = [
+ "png",
  "serde",
  "serde_json",
  "tokio",
