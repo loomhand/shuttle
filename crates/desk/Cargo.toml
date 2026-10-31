@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 base64 = "0.23"
+fast_image_resize = "5.5"
 image-webp = "0.2.4"
 jpeg-encoder = "0.7.1"
 png = "0.18"

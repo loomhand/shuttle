@@ -1,6 +1,6 @@
 //! The computer verbs: `desk_computer_state`, `desk_computer_act`, `desk_computer_end` and `desk_look` for a vision agent, with the settle, the window report and the press guards, over cua-driver's line-delimited JSON in named driver sessions.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -12,6 +12,7 @@ use desk_core::args::parse;
 use desk_core::press::{MENU_POLL, MENU_POLLS};
 use desk_core::text::norm;
 use desk_core::wire::Output;
+use fast_image_resize as fr;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -117,7 +118,6 @@ pub struct Computer {
     /// Screen pixels per image pixel of the latest screenshot of any session, one-shot included.
     last_scale: std::sync::Mutex<f64>,
     backing: std::sync::Mutex<f64>,
-    unmapped: std::sync::Mutex<HashSet<String>>,
     /// The screen blocks that change while no action runs, which the settle ignores; sampled from the first computer call.
     volatile: OnceLock<Volatile>,
     ids: AtomicU64,
@@ -142,7 +142,6 @@ impl Computer {
             scales: std::sync::Mutex::new(HashMap::new()),
             last_scale: std::sync::Mutex::new(1.0),
             backing: std::sync::Mutex::new(1.0),
-            unmapped: std::sync::Mutex::new(HashSet::new()),
             volatile: OnceLock::new(),
             ids: AtomicU64::new(0),
             defaults: AtomicU64::new(0),
@@ -552,28 +551,26 @@ impl Computer {
         self.request(&session, "end_session", json!({})).await?;
         self.last.lock().await.remove(&session);
         self.scales().remove(&session);
-        lock(&self.unmapped).remove(&session);
         Ok(format!("ended session {session}"))
     }
 
-    /// Captures the desktop; the driver maps desktop-scope pixels of this capture back to the screen. A capture over MIT-SHM is shrunk to `max_edge` here and also returns the full-size pixels.
+    /// Captures the desktop at full size and shrinks it to `max_edge` here, so the driver never rescales a later desktop click; a capture over MIT-SHM also returns the full-size pixels.
     async fn capture(
         &self,
         session: &str,
         max_edge: Option<u32>,
         shared: bool,
     ) -> Result<(Option<String>, f64, Option<Screen>), String> {
-        let max_edge = max_edge.or(Some(DEFAULT_EDGE));
+        let edge = max_edge.unwrap_or(DEFAULT_EDGE);
         if let Some((w, h, rgb)) = self
             .shm(|g| (!g.overlay_shown()?).then(|| g.rgb()).transpose())
             .flatten()
         {
-            let image = match max_edge {
-                Some(edge) if edge > 0 && edge < w.max(h) => {
-                    let (tw, th, small) = fit(w, h, &rgb, edge);
-                    encode(tw, th, &small).map(|i| (i, f64::from(w) / f64::from(tw)))
-                }
-                _ => encode(w, h, &rgb).map(|i| (i, 1.0)),
+            let image = if edge > 0 && edge < w.max(h) {
+                let (tw, th, small) = fit(w, h, &rgb, edge);
+                encode(tw, th, &small).map(|i| (i, f64::from(w) / f64::from(tw)))
+            } else {
+                encode(w, h, &rgb).map(|i| (i, 1.0))
             };
             if let Some((image, scale)) = image {
                 self.keep_scale(session, scale, shared);
@@ -585,30 +582,23 @@ impl Computer {
                 return Ok((Some(B64.encode(image)), scale, Some(screen)));
             }
         }
-        let mut args = json!({});
-        if let Some(edge) = max_edge {
-            args["max_image_dimension"] = edge.into();
-        }
-        let v = self.request(session, "get_desktop_state", args).await?;
+        let full = json!({"max_image_dimension": 0});
+        let v = self.request(session, "get_desktop_state", full).await?;
         let state = &v["structuredContent"];
-        let scale = state["frame_scale"]
+        let native = state["frame_scale"]
             .as_f64()
             .or_else(|| Some(state["screen_width"].as_f64()? / state["screenshot_width"].as_f64()?))
             .filter(|s| s.is_finite() && *s > 0.0)
             .unwrap_or(1.0);
-        let capped = state.get("screenshot_original_width").is_some()
-            || state["frame_scale"].as_f64().is_some_and(|s| s != 1.0);
         self.keep_backing(state);
-        let mut image = image_of(&v).map(str::to_owned);
-        if let Some(smaller) = image.as_deref().and_then(shrink) {
-            image = Some(smaller);
-        }
-        // the driver rescales later desktop clicks by its last capture; a full-size one keeps it at 1
-        if capped && let Err(e) = self.full_capture(session).await {
-            lock(&self.unmapped).insert(session.to_owned());
-            return Err(format!("the screenshot's click mapping is unknown: {e}"));
-        }
-        lock(&self.unmapped).remove(session);
+        let (image, ratio) = match image_of(&v) {
+            Some(png) => fitted(png, edge).map_or_else(
+                || (Some(shrink(png).unwrap_or_else(|| png.to_owned())), 1.0),
+                |(image, ratio)| (Some(image), ratio),
+            ),
+            None => (None, 1.0),
+        };
+        let scale = native * ratio;
         self.keep_scale(session, scale, shared);
         Ok((image, scale, None))
     }
@@ -1715,12 +1705,6 @@ impl Computer {
     }
 
     async fn request(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
-        if lock(&self.unmapped).contains(session) && desktop_point(&args) {
-            self.full_capture(session).await.map_err(|e| {
-                format!("{name}: the click mapping of session {session} is unknown: {e}")
-            })?;
-            lock(&self.unmapped).remove(session);
-        }
         let point = match (args["x"].as_f64(), args["y"].as_f64()) {
             (Some(x), Some(y)) if name == "click" => Some((x, y)),
             _ => None,
@@ -1740,15 +1724,6 @@ impl Computer {
             crate::desk::adopt(result.clone()).await;
         }
         Ok(result)
-    }
-
-    async fn full_capture(&self, session: &str) -> Result<(), String> {
-        let full = json!({"max_image_dimension": 0});
-        let v = self.call(session, "get_desktop_state", full).await?;
-        if v["isError"] == true {
-            return Err(format!("get_desktop_state: {}", text_of(&v)));
-        }
-        Ok(())
     }
 
     /// One driver call, sent once more after starting `session` again when the driver had ended it; a result the driver marks isError comes back as is.
@@ -2189,11 +2164,6 @@ fn window_list(result: &Value) -> Vec<Window> {
     out
 }
 
-fn desktop_point(args: &Value) -> bool {
-    (args["scope"] == "desktop" || args["target"]["kind"] == "desktop")
-        && ["x", "from_x"].iter().any(|k| args[k].is_number())
-}
-
 fn window_id_of(state: &Value) -> Option<i64> {
     state["structuredContent"]["window_id"].as_i64()
 }
@@ -2295,13 +2265,18 @@ fn moved(screen: &Screen, [x, y, w, h]: [i32; 4], now: &[u8]) -> bool {
     changed * 100 > w * h * MOVED_PERCENT
 }
 
-/// RGB rows shrunk by area averaging so the long edge is `edge`.
-fn fit(width: u32, height: u32, rgb: &[u8], edge: u32) -> (u32, u32, Vec<u8>) {
-    let (tw, th) = if width >= height {
+/// The size of a `width` by `height` image whose long edge is `edge`.
+fn fit_size(width: u32, height: u32, edge: u32) -> (u32, u32) {
+    if width >= height {
         (edge, (height * edge / width).max(1))
     } else {
         ((width * edge / height).max(1), edge)
-    };
+    }
+}
+
+/// RGB rows shrunk by area averaging so the long edge is `edge`.
+fn fit(width: u32, height: u32, rgb: &[u8], edge: u32) -> (u32, u32, Vec<u8>) {
+    let (tw, th) = fit_size(width, height, edge);
     let (w, h, ow, oh) = (width as usize, height as usize, tw as usize, th as usize);
     let mut out = Vec::with_capacity(ow * oh * 3);
     for oy in 0..oh {
@@ -2388,6 +2363,36 @@ fn shrink(b64: &str) -> Option<String> {
     }
     let out = encode(info.width, info.height, &rgb)?;
     (out.len() < data.len()).then(|| B64.encode(&out))
+}
+
+/// The PNG `b64` shrunk by Lanczos3, the driver's own filter, so its long edge is `edge`, and made by [`encode`], with its pixels per image pixel; none when it is no larger.
+fn fitted(b64: &str, edge: u32) -> Option<(String, f64)> {
+    let data = B64.decode(b64).ok()?;
+    let (_, w, h) = image_size(&data)?;
+    if edge == 0 || edge >= w.max(h) {
+        return None;
+    }
+    let (info, rgba) = decode_png(&data)?;
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    let (tw, th) = fit_size(w, h, edge);
+    let from = fr::images::TypedImageRef::<fr::pixels::U8x4>::from_buffer(w, h, &rgba).ok()?;
+    let mut to = fr::images::TypedImage::<fr::pixels::U8x4>::new(tw, th);
+    let lanczos = fr::ResizeOptions::new()
+        .resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3))
+        .use_alpha(false);
+    fr::Resizer::new()
+        .resize_typed(&from, &mut to, &lanczos)
+        .ok()?;
+    let rgb: Vec<u8> = to
+        .pixels()
+        .iter()
+        .flat_map(|p| &p.0[..3])
+        .copied()
+        .collect();
+    let image = encode(tw, th, &rgb)?;
+    Some((B64.encode(image), f64::from(w) / f64::from(tw)))
 }
 
 /// The format, pixel size, bytes and estimated input tokens of the base64 image `b64`.
@@ -2520,6 +2525,7 @@ fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::path::{Path, PathBuf};
 
     use super::*;
@@ -3320,6 +3326,12 @@ mod tests {
         assert_eq!(clicks.len(), 1, "{clicks:?}");
     }
 
+    /// A get_desktop_state reply with a full-size `width` by `height` screenshot of a screen `screen_width` wide.
+    fn full_shot(width: u32, height: u32, screen_width: u32) -> Value {
+        let image = png_of(width, height, &vec![255; (width * height * 4) as usize]);
+        json!({"ok": true, "result": {"content": [{"type": "image", "data": image, "mimeType": "image/png"}], "structuredContent": {"screen_width": screen_width, "screenshot_width": width}}})
+    }
+
     fn png_of(width: u32, height: u32, rgba: &[u8]) -> String {
         let mut out = Vec::new();
         let mut encoder = png::Encoder::new(&mut out, width, height);
@@ -3390,6 +3402,7 @@ mod tests {
         let listener = Fake::bind(&socket).unwrap();
         let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(f64, f64)>::new()));
         let log = std::sync::Arc::clone(&clicks);
+        let full = full_shot(1280, 800, 640);
         let driver = tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
@@ -3399,10 +3412,7 @@ mod tests {
                 let req: Value = serde_json::from_str(&line).unwrap();
                 let args = &req["args"];
                 let reply = match req["name"].as_str().unwrap_or_default() {
-                    "get_desktop_state" => {
-                        let shot = args["max_image_dimension"].as_u64().unwrap_or(1280);
-                        json!({"ok": true, "result": {"structuredContent": {"screen_width": 1280, "screenshot_width": shot.min(1280)}}})
-                    }
+                    "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
                     name => {
                         if name == "click" {
                             log.lock()
@@ -3424,7 +3434,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.text);
-        assert_eq!(*clicks.lock().unwrap(), [(125.0, 50.0)]);
+        assert_eq!(*clicks.lock().unwrap(), [(62.5, 25.0)]);
         driver.abort();
     }
 
@@ -3435,6 +3445,7 @@ mod tests {
         let listener = Fake::bind(&socket).unwrap();
         let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(f64, f64)>::new()));
         let log = std::sync::Arc::clone(&clicks);
+        let full = full_shot(1280, 800, 1280);
         let driver = tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
@@ -3444,14 +3455,7 @@ mod tests {
                 let req: Value = serde_json::from_str(&line).unwrap();
                 let args = &req["args"];
                 let reply = match req["name"].as_str().unwrap_or_default() {
-                    "get_desktop_state" => {
-                        let scale = if args["max_image_dimension"].as_u64().is_some_and(|d| d > 0) {
-                            2.0
-                        } else {
-                            1.0
-                        };
-                        json!({"ok": true, "result": {"structuredContent": {"frame_scale": scale}}})
-                    }
+                    "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
                     name => {
                         if name == "click" {
                             log.lock()
@@ -3582,7 +3586,7 @@ mod tests {
 
     fn retina_driver(
         dir: &Path,
-        full_fails: bool,
+        fails: bool,
         idle_ends: bool,
     ) -> (PathBuf, Landed, tokio::task::JoinHandle<()>) {
         let socket = endpoint(dir);
@@ -3610,7 +3614,7 @@ mod tests {
                         ended.remove(&session);
                         json!({"ok": true, "result": {}})
                     }
-                    "get_desktop_state" if full_fails && args["max_image_dimension"] == 0 => {
+                    "get_desktop_state" if fails => {
                         refused("Desktop screenshot failed: the display is asleep")
                     }
                     "get_desktop_state" => {
@@ -3678,28 +3682,69 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_capture_whose_full_size_reset_fails_fails_and_no_click_goes_with_its_scaling() {
+    async fn a_screenshot_is_one_full_size_capture_in_the_callers_session() {
         let dir = tempfile::tempdir().unwrap();
-        let (socket, landed, driver) = retina_driver(dir.path(), true, false);
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let full = full_shot(1280, 800, 1280);
+        let captures = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, Value)>::new()));
+        let log = std::sync::Arc::clone(&captures);
+        let driver = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let args = &req["args"];
+                let reply = match req["name"].as_str().unwrap_or_default() {
+                    "get_desktop_state" => {
+                        let session = args["session"].as_str().unwrap_or_default().to_owned();
+                        log.lock()
+                            .unwrap()
+                            .push((session, args["max_image_dimension"].clone()));
+                        if args["max_image_dimension"] == 0 {
+                            full.clone()
+                        } else {
+                            json!({"ok": true, "result": {"structuredContent": {}}})
+                        }
+                    }
+                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+                };
+                let mut out = serde_json::to_vec(&reply).unwrap();
+                out.push(b'\n');
+                reader.into_inner().write_all(&out).await.unwrap();
+            }
+        });
+        let cua = cua_on(&socket, Os::Windows);
+        cua.state(json!({})).await.unwrap();
+        let out = cua
+            .act(json!({"action": "click", "x": 10.0, "y": 10.0}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        let own: Vec<(String, Value)> = captures
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(s, _)| s == DEFAULT_SESSION)
+            .cloned()
+            .collect();
+        assert_eq!(own, vec![(DEFAULT_SESSION.to_owned(), json!(0)); 2]);
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_failed_capture_fails_with_the_drivers_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, _, driver) = retina_driver(dir.path(), true, false);
         let cua = cua_on(&socket, Os::Mac);
         let shot = cua.state(json!({"max_edge": 50})).await;
         assert!(
             shot.as_ref()
-                .is_err_and(|e| e.contains("mapping is unknown")),
+                .is_err_and(|e| e.contains("the display is asleep")),
             "{:?}",
             shot.map(|o| o.text)
-        );
-        let click = json!({"action": "click", "x": 10.0, "y": 5.0, "scale": 2.0});
-        let out = cua.act(click).await;
-        assert!(
-            out.as_ref().map_or(true, |o| o.is_error),
-            "{:?}",
-            out.map(|o| o.text)
-        );
-        assert!(
-            landed.lock().unwrap().is_empty(),
-            "{:?}",
-            landed.lock().unwrap()
         );
         driver.abort();
     }
@@ -3779,6 +3824,7 @@ mod tests {
         let listener = Fake::bind(&socket).unwrap();
         let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(f64, f64)>::new()));
         let log = std::sync::Arc::clone(&clicks);
+        let full = full_shot(1280, 800, 1280);
         let driver = tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
@@ -3788,13 +3834,7 @@ mod tests {
                 let req: Value = serde_json::from_str(&line).unwrap();
                 let args = &req["args"];
                 let reply = match req["name"].as_str().unwrap_or_default() {
-                    "get_desktop_state" => {
-                        let scale = match args["max_image_dimension"].as_u64() {
-                            Some(edge) if edge > 0 => 1280.0 / edge as f64,
-                            _ => 1.0,
-                        };
-                        json!({"ok": true, "result": {"structuredContent": {"frame_scale": scale}}})
-                    }
+                    "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
                     name => {
                         if name == "click" {
                             log.lock()
@@ -3817,6 +3857,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let listener = Fake::bind(&socket).unwrap();
+        let full = full_shot(1280, 800, 1280);
         let driver = tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
@@ -3829,13 +3870,7 @@ mod tests {
                     "list_windows" => {
                         json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Mousepad", "title": "notes", "bounds": {"x": 100, "y": 50, "width": 640, "height": 480}, "z_index": 1}]}}})
                     }
-                    "get_desktop_state" => {
-                        let scale = match args["max_image_dimension"].as_u64() {
-                            Some(edge) if edge > 0 => 1280.0 / edge as f64,
-                            _ => 1.0,
-                        };
-                        json!({"ok": true, "result": {"structuredContent": {"frame_scale": scale}}})
-                    }
+                    "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
                     "click" => {
                         let text = format!(
                             "\u{2705} Sent screen-absolute click at ({},{}) (desktop scope).",
@@ -4321,6 +4356,21 @@ mod tests {
         let (tw, th, small) = fit(w, h, &rgb, 4);
         assert_eq!((tw, th), (4, 2));
         assert_eq!(small, [100, 100, 50].repeat(8));
+    }
+
+    #[test]
+    fn fitted_shrinks_a_full_size_capture_to_the_long_edge_and_leaves_a_small_one() {
+        let png = png_of(64, 32, &[30, 120, 200, 255].repeat(64 * 32));
+        let (image, ratio) = fitted(&png, 16).unwrap();
+        assert_eq!(ratio, 4.0);
+        let data = B64.decode(image).unwrap();
+        let mut webp = image_webp::WebPDecoder::new(std::io::Cursor::new(&data)).unwrap();
+        assert_eq!(webp.dimensions(), (16, 8));
+        let mut rgb = vec![0; webp.output_buffer_size().unwrap()];
+        webp.read_image(&mut rgb).unwrap();
+        assert_eq!(rgb, [30, 120, 200].repeat(16 * 8));
+        assert!(fitted(&png, 0).is_none());
+        assert!(fitted(&png, 64).is_none());
     }
 
     #[test]
