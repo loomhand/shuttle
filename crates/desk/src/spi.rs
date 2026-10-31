@@ -66,6 +66,7 @@ impl Access for Spi {
             name: frame.title.clone(),
             states: 0,
             pid: frame.pid,
+            stale: false,
         };
         let t = self
             .rt
@@ -194,7 +195,7 @@ fn frame(f: atspi::Frame) -> Frame {
         shell: false,
         space: None,
         bounds: None,
-        stale: false,
+        stale: f.stale,
         unlisted: !FRAME_ROLES.contains(&f.role),
         framed: f.role != WINDOW_ROLE,
         hidden: false,
@@ -680,20 +681,22 @@ mod tests {
             name: "Untitled - Mousepad".into(),
             states: 1 << 1,
             pid: Some(42),
+            stale: false,
         };
         let m = frame(f.clone());
         assert_eq!(
             (m.id.as_str(), m.title.as_str(), m.role, m.pid, m.active),
             ("1.17/5", "Untitled - Mousepad", "window", Some(42), true)
         );
-        assert!(!m.unlisted && m.framed);
+        assert!(!m.unlisted && m.framed && !m.stale);
         let own = std::process::id();
         let mine = frame(atspi::Frame {
             role: 69,
             pid: Some(own),
+            stale: true,
             ..f
         });
-        assert!(!mine.unlisted && !mine.framed);
+        assert!(!mine.unlisted && !mine.framed && mine.stale);
         assert_eq!(mine.app, app(own));
         assert!(mine.app.is_some());
         assert_eq!(app(u32::MAX), None);
@@ -707,6 +710,7 @@ mod tests {
             name: "waits PyQt".into(),
             states: 1 << 1,
             pid: Some(42),
+            stale: false,
         });
         assert!(!qt.unlisted && qt.framed);
         assert_eq!((qt.title.as_str(), qt.active), ("waits PyQt", true));

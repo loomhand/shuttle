@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 use zbus::Connection;
 use zbus::zvariant::{DynamicType, OwnedObjectPath, OwnedValue};
 
-use crate::model::{MAX_DEPTH, MAX_NODES, VALUE_CHARS, format_number, is_active, is_field};
+use crate::model::{MAX_DEPTH, MAX_NODES, VALUE_CHARS, format_number, hung, is_active, is_field};
 
 const BUS_NAME: &str = "org.a11y.Bus";
 const BUS_PATH: &str = "/org/a11y/bus";
@@ -215,6 +215,9 @@ const ROLE_NAMES: [&str; 130] = [
 static HUNG: LazyLock<std::sync::Mutex<HashMap<String, Instant>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
+static SEEN: LazyLock<std::sync::Mutex<HashMap<String, Seen>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
 /// The apps, by bus name, already asked for their attributes by [`Atspi::wake`].
 static WOKEN: LazyLock<std::sync::Mutex<HashSet<String>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
@@ -334,6 +337,7 @@ pub struct Frame {
     pub name: String,
     pub states: u64,
     pub pid: Option<u32>,
+    pub stale: bool,
 }
 
 impl Frame {
@@ -357,6 +361,12 @@ pub struct Tree {
     pub nodes: Vec<Node>,
     pub truncated: bool,
     pub phases: Vec<(&'static str, u128)>,
+}
+
+struct Seen {
+    listed: Instant,
+    slow: Option<Instant>,
+    last: Vec<Frame>,
 }
 
 /// Raw data of one object, from the cache or from live calls.
@@ -413,19 +423,29 @@ impl Atspi {
         }
     }
 
-    /// The accessible top-level windows of every app, with their pids; an app that takes over [`APP_FRAMES`] is left out and skipped for a while.
+    /// The accessible top-level windows of every app, with their pids; an app that takes over [`APP_FRAMES`] keeps its last windows, marked stale, until it counts as hung and is skipped for a while.
     pub async fn frames(&self) -> Result<Vec<Frame>, String> {
         let registry = Obj {
             bus: REGISTRY.to_owned(),
             path: ROOT.to_owned(),
         };
         let apps = self.children(&registry).await?;
-        let per_app = join_all(
-            apps.iter()
-                .map(|app| async move { capped(&app.bus, self.app_frames(app)).await }),
-        )
+        let asked = Instant::now();
+        let reads = join_all(apps.iter().filter(|app| !self.is_hung(&app.bus)).map(
+            |app| async move {
+                let read = tokio::time::timeout(APP_FRAMES, self.app_frames(app)).await;
+                (app.bus.as_str(), read.ok())
+            },
+        ))
         .await;
-        Ok(per_app.into_iter().flatten().collect())
+        let mut seen = SEEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        seen.retain(|bus, _| apps.iter().any(|app| app.bus == *bus));
+        Ok(reads
+            .into_iter()
+            .flat_map(|(bus, read)| settle(&mut seen, bus, read, asked))
+            .collect())
     }
 
     /// The tree under `frame`: shown nodes in preorder, with `extras` read live.
@@ -753,6 +773,7 @@ impl Atspi {
                 states: states.ok()?,
                 obj,
                 pid,
+                stale: false,
             })
         }))
         .await
@@ -1042,15 +1063,36 @@ fn mark_hung(bus: &str) {
         .insert(bus.to_owned(), Instant::now());
 }
 
-/// The frames `read` finds for the app on `bus` within [`APP_FRAMES`], else none, and the app is skipped for a while.
-async fn capped(bus: &str, read: impl Future<Output = Vec<Frame>>) -> Vec<Frame> {
-    match tokio::time::timeout(APP_FRAMES, read).await {
-        Ok(frames) => frames,
-        Err(_) => {
-            mark_hung(bus);
-            Vec::new()
-        }
+/// The frames of the app on `bus` from a read asked at `asked`: what it answered, else its last frames marked stale, and none once it counts as hung.
+fn settle(
+    seen: &mut HashMap<String, Seen>,
+    bus: &str,
+    read: Option<Vec<Frame>>,
+    asked: Instant,
+) -> Vec<Frame> {
+    let s = seen.entry(bus.to_owned()).or_insert_with(|| Seen {
+        listed: asked,
+        slow: None,
+        last: Vec::new(),
+    });
+    if let Some(frames) = read {
+        s.slow = None;
+        s.last.clone_from(&frames);
+        return frames;
     }
+    let slow = s.slow.get_or_insert(asked).elapsed();
+    if hung(slow, s.listed.elapsed()) {
+        s.last.clear();
+        mark_hung(bus);
+        return Vec::new();
+    }
+    s.last
+        .iter()
+        .map(|f| Frame {
+            stale: true,
+            ..f.clone()
+        })
+        .collect()
 }
 
 fn aria_role(role: u32, named: bool) -> Option<&'static str> {
@@ -1329,15 +1371,44 @@ fn timed_out(bus: &str, method: &str) -> String {
 mod tests {
     use super::*;
 
-    #[tokio::test(start_paused = true)]
-    async fn an_app_that_never_answers_is_left_out_and_skipped_by_a_new_client() {
-        let started = tokio::time::Instant::now();
-        let frames = capped(":9.99", std::future::pending()).await;
-        assert!(frames.is_empty());
-        assert_eq!(started.elapsed(), APP_FRAMES);
-        assert!(Atspi::new().is_hung(":9.99"));
-        let answered = capped(":9.98", async { Vec::new() }).await;
-        assert!(answered.is_empty() && !Atspi::new().is_hung(":9.98"));
+    #[test]
+    fn a_late_app_keeps_its_last_frames_stale_until_it_has_missed_for_two_seconds() {
+        let window = |bus: &str| Frame {
+            obj: Obj {
+                bus: bus.into(),
+                path: format!("{PATH_PREFIX}/1"),
+            },
+            role: 23,
+            name: "Doc".into(),
+            states: 0,
+            pid: Some(7),
+            stale: false,
+        };
+        let mut seen = HashMap::new();
+        let now = Instant::now();
+        let ago = |s: u64| now.checked_sub(Duration::from_secs(s)).unwrap();
+        let answered = settle(&mut seen, ":9.94", Some(vec![window(":9.94")]), ago(30));
+        assert!(!answered[0].stale);
+        let late = settle(&mut seen, ":9.94", None, now);
+        assert_eq!(late.len(), 1);
+        assert!(late[0].stale && late[0].name == "Doc");
+        assert!(!Atspi::new().is_hung(":9.94"));
+        seen.get_mut(":9.94").unwrap().slow = Some(ago(2));
+        assert!(settle(&mut seen, ":9.94", None, now).is_empty());
+        assert!(Atspi::new().is_hung(":9.94"));
+        assert!(seen[":9.94"].last.is_empty());
+    }
+
+    #[test]
+    fn an_app_in_its_launch_grace_is_never_marked_hung_and_an_answer_ends_its_misses() {
+        let mut seen = HashMap::new();
+        let now = Instant::now();
+        let ago = |s: u64| now.checked_sub(Duration::from_secs(s)).unwrap();
+        assert!(settle(&mut seen, ":9.93", None, ago(5)).is_empty());
+        assert!(settle(&mut seen, ":9.93", None, now).is_empty());
+        assert!(!Atspi::new().is_hung(":9.93"));
+        assert!(settle(&mut seen, ":9.93", Some(Vec::new()), now).is_empty());
+        assert_eq!(seen[":9.93"].slow, None);
     }
 
     #[test]

@@ -12,6 +12,7 @@ pub const MAX_NODES: usize = 2500;
 pub const MAX_DEPTH: usize = 64;
 pub const MAX_IDS: usize = 50_000;
 pub const VALUE_CHARS: usize = 200;
+pub const LAUNCH_GRACE: Duration = Duration::from_secs(10);
 
 const ACTIVE_ROLES: [&str; 20] = [
     "button",
@@ -44,6 +45,7 @@ const FIELD_ROLES: [&str; 6] = [
     "progressbar",
 ];
 const WEB_SWITCH: &str = "the web accessibility switch runs only on macOS";
+const HUNG_AFTER: Duration = Duration::from_secs(2);
 
 /// A top-level window of an app.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -367,6 +369,10 @@ pub fn is_field(role: &str) -> bool {
     FIELD_ROLES.contains(&role)
 }
 
+pub fn hung(slow: Duration, listed: Duration) -> bool {
+    slow >= HUNG_AFTER && listed >= LAUNCH_GRACE
+}
+
 pub fn states(s: States) -> Vec<&'static str> {
     [
         (s.checked, "checked"),
@@ -529,6 +535,15 @@ mod tests {
             json!({"ref": 3, "id": "1/2", "parent": 0, "depth": 1, "role": "checkbox", "name": "Wrap",
                 "states": ["checked", "showing"], "shortcut": "ctrl+w"})
         );
+    }
+
+    #[test]
+    fn an_app_listed_within_the_launch_grace_is_not_skipped_as_hung() {
+        let s = Duration::from_secs;
+        assert!(!hung(s(1), s(30)));
+        assert!(hung(s(2), s(30)));
+        assert!(!hung(s(5), s(4)));
+        assert!(hung(s(5), s(10)));
     }
 
     #[test]
