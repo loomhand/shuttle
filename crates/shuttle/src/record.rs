@@ -75,9 +75,9 @@ pub enum Input {
 /// The element with the keyboard focus, as a snapshot names it, the role of its window or sheet, the title of its window, whether it takes a password, and the address of its web page with its DOM id.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct Field {
-    pub role: String,
+    pub role: &'static str,
     pub name: String,
-    pub frame: String,
+    pub frame: &'static str,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub window: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -91,11 +91,11 @@ pub struct Field {
 /// An element under a click: its role and name as a snapshot names them, its help, its process, the role and name of its ancestors up to its window, innermost first, and the address of its web page with its DOM id.
 #[derive(Debug, Default)]
 pub struct Hit {
-    pub role: String,
+    pub role: &'static str,
     pub name: String,
     pub description: String,
     pub pid: Option<u32>,
-    pub path: Vec<(String, String)>,
+    pub path: Vec<(&'static str, String)>,
     pub secret: bool,
     pub page: Option<(String, Option<String>)>,
 }
