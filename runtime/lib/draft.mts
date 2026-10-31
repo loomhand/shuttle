@@ -98,9 +98,9 @@ export async function main(p: Params): Promise<Draft> {
     } else if (e.kind === 'click') {
       if (e === first && dock) continue
       const el = e.element ?? {}
-      const next = events.slice(i + 1).find((n) => n.kind === 'click')
+      const next = events.find((n, j) => j > i && n.kind === 'click')
       if (el.role === 'menu' && next?.element?.role === 'menuitem') continue
-      const prev = events.slice(0, i).findLast((n) => n.kind === 'click')
+      const prev = events.findLast((n, j) => j < i && n.kind === 'click')
       if (el.role === 'menuitem' && prev?.element?.role === 'menu') {
         const menu = `${prev.element.name} > ${el.name}`
         draft.steps.push({ menu, intent: `choose ${menu}` })
