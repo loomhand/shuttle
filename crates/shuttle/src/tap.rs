@@ -38,26 +38,6 @@ pub struct Tap {
     thread: Option<JoinHandle<()>>,
 }
 
-struct Seen {
-    tx: UnboundedSender<Input>,
-    port: *mut c_void,
-    scale: f64,
-    /// Whether the next key starts a run of typing, whose target the tap reads.
-    fresh: Cell<bool>,
-}
-
-/// Whether this process may listen to the keyboard (Input Monitoring).
-pub fn allowed() -> bool {
-    // SAFETY: the call only reads this process's TCC state.
-    unsafe { CGPreflightListenEventAccess() }
-}
-
-/// Lists this app under Input Monitoring and asks the user once.
-pub fn ask() {
-    // SAFETY: the call reads and may register this process's TCC state.
-    unsafe { CGRequestListenEventAccess() };
-}
-
 impl Tap {
     /// Starts a tap on its own thread that sends each click and key to `tx`.
     pub fn start(tx: UnboundedSender<Input>) -> Result<Self, String> {
@@ -129,6 +109,26 @@ impl Drop for Tap {
             let _ = t.join();
         }
     }
+}
+
+/// Whether this process may listen to the keyboard (Input Monitoring).
+pub fn allowed() -> bool {
+    // SAFETY: the call only reads this process's TCC state.
+    unsafe { CGPreflightListenEventAccess() }
+}
+
+/// Lists this app under Input Monitoring and asks the user once.
+pub fn ask() {
+    // SAFETY: the call reads and may register this process's TCC state.
+    unsafe { CGRequestListenEventAccess() };
+}
+
+struct Seen {
+    tx: UnboundedSender<Input>,
+    port: *mut c_void,
+    scale: f64,
+    /// Whether the next key starts a run of typing, whose target the tap reads.
+    fresh: Cell<bool>,
 }
 
 extern "C" fn heard(
