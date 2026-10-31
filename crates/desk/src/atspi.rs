@@ -1,7 +1,7 @@
 //! AT-SPI over D-Bus: a window's tree from its app's `Cache.GetItems`, filled in by live calls where the cache lacks children or their order, plus live reads and actions on one node.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use futures_util::future::join_all;
@@ -408,6 +408,7 @@ type OldItem = (
 /// A lazily opened connection to the accessibility bus, shared by all calls.
 pub struct Atspi {
     conn: Mutex<Option<Connection>>,
+    probing: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
 impl Default for Atspi {
@@ -420,6 +421,7 @@ impl Atspi {
     pub fn new() -> Self {
         Self {
             conn: Mutex::new(None),
+            probing: Arc::default(),
         }
     }
 
@@ -430,13 +432,17 @@ impl Atspi {
             path: ROOT.to_owned(),
         };
         let apps = self.children(&registry).await?;
+        let mut answering = Vec::with_capacity(apps.len());
+        for app in &apps {
+            if !self.skips(&app.bus).await {
+                answering.push(app);
+            }
+        }
         let asked = Instant::now();
-        let reads = join_all(apps.iter().filter(|app| !self.is_hung(&app.bus)).map(
-            |app| async move {
-                let read = tokio::time::timeout(APP_FRAMES, self.app_frames(app)).await;
-                (app.bus.as_str(), read.ok())
-            },
-        ))
+        let reads = join_all(answering.into_iter().map(|app| async move {
+            let read = tokio::time::timeout(APP_FRAMES, self.app_frames(app)).await;
+            (app.bus.as_str(), read.ok())
+        }))
         .await;
         let mut seen = SEEN
             .lock()
@@ -972,7 +978,7 @@ impl Atspi {
     where
         B: serde::Serialize + DynamicType,
     {
-        if self.is_hung(&obj.bus) {
+        if self.skips(&obj.bus).await {
             return Err(not_responding(&obj.bus));
         }
         let conn = self.connection().await?;
@@ -999,6 +1005,21 @@ impl Atspi {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         hung.retain(|_, at| at.elapsed() < HUNG_FOR);
         hung.contains_key(bus)
+    }
+
+    async fn skips(&self, bus: &str) -> bool {
+        if !self.is_hung(bus) {
+            return false;
+        }
+        if let Ok(conn) = self.connection().await {
+            let root = bus.to_owned();
+            release_on_answer(&self.probing, bus, async move {
+                let asked =
+                    conn.call_method(Some(root.as_str()), ROOT, Some(ACCESSIBLE), "GetState", &());
+                tokio::time::timeout(HUNG_FOR, asked).await.is_ok()
+            });
+        }
+        true
     }
 
     async fn connection(&self) -> Result<Connection, String> {
@@ -1061,6 +1082,32 @@ fn mark_hung(bus: &str) {
     HUNG.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(bus.to_owned(), Instant::now());
+}
+
+fn release_on_answer(
+    probing: &Arc<std::sync::Mutex<HashSet<String>>>,
+    bus: &str,
+    answer: impl Future<Output = bool> + Send + 'static,
+) {
+    if !probing
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(bus.to_owned())
+    {
+        return;
+    }
+    let (probing, bus) = (Arc::clone(probing), bus.to_owned());
+    tokio::spawn(async move {
+        if answer.await {
+            HUNG.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&bus);
+        }
+        probing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&bus);
+    });
 }
 
 /// The frames of the app on `bus` from a read asked at `asked`: what it answered, else its last frames marked stale, and none once it counts as hung.
@@ -1409,6 +1456,28 @@ mod tests {
         assert!(!Atspi::new().is_hung(":9.93"));
         assert!(settle(&mut seen, ":9.93", Some(Vec::new()), now).is_empty());
         assert_eq!(seen[":9.93"].slow, None);
+    }
+
+    #[tokio::test]
+    async fn an_answer_to_the_probe_releases_a_hung_app_and_one_probe_runs_at_a_time() {
+        let probing = Arc::default();
+        mark_hung(":9.92");
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        release_on_answer(&probing, ":9.92", async { rx.await.is_ok() });
+        release_on_answer(&probing, ":9.92", async { true });
+        tokio::task::yield_now().await;
+        assert!(Atspi::new().is_hung(":9.92"));
+        tx.send(()).unwrap();
+        while probing.lock().unwrap().contains(":9.92") {
+            tokio::task::yield_now().await;
+        }
+        assert!(!Atspi::new().is_hung(":9.92"));
+        mark_hung(":9.91");
+        release_on_answer(&probing, ":9.91", async { false });
+        while probing.lock().unwrap().contains(":9.91") {
+            tokio::task::yield_now().await;
+        }
+        assert!(Atspi::new().is_hung(":9.91"));
     }
 
     #[test]
