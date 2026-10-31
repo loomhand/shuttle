@@ -813,8 +813,9 @@ async function byDom(nodes: Node[], id: string, hit: Hit | null, target: string,
   if (hit && await idOf(hit.n) === id) return hit
   const roles = role ? new Set(role.split('|')) : ACTIVE
   const all = nodes.map((n, i) => ({ n, i })).filter(({ n }) => n.id !== hit?.n.id && roles.has(n.role))
-  const named = all.filter(({ n }) => norm(n.name) === norm(target))
-  const pool = [...named, ...all.filter((c) => !named.includes(c)).slice(0, DOM_READS)]
+  const t = norm(target)
+  const named = all.filter(({ n }) => norm(n.name) === t)
+  const pool = [...named, ...all.filter(({ n }) => norm(n.name) !== t).slice(0, DOM_READS)]
   for (const c of pool) if (await idOf(c.n) === id) return { ...c, how: 'dom' }
   return hit
 }
