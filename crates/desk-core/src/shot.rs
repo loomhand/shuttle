@@ -2,6 +2,8 @@
 
 pub const OFF_SCREEN: &str = "the rectangle is off the screen";
 
+const DEFLATE_LEVEL: u8 = 2;
+
 /// A crop of the screen rectangle `[x, y, w, h]` from a screenshot scaled by `factor`, as `(width, height, PNG)`.
 pub fn crop_png(
     png: &[u8],
@@ -68,6 +70,7 @@ fn encode(w: u32, h: u32, rgb: &[u8]) -> Result<Vec<u8>, String> {
     let mut enc = png::Encoder::new(&mut out, w, h);
     enc.set_color(png::ColorType::Rgb);
     enc.set_depth(png::BitDepth::Eight);
+    enc.set_deflate_compression(png::DeflateCompression::Level(DEFLATE_LEVEL));
     enc.write_header()
         .and_then(|mut wr| wr.write_image_data(rgb))
         .map_err(|e| format!("encode PNG: {e}"))?;
@@ -133,6 +136,18 @@ mod tests {
         let mut buf = vec![0; dec.output_buffer_size().unwrap()];
         dec.next_frame(&mut buf).unwrap();
         assert_eq!(&buf[..6], &[16, 17, 18, 20, 21, 22]);
+    }
+
+    #[test]
+    fn a_screenshot_png_decodes_to_the_pixels_it_was_encoded_from() {
+        let rgb: Vec<u8> = (0..64 * 48 * 3u32).map(|i| (i * i / 7) as u8).collect();
+        let png = rgb_png(rgb.clone(), [0, 0, 64, 48], None).unwrap();
+        let mut dec = png::Decoder::new(std::io::Cursor::new(png))
+            .read_info()
+            .unwrap();
+        let mut buf = vec![0; dec.output_buffer_size().unwrap()];
+        dec.next_frame(&mut buf).unwrap();
+        assert_eq!(buf, rgb);
     }
 
     #[test]
