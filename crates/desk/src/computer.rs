@@ -10,6 +10,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use desk_core::args::parse;
 use desk_core::press::{MENU_POLL, MENU_POLLS};
+use desk_core::text::norm;
 use desk_core::wire::Output;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -1481,7 +1482,7 @@ impl Computer {
             (
                 snap.pid,
                 snap.window_id,
-                label_key(&element.label),
+                norm(&element.label),
                 button,
                 menus,
             )
@@ -1535,7 +1536,7 @@ impl Computer {
                 .into_iter()
                 .flatten()
                 .filter(|e| e["role"] == "menu item")
-                .filter(|e| e["label"].as_str().is_some_and(|l| label_key(l) == name))
+                .filter(|e| e["label"].as_str().is_some_and(|l| norm(l) == name))
                 .filter_map(|e| {
                     let f = &e["frame"];
                     Some([
@@ -2056,16 +2057,6 @@ fn confirms(a: &ActArgs) -> bool {
         return a.text.as_deref().is_some_and(|t| t.ends_with(['\n', '\r']));
     }
     combo(a).is_some_and(|k| ["return", "enter", "kp_enter"].contains(&k.as_str()))
-}
-
-/// `label` without case, mnemonic underscores, a trailing ellipsis or colon, and extra spaces, so a toolbar button and its menu item compare equal.
-fn label_key(label: &str) -> String {
-    let words = label.replace('_', "").to_lowercase();
-    let words = words.split_whitespace().collect::<Vec<_>>().join(" ");
-    words
-        .trim_end_matches(['.', '\u{2026}', ':'])
-        .trim_end()
-        .to_owned()
 }
 
 /// Whether process `pid` has GTK loaded.
@@ -4390,10 +4381,10 @@ mod tests {
 
     #[test]
     fn a_toolbar_button_and_its_menu_item_have_one_label_key() {
-        assert_eq!(label_key("Save As..."), "save as");
-        assert_eq!(label_key("Save _As\u{2026}      "), "save as");
-        assert_eq!(label_key("Go to..."), "go to");
-        assert_eq!(label_key("Find and Replace..."), "find and replace");
-        assert_ne!(label_key("Save"), label_key("Save As..."));
+        assert_eq!(norm("Save As..."), "save as");
+        assert_eq!(norm("Save _As\u{2026}      "), "save as");
+        assert_eq!(norm("Go to..."), "go to");
+        assert_eq!(norm("Find and Replace..."), "find and replace");
+        assert_ne!(norm("Save"), norm("Save As..."));
     }
 }
