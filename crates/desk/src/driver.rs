@@ -156,6 +156,26 @@ impl Driver {
         Ok(reply)
     }
 
+    pub(crate) fn admit(&self, tool: &str, args: &Value) -> Result<bool, String> {
+        let foreground = INPUT_TOOLS.contains(&tool) && args["delivery_mode"] != "background";
+        if foreground {
+            let since = since_user_input();
+            if user_busy(since, self.since_own_input()) {
+                return Err(format!(
+                    "{tool}: the user used the mouse or keyboard {since:.1} s ago, and foreground input would take them over; nothing was sent: try again once they stop"
+                ));
+            }
+        }
+        Ok(foreground)
+    }
+
+    pub(crate) fn stamp(&self) {
+        *self
+            .last_input
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::time::Instant::now());
+    }
+
     fn since_own_input(&self) -> Option<Duration> {
         self.last_input
             .lock()
@@ -205,22 +225,10 @@ impl Input for Driver {
             let _ = self.send("end_session", &json!({"session": once})).await;
             return done;
         }
-        let foreground = INPUT_TOOLS.contains(&tool) && args["delivery_mode"] != "background";
-        if foreground {
-            let since = since_user_input();
-            if user_busy(since, self.since_own_input()) {
-                return Err(format!(
-                    "{tool}: the user used the mouse or keyboard {since:.1} s ago, and foreground input would take them over; nothing was sent: try again once they stop"
-                ));
-            }
-        }
+        let foreground = self.admit(tool, &args)?;
         let done = self.call_session(tool, args).await;
         if foreground {
-            *self
-                .last_input
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some(std::time::Instant::now());
+            self.stamp();
         }
         done
     }
@@ -255,9 +263,24 @@ fn since_user_input() -> f64 {
         .fold(f64::INFINITY, f64::min)
 }
 
-#[cfg(not(all(target_os = "macos", not(test))))]
+#[cfg(all(not(target_os = "macos"), not(test)))]
 fn since_user_input() -> f64 {
     f64::INFINITY
+}
+
+#[cfg(test)]
+thread_local! {
+    static USER_SINCE: std::cell::Cell<f64> = const { std::cell::Cell::new(f64::INFINITY) };
+}
+
+#[cfg(test)]
+fn since_user_input() -> f64 {
+    USER_SINCE.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn user_input_since(seconds: f64) {
+    USER_SINCE.with(|s| s.set(seconds));
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
