@@ -201,7 +201,7 @@ struct Shown {
     icons: [Retained<NSImage>; 4],
     about: String,
     record: Retained<NSMenuItem>,
-    state: Cell<Option<usize>>,
+    state: Cell<Option<(usize, bool)>>,
 }
 
 impl Shown {
@@ -214,11 +214,11 @@ impl Shown {
         } else {
             usize::from(self.controls.acting())
         };
-        self.record
-            .setTitle(&NSString::from_str(RECORD[usize::from(recording)]));
-        if self.state.replace(Some(state)) == Some(state) {
+        if self.state.replace(Some((state, recording))) == Some((state, recording)) {
             return;
         }
+        self.record
+            .setTitle(&NSString::from_str(RECORD[usize::from(recording)]));
         if let Some(button) = self.item.button(mtm) {
             button.setImage(Some(&self.icons[state]));
             button.setToolTip(Some(&NSString::from_str(&format!(
