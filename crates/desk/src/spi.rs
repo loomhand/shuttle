@@ -11,7 +11,7 @@ use crate::atspi::{self, Atspi, Obj};
 use crate::model::{Access, Act, Capture, Extras, Frame, Modal, Node, Tree, focused_by_tree};
 use crate::xshm::{Grabber, clip};
 
-const FRAME_ROLES: [u32; 5] = [2, 16, 19, 23, WINDOW_ROLE];
+const FRAME_ROLES: [u32; 6] = [2, 16, 19, 20, 23, WINDOW_ROLE];
 const WINDOW_ROLE: u32 = 69;
 
 /// The AT-SPI client, the single-thread runtime its calls run on, and the MIT-SHM grabber once opened.
@@ -697,5 +697,18 @@ mod tests {
         assert_eq!(mine.app, app(own));
         assert!(mine.app.is_some());
         assert_eq!(app(u32::MAX), None);
+    }
+
+    #[test]
+    fn a_qt_window_whose_top_level_is_a_filler_is_listed() {
+        let qt = frame(atspi::Frame {
+            obj: Obj::parse("1.38/2147483650").unwrap(),
+            role: 20,
+            name: "waits PyQt".into(),
+            states: 1 << 1,
+            pid: Some(42),
+        });
+        assert!(!qt.unlisted && qt.framed);
+        assert_eq!((qt.title.as_str(), qt.active), ("waits PyQt", true));
     }
 }
