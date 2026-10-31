@@ -798,8 +798,7 @@ async function page(w: Win, nodes?: Node[], read: Reads = {}): Promise<{ nodes: 
     const r = await desk.web(w.pid, true).catch(() => null)
     for (const end = Date.now() + WEB_TREE_MS; r && !doc && Date.now() < end; await sleep(200)) { ns = parse(await snapOf(w, read)); doc = ns.find((n) => n.role === 'document') }
   }
-  if (!doc) throw new Surprise(`"${w.title}" shows no web page the accessibility tree reads`, await seen())
-  return { nodes: ns, url: (await desk.read(doc.id, { web: true })).url ?? '' }
+  return { nodes: ns, url: doc ? (await desk.read(doc.id, { web: true })).url ?? '' : '' }
 }
 
 // origin and path decide; the query, the fragment and a trailing slash do not

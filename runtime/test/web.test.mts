@@ -118,3 +118,19 @@ test('a DOM id finds a same-named control past the read cap on a long form', asy
   assert.equal(r.ok, true, JSON.stringify(r).slice(0, 300))
   assert.deepEqual(pressed(calls), ['7/91'])
 })
+
+test('a page that shows no document yet is waited for', async (t) => {
+  const t0 = Date.now()
+  const calls = await browser(t, { url: () => 'https://shop.test/form', tree: () => Date.now() - t0 > 600, els: [{ id: '7/3', role: 'button', name: 'Pay' }] })
+  const r = await main({ steps: [{ click: 'Pay', role: 'button', web: { url: 'https://shop.test/form' } }] })
+  assert.equal(r.ok, true, JSON.stringify(r).slice(0, 300))
+  assert.deepEqual(pressed(calls), ['7/3'])
+})
+
+test('a page that never shows a document stops the web step with a stop report', async (t) => {
+  const calls = await browser(t, { url: () => 'https://shop.test/form', tree: () => false, els: [{ id: '7/3', role: 'button', name: 'Pay' }] })
+  const r = await main({ steps: [{ click: 'Pay', role: 'button', web: { url: 'https://shop.test/form' } }] })
+  assert.match(String(r.error), /the plan's window shows no address now/)
+  assert.equal((r.stopped as { step: number }).step, 0)
+  assert.deepEqual(pressed(calls), [])
+})
