@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use desk_core::args::parse;
+use desk_core::text::clip;
 use desk_core::wire::{Call, Output, write_frame};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -500,8 +501,7 @@ fn question(call: &Call) -> String {
         },
         _ => format!("{verb} {}", call.args),
     };
-    let what: String = what.chars().take(QUESTION_CHARS).collect();
-    format!("Allow {NAME} to {what}?")
+    format!("Allow {NAME} to {}?", clip(what, QUESTION_CHARS))
 }
 
 /// Whether the computer action `a` can end in a click at a screen point: a pointer action, or typing at an element or a point, which clicks it first.

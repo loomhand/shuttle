@@ -16,6 +16,7 @@ use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
 use core_foundation::string::{CFString, CFStringRef};
 use core_foundation::url::CFURL;
+use desk_core::text::clip;
 
 use crate::ax_roles::{self, Facts, Kind};
 use crate::keys::ax_combo;
@@ -1451,7 +1452,7 @@ pub fn display_scale() -> f64 {
 
 fn text(v: &CFType, chars: usize) -> String {
     if let Some(s) = v.downcast::<CFString>() {
-        return s.to_string().chars().take(chars).collect();
+        return clip(s.to_string(), chars);
     }
     v.downcast::<CFNumber>()
         .and_then(|n| n.to_f64())
