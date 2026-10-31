@@ -50,7 +50,7 @@ impl<B: 'static> Worker<B> {
             Err(_) => {
                 self.restart();
                 Err(format!(
-                    "no accessibility answer within {} ms; the app may hang",
+                    "no accessibility answer within {} ms; the app may hang, and an action sent to it may still take effect once it answers",
                     limit.as_millis()
                 ))
             }
