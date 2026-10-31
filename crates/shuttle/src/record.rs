@@ -804,13 +804,13 @@ mod tests {
             count: 1,
             mods: Vec::new(),
             found: Some(Hit {
-                role: "menuitem".into(),
+                role: "menuitem",
                 name: "New".into(),
                 description: String::new(),
                 pid: Some(7),
                 path: vec![
-                    ("menu".into(), "File".into()),
-                    ("window".into(), "Untitled".into()),
+                    ("menu", "File".into()),
+                    ("window", "Untitled".into()),
                 ],
                 secret: false,
                 page: None,
@@ -847,10 +847,10 @@ mod tests {
             count: 1,
             mods: Vec::new(),
             found: Some(Hit {
-                role: "button".into(),
+                role: "button",
                 name: "Pay".into(),
                 pid: Some(7),
-                path: vec![("window".into(), "Untitled".into())],
+                path: vec![("window", "Untitled".into())],
                 page,
                 ..Hit::default()
             }),
@@ -913,7 +913,7 @@ mod tests {
             count: 1,
             mods: Vec::new(),
             found: Some(Hit {
-                role: "textbox".into(),
+                role: "textbox",
                 pid: Some(7),
                 secret: true,
                 ..Hit::default()
@@ -928,7 +928,7 @@ mod tests {
                 Input::Password {
                     pid: Some(7),
                     focus: Some(Field {
-                        role: "textbox".into(),
+                        role: "textbox",
                         secure: true,
                         ..Field::default()
                     }),
@@ -1012,9 +1012,9 @@ mod tests {
             read,
         };
         let field = Field {
-            role: "textbox".into(),
+            role: "textbox",
             name: "Save As:".into(),
-            frame: "dialog".into(),
+            frame: "dialog",
             window: "Untitled".into(),
             ..Field::default()
         };
