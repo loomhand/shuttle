@@ -37,6 +37,7 @@ const HUNG_FOR: Duration = Duration::from_secs(10);
 const APP_FRAMES: Duration = Duration::from_millis(500);
 const MANAGED_KIDS: i32 = 200;
 const LIST_ROLES: [u32; 4] = [31, 55, 65, 66];
+const PASSWORD_TEXT: u32 = 40;
 const SCREEN: u32 = 0;
 const IF_ACTION: u8 = 1;
 const IF_COMPONENT: u8 = 2;
@@ -578,7 +579,7 @@ impl Atspi {
         let (value, bounds, keys) = tokio::join!(
             async {
                 if extras.values {
-                    self.value(obj, r.ifaces, chars).await.ok()
+                    self.value(obj, r.role, r.ifaces, chars).await
                 } else {
                     None
                 }
@@ -621,17 +622,23 @@ impl Atspi {
         found.into_iter().next().map(Obj::of)
     }
 
-    /// The text of a text node, at most `max` characters, else the current value of a value node.
-    pub async fn value(&self, obj: &Obj, ifaces: u8, max: usize) -> Result<String, String> {
+    /// The text of a text node, at most `max` characters, else the current value of a value node; none for a password field or a failed read.
+    pub async fn value(&self, obj: &Obj, role: u32, ifaces: u8, max: usize) -> Option<String> {
+        if secret(role) {
+            return None;
+        }
         if ifaces & IF_TEXT != 0 {
             let max = i32::try_from(max).unwrap_or(i32::MAX);
-            return self.call(obj, TEXT, "GetText", &(0i32, max)).await;
+            return self.call(obj, TEXT, "GetText", &(0i32, max)).await.ok();
         }
         if ifaces & IF_VALUE != 0 {
-            let v: f64 = self.prop(obj, VALUE, "CurrentValue").await?;
-            return Ok(format_number(v));
+            return self
+                .prop::<f64>(obj, VALUE, "CurrentValue")
+                .await
+                .ok()
+                .map(format_number);
         }
-        Ok(String::new())
+        Some(String::new())
     }
 
     /// The screen rectangle of `obj` as `[x, y, width, height]`.
@@ -769,9 +776,8 @@ impl Atspi {
                 if !(extras.values && is_field(role)) {
                     return None;
                 }
-                self.value(obj, n.ifaces, VALUE_CHARS)
+                self.value(obj, n.role, n.ifaces, VALUE_CHARS)
                     .await
-                    .ok()
                     .filter(|v| !v.is_empty())
             };
             let bounds = async {
@@ -1299,6 +1305,10 @@ fn no_screen_coords(obj: &Obj) -> String {
     )
 }
 
+fn secret(role: u32) -> bool {
+    role == PASSWORD_TEXT
+}
+
 fn not_responding(bus: &str) -> String {
     format!("AT-SPI peer {bus} is not responding")
 }
@@ -1316,6 +1326,12 @@ mod tests {
         assert!(Atspi::new().is_hung(":9.99"));
         let answered = capped(":9.98", async { Vec::new() }).await;
         assert!(answered.is_empty() && !Atspi::new().is_hung(":9.98"));
+    }
+
+    #[test]
+    fn only_a_password_field_keeps_its_value_unread() {
+        assert!(secret(PASSWORD_TEXT));
+        assert!(!secret(61));
     }
 
     #[test]
