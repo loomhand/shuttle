@@ -109,41 +109,6 @@ pub struct Recorder {
     ended: Mutex<Option<Ended>>,
 }
 
-/// A recording for the worker: its inputs until they end, where to save it and where to send it.
-pub struct Session {
-    id: String,
-    apps: Vec<String>,
-    per_point: f64,
-    path: PathBuf,
-    inputs: UnboundedReceiver<Input>,
-    done: oneshot::Sender<Value>,
-}
-
-struct Live {
-    path: PathBuf,
-    notes: UnboundedSender<Input>,
-    made: oneshot::Receiver<Value>,
-    _tap: Listening,
-}
-
-struct Ended {
-    path: PathBuf,
-    made: Option<oneshot::Receiver<Value>>,
-}
-
-struct Frame {
-    window: String,
-    png: Vec<u8>,
-    factor: f64,
-    bounds: [f64; 4],
-    at: Instant,
-}
-
-#[cfg(target_os = "macos")]
-type Listening = Tap;
-#[cfg(not(target_os = "macos"))]
-type Listening = std::convert::Infallible;
-
 impl Recorder {
     /// A recorder that saves each recording in `dir`, readable by this user only.
     pub fn new(dir: PathBuf) -> Self {
@@ -239,19 +204,40 @@ impl Recorder {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn listen(tx: UnboundedSender<Input>) -> Result<Listening, String> {
-    if !tap::allowed() {
-        tap::ask();
-        return Err(INPUT_MONITORING.to_owned());
-    }
-    Tap::start(tx)
+/// A recording for the worker: its inputs until they end, where to save it and where to send it.
+pub struct Session {
+    id: String,
+    apps: Vec<String>,
+    per_point: f64,
+    path: PathBuf,
+    inputs: UnboundedReceiver<Input>,
+    done: oneshot::Sender<Value>,
 }
 
-#[cfg(not(target_os = "macos"))]
-fn listen(_: UnboundedSender<Input>) -> Result<Listening, String> {
-    Err(OTHER_OS.to_owned())
+struct Live {
+    path: PathBuf,
+    notes: UnboundedSender<Input>,
+    made: oneshot::Receiver<Value>,
+    _tap: Listening,
 }
+
+struct Ended {
+    path: PathBuf,
+    made: Option<oneshot::Receiver<Value>>,
+}
+
+struct Frame {
+    window: String,
+    png: Vec<u8>,
+    factor: f64,
+    bounds: [f64; 4],
+    at: Instant,
+}
+
+#[cfg(target_os = "macos")]
+type Listening = Tap;
+#[cfg(not(target_os = "macos"))]
+type Listening = std::convert::Infallible;
 
 /// Runs `s` against `desk` until its inputs end, then saves it and sends it on; input while `acting` says shuttle itself acts is no user's.
 pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
@@ -408,6 +394,20 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
     let _ = done.send(recording);
 }
 
+#[cfg(target_os = "macos")]
+fn listen(tx: UnboundedSender<Input>) -> Result<Listening, String> {
+    if !tap::allowed() {
+        tap::ask();
+        return Err(INPUT_MONITORING.to_owned());
+    }
+    Tap::start(tx)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn listen(_: UnboundedSender<Input>) -> Result<Listening, String> {
+    Err(OTHER_OS.to_owned())
+}
+
 fn rooted(found: &Value) -> bool {
     found.is_null()
         || found["role"]
@@ -457,15 +457,12 @@ fn kept(app: Option<&str>, apps: &[String]) -> bool {
 fn window_of<'a>(windows: &'a [Value], at: &Value) -> Option<&'a Value> {
     let path = at["path"].as_array()?;
     let pid = at["pid"].as_u64();
-    path.iter()
-        .find_map(|n| {
-            windows.iter().find(|w| match n["id"].as_str() {
-                Some(id) => w["id"].as_str() == Some(id),
-                None => {
-                    n["role"] == "window" && w["title"] == n["name"] && w["pid"].as_u64() == pid
-                }
-            })
+    path.iter().find_map(|n| {
+        windows.iter().find(|w| match n["id"].as_str() {
+            Some(id) => w["id"].as_str() == Some(id),
+            None => n["role"] == "window" && w["title"] == n["name"] && w["pid"].as_u64() == pid,
         })
+    })
 }
 
 fn app_of(windows: &[Value], pid: Option<u64>) -> Option<String> {
