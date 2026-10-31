@@ -969,17 +969,18 @@ async function closed(title: string, pid: number | null) {
 function shownFields(nodes: Node[], fp: Pick<Fp, 'role' | 'name' | 'label'>) {
   return candidates(nodes, fp.role).filter(({ n, i }) => n.name === fp.name && (sibling(nodes, i) ?? '') === (fp.label ?? '') && n.shown)
 }
-async function typedInto(w: Win, text: string): Promise<Fp | undefined> {
+async function typedInto(w: Win, text: string): Promise<{ fp?: Fp; kept?: Kept }> {
   const t0 = Date.now(); const squash = (v: string) => v.replace(/\s+/g, '')
   try {
-    const nodes = parse(await snapOf(w))
+    const snap = await snapOf(w); const nodes = parse(snap)
+    const kept: Kept = { id: w.id, snap, nodes }
     const hit = candidates(nodes, 'textbox|searchbox').find(({ n }) => n.shown && squash(n.value) === squash(text))
-    if (!hit) return undefined
+    if (!hit) return { kept }
     const fp: Fp = { role: hit.n.role, name: hit.n.name, parent: '', nth: 0 }
     const label = sibling(nodes, hit.i); if (label) fp.label = label
     fp.nth = shownFields(nodes, fp).findIndex((x) => x.i === hit.i)
-    return fp
-  } catch { return undefined } finally { tick('blank', t0) }
+    return { fp, kept }
+  } catch { return {} } finally { tick('blank', t0) }
 }
 // the text of each element of `w` that holds text, by id, read before and after typing the driver may not confirm
 async function texts(w: Win): Promise<Map<string, Text> | null> {
@@ -1127,9 +1128,12 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       } else if (!shows(was, now, s.type)) throw new Surprise(`"${s.type}" did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
       rec.confirmed = true
     }
-    if (recording && first && !chooser && w) rec.blank = await typedInto(w, s.type)
+    const blank = recording && first && !chooser && w ? await typedInto(w, s.type) : null
+    if (blank) rec.blank = blank.fp
     const v = nl && !sub ? await focused() : null
-    if (sub && w) { rec.submit = true; await submit(w, true) } else if (v && isDialog(v.title === w?.title ? o : await outline(v)) && await closed(v.title, v.pid)) rec.submit = true
+    const vo = v && v.title !== w?.title ? await outline(v, {}, blank?.kept) : o
+    if (v && w && v.id === w.id && !isDialog(vo)) known.add(v.title)
+    if (sub && w) { rec.submit = true; await submit(w, true) } else if (v && isDialog(vo) && await closed(v.title, v.pid)) rec.submit = true
     if (dialog && w) {
       const want = s.type.slice(0, 30).replace(/\\/g, '\\\\').replace(/"/g, '\\"'); let after = ''
       for (let k = 0; k < 5; k++) { after = await outline(w); if (!isDialog(after) || after.split('\n').some((l) => /^\s*- (textbox|searchbox|combobox|spinbutton)\b.*: ".*/.test(l) && l.includes(want))) return; await sleep(40) }
