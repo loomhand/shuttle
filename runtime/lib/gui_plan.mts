@@ -812,8 +812,9 @@ async function byDom(nodes: Node[], id: string, hit: Hit | null, target: string,
   const idOf = async (n: Node) => (await desk.read(n.id, { web: true }).catch(() => null))?.dom_id
   if (hit && await idOf(hit.n) === id) return hit
   const roles = role ? new Set(role.split('|')) : ACTIVE
-  const named = (n: Node) => +(norm(n.name) === norm(target))
-  const pool = nodes.map((n, i) => ({ n, i })).filter(({ n }) => n.id !== hit?.n.id && roles.has(n.role)).sort((a, b) => named(b.n) - named(a.n)).slice(0, DOM_READS)
+  const all = nodes.map((n, i) => ({ n, i })).filter(({ n }) => n.id !== hit?.n.id && roles.has(n.role))
+  const named = all.filter(({ n }) => norm(n.name) === norm(target))
+  const pool = [...named, ...all.filter((c) => !named.includes(c)).slice(0, DOM_READS)]
   for (const c of pool) if (await idOf(c.n) === id) return { ...c, how: 'dom' }
   return hit
 }
