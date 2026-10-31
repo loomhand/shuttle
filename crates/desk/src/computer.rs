@@ -827,7 +827,8 @@ impl Computer {
             (STILL_FOR, WINDOW_STILL_FOR)
         };
         let start = Instant::now();
-        let mut deadline = start + wait;
+        let mut base = start + wait;
+        let mut deadline = base;
         let (mut last, mut since): (Option<Frame>, Instant) = (None, Instant::now());
         let (mut seen, mut focus, mut hold) = (windows.clone(), active, first_hold);
         let (mut still, mut changed) = (false, false);
@@ -879,7 +880,7 @@ impl Computer {
                 since = Instant::now();
             }
             if differs && !changed {
-                deadline = deadline.max((Instant::now() + SETTLE).min(start + COMMIT_SETTLE));
+                base = base.max((Instant::now() + SETTLE).min(start + COMMIT_SETTLE));
             }
             changed = differs;
             let moved = last.as_ref().is_none_or(|l| l.changes(&frame, &volatile));
@@ -893,9 +894,11 @@ impl Computer {
                 since = Instant::now();
                 last = Some(frame);
             }
-            if page && changed {
-                deadline = start + COMMIT_SETTLE;
-            }
+            deadline = if page && changed {
+                start + COMMIT_SETTLE
+            } else {
+                base
+            };
             still = changed && since.elapsed() >= hold;
         }
         self.end_volatile();
