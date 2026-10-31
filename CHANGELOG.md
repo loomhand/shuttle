@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.35 - 2026-10-31
+
+- **macOS: foreground input yields to you.** A foreground click, drag, scroll, key or typed text, `computer_act` input and bringing a window to the front are refused, with nothing sent, while you used the mouse or keyboard in the last second; the error says so, and a call once you stop goes through. shuttle's own input does not count as yours. Background input is not checked. [safety.md](docs/safety.md) has the rule and its limit.
+- **Linux: a password field's value is never read.** A snapshot, `find` and `read` leave out the value and text of an AT-SPI password field, so GTK4 password entries no longer show their text. A GTK4 entry that only hides its text is a plain text field to accessibility and still shows it ([wire.md](docs/wire.md)).
+- **Linux: an action that timed out may still land.** When an app stops answering, an accessibility action that timed out says it was sent and may still take effect once the app answers, so read its effect before acting again.
+- **`caveats` in a `gui_plan` result.** On Linux a step whose only proof is an accessibility action's reply, and that no later step reads, is listed under `caveats`; the plan still passes.
+
 ## 0.1.34 - 2026-10-31
 
 - **A stop report for recorded checks.** When an `after`, `focus` or `web` check, or a recorded click whose fallbacks all miss, stops a `gui_plan`, the result carries `stopped: {step, intent, reason, remaining}` next to `error`, so an agent can take over from that step. A recorded click whose fallbacks all miss is now an error like the other recorded checks.
