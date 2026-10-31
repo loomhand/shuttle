@@ -111,6 +111,18 @@ impl Volatile {
     }
 }
 
+#[derive(Default)]
+struct State {
+    touched: Option<Instant>,
+    /// Counts actions begun, so a sample grabbed across a begin is dropped.
+    actions: u64,
+    acting: bool,
+    /// Block hashes sampled since the last action ended, oldest first.
+    samples: VecDeque<(Instant, Vec<u64>)>,
+    /// The samples of the pauses before earlier actions, newest first, kept while the newer ones span less than [`WINDOW`] by more than [`SAMPLE_EVERY`].
+    pauses: VecDeque<Vec<(Instant, Vec<u64>)>>,
+}
+
 struct Shared {
     state: Mutex<State>,
     wake: Condvar,
@@ -164,18 +176,6 @@ impl Shared {
             std::thread::sleep(SAMPLE_EVERY);
         }
     }
-}
-
-#[derive(Default)]
-struct State {
-    touched: Option<Instant>,
-    /// Counts actions begun, so a sample grabbed across a begin is dropped.
-    actions: u64,
-    acting: bool,
-    /// Block hashes sampled since the last action ended, oldest first.
-    samples: VecDeque<(Instant, Vec<u64>)>,
-    /// The samples of the pauses before earlier actions, newest first, kept while the newer ones span less than [`WINDOW`] by more than [`SAMPLE_EVERY`].
-    pauses: VecDeque<Vec<(Instant, Vec<u64>)>>,
 }
 
 /// What `block` did in one pause together with what it did in the later pauses, `carried`.
