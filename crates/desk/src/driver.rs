@@ -278,7 +278,7 @@ fn since_user_input() -> f64 {
     USER_SINCE.with(std::cell::Cell::get)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn user_input_since(seconds: f64) {
     USER_SINCE.with(|s| s.set(seconds));
 }
