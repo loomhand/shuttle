@@ -72,6 +72,8 @@ const DEFAULT_EDGE: u32 = 1024;
 const PIXELS_PER_TOKEN: u32 = 750;
 const PHOTO_COLORS: usize = 2500;
 const COLOR_STRIDE: usize = 7;
+const COLOR_BITS: u32 = 14;
+const COLOR_EMPTY: u32 = u32::MAX;
 const MAX_WAIT_SECS: f64 = 10.0;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_SESSION: &str = "computer";
@@ -2394,12 +2396,23 @@ fn encode(width: u32, height: u32, rgb: &[u8]) -> Option<Vec<u8>> {
 
 /// Whether every [`COLOR_STRIDE`]th pixel shows more than [`PHOTO_COLORS`] distinct colours.
 fn photo(rgb: &[u8]) -> bool {
-    let mut seen = HashSet::new();
-    rgb.as_chunks::<3>()
-        .0
-        .iter()
-        .step_by(COLOR_STRIDE)
-        .any(|p| seen.insert(*p) && seen.len() > PHOTO_COLORS)
+    let mut table = [COLOR_EMPTY; 1 << COLOR_BITS];
+    let mut seen = 0;
+    for p in rgb.as_chunks::<3>().0.iter().step_by(COLOR_STRIDE) {
+        let key = u32::from(p[0]) << 16 | u32::from(p[1]) << 8 | u32::from(p[2]);
+        let mut i = (key.wrapping_mul(0x9e37_79b1) >> (32 - COLOR_BITS)) as usize;
+        while table[i] != COLOR_EMPTY && table[i] != key {
+            i = (i + 1) & (table.len() - 1);
+        }
+        if table[i] == COLOR_EMPTY {
+            table[i] = key;
+            seen += 1;
+            if seen > PHOTO_COLORS {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn decode_png(data: &[u8]) -> Option<(png::OutputInfo, Vec<u8>)> {
@@ -4056,6 +4069,56 @@ mod tests {
         writer.write_image_data(pixels).unwrap();
         writer.finish().unwrap();
         out
+    }
+
+    #[test]
+    fn photo_answers_as_a_hash_set_of_the_sampled_colours_does() {
+        let by_set = |rgb: &[u8]| {
+            let mut seen = HashSet::new();
+            rgb.as_chunks::<3>()
+                .0
+                .iter()
+                .step_by(COLOR_STRIDE)
+                .any(|p| seen.insert(*p) && seen.len() > PHOTO_COLORS)
+        };
+        let mut seed = 11u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (seed >> 16) as u8
+        };
+        let pixels = 1280 * 800;
+        let noise: Vec<u8> = (0..pixels * 3).map(|_| next()).collect();
+        let flat = vec![230u8; pixels * 3];
+        let ui: Vec<u8> = (0..pixels)
+            .flat_map(|i| {
+                let v = if (i / 1280) % 20 == 0 || (i % 1280) % 40 == 0 {
+                    40
+                } else {
+                    230
+                };
+                [v, v, ((i % 1280) / 40 * 6) as u8]
+            })
+            .collect();
+        let blocks = |k: usize| -> Vec<u8> {
+            (0..pixels)
+                .flat_map(|i| {
+                    let c = ((i / COLOR_STRIDE % k) as u32).wrapping_mul(2_654_435);
+                    [(c >> 16) as u8, (c >> 8) as u8, c as u8]
+                })
+                .collect()
+        };
+        for (name, rgb) in [
+            ("noise", noise),
+            ("flat", flat),
+            ("ui", ui),
+            ("below", blocks(PHOTO_COLORS - 1)),
+            ("at", blocks(PHOTO_COLORS)),
+            ("above", blocks(PHOTO_COLORS + 1)),
+            ("far above", blocks(PHOTO_COLORS * 4)),
+        ] {
+            assert_eq!(photo(&rgb), by_set(&rgb), "{name}");
+        }
+        assert!(!photo(&blocks(PHOTO_COLORS)) && photo(&blocks(PHOTO_COLORS + 1)));
     }
 
     #[test]
