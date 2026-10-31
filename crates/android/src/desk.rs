@@ -9,6 +9,7 @@ use desk_core::args::{
     ActArgs, AtArgs, ClickArgs, FindArgs, IdArgs, KeyArgs, LaunchArgs, ReadArgs, ShotArgs,
     SnapArgs, TypeArgs, WaitArgs, WindowArgs, parse,
 };
+use desk_core::shot::crop_png;
 use desk_core::text::{MAX_FOUND, NAME_CHARS, Named, matches, ms, quote};
 use desk_core::window::{self, Window};
 use desk_core::wire::Output;
@@ -967,7 +968,7 @@ async fn shot(android: &Android, a: ShotArgs) -> Result<Output, String> {
         {
             (iw, ih, png)
         }
-        _ => crop(&png, rect)?,
+        _ => crop_png(&png, rect, 1.0, None)?,
     };
     let mut out = json!({"ok": true, "width": w, "height": h});
     if let Some(path) = a.path {
@@ -986,35 +987,6 @@ fn png_size(png: &[u8]) -> Option<(u32, u32)> {
     let size = |at: usize| Some(u32::from_be_bytes(png.get(at..at + 4)?.try_into().ok()?));
     png.starts_with(b"\x89PNG\r\n\x1a\n").then_some(())?;
     Some((size(16)?, size(20)?))
-}
-
-/// The RGB PNG of rectangle `[x, y, w, h]` of a PNG.
-fn crop(png: &[u8], [x, y, w, h]: [f64; 4]) -> Result<(u32, u32, Vec<u8>), String> {
-    let mut dec = png::Decoder::new(std::io::Cursor::new(png));
-    dec.set_transformations(png::Transformations::normalize_to_color8());
-    let mut reader = dec
-        .read_info()
-        .map_err(|e| format!("decode screenshot: {e}"))?;
-    let mut buf = vec![0; reader.output_buffer_size().ok_or("screenshot too large")?];
-    let info = reader
-        .next_frame(&mut buf)
-        .map_err(|e| format!("decode screenshot: {e}"))?;
-    let channels = info.color_type.samples();
-    let clip = |v: f64, max: u32| v.floor().clamp(0.0, f64::from(max)) as u32;
-    let (left, top) = (clip(x, info.width), clip(y, info.height));
-    let (right, bottom) = (clip(x + w, info.width), clip(y + h, info.height));
-    if right <= left || bottom <= top {
-        return Err("the rectangle is off the screen".to_owned());
-    }
-    let (cw, ch) = (right - left, bottom - top);
-    let mut rgb = Vec::with_capacity((cw * ch * 3) as usize);
-    for row in top..bottom {
-        for col in left..right {
-            let at = (row as usize * info.width as usize + col as usize) * channels;
-            rgb.extend_from_slice(&buf[at..at + 3]);
-        }
-    }
-    Ok((cw, ch, png_rgb(cw, ch, &rgb)?))
 }
 
 /// Lists the windows until they differ from `since` or `limit` of wall time passes, list reads included, 5 s at most.
@@ -1042,17 +1014,6 @@ where
             return Ok(out);
         }
     }
-}
-
-fn png_rgb(width: u32, height: u32, rgb: &[u8]) -> Result<Vec<u8>, String> {
-    let mut out = Vec::new();
-    let mut enc = png::Encoder::new(&mut out, width, height);
-    enc.set_color(png::ColorType::Rgb);
-    enc.set_depth(png::BitDepth::Eight);
-    enc.write_header()
-        .and_then(|mut w| w.write_image_data(rgb))
-        .map_err(|e| format!("encode PNG: {e}"))?;
-    Ok(out)
 }
 
 async fn write_bytes(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
@@ -1501,25 +1462,6 @@ mod tests {
     }
 
     #[test]
-    fn crop_cuts_an_rgb_rectangle() {
-        let rgba: Vec<u8> = (0..4 * 3 * 2).map(|i| i as u8).collect();
-        let mut src = Vec::new();
-        let mut enc = png::Encoder::new(&mut src, 3, 2);
-        enc.set_color(png::ColorType::Rgba);
-        enc.set_depth(png::BitDepth::Eight);
-        enc.write_header().unwrap().write_image_data(&rgba).unwrap();
-        let (w, h, out) = crop(&src, [1.0, 1.0, 5.0, 5.0]).unwrap();
-        assert_eq!((w, h), (2, 1));
-        let mut dec = png::Decoder::new(std::io::Cursor::new(out))
-            .read_info()
-            .unwrap();
-        let mut buf = vec![0; dec.output_buffer_size().unwrap()];
-        dec.next_frame(&mut buf).unwrap();
-        assert_eq!(&buf[..6], &[16, 17, 18, 20, 21, 22]);
-        assert!(crop(&src, [9.0, 9.0, 1.0, 1.0]).is_err());
-    }
-
-    #[test]
     fn a_png_header_gives_its_size_and_crop_reads_rgb_and_rgba_alike() {
         let encode = |color, channels: usize| {
             let data: Vec<u8> = (0..3 * 2 * channels).map(|i| i as u8 + 1).collect();
@@ -1536,7 +1478,7 @@ mod tests {
         assert_eq!(png_size(&rgb), Some((3, 2)));
         assert_eq!(png_size(b"not a png at all, but long enough"), None);
         let pixels = |png: &[u8]| {
-            let (_, _, cut) = crop(png, [0.0, 0.0, 3.0, 2.0]).unwrap();
+            let (_, _, cut) = crop_png(png, [0.0, 0.0, 3.0, 2.0], 1.0, None).unwrap();
             let mut dec = png::Decoder::new(std::io::Cursor::new(cut))
                 .read_info()
                 .unwrap();

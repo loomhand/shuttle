@@ -1,6 +1,6 @@
 [package]
 name = "shuttle-desk-core"
-description = "The desk wire, call arguments and window matching shared by every desk host"
+description = "The desk wire, call arguments, window matching and screenshot crops shared by every desk host"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,7 @@ publish.workspace = true
 name = "desk_core"
 
 [dependencies]
+png = "0.18"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["io-util"] }
