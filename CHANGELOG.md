@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.36 - 2026-10-31
+
+- **Linux: an element id of a GTK 4 app outside `org.` reaches its element.** A GTK 4 app whose app id does not start with `org.` registers its accessibles under its own path. A call that takes an element `id` from such an app now reaches that element; before, the id resolved under the AT-SPI prefix to an object that does not exist, and the call failed.
+- **Linux: a screen region converts to RGB 2.3x faster.** A 1920x1080 region takes 1.4 ms instead of 3.2 ms on arm64; the bytes are the same.
+- **A screenshot is shrunk about 9% faster.** `computer_state` and `computer_act` re-encode each screenshot; its RGBA to RGB step is 2x faster, which takes about 1.7 ms off a 1920x1080 screenshot. The bytes are the same.
+
 ## 0.1.35 - 2026-10-31
 
 - **macOS: foreground input yields to you.** A foreground click, drag, scroll, key or typed text, `computer_act` input and bringing a window to the front are refused, with nothing sent, while you used the mouse or keyboard in the last second; the error says so, and a call once you stop goes through. shuttle's own input does not count as yours. Background input is not checked. [safety.md](docs/safety.md) has the rule and its limit.
