@@ -808,10 +808,7 @@ mod tests {
                 name: "New".into(),
                 description: String::new(),
                 pid: Some(7),
-                path: vec![
-                    ("menu", "File".into()),
-                    ("window", "Untitled".into()),
-                ],
+                path: vec![("menu", "File".into()), ("window", "Untitled".into())],
                 secret: false,
                 page: None,
             }),
