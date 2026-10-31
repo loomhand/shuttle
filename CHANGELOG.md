@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.34 - 2026-10-31
 
 - **A stop report for recorded checks.** When an `after`, `focus` or `web` check, or a recorded click whose fallbacks all miss, stops a `gui_plan`, the result carries `stopped: {step, intent, reason, remaining}` next to `error`, so an agent can take over from that step. A recorded click whose fallbacks all miss is now an error like the other recorded checks.
 - **Drafts of web input.** `record_stop` drafts a recording made in a web page into web steps: the first step into a page opens its address (`{app, url}`), and each click and typed run carries `web` with the page address and DOM id, so the replay checks the page and picks the element by its id. Values the caller names are templated in page addresses too.
