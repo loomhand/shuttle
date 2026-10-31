@@ -10,6 +10,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use desk_core::args::parse;
 use desk_core::press::{MENU_POLL, MENU_POLLS};
+use desk_core::shot::OFF_SCREEN;
 use desk_core::text::norm;
 use desk_core::wire::Output;
 use fast_image_resize as fr;
@@ -91,7 +92,6 @@ const WM_WAIT: Duration = Duration::from_secs(10);
 const WM_POLL: Duration = Duration::from_millis(100);
 const AX_UNSUPPORTED: &str = "returned -25206";
 const PRESSED_INSTEAD: &str = "the field got its press action instead, which may not move the keyboard focus to it: read the field before typing into it";
-const OFF_SCREEN: &str = "the rectangle is off the screen";
 const XTEST_TYPED: &str = "Typed text into the focused desktop application.";
 const NO_TEXT_TARGET: &str =
     "no application window is on the screen to type into; open or focus one first";
@@ -2387,7 +2387,6 @@ fn shrink(b64: &str) -> Option<String> {
     (out.len() < data.len()).then(|| B64.encode(&out))
 }
 
-/// The RGB of RGBA pixels `rgba`.
 fn rgb(rgba: &[u8]) -> Vec<u8> {
     let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
     for p in rgba.as_chunks::<4>().0 {
@@ -3360,7 +3359,6 @@ mod tests {
         assert_eq!(clicks.len(), 1, "{clicks:?}");
     }
 
-    /// A get_desktop_state reply with a full-size `width` by `height` screenshot of a screen `screen_width` wide.
     fn full_shot(width: u32, height: u32, screen_width: u32) -> Value {
         let image = png_of(width, height, &vec![255; (width * height * 4) as usize]);
         json!({"ok": true, "result": {"content": [{"type": "image", "data": image, "mimeType": "image/png"}], "structuredContent": {"screen_width": screen_width, "screenshot_width": width}}})
