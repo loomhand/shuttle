@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use desk_core::wire::Call;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use shuttle_desk::server::Handler;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -280,7 +281,9 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                 let t = t0.elapsed().as_millis();
                 let event = match input {
                     Input::Note(text) => {
-                        events.push(json!({"t": t, "kind": "note", "text": text}));
+                        let mut e = json!({"t": t, "kind": "note"});
+                        e["text"] = text.into();
+                        events.push(e);
                         continue;
                     }
                     _ if acting() => continue,
@@ -310,11 +313,11 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                         windows = list(desk).await;
                         light(desk, &windows, &apps, &mut asked).await;
                         let win = window_of(&windows, &at);
-                        let app = win.as_ref().and_then(|w| w["app"].as_str()).map(str::to_owned).or_else(|| app_of(&windows, pid));
+                        let app = win.and_then(|w| w["app"].as_str()).map(str::to_owned).or_else(|| app_of(&windows, pid));
                         if kept(app.as_deref(), &apps) {
-                            let late = frame.as_ref().is_none_or(|f| f.at < acted || win.as_ref().is_none_or(|w| w["id"] != f.window.as_str()));
+                            let late = frame.as_ref().is_none_or(|f| f.at < acted || win.is_none_or(|w| w["id"] != f.window.as_str()));
                             if late {
-                                frame = framed(desk, &windows, win.as_ref(), &apps).await;
+                                frame = framed(desk, &windows, win, &apps).await;
                             }
                             let mut e = json!({
                                 "t": t, "kind": "click", "x": x, "y": y, "button": if right { "right" } else { "left" }, "count": count, "mods": mods,
@@ -326,10 +329,10 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                             if at["web"].is_object() {
                                 e["web"] = at["web"].take();
                             }
-                            if let Some(w) = &win {
+                            if let Some(w) = win {
                                 e["window"] = json!({"title": w["title"], "bounds": w["bounds"]});
                             }
-                            let mine = frame.as_ref().filter(|f| win.as_ref().is_some_and(|w| w["id"] == f.window.as_str()));
+                            let mine = frame.as_ref().filter(|f| win.is_some_and(|w| w["id"] == f.window.as_str()));
                             if let Some((png, factor, offset)) = mine.and_then(|f| crop(f, x, y, per_point)) {
                                 e["crop"] = png.into();
                                 e["crop_scale"] = factor.into();
@@ -451,7 +454,7 @@ fn kept(app: Option<&str>, apps: &[String]) -> bool {
 }
 
 // a path from the tap names its window by role and title, one from desk_at by id
-fn window_of(windows: &[Value], at: &Value) -> Option<Value> {
+fn window_of<'a>(windows: &'a [Value], at: &Value) -> Option<&'a Value> {
     let path = at["path"].as_array()?;
     let pid = at["pid"].as_u64();
     path.iter()
@@ -463,7 +466,6 @@ fn window_of(windows: &[Value], at: &Value) -> Option<Value> {
                 }
             })
         })
-        .cloned()
 }
 
 fn app_of(windows: &[Value], pid: Option<u64>) -> Option<String> {
@@ -507,7 +509,10 @@ async fn list<H: Handler>(desk: &H) -> Vec<Value> {
     call(desk, "desk_windows", json!({}))
         .await
         .ok()
-        .and_then(|v| v.as_array().cloned())
+        .and_then(|v| match v {
+            Value::Array(a) => Some(a),
+            _ => None,
+        })
         .unwrap_or_default()
 }
 
@@ -527,7 +532,7 @@ async fn framed<H: Handler>(
     if !kept(w["app"].as_str(), apps) {
         return None;
     }
-    let bounds: [f64; 4] = serde_json::from_value(w["bounds"].clone()).ok()?;
+    let bounds = <[f64; 4]>::deserialize(&w["bounds"]).ok()?;
     let out = desk
         .answer(asked("desk_shot", json!({"window": w["title"]})))
         .await;
