@@ -32,7 +32,7 @@ Every platform installs and runs `shuttle mcp`. On macOS and Windows, the `desk`
 - **Launched apps** move into a systemd user scope of their own (`app-desk-APP-PID.scope`) when a systemd user manager runs, so a restart of the daemon or its service does not end them. The move is best effort: `scoped: true` means the request to systemd went out, before its start job finished, and a stop that lands between the driver's launch reply and the move leaves the app where it was. Without a user manager, the launch result says `scoped: false`: the app stays in the daemon's cgroup, and a restart of the daemon or its service can end it.
 - **X11 is required.** The desk reads the screen, types and closes windows through the X server; a Wayland-only session is not supported. Under XWayland, X11 apps work as far as the compositor lets an X client see them.
 - **Known limits.** Two windows of one process with the same title both show the active state when one of them is active. A modifier that Sticky Keys latched changes what XTest types. A key XTest pressed stays down if the X connection dies mid-line.
-- **AT-SPI** must be on: most desktops start it; on a minimal session, start `at-spi-bus-launcher` and set `GTK_MODULES=gail:atk-bridge` for older GTK apps.
+- **AT-SPI** must be on: most desktops start it; on a minimal session, start `at-spi-bus-launcher` and set `GTK_MODULES=gail:atk-bridge` for older GTK apps. The launcher needs `DISPLAY` when it starts: it then sets the `AT_SPI_BUS` root window property, without which Qt apps often do not join the bus.
 
 ## Android over adb
 
