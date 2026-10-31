@@ -2274,9 +2274,7 @@ fn fit(width: u32, height: u32, rgb: &[u8], edge: u32) -> (u32, u32, Vec<u8>) {
     (tw, th, out)
 }
 
-/// The driver's reply to an input with its points in screenshot pixels, worded as such: a desktop click's
-/// `Sent screen-absolute <click> at (x,y)` (Linux) or `at desktop-pixel (…) → screen-point (x,y)` (macOS, whose
-/// screen point is the one the caller's screenshot point maps to) reads `Sent <click> at screenshot point (x,y)`.
+/// The driver's reply to an input, its click point worded in screenshot pixels: `Sent <click> at screenshot point (x,y)`.
 fn shot_reply(text: &str, scale: f64) -> String {
     let text = shot_points(text, scale);
     let Some((head, rest)) = text.split_once("Sent screen-absolute ") else {
