@@ -34,6 +34,7 @@ const INPUT_TOOLS: [&str; 9] = [
     "hotkey",
 ];
 const USER_IDLE: Duration = Duration::from_secs(1);
+const OWN_INPUT_LAG: Duration = Duration::from_millis(600);
 #[cfg(all(target_os = "macos", not(test)))]
 const HID_SYSTEM_STATE: i32 = 1;
 #[cfg(all(target_os = "macos", not(test)))]
@@ -247,9 +248,10 @@ struct Request<'a> {
     args: &'a Value,
 }
 
-/// Whether HID input `since` seconds ago is the user's: it is within [`USER_IDLE`] and after the end of the driver's own last input, which also counts as HID input.
+/// Whether HID input `since` seconds ago is the user's: it is within [`USER_IDLE`] and more than [`OWN_INPUT_LAG`] after the end of the driver's own last input, whose events reach the HID counter up to that late.
 fn user_busy(since: f64, own: Option<Duration>) -> bool {
-    since < USER_IDLE.as_secs_f64() && own.is_none_or(|own| since < own.as_secs_f64())
+    since < USER_IDLE.as_secs_f64()
+        && own.is_none_or(|own| since < own.saturating_sub(OWN_INPUT_LAG).as_secs_f64())
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
@@ -347,12 +349,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_input_after_the_drivers_own_and_within_a_second_is_the_users() {
+    fn only_input_within_a_second_and_past_the_lag_of_the_drivers_own_is_the_users() {
+        let past = OWN_INPUT_LAG + Duration::from_millis(100);
         assert!(user_busy(0.2, None));
         assert!(!user_busy(1.5, None));
         assert!(!user_busy(f64::INFINITY, None));
         assert!(!user_busy(0.2, Some(Duration::from_millis(100))));
-        assert!(user_busy(0.05, Some(Duration::from_millis(100))));
+        assert!(!user_busy(0.0, Some(Duration::from_millis(100))));
+        assert!(!user_busy(0.0, Some(OWN_INPUT_LAG)));
+        assert!(!user_busy(0.15, Some(past)));
+        assert!(user_busy(0.05, Some(past)));
+        assert!(!user_busy(1.2, Some(USER_IDLE + past)));
     }
 
     #[test]
