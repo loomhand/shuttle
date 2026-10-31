@@ -34,6 +34,7 @@ const DBUS: &str = "org.freedesktop.DBus";
 const DBUS_PATH: &str = "/org/freedesktop/DBus";
 const CALL_TIMEOUT: Duration = Duration::from_secs(3);
 const HUNG_FOR: Duration = Duration::from_secs(10);
+const WRITES: [&str; 3] = ["DoAction", "GrabFocus", "SelectChild"];
 const APP_FRAMES: Duration = Duration::from_millis(500);
 const MANAGED_KIDS: i32 = 200;
 const LIST_ROLES: [u32; 4] = [31, 55, 65, 66];
@@ -966,7 +967,7 @@ impl Atspi {
             Ok(Err(e)) => Err(format!("{iface}.{method} on {}: {e}", obj.id())),
             Err(_) => {
                 mark_hung(&obj.bus);
-                Err(not_responding(&obj.bus))
+                Err(timed_out(&obj.bus, method))
             }
         }
     }
@@ -1313,6 +1314,17 @@ fn not_responding(bus: &str) -> String {
     format!("AT-SPI peer {bus} is not responding")
 }
 
+fn timed_out(bus: &str, method: &str) -> String {
+    if WRITES.contains(&method) {
+        format!(
+            "{}; the {method} was sent and may still take effect once it answers, so read its effect back before acting again",
+            not_responding(bus)
+        )
+    } else {
+        not_responding(bus)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1326,6 +1338,14 @@ mod tests {
         assert!(Atspi::new().is_hung(":9.99"));
         let answered = capped(":9.98", async { Vec::new() }).await;
         assert!(answered.is_empty() && !Atspi::new().is_hung(":9.98"));
+    }
+
+    #[test]
+    fn a_write_that_timed_out_may_still_land_and_a_read_says_nothing_of_it() {
+        for write in WRITES {
+            assert!(timed_out(":1.0", write).contains("may still take effect"));
+        }
+        assert_eq!(timed_out(":1.0", "GetText"), not_responding(":1.0"));
     }
 
     #[test]
