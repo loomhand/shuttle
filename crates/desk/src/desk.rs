@@ -1763,17 +1763,17 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let window_id: i64 =
             w.id.parse()
                 .map_err(|_| format!("window id {:?} is not a number", w.id))?;
-        let v = self
+        let mut v = self
             .call(
                 "bring_to_front",
                 json!({"pid": w.pid, "window_id": window_id}),
             )
             .await?;
         let mut out = json!({"ok": true, "title": w.title, "pid": w.pid});
-        let done = &v["structuredContent"];
-        if let Some(path) = done.get("path") {
-            out["path"] = path.clone();
-            out["front"] = done["observed"]["workspace_frontmost_pid"].clone();
+        let done = &mut v["structuredContent"];
+        if let Some(path) = done.get_mut("path") {
+            out["path"] = path.take();
+            out["front"] = done["observed"]["workspace_frontmost_pid"].take();
         }
         Ok(out.to_string())
     }
@@ -1853,12 +1853,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         });
         let w = self.allow.pick(windows, window, pid)?;
         let id = w.id.parse::<i64>().ok();
-        let listed = raw
-            .iter()
-            .find(|r| r["window_id"].as_i64() == id)
-            .cloned()
-            .unwrap_or_default();
-        if by_title && self.bg() && mac {
+        let at = raw.iter().position(|r| r["window_id"].as_i64() == id);
+        if by_title
+            && self.bg()
+            && mac
+            && let Some(listed) = at.map(|i| &raw[i])
+        {
             let twins: Vec<&Value> = raw
                 .iter()
                 .filter(|r| r["pid"] == listed["pid"] && r["title"] == listed["title"])
@@ -1884,6 +1884,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 ));
             }
         }
+        let listed = at.map_or(Value::Null, |i| raw.swap_remove(i));
         self.classify(&listed);
         Ok((w, listed, rivals))
     }
