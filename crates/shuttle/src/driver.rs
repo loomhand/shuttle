@@ -21,6 +21,7 @@ const GLIDE_MS: &str = "1";
 const LISTEN_WAIT: Duration = Duration::from_secs(10);
 const STOP_WAIT: Duration = Duration::from_secs(3);
 const POLL: Duration = Duration::from_millis(100);
+const LISTEN_POLL: Duration = Duration::from_millis(10);
 const RESTART_DELAY: Duration = Duration::from_secs(1);
 
 /// A cua-driver this daemon runs.
@@ -120,8 +121,8 @@ impl Proc {
                     self.endpoint
                 ));
             }
-            tokio::time::sleep(POLL).await;
-            waited += POLL;
+            tokio::time::sleep(LISTEN_POLL).await;
+            waited += LISTEN_POLL;
         }
         Ok(running)
     }
