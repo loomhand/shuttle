@@ -134,3 +134,11 @@ test('a page that never shows a document stops the web step with a stop report',
   assert.equal((r.stopped as { step: number }).step, 0)
   assert.deepEqual(pressed(calls), [])
 })
+
+test('a DOM id finds its row among a hundred same-named controls', async (t) => {
+  const rows = Array.from({ length: 100 }, (_, i) => ({ id: `7/${i + 10}`, role: 'button', name: 'Delete', dom_id: `delete${i}` }))
+  const calls = await browser(t, { url: () => 'https://shop.test/admin', els: rows })
+  const r = await main({ steps: [{ click: 'Delete', role: 'button', web: { url: 'https://shop.test/admin', id: 'delete90' } }] })
+  assert.equal(r.ok, true, JSON.stringify(r).slice(0, 300))
+  assert.deepEqual(pressed(calls), ['7/100'])
+})
