@@ -158,7 +158,7 @@ impl Driver {
 
     pub(crate) fn admit(&self, tool: &str, args: &Value) -> Result<bool, String> {
         let foreground = INPUT_TOOLS.contains(&tool) && args["delivery_mode"] != "background";
-        if foreground {
+        if foreground || tool == "bring_to_front" {
             let since = since_user_input();
             if user_busy(since, self.since_own_input()) {
                 return Err(format!(
@@ -572,6 +572,27 @@ mod tests {
         assert!(d.since_own_input().is_none());
         d.call("click", json!({"x": 10, "y": 10})).await.unwrap();
         assert!(d.since_own_input().is_some());
+        drop(d);
+        daemon.await.unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn bring_to_front_refuses_while_the_user_is_busy_and_never_counts_as_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let d = Driver::new(socket.to_string_lossy().into_owned());
+        let front = json!({"pid": 4, "window_id": 1});
+        user_input_since(0.2);
+        let refused = d.call("bring_to_front", front.clone()).await.unwrap_err();
+        assert!(
+            refused.contains("the user used the mouse or keyboard"),
+            "{refused}"
+        );
+        user_input_since(f64::INFINITY);
+        let daemon = answering(&socket);
+        d.call("bring_to_front", front).await.unwrap();
+        assert!(d.since_own_input().is_none());
         drop(d);
         daemon.await.unwrap();
     }
