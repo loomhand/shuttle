@@ -205,8 +205,8 @@ impl Input for Driver {
             let _ = self.send("end_session", &json!({"session": once})).await;
             return done;
         }
-        let input = INPUT_TOOLS.contains(&tool);
-        if input && args["delivery_mode"] != "background" {
+        let foreground = INPUT_TOOLS.contains(&tool) && args["delivery_mode"] != "background";
+        if foreground {
             let since = since_user_input();
             if user_busy(since, self.since_own_input()) {
                 return Err(format!(
@@ -215,7 +215,7 @@ impl Input for Driver {
             }
         }
         let done = self.call_session(tool, args).await;
-        if input {
+        if foreground {
             *self
                 .last_input
                 .lock()
@@ -510,6 +510,47 @@ mod tests {
         assert_eq!(sessions[0], sessions[1]);
         assert_eq!(sessions[2], sessions[3]);
         assert_ne!(sessions[0], sessions[2]);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn answering(socket: &std::path::Path) -> tokio::task::JoinHandle<Vec<Value>> {
+        let listener = tokio::net::UnixListener::bind(socket).unwrap();
+        tokio::spawn(async move {
+            let mut lines = Vec::new();
+            while let Ok(Ok((s, _))) =
+                tokio::time::timeout(Duration::from_millis(500), listener.accept()).await
+            {
+                let mut s = BufReader::new(s);
+                let mut line = String::new();
+                s.read_line(&mut line).await.unwrap();
+                s.get_mut()
+                    .write_all(b"{\"ok\":true,\"result\":{}}\n")
+                    .await
+                    .unwrap();
+                lines.push(serde_json::from_str::<Value>(&line).unwrap());
+            }
+            lines
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn only_foreground_input_counts_as_the_drivers_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let daemon = answering(&socket);
+        let d = Driver::new(socket.to_string_lossy().into_owned());
+        d.call(
+            "click",
+            json!({"x": 10, "y": 10, "delivery_mode": "background"}),
+        )
+        .await
+        .unwrap();
+        assert!(d.since_own_input().is_none());
+        d.call("click", json!({"x": 10, "y": 10})).await.unwrap();
+        assert!(d.since_own_input().is_some());
+        drop(d);
+        daemon.await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]
