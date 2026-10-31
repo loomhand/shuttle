@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.37 - 2026-10-31
+
+- **macOS and Windows: one capture per screenshot.** `computer_state` and `computer_act` ask cua-driver for one full-size capture and shrink it here with the driver's own Lanczos3 filter, so the second, full-size capture that reset the driver's click scale is gone; an action whose settle ends with the screen still returns the capture it settled on. On a 2x Mac `computer_state` takes 658 ms instead of 1280 ms and a click 2036 ms instead of 3249 ms; on Windows `computer_state` takes 194 ms instead of 314 ms.
+- **macOS: shuttle's own typing no longer counts as you.** Under load, macOS takes in shuttle's keys and scrolls up to half a second after cua-driver answers, and the yield check took them for yours and refused the next input, such as the Return after a typed name. Input in the 0.6 s after shuttle's own now counts as its own; the check does not see you in that time ([safety.md](docs/safety.md)).
+- **Linux: a short stall no longer hides an app for 10 s.** An app that answers AT-SPI late keeps its windows, marked stale, and counts as not responding only after 2 s of misses past a 10 s launch grace; it is listed again as soon as it answers. A call to an app that stopped answering gives up after 2.5 s with "AT-SPI peer ... is not responding".
+- **Linux: a Qt window made of a bare widget can be picked.** Its top level has the AT-SPI role `filler`, which is now a window. Qt apps also need the AT-SPI launcher to start with `DISPLAY` ([platforms.md](docs/platforms.md)).
+- **A computer session the driver ended while idle starts again.** cua-driver ends an idle session and refuses it from then on; a computer call that gets this answer starts the session again and is sent once more.
+- **Shorter waits after input.** A Chrome page change that reverts to the screen before the action ends the wait at its first-change deadline instead of 3 s; a left click in a dialog that changes nothing waits 600 ms instead of 1.5 s; on Linux a typed line's Return waits until the dialog's default button is sensitive, at most 300 ms, instead of 300 ms always.
+- **`gui_plan` reads less.** A step reuses the window list it just read, the type step reuses its window's tree, and a step that fails only to be retried reads no screen for its report: a Windows Save As plan is 222 ms faster, a typing plan 113 ms, a macOS plan 38 to 71 ms.
+- **Faster screenshots.** `screenshot` PNGs encode 40 to 65% faster at deflate level 2, 2 to 8% larger with the same pixels, and the photo check of a re-encoded screenshot is about 8 times faster. The daemon reaches the cua-driver it starts in about 40 ms instead of 108 ms.
+
 ## 0.1.36 - 2026-10-31
 
 - **Linux: an element id of a GTK 4 app outside `org.` reaches its element.** A GTK 4 app whose app id does not start with `org.` registers its accessibles under its own path. A call that takes an element `id` from such an app now reaches that element; before, the id resolved under the AT-SPI prefix to an object that does not exist, and the call failed.
