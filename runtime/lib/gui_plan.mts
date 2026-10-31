@@ -195,6 +195,7 @@ async function perform(p: Params): Promise<Result> {
       if (before && (s.wait || s.verify || s.expect)) before.confirmed = true
     } catch (e: unknown) {
       const sp = e instanceof Surprise ? e : new Surprise(e instanceof Error ? e.message : String(e), await seen())
+      if (sp.late && sp.seen.outline === undefined && sp.reason !== NO_FRONT) sp.seen = await seen()
       if (sp.reason === NO_FRONT || sp.seen.outline === `(${NO_FRONT})`) { const why = await frontless(); if (sp.reason === NO_FRONT) sp.reason = why; if (sp.seen.outline === `(${NO_FRONT})`) sp.seen.outline = `(${why})` }
       const step = e instanceof Stolen ? e.step : i
       const note = step === i ? recs[i - 1]?.unverified : undefined
@@ -734,7 +735,7 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec): 
     if (c.ok) { rec.how = 'point'; return [x, y] }
     missed.push(`the recorded point is on ${told(c)}`)
   }
-  throw new (r ? Diverged : Surprise)(`no element matches "${target}"; ${missed.join('; ')}`, await seen(), true)
+  throw new (r ? Diverged : Surprise)(`no element matches "${target}"; ${missed.join('; ')}`, {}, true)
 }
 
 function pointer(s: Step) {
@@ -1275,8 +1276,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   let hit = await resolve(nodes, target, targetRole(s), undefined, least, s.fp, !s.web?.id)
   if (s.web?.id) hit = await byDom(nodes, s.web.id, hit, target, targetRole(s)) ?? await resolve(nodes, target, targetRole(s), undefined, least, s.fp)
   if (!hit) {
-    if (!s.click) throw new Surprise(`no element matches "${target}"`, await seen(), true)
-    if (BG && !AUTO) throw new Surprise(`no element of "${w.title}" matches "${target}", and finding it on the screen is out: ${NO_PIXELS}`, await seen(), true)
+    if (!s.click) throw new Surprise(`no element matches "${target}"`, {}, true)
+    if (BG && !AUTO) throw new Surprise(`no element of "${w.title}" matches "${target}", and finding it on the screen is out: ${NO_PIXELS}`, {}, true)
     if (BG) await front(w)
     const [x, y] = await spot(s.recorded, target, w, rec)
     t0 = Date.now(); await desk.click(x, y, pointer(s)); tick('act', t0)
