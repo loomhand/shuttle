@@ -379,32 +379,30 @@ impl Computer {
             p.remove("verify_hit");
         }
         let mut refused = None;
-        let mut result = match &pressed {
+        let mut result = match pressed {
             Some(pressed) if req.get("verify_hit").is_some() => {
                 match self.call(target, tool, req).await {
                     Ok(v) if v["isError"] == true => {
                         let text = format!("{tool}: {}", text_of(&v));
                         match hit_refusal(&v) {
-                            Some(true) => {
-                                match self.request(target, "click", pressed.clone()).await {
-                                    Err(e) if e.contains(AX_UNSUPPORTED) => Err(text),
-                                    Err(e) => Err(format!("{text}\n{e}")),
-                                    Ok(v) => {
-                                        refused = Some(text);
-                                        Ok(v)
-                                    }
+                            Some(true) => match self.request(target, "click", pressed).await {
+                                Err(e) if e.contains(AX_UNSUPPORTED) => Err(text),
+                                Err(e) => Err(format!("{text}\n{e}")),
+                                Ok(v) => {
+                                    refused = Some(text);
+                                    Ok(v)
                                 }
-                            }
-                            Some(false) => self.request(target, "click", pressed.clone()).await,
+                            },
+                            Some(false) => self.request(target, "click", pressed).await,
                             None => Err(text),
                         }
                     }
                     done => done,
                 }
             }
-            _ => match self.send(target, tool, req, enter, &input).await {
+            pressed => match self.send(target, tool, req, enter, &input).await {
                 Err(e) if e.contains(AX_UNSUPPORTED) => {
-                    self.hit_checked(target, &a, pressed.as_ref(), e).await
+                    self.hit_checked(target, &a, pressed, e).await
                 }
                 done => done,
             },
@@ -412,7 +410,7 @@ impl Computer {
         if let Some(typed) = typed
             && result.is_ok()
         {
-            result = self.press_return(target, &typed).await.and(result);
+            result = self.press_return(target, typed).await.and(result);
         }
         self.end_once(once).await;
         let k = self.mapped(session, a.scale);
@@ -664,7 +662,7 @@ impl Computer {
         }
         if failure.is_none() && text.len() < full.len() {
             match self
-                .press_return(once.as_ref().map_or(session, Owned::name), &base)
+                .press_return(once.as_ref().map_or(session, Owned::name), base)
                 .await
             {
                 Ok(_) => typed += 1,
@@ -1309,12 +1307,10 @@ impl Computer {
         &self,
         target: &str,
         a: &ActArgs,
-        pressed: Option<&Value>,
+        pressed: Option<Value>,
         e: String,
     ) -> Result<Value, String> {
-        let Some(mut retry) = pressed
-            .filter(|p| clicks_left(a) && p.get("window_id").is_some())
-            .cloned()
+        let Some(mut retry) = pressed.filter(|p| clicks_left(a) && p.get("window_id").is_some())
         else {
             return Err(e);
         };
@@ -1335,9 +1331,8 @@ impl Computer {
             .unwrap_or(true)
     }
 
-    async fn press_return(&self, session: &str, typed: &Value) -> Result<Value, String> {
+    async fn press_return(&self, session: &str, mut req: Value) -> Result<Value, String> {
         tokio::time::sleep(RETURN_GAP).await;
-        let mut req = typed.clone();
         if let Some(fields) = req.as_object_mut() {
             for k in ["text", "x", "y"] {
                 fields.remove(k);
@@ -2197,7 +2192,7 @@ fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
             indent = depth * 2
         );
         if let Some(v) = e["value"].as_str().filter(|v| !v.is_empty()) {
-            let v: String = readable(v).chars().take(60).collect();
+            let v = desk_core::text::clip(readable(v), 60);
             let _ = write!(tree, " value=\"{v}\"");
         }
         if let Some([x, y, w, h]) = frame {
