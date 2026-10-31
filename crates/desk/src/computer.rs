@@ -1723,8 +1723,13 @@ impl Computer {
 
     /// One driver call; a result the driver marks isError comes back as is.
     async fn call(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
+        let foreground = self.driver.admit(name, &args)?;
         let retry = RETRIED.contains(&name).then(|| args.clone());
-        let mut reply = self.exchange(session, name, args).await?;
+        let sent = self.exchange(session, name, args).await;
+        if foreground {
+            self.driver.stamp();
+        }
+        let mut reply = sent?;
         if let Some(args) = retry.filter(|_| reply.trim().is_empty()) {
             tokio::time::sleep(CONNECT_RETRY).await;
             reply = self.exchange(session, name, args).await?;
@@ -2539,6 +2544,48 @@ mod tests {
             server.connect().await?;
             Ok((server, ()))
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn computer_input_takes_the_same_user_check_and_counts_as_the_drivers_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let fake = Fake::bind(&socket).unwrap();
+        let lines = Arc::new(std::sync::Mutex::new(Vec::new()));
+        tokio::spawn({
+            let lines = lines.clone();
+            async move {
+                while let Ok((s, ())) = fake.accept().await {
+                    let mut s = BufReader::new(s);
+                    let mut line = String::new();
+                    s.read_line(&mut line).await.unwrap();
+                    lines.lock().unwrap().push(line);
+                    s.get_mut()
+                        .write_all(b"{\"ok\":true,\"result\":{}}\n")
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+        let cua = cua(&socket);
+        crate::driver::user_input_since(0.2);
+        let refused = cua
+            .call("s", "click", json!({"x": 1, "y": 1}))
+            .await
+            .unwrap_err();
+        assert!(
+            refused.contains("the user used the mouse or keyboard"),
+            "{refused}"
+        );
+        assert!(lines.lock().unwrap().is_empty());
+        crate::driver::user_input_since(f64::INFINITY);
+        cua.call("s", "click", json!({"x": 1, "y": 1}))
+            .await
+            .unwrap();
+        crate::driver::user_input_since(0.5);
+        cua.driver.admit("click", &json!({})).unwrap();
+        assert_eq!(lines.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
