@@ -6704,7 +6704,7 @@ pub(crate) mod tests {
         let calm = run(|_| vec![], json!({"hold_ms": 30})).await;
         assert_eq!(pair(&calm), (json!(true), json!(false)));
         let settles = run(
-            |n| vec![(0, if n < 3 { 0 } else { 200 })],
+            |n| vec![(0, if n < 2 { 0 } else { 200 })],
             json!({"hold_ms": 30}),
         )
         .await;
@@ -6718,7 +6718,7 @@ pub(crate) mod tests {
         assert_eq!(video["volatile"], 1, "{video}");
         assert!(video["ms"].as_u64().unwrap() < 2000, "{video}");
         let short = run(
-            |n| vec![(0, if n < 3 { 0 } else { 200 })],
+            |n| vec![(0, if n < 2 { 0 } else { 200 })],
             json!({"hold_ms": 1000, "timeout_ms": 150}),
         )
         .await;
