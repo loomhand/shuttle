@@ -68,7 +68,7 @@ fn builtins() -> Value {
     json!({"tools": [
         {
             "name": "gui_plan",
-            "description": "Run a desktop-app GUI plan in one call: each step runs on the accessibility tree, is checked, and the plan stops at the first surprise. One op per step: {app}, {menu}, {click}, {check, on}, {set, value}, {type}, {key}, {wait}, {expect}, {verify}, {close: true}. A passing plan can be saved as a flow with save, and replayed with flow and params.",
+            "description": "Run a desktop-app GUI plan in one call: each step runs on the accessibility tree, is checked, and the plan stops at the first surprise; caveats lists the Linux steps whose only proof is an accessibility action's reply: read their effect before relying on them. One op per step: {app}, {menu}, {click}, {check, on}, {set, value}, {type}, {key}, {wait}, {expect}, {verify}, {close: true}. A passing plan can be saved as a flow with save, and replayed with flow and params.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

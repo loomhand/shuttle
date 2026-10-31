@@ -31,7 +31,7 @@ type Rec = {
   i: number; op?: string; ms?: number; served?: unknown[]; how?: string; via?: string; window?: string; seen?: string; submit?: boolean
   blank?: Fp; fp?: Fp; was?: boolean | 'mixed' | null; now?: boolean; noop?: boolean; state?: string; opened?: number; path?: string[]; pick?: number[]
   focused?: string; p?: number; p_zoom?: number | null; p_full?: number | null; verdict?: Vision; ground_hit?: string; checked?: string; value?: string; ref?: string; unsaved?: boolean
-  unverified?: string; confirmed?: boolean; fg?: boolean
+  unverified?: string; caveat?: string; confirmed?: boolean; fg?: boolean
 }
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
@@ -94,6 +94,7 @@ const ANDROID_PACKAGE = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/
 const CHOOSER_BY_OS: Partial<Record<NodeJS.Platform, RegExp>> = { linux: /File Chooser Widget/, win32: /^\s*- (combobox|textbox) "File name:?"/m, darwin: /^\s*- text "Save As:"/m }
 const CHOOSER = CHOOSER_BY_OS[OS] ?? /(?!)/
 const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
+const ACTION_ONLY = 'an accessibility action ran, and on Linux its success does not show its effect; no later step read it back'
 const known = new Set<string>()
 let busNames: string[] | null = null
 let gitWorks: boolean | undefined
@@ -107,6 +108,7 @@ let targetSince = new Set<string>()
 let adopted = new Set<string>()
 let doubt: string | null = null
 let unheard: string | undefined
+let actioned = false
 let userFront: Win | null = null
 let BG = BEHIND
 let fronted = false
@@ -176,7 +178,7 @@ async function perform(p: Params): Promise<Result> {
       if (f && pre) vetted.add(`${f.id} ${f.pid} ${f.title}`)
       const kept = f && pre?.snap && pre.nodes && f.title !== pressed?.title ? { ...r, id: f.id, snap: pre.snap, nodes: pre.nodes } : undefined
       const prev = plan[i - 1]
-      unheard = undefined
+      unheard = undefined; actioned = false
       const runs = desk.foreground.runs + foreground.steps
       await run(s, rec, kept).catch(async (e: unknown) => {
         const late = (x: unknown) => x instanceof Surprise && x.late
@@ -187,6 +189,7 @@ async function perform(p: Params): Promise<Result> {
       })
       if (s.after) await landed(s.after, s.timeout_ms ?? 5000)
       if (unheard && !rec.unverified) rec.unverified = unheard
+      if (actioned && !s.after) rec.caveat = ACTION_ONLY
       if (desk.foreground.runs + foreground.steps > runs) { rec.fg = true; fronted = true; BG = false }
       const before = recs[i - 1]
       if (before && (s.wait || s.verify || s.expect)) before.confirmed = true
@@ -272,6 +275,8 @@ async function perform(p: Params): Promise<Result> {
   if (escalate && diverged) out.stopped = stopped(plan, escalate)
   const notes = recs.filter((r) => r?.unverified && !r.confirmed).map((r) => ({ step: r.i, note: r.unverified }))
   if (notes.length) out.unverified = notes
+  const caveats = recs.filter((r) => r?.caveat && !r.confirmed).map((r) => ({ step: r.i, note: r.caveat }))
+  if (caveats.length) out.caveats = caveats
   return out
 }
 
@@ -904,6 +909,7 @@ async function act(n: Node) {
     const r = await desk.press(n.id)
     if (!r.ok) throw new Surprise(`"${n.name}" took no ${r.how}`, await seen())
     if (BG && r.unverified) unheard ??= r.unverified
+    if (OS === 'linux' && r.how === 'action') actioned = true
     return r.how
   } finally { tick('act', t0) }
 }
