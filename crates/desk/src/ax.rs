@@ -21,15 +21,13 @@ use desk_core::text::clip;
 use crate::ax_roles::{self, Facts, Kind};
 use crate::keys::ax_combo;
 use crate::model::{
-    Access, Act, Extras, Frame, MAX_DEPTH, MAX_IDS, MAX_NODES, Node, Tree, VALUE_CHARS,
-    format_number, is_active, lookup, place,
+    Access, Act, Extras, Frame, LAUNCH_GRACE, MAX_DEPTH, MAX_IDS, MAX_NODES, Node, Tree,
+    VALUE_CHARS, format_number, hung, is_active, lookup, place,
 };
 
 const WALK_BUDGET: Duration = Duration::from_secs(4);
 const MESSAGING_TIMEOUT: Duration = Duration::from_millis(500);
 const HUNG_SKIP: Duration = Duration::from_secs(10);
-const HUNG_AFTER: Duration = Duration::from_secs(2);
-const LAUNCH_GRACE: Duration = Duration::from_secs(10);
 const AX_SUCCESS: i32 = 0;
 const AX_CANNOT_COMPLETE: i32 = -25204;
 const AX_NO_VALUE: i32 = -25212;
@@ -734,10 +732,6 @@ unsafe extern "C" {
     fn CGDisplayModeGetPixelWidth(mode: *mut c_void) -> usize;
     fn CGDisplayModeGetWidth(mode: *mut c_void) -> usize;
     fn CGDisplayModeRelease(mode: *mut c_void);
-}
-
-fn hung(slow: Duration, listed: Duration) -> bool {
-    slow >= HUNG_AFTER && listed >= LAUNCH_GRACE
 }
 
 fn attrs(names: &CFArray<CFString>, el: &CFType) -> Attrs {
@@ -1497,15 +1491,6 @@ mod tests {
         assert_eq!(top_listed(&windows, (200.0, 10.0), none), Some(7));
         assert_eq!(top_listed(&windows, (1000.0, 750.0), none), None);
         assert_eq!(top_listed(&windows, (500.0, 350.0), |p| p == 8), Some(9));
-    }
-
-    #[test]
-    fn an_app_listed_within_the_launch_grace_is_not_skipped_as_hung() {
-        let s = Duration::from_secs;
-        assert!(!hung(s(1), s(30)));
-        assert!(hung(s(2), s(30)));
-        assert!(!hung(s(5), s(4)));
-        assert!(hung(s(5), s(10)));
     }
 
     #[test]
