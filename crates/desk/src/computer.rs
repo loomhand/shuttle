@@ -19,7 +19,7 @@ use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 use crate::desk::{Cancel, Turn, Typer, launch_name, text_runs};
-use crate::driver::{CONNECT_RETRY, Driver, image_of, text_of};
+use crate::driver::{CONNECT_RETRY, Driver, ENDED, image_of, text_of};
 use crate::keys::{Os, key_names};
 use crate::model::Modal;
 #[cfg(target_os = "linux")]
@@ -1751,8 +1751,24 @@ impl Computer {
         Ok(())
     }
 
-    /// One driver call; a result the driver marks isError comes back as is.
+    /// One driver call, sent once more after starting `session` again when the driver had ended it; a result the driver marks isError comes back as is.
     async fn call(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
+        let mut v = self.reply(session, name, args.clone()).await?;
+        if name != "end_session" && v["error"].as_str().is_some_and(|e| e.contains(ENDED)) {
+            self.reply(session, "start_session", json!({})).await?;
+            v = self.reply(session, name, args).await?;
+        }
+        if v["ok"] != true {
+            return Err(format!(
+                "{name}: {}",
+                v["error"].as_str().unwrap_or("cua-driver call failed")
+            ));
+        }
+        Ok(v["result"].take())
+    }
+
+    /// The driver's decoded reply to one call.
+    async fn reply(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
         let foreground = self.driver.admit(name, &args)?;
         let retry = RETRIED.contains(&name).then(|| args.clone());
         let sent = self.exchange(session, name, args).await;
@@ -1764,15 +1780,7 @@ impl Computer {
             tokio::time::sleep(CONNECT_RETRY).await;
             reply = self.exchange(session, name, args).await?;
         }
-        let mut v = serde_json::from_str::<Value>(&reply)
-            .map_err(|e| format!("decode cua-driver reply: {e}"))?;
-        if v["ok"] != true {
-            return Err(format!(
-                "{name}: {}",
-                v["error"].as_str().unwrap_or("cua-driver call failed")
-            ));
-        }
-        Ok(v["result"].take())
+        serde_json::from_str::<Value>(&reply).map_err(|e| format!("decode cua-driver reply: {e}"))
     }
 
     /// Sends one call and returns the raw reply line, empty when the driver closed without one.
@@ -3575,6 +3583,7 @@ mod tests {
     fn retina_driver(
         dir: &Path,
         full_fails: bool,
+        idle_ends: bool,
     ) -> (PathBuf, Landed, tokio::task::JoinHandle<()>) {
         let socket = endpoint(dir);
         let listener = Fake::bind(&socket).unwrap();
@@ -3582,6 +3591,7 @@ mod tests {
         let log = std::sync::Arc::clone(&landed);
         let driver = tokio::spawn(async move {
             let mut factors = HashMap::<String, f64>::new();
+            let (mut ended, mut idle_ends) = (HashSet::<String>::new(), idle_ends);
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
                 let mut reader = BufReader::new(stream);
@@ -3593,6 +3603,13 @@ mod tests {
                 let windowless = args["pid"].is_null() && args["element_token"].is_null();
                 let refused = |text: &str| json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": text}]}});
                 let reply = match req["name"].as_str().unwrap_or_default() {
+                    name if ended.contains(&session) && name != "start_session" => {
+                        json!({"ok": false, "error": format!("session has ended; tool call '{name}' was rejected")})
+                    }
+                    "start_session" => {
+                        ended.remove(&session);
+                        json!({"ok": true, "result": {}})
+                    }
                     "get_desktop_state" if full_fails && args["max_image_dimension"] == 0 => {
                         refused("Desktop screenshot failed: the display is asleep")
                     }
@@ -3609,6 +3626,10 @@ mod tests {
                             factors.insert(session, 200.0 / width as f64);
                         } else {
                             factors.remove(&session);
+                            if idle_ends && session == DEFAULT_SESSION {
+                                idle_ends = false;
+                                ended.insert(session);
+                            }
                         }
                         let (w, h) = (width as u32, width as u32 / 2);
                         let image = png_of(w, h, &vec![9; (w * h * 4) as usize]);
@@ -3659,7 +3680,7 @@ mod tests {
     #[tokio::test]
     async fn a_capture_whose_full_size_reset_fails_fails_and_no_click_goes_with_its_scaling() {
         let dir = tempfile::tempdir().unwrap();
-        let (socket, landed, driver) = retina_driver(dir.path(), true);
+        let (socket, landed, driver) = retina_driver(dir.path(), true, false);
         let cua = cua_on(&socket, Os::Mac);
         let shot = cua.state(json!({"max_edge": 50})).await;
         assert!(
@@ -3684,9 +3705,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_session_the_driver_ended_starts_again_and_its_click_lands_where_the_screenshot_showed()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, landed, driver) = retina_driver(dir.path(), false, true);
+        let cua = cua_on(&socket, Os::Mac);
+        cua.state(json!({"max_edge": 50})).await.unwrap();
+        let out = cua
+            .act(json!({"action": "click", "x": 10.0, "y": 5.0}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(*landed.lock().unwrap(), [vec![20.0, 10.0]]);
+        driver.abort();
+    }
+
+    #[tokio::test]
     async fn off_linux_windowless_input_goes_with_desktop_scope_and_no_target() {
         let dir = tempfile::tempdir().unwrap();
-        let (socket, landed, driver) = retina_driver(dir.path(), false);
+        let (socket, landed, driver) = retina_driver(dir.path(), false, false);
         let cua = cua_on(&socket, Os::Mac);
         cua.state(json!({"max_edge": 50})).await.unwrap();
         for act in [
@@ -3705,7 +3742,7 @@ mod tests {
     async fn a_retina_desktop_click_lands_where_the_screenshot_showed_after_a_shot_a_zoom_or_a_full_shot()
      {
         let dir = tempfile::tempdir().unwrap();
-        let (socket, landed, driver) = retina_driver(dir.path(), false);
+        let (socket, landed, driver) = retina_driver(dir.path(), false, false);
         let cua = cua_on(&socket, Os::Mac);
         let click = json!({"action": "click", "x": 10.0, "y": 5.0, "max_edge": 50});
         cua.state(json!({"max_edge": 50})).await.unwrap();

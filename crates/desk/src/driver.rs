@@ -16,11 +16,11 @@ pub const WINDOW_SESSION: &str = "desk-window";
 pub const CAPTURE_SESSION: &str = "desk-capture";
 pub(crate) const CLICK_SPACING: Duration = Duration::from_millis(500);
 pub(crate) const CONNECT_RETRY: Duration = Duration::from_millis(250);
+pub(crate) const ENDED: &str = "session has ended";
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_WAIT: Duration = Duration::from_secs(10);
 const SESSION: &str = "desk";
-const ENDED: &str = "session has ended";
 const CLICK_DISTANCE: f64 = 16.0;
 const INPUT_TOOLS: [&str; 9] = [
     "click",
