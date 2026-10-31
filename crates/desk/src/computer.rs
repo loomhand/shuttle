@@ -428,8 +428,8 @@ impl Computer {
         }
         self.end_once(once).await;
         let k = self.mapped(session, a.scale);
-        let changes = self.settle(before, k).await;
-        let shot = self.screenshot(session, a.max_edge).await?;
+        let (changes, still) = self.settle(before, k).await;
+        let shot = self.settled(session, still, a.max_edge).await?;
         drop(input);
         let (text, is_error) = match result {
             Ok(v) => {
@@ -536,6 +536,22 @@ impl Computer {
         Ok(self.capture(session, max_edge, false).await?.0)
     }
 
+    /// The screenshot after a settled input: the capture `still` the screen held still on, else a new one.
+    async fn settled(
+        &self,
+        session: &str,
+        still: Option<Value>,
+        max_edge: Option<u32>,
+    ) -> Result<Option<String>, String> {
+        let Some(v) = still else {
+            return self.screenshot(session, max_edge).await;
+        };
+        self.touch();
+        Ok(self
+            .adopt(session, &v, max_edge.unwrap_or(DEFAULT_EDGE), false)
+            .0)
+    }
+
     /// Screenshot in a one-shot driver session that is ended right away.
     async fn screenshot_once(&self, max_edge: Option<u32>) -> Result<Option<String>, String> {
         let session = self.own("shot");
@@ -584,6 +600,12 @@ impl Computer {
         }
         let full = json!({"max_image_dimension": 0});
         let v = self.request(session, "get_desktop_state", full).await?;
+        let (image, scale) = self.adopt(session, &v, edge, shared);
+        Ok((image, scale, None))
+    }
+
+    /// The image of driver capture `v` shrunk so its long edge is `edge`, and its scale, which is kept for `session`.
+    fn adopt(&self, session: &str, v: &Value, edge: u32, shared: bool) -> (Option<String>, f64) {
         let state = &v["structuredContent"];
         let native = state["frame_scale"]
             .as_f64()
@@ -591,7 +613,7 @@ impl Computer {
             .filter(|s| s.is_finite() && *s > 0.0)
             .unwrap_or(1.0);
         self.keep_backing(state);
-        let (image, ratio) = match image_of(&v) {
+        let (image, ratio) = match image_of(v) {
             Some(png) => fitted(png, edge).map_or_else(
                 || (Some(shrink(png).unwrap_or_else(|| png.to_owned())), 1.0),
                 |(image, ratio)| (Some(image), ratio),
@@ -600,7 +622,7 @@ impl Computer {
         };
         let scale = native * ratio;
         self.keep_scale(session, scale, shared);
-        Ok((image, scale, None))
+        (image, scale)
     }
 
     /// Types text with non-ASCII characters or at a point, which a click focuses first, in the calls [`text_runs`] cuts.
@@ -675,8 +697,8 @@ impl Computer {
             }
         }
         self.end_once(once).await;
-        let changes = self.settle(before, self.mapped(session, a.scale)).await;
-        let shot = self.screenshot(session, a.max_edge).await?;
+        let (changes, still) = self.settle(before, self.mapped(session, a.scale)).await;
+        let shot = self.settled(session, still, a.max_edge).await?;
         drop(input);
         let total = full.chars().count();
         let summary =
@@ -741,8 +763,8 @@ impl Computer {
                 });
             }
         };
-        let changes = self.settle(before, self.mapped(session, a.scale)).await;
-        let shot = self.screenshot(session, a.max_edge).await?;
+        let (changes, still) = self.settle(before, self.mapped(session, a.scale)).await;
+        let shot = self.settled(session, still, a.max_edge).await?;
         drop(input);
         Ok(Output {
             text: text + &changes,
@@ -786,7 +808,7 @@ impl Computer {
         }
         let probe = self.own("still");
         match self.frame(probe.name()).await {
-            Some(frame) => Some(Before {
+            Some((frame, _)) => Some(Before {
                 probe: Some(probe),
                 frame: Frame::Thumb(frame),
                 pixels: Vec::new(),
@@ -803,8 +825,8 @@ impl Computer {
         }
     }
 
-    /// Waits until the screen differs from `before` and holds still, within the wait [`Before`] carries; blocks that churn or toggle (see [`Block`], [`Shown`]) and changes under [`VISIBLE_STEP`] do not count. Returns lines naming the windows the action opened, closed or brought to the front.
-    async fn settle(&self, before: Option<Before>, scale: f64) -> String {
+    /// Waits until the screen differs from `before` and holds still, within the wait [`Before`] carries; blocks that churn or toggle (see [`Block`], [`Shown`]) and changes under [`VISIBLE_STEP`] do not count. Returns lines naming the windows the action opened, closed or brought to the front, and the probe capture the screen held still on.
+    async fn settle(&self, before: Option<Before>, scale: f64) -> (String, Option<Value>) {
         let Some(Before {
             probe,
             frame: first,
@@ -817,7 +839,7 @@ impl Computer {
         }) = before
         else {
             tokio::time::sleep(SETTLE).await;
-            return String::new();
+            return (String::new(), None);
         };
         let poll = if probe.is_some() {
             STILL_POLL
@@ -836,6 +858,7 @@ impl Computer {
         let (mut seen, mut focus, mut hold) = (windows.clone(), active, first_hold);
         let (mut still, mut changed) = (false, false);
         let (mut shown, mut prev) = (Shown::default(), None::<Vec<u64>>);
+        let mut capture = None;
         while !still && Instant::now() < deadline {
             let at = Instant::now();
             let mut nap = poll.min(deadline.saturating_duration_since(at));
@@ -844,9 +867,10 @@ impl Computer {
             }
             tokio::time::sleep(nap).await;
             let polled = match probe.as_ref().map(Owned::name) {
-                Some(probe) => self.frame(probe).await.map(|f| {
+                Some(probe) => self.frame(probe).await.map(|(f, v)| {
                     let f = Frame::Thumb(f);
                     let differs = first.changes(&f, &volatile);
+                    capture = Some(v);
                     (f, differs, seen.clone(), focus)
                 }),
                 None => self.shm(|g| {
@@ -907,13 +931,13 @@ impl Computer {
         self.end_volatile();
         if let Some(probe) = probe {
             let _ = self.end_own(probe).await;
-            return String::new();
+            return (String::new(), capture.filter(|_| still));
         }
         if seen == windows && focus == active {
-            return String::new();
+            return (String::new(), None);
         }
-        self.shm(|g| Ok(self.window_report(g, &windows, &seen, active, focus, scale)))
-            .unwrap_or_default()
+        let report = self.shm(|g| Ok(self.window_report(g, &windows, &seen, active, focus, scale)));
+        (report.unwrap_or_default(), None)
     }
 
     /// The session of `agent` when its call names none; every default takes a new name once one is ended, since the driver refuses an ended name.
@@ -1035,12 +1059,14 @@ impl Computer {
         out
     }
 
-    /// A thumbnail from the probe driver session `probe`.
-    async fn frame(&self, probe: &str) -> Option<Vec<u8>> {
-        let edge = json!({"max_image_dimension": STILL_EDGE});
-        let v = self.request(probe, "get_desktop_state", edge).await.ok()?;
+    /// A full-size capture from the probe driver session `probe` and its RGBA thumbnail, whose long edge is [`STILL_EDGE`].
+    async fn frame(&self, probe: &str) -> Option<(Vec<u8>, Value)> {
+        let full = json!({"max_image_dimension": 0});
+        let v = self.request(probe, "get_desktop_state", full).await.ok()?;
         let data = B64.decode(image_of(&v)?).ok()?;
-        Some(decode_png(&data)?.1)
+        let (info, rgba) = decode_png(&data)?;
+        let thumb = lanczos(&info, &rgba, STILL_EDGE)?.2;
+        Some((thumb, v))
     }
 
     fn scales(&self) -> std::sync::MutexGuard<'_, HashMap<String, f64>> {
@@ -2365,7 +2391,7 @@ fn shrink(b64: &str) -> Option<String> {
     (out.len() < data.len()).then(|| B64.encode(&out))
 }
 
-/// The PNG `b64` shrunk by Lanczos3, the driver's own filter, so its long edge is `edge`, and made by [`encode`], with its pixels per image pixel; none when it is no larger.
+/// The PNG `b64` shrunk by [`lanczos`] so its long edge is `edge` and made by [`encode`], with its pixels per image pixel; none when it is no larger.
 fn fitted(b64: &str, edge: u32) -> Option<(String, f64)> {
     let data = B64.decode(b64).ok()?;
     let (_, w, h) = image_size(&data)?;
@@ -2373,26 +2399,35 @@ fn fitted(b64: &str, edge: u32) -> Option<(String, f64)> {
         return None;
     }
     let (info, rgba) = decode_png(&data)?;
-    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
-        return None;
-    }
-    let (tw, th) = fit_size(w, h, edge);
-    let from = fr::images::TypedImageRef::<fr::pixels::U8x4>::from_buffer(w, h, &rgba).ok()?;
-    let mut to = fr::images::TypedImage::<fr::pixels::U8x4>::new(tw, th);
-    let lanczos = fr::ResizeOptions::new()
-        .resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3))
-        .use_alpha(false);
-    fr::Resizer::new()
-        .resize_typed(&from, &mut to, &lanczos)
-        .ok()?;
-    let rgb: Vec<u8> = to
-        .pixels()
+    let (tw, th, small) = lanczos(&info, &rgba, edge)?;
+    let rgb: Vec<u8> = small
+        .as_chunks::<4>()
+        .0
         .iter()
-        .flat_map(|p| &p.0[..3])
+        .flat_map(|p| &p[..3])
         .copied()
         .collect();
     let image = encode(tw, th, &rgb)?;
     Some((B64.encode(image), f64::from(w) / f64::from(tw)))
+}
+
+/// The 8-bit RGBA pixels `rgba` shrunk by Lanczos3, the driver's own filter, so the long edge is `edge`.
+fn lanczos(info: &png::OutputInfo, rgba: &[u8], edge: u32) -> Option<(u32, u32, Vec<u8>)> {
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    let (w, h) = (info.width, info.height);
+    let (tw, th) = fit_size(w, h, edge);
+    let from = fr::images::TypedImageRef::<fr::pixels::U8x4>::from_buffer(w, h, rgba).ok()?;
+    let mut to = fr::images::TypedImage::<fr::pixels::U8x4>::new(tw, th);
+    let filter = fr::ResizeOptions::new()
+        .resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3))
+        .use_alpha(false);
+    fr::Resizer::new()
+        .resize_typed(&from, &mut to, &filter)
+        .ok()?;
+    let pixels = to.pixels().iter().flat_map(|p| p.0).collect();
+    Some((tw, th, pixels))
 }
 
 /// The format, pixel size, bytes and estimated input tokens of the base64 image `b64`.
@@ -3731,6 +3766,63 @@ mod tests {
             .cloned()
             .collect();
         assert_eq!(own, vec![(DEFAULT_SESSION.to_owned(), json!(0)); 2]);
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn an_action_that_settles_still_returns_the_capture_it_settled_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let light = full_shot(1280, 800, 1280);
+        let mut dark = light.clone();
+        dark["result"]["content"][0]["data"] = png_of(1280, 800, &vec![0; 1280 * 800 * 4]).into();
+        let captures = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let log = std::sync::Arc::clone(&captures);
+        let driver = tokio::spawn(async move {
+            let mut probes = 0;
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let session = req["args"]["session"].as_str().unwrap_or_default();
+                let reply = match req["name"].as_str().unwrap_or_default() {
+                    "get_desktop_state" if session.starts_with("still-") => {
+                        probes += 1;
+                        if probes == 1 {
+                            light.clone()
+                        } else {
+                            dark.clone()
+                        }
+                    }
+                    "get_desktop_state" => {
+                        log.lock().unwrap().push(session.to_owned());
+                        light.clone()
+                    }
+                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+                };
+                let mut out = serde_json::to_vec(&reply).unwrap();
+                out.push(b'\n');
+                reader.into_inner().write_all(&out).await.unwrap();
+            }
+        });
+        let cua = cua_on(&socket, Os::Windows);
+        cua.state(json!({})).await.unwrap();
+        let out = cua
+            .act(json!({"action": "click", "x": 10.0, "y": 10.0}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        let image = B64.decode(out.image_b64.unwrap()).unwrap();
+        let mut webp = image_webp::WebPDecoder::new(std::io::Cursor::new(&image)).unwrap();
+        assert_eq!(webp.dimensions(), (1024, 640));
+        let mut rgb = vec![1; webp.output_buffer_size().unwrap()];
+        webp.read_image(&mut rgb).unwrap();
+        assert!(rgb.iter().all(|c| *c == 0));
+        assert_eq!(*captures.lock().unwrap(), [DEFAULT_SESSION]);
+        assert_eq!(cua.scale_of(DEFAULT_SESSION), 1.25);
         driver.abort();
     }
 
