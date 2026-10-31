@@ -908,7 +908,7 @@ async function act(n: Node) {
     const r = await desk.press(n.id)
     if (!r.ok) throw new Surprise(`"${n.name}" took no ${r.how}`, await seen())
     if (BG && r.unverified) unheard ??= r.unverified
-    if (OS === 'linux' && r.how === 'action') actioned = true
+    if (OS === 'linux' && (r.how === 'action' || r.how === 'select')) actioned = true
     return r.how
   } finally { tick('act', t0) }
 }
@@ -1026,6 +1026,7 @@ async function replaced(nodes: Node[], read: () => Promise<string>, before: stri
   try { needle = f ? (await desk.read(f.id)).value ?? '' : '' } catch {}
   tick('verify', t0)
   if (now === before && needle && now.includes(needle)) throw new Surprise(`Replace All replaced nothing: "${needle}" is still in the document`, await seen())
+  return now !== before
 }
 
 async function setState(s: Step, hit: Hit, rec: Rec) {
@@ -1308,7 +1309,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.click) {
     const read = norm(hit.n.name) === 'replace all' ? await documents(w) : null; const before = await read?.()
     await act(hit.n)
-    if (read) await replaced(nodes, read, before); else await settle(w.title)
+    if (read) rec.confirmed = await replaced(nodes, read, before); else await settle(w.title)
     return
   }
   if (s.check) { await setState(s, hit, rec); return }
