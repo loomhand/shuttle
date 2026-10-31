@@ -2383,12 +2383,17 @@ fn shrink(b64: &str) -> Option<String> {
     if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
         return None;
     }
+    let out = encode(info.width, info.height, &rgb(&rgba))?;
+    (out.len() < data.len()).then(|| B64.encode(&out))
+}
+
+/// The RGB of RGBA pixels `rgba`.
+fn rgb(rgba: &[u8]) -> Vec<u8> {
     let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
     for p in rgba.as_chunks::<4>().0 {
         rgb.extend_from_slice(&p[..3]);
     }
-    let out = encode(info.width, info.height, &rgb)?;
-    (out.len() < data.len()).then(|| B64.encode(&out))
+    rgb
 }
 
 /// The PNG `b64` shrunk by [`lanczos`] so its long edge is `edge` and made by [`encode`], with its pixels per image pixel; none when it is no larger.
@@ -2400,14 +2405,7 @@ fn fitted(b64: &str, edge: u32) -> Option<(String, f64)> {
     }
     let (info, rgba) = decode_png(&data)?;
     let (tw, th, small) = lanczos(&info, &rgba, edge)?;
-    let rgb: Vec<u8> = small
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .flat_map(|p| &p[..3])
-        .copied()
-        .collect();
-    let image = encode(tw, th, &rgb)?;
+    let image = encode(tw, th, &rgb(&small))?;
     Some((B64.encode(image), f64::from(w) / f64::from(tw)))
 }
 
@@ -2419,14 +2417,15 @@ fn lanczos(info: &png::OutputInfo, rgba: &[u8], edge: u32) -> Option<(u32, u32, 
     let (w, h) = (info.width, info.height);
     let (tw, th) = fit_size(w, h, edge);
     let from = fr::images::TypedImageRef::<fr::pixels::U8x4>::from_buffer(w, h, rgba).ok()?;
-    let mut to = fr::images::TypedImage::<fr::pixels::U8x4>::new(tw, th);
+    let mut pixels = vec![0; tw as usize * th as usize * 4];
+    let mut to =
+        fr::images::TypedImage::<fr::pixels::U8x4>::from_buffer(tw, th, &mut pixels).ok()?;
     let filter = fr::ResizeOptions::new()
         .resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3))
         .use_alpha(false);
     fr::Resizer::new()
         .resize_typed(&from, &mut to, &filter)
         .ok()?;
-    let pixels = to.pixels().iter().flat_map(|p| p.0).collect();
     Some((tw, th, pixels))
 }
 
@@ -4463,6 +4462,25 @@ mod tests {
         assert_eq!(rgb, [30, 120, 200].repeat(16 * 8));
         assert!(fitted(&png, 0).is_none());
         assert!(fitted(&png, 64).is_none());
+    }
+
+    #[test]
+    fn rgb_drops_the_alpha_of_every_pixel_as_a_per_pixel_copy_does() {
+        let mut seed = 0x2545_f491_u32;
+        let rgba: Vec<u8> = (0..4 * 1001)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 24) as u8
+            })
+            .collect();
+        let copied: Vec<u8> = rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| &p[..3])
+            .copied()
+            .collect();
+        assert_eq!(rgb(&rgba), copied);
     }
 
     #[test]
