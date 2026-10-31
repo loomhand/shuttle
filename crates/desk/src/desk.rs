@@ -235,7 +235,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let Some(app) = args.as_object_mut().and_then(|a| a.remove("app")) else {
             return Ok(());
         };
-        let app = app.as_str().unwrap_or_default().to_owned();
+        let app = match app {
+            Value::String(s) => s,
+            _ => String::new(),
+        };
         if args["pid"].is_u64() {
             return Ok(());
         }
@@ -376,7 +379,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 }
                 let v = match self.call("launch_app", req.clone()).await {
                     Err(e) if self.os == Os::Mac => {
-                        let app = a.app.clone();
+                        let app = a.app;
                         let named = self
                             .access
                             .run(CALL_LIMIT, (), move |b| b.bundle_name(&app))
