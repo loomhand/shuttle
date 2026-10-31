@@ -1008,10 +1008,10 @@ pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
                 name_of(&pa, NAME_CHARS),
             ));
         }
-        if pa.role == "AXWebArea" && url.is_none() {
-            url = attr(&p, "AXURL").and_then(url_text);
+        if pa.role == "AXWebArea" {
+            url = attr(&p, "AXURL").and_then(url_text).or(url);
         }
-        if pa.role == "AXWindow" || (path.len() >= PATH_MAX_DEPTH && url.is_some()) {
+        if pa.role == "AXWindow" {
             break;
         }
         up = attr(&p, "AXParent");
@@ -1094,8 +1094,8 @@ pub fn focused() -> Option<Focused> {
         if role == "AXSheet" {
             frame.get_or_insert("dialog");
         }
-        if role == "AXWebArea" && url.is_none() {
-            url = attr(&p, "AXURL").and_then(url_text);
+        if role == "AXWebArea" {
+            url = attr(&p, "AXURL").and_then(url_text).or(url);
         }
         if role == "AXWindow" {
             let subrole = string(attr(&p, "AXSubrole"));
