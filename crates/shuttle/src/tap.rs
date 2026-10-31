@@ -157,9 +157,9 @@ fn focused(secret: bool) -> Option<Field> {
             .map(|p| (p.url, p.dom_id.unwrap_or_default()))
             .unwrap_or_default();
         Field {
-            role: f.role.to_owned(),
+            role: f.role,
             name: f.name,
-            frame: f.frame.to_owned(),
+            frame: f.frame,
             window: f.window,
             secure: f.secure || secret,
             url,
@@ -209,11 +209,11 @@ fn read(e: &Event, kind: u32, seen: &Seen) -> Option<Input> {
             let p = e.at();
             let (x, y) = (p.x * scale, p.y * scale);
             let found = ax::seen_at(x.round() as i32, y.round() as i32).map(|s| Hit {
-                role: s.role.to_owned(),
+                role: s.role,
                 name: s.name,
                 description: s.description,
                 pid: s.pid,
-                path: s.path.into_iter().map(|(r, n)| (r.to_owned(), n)).collect(),
+                path: s.path,
                 secret: s.secret,
                 page: s.page.map(|p| (p.url, p.dom_id)),
             });
