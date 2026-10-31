@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use desk_core::shot::OFF_SCREEN;
 use desk_core::window::{TITLE_TIERS, title_matches};
 use tokio::runtime::{Builder, Runtime};
 use x11rb::connection::Connection as _;
@@ -148,7 +149,7 @@ impl Access for Spi {
         if shown {
             return Ok(None);
         }
-        let clipped = clip(rect, size).ok_or("the rectangle is off the screen")?;
+        let clipped = clip(rect, size).ok_or(OFF_SCREEN)?;
         let rgb = self.shm(|g| g.region(clipped));
         Ok(rgb.map(|rgb| Capture {
             rect: clipped.map(i32::unsigned_abs),
