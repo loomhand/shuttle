@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.38 - 2026-11-01
 
 - **Bundled:** cua-driver v0.38.0-loomhand.11 (was v0.38.0-loomhand.10).
   - Linux: `computer_state` on an app that stopped answering accessibility pays the driver's walk budget once, not on every call ([loomhand/cua#17](https://github.com/loomhand/cua/pull/17)). The driver remembers the app and answers `app_unresponsive` at once until a `GetState` probe gets a reply. On a stopped GTK3 window the later calls take 15 ms instead of 1017 ms, and the elements are back on the first call after the app resumes, 31–34 ms, also after a 30 s stop.
