@@ -462,7 +462,7 @@ mod tests {
             .unwrap();
         assert_eq!(broken["error"]["kind"], "import", "{broken}");
         assert!(broken["result"].is_null());
-        let slow = r.script(json!({"code": "console.log('started')\nexport async function main() { await new Promise((r) => setTimeout(r, 5000)) }", "timeout_s": 1}), "run-test")
+        let slow = r.script(json!({"code": "console.log('started')\nexport async function main() { await new Promise((r) => setTimeout(r, 5000)) }", "timeout_s": 3}), "run-test")
             .await
             .unwrap();
         assert_eq!(slow["error"]["kind"], "timeout");
@@ -482,7 +482,7 @@ mod tests {
         let r = runner(dir.path());
         let code = "import { spawn } from 'node:child_process'\nconst same = spawn('sleep', ['30'], { stdio: 'inherit' })\nconst away = spawn('sleep', ['30'], { stdio: 'inherit', detached: true })\nconsole.log(`${same.pid} ${away.pid}`)\nexport async function main() { await new Promise((r) => setTimeout(r, 5000)) }";
         let report = r
-            .script(json!({"code": code, "timeout_s": 1}), "run-test")
+            .script(json!({"code": code, "timeout_s": 3}), "run-test")
             .await
             .unwrap();
         assert_eq!(report["error"]["kind"], "timeout", "{report}");
