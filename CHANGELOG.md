@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Bundled:** cua-driver v0.38.0-loomhand.11 (was v0.38.0-loomhand.10).
+  - Linux: `computer_state` on an app that stopped answering accessibility pays the driver's walk budget once, not on every call ([loomhand/cua#17](https://github.com/loomhand/cua/pull/17)). The driver remembers the app and answers `app_unresponsive` at once until a `GetState` probe gets a reply. On a stopped GTK3 window the later calls take 15 ms instead of 1017 ms, and the elements are back on the first call after the app resumes, 31–34 ms, also after a 30 s stop.
+
 ## 0.1.37 - 2026-10-31
 
 - **macOS and Windows: one capture per screenshot.** `computer_state` and `computer_act` ask cua-driver for one full-size capture and shrink it here with the driver's own Lanczos3 filter, so the second, full-size capture that reset the driver's click scale is gone; an action whose settle ends with the screen still returns the capture it settled on. On a 2x Mac `computer_state` takes 658 ms instead of 1280 ms and a click 2036 ms instead of 3249 ms; on Windows `computer_state` takes 194 ms instead of 314 ms.
