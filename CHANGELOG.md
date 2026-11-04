@@ -4,7 +4,7 @@
 
 - **Linux: `launch` reuses a running app.** Without `args`, `desk` `launch` and a `gui_plan` app step bring the app's window to the front instead of opening another window each time, as a terminal did. `computer_act` and `launch` now match a menu name such as `Xfce Terminal` to its app through the desktop entry. Pass `args` to start a new instance.
 - **Windows: `launch` reuses a running app** as on Linux: a second `launch` of Notepad opened a second window. macOS keeps its launch, which already brings back the running app.
-- **An app name matches the start of the app's words.** `launch` and `computer_act` `launch_app` no longer take a fragment inside a word, such as `pad` for mousepad, or a name under three letters, such as `e`, for a running app: each word must equal a word of the app's name or, from three letters, begin one. `Note` still finds Notepad, `Text` TextEdit and `Chrome` Google Chrome.
+- **An app name matches the start or end of the app's words.** `launch` and `computer_act` `launch_app` no longer take a short fragment, such as `pad` for mousepad or `e`, for a running app: each word must equal a word of the app's name, begin one from three letters, or end one from four. `Note` still finds Notepad, `Text` TextEdit, `Paint` mspaint.exe and `Chrome` Google Chrome.
 - **Linux: title twins keep a front window.** When two windows of one app share a title, the one the X server has active is now the active one, found by its place on the screen; before, neither was, and a `gui_plan` step waited 3 s for a front window that never came.
 
 ## 0.1.38 - 2026-11-01
