@@ -370,6 +370,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_web" => self.web(parse(args)?).await?,
             "desk_launch" => {
                 let a = parse::<LaunchArgs>(args)?;
+                if a.args.is_empty()
+                    && self.os == Os::Linux
+                    && let Some(raised) = self.raise_running(&a.app).await?
+                {
+                    return Ok(Output::text(raised));
+                }
                 let mut req = json!({"name": launch_name(&a.app)});
                 if !a.args.is_empty() {
                     if self.os == Os::Mac {
@@ -443,6 +449,27 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             })
             .await?;
         serde_json::to_string(&front).map_err(|e| format!("encode unanswered: {e}"))
+    }
+
+    async fn raise_running(&self, app: &str) -> Result<Option<String>, String> {
+        let frames = self.listed().await?;
+        let Some(w) = frames.iter().find(|f| {
+            !f.shell
+                && !f.title.trim().is_empty()
+                && f.app.as_deref().is_some_and(|name| runs_app(name, app))
+        }) else {
+            return Ok(None);
+        };
+        let front = WindowArgs {
+            window: w.title.clone(),
+            pid: w.pid,
+        };
+        if self.focus(front).await.is_err() {
+            return Ok(None);
+        }
+        let launched = format!("{app} is already running; brought its window to the front");
+        let out = json!({"ok": true, "launched": launched, "running": true, "title": w.title, "pid": w.pid});
+        Ok(Some(out.to_string()))
     }
 
     async fn windows(&self) -> Result<String, String> {
@@ -2111,6 +2138,15 @@ pub(crate) fn launch_name(app: &str) -> Cow<'_, str> {
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn launch_name(app: &str) -> Cow<'_, str> {
     Cow::Borrowed(app)
+}
+
+pub(crate) fn runs_app(window_app: &str, app: &str) -> bool {
+    names_app(window_app, app) || names_app(window_app, &launch_name(app))
+}
+
+fn names_app(window_app: &str, wanted: &str) -> bool {
+    let (name, wanted) = (window_app.to_lowercase(), wanted.to_lowercase());
+    !name.is_empty() && (name.contains(&wanted) || wanted.contains(&name))
 }
 
 /// Runs of `text` with at most [`RUN_CHARS`] distinct non-ASCII characters; the Linux driver binds a spare keycode to each for the call and has fewer than 20 to lend.
@@ -4114,6 +4150,57 @@ pub(crate) mod tests {
             click(same).await.unwrap();
             assert_eq!(sent(&calls, "click").len(), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn a_linux_launch_raises_the_running_app_and_starts_it_only_when_asked_or_absent() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Linux);
+        let raised: Value = serde_json::from_str(
+            &desk
+                .run("desk_launch", json!({"app": "mail"}))
+                .await
+                .unwrap()
+                .text,
+        )
+        .unwrap();
+        assert_eq!(
+            (&raised["running"], &raised["title"], &raised["pid"]),
+            (&json!(true), &json!("Inbox"), &json!(8)),
+            "{raised}"
+        );
+        assert_eq!(sent(&calls, "bring_to_front").len(), 1);
+        assert!(sent(&calls, "launch_app").is_empty());
+        let args = json!({"app": "mail", "args": ["--compose"]});
+        desk.run("desk_launch", args).await.unwrap();
+        desk.run("desk_launch", json!({"app": "Mousepad"}))
+            .await
+            .unwrap();
+        assert_eq!(sent(&calls, "launch_app").len(), 2);
+        assert_eq!(sent(&calls, "bring_to_front").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn only_a_linux_launch_raises_a_running_app() {
+        for os in [Os::Mac, Os::Windows] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), os);
+            desk.run("desk_launch", json!({"app": "Mail"}))
+                .await
+                .unwrap();
+            assert_eq!(sent(&calls, "launch_app").len(), 1, "{os:?}");
+            assert!(sent(&calls, "bring_to_front").is_empty(), "{os:?}");
+        }
+    }
+
+    #[test]
+    fn a_window_names_an_app_by_its_process_or_the_desktop_id_of_its_menu_name() {
+        assert!(names_app("xfce4-terminal", "Terminal"));
+        assert!(names_app("xfce4-terminal", "xfce4-terminal"));
+        assert!(names_app("xfce4-terminal", "xfce4-terminal-emulator"));
+        assert!(!names_app("xfce4-terminal", "Xfce Terminal"));
+        assert!(!names_app("xfce4-terminal", "Mousepad"));
+        assert!(!names_app("", "Terminal"));
     }
 
     #[tokio::test]

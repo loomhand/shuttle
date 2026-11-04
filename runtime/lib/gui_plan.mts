@@ -1094,13 +1094,14 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const pkg = !s.title && ANDROID_PACKAGE.test(s.app)
     const titled = (w: Win) => pkg ? w.title === s.app || w.title.endsWith(` - ${s.app}`) : norm(w.title).includes(name)
     const own = (w: Win) => titled(w) || (!s.title && !!w.app && norm(w.app).includes(app)) || (word && ((!pkg && norm(w.title).includes(name.replace(/-/g, ' '))) || ownedBy(w.pid, name) || entries.some((e) => norm(w.title).includes(e))))
-    const has = async () => { const ws = await desk.windows(); return ws.find(own) ?? (launched ? ws.find((w) => w.title && !before.has(w.title)) : undefined) }
+    let started: Awaited<ReturnType<typeof desk.launch>> | undefined
+    const has = async () => { const ws = await desk.windows(); return ws.find(own) ?? (started?.running ? ws.find((w) => w.title === started?.title && w.pid === started?.pid) : launched ? ws.find((w) => w.title && !before.has(w.title)) : undefined) }
     let w = (BG ? ws.find((x) => own(x) && !!x.title.trim()) : undefined) ?? ws.find(own)
     const listed = !w && word && !BG ? await desk.focus(s.app).catch(() => null) : null
     if (listed) { known.add(listed.title); rec.window = lastSeen = listed.title; return }
     if (!w) {
       const t0 = Date.now(); launched = true
-      background = (await desk.launch(s.app)).background === true
+      started = await desk.launch(s.app); background = started.background === true
       for (const end = Date.now() + 8000; !(w = await has()); await sleep(50)) {
         if (Date.now() > end) throw new Surprise(`app "${s.app}" has no window`, await seen())
       }

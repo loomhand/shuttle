@@ -20,7 +20,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use crate::desk::{Cancel, Turn, Typer, launch_name, text_runs};
+use crate::desk::{Cancel, Turn, Typer, launch_name, runs_app, text_runs};
 use crate::driver::{CONNECT_RETRY, Driver, ENDED, image_of, text_of};
 use crate::keys::{Os, key_names};
 use crate::model::Modal;
@@ -1120,14 +1120,9 @@ impl Computer {
         let windows = self
             .request(session, "list_windows", json!({"on_screen_only": true}))
             .await?;
-        let wanted = app.to_lowercase();
         Ok(window_list(&windows)
             .into_iter()
-            .filter(|w| {
-                let name = w.app.to_lowercase();
-                !name.is_empty()
-                    && (name == wanted || name.contains(&wanted) || wanted.contains(&name))
-            })
+            .filter(|w| runs_app(&w.app, app))
             .collect())
     }
 

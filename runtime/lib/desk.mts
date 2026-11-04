@@ -58,7 +58,7 @@ export const typeText = async (text: string, to: Target = {}): Promise<Sent> => 
 export const click = async (x: number, y: number, o: { button?: string; count?: number; modifiers?: string[] } & Target = {}): Promise<Sent> => ran(await call('click', { x, y, ...o, pid: o.pid ?? undefined }))
 export const focus = (window: string, pid?: number | null): Promise<{ ok: boolean; title: string; pid: number | null; path?: string; front?: number | null }> => call('focus', { window, pid: pid ?? undefined })
 export const close = (window: string, pid?: number | null): Promise<unknown> => call('close', { window, pid: pid ?? undefined })
-export const launch = (app: string, args?: string[]): Promise<{ ok: boolean; launched: string; background?: boolean }> => call('launch', { app, args })
+export const launch = (app: string, args?: string[]): Promise<{ ok: boolean; launched: string; background?: boolean; running?: boolean; title?: string; pid?: number | null }> => call('launch', { app, args })
 /** Turns the web accessibility tree of the browser of process `pid` on or off; `was` says whether it was on. */
 export const web = (pid: number, on: boolean): Promise<{ ok: boolean; was: boolean }> => call('web', { pid, on })
 export async function screen(): Promise<Size> {

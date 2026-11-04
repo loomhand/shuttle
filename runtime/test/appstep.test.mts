@@ -24,6 +24,22 @@ test('an app step finds a running app by the app its windows name, whatever thei
   assert.ok(!calls.includes('desk_launch'), calls.join(' '))
 })
 
+test('an app step takes the window a launch raised, whatever its app and title are called', async (t) => {
+  const term = { id: '1', title: 'Terminal - user@box: ~', role: 'window', pid: process.pid, active: false, app: 'xfce4-terminal' }
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify([term])
+    if (tool === 'desk_launch') { term.active = true; return JSON.stringify({ ok: true, launched: 'raised', running: true, title: term.title, pid: term.pid }) }
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: term, nodes: [], truncated: false })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'Xfce Terminal' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.window, term.title)
+  assert.equal(calls.filter((c) => c === 'desk_launch').length, 1, calls.join(' '))
+})
+
 test('an app step for a package takes the window that ends in its package, not one whose package it prefixes', async (t) => {
   const suggestions = { id: '7', title: 'Settings Suggestions - com.android.settings.intelligence', role: 'frame', pid: 4562183, active: true }
   const settings = { id: '9', title: 'Settings - com.android.settings', role: 'frame', pid: 6289366, active: false }
