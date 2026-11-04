@@ -371,7 +371,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_launch" => {
                 let a = parse::<LaunchArgs>(args)?;
                 if a.args.is_empty()
-                    && self.os == Os::Linux
+                    && self.os != Os::Mac
                     && let Some(raised) = self.raise_running(&a.app).await?
                 {
                     return Ok(Output::text(raised));
@@ -4190,15 +4190,19 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn only_a_linux_launch_raises_a_running_app() {
-        for os in [Os::Mac, Os::Windows] {
+    async fn a_macos_launch_never_raises_a_running_app_and_a_windows_one_does() {
+        for (os, raised) in [(Os::Mac, false), (Os::Windows, true)] {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), os);
             desk.run("desk_launch", json!({"app": "Mail"}))
                 .await
                 .unwrap();
-            assert_eq!(sent(&calls, "launch_app").len(), 1, "{os:?}");
-            assert!(sent(&calls, "bring_to_front").is_empty(), "{os:?}");
+            assert_eq!(sent(&calls, "launch_app").is_empty(), raised, "{os:?}");
+            assert_eq!(
+                sent(&calls, "bring_to_front").len(),
+                usize::from(raised),
+                "{os:?}"
+            );
         }
     }
 
