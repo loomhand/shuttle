@@ -2148,7 +2148,12 @@ fn names_app(window_app: &str, wanted: &str) -> bool {
     let (have, want) = (words(window_app), words(wanted));
     !have.is_empty()
         && !want.is_empty()
-        && (want.iter().all(|w| have.contains(w)) || have.iter().all(|w| want.contains(w)))
+        && (want.iter().all(|w| have.iter().any(|h| starts_word(h, w)))
+            || have.iter().all(|h| want.contains(h)))
+}
+
+fn starts_word(word: &str, start: &str) -> bool {
+    word == start || (start.len() >= 3 && word.starts_with(start))
 }
 
 fn words(name: &str) -> Vec<String> {
@@ -4211,32 +4216,34 @@ pub(crate) mod tests {
         assert!(names_app("xfce4-terminal", "Terminal"));
         assert!(names_app("xfce4-terminal", "xfce4-terminal"));
         assert!(names_app("xfce4-terminal", "xfce4-terminal-emulator"));
-        assert!(!names_app("xfce4-terminal", "Xfce Terminal"));
         assert!(!names_app("xfce4-terminal", "Mousepad"));
         assert!(!names_app("", "Terminal"));
     }
 
     #[test]
-    fn a_name_matches_whole_words_of_the_app_never_a_fragment() {
+    fn a_name_matches_the_start_of_app_words_never_a_fragment_inside_one() {
         for (app, name) in [
             ("Notepad.exe", "Notepad"),
+            ("Notepad.exe", "Note"),
             ("Google Chrome", "Chrome"),
             ("chrome", "Google Chrome"),
             ("gnome-terminal-server", "gnome-terminal"),
             ("TextEdit", "textedit"),
+            ("TextEdit", "Text"),
+            ("xfce4-terminal", "term"),
+            ("xfce4-terminal", "Xfce Terminal"),
+            ("mousepad", "mouse"),
         ] {
             assert!(names_app(app, name), "{app} {name}");
         }
         for (app, name) in [
             ("mousepad", "pad"),
-            ("mousepad", "mouse"),
-            ("xfce4-terminal", "term"),
-            ("xfce4-terminal", "xfce"),
+            ("xfce4-terminal", "minal"),
             ("xfce4-terminal", "e"),
+            ("xfce4-terminal", "xf"),
             ("xfce4-terminal", ""),
             ("xfce4-terminal", "  "),
-            ("TextEdit", "Text"),
-            ("Notepad.exe", "Note"),
+            ("Notepad.exe", "No"),
         ] {
             assert!(!names_app(app, name), "{app} {name:?}");
         }
