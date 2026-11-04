@@ -2145,8 +2145,17 @@ pub(crate) fn runs_app(window_app: &str, app: &str) -> bool {
 }
 
 fn names_app(window_app: &str, wanted: &str) -> bool {
-    let (name, wanted) = (window_app.to_lowercase(), wanted.to_lowercase());
-    !name.is_empty() && (name.contains(&wanted) || wanted.contains(&name))
+    let (have, want) = (words(window_app), words(wanted));
+    !have.is_empty()
+        && !want.is_empty()
+        && (want.iter().all(|w| have.contains(w)) || have.iter().all(|w| want.contains(w)))
+}
+
+fn words(name: &str) -> Vec<String> {
+    name.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
 }
 
 /// Runs of `text` with at most [`RUN_CHARS`] distinct non-ASCII characters; the Linux driver binds a spare keycode to each for the call and has fewer than 20 to lend.
@@ -4201,6 +4210,32 @@ pub(crate) mod tests {
         assert!(!names_app("xfce4-terminal", "Xfce Terminal"));
         assert!(!names_app("xfce4-terminal", "Mousepad"));
         assert!(!names_app("", "Terminal"));
+    }
+
+    #[test]
+    fn a_name_matches_whole_words_of_the_app_never_a_fragment() {
+        for (app, name) in [
+            ("Notepad.exe", "Notepad"),
+            ("Google Chrome", "Chrome"),
+            ("chrome", "Google Chrome"),
+            ("gnome-terminal-server", "gnome-terminal"),
+            ("TextEdit", "textedit"),
+        ] {
+            assert!(names_app(app, name), "{app} {name}");
+        }
+        for (app, name) in [
+            ("mousepad", "pad"),
+            ("mousepad", "mouse"),
+            ("xfce4-terminal", "term"),
+            ("xfce4-terminal", "xfce"),
+            ("xfce4-terminal", "e"),
+            ("xfce4-terminal", ""),
+            ("xfce4-terminal", "  "),
+            ("TextEdit", "Text"),
+            ("Notepad.exe", "Note"),
+        ] {
+            assert!(!names_app(app, name), "{app} {name:?}");
+        }
     }
 
     #[tokio::test]

@@ -35,6 +35,41 @@ impl Spi {
         })
     }
 
+    fn twin_of(
+        &mut self,
+        frames: &[Frame],
+        w: u32,
+        pid: Option<u32>,
+        title: &str,
+    ) -> Option<String> {
+        let twins: Vec<&Frame> = frames
+            .iter()
+            .filter(|f| pid.is_some() && f.pid == pid && f.title == title)
+            .collect();
+        if title.is_empty() || twins.len() < 2 {
+            return None;
+        }
+        let top = self.shm(|g| {
+            let top = g.top_level(w)?;
+            Ok(g.mapped()?.into_iter().find(|p| p.id == top))
+        })??;
+        let place = [
+            i32::from(top.x),
+            i32::from(top.y),
+            i32::from(top.width),
+            i32::from(top.height),
+        ];
+        let rects: Vec<(&str, [i32; 4])> = twins
+            .iter()
+            .filter_map(|f| {
+                let obj = Obj::parse(&f.id).ok()?;
+                let rect = self.rt.block_on(self.atspi.extents(&obj)).ok()?;
+                Some((f.id.as_str(), rect))
+            })
+            .collect();
+        twin_in(&rects, place).map(str::to_owned)
+    }
+
     /// `read` on the grabber; none when MIT-SHM is out of reach.
     fn shm<T>(&mut self, read: impl Fn(&Grabber) -> Result<T, String>) -> Option<T> {
         reuse(&mut self.grabber, Grabber::open, Grabber::current, read)
@@ -52,11 +87,13 @@ impl Spi {
 impl Access for Spi {
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
         let mut frames: Vec<Frame> = self.listed()?.into_iter().map(frame).collect();
-        if let Some(Some((pid, title))) =
-            self.shm(|g| Ok(g.active().and_then(|w| Some((g.pid(w), g.title(w)?)))))
-        {
-            settle_active(&mut frames, pid, &title);
-        }
+        let Some(Some((w, pid, title))) =
+            self.shm(|g| Ok(g.active().and_then(|w| Some((w, g.pid(w), g.title(w)?)))))
+        else {
+            return Ok(frames);
+        };
+        let twin = self.twin_of(&frames, w, pid, &title);
+        settle_active(&mut frames, pid, &title, twin.as_deref());
         Ok(frames)
     }
 
@@ -206,7 +243,7 @@ fn frame(f: atspi::Frame) -> Frame {
 }
 
 /// Leaves active only the frame of the X active window, `_NET_ACTIVE_WINDOW`'s pid and title, since GTK keeps a window's AT-SPI active state after the keyboard focus moved to another X window; title twins of that pid leave none active, a title of no frame (or one that changed between the AT-SPI and X reads) keeps that pid's AT-SPI actives, and a pid of no frame keeps AT-SPI's state.
-fn settle_active(frames: &mut [Frame], pid: Option<u32>, title: &str) {
+fn settle_active(frames: &mut [Frame], pid: Option<u32>, title: &str, twin: Option<&str>) {
     let Some(pid) = pid.filter(|&p| p != 0 && frames.iter().any(|f| f.pid == Some(p))) else {
         return;
     };
@@ -223,8 +260,37 @@ fn settle_active(frames: &mut [Frame], pid: Option<u32>, title: &str) {
         f.active = match named {
             0 => f.active && own,
             1 => own && f.title == title,
-            _ => false,
+            _ => own && f.title == title && twin == Some(f.id.as_str()),
         };
+    }
+}
+
+fn twin_in<'a>(rects: &[(&'a str, [i32; 4])], frame: [i32; 4]) -> Option<&'a str> {
+    let overlaps = |r: &[i32; 4]| {
+        r[0] < frame[0] + frame[2]
+            && frame[0] < r[0] + r[2]
+            && r[1] < frame[1] + frame[3]
+            && frame[1] < r[1] + r[3]
+    };
+    let inside = |r: &[i32; 4]| {
+        r[0] >= frame[0]
+            && r[1] >= frame[1]
+            && r[0] + r[2] <= frame[0] + frame[2]
+            && r[1] + r[3] <= frame[1] + frame[3]
+    };
+    let gap = |r: &[i32; 4]| (0..4).map(|i| (r[i] - frame[i]).abs()).sum::<i32>();
+    let held: Vec<_> = rects.iter().filter(|(_, r)| inside(r)).collect();
+    let pool = if held.is_empty() {
+        rects.iter().filter(|(_, r)| overlaps(r)).collect()
+    } else {
+        held
+    };
+    let mut near: Vec<(i32, &str)> = pool.iter().map(|(id, r)| (gap(r), *id)).collect();
+    near.sort_unstable();
+    match near.as_slice() {
+        [(_, id)] => Some(id),
+        [(a, id), (b, _), ..] if a < b => Some(id),
+        _ => None,
     }
 }
 
@@ -431,13 +497,13 @@ mod tests {
             window("b.txt - Mousepad", 7, false),
             window("Terminal", 9, false),
         ];
-        settle_active(&mut frames, Some(7), "b.txt - Mousepad");
+        settle_active(&mut frames, Some(7), "b.txt - Mousepad", None);
         assert_eq!(actives(&frames), ["b.txt - Mousepad"]);
         let mut frames = vec![
             window("a.txt - Mousepad", 7, true),
             window("Terminal", 9, false),
         ];
-        settle_active(&mut frames, Some(9), "Terminal");
+        settle_active(&mut frames, Some(9), "Terminal", None);
         assert_eq!(actives(&frames), ["Terminal"]);
     }
 
@@ -447,10 +513,10 @@ mod tests {
             window("a.txt - Mousepad", 7, true),
             window("Terminal", 9, true),
         ];
-        settle_active(&mut frames, Some(9), "Desktop");
+        settle_active(&mut frames, Some(9), "Desktop", None);
         assert_eq!(actives(&frames), ["Terminal"]);
         let mut frames = vec![window("a.txt - Mousepad", 7, true)];
-        settle_active(&mut frames, None, "a.txt - Mousepad");
+        settle_active(&mut frames, None, "a.txt - Mousepad", None);
         assert_eq!(actives(&frames), ["a.txt - Mousepad"]);
     }
 
@@ -462,9 +528,40 @@ mod tests {
                 window("Untitled", 7, marked[1]),
                 window("Terminal", 9, true),
             ];
-            settle_active(&mut frames, Some(7), "Untitled");
+            settle_active(&mut frames, Some(7), "Untitled", None);
             assert!(actives(&frames).is_empty(), "{marked:?}");
         }
+    }
+
+    #[test]
+    fn the_title_twin_placed_at_the_x_active_frame_is_the_active_one() {
+        let mut frames = vec![
+            window("Untitled", 7, false),
+            window("Untitled", 7, false),
+            window("Terminal", 9, true),
+        ];
+        frames[0].id = "a".into();
+        frames[1].id = "b".into();
+        settle_active(&mut frames, Some(7), "Untitled", Some("b"));
+        assert_eq!(actives(&frames), ["Untitled"]);
+        assert!(frames[1].active);
+    }
+
+    #[test]
+    fn a_frame_picks_the_twin_inside_it_else_the_closest_overlapping_and_none_on_a_tie() {
+        let rects = [("a", [0, 0, 400, 300]), ("b", [500, 100, 400, 300])];
+        assert_eq!(twin_in(&rects, [490, 70, 420, 340]), Some("b"));
+        assert_eq!(twin_in(&rects, [2000, 0, 10, 10]), None);
+        let cascade = [("a", [100, 100, 400, 300]), ("b", [130, 130, 400, 300])];
+        assert_eq!(twin_in(&cascade, [125, 100, 410, 335]), Some("b"));
+        let xfce = [
+            ("40", [0, 27, 827, 517]),
+            ("68", [453, 283, 827, 517]),
+            ("118", [453, 27, 827, 517]),
+        ];
+        assert_eq!(twin_in(&xfce, [453, 283, 827, 517]), Some("68"));
+        let stacked = [("a", [100, 100, 400, 300]), ("b", [100, 100, 400, 300])];
+        assert_eq!(twin_in(&stacked, [95, 75, 410, 330]), None);
     }
 
     #[test]
@@ -474,7 +571,7 @@ mod tests {
             window("", 7, false),
             window("Terminal", 9, true),
         ];
-        settle_active(&mut frames, Some(7), "");
+        settle_active(&mut frames, Some(7), "", None);
         assert_eq!(actives(&frames), ["a.txt - Mousepad"]);
     }
 
@@ -536,7 +633,7 @@ mod tests {
                 window("a.txt - Mousepad", 7, true),
                 window("Terminal", 9, true),
             ];
-            settle_active(&mut frames, Some(pid), "Terminal");
+            settle_active(&mut frames, Some(pid), "Terminal", None);
             assert_eq!(actives(&frames), ["a.txt - Mousepad", "Terminal"]);
         }
     }
