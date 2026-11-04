@@ -2148,12 +2148,14 @@ fn names_app(window_app: &str, wanted: &str) -> bool {
     let (have, want) = (words(window_app), words(wanted));
     !have.is_empty()
         && !want.is_empty()
-        && (want.iter().all(|w| have.iter().any(|h| starts_word(h, w)))
+        && (want.iter().all(|w| have.iter().any(|h| part_of_word(h, w)))
             || have.iter().all(|h| want.contains(h)))
 }
 
-fn starts_word(word: &str, start: &str) -> bool {
-    word == start || (start.len() >= 3 && word.starts_with(start))
+fn part_of_word(word: &str, part: &str) -> bool {
+    word == part
+        || (part.len() >= 3 && word.starts_with(part))
+        || (part.len() >= 4 && word.ends_with(part))
 }
 
 fn words(name: &str) -> Vec<String> {
@@ -4221,7 +4223,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_name_matches_the_start_of_app_words_never_a_fragment_inside_one() {
+    fn a_name_matches_the_start_or_end_of_app_words_never_a_short_fragment() {
         for (app, name) in [
             ("Notepad.exe", "Notepad"),
             ("Notepad.exe", "Note"),
@@ -4233,12 +4235,14 @@ pub(crate) mod tests {
             ("xfce4-terminal", "term"),
             ("xfce4-terminal", "Xfce Terminal"),
             ("mousepad", "mouse"),
+            ("mspaint.exe", "Paint"),
+            ("msedge.exe", "Edge"),
         ] {
             assert!(names_app(app, name), "{app} {name}");
         }
         for (app, name) in [
             ("mousepad", "pad"),
-            ("xfce4-terminal", "minal"),
+            ("xfce4-terminal", "rmin"),
             ("xfce4-terminal", "e"),
             ("xfce4-terminal", "xf"),
             ("xfce4-terminal", ""),
