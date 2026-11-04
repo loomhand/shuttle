@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.39 - 2026-11-04
 
 - **Linux: `launch` reuses a running app.** Without `args`, `desk` `launch` and a `gui_plan` app step bring the app's window to the front instead of opening another window each time, as a terminal did. `computer_act` and `launch` now match a menu name such as `Xfce Terminal` to its app through the desktop entry. Pass `args` to start a new instance.
 - **Windows: `launch` reuses a running app** as on Linux: a second `launch` of Notepad opened a second window. macOS keeps its launch, which already brings back the running app.
