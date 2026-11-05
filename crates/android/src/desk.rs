@@ -98,16 +98,14 @@ impl Node {
     }
 
     fn json(&self, i: usize, app: &str) -> Value {
-        let mut v = json!({
-            "ref": i,
-            "id": self.id(app),
-            "parent": self.parent,
-            "depth": self.depth,
-            "role": self.role,
-            "name": self.name,
-            "states": self.states,
-            "bounds": self.bounds,
-        });
+        let mut v = json!({"ref": i});
+        v["id"] = self.id(app).into();
+        v["parent"] = self.parent.into();
+        v["depth"] = self.depth.into();
+        v["role"] = self.role.into();
+        v["name"] = self.name.as_str().into();
+        v["states"] = self.states.as_slice().into();
+        v["bounds"] = self.bounds.as_slice().into();
         if let Some(value) = &self.value {
             v["value"] = value.as_str().into();
         }
@@ -326,11 +324,15 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
                 ));
             }
             android.keys("back").await?;
-            json!({"ok": true, "title": frame.title}).to_string()
+            let mut out = json!({"ok": true});
+            out["title"] = frame.title.into();
+            out.to_string()
         }
         "desk_launch" => {
             let app = parse::<LaunchArgs>(args)?.app;
-            json!({"ok": true, "launched": android.launch(&app).await?}).to_string()
+            let mut out = json!({"ok": true});
+            out["launched"] = android.launch(&app).await?.into();
+            out.to_string()
         }
         "desk_screen" => {
             let (width, height) = screen(android).await?;
@@ -511,15 +513,11 @@ async fn tree(
 
 /// The front window of package `app` with its nodes.
 async fn app_tree(android: &Android, app: &str) -> Result<(Frame, Vec<Node>), String> {
-    let mut own: Vec<Frame> = frames(android)
+    let frame = frames(android)
         .await?
         .into_iter()
         .filter(|f| f.package == app)
-        .collect();
-    own.sort_by_key(|f| !f.active);
-    let frame = own
-        .into_iter()
-        .next()
+        .min_by_key(|f| !f.active)
         .ok_or_else(|| format!("no window of {app}"))?;
     let xml = android.tree(Some(&frame.id)).await?;
     let nodes = nodes(&frame, &raws(&xml));
@@ -784,11 +782,10 @@ fn role(r: &Raw<'_>) -> &'static str {
 async fn snapshot(android: &Android, a: SnapArgs) -> Result<String, String> {
     let started = Instant::now();
     let (frame, nodes) = tree(android, a.id.as_deref(), a.window.as_deref(), a.pid).await?;
-    let mut out = json!({
-        "window": frame.json(),
-        "ms": ms(started.elapsed().as_micros()),
-        "truncated": false,
-    });
+    let mut out = json!({});
+    out["window"] = frame.json();
+    out["ms"] = ms(started.elapsed().as_micros());
+    out["truncated"] = false.into();
     if a.text {
         out["text"] = outline(&nodes, &frame.package, a.max_chars.unwrap_or(NAME_CHARS)).into();
     } else {
@@ -804,7 +801,7 @@ async fn snapshot(android: &Android, a: SnapArgs) -> Result<String, String> {
 fn outline(nodes: &[Node], app: &str, max_chars: usize) -> String {
     let mut out = String::new();
     for n in nodes {
-        let _ = write!(out, "{}- {}", "  ".repeat(n.depth), n.role);
+        let _ = write!(out, "{:indent$}- {}", "", n.role, indent = 2 * n.depth);
         if !n.name.is_empty() {
             let _ = write!(out, " \"{}\"", quote(&n.name, max_chars));
         }
@@ -829,7 +826,8 @@ async fn find(android: &Android, a: FindArgs) -> Result<String, String> {
         .take(MAX_FOUND)
         .map(|i| nodes[i].json(i, &frame.package))
         .collect();
-    let mut out = json!({"window": frame.json()});
+    let mut out = json!({});
+    out["window"] = frame.json();
     out["found"] = Value::Array(found);
     Ok(out.to_string())
 }
@@ -928,16 +926,18 @@ async fn at(android: &Android, a: AtArgs) -> Result<String, String> {
         .filter(|(_, n)| inside(n))
         .max_by_key(|(i, n)| (n.depth, *i))
     else {
-        return Ok(json!({"found": null, "window": frame.json()}).to_string());
+        let mut out = json!({"found": null});
+        out["window"] = frame.json();
+        return Ok(out.to_string());
     };
     let mut path = Vec::new();
     let mut p = hit.parent;
     while p >= 0 {
         let n = &nodes[p as usize];
         let id = if p == 0 {
-            frame.id.clone()
+            Cow::Borrowed(frame.id.as_str())
         } else {
-            n.id(&frame.package)
+            Cow::Owned(n.id(&frame.package))
         };
         path.push(json!({"id": id, "role": n.role, "name": n.name}));
         p = n.parent;
@@ -1007,7 +1007,10 @@ async fn focus(android: &Android, a: WindowArgs) -> Result<String, String> {
         }
         Err(e) => return Err(e),
     };
-    Ok(json!({"ok": true, "title": frame.title, "pid": frame.pid}).to_string())
+    let mut out = json!({"ok": true});
+    out["title"] = frame.title.into();
+    out["pid"] = frame.pid.into();
+    Ok(out.to_string())
 }
 
 /// A PNG of a screen rectangle, the whole screen by default.
