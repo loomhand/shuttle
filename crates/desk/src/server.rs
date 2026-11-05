@@ -18,6 +18,7 @@ use crate::spi::Spi as Backend;
 #[cfg(windows)]
 use crate::uia::Uia as Backend;
 
+const ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
 #[cfg(unix)]
 const BACKLOG: u32 = 1024;
 #[cfg(target_os = "linux")]
@@ -261,12 +262,15 @@ pub async fn bind_for(endpoint: &str, group: &str) -> Result<Listener, String> {
 #[cfg(unix)]
 pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<(), String> {
     loop {
-        let (stream, _) = listener
-            .socket
-            .accept()
-            .await
-            .map_err(|e| format!("accept {}: {e}", listener.endpoint))?;
-        tokio::spawn(handle(handler.clone(), stream));
+        match listener.socket.accept().await {
+            Ok((stream, _)) => {
+                tokio::spawn(handle(handler.clone(), stream));
+            }
+            Err(e) => {
+                eprintln!("desk: accept {}: {e}", listener.endpoint);
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
+            }
+        }
     }
 }
 
@@ -291,10 +295,12 @@ pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<()
         endpoint,
     } = listener;
     loop {
-        server
-            .connect()
-            .await
-            .map_err(|e| format!("accept {endpoint}: {e}"))?;
+        if let Err(e) = server.connect().await {
+            eprintln!("desk: accept {endpoint}: {e}");
+            server = pipe(&endpoint, false, &security)?;
+            tokio::time::sleep(ACCEPT_BACKOFF).await;
+            continue;
+        }
         let client = std::mem::replace(&mut server, pipe(&endpoint, false, &security)?);
         tokio::spawn(handle(handler.clone(), client));
     }
