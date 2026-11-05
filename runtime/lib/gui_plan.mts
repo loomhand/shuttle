@@ -96,6 +96,7 @@ const CHOOSER_BY_OS: Partial<Record<NodeJS.Platform, RegExp>> = { linux: /File C
 const CHOOSER = CHOOSER_BY_OS[OS] ?? /(?!)/
 const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
 const ACTION_ONLY = 'an accessibility action ran, and on Linux its success does not show its effect; no later step read it back'
+const TOGGLE_UNREAD = 'the menu toggle was pressed, and its state after the press could not be read; no later step read it back'
 const known = new Set<string>()
 let busNames: string[] | null = null
 let gitWorks: boolean | undefined
@@ -415,7 +416,7 @@ function traced(i: number, rec: Rec, s: Step, escalated: boolean): Trace {
     i, op: rec.op, how: rec.how,
     ...(rec.fg || rec.how === 'foreground' ? { input: 'foreground' as const } : {}),
     ms: rec.ms,
-    ...(rec.was !== undefined ? { was: rec.was === 'mixed' ? 'mixed' : rec.was ? 'on' : 'off', now: rec.noop || s.verify || escalated ? undefined : s.on === false ? 'off' : 'on' } : {}),
+    ...(rec.was !== undefined ? { was: rec.was === 'mixed' ? 'mixed' : rec.was ? 'on' : 'off', now: rec.noop || s.verify || escalated || !rec.confirmed ? undefined : s.on === false ? 'off' : 'on' } : {}),
     ...(rec.now !== undefined ? { now: rec.now ? 'on' : 'off' } : {}),
     ...(rec.noop ? { noop: true } : {}),
     ...(rec.checked !== undefined ? { ground: { check: rec.checked, p: rec.p, p_zoom: rec.p_zoom, p_full: rec.p_full, hit: rec.ground_hit ?? '' } } : {}),
@@ -1252,7 +1253,12 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if ((hit.n.role === 'menuitemcheckbox' || hit.n.role === 'menuitemradio') && OS !== 'darwin') {
       const now = await checked(hit.n); rec.was = now; rec.state = 'atspi'
       if (now === s.on) { for (let k = 0; k < (rec.opened ?? 0); k++) await desk.key('Escape', at(w)); rec.noop = true; return }
-      if (now !== null) { await act(hit.n); await settle(w.title); return }
+      if (now !== null) {
+        const got = await flip(hit.n, s.on); await settle(w.title)
+        if (got === null) { rec.caveat = TOGGLE_UNREAD; return }
+        if (got !== s.on) throw new Surprise(`menu toggle "${hit.n.name}" is still ${got === 'mixed' ? 'mixed' : got ? 'on' : 'off'}`, await seen())
+        rec.confirmed = true; return
+      }
     }
     const chain = menus(nodes, hit.n.parent).reverse()
     if (!chain.length) throw new Surprise(`"${hit.n.name}" is not inside a menu`, await seen())
@@ -1289,12 +1295,14 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       const was = await read(); rec.was = was.on; rec.state = 'ax-validated'
       if (was.on === s.on) { rec.noop = true; return }
       await act(was.leaf); await settle(w.title)
-      return
+      const now = await read()
+      if (now.on !== s.on) throw new Surprise(`menu toggle "${hit.n.name}" is still ${now.on ? 'on' : 'off'}`, await seen())
+      rec.confirmed = true; return
     }
     for (const q of chain) { await act(q); await sleep(120) }
     const on = await cropState(hit.n, false); rec.was = on; rec.state = 'vision'
     if (on === s.on) { for (const _ of chain) await desk.key('Escape', at(w)); rec.noop = true; return }
-    await act(hit.n); await settle(w.title); return
+    await act(hit.n); await settle(w.title); rec.caveat = TOGGLE_UNREAD; return
   }
   const target = s.click ?? s.check ?? s.set ?? ''
   const least = s.set ? 0.5 : 0.7
