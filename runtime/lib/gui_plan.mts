@@ -582,7 +582,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string): Pro
     if (w && !w.title.trim() && lastSeen && !isAlert(await outline(w))) { const pid = w.pid; w = ws.find((x) => x.title === lastSeen && x.pid === pid) ?? w }
     tick('wait', t0); if (!w) throw new Surprise(NO_FRONT, {}, true); return w
   }
-  const end = Date.now() + ms; let asked: string | null = null
+  const end = Date.now() + ms; let asked: string | null = null; let many = 0
   for (;;) {
     const ws = await desk.windows(); const w = frontOf(ws)
     if (w && awaited(w.title, want, saw)) return found(w, t0)
@@ -593,8 +593,8 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string): Pro
       if (bg) { follow(bg, ws); return found(bg, t0) }
     } else if ((!w || known.has(w.title)) && Date.now() - t0 > 150) {
       const hits = ws.filter((x) => norm(x.title).includes(norm(want)) && (!!w || x.role !== 'alert'))
-      const bg = w || hits.length === 1 ? hits[0] : undefined
-      if (bg) { await desk.focus(bg.title, bg.pid); return found(bg, t0) }
+      const [bg, other] = hits; many = hits.length
+      if (bg && !other) { await desk.focus(bg.title, bg.pid); return found(bg, t0) }
     }
     if (w && !known.has(w.title) && w.title !== asked && Date.now() - t0 > 250) {
       asked = w.title
@@ -605,7 +605,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string): Pro
       if (prob(d.is) >= 0.7) return found(w, t0)
       if (prob(d.is) < 0.3) { tick('wait', t0); throw new Surprise(`window "${w.title}" opened instead of "${want}"`, await seen()) }
     }
-    if (Date.now() > end) { tick('wait', t0); throw new Surprise(`expected window "${want}" did not appear`, await seen()) }
+    if (Date.now() > end) { tick('wait', t0); throw new Surprise(many > 1 ? `${many} windows match "${want}", and the step never guesses which one: name the window more exactly` : `expected window "${want}" did not appear`, await seen()) }
     await sleep(30)
   }
 }
