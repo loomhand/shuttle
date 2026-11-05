@@ -67,6 +67,7 @@ const APP_ATTRS: [&str; 5] = [
     "AXMainWindow",
     "AXWindows",
 ];
+const CLIMB_ATTRS: [&str; 2] = ["AXRole", "AXParent"];
 const FRAME_ATTRS: [&str; 6] = [
     "AXRole",
     "AXSubrole",
@@ -85,6 +86,7 @@ pub struct Ax {
     names: CFArray<CFString>,
     app_names: CFArray<CFString>,
     frame_names: CFArray<CFString>,
+    climb_names: CFArray<CFString>,
     ids: HashMap<String, CFType>,
     hashes: HashMap<usize, Vec<(CFType, String)>>,
     hung: HashMap<i32, Instant>,
@@ -110,6 +112,7 @@ impl Ax {
             names: names(ATTRS),
             app_names: names(APP_ATTRS),
             frame_names: names(FRAME_ATTRS),
+            climb_names: names(CLIMB_ATTRS),
             ids: HashMap::new(),
             hashes: HashMap::new(),
             hung: HashMap::new(),
@@ -459,16 +462,17 @@ impl Access for Ax {
 
     fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
         let mut chain = Vec::new();
-        let mut at = self.element(id)?;
+        let mut up = attr(&self.element(id)?, "AXParent");
         while chain.len() < MAX_DEPTH {
-            let Some(parent) = attr(&at, "AXParent") else {
+            let Some(parent) = up.take() else {
                 break;
             };
-            if string(attr(&parent, "AXRole")) == "AXApplication" {
+            let [role, next] = values(&self.climb_names, &parent);
+            if string(role) == "AXApplication" {
                 break;
             }
             chain.push(self.id_of(&parent));
-            at = parent;
+            up = next;
         }
         chain.reverse();
         Ok(chain)
@@ -598,10 +602,11 @@ impl Access for Ax {
             if at == target {
                 return Ok(None);
             }
-            if window.is_none() && string(attr(&at, "AXRole")) == "AXWindow" {
+            let [role, parent] = values(&self.climb_names, &at);
+            if window.is_none() && string(role) == "AXWindow" {
                 window = Some(at.clone());
             }
-            let Some(parent) = attr(&at, "AXParent") else {
+            let Some(parent) = parent else {
                 break;
             };
             at = parent;
@@ -875,7 +880,7 @@ pub fn typing() -> (Option<u32>, bool) {
 }
 
 pub fn focused() -> Option<Focused> {
-    let names = names(ATTRS);
+    let (names, climb) = (names(ATTRS), names(CLIMB_ATTRS));
     let el = attr(&system_wide(), "AXFocusedUIElement")?;
     let mut a = attrs(&names, &el);
     let mut frame = None;
@@ -884,7 +889,8 @@ pub fn focused() -> Option<Focused> {
     let mut up = attr(&el, "AXParent");
     for _ in 0..MAX_DEPTH {
         let Some(p) = up.take() else { break };
-        let role = string(attr(&p, "AXRole"));
+        let [role, parent] = values(&climb, &p);
+        let role = string(role);
         if role == "AXSheet" {
             frame.get_or_insert("dialog");
         }
@@ -904,7 +910,7 @@ pub fn focused() -> Option<Focused> {
             window = string(attr(&p, "AXTitle"));
             break;
         }
-        up = attr(&p, "AXParent");
+        up = parent;
     }
     Some(Focused {
         role: ax_roles::role(kind_of(&a)).unwrap_or("generic"),
