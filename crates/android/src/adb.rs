@@ -262,9 +262,13 @@ impl Android {
             other => return Err(format!("unknown action {other}")),
         };
         tokio::time::sleep(SETTLE).await;
-        let mut out = self.look().await?;
-        out.text = report;
-        Ok(out)
+        Ok(match self.look().await {
+            Ok(mut out) => {
+                out.text = report;
+                out
+            }
+            Err(e) => Output::text(format!("{report}; no screenshot after it: {e}")),
+        })
     }
 
     /// Forgets the element centres of a session, the default one when none is named.
@@ -381,8 +385,15 @@ impl Android {
     ) -> Result<Option<bool>, String> {
         let mut typed = Some(true);
         for (i, line) in text.split('\n').enumerate() {
+            let partly = |e: String| match i {
+                0 => e,
+                _ => format!(
+                    "{e}; {i} of {} lines were typed before it",
+                    text.split('\n').count()
+                ),
+            };
             if i > 0 {
-                self.keys("return").await?;
+                self.keys("return").await.map_err(partly)?;
             }
             if line.is_empty() {
                 continue;
@@ -398,7 +409,8 @@ impl Android {
                 },
                 || self.paste(line),
             )
-            .await?;
+            .await
+            .map_err(partly)?;
             typed = match (typed, shown) {
                 (Some(false), _) | (_, Some(false)) => Some(false),
                 (None, _) | (_, None) => None,
@@ -1399,7 +1411,7 @@ mod tests {
             let adb = dir.path().join("adb");
             script(
                 &adb,
-                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi;;\n*screencap*) cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) a=$(cat \"$DIR/inject.answer\" 2>/dev/null); if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
+                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi;;\n*screencap*) if [ -f \"$DIR/screencap.fail\" ]; then exit 1; fi; cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) a=$(head -n 1 \"$DIR/inject.answer\" 2>/dev/null); if [ -f \"$DIR/inject.answer\" ] && [ \"$(wc -l < \"$DIR/inject.answer\")\" -ge 1 ]; then tail -n +2 \"$DIR/inject.answer\" > \"$DIR/inject.next\"; mv \"$DIR/inject.next\" \"$DIR/inject.answer\"; fi; if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
             );
             let android = Android::new(Device {
                 adb,
@@ -1936,6 +1948,40 @@ mod tests {
         .await
         .unwrap();
         assert!(log(&fake, "requests").ends_with("key 29\ntap 10 20\n"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_action_that_ran_is_reported_even_when_the_screenshot_after_it_fails() {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.put("screencap.fail", "");
+        let out = fake
+            .android
+            .act(serde_json::json!({"action": "tap", "x": 10, "y": 20}))
+            .await
+            .unwrap();
+        assert!(
+            out.text.starts_with("tapped 10,20; no screenshot"),
+            "{}",
+            out.text
+        );
+        assert!(out.image_b64.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_type_that_fails_midway_says_how_many_lines_went_in() {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true\nfalse");
+        let err = desk(&fake, "desk_type", serde_json::json!({"text": "\n\n"}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("key return is unconfirmed"), "{err}");
+        assert!(
+            err.ends_with("; 2 of 3 lines were typed before it"),
+            "{err}"
+        );
     }
 
     #[tokio::test]
