@@ -321,8 +321,7 @@ impl<H: Handler> Daemon<H> {
         self.running.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    async fn model(&self, tool: &str, args: Value) -> Result<String, String> {
-        let models = self.models.as_ref().map_err(String::clone)?;
+    async fn model(models: &Models, tool: &str, args: Value) -> Result<String, String> {
         match tool {
             "model_decide" => encode(&models.decide(parse(args)?).await?),
             "model_ask" => encode(&models.ask(parse(args)?).await?),
@@ -346,9 +345,10 @@ impl<H: Handler> Handler for Daemon<H> {
         if *self.halted.borrow() {
             return Output::error(STOPPED);
         }
-        if let Err(e) = &self.models {
-            return Output::error(e);
-        }
+        let models = match &self.models {
+            Ok(m) => m,
+            Err(e) => return Output::error(e),
+        };
         if call.tool.starts_with("desk_") && self.asking.load(Ordering::Acquire) {
             return Output::error(CONFIRM_OPEN);
         }
@@ -368,8 +368,7 @@ impl<H: Handler> Handler for Daemon<H> {
         let mut halted = self.halted.subscribe();
         let out = async {
             match call.tool.as_str() {
-                t if t.starts_with("model_") => self
-                    .model(t, call.args)
+                t if t.starts_with("model_") => Self::model(models, t, call.args)
                     .await
                     .map_or_else(Output::error, Output::text),
                 t if ACTIONS.contains(&t) || t == COMPUTER_ACT => self.act(call).await,
