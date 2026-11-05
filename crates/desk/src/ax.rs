@@ -371,7 +371,10 @@ impl Access for Ax {
         );
         off_space_windows()
             .iter()
-            .filter(|d| number(d, &layer) == Some(0) && number(d, &shown) != Some(1))
+            .filter(|d| {
+                number(d, &layer) == Some(0)
+                    && boolean(d.find(&shown).map(|v| (*v).clone())) != Some(true)
+            })
             .filter_map(|d| {
                 let pid = u32::try_from(number(d, &pid)?).ok()?;
                 let exe = || exe_path(i32::try_from(pid).ok()?);
