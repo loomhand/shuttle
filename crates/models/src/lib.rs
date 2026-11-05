@@ -365,15 +365,6 @@ mod tests {
         );
     }
 
-    fn area(left: f64, top: f64, width: f64, height: f64) -> Area {
-        Area {
-            left,
-            top,
-            width,
-            height,
-        }
-    }
-
     #[test]
     fn a_point_lands_in_desk_coordinates_whatever_the_screenshot_size() {
         let screen = area(0.0, 0.0, 1280.0, 800.0);
@@ -405,5 +396,14 @@ mod tests {
             Err("grounding put OK at (1001, 5), outside 0 to 1000".to_owned())
         );
         assert!(point("[-3, 5]", "OK", &screen).is_err());
+    }
+
+    fn area(left: f64, top: f64, width: f64, height: f64) -> Area {
+        Area {
+            left,
+            top,
+            width,
+            height,
+        }
     }
 }

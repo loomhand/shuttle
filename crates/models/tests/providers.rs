@@ -28,82 +28,6 @@ mod tests {
         }
     }
 
-    async fn fake(reply: Value) -> (String, Arc<Mutex<Vec<Seen>>>) {
-        let text = reply.to_string();
-        serve(move |_| {
-            format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{text}",
-                text.len()
-            )
-        })
-        .await
-    }
-
-    async fn serve(
-        respond: impl Fn(&str) -> String + Send + 'static,
-    ) -> (String, Arc<Mutex<Vec<Seen>>>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let log = seen.clone();
-        tokio::spawn(async move {
-            loop {
-                let (mut s, _) = listener.accept().await.unwrap();
-                let mut buf = Vec::new();
-                let mut chunk = [0u8; 4096];
-                let (head, body) = loop {
-                    let n = s.read(&mut chunk).await.unwrap();
-                    buf.extend_from_slice(&chunk[..n]);
-                    if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                        let head = String::from_utf8_lossy(&buf[..end]).into_owned();
-                        let len = head
-                            .lines()
-                            .find_map(|l| {
-                                l.to_ascii_lowercase()
-                                    .strip_prefix("content-length:")
-                                    .map(|v| v.trim().parse::<usize>().unwrap())
-                            })
-                            .unwrap_or(0);
-                        while buf.len() < end + 4 + len {
-                            let n = s.read(&mut chunk).await.unwrap();
-                            buf.extend_from_slice(&chunk[..n]);
-                        }
-                        break (head, buf[end + 4..end + 4 + len].to_vec());
-                    }
-                };
-                let mut lines = head.lines();
-                let path = lines.next().unwrap().split(' ').nth(1).unwrap().to_owned();
-                let headers = lines
-                    .filter_map(|l| {
-                        l.split_once(':')
-                            .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_owned()))
-                    })
-                    .collect();
-                let res = respond(&path);
-                log.lock().unwrap().push(Seen {
-                    path,
-                    headers,
-                    body: String::from_utf8(body).unwrap(),
-                });
-                s.write_all(res.as_bytes()).await.unwrap();
-            }
-        });
-        (base, seen)
-    }
-
-    fn gateway(base: &str) -> Config {
-        Config {
-            base_url: format!("{base}/v1"),
-            decisions_url: format!("{base}/v1/decisions"),
-            api_key: Some("gw-key".to_owned().into()),
-            ..Config::default()
-        }
-    }
-
-    fn questions(v: Value) -> Map<String, Value> {
-        serde_json::from_value(v).unwrap()
-    }
-
     #[tokio::test]
     async fn request_bodies_match_what_desk_mts_sends() {
         let reply = json!({
@@ -435,5 +359,81 @@ mod tests {
         };
         let err = Models::new(gateway(&base)).decide(args).await.unwrap_err();
         assert!(err.starts_with("typesafe/jev-1.14: invalid type"), "{err}");
+    }
+
+    async fn fake(reply: Value) -> (String, Arc<Mutex<Vec<Seen>>>) {
+        let text = reply.to_string();
+        serve(move |_| {
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{text}",
+                text.len()
+            )
+        })
+        .await
+    }
+
+    async fn serve(
+        respond: impl Fn(&str) -> String + Send + 'static,
+    ) -> (String, Arc<Mutex<Vec<Seen>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut s, _) = listener.accept().await.unwrap();
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let (head, body) = loop {
+                    let n = s.read(&mut chunk).await.unwrap();
+                    buf.extend_from_slice(&chunk[..n]);
+                    if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&buf[..end]).into_owned();
+                        let len = head
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        while buf.len() < end + 4 + len {
+                            let n = s.read(&mut chunk).await.unwrap();
+                            buf.extend_from_slice(&chunk[..n]);
+                        }
+                        break (head, buf[end + 4..end + 4 + len].to_vec());
+                    }
+                };
+                let mut lines = head.lines();
+                let path = lines.next().unwrap().split(' ').nth(1).unwrap().to_owned();
+                let headers = lines
+                    .filter_map(|l| {
+                        l.split_once(':')
+                            .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_owned()))
+                    })
+                    .collect();
+                let res = respond(&path);
+                log.lock().unwrap().push(Seen {
+                    path,
+                    headers,
+                    body: String::from_utf8(body).unwrap(),
+                });
+                s.write_all(res.as_bytes()).await.unwrap();
+            }
+        });
+        (base, seen)
+    }
+
+    fn gateway(base: &str) -> Config {
+        Config {
+            base_url: format!("{base}/v1"),
+            decisions_url: format!("{base}/v1/decisions"),
+            api_key: Some("gw-key".to_owned().into()),
+            ..Config::default()
+        }
+    }
+
+    fn questions(v: Value) -> Map<String, Value> {
+        serde_json::from_value(v).unwrap()
     }
 }

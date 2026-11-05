@@ -5,12 +5,6 @@ mod tests {
 
     use shuttle_models::config::{Config, Confirm, DecideApi, InputMode, default_path};
 
-    fn file(text: &str) -> tempfile::NamedTempFile {
-        let mut f = tempfile::NamedTempFile::new().unwrap();
-        f.write_all(text.as_bytes()).unwrap();
-        f
-    }
-
     #[test]
     fn a_missing_file_is_openrouter_with_its_key_variable() {
         let dir = tempfile::tempdir().unwrap();
@@ -257,5 +251,11 @@ mod tests {
             "{err}"
         );
         assert!(Config::load(file(&format!("[desk]\ninput = \"auto\"\n{android}")).path()).is_ok());
+    }
+
+    fn file(text: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(text.as_bytes()).unwrap();
+        f
     }
 }
