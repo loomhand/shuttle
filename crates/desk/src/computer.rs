@@ -3879,9 +3879,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let listener = Fake::bind(&socket).unwrap();
-        let light = full_shot(1280, 800, 1280);
+        let light = full_shot(1280, 16, 1280);
         let mut dark = light.clone();
-        dark["result"]["content"][0]["data"] = png_of(1280, 800, &vec![0; 1280 * 800 * 4]).into();
+        dark["result"]["content"][0]["data"] = png_of(1280, 16, &vec![0; 1280 * 16 * 4]).into();
         let captures = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let log = std::sync::Arc::clone(&captures);
         let mut probes = 0;
@@ -3912,7 +3912,7 @@ mod tests {
         assert!(!out.is_error, "{}", out.text);
         let image = B64.decode(out.image_b64.unwrap()).unwrap();
         let mut webp = image_webp::WebPDecoder::new(std::io::Cursor::new(&image)).unwrap();
-        assert_eq!(webp.dimensions(), (1024, 640));
+        assert_eq!(webp.dimensions(), (1024, 12));
         let mut rgb = vec![1; webp.output_buffer_size().unwrap()];
         webp.read_image(&mut rgb).unwrap();
         assert!(rgb.iter().all(|c| *c == 0));
