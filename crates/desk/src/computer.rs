@@ -93,6 +93,7 @@ const WM_POLL: Duration = Duration::from_millis(100);
 const AX_UNSUPPORTED: &str = "returned -25206";
 const PRESSED_INSTEAD: &str = "the field got its press action instead, which may not move the keyboard focus to it: read the field before typing into it";
 const XTEST_TYPED: &str = "Typed text into the focused desktop application.";
+const SHOT_FAILED: &str = "the action ran, but the screenshot after it failed";
 const NO_TEXT_TARGET: &str =
     "no application window is on the screen to type into; open or focus one first";
 const RETRIED: [&str; 4] = [
@@ -336,7 +337,10 @@ impl Computer {
             }
         }
         if out.image_b64.is_none() {
-            out.image_b64 = self.screenshot(session, list.max_edge).await?;
+            match self.screenshot(session, list.max_edge).await {
+                Ok(image) => out.image_b64 = image,
+                Err(e) => lines.push(format!("{SHOT_FAILED}: {e}")),
+            }
         }
         out.text = lines.join("\n");
         Ok(out)
@@ -434,16 +438,19 @@ impl Computer {
         self.end_once(once).await;
         let k = self.mapped(session, a.scale);
         let (changes, still) = self.settle(before, k).await;
-        let shot = self.settled(session, still, a.max_edge).await?;
+        let (shot, missed) = self.settled(session, still, a.max_edge).await;
         drop(input);
         let (text, is_error) = match result {
             Ok(v) => {
                 let pressed = refused
                     .map(|r| format!("\n{r}\n{PRESSED_INSTEAD}"))
                     .unwrap_or_default();
-                (shot_reply(&text_of(&v), k) + &pressed + &changes, false)
+                (
+                    shot_reply(&text_of(&v), k) + &pressed + &changes + &missed,
+                    false,
+                )
             }
-            Err(e) => (e, true),
+            Err(e) => (e + &missed, true),
         };
         Ok(Output {
             text,
@@ -546,20 +553,26 @@ impl Computer {
         Ok(self.capture(session, max_edge, false).await?.0)
     }
 
-    /// The screenshot after a settled input: the capture `still` the screen held still on, else a new one.
+    /// The screenshot after a settled input: the capture `still` the screen held still on, else a new one; a failed capture comes back as a line of text, since the input already ran.
     async fn settled(
         &self,
         session: &str,
         still: Option<Value>,
         max_edge: Option<u32>,
-    ) -> Result<Option<String>, String> {
-        let Some(v) = still else {
-            return self.screenshot(session, max_edge).await;
+    ) -> (Option<String>, String) {
+        let shot = match still {
+            Some(v) => {
+                self.touch();
+                Ok(self
+                    .adopt(session, &v, max_edge.unwrap_or(DEFAULT_EDGE), false)
+                    .0)
+            }
+            None => self.screenshot(session, max_edge).await,
         };
-        self.touch();
-        Ok(self
-            .adopt(session, &v, max_edge.unwrap_or(DEFAULT_EDGE), false)
-            .0)
+        match shot {
+            Ok(image) => (image, String::new()),
+            Err(e) => (None, format!("\n{SHOT_FAILED}: {e}")),
+        }
     }
 
     /// Screenshot in a one-shot driver session that is ended right away.
@@ -707,11 +720,12 @@ impl Computer {
         }
         self.end_once(once).await;
         let (changes, still) = self.settle(before, self.mapped(session, a.scale)).await;
-        let shot = self.settled(session, still, a.max_edge).await?;
+        let (shot, missed) = self.settled(session, still, a.max_edge).await;
         drop(input);
         let total = full.chars().count();
-        let summary =
-            format!("typed {typed} of {total} characters; verify on the screenshot{changes}");
+        let summary = format!(
+            "typed {typed} of {total} characters; verify on the screenshot{changes}{missed}"
+        );
         Ok(Output {
             text: match &failure {
                 Some(e) => format!("{summary}; stopped: {e}"),
@@ -773,10 +787,10 @@ impl Computer {
             }
         };
         let (changes, still) = self.settle(before, self.mapped(session, a.scale)).await;
-        let shot = self.settled(session, still, a.max_edge).await?;
+        let (shot, missed) = self.settled(session, still, a.max_edge).await;
         drop(input);
         Ok(Output {
-            text: text + &changes,
+            text: text + &changes + &missed,
             is_error: false,
             image_b64: shot,
             ..Output::default()
@@ -3964,6 +3978,24 @@ mod tests {
             "{:?}",
             shot.map(|o| o.text)
         );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn an_action_whose_screenshot_fails_still_reports_that_it_ran() {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, landed, driver) = retina_driver(dir.path(), true, false);
+        let cua = cua_on(&socket, Os::Mac);
+        let click = json!({"action": "click", "x": 10.0, "y": 5.0});
+        let one = cua.act(click.clone()).await.unwrap();
+        assert!(!one.is_error && one.image_b64.is_none(), "{}", one.text);
+        assert!(one.text.contains("the display is asleep"), "{}", one.text);
+        let list = cua
+            .act(json!({"actions": [click.clone(), click]}))
+            .await
+            .unwrap();
+        assert!(!list.is_error, "{}", list.text);
+        assert_eq!(landed.lock().unwrap().len(), 3);
         driver.abort();
     }
 
