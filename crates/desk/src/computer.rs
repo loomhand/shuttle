@@ -162,6 +162,9 @@ impl Computer {
 
     /// Answers the computer verb `tool` of caller `agent`, whose default session is its own.
     pub async fn run(&self, agent: &str, tool: &str, mut args: Value) -> Result<Output, String> {
+        if !args.is_object() && !args.is_null() {
+            return Err(format!("{tool}: args are not an object"));
+        }
         let default =
             !matches!(tool, "desk_look" | "desk_title_at") && !args["session"].is_string();
         if default {
@@ -2694,6 +2697,22 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("needs the foreground"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_computer_call_whose_args_are_not_an_object_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let cua = cua(&dir.path().join("none.sock"));
+        for tool in [
+            "desk_computer_state",
+            "desk_computer_act",
+            "desk_computer_end",
+        ] {
+            for args in [json!([1]), json!(7), json!("x"), json!(true)] {
+                let err = cua.run("a", tool, args).await.unwrap_err();
+                assert_eq!(err, format!("{tool}: args are not an object"));
+            }
+        }
     }
 
     #[tokio::test]
