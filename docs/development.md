@@ -24,9 +24,9 @@ CI runs the Rust gates on Linux (x64), macOS (arm64, x64) and Windows (x64), the
 
 1. Add a `## X.Y.Z - date` section to `CHANGELOG.md`; it becomes the release notes.
 2. Set `version` in the workspace `Cargo.toml`, run `cargo check` so `Cargo.lock` follows (CI and the release build with `--locked`), and commit both.
-3. Tag `vX.Y.Z` and push the tag.
+3. Tag that commit on `main` as `vX.Y.Z` and push the tag.
 
-The release workflow builds the five archives, fails when an executable in the Windows archive imports the Visual C++ runtime, writes `SHA256SUMS`, attests their provenance and publishes them with the installers as a prerelease. It then installs that release with `install.sh` and `install.ps1` on fresh runners, asks each installed binary for `status` over MCP, and only then marks the release as the latest. A failed install job leaves it a prerelease: fix the cause and tag the next patch version; a published tag is never moved.
+The release workflow fails a tag that is not on `main` or that differs from the `Cargo.toml` version, runs CI, and only then builds the five archives, fails when an executable in the Windows archive imports the Visual C++ runtime, writes `SHA256SUMS`, attests their provenance and publishes them with the installers as a prerelease. It then installs that release with `install.sh` and `install.ps1` on fresh runners, asks each installed binary for `status` over MCP, and only then takes it out of prerelease, marking it the latest unless a newer release is already out. A failed install job leaves it a prerelease: fix the cause and tag the next patch version; a published tag is never moved.
 
 ## Third-party pins
 

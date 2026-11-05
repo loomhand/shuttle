@@ -62,7 +62,7 @@ ask = "anthropic/claude-sonnet-5"
 
 ## Saved flows
 
-`gui_plan` saves passing plans as flows in a `flows` directory next to `config.toml`, as one JSON file per flow, an `INDEX`, a run log `.runs.jsonl`, `.pending.json` (the steps of the last plans, which a later `save` stores) and a git history of the changes when git is installed (on macOS, when the Command Line Tools are: the flow history never runs the `git` stub that would open their installer; git that a `script_run` script runs is that script's own call). Flows hold the values plans typed, so the directory is readable by its owner only (0700) and its files are created 0600.
+`gui_plan` saves passing plans as flows in a `flows` directory next to `config.toml`, as one JSON file per flow, an `INDEX`, a run log `.runs.jsonl`, `.pending.json` (the steps of the last plans, which a later `save` stores) and a git history of the changes when git is installed (on macOS, when the Command Line Tools are: the flow history never runs the `git` stub that would open their installer; git that a `script_run` script runs is that script's own call). Flows hold the values plans typed, so the directory is readable by its owner only (0700) and its files are created 0600. A value a step types into a password field (`focus.secure`) stays out of the flow and `.pending.json`, so a replay passes it in `params`.
 
 When a replayed flow stops at a step, the next plan run from the window it left within 10 minutes continues it, as a plan continues the last plan that stopped. When that plan passes, the flow is saved again as its steps before the one that stopped followed by the plan's steps: a plan of the fix and the flow's steps from the failing one on repairs the flow, and its next replay runs the fix.
 
