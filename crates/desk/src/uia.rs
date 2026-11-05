@@ -26,7 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GW_OWNER, GetForegroundWindow, GetWindow, GetWindowTextW,
     GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_CLOSE,
 };
-use windows::core::{BOOL, PWSTR};
+use windows::core::{BOOL, HRESULT, Interface, PWSTR};
 
 use crate::keys::uia_combo;
 use crate::model::{
@@ -35,6 +35,9 @@ use crate::model::{
 };
 use crate::uia_roles::{self, Facts, Kind};
 
+const ACT_TIMEOUT_MS: u32 = 2_000;
+const TIMED_OUT: HRESULT = HRESULT(UIA_E_TIMEOUT.cast_signed());
+const ACT_TIMED_OUT: &str = "the app did not answer the action within 2 s, as when the action opens a modal dialog; it may have taken effect: read the window before acting again";
 const CACHE_TRIES: u32 = 3;
 const CACHE_RETRY: Duration = Duration::from_millis(40);
 const TITLE_CHARS: usize = 512;
@@ -428,61 +431,69 @@ impl Access for Uia {
 
     fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
         let el = self.element(id)?;
+        let _bounded = Bounded::new(&self.auto);
         // SAFETY: `el` is a live UIA element of this thread; each pattern comes from it.
         let done = unsafe {
             let select = || {
-                el.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
-                    UIA_SelectionItemPatternId,
+                tried(
+                    el.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                        UIA_SelectionItemPatternId,
+                    )
+                    .and_then(|p| p.Select()),
                 )
-                .and_then(|p| p.Select())
-                .is_ok()
             };
             match act {
-                Act::Focus => el.SetFocus().is_ok(),
+                Act::Focus => tried(el.SetFocus()),
                 Act::Select => select(),
-                Act::Action => {
+                Act::Action => tried(
                     el.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
-                        .and_then(|p| p.Invoke())
-                        .is_ok()
-                        || el
-                            .GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
-                            .and_then(|p| p.Toggle())
-                            .is_ok()
-                        || el
-                            .GetCurrentPatternAs::<IUIAutomationExpandCollapsePattern>(
-                                UIA_ExpandCollapsePatternId,
-                            )
-                            .and_then(|p| {
-                                if p.CurrentExpandCollapseState()? == ExpandCollapseState_Collapsed
-                                {
-                                    p.Expand()
-                                } else {
-                                    p.Collapse()
-                                }
-                            })
-                            .is_ok()
-                        || select()
-                        || el
-                            .GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(
-                                UIA_LegacyIAccessiblePatternId,
-                            )
-                            .and_then(|p| p.DoDefaultAction())
-                            .is_ok()
-                }
+                        .and_then(|p| p.Invoke()),
+                )
+                .or_else(|| {
+                    tried(
+                        el.GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
+                            .and_then(|p| p.Toggle()),
+                    )
+                })
+                .or_else(|| {
+                    tried(
+                        el.GetCurrentPatternAs::<IUIAutomationExpandCollapsePattern>(
+                            UIA_ExpandCollapsePatternId,
+                        )
+                        .and_then(|p| {
+                            if p.CurrentExpandCollapseState()? == ExpandCollapseState_Collapsed {
+                                p.Expand()
+                            } else {
+                                p.Collapse()
+                            }
+                        }),
+                    )
+                })
+                .or_else(select)
+                .or_else(|| {
+                    tried(
+                        el.GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(
+                            UIA_LegacyIAccessiblePatternId,
+                        )
+                        .and_then(|p| p.DoDefaultAction()),
+                    )
+                }),
             }
         };
-        Ok(done)
+        done.unwrap_or(Ok(false))
     }
 
     fn close(&mut self, frame: &Frame) -> Result<(), String> {
         let el = self.element(&frame.id)?;
+        let bounded = Bounded::new(&self.auto);
         // SAFETY: `el` is a live UIA element of this thread.
         let closed = unsafe {
             el.GetCurrentPatternAs::<IUIAutomationWindowPattern>(UIA_WindowPatternId)
                 .and_then(|p| p.Close())
         };
-        if closed.is_ok() {
-            return Ok(());
+        drop(bounded);
+        if let Some(closed) = tried(closed) {
+            return closed.map(drop);
         }
         // SAFETY: `el` is a live UIA element; posting WM_CLOSE to a window handle has no memory effects.
         unsafe {
@@ -492,6 +503,31 @@ impl Access for Uia {
             PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0))
         }
         .map_err(|e| format!("close {:?}: {e}", frame.title))
+    }
+}
+
+struct Bounded(Option<(IUIAutomation2, u32)>);
+
+impl Bounded {
+    fn new(auto: &IUIAutomation) -> Self {
+        let Ok(auto) = auto.cast::<IUIAutomation2>() else {
+            return Self(None);
+        };
+        // SAFETY: `auto` is a live IUIAutomation2 of this thread; the timeout is a client-side property.
+        let was = unsafe {
+            auto.TransactionTimeout()
+                .and_then(|was| auto.SetTransactionTimeout(ACT_TIMEOUT_MS).map(|()| was))
+        };
+        Self(was.ok().map(|was| (auto, was)))
+    }
+}
+
+impl Drop for Bounded {
+    fn drop(&mut self) {
+        if let Some((auto, was)) = &self.0 {
+            // SAFETY: `auto` is a live IUIAutomation2 of this thread; the timeout is a client-side property.
+            let _ = unsafe { auto.SetTransactionTimeout(*was) };
+        }
     }
 }
 
@@ -530,6 +566,14 @@ enum Val {
     Real(f64),
     Text(String),
     Other,
+}
+
+fn tried(r: windows::core::Result<()>) -> Option<Result<bool, String>> {
+    match r {
+        Ok(()) => Some(Ok(true)),
+        Err(e) if e.code() == TIMED_OUT => Some(Err(ACT_TIMED_OUT.to_owned())),
+        Err(_) => None,
+    }
 }
 
 fn request(
