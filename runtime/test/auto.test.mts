@@ -43,6 +43,7 @@ async function run(t: { after(fn: () => void): void }, plan: Plan, typed: (befor
 }
 
 test('an auto plan sends the same desk calls as a background plan when nothing falls back', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
   for (const [typed, note] of [[(b: string, s: string) => b + s, false], [(b: string, s: string) => b + s, true]] as const) {
     const bg = await run(t, background, typed, note)
     const au = await run(t, auto, typed, note)
