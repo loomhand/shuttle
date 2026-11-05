@@ -220,18 +220,11 @@ fn frame(f: atspi::Frame) -> Frame {
         pid: f.pid,
         active: f.active(),
         app: f.pid.and_then(app),
-        owner: None,
-        modal: None,
-        blocks: None,
-        shell: false,
-        space: None,
-        bounds: None,
         stale: f.stale,
         unlisted: !FRAME_ROLES.contains(&f.role),
         framed: f.role != WINDOW_ROLE,
-        hidden: false,
-        number: None,
         title: f.name,
+        ..Frame::default()
     }
 }
 
