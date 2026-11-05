@@ -344,7 +344,7 @@ impl Android {
         Ok(())
     }
 
-    /// Presses a key or a combination such as `ctrl+a`; a single key is injected by the UI server, a combination by `input`.
+    /// Presses a key or a combination such as `ctrl+a`.
     pub(crate) async fn keys(&self, keys: &str) -> Result<(), String> {
         let codes: Vec<String> = keycodes(keys)?.iter().map(u32::to_string).collect();
         if let [code] = codes.as_slice() {
@@ -379,7 +379,7 @@ impl Android {
         }
     }
 
-    /// Whether the element at `path` of window `window` took the UI server's request to scroll itself into view; a server that predates it answers a dump, and is not asked again.
+    /// Whether the element at `path` of window `window` took the UI server's request to scroll itself into view.
     pub(crate) async fn show(&self, window: &str, path: &str) -> bool {
         if !self.server_show.load(Ordering::Relaxed) {
             return false;
@@ -404,7 +404,7 @@ impl Android {
         self.served("windows").await
     }
 
-    /// Types `text` into the focused field, the first line under `at` when given: each line pasted and checked (see [`type_with`]), Return between lines.
+    /// Types `text` into the focused field: each line pasted, Return between lines.
     pub(crate) async fn type_text(
         &self,
         text: &str,
@@ -447,7 +447,7 @@ impl Android {
         Ok(typed)
     }
 
-    /// Pastes `text` into the focused field through the clipboard, which takes any Unicode: scrcpy sets it and the UI server presses the paste key; false when the device refused the key, which then reached no window.
+    /// Pastes `text` through the clipboard, which takes any Unicode; false when the device refused the paste key.
     pub(crate) async fn paste(&self, text: &str) -> Result<bool, String> {
         {
             let mut slot = self.control.lock().await;
@@ -610,7 +610,7 @@ impl Android {
             .await
     }
 
-    /// One answer of the resident UI server, started on first use; a server that fails or is cancelled mid-answer is dropped.
+    /// One answer of the UI server, which is dropped when it fails or is cancelled mid-answer.
     async fn served(&self, cmd: &str) -> Result<String, String> {
         let mut slot = self.ui.lock().await;
         let mut server = match slot.take() {
@@ -787,7 +787,7 @@ struct UiServer {
 }
 
 impl UiServer {
-    /// The answer to `shot`: `png N`, then N bytes, then the end line. A server that does not know `shot` answers a dump, which this reads to its end; none then.
+    /// The answer to `shot`: `png N`, N bytes and the end line; none from a server that predates `shot`.
     async fn ask_png(&mut self) -> Result<Option<Vec<u8>>, String> {
         self.stdin
             .write_all(b"shot\n")
@@ -1078,7 +1078,7 @@ fn launcher(out: &str, app: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Pastes `line` into the field `focus` names, pressing the paste key again only while the device refuses it: Some(true) when it shows, Some(false) when the text stayed the same for 1.5 s. None is a paste it does not check (no field, a password field, or text that changed otherwise); an error when no paste key was delivered or the field under `at` has no focus.
+/// Pastes `line` into the field `focus` names: Some(true) when it shows, Some(false) when the text stayed the same, None when unchecked.
 async fn type_with<F, Ff, P, Pf>(
     line: &str,
     at: Option<(i32, i32)>,
