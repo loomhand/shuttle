@@ -1294,13 +1294,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_launch_of_a_name_that_is_no_package_runs_no_adb() {
-        let android = Android::new(Device {
-            adb: "/nonexistent/adb".into(),
-            serial: None,
-            ui_jar: "/u.jar".into(),
-            scrcpy_jar: "/s.jar".into(),
-            su: Some("/su".into()),
-        });
+        let android = android_at("/nonexistent/adb");
         let err = android.launch("com.x; reboot").await.unwrap_err();
         assert!(err.contains("not an Android package"), "{err}");
         let err = android.launch("com.x").await.unwrap_err();
@@ -1317,13 +1311,7 @@ mod tests {
             &adb,
             &format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n", argv.display()),
         );
-        let android = Android::new(Device {
-            adb,
-            serial: None,
-            ui_jar: "/u.jar".into(),
-            scrcpy_jar: "/s.jar".into(),
-            su: Some("/su".into()),
-        });
+        let android = android_at(adb);
         android.launch("com.example/.Main$Launcher").await.unwrap();
         let args = std::fs::read_to_string(&argv).unwrap();
         assert_eq!(args.lines().last(), Some("'com.example/.Main$Launcher'"));
@@ -1630,13 +1618,7 @@ mod tests {
             &adb,
             "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*app_process*) exit 1;;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\";;\nesac\n",
         );
-        let android = Android::new(Device {
-            adb,
-            serial: None,
-            ui_jar: "/u.jar".into(),
-            scrcpy_jar: "/s.jar".into(),
-            su: None,
-        });
+        let android = android_at(adb);
         android.tap((10, 20)).await.unwrap();
         let sent = std::fs::read_to_string(dir.path().join("adbinput")).unwrap();
         assert_eq!(sent, "shell input tap 10 20\n");
@@ -1890,13 +1872,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_session_end_forgets_only_that_sessions_elements() {
-        let android = Android::new(Device {
-            adb: "/nonexistent/adb".into(),
-            serial: None,
-            ui_jar: "/u.jar".into(),
-            scrcpy_jar: "/s.jar".into(),
-            su: None,
-        });
+        let android = android_at("/nonexistent/adb");
         {
             let mut points = android.points.lock().await;
             points.insert("cu-1".into(), saved(vec![(10, 20)]));
@@ -1916,13 +1892,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_end_without_a_session_forgets_the_default_one_and_ends_are_idempotent() {
-        let android = Android::new(Device {
-            adb: "/nonexistent/adb".into(),
-            serial: None,
-            ui_jar: "/u.jar".into(),
-            scrcpy_jar: "/s.jar".into(),
-            su: None,
-        });
+        let android = android_at("/nonexistent/adb");
         {
             let mut points = android.points.lock().await;
             points.insert(String::new(), saved(vec![(10, 20)]));
@@ -2306,13 +2276,7 @@ mod tests {
                 &adb,
                 "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi;;\n*screencap*) if [ -f \"$DIR/screencap.fail\" ]; then exit 1; fi; cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) a=$(head -n 1 \"$DIR/inject.answer\" 2>/dev/null); if [ -f \"$DIR/inject.answer\" ] && [ \"$(wc -l < \"$DIR/inject.answer\")\" -ge 1 ]; then tail -n +2 \"$DIR/inject.answer\" > \"$DIR/inject.next\"; mv \"$DIR/inject.next\" \"$DIR/inject.answer\"; fi; if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
             );
-            let android = Android::new(Device {
-                adb,
-                serial: None,
-                ui_jar: "/u.jar".into(),
-                scrcpy_jar: "/s.jar".into(),
-                su: None,
-            });
+            let android = android_at(adb);
             Self { dir, android }
         }
 
@@ -2390,13 +2354,7 @@ mod tests {
             ),
         );
         std::fs::write(dir.path().join("crash.log"), log).unwrap();
-        let android = Android::new(Device {
-            adb,
-            serial: None,
-            ui_jar: "/u.jar".into(),
-            scrcpy_jar: "/s.jar".into(),
-            su: None,
-        });
+        let android = android_at(adb);
         android.windows().await.unwrap_err()
     }
 
@@ -2448,13 +2406,7 @@ mod tests {
             .await
             .unwrap();
         let (peer, _) = listener.accept().await.unwrap();
-        let android = Android::new(Device {
-            adb: adb.into(),
-            serial: None,
-            ui_jar: "/u.jar".into(),
-            scrcpy_jar: "/s.jar".into(),
-            su: Some("/su".into()),
-        });
+        let android = android_at(adb);
         *android.control.lock().await = Some(Control {
             stream,
             sequence: 0,
@@ -2540,5 +2492,15 @@ mod tests {
         .await
         .unwrap();
         (out, pastes.get())
+    }
+
+    fn android_at(adb: impl Into<PathBuf>) -> Android {
+        Android::new(Device {
+            adb: adb.into(),
+            serial: None,
+            ui_jar: "/u.jar".into(),
+            scrcpy_jar: "/s.jar".into(),
+            su: None,
+        })
     }
 }
