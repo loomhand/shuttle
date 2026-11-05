@@ -216,7 +216,7 @@ async fn serve(
     let path = default_path(home());
     let mut config = Config::load(&path);
     let android = config.as_mut().ok().and_then(|c| c.android.take());
-    let local = android::local_controls(android.as_ref());
+    let local = android.is_none();
     let mut safety = config
         .as_mut()
         .map(|c| std::mem::take(&mut c.safety))
