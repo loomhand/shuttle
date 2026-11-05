@@ -31,7 +31,7 @@ impl Shown {
             if n == f
                 && let Some(b) = blocks.get_mut(i)
             {
-                *b = merge(std::mem::take(b), &Block::Toggling(states.clone()));
+                *b = merge(std::mem::take(b), Block::Toggling(states.clone()));
             }
         }
     }
@@ -95,7 +95,7 @@ impl Volatile {
         let blocks = (0..now.len())
             .map(|i| {
                 s.pauses.iter().fold(Block::Quiet, |carried, p| {
-                    merge(Block::of(p.iter().map(|(_, h)| h[i])), &carried)
+                    merge(Block::of(p.iter().map(|(_, h)| h[i])), carried)
                 })
             })
             .collect();
@@ -187,7 +187,7 @@ impl Shared {
 }
 
 /// What `block` did in one pause together with what it did in the later pauses, `carried`.
-fn merge(block: Block, carried: &Block) -> Block {
+fn merge(block: Block, carried: Block) -> Block {
     match (block, carried) {
         (Block::Churning, _) | (_, Block::Churning) => Block::Churning,
         (Block::Toggling(mut a), Block::Toggling(b)) => {
@@ -196,7 +196,7 @@ fn merge(block: Block, carried: &Block) -> Block {
             a.dedup();
             Block::Toggling(a)
         }
-        (Block::Quiet, c) => c.clone(),
+        (Block::Quiet, c) => c,
         (b, Block::Quiet) => b,
     }
 }
