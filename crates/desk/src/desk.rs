@@ -332,7 +332,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(out)
     }
 
-    /// Brings the window of an auto action to the front before the foreground runs it: the named window, or an element's own; false when the action names none.
+    /// Brings the window of an auto action to the front before the foreground runs it; false when the action names none.
     async fn front_target(&self, tool: &str, args: &Value) -> Result<bool, String> {
         let (window, pid) = if let Some(id) = args["id"]
             .as_str()
@@ -1013,7 +1013,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .flatten()
     }
 
-    /// Sends `req` to window `to`, or in the foreground to the focused window, and keeps the first note of background input the driver could not confirm.
+    /// Sends `req` to window `to`, or in the foreground to the focused window.
     async fn send(
         &self,
         tool: &str,
@@ -1436,7 +1436,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(OK.to_owned())
     }
 
-    /// Waits until no block of the screen changes in a way that counts (see [`Watch`]) for `hold_ms`, at most `timeout_ms`; says whether one changed meanwhile.
+    /// Waits until no block of the screen changes in a way that counts (see [`Watch`]) for `hold_ms`, at most `timeout_ms`.
     async fn still(&self, a: StillArgs) -> Result<String, String> {
         let limit = a
             .timeout_ms
@@ -1537,7 +1537,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(self.unverified(&out, Some((w.pid, w.id)), false))
     }
 
-    /// Why the point of `req` takes no foreground click into process `pid`: another app's window on top there, on any window level, or a hit test that failed.
+    /// Why the point of `req` takes no foreground click into process `pid`: another app's window is on top there.
     async fn cover(&self, req: &Value, pid: i64) -> Result<Option<String>, String> {
         let Some((x, y)) = req["x"].as_f64().zip(req["y"].as_f64()) else {
             return Ok(None);
@@ -1632,7 +1632,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok((to, w))
     }
 
-    /// The window input with `window` goes to, its points pixels of that window's shot; a title that matches two listed windows equally is refused, since the shot may show the other one.
+    /// The window input with `window` goes to; a title that matches two listed windows equally is refused.
     async fn shot_window(
         &self,
         window: &str,
@@ -2189,7 +2189,7 @@ pub(crate) fn runs_app(window_app: &str, app: &str) -> bool {
     names_app(window_app, app) || names_app(window_app, &launch_name(app))
 }
 
-/// Runs of `text` with at most [`RUN_CHARS`] distinct non-ASCII characters; the Linux driver binds a spare keycode to each for the call and has fewer than 20 to lend.
+/// Runs of `text` with at most [`RUN_CHARS`] distinct non-ASCII characters, one spare keycode each.
 pub(crate) fn text_runs(text: &str) -> Vec<&str> {
     let (mut runs, mut start, mut seen) = (Vec::new(), 0, Vec::new());
     for (i, c) in text.char_indices() {
@@ -2411,7 +2411,7 @@ fn layer(w: &Value) -> i64 {
     w["layer"].as_i64().unwrap_or(0)
 }
 
-/// Whether a title or pid may pick macOS driver window `w` of `all`: one on screen, or one off screen in a known Space with no on-screen window of its process and title.
+/// Whether a title or pid may pick macOS driver window `w` of `all`: one on screen, or one off screen in a known Space.
 fn pickable(w: &Value, all: &[Value]) -> bool {
     let shown = |o: &Value| o["is_on_screen"] != false;
     shown(w)

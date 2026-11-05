@@ -217,7 +217,7 @@ impl Driver {
 impl Input for Driver {
     async fn call(&self, tool: &str, mut args: Value) -> Result<Value, String> {
         if cfg!(target_os = "linux") {
-            // the Linux driver keeps a session's last capture scale and a master keyboard that Chrome's core-keyboard input loses to
+            // a session keeps its capture scale and a master keyboard that Chrome's core input loses to
             args["session"] = format!(
                 "desk-{}-{}",
                 std::process::id(),

@@ -623,7 +623,7 @@ impl Atspi {
         })
     }
 
-    /// The first descendant of `obj` in the focused state, by one Collection match in its app; none when nothing matches or the app does not serve Collection.
+    /// The first descendant of `obj` in the focused state, by one Collection match; none when the app does not serve Collection.
     pub async fn focused_in(&self, obj: &Obj) -> Option<Obj> {
         let found: Vec<(String, OwnedObjectPath)> = self
             .call(obj, COLLECTION, "GetMatches", &focused_rule())
@@ -1382,7 +1382,7 @@ fn iface_bits(names: &[String]) -> u8 {
     })
 }
 
-/// The Collection.GetMatches arguments for the first descendant in the focused state, in tree order: a rule on the state alone, canonical order, one match, descending.
+/// The Collection.GetMatches arguments for the first focused descendant in tree order.
 #[allow(clippy::type_complexity)]
 fn focused_rule() -> (
     (

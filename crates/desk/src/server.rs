@@ -54,7 +54,7 @@ pub type Accepted = tokio::net::UnixStream;
 #[cfg(windows)]
 pub type Accepted = tokio::net::windows::named_pipe::NamedPipeServer;
 
-/// The client end of a named pipe that cancels its pending I/O when dropped, so its server sees the hang-up at once: the runtime closes a pipe only after its writes finish.
+/// The client end of a named pipe that cancels its pending I/O when dropped, so its server sees the hang-up at once.
 #[cfg(windows)]
 #[derive(Debug)]
 pub struct PipeClient(tokio::net::windows::named_pipe::NamedPipeClient);
@@ -363,7 +363,7 @@ pub async fn connect(endpoint: &str) -> std::io::Result<Conn> {
     tokio::net::UnixStream::connect(endpoint).await
 }
 
-/// Connects to the endpoint, waiting while a Windows pipe is busy, and refuses a server that runs as another user than [`pipe_owner`] names, or than this process's user for a name without one.
+/// Connects to the endpoint, waiting while a Windows pipe is busy; refuses a server that runs as another user than [`pipe_owner`] names.
 #[cfg(windows)]
 pub async fn connect(endpoint: &str) -> std::io::Result<Conn> {
     use std::os::windows::io::AsRawHandle as _;
@@ -479,7 +479,7 @@ fn bind_at(endpoint: &str, gid: Option<u32>) -> Result<Listener, String> {
     })
 }
 
-/// Refuses a socket directory that is not this user's or that its group or others can write, a link anywhere on its path, and any directory above it owned by another user or writable by others without the sticky bit: from any of them a member could swap the socket.
+/// Refuses a socket directory another user could swap the socket in: not this user's, group or world writable, or reached through a link.
 #[cfg(unix)]
 fn private_dir(dir: &std::path::Path) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;

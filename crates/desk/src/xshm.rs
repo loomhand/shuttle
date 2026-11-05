@@ -448,7 +448,7 @@ impl Grabber {
         Ok(!popups.is_empty() || !self.grabbed(false)?)
     }
 
-    /// Whether another client holds an active grab of the keyboard, or of the pointer with `pointer`; a probe grab of this connection that succeeds is released at once.
+    /// Whether another client holds an active grab of the keyboard, or of the pointer with `pointer`.
     pub fn grabbed(&self, pointer: bool) -> Result<bool, String> {
         let (async_, now) = (GrabMode::ASYNC, x11rb::CURRENT_TIME);
         let status = if pointer {
@@ -490,7 +490,7 @@ impl Grabber {
         }))
     }
 
-    /// Whether the screen point `(x, y)` shows a window title rather than a window's content: a desktop panel, whose task buttons carry the titles, or the band of a window manager frame above its client.
+    /// Whether the screen point `(x, y)` shows a window title: a desktop panel or the band of a frame above its client.
     pub fn title_at(&self, x: i32, y: i32) -> Result<bool, String> {
         let Some(top) = self.top_at(x, y)? else {
             return Ok(false);
@@ -902,7 +902,7 @@ fn dock_mask(docks: &[[i32; 4]], (width, height): (usize, usize)) -> Vec<bool> {
     mask
 }
 
-/// How `mapped`, the drawn root children bottom to top, hide `frame`: centred off the screen, or under another window at its centre that is no dialog `opened` names.
+/// How `mapped`, the drawn root children bottom to top, hide `frame`: off the screen, or under another window.
 fn cover(
     frame: Window,
     mapped: &[Placement],

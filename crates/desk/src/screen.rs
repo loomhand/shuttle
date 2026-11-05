@@ -58,7 +58,7 @@ pub fn block_hashes(bgrx: &[u8], width: usize, height: usize, skip: &[bool]) -> 
     hashes
 }
 
-/// Whether a pixel of block `block` (see [`block_hashes`]) of the BGRX frames `a` and `b`, `width` by `height`, differs by more than `step` in a colour channel; frames of different sizes always do.
+/// Whether a pixel of block `block` (see [`block_hashes`]) of the BGRX frames `a` and `b` differs by more than `step` in a colour channel; frames of different sizes always do.
 pub fn visible(a: &[u8], b: &[u8], width: usize, height: usize, block: usize, step: u8) -> bool {
     if a.len() != b.len() || a.len() < width * height * 4 {
         return true;

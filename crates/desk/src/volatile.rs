@@ -1,4 +1,4 @@
-//! Volatile screen blocks: the ones that change while no action runs, such as a clock, a caret, a spinner or a video, learned from a low-rate MIT-SHM sampler that runs while tools are in use.
+//! Volatile screen blocks, such as a clock, a caret or a spinner, learned from a low-rate MIT-SHM sampler.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -66,7 +66,7 @@ impl Volatile {
         self.shared.wake.notify_one();
     }
 
-    /// Marks an action begun until the returned [`Paused`] drops, and returns what each block did in the last [`WINDOW`] of samples, in `now` (the hashes just before the action) and in the kept [`State::pauses`].
+    /// Marks an action begun until the returned [`Paused`] drops; returns what each block did in the last [`WINDOW`] of samples.
     pub fn begin(&self, now: &[u64]) -> (Vec<Block>, Paused) {
         let mut s = self.shared.lock();
         s.actions += 1;

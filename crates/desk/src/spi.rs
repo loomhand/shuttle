@@ -311,7 +311,7 @@ fn node(n: atspi::Node) -> Node {
     }
 }
 
-/// Asks the window manager to close the managed window titled `want` of process `pid`, as its close button does; refuses a title two windows share and a window manager without `_NET_CLOSE_WINDOW`.
+/// Asks the window manager to close the managed window titled `want` of process `pid`; refuses a title two windows share.
 fn close(want: &str, pid: Option<u32>) -> Result<(), String> {
     let (conn, n) = x11rb::connect(None).map_err(|e| format!("connect X: {e}"))?;
     let root = conn.setup().roots[n].root;

@@ -1,4 +1,4 @@
-//! Desktop entries a launch name can repeat: an agent names an app as its menu shows it, and a name such as "libreoffice calc" otherwise runs `libreoffice` on a file named calc.
+//! Desktop entries a launch name can repeat, so "libreoffice calc" does not run `libreoffice` on a file named calc.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -34,7 +34,7 @@ impl Entries {
     }
 }
 
-/// The desktop file id of the application entry whose `Name` equals `name` ignoring case, for a name of more than one word; the user's entries come before the system's, as the driver reads them.
+/// The desktop file id of the entry whose `Name` equals `name` ignoring case, for a name of more than one word; the user's entries come first.
 pub fn id_for(name: &str) -> Option<String> {
     let name = name.trim();
     if !name.contains(char::is_whitespace) {

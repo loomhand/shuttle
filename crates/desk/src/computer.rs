@@ -1,4 +1,4 @@
-//! The computer verbs: `desk_computer_state`, `desk_computer_act`, `desk_computer_end` and `desk_look` for a vision agent, with the settle, the window report and the press guards, over cua-driver's line-delimited JSON in named driver sessions.
+//! The computer verbs for a vision agent, over cua-driver's line-delimited JSON in named driver sessions.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -310,7 +310,7 @@ impl Computer {
         scale.unwrap_or_else(|| self.scale_of(session))
     }
 
-    /// Runs the actions in order, each settled, stops at the first failure and returns the last screenshot; every x,y maps by the screenshot returned before the list, the one the caller saw.
+    /// Runs the actions in order, each settled, and stops at the first failure; every x,y maps by the screenshot the caller saw.
     async fn act_list(&self, session: &str, list: ActList) -> Result<Output, String> {
         let total = list.actions.len();
         let mut lines = Vec::with_capacity(total);
@@ -548,7 +548,7 @@ impl Computer {
         Ok(self.capture(session, max_edge, false).await?.0)
     }
 
-    /// The screenshot after a settled input: the capture `still` the screen held still on, else a new one; a failed capture comes back as a line of text, since the input already ran.
+    /// The screenshot after a settled input: the capture `still` held on, else a new one; a failed capture comes back as text.
     async fn settled(
         &self,
         session: &str,
@@ -594,7 +594,7 @@ impl Computer {
         Ok(format!("ended session {session}"))
     }
 
-    /// Captures the desktop at full size and shrinks it to `max_edge` here, so the driver never rescales a later desktop click; a capture over MIT-SHM also returns the full-size pixels.
+    /// Captures the desktop at full size and shrinks it to `max_edge` here, so the driver never rescales a later desktop click.
     async fn capture(
         &self,
         session: &str,
@@ -1414,7 +1414,7 @@ impl Computer {
         tokio::time::sleep(RETURN_GAP).await;
     }
 
-    /// A one-call driver session for the pid-addressed input `req`, ended by [`Self::end_once`]: its virtual master keyboard would outlive the call, and while one exists Chrome drops core keyboard input from XTest and VNC.
+    /// A one-call driver session for the pid-addressed input `req`, ended by [`Self::end_once`]; a session left open keeps a virtual keyboard that makes Chrome drop core keyboard input.
     fn once(&self, req: &Value) -> Option<Owned> {
         req.get("pid").is_some().then(|| self.own("input"))
     }
@@ -1425,7 +1425,7 @@ impl Computer {
         }
     }
 
-    /// Whether keys for `window` of `pid` can go to the desktop, which skips the driver's 220 ms focus guard: on X11 the window is active and holds the input focus, and no popup of another app is open; off Linux always, since the key window is the frontmost and the driver's per-window keys miss XAML windows.
+    /// Whether keys for `window` of `pid` can go to the desktop, skipping the driver's 220 ms focus guard; off Linux always.
     fn keyboard(&self, pid: i64, window: i64) -> bool {
         let (Ok(pid), Ok(window)) = (u32::try_from(pid), u32::try_from(window)) else {
             return false;
@@ -1449,7 +1449,7 @@ impl Computer {
         web && self.element_pixel(session, index, false).await.is_some()
     }
 
-    /// The point where a pixel click reaches element `index` of `session`'s snapshot, skipping the driver's 270 ms click and an AT-SPI dispatch a modal dialog deadlocks; none unless it looks as in the snapshot (a `menu` to open need not) under its active window or an own popup, and none for LibreOffice outside menus and dialogs.
+    /// The point where a pixel click reaches element `index` of `session`'s snapshot, skipping the driver's 270 ms click; none unless the element still looks as in the snapshot.
     async fn element_pixel(&self, session: &str, index: i64, menu: bool) -> Option<(f64, f64)> {
         let last = self.last.lock().await;
         let snap = last.get(session)?;
@@ -1521,7 +1521,7 @@ impl Computer {
         self.poll_pixel(session, index, false).await
     }
 
-    /// The menu bar twin's point for an off-screen push button or menu item of a GTK app outside a web page, whose AT-SPI action can deadlock on a modal dialog; an error when none is found, `None` for any other element.
+    /// The menu bar twin's point for an off-screen button or menu item of a GTK app, whose AT-SPI action can deadlock on a modal dialog.
     async fn hidden_press(&self, session: &str, index: i64) -> Result<Option<(f64, f64)>, String> {
         let (pid, window_id, name, button, menus) = {
             let last = self.last.lock().await;
@@ -1570,7 +1570,7 @@ impl Computer {
         ))
     }
 
-    /// Opens the menu bar `menus` of `session`'s snapshot in turn and returns the point of the first shown menu item named `name` that a pixel click reaches; closes the menu when none is.
+    /// Opens the menu bar `menus` of `session`'s snapshot in turn and returns the point of the first shown menu item named `name`.
     async fn menu_twin(
         &self,
         session: &str,
@@ -1639,7 +1639,6 @@ impl Computer {
         self.desktop_input("click", json!({"x": x, "y": y})).await
     }
 
-    /// Escape to the focused window, which closes an open menu.
     async fn escape(&self) {
         let _ = self
             .desktop_input("press_key", json!({"key": "Escape"}))
@@ -2140,7 +2139,6 @@ fn confirms(a: &ActArgs) -> bool {
     combo(a).is_some_and(|k| ["return", "enter", "kp_enter"].contains(&k.as_str()))
 }
 
-/// Whether process `pid` has GTK loaded.
 fn gtk(pid: i64) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/maps")).is_ok_and(|maps| {
         maps.contains("/libgtk-3.so")
