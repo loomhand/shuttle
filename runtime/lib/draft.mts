@@ -20,6 +20,7 @@ const KEYS: Record<number, string> = { 36: 'return', 76: 'enter', 48: 'tab', 53:
 const NAMED_ROLES = new Set(['button', 'checkbox', 'radio', 'tab', 'link', 'switch', 'togglebutton', 'menuitem'])
 const CAPTION = 'The image is a crop of a screen; a red ring with four ticks marks the point a user clicked. Name the control under the ring as a short noun phrase a person would use to find it on screen, such as: the Save button. At most 8 words; answer with the phrase only.'
 const RING_PT = 14
+const CAPTIONS_AT_ONCE = 4
 
 /** Turns a recording into a draft gui_plan, with `params` for the typed values the caller names. */
 export async function main(p: Params): Promise<Draft> {
@@ -28,7 +29,8 @@ export async function main(p: Params): Promise<Draft> {
   const templ = (s: string) => examples.reduce((out, [k, v]) => out.split(v).join(`{{${k}}}`), s)
   const draft: Draft = { id: p.recording.id, apps: p.recording.apps ?? [], params, steps: [], notes: [], gaps: [] }
   const events = p.recording.events
-  const captions = new Map(events.flatMap((e) => e.kind === 'click' && e.crop && !own(e) ? [[e, caption(e.crop, e.crop_scale ?? 1, e.crop_offset ?? [0, 0], e.element?.role)] as const] : []))
+  const slot = pool(CAPTIONS_AT_ONCE)
+  const captions = new Map(events.flatMap((e) => e.kind === 'click' && e.crop && !own(e) ? [[e, slot(() => caption(e.crop ?? '', e.crop_scale ?? 1, e.crop_offset ?? [0, 0], e.element?.role))] as const] : []))
   const seen = new Set<string>()
   let typed = ''; let secrets = 0; let secret = false; let filled = false
   let into: Field | null | undefined
@@ -123,6 +125,16 @@ function pageOf(e: Event) {
 
 function windowOf(e: Event) {
   return (typeof e.window === 'object' ? e.window.title : e.focus?.window) || undefined
+}
+
+function pool(size: number) {
+  let free = size
+  const waiting: (() => void)[] = []
+  return async <T,>(job: () => Promise<T>): Promise<T> => {
+    while (!free) await new Promise<void>((go) => waiting.push(go))
+    free -= 1
+    try { return await job() } finally { free += 1; waiting.shift()?.() }
+  }
 }
 
 function own(e: Event) {
