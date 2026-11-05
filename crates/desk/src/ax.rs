@@ -792,11 +792,11 @@ pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
     let mut up = attr(&el, "AXParent");
     for _ in 0..MAX_DEPTH {
         let Some(p) = up.take() else { break };
-        let pa = attrs(&names, &p);
+        let mut pa = attrs(&names, &p);
         if path.len() < PATH_MAX_DEPTH {
             path.push((
                 ax_roles::role(kind_of(&pa)).unwrap_or("generic"),
-                name_of(&pa, NAME_CHARS),
+                name_of(&mut pa, NAME_CHARS),
             ));
         }
         if pa.role == "AXWebArea" {
@@ -809,7 +809,7 @@ pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
     }
     Some(Seen {
         role: ax_roles::role(kind_of(&a)).unwrap_or("generic"),
-        name: name_of(&a, NAME_CHARS),
+        name: name_of(&mut a, NAME_CHARS),
         description: a.help,
         pid: pid(&el).and_then(|p| u32::try_from(p).ok()),
         path,
@@ -834,7 +834,7 @@ pub fn typing() -> (Option<u32>, bool) {
 pub fn focused() -> Option<Focused> {
     let names = names(ATTRS);
     let el = attr(&system_wide(), "AXFocusedUIElement")?;
-    let a = attrs(&names, &el);
+    let mut a = attrs(&names, &el);
     let mut frame = None;
     let mut window = String::new();
     let mut url = None;
@@ -865,7 +865,7 @@ pub fn focused() -> Option<Focused> {
     }
     Some(Focused {
         role: ax_roles::role(kind_of(&a)).unwrap_or("generic"),
-        name: name_of(&a, NAME_CHARS),
+        name: name_of(&mut a, NAME_CHARS),
         frame: frame.unwrap_or("window"),
         window,
         secure: [&a.role, &a.subrole]
@@ -1183,17 +1183,18 @@ fn kind_of(a: &Attrs) -> Kind<'_> {
     }
 }
 
-fn name_of(a: &Attrs, chars: usize) -> String {
-    let static_text = (a.role == "AXStaticText")
-        .then(|| a.value.as_ref().map(|v| text(v, chars)))
-        .flatten()
-        .unwrap_or_default();
-    [&a.title, &a.description, &static_text]
-        .into_iter()
-        .find(|n| !n.is_empty())
-        .map_or("", |n| n.as_str())
-        .trim_end()
-        .to_owned()
+fn name_of(a: &mut Attrs, chars: usize) -> String {
+    let mut name = if !a.title.is_empty() {
+        std::mem::take(&mut a.title)
+    } else if !a.description.is_empty() {
+        std::mem::take(&mut a.description)
+    } else if a.role == "AXStaticText" {
+        a.value.as_ref().map(|v| text(v, chars)).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    name.truncate(name.trim_end().len());
+    name
 }
 
 fn typing_at(focused: Option<CFType>) -> (Option<u32>, bool) {
