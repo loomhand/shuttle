@@ -613,7 +613,7 @@ impl Access for Ax {
     }
 }
 
-/// An element a hit test found: its role and name as a snapshot names them, its help, its process, and the role and name of each ancestor up to its window, innermost first.
+/// An element a hit test found, as a snapshot names it, with its ancestors up to its window, innermost first.
 pub struct Seen {
     pub role: &'static str,
     pub name: String,
@@ -622,7 +622,6 @@ pub struct Seen {
     pub path: Vec<(&'static str, String)>,
     /// A secure text field: a password, whose keys no listener sees.
     pub secret: bool,
-    /// The address of the web page the element is in, and its DOM id.
     pub page: Option<Page>,
 }
 
@@ -633,7 +632,7 @@ pub struct Page {
     pub dom_id: Option<String>,
 }
 
-/// The focused element as a snapshot names it, the role of its window or sheet, the title of its window, whether it is a password field, and its web page.
+/// The focused element as a snapshot names it, with its window or sheet.
 pub struct Focused {
     pub role: &'static str,
     pub name: String,
@@ -827,7 +826,7 @@ pub fn secure_input() -> bool {
     unsafe { IsSecureEventInputEnabled() }
 }
 
-/// Where typing goes now: the process of the focused element, and whether it is a password field, as a secure text field or under the session's secure input.
+/// The process of the focused element, and whether typing goes to a password field.
 pub fn typing() -> (Option<u32>, bool) {
     typing_at(attr(&system_wide(), "AXFocusedUIElement"))
 }

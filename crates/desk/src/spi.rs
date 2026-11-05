@@ -242,7 +242,7 @@ fn frame(f: atspi::Frame) -> Frame {
     }
 }
 
-/// Leaves active only the frame of the X active window, `_NET_ACTIVE_WINDOW`'s pid and title, since GTK keeps a window's AT-SPI active state after the keyboard focus moved to another X window; title twins of that pid leave none active, a title of no frame (or one that changed between the AT-SPI and X reads) keeps that pid's AT-SPI actives, and a pid of no frame keeps AT-SPI's state.
+/// Leaves active only the frame of the X active window, since GTK keeps a window's AT-SPI active state after the focus moves to another X window.
 fn settle_active(frames: &mut [Frame], pid: Option<u32>, title: &str, twin: Option<&str>) {
     let Some(pid) = pid.filter(|&p| p != 0 && frames.iter().any(|f| f.pid == Some(p))) else {
         return;
@@ -299,7 +299,7 @@ fn unlisted(mut pids: impl Iterator<Item = Option<u32>>, pid: u32) -> bool {
     pid != 0 && pids.all(|p| p != Some(pid))
 }
 
-/// Whether the X window `(title, pid)` is `frame`'s own: of its process, and that process's only X window or the one with that title, `titles` being the titles of the process's X windows.
+/// Whether the X window `(title, pid)` is `frame`'s own: its process's only X window, or the one with that title among `titles`.
 fn is_frame(frame: &Frame, (title, pid): &(String, Option<u32>), titles: &[String]) -> bool {
     *pid == frame.pid
         && (titles.len() == 1
@@ -442,7 +442,7 @@ fn answered<T>(
         .ok()
 }
 
-/// `read` on the grabber in `slot`, opened on first use and again after a screen change; a failed read opens it once more and retries, and a second failure leaves the slot empty.
+/// `read` on the grabber in `slot`, opened on first use, after a screen change and once after a failed read.
 fn reuse<G, T>(
     slot: &mut Option<G>,
     open: impl Fn() -> Result<G, String>,

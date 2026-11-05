@@ -49,9 +49,7 @@ const CHECKED: u32 = 4;
 const ENABLED: u32 = 8;
 const SENSITIVE: u32 = 24;
 const INDETERMINATE: u32 = 32;
-/// The state of the node that holds the keyboard focus.
 pub const FOCUSED: u32 = 12;
-/// The state of a node drawn on the screen.
 pub const SHOWING: u32 = 25;
 const MANAGES_DESCENDANTS: u32 = 31;
 const LABELLED_BY: u32 = 2;
@@ -385,7 +383,7 @@ impl Atspi {
         }
     }
 
-    /// The accessible top-level windows of every app, with their pids; an app that takes over [`APP_FRAMES`] keeps its last windows, marked stale, until it counts as hung and is skipped for a while.
+    /// The top-level windows of every app with their pids; a late app gives its last ones, marked stale.
     pub async fn frames(&self) -> Result<Vec<Frame>, String> {
         let registry = Obj {
             bus: REGISTRY.to_owned(),
@@ -869,7 +867,7 @@ impl Atspi {
         known
     }
 
-    /// The app's cached objects, from the cache of at-spi2-core 2.46 and later or from the older one, which lists the children of each object instead of its index and child count.
+    /// The app's cached objects, from the cache of at-spi2-core 2.46 and later or from the older one.
     async fn items(&self, bus: &str) -> Result<Vec<Item>, String> {
         let cache = Obj {
             bus: bus.to_owned(),

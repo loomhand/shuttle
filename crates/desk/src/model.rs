@@ -249,7 +249,6 @@ pub struct Modal {
     pub pid: Option<u32>,
     /// The title of the window it blocks, which it is transient for.
     pub owner: String,
-    /// `hidden`, `off the screen` or `behind "TITLE"`.
     pub place: String,
 }
 
@@ -341,7 +340,7 @@ pub trait Access {
     fn act(&mut self, id: &str, act: Act) -> Result<bool, String>;
     /// Asks the window to close as its close button does.
     fn close(&mut self, frame: &Frame) -> Result<(), String>;
-    /// The screen rectangle `[x, y, w, h]` clipped to the screen, read by the backend itself; none when the driver captures, as it does while its cursor overlay shows, which the backend looks for only when `overlay` says the driver may show one.
+    /// The screen rectangle `[x, y, w, h]` clipped to the screen, read by the backend; none leaves it to the driver, as while an `overlay` shows.
     fn capture(&mut self, _rect: [f64; 4], _overlay: bool) -> Result<Option<Capture>, String> {
         Ok(None)
     }

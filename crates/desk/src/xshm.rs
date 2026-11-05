@@ -408,7 +408,7 @@ impl Grabber {
             .unwrap_or_default()
     }
 
-    /// Whether keys sent to the focus reach `window` of `pid`: it is active and focused, no other client's popup shows, no grab but a popup of `pid` holds the keyboard, and the core keyboard is the only master, since Chrome drops core input while another exists.
+    /// Whether keys sent to the focus reach `window` of `pid`; a second master keyboard fails it, since Chrome then drops core input.
     pub fn keyboard(&self, window: Window, pid: u32) -> Result<bool, String> {
         if self.active() != Some(window) || self.masters() != Some(1) {
             return Ok(false);
@@ -859,12 +859,10 @@ impl Drop for Grabber {
 /// The desktop shell as one refresh read it.
 #[derive(Default)]
 struct Shell {
-    /// Which 16-pixel squares a dock covers, row-major.
     mask: Arc<[bool]>,
     pids: Vec<u32>,
     /// The dock windows and their window manager frames.
     docks: Vec<Window>,
-    /// The docks and the desktop windows, with their frames.
     windows: Vec<Window>,
 }
 
@@ -893,7 +891,7 @@ fn dock_mask(docks: &[[i32; 4]], (width, height): (usize, usize)) -> Vec<bool> {
     mask
 }
 
-/// How `mapped`, the drawn root children bottom to top, hide `frame` on a screen of `width` by `height`: centred off the screen, or under another managed window at its centre that is not a dialog `opened` says the frame's own window opened.
+/// How `mapped`, the drawn root children bottom to top, hide `frame`: centred off the screen, or under another window at its centre that is no dialog `opened` names.
 fn cover(
     frame: Window,
     mapped: &[Placement],
