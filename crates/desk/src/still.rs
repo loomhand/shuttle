@@ -54,7 +54,6 @@ pub(crate) struct Frame {
 }
 
 impl Frame {
-    /// Decodes a PNG capture.
     pub(crate) fn decode(png: &[u8]) -> Result<Self, String> {
         let mut dec = png::Decoder::new(std::io::Cursor::new(png));
         dec.set_transformations(png::Transformations::normalize_to_color8());
@@ -155,7 +154,6 @@ impl Watch {
 pub(crate) mod tests {
     use super::*;
 
-    /// A `width` x `height` frame, black but for the 8-pixel blocks in `lit` painted `tone`.
     pub(crate) fn frame(width: usize, height: usize, lit: &[(usize, u8)]) -> Frame {
         let columns = width.div_ceil(BLOCK);
         let mut rgb = vec![0; width * height * 3];

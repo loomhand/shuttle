@@ -190,7 +190,6 @@ impl Computer {
         }
     }
 
-    /// `computer_state`: window list, accessibility elements and a desktop screenshot.
     async fn state(&self, args: Value) -> Result<Output, String> {
         self.touch();
         let session = session_of(&args);
@@ -285,7 +284,6 @@ impl Computer {
         })
     }
 
-    /// `computer_act`: one input action, or a list of `actions`, followed by a fresh desktop screenshot.
     async fn act(&self, args: Value) -> Result<Output, String> {
         self.touch();
         let session = session_of(&args);
@@ -340,7 +338,6 @@ impl Computer {
         Ok(out)
     }
 
-    /// Runs one action: a launch, or an input action.
     async fn act_one(&self, session: &str, a: ActArgs) -> Result<Output, String> {
         if a.action == "launch_app" {
             return self.launch(session, &a).await;
@@ -532,7 +529,6 @@ impl Computer {
         })
     }
 
-    /// The modal dialogs that are open where the screen does not show them.
     fn modals(&self) -> Vec<Modal> {
         self.shm(Grabber::modals).unwrap_or_default()
     }
@@ -569,7 +565,6 @@ impl Computer {
         }
     }
 
-    /// Screenshot in a one-shot driver session that is ended right away.
     async fn screenshot_once(&self, max_edge: Option<u32>) -> Result<Option<String>, String> {
         let session = self.own("shot");
         let shot = self.screenshot(session.name(), max_edge).await;
@@ -578,7 +573,6 @@ impl Computer {
         shot
     }
 
-    /// Ends a driver session, releasing its input devices.
     async fn end(&self, args: Value) -> Result<String, String> {
         let session = session_of(&args);
         self.request(&session, "end_session", json!({})).await?;
@@ -790,7 +784,7 @@ impl Computer {
         })
     }
 
-    /// The screen before an input action: MIT-SHM pixels and block hashes with each block's past, else a thumbnail from a probe session that leaves the action session's capture context alone. A commit action `a` (see [`commits`]) in Chrome may load a page.
+    /// The screen before an input action: MIT-SHM block hashes, else a thumbnail from a probe session that leaves the action session's capture context alone.
     async fn before_input(&self, a: Option<&ActArgs>) -> Option<Before> {
         let commit = a.is_some_and(commits);
         if let Some((pixels, blocks, windows, active, page, wait)) = self.shm(|g| {
@@ -843,7 +837,7 @@ impl Computer {
         }
     }
 
-    /// Waits until the screen differs from `before` and holds still, within the wait [`Before`] carries; blocks that churn or toggle (see [`Block`], [`Shown`]) and changes under [`VISIBLE_STEP`] do not count. Returns lines naming the windows the action opened, closed or brought to the front, and the probe capture the screen held still on.
+    /// Waits until the screen differs from `before` and holds still; returns the window changes and the probe capture it held still on.
     async fn settle(&self, before: Option<Before>, scale: f64) -> (String, Option<Value>) {
         let Some(Before {
             probe,
@@ -1328,7 +1322,7 @@ impl Computer {
         self.request(session, tool, req).await
     }
 
-    /// Whether the typer typed `text`; it runs on a blocking thread that holds the input turn to its end and stops at its next key once this call is dropped.
+    /// Whether the typer typed `text`; a drop of this call stops it at its next key.
     async fn xtest(&self, text: &str, turn: Turn) -> Result<bool, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let _cancel = Cancel(stop.clone());
@@ -1620,7 +1614,6 @@ impl Computer {
         None
     }
 
-    /// A left click at the screen point `(x, y)`.
     async fn pixel_click(&self, x: f64, y: f64) -> Result<Value, String> {
         self.desktop_input("click", json!({"x": x, "y": y})).await
     }
@@ -1820,7 +1813,6 @@ struct Before {
     probe: Option<Owned>,
     paused: Option<Paused>,
     frame: Frame,
-    /// The BGRX pixels of a [`Frame::Blocks`].
     pixels: Vec<u8>,
     /// Per block of a [`Frame::Blocks`], what it did before the action.
     volatile: Vec<Block>,

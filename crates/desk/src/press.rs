@@ -17,7 +17,7 @@ pub(crate) enum Press {
     Acted(bool),
 }
 
-/// Presses `id` the way a user would; a menu entry runs its action, since a click right after its popup opens misses it, except on Linux, where it takes a click once it shows and a LibreOffice control outside a dialog runs its action; a Windows tree item takes a click first, since Explorer can ignore its select. With `background` input an element runs its action before any click, which needs no pointer, and so does a macOS button, check box, switch or link in the front window.
+/// Presses `id` the way a user would: a select, a click at a point, or the element's action.
 pub(crate) fn plan_press<B: Access>(
     b: &mut B,
     id: &str,
@@ -88,7 +88,7 @@ fn in_front<B: Access>(b: &mut B, id: &str) -> Result<bool, String> {
         .any(|f| f.active && root.as_ref() == Some(&f.id)))
 }
 
-/// Whether the top-level window of `chain` is a dialog or an alert, where LibreOffice draws its controls at their extents and a control's action that opens a modal blocks the app until the modal closes.
+/// Whether the top-level window of `chain` is a dialog, where LibreOffice draws controls at their extents.
 fn in_dialog<B: Access>(b: &mut B, chain: &[String]) -> bool {
     chain
         .first()

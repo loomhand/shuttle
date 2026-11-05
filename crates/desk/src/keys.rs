@@ -52,7 +52,6 @@ const LINUX_ALIASES: [(&str, &str); 47] = [
     ("bksp", "backspace"),
 ];
 
-/// The OS whose key names a combination uses.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Os {
     Windows,

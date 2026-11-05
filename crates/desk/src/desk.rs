@@ -118,7 +118,7 @@ tokio::task_local! {
 }
 
 pub(crate) type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
-/// Types a line on the core keyboard: true when typed, false when it typed nothing and leaves the line to the driver; it stops once the flag is set.
+/// Types a line on the core keyboard; false leaves the line to the driver.
 pub(crate) type Typer = fn(&str, &AtomicBool) -> Result<bool, String>;
 
 /// The desk of one OS: `B` reads and acts on elements, `D` sends input.
@@ -190,7 +190,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Arc::clone(&self.acting)
     }
 
-    /// Whether a background action refused before any input was sent runs once more in the foreground, its target window brought to the front.
+    /// Whether a background action refused before any input runs once more in the foreground.
     pub fn auto(mut self, on: bool) -> Self {
         self.auto = on;
         self
@@ -273,7 +273,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
     }
 
-    /// Refuses a call whose `delivery_mode` is not the mode this desk sends input in.
     fn check_mode(&self, args: &Value) -> Result<(), String> {
         let input = if self.background {
             "background"
@@ -965,7 +964,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(out.to_string())
     }
 
-    /// The focused element of window `to`'s app as `{role, name}` and whether it is a text field; after a background click into `to`, refuses a field the click missed, and an unreadable focus unless `unverified`.
+    /// The focused element of window `to`'s app as `{role, name}` and whether it is a text field.
     async fn typing_focus(
         &self,
         to: (i64, i64),
@@ -991,7 +990,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok((focused, field))
     }
 
-    /// The element with the keyboard focus in the app of process `pid`; none when it cannot be read.
     async fn keyboard_focus(&self, pid: i64) -> Option<Node> {
         let pid = u32::try_from(pid).ok()?;
         self.access
@@ -1053,7 +1051,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         )
     }
 
-    /// Whether the typer typed `line` on the core keyboard; it runs on a blocking thread that holds the action's turn to its end and stops at its next key once this call is dropped.
+    /// Whether the typer typed `line`; a drop of this call stops it at its next key.
     async fn xtest(&self, line: &str, turn: Option<Turn>) -> Result<bool, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let _cancel = Cancel(stop.clone());
@@ -1066,7 +1064,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         .map_err(|e| format!("XTest: {e}"))?
     }
 
-    /// Waits at most [`TYPE_SETTLE`] until the focused element of the focused window holds the end of the last line typed, since an app reads typed keys after the input call returns.
+    /// Waits at most [`TYPE_SETTLE`] until the focused element holds the end of the typed text.
     async fn typed(&self, text: &str) {
         let Some(tail) = typed_tail(text) else {
             return;
@@ -1302,7 +1300,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.check_point(x, y, under.as_ref()).await
     }
 
-    /// Wheel notches at a screen point; without one, scroll keys to the front app window on macOS (the driver's topmost, or the one an allowlist picks and checks), and elsewhere wheel notches at its center, the window of the focused app on Linux.
+    /// Wheel notches at a screen point, else a scroll of the front app window.
     async fn scroll(&self, a: ScrollArgs) -> Result<String, String> {
         if a.x.is_some() != a.y.is_some() {
             return Err(SCROLL_POINT.to_owned());
@@ -1558,7 +1556,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(Some(format!("{app} {COVERED}")))
     }
 
-    /// A click at a screen point, for a window that takes no window click; background input refuses it.
     async fn desktop_click(&self, req: Value) -> Result<(), String> {
         if self.bg() {
             return Err(BACKGROUND_DESKTOP.to_owned());
@@ -1567,7 +1564,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(())
     }
 
-    /// The window background input goes to, as `(pid, window_id)`; none in the foreground, where input goes to the focused window.
     async fn target(
         &self,
         window: Option<&str>,
@@ -1823,7 +1819,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(out.to_string())
     }
 
-    /// The driver window titled like `window` or of `pid`, as a frame and as the driver lists it, titled as accessibility names it where the driver lists an elided title; the allowlist picks among them, and a title alone does not pick between twins on two Spaces.
+    /// The driver window titled like `window` or of `pid`, as a frame and as the driver lists it.
     async fn pick_window(
         &self,
         window: Option<&str>,
@@ -2160,7 +2156,7 @@ impl Unseen {
     }
 }
 
-/// Moves a Linux launch into a systemd scope of its own on a task that finishes when the call is dropped; false when the launch stays in the daemon's cgroup.
+/// Moves a Linux launch into a systemd scope of its own; false when it stays in the daemon's cgroup.
 #[cfg(target_os = "linux")]
 pub(crate) async fn adopt(launched: Value) -> bool {
     tokio::spawn(async move {
@@ -2328,7 +2324,6 @@ fn live(frame: Frame) -> Result<Frame, String> {
     Ok(frame)
 }
 
-/// A Linux shot's answer: the PNG as the image, also written to `path` when one is given.
 async fn delivered(png: Vec<u8>, w: u32, h: u32, path: Option<String>) -> Result<Output, String> {
     let mut out = json!({"ok": true, "width": w, "height": h});
     if let Some(path) = path {
@@ -2434,13 +2429,11 @@ fn unseen_of(w: &Value, mac: bool) -> Option<Unseen> {
     (mac && w["is_on_screen"] == false).then_some(Unseen::Hidden)
 }
 
-/// Whether node `n` covers desk point `at`; none when it has no bounds.
 fn holds(n: &Node, (x, y): (f64, f64)) -> Option<bool> {
     let [l, t, w, h] = n.bounds?.map(f64::from);
     Some(x >= l && x < l + w && y >= t && y < t + h)
 }
 
-/// `{"ok":true}`, with the driver's note when it could not confirm background input.
 fn ok_with(unverified: Option<String>) -> String {
     match unverified {
         Some(note) => json!({"ok": true, "unverified": note}).to_string(),
@@ -2448,7 +2441,6 @@ fn ok_with(unverified: Option<String>) -> String {
     }
 }
 
-/// `req` to the focused window, or in the background to window `to`.
 fn deliver(req: Value, to: Option<(i64, i64)>) -> Value {
     match to {
         Some(to) => background(req, to),
