@@ -1881,6 +1881,63 @@ mod tests {
         assert_eq!(fake.android.look().await.unwrap().text, "1280x720 screen");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_click_the_device_cannot_make_is_refused_before_any_tap() {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.windows("shade");
+        for (args, want) in [
+            (
+                serde_json::json!({"x": 10, "y": 20, "button": "right"}),
+                "a tap on a device has no right button",
+            ),
+            (
+                serde_json::json!({"x": 10, "y": 20, "modifiers": ["shift"]}),
+                "a tap on a device takes no modifier keys",
+            ),
+            (
+                serde_json::json!({"x": 10, "y": 20, "window": "Settings"}),
+                "Settings - com.android.settings is not in front",
+            ),
+        ] {
+            let err = desk(&fake, "desk_click", args).await.unwrap_err();
+            assert!(err.starts_with(want), "{err}");
+        }
+        for (verb, args) in [
+            (
+                "desk_key",
+                serde_json::json!({"keys": "a", "window": "Settings"}),
+            ),
+            (
+                "desk_type",
+                serde_json::json!({"text": "hi", "window": "Settings"}),
+            ),
+        ] {
+            let err = desk(&fake, verb, args).await.unwrap_err();
+            assert!(err.contains("not in front"), "{verb}: {err}");
+        }
+        assert_eq!(log(&fake, "requests").matches("tap ").count(), 0);
+        assert_eq!(log(&fake, "requests").matches("key ").count(), 0);
+        assert_eq!(log(&fake, "adbinput"), "");
+        fake.windows("");
+        desk(
+            &fake,
+            "desk_key",
+            serde_json::json!({"keys": "a", "window": "Settings"}),
+        )
+        .await
+        .unwrap();
+        desk(
+            &fake,
+            "desk_click",
+            serde_json::json!({"x": 10, "y": 20, "button": "left"}),
+        )
+        .await
+        .unwrap();
+        assert!(log(&fake, "requests").ends_with("key 29\ntap 10 20\n"));
+    }
+
     #[tokio::test]
     async fn a_session_end_forgets_only_that_sessions_elements() {
         let android = Android::new(Device {

@@ -302,10 +302,16 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
         }
         "desk_at" => at(android, parse(args)?).await?,
         "desk_key" => {
-            android.keys(&parse::<KeyArgs>(args)?.keys).await?;
+            let a: KeyArgs = parse(args)?;
+            in_front(android, a.window.as_deref(), a.pid).await?;
+            android.keys(&a.keys).await?;
             json!({"ok": true}).to_string()
         }
-        "desk_type" => type_text(android, &parse::<TypeArgs>(args)?.text).await?,
+        "desk_type" => {
+            let a: TypeArgs = parse(args)?;
+            in_front(android, a.window.as_deref(), a.pid).await?;
+            type_text(android, &a.text).await?
+        }
         "desk_click" => click(android, parse(args)?).await?,
         "desk_focus" => focus(android, parse(args)?).await?,
         "desk_close" => {
@@ -942,10 +948,32 @@ async fn type_text(android: &Android, text: &str) -> Result<String, String> {
 }
 
 async fn click(android: &Android, a: ClickArgs) -> Result<String, String> {
+    if let Some(button) = a.button.as_deref().filter(|b| *b != "left") {
+        return Err(format!("a tap on a device has no {button} button"));
+    }
+    if a.modifiers.as_ref().is_some_and(|m| !m.is_empty()) {
+        return Err("a tap on a device takes no modifier keys".to_owned());
+    }
+    in_front(android, a.window.as_deref(), a.pid).await?;
     for _ in 0..a.count.unwrap_or(1).max(1) {
         android.tap((a.x as i32, a.y as i32)).await?;
     }
     Ok(json!({"ok": true}).to_string())
+}
+
+async fn in_front(android: &Android, window: Option<&str>, pid: Option<u32>) -> Result<(), String> {
+    if window.is_none() && pid.is_none() {
+        return Ok(());
+    }
+    let frame = window::pick(frames(android).await?, window, pid)?;
+    if frame.active {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} is not in front, and input on a device reaches only the front window",
+            frame.title
+        ))
+    }
 }
 
 /// The window `window` names, which on Android is on the screen; a package name without a window starts its app.
