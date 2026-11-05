@@ -55,7 +55,7 @@ pub enum Input {
         mods: Vec<&'static str>,
         found: Option<Hit>,
     },
-    /// A key and the process it went to; `secret` when it went to a password field, and then `text` is empty. The first key of a run of typing was `read` for its `focus`.
+    /// A key and the process it went to; a `secret` key keeps no `text`.
     Key {
         code: i64,
         text: String,
@@ -74,7 +74,7 @@ pub enum Input {
     Hotkey(i64),
 }
 
-/// The element with the keyboard focus, as a snapshot names it, the role of its window or sheet, the title of its window, whether it takes a password, and the address of its web page with its DOM id.
+/// The element with the keyboard focus, as a snapshot names it.
 #[derive(Debug, Default, Serialize)]
 pub struct Field {
     pub role: &'static str,
@@ -90,7 +90,7 @@ pub struct Field {
     pub id: String,
 }
 
-/// An element under a click: its role and name as a snapshot names them, its help, its process, the role and name of its ancestors up to its window, innermost first, and the address of its web page with its DOM id.
+/// An element under a click, as a snapshot names it; `path` runs innermost first.
 #[derive(Debug, Default)]
 pub struct Hit {
     pub role: &'static str,
@@ -448,7 +448,7 @@ fn rooted(found: &Value) -> bool {
             .is_some_and(|r| ROOT_ROLES.contains(&r))
 }
 
-// the crop is CROP_PT points around the point, cut to the window, with the point's offset from its centre in desk units
+// the point's offset from the crop's centre is in desk units
 fn crop(f: &Frame, x: f64, y: f64, per_point: f64) -> Option<(String, f64, [f64; 2])> {
     let [w, h] = CROP_PT.map(|v| v * per_point);
     let [x, y] = [x - f.bounds[0], y - f.bounds[1]];
@@ -521,7 +521,7 @@ fn came(now: Option<&Value>, was: Option<&Value>, apps: &[String], t0: Instant) 
     })
 }
 
-// a Chromium browser builds its page tree only for an assistive app that asks: each app the recording keeps is asked once, and the desk lets the trees go when the recording ends
+// a Chromium browser builds its page tree only for an assistive app that asks
 async fn light<H: Handler>(desk: &H, windows: &[Value], apps: &[String], asked: &mut Vec<u64>) {
     for w in windows {
         let Some(pid) = w["pid"].as_u64().filter(|p| !asked.contains(p)) else {

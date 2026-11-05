@@ -104,7 +104,7 @@ pub struct Ui {
     pub about: String,
 }
 
-/// Answers `model_*` calls with `models`, `gui_plan`, `script_run` and plugin tools with `runner`, splices service tools to their services, and answers the rest with `desk`; `safety_stop` halts every call until `safety_resume`.
+/// Routes each call by its tool; `safety_stop` halts every call until `safety_resume`.
 pub struct Daemon<H> {
     desk: H,
     models: Result<Models, String>,
@@ -124,7 +124,7 @@ pub struct Daemon<H> {
 }
 
 impl<H: Handler> Daemon<H> {
-    /// A daemon whose every call fails with the configuration's error when it does not load, since the safety controls are in it.
+    /// A daemon that fails every call but the stop while `models` holds the configuration's error.
     pub fn new(desk: H, models: Result<Models, String>, runner: Runner, guard: Guard) -> Self {
         Self {
             desk,
@@ -524,7 +524,6 @@ fn points(a: &Value) -> bool {
         || (action == "type" && (a.get("element").is_some() || a.get("x").is_some()))
 }
 
-/// One computer action as the confirm question names it.
 fn step(a: &Value) -> String {
     let action = a["action"].as_str().unwrap_or("act");
     if let Some(element) = a.get("element") {

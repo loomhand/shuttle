@@ -39,7 +39,6 @@ use tokio::process::Child;
 pub const NAME: &str = "shuttle";
 /// The namespace of shuttle's directories and Windows global names, so another `shuttle` does not collide.
 pub const VENDOR: &str = "loomhand";
-/// The release version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The answer to every call while the user has stopped shuttle.
 pub const STOPPED: &str = "stopped by the user: run `shuttle resume` to go on";
@@ -137,7 +136,6 @@ pub fn home() -> PathBuf {
     Path::new(VENDOR).join(NAME)
 }
 
-/// Whether [`EMBEDDED`] is exactly `1`.
 pub fn embedded() -> bool {
     std::env::var(EMBEDDED).is_ok_and(|v| v == "1")
 }
@@ -146,7 +144,7 @@ pub(crate) fn log(line: impl Display) {
     let _ = writeln!(std::io::stderr(), "{NAME}: {line}");
 }
 
-/// Sends `sig` to the live processes of the group `group` leads that are still in this process's cgroup, sparing the apps the desk moved into scopes of their own; how many it reached, so signal 0 counts them.
+/// Sends `sig` to the live members of the group `group` leads that share this process's cgroup; how many it reached.
 #[cfg(target_os = "linux")]
 pub(crate) fn signal_group(group: u32, sig: libc::c_int) -> usize {
     let cgroup = |p: &str| std::fs::read_to_string(format!("/proc/{p}/cgroup")).ok();

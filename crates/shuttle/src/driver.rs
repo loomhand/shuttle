@@ -30,7 +30,7 @@ pub struct Bundled {
 }
 
 impl Bundled {
-    /// Starts the cua-driver beside `exe` at `endpoint`, after stopping one that a killed daemon left there; none when no driver is bundled. Off macOS `overlay = false` starts it without its agent cursor; `embedded` starts it in cua-driver's embedded mode; on macOS `foreground` input bounds its window watch after an action, which foreground input holds no focus lease on and nobody reads.
+    /// Starts the cua-driver beside `exe` at `endpoint` after it stops one a killed daemon left; none when no driver is bundled.
     pub async fn start(
         exe: &Path,
         endpoint: &str,

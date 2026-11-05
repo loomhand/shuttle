@@ -39,7 +39,6 @@ impl Plugins {
 pub struct Plugin {
     pub name: String,
     pub description: String,
-    /// The program that runs the tool's scripts in place of Node.
     pub bin: PathBuf,
     #[serde(default)]
     pub resources: Vec<Resource>,

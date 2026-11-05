@@ -246,7 +246,7 @@ async fn listening(socket: &str) -> Result<server::Conn, String> {
     }
 }
 
-// an end of the data on either side closes only the other's input, or both on Windows where a pipe has no half-close; the first failure ends both
+// an eof half-closes the other side, or both on Windows; the first failure ends both
 async fn splice<C, S>(client: C, service: S)
 where
     C: AsyncRead + AsyncWrite + Unpin,
