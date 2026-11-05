@@ -164,7 +164,7 @@ impl Runner {
         let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
         let mut cmd = Command::new(program);
         cmd.arg(self.module("entry"))
-            .current_dir(home.map_or_else(|| scratch.to_path_buf(), PathBuf::from))
+            .current_dir(home.as_deref().map_or(scratch, Path::new))
             .env("SHUTTLE_SOCKET", &self.endpoint)
             .env("SHUTTLE_SCRIPT", script)
             .env("SHUTTLE_RUN", scratch)
