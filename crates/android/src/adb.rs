@@ -880,7 +880,10 @@ struct Control {
 impl Control {
     /// Whether the server still holds the session; it sends nothing unasked, so anything readable is its end.
     fn is_open(&self) -> bool {
-        matches!(self.stream.try_read(&mut [0; 1]), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+        matches!(
+            self.stream.try_read(&mut [0; 1]),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+        )
     }
 
     async fn set_clipboard(&mut self, text: &str) -> Result<(), String> {
@@ -1232,12 +1235,7 @@ async fn read_ack<R: AsyncRead + Unpin>(r: &mut R, sequence: u64) -> Result<(), 
 mod tests {
     use super::*;
 
-    fn saved(points: Vec<(i32, i32)>) -> Saved {
-        Saved {
-            window: String::new(),
-            points,
-        }
-    }
+    const CRASH_LOG: &str = "10-19 08:01:40.100  3200  3200 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:40.100  3200  3200 F DEBUG   : Abort message: 'not ours'\n10-19 08:01:50.777  3318  3318 F DEBUG   : Cmdline: app_process / shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : pid: 3308, tid: 3308, name: main  >>> app_process <<<\n10-19 08:01:50.777  3318  3318 F DEBUG   : Abort message: 'No pending exception expected: java.lang.ClassNotFoundException: shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : (Throwable with empty stack trace)'\n10-19 08:01:51.000  3330  3330 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:51.000  3330  3330 F DEBUG   : Abort message: 'later, not ours'\n";
 
     #[test]
     fn desktop_key_names_map_to_android_keycodes() {
@@ -1315,17 +1313,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn script(path: &std::path::Path, body: &str) {
-        let made = std::process::Command::new("/bin/sh")
-            .args(["-c", r#"printf '%s' "$1" > "$0" && chmod 755 "$0""#])
-            .arg(path)
-            .arg(body)
-            .status()
-            .unwrap();
-        assert!(made.success(), "write {}", path.display());
-    }
-
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_component_reaches_the_device_shell_quoted() {
         let dir = tempfile::tempdir().unwrap();
@@ -1346,8 +1333,6 @@ mod tests {
         let args = std::fs::read_to_string(&argv).unwrap();
         assert_eq!(args.lines().last(), Some("'com.example/.Main$Launcher'"));
     }
-
-    const CRASH_LOG: &str = "10-19 08:01:40.100  3200  3200 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:40.100  3200  3200 F DEBUG   : Abort message: 'not ours'\n10-19 08:01:50.777  3318  3318 F DEBUG   : Cmdline: app_process / shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : pid: 3308, tid: 3308, name: main  >>> app_process <<<\n10-19 08:01:50.777  3318  3318 F DEBUG   : Abort message: 'No pending exception expected: java.lang.ClassNotFoundException: shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : (Throwable with empty stack trace)'\n10-19 08:01:51.000  3330  3330 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:51.000  3330  3330 F DEBUG   : Abort message: 'later, not ours'\n";
 
     #[test]
     fn the_abort_cause_is_the_last_one_of_a_ui_server_process() {
@@ -1370,27 +1355,6 @@ mod tests {
         let kept = tail(text.as_bytes(), 100).await;
         assert_eq!(kept.len(), 100);
         assert!(text.as_bytes().ends_with(&kept));
-    }
-
-    #[cfg(unix)]
-    async fn failing_ui_server(log: &str, stderr: &str, status: u8) -> String {
-        let dir = tempfile::tempdir().unwrap();
-        let adb = dir.path().join("adb");
-        script(
-            &adb,
-            &format!(
-                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*logcat*) cat \"$DIR/crash.log\";;\n*app_process*) echo '{stderr}' >&2; exit {status};;\nesac\n"
-            ),
-        );
-        std::fs::write(dir.path().join("crash.log"), log).unwrap();
-        let android = Android::new(Device {
-            adb,
-            serial: None,
-            ui_jar: "/u.jar".into(),
-            scrcpy_jar: "/s.jar".into(),
-            su: None,
-        });
-        android.windows().await.unwrap_err()
     }
 
     #[cfg(unix)]
@@ -1425,76 +1389,6 @@ mod tests {
     fn an_empty_abort_message_is_no_cause() {
         let log = "F DEBUG   : Cmdline: app_process / shuttle.Ui\nF DEBUG   : Abort message: ''\n";
         assert_eq!(abort_cause(log), None);
-    }
-
-    #[cfg(unix)]
-    struct Fake {
-        dir: tempfile::TempDir,
-        android: Android,
-    }
-
-    #[cfg(unix)]
-    impl Fake {
-        fn new() -> Self {
-            let dir = tempfile::tempdir().unwrap();
-            let adb = dir.path().join("adb");
-            script(
-                &adb,
-                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi;;\n*screencap*) if [ -f \"$DIR/screencap.fail\" ]; then exit 1; fi; cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) a=$(head -n 1 \"$DIR/inject.answer\" 2>/dev/null); if [ -f \"$DIR/inject.answer\" ] && [ \"$(wc -l < \"$DIR/inject.answer\")\" -ge 1 ]; then tail -n +2 \"$DIR/inject.answer\" > \"$DIR/inject.next\"; mv \"$DIR/inject.next\" \"$DIR/inject.answer\"; fi; if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
-            );
-            let android = Android::new(Device {
-                adb,
-                serial: None,
-                ui_jar: "/u.jar".into(),
-                scrcpy_jar: "/s.jar".into(),
-                su: None,
-            });
-            Self { dir, android }
-        }
-
-        fn put(&self, name: &str, text: &str) {
-            std::fs::write(self.dir.path().join(name), text).unwrap();
-        }
-
-        fn windows(&self, layout: &str) {
-            let app = |active| {
-                format!(
-                    r#"{{"id":7,"type":1,"layer":0,"title":"Settings","package":"com.android.settings","active":{active},"focused":{active},"bounds":[0,0,720,1280]}}"#
-                )
-            };
-            let bar = r#"{"id":5,"type":3,"layer":2,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[0,1184,720,1280]}"#;
-            let list = match layout {
-                "shade" => format!(
-                    r#"[{bar},{{"id":9,"type":3,"layer":4,"title":"Shade","package":"com.android.systemui","active":true,"focused":true,"bounds":[0,0,720,1280]}},{}]"#,
-                    app(false)
-                ),
-                "keyboard" => format!(
-                    r#"[{{"id":8,"type":2,"layer":3,"title":"","package":"com.android.inputmethod.latin","active":false,"focused":false,"bounds":[0,700,720,1184]}},{bar},{}]"#,
-                    app(true)
-                ),
-                "landscape" => format!(
-                    r#"[{{"id":5,"type":3,"layer":2,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[1184,0,1280,720]}},{}]"#,
-                    app(true).replace("[0,0,720,1280]", "[0,0,1280,720]")
-                ),
-                "none" => "[]".to_owned(),
-                _ => format!("[{bar},{}]", app(true)),
-            };
-            self.put("windows.json", &list);
-        }
-
-        fn dump(&self, name: &str, window: &str) {
-            let attr = if window.is_empty() {
-                String::new()
-            } else {
-                format!(" window=\"{window}\"")
-            };
-            self.put(
-                name,
-                &format!(
-                    r#"<hierarchy{attr}><node text="OK" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0" bounds="[100,200][300,300]" /></hierarchy>"#
-                ),
-            );
-        }
     }
 
     #[cfg(unix)]
@@ -1565,33 +1459,6 @@ mod tests {
             serde_json::from_str::<Value>(&part.text).unwrap()["height"],
             1
         );
-    }
-
-    #[cfg(unix)]
-    fn log(fake: &Fake, name: &str) -> String {
-        std::fs::read_to_string(fake.dir.path().join(name)).unwrap_or_default()
-    }
-
-    #[cfg(unix)]
-    fn list(fake: &Fake, name: &str, target: &str) {
-        fake.put(
-            name,
-            &format!(
-                r#"<hierarchy window="7"><node text="" class="androidx.recyclerview.widget.RecyclerView" scrollable="true" visible="true" path="0.0" bounds="[0,160][720,1184]" /><node text="Target" class="android.widget.TextView" clickable="true" visible="true" path="0.0.1" bounds="{target}" /></hierarchy>"#
-            ),
-        );
-    }
-
-    #[cfg(unix)]
-    async fn press_target(fake: &Fake) -> Value {
-        let out = crate::desk::run(
-            &fake.android,
-            "desk_press",
-            serde_json::json!({"id": "com.android.settings:0.0.1:button:Target"}),
-        )
-        .await
-        .unwrap();
-        serde_json::from_str(&out.text).unwrap()
     }
 
     #[cfg(unix)]
@@ -1781,14 +1648,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn tap_element(session: &str, element: usize) -> ActArgs {
-        serde_json::from_value(
-            serde_json::json!({"session": session, "action": "tap", "element": element}),
-        )
-        .unwrap()
-    }
-
-    #[cfg(unix)]
     #[tokio::test]
     async fn an_indexed_point_is_refused_once_the_screen_it_came_from_changed() {
         let fake = Fake::new();
@@ -1877,12 +1736,6 @@ mod tests {
         fake.dump("dump-first.xml", "9");
         let err = fake.android.state(serde_json::json!({})).await.unwrap_err();
         assert_eq!(err, "the screen is changing; call computer_state again");
-    }
-
-    #[cfg(unix)]
-    async fn desk(fake: &Fake, verb: &str, args: Value) -> Result<Value, String> {
-        let out = crate::desk::run(&fake.android, verb, args).await?;
-        Ok(serde_json::from_str(&out.text).unwrap())
     }
 
     #[cfg(unix)]
@@ -2123,36 +1976,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn session(adb: &str) -> (Android, TcpStream) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let stream = TcpStream::connect(listener.local_addr().unwrap())
-            .await
-            .unwrap();
-        let (peer, _) = listener.accept().await.unwrap();
-        let android = Android::new(Device {
-            adb: adb.into(),
-            serial: None,
-            ui_jar: "/u.jar".into(),
-            scrcpy_jar: "/s.jar".into(),
-            su: Some("/su".into()),
-        });
-        *android.control.lock().await = Some(Control {
-            stream,
-            sequence: 0,
-            _server: Command::new("sleep")
-                .arg("30")
-                .kill_on_drop(true)
-                .spawn()
-                .unwrap(),
-            _forward: Forward {
-                port: String::new(),
-                remove: None,
-            },
-        });
-        (android, peer)
-    }
-
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_paste_sent_without_an_acknowledgement_fails_and_is_not_sent_again() {
         let (android, mut peer) = session("/nonexistent/adb").await;
@@ -2181,36 +2004,6 @@ mod tests {
         let mut sent = Vec::new();
         peer.read_to_end(&mut sent).await.unwrap();
         assert!(sent.is_empty(), "{sent:?}");
-    }
-
-    #[cfg(unix)]
-    async fn paste_through(
-        android: &Android,
-        mut peer: TcpStream,
-        mut ui: Command,
-    ) -> Result<bool, String> {
-        let mut ack = vec![ACK_CLIPBOARD];
-        ack.extend_from_slice(&1u64.to_be_bytes());
-        peer.write_all(&ack).await.unwrap();
-        let device = tokio::spawn(async move {
-            let mut buf = [0; 64];
-            let n = peer.read(&mut buf).await.unwrap();
-            (buf[..n].to_vec(), peer)
-        });
-        let mut ui = ui
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
-        *android.ui.lock().await = Some(UiServer {
-            stdin: ui.stdin.take().unwrap(),
-            stdout: BufReader::new(ui.stdout.take().unwrap()),
-            _child: ui,
-        });
-        let pasted = android.paste("hi").await;
-        assert_eq!(device.await.unwrap().0, clipboard_message("hi", 1));
-        pasted
     }
 
     #[cfg(unix)]
@@ -2315,47 +2108,6 @@ mod tests {
         );
         assert_eq!(wm_size("Physical size: ?\n"), None);
         assert_eq!(wm_size(""), None);
-    }
-
-    fn field(text: &str) -> Focus {
-        let n = text.chars().count();
-        Focus {
-            editable: true,
-            window: true,
-            bounds: [100, 80, 620, 180],
-            len: text.encode_utf16().count(),
-            hash: text.len() as i32,
-            tail: text.chars().skip(n.saturating_sub(32)).collect(),
-            ..Focus::default()
-        }
-    }
-
-    async fn typed(
-        line: &str,
-        at: Option<(i32, i32)>,
-        before: &str,
-        after: &[&str],
-    ) -> (Option<bool>, usize) {
-        let pastes = std::cell::Cell::new(0);
-        let out = type_with(
-            line,
-            at,
-            |_| {
-                let text = match pastes.get() {
-                    0 => before,
-                    n => after[(n - 1).min(after.len() - 1)],
-                };
-                let f = field(text);
-                async move { Ok(Some(f)) }
-            },
-            || {
-                pastes.set(pastes.get() + 1);
-                async { Ok(true) }
-            },
-        )
-        .await
-        .unwrap();
-        (out, pastes.get())
     }
 
     #[test]
@@ -2539,5 +2291,256 @@ mod tests {
         .await
         .unwrap();
         assert_eq!((out, pastes.get()), (None, 1));
+    }
+
+    #[cfg(unix)]
+    struct Fake {
+        dir: tempfile::TempDir,
+        android: Android,
+    }
+
+    #[cfg(unix)]
+    impl Fake {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let adb = dir.path().join("adb");
+            script(
+                &adb,
+                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi;;\n*screencap*) if [ -f \"$DIR/screencap.fail\" ]; then exit 1; fi; cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) a=$(head -n 1 \"$DIR/inject.answer\" 2>/dev/null); if [ -f \"$DIR/inject.answer\" ] && [ \"$(wc -l < \"$DIR/inject.answer\")\" -ge 1 ]; then tail -n +2 \"$DIR/inject.answer\" > \"$DIR/inject.next\"; mv \"$DIR/inject.next\" \"$DIR/inject.answer\"; fi; if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
+            );
+            let android = Android::new(Device {
+                adb,
+                serial: None,
+                ui_jar: "/u.jar".into(),
+                scrcpy_jar: "/s.jar".into(),
+                su: None,
+            });
+            Self { dir, android }
+        }
+
+        fn put(&self, name: &str, text: &str) {
+            std::fs::write(self.dir.path().join(name), text).unwrap();
+        }
+
+        fn windows(&self, layout: &str) {
+            let app = |active| {
+                format!(
+                    r#"{{"id":7,"type":1,"layer":0,"title":"Settings","package":"com.android.settings","active":{active},"focused":{active},"bounds":[0,0,720,1280]}}"#
+                )
+            };
+            let bar = r#"{"id":5,"type":3,"layer":2,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[0,1184,720,1280]}"#;
+            let list = match layout {
+                "shade" => format!(
+                    r#"[{bar},{{"id":9,"type":3,"layer":4,"title":"Shade","package":"com.android.systemui","active":true,"focused":true,"bounds":[0,0,720,1280]}},{}]"#,
+                    app(false)
+                ),
+                "keyboard" => format!(
+                    r#"[{{"id":8,"type":2,"layer":3,"title":"","package":"com.android.inputmethod.latin","active":false,"focused":false,"bounds":[0,700,720,1184]}},{bar},{}]"#,
+                    app(true)
+                ),
+                "landscape" => format!(
+                    r#"[{{"id":5,"type":3,"layer":2,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[1184,0,1280,720]}},{}]"#,
+                    app(true).replace("[0,0,720,1280]", "[0,0,1280,720]")
+                ),
+                "none" => "[]".to_owned(),
+                _ => format!("[{bar},{}]", app(true)),
+            };
+            self.put("windows.json", &list);
+        }
+
+        fn dump(&self, name: &str, window: &str) {
+            let attr = if window.is_empty() {
+                String::new()
+            } else {
+                format!(" window=\"{window}\"")
+            };
+            self.put(
+                name,
+                &format!(
+                    r#"<hierarchy{attr}><node text="OK" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0" bounds="[100,200][300,300]" /></hierarchy>"#
+                ),
+            );
+        }
+    }
+
+    fn saved(points: Vec<(i32, i32)>) -> Saved {
+        Saved {
+            window: String::new(),
+            points,
+        }
+    }
+
+    #[cfg(unix)]
+    fn script(path: &std::path::Path, body: &str) {
+        let made = std::process::Command::new("/bin/sh")
+            .args(["-c", r#"printf '%s' "$1" > "$0" && chmod 755 "$0""#])
+            .arg(path)
+            .arg(body)
+            .status()
+            .unwrap();
+        assert!(made.success(), "write {}", path.display());
+    }
+
+    #[cfg(unix)]
+    async fn failing_ui_server(log: &str, stderr: &str, status: u8) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let adb = dir.path().join("adb");
+        script(
+            &adb,
+            &format!(
+                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*logcat*) cat \"$DIR/crash.log\";;\n*app_process*) echo '{stderr}' >&2; exit {status};;\nesac\n"
+            ),
+        );
+        std::fs::write(dir.path().join("crash.log"), log).unwrap();
+        let android = Android::new(Device {
+            adb,
+            serial: None,
+            ui_jar: "/u.jar".into(),
+            scrcpy_jar: "/s.jar".into(),
+            su: None,
+        });
+        android.windows().await.unwrap_err()
+    }
+
+    #[cfg(unix)]
+    fn log(fake: &Fake, name: &str) -> String {
+        std::fs::read_to_string(fake.dir.path().join(name)).unwrap_or_default()
+    }
+
+    #[cfg(unix)]
+    fn list(fake: &Fake, name: &str, target: &str) {
+        fake.put(
+            name,
+            &format!(
+                r#"<hierarchy window="7"><node text="" class="androidx.recyclerview.widget.RecyclerView" scrollable="true" visible="true" path="0.0" bounds="[0,160][720,1184]" /><node text="Target" class="android.widget.TextView" clickable="true" visible="true" path="0.0.1" bounds="{target}" /></hierarchy>"#
+            ),
+        );
+    }
+
+    #[cfg(unix)]
+    async fn press_target(fake: &Fake) -> Value {
+        let out = crate::desk::run(
+            &fake.android,
+            "desk_press",
+            serde_json::json!({"id": "com.android.settings:0.0.1:button:Target"}),
+        )
+        .await
+        .unwrap();
+        serde_json::from_str(&out.text).unwrap()
+    }
+
+    #[cfg(unix)]
+    fn tap_element(session: &str, element: usize) -> ActArgs {
+        serde_json::from_value(
+            serde_json::json!({"session": session, "action": "tap", "element": element}),
+        )
+        .unwrap()
+    }
+
+    #[cfg(unix)]
+    async fn desk(fake: &Fake, verb: &str, args: Value) -> Result<Value, String> {
+        let out = crate::desk::run(&fake.android, verb, args).await?;
+        Ok(serde_json::from_str(&out.text).unwrap())
+    }
+
+    #[cfg(unix)]
+    async fn session(adb: &str) -> (Android, TcpStream) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (peer, _) = listener.accept().await.unwrap();
+        let android = Android::new(Device {
+            adb: adb.into(),
+            serial: None,
+            ui_jar: "/u.jar".into(),
+            scrcpy_jar: "/s.jar".into(),
+            su: Some("/su".into()),
+        });
+        *android.control.lock().await = Some(Control {
+            stream,
+            sequence: 0,
+            _server: Command::new("sleep")
+                .arg("30")
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap(),
+            _forward: Forward {
+                port: String::new(),
+                remove: None,
+            },
+        });
+        (android, peer)
+    }
+
+    #[cfg(unix)]
+    async fn paste_through(
+        android: &Android,
+        mut peer: TcpStream,
+        mut ui: Command,
+    ) -> Result<bool, String> {
+        let mut ack = vec![ACK_CLIPBOARD];
+        ack.extend_from_slice(&1u64.to_be_bytes());
+        peer.write_all(&ack).await.unwrap();
+        let device = tokio::spawn(async move {
+            let mut buf = [0; 64];
+            let n = peer.read(&mut buf).await.unwrap();
+            (buf[..n].to_vec(), peer)
+        });
+        let mut ui = ui
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        *android.ui.lock().await = Some(UiServer {
+            stdin: ui.stdin.take().unwrap(),
+            stdout: BufReader::new(ui.stdout.take().unwrap()),
+            _child: ui,
+        });
+        let pasted = android.paste("hi").await;
+        assert_eq!(device.await.unwrap().0, clipboard_message("hi", 1));
+        pasted
+    }
+
+    fn field(text: &str) -> Focus {
+        let n = text.chars().count();
+        Focus {
+            editable: true,
+            window: true,
+            bounds: [100, 80, 620, 180],
+            len: text.encode_utf16().count(),
+            hash: text.len() as i32,
+            tail: text.chars().skip(n.saturating_sub(32)).collect(),
+            ..Focus::default()
+        }
+    }
+
+    async fn typed(
+        line: &str,
+        at: Option<(i32, i32)>,
+        before: &str,
+        after: &[&str],
+    ) -> (Option<bool>, usize) {
+        let pastes = std::cell::Cell::new(0);
+        let out = type_with(
+            line,
+            at,
+            |_| {
+                let text = match pastes.get() {
+                    0 => before,
+                    n => after[(n - 1).min(after.len() - 1)],
+                };
+                let f = field(text);
+                async move { Ok(Some(f)) }
+            },
+            || {
+                pastes.set(pastes.get() + 1);
+                async { Ok(true) }
+            },
+        )
+        .await
+        .unwrap();
+        (out, pastes.get())
     }
 }

@@ -1083,19 +1083,6 @@ mod tests {
     const REDROID: (i32, i32) = (720, 1280);
     const DUMP: &str = r#"<hierarchy><node text="" class="android.widget.FrameLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0" bounds="[0,0][720,1280]" /><node text="" class="android.widget.LinearLayout" content-desc="" hint="" showing-hint="false" checkable="true" checked="true" clickable="true" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0" bounds="[0,300][720,400]" /><node text="Dark theme" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.0" bounds="[40,320][400,380]" /><node text="" class="android.widget.Switch" content-desc="" hint="" showing-hint="false" checkable="true" checked="true" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.1" bounds="[600,320][680,380]" /><node text="Search…" class="android.widget.EditText" content-desc="" hint="Search…" showing-hint="true" checkable="false" checked="false" clickable="true" long-clickable="false" editable="true" enabled="false" focused="true" selected="false" scrollable="false" visible="true" path="0.1" bounds="[40,100][680,180]" /><node text="gone" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="false" path="0.2" bounds="[0,0][0,0]" /></hierarchy>"#;
 
-    fn window(bounds: [i32; 4]) -> WindowInfo {
-        WindowInfo {
-            id: 7,
-            kind: APPLICATION,
-            title: "Settings".into(),
-            package: "com.android.settings".into(),
-            active: true,
-            focused: true,
-            layer: 0,
-            bounds,
-        }
-    }
-
     #[test]
     fn an_active_system_window_is_in_front_of_the_apps() {
         let app = |active| WindowInfo {
@@ -1271,23 +1258,6 @@ mod tests {
         assert_eq!(unique(&twice, "text", "Dark theme"), None);
     }
 
-    fn settings() -> Frame {
-        frame(window([0, 0, 720, 1280]), false, REDROID)
-    }
-
-    fn bar(id: i64, kind: i64, layer: i64, bounds: [i32; 4]) -> WindowInfo {
-        WindowInfo {
-            id,
-            kind,
-            title: String::new(),
-            package: "com.android.systemui".into(),
-            active: false,
-            focused: false,
-            layer,
-            bounds,
-        }
-    }
-
     #[test]
     fn a_window_is_titled_with_its_package() {
         let f = settings();
@@ -1355,27 +1325,6 @@ mod tests {
         );
         let shown = elements(DUMP, &settings());
         assert!(shown[0].mentions("dark") && !shown[0].mentions("search"));
-    }
-
-    fn row(path: &str, scrollable: bool, bounds: &str) -> String {
-        format!(
-            r#"<node text="{path}" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="{scrollable}" visible="true" path="{path}" bounds="{bounds}" />"#
-        )
-    }
-
-    fn list_dump() -> String {
-        format!(
-            "<hierarchy>{}{}{}{}</hierarchy>",
-            row("0.0", true, "[0,200][720,1184]"),
-            row("0.0.0", false, "[0,100][720,260]"),
-            row("0.0.1", false, "[0,260][720,420]"),
-            row("0.0.2", false, "[0,1200][720,1360]"),
-        )
-    }
-
-    fn tap_of(frame: &Frame, dump: &str, name: &str) -> Option<(i32, i32)> {
-        let nodes = nodes(frame, &raws(dump));
-        frame.tap_at(nodes.iter().find(|n| n.name == name).unwrap())
     }
 
     #[test]
@@ -1671,5 +1620,56 @@ mod tests {
         assert_eq!(out["changed"], true);
         assert_eq!(out["windows"], after);
         assert_eq!(started.elapsed(), Duration::from_millis(151));
+    }
+
+    fn window(bounds: [i32; 4]) -> WindowInfo {
+        WindowInfo {
+            id: 7,
+            kind: APPLICATION,
+            title: "Settings".into(),
+            package: "com.android.settings".into(),
+            active: true,
+            focused: true,
+            layer: 0,
+            bounds,
+        }
+    }
+
+    fn settings() -> Frame {
+        frame(window([0, 0, 720, 1280]), false, REDROID)
+    }
+
+    fn bar(id: i64, kind: i64, layer: i64, bounds: [i32; 4]) -> WindowInfo {
+        WindowInfo {
+            id,
+            kind,
+            title: String::new(),
+            package: "com.android.systemui".into(),
+            active: false,
+            focused: false,
+            layer,
+            bounds,
+        }
+    }
+
+    fn row(path: &str, scrollable: bool, bounds: &str) -> String {
+        format!(
+            r#"<node text="{path}" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="{scrollable}" visible="true" path="{path}" bounds="{bounds}" />"#
+        )
+    }
+
+    fn list_dump() -> String {
+        format!(
+            "<hierarchy>{}{}{}{}</hierarchy>",
+            row("0.0", true, "[0,200][720,1184]"),
+            row("0.0.0", false, "[0,100][720,260]"),
+            row("0.0.1", false, "[0,260][720,420]"),
+            row("0.0.2", false, "[0,1200][720,1360]"),
+        )
+    }
+
+    fn tap_of(frame: &Frame, dump: &str, name: &str) -> Option<(i32, i32)> {
+        let nodes = nodes(frame, &raws(dump));
+        frame.tap_at(nodes.iter().find(|n| n.name == name).unwrap())
     }
 }
