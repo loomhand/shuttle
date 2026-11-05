@@ -2,13 +2,13 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use desk_core::wire::Call;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use shuttle_desk::server::Handler;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -75,7 +75,7 @@ pub enum Input {
 }
 
 /// The element with the keyboard focus, as a snapshot names it, the role of its window or sheet, the title of its window, whether it takes a password, and the address of its web page with its DOM id.
-#[derive(Debug, Default, serde::Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct Field {
     pub role: &'static str,
     pub name: String,
@@ -646,8 +646,8 @@ fn now_ms() -> u128 {
         .map_or(0, |d| d.as_millis())
 }
 
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 #[cfg(test)]

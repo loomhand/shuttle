@@ -64,6 +64,33 @@ pub fn list(plugins: &Plugins) -> Value {
     listed
 }
 
+/// Answers a `tools/call` of `name` with `args`: an MCP tool result, or `None` for a tool that is neither built in nor one of `plugins`.
+pub async fn call(name: &str, args: Value, endpoint: &str, plugins: &Plugins) -> Option<Value> {
+    if name == "status" {
+        return Some(result(status().to_string(), false));
+    }
+    let routed = if plugins.runs.iter().any(|p| p.name == name) {
+        Some(Ok((name.to_owned(), absolute_script(args))))
+    } else if plugins.lists(name) {
+        Some(Ok((name.to_owned(), args)))
+    } else {
+        route(name, args)
+    };
+    let (tool, args) = match routed? {
+        Ok(routed) => routed,
+        Err(e) => return Some(result(e, true)),
+    };
+    let call = Call {
+        agent_id: NAME.to_owned(),
+        tool,
+        args,
+    };
+    Some(match proxy::call(endpoint, &call).await {
+        Ok(out) => output(out),
+        Err(e) => result(e, true),
+    })
+}
+
 fn builtins() -> Value {
     json!({"tools": [
         {
@@ -156,33 +183,6 @@ fn builtins() -> Value {
             }
         }
     ]})
-}
-
-/// Answers a `tools/call` of `name` with `args`: an MCP tool result, or `None` for a tool that is neither built in nor one of `plugins`.
-pub async fn call(name: &str, args: Value, endpoint: &str, plugins: &Plugins) -> Option<Value> {
-    if name == "status" {
-        return Some(result(status().to_string(), false));
-    }
-    let routed = if plugins.runs.iter().any(|p| p.name == name) {
-        Some(Ok((name.to_owned(), absolute_script(args))))
-    } else if plugins.lists(name) {
-        Some(Ok((name.to_owned(), args)))
-    } else {
-        route(name, args)
-    };
-    let (tool, args) = match routed? {
-        Ok(routed) => routed,
-        Err(e) => return Some(result(e, true)),
-    };
-    let call = Call {
-        agent_id: NAME.to_owned(),
-        tool,
-        args,
-    };
-    Some(match proxy::call(endpoint, &call).await {
-        Ok(out) => output(out),
-        Err(e) => result(e, true),
-    })
 }
 
 fn route(name: &str, mut args: Value) -> Option<Result<(String, Value), String>> {

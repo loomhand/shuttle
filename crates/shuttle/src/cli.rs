@@ -5,6 +5,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -338,7 +339,7 @@ async fn serve(
         () = shutdown() => Ok(()),
     };
     ending.end_recording().await;
-    crate::ENDING.store(true, std::sync::atomic::Ordering::Relaxed);
+    crate::ENDING.store(true, Ordering::Relaxed);
     #[cfg(unix)]
     crate::kill_graced();
     services.stop().await;

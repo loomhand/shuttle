@@ -28,6 +28,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 #[cfg(unix)]
+use std::sync::atomic::Ordering;
+#[cfg(unix)]
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
@@ -202,24 +204,11 @@ pub(crate) async fn end_group(group: u32, grace: Duration) {
     kill_after(group, grace).await;
 }
 
-/// KILLs whatever is left of the group `group` leads once `grace` has passed, or nothing once the group is gone.
-#[cfg(unix)]
-async fn kill_after(group: u32, grace: Duration) {
-    let deadline = tokio::time::Instant::now() + grace;
-    while tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(GROUP_POLL).await;
-        if signal_group(group, 0) == 0 {
-            return;
-        }
-    }
-    signal_group(group, libc::SIGKILL);
-}
-
 #[cfg(unix)]
 pub(crate) fn kill_later(rt: &tokio::runtime::Handle, group: u32, grace: Duration) {
     {
         let mut graced = GRACED.lock().unwrap_or_else(PoisonError::into_inner);
-        if ENDING.load(std::sync::atomic::Ordering::Relaxed) {
+        if ENDING.load(Ordering::Relaxed) {
             drop(graced);
             signal_group(group, libc::SIGKILL);
             return;
@@ -251,8 +240,21 @@ pub(crate) fn term(pid: u32) {
     }
 }
 
+/// KILLs whatever is left of the group `group` leads once `grace` has passed, or nothing once the group is gone.
+#[cfg(unix)]
+async fn kill_after(group: u32, grace: Duration) {
+    let deadline = tokio::time::Instant::now() + grace;
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(GROUP_POLL).await;
+        if signal_group(group, 0) == 0 {
+            return;
+        }
+    }
+    signal_group(group, libc::SIGKILL);
+}
+
 #[cfg(all(test, unix))]
-pub(crate) fn script(path: &std::path::Path, body: &str) -> std::io::Result<()> {
+pub(crate) fn script(path: &Path, body: &str) -> std::io::Result<()> {
     let made = std::process::Command::new("/bin/sh")
         .args(["-c", r#"printf '%s' "$1" > "$0" && chmod 755 "$0""#])
         .arg(path)

@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 const DEFAULT_TIMEOUT_S: u64 = 90;
@@ -30,7 +31,7 @@ pub struct Runner {
     flows: PathBuf,
     key_vars: Vec<String>,
     input: &'static str,
-    stop: tokio::sync::watch::Sender<bool>,
+    stop: watch::Sender<bool>,
 }
 
 impl Runner {
@@ -48,7 +49,7 @@ impl Runner {
             flows,
             key_vars,
             input: "foreground",
-            stop: tokio::sync::watch::Sender::new(false),
+            stop: watch::Sender::new(false),
         }
     }
 
@@ -84,6 +85,16 @@ impl Runner {
         self.script_on(bin, args, agent).await
     }
 
+    /// `gui_plan` for `agent`: the plan executor of the runtime with `args`; its result comes back as is.
+    pub async fn plan(&self, args: Value, agent: &str) -> Result<Value, String> {
+        self.module_result("gui_plan", args, agent).await
+    }
+
+    /// The draft plan of a recording for `agent`: the runtime's draft builder with `args`.
+    pub async fn draft(&self, args: Value, agent: &str) -> Result<Value, String> {
+        self.module_result("draft", args, agent).await
+    }
+
     async fn script_on(&self, program: &Path, args: Value, agent: &str) -> Result<Value, String> {
         let a: ScriptArgs = parse(args)?;
         let scratch = scratch()?;
@@ -111,16 +122,6 @@ impl Runner {
             agent,
         )
         .await
-    }
-
-    /// `gui_plan` for `agent`: the plan executor of the runtime with `args`; its result comes back as is.
-    pub async fn plan(&self, args: Value, agent: &str) -> Result<Value, String> {
-        self.module_result("gui_plan", args, agent).await
-    }
-
-    /// The draft plan of a recording for `agent`: the runtime's draft builder with `args`.
-    pub async fn draft(&self, args: Value, agent: &str) -> Result<Value, String> {
-        self.module_result("draft", args, agent).await
     }
 
     async fn module_result(&self, name: &str, args: Value, agent: &str) -> Result<Value, String> {

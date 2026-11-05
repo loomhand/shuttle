@@ -2,8 +2,9 @@
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, RandomState};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use desk_core::args::parse;
@@ -15,7 +16,7 @@ use shuttle_desk::desk::{ACTIONS, TURN_WAIT};
 use shuttle_desk::server::{Accepted, Handler};
 use shuttle_models::Models;
 use shuttle_models::config::Confirm;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use zeroize::Zeroizing;
 
 #[cfg(any(target_os = "macos", windows))]
@@ -111,7 +112,7 @@ pub struct Daemon<H> {
     guard: Guard,
     plugins: Vec<Plugin>,
     services: HashMap<String, String>,
-    halted: tokio::sync::watch::Sender<bool>,
+    halted: watch::Sender<bool>,
     actions: Arc<AtomicUsize>,
     asking: AtomicBool,
     turn: tokio::sync::Mutex<()>,
@@ -132,7 +133,7 @@ impl<H: Handler> Daemon<H> {
             guard,
             plugins: Vec::new(),
             services: HashMap::new(),
-            halted: tokio::sync::watch::Sender::new(false),
+            halted: watch::Sender::new(false),
             actions: Arc::new(AtomicUsize::new(0)),
             asking: AtomicBool::new(false),
             turn: tokio::sync::Mutex::new(()),
@@ -146,7 +147,7 @@ impl<H: Handler> Daemon<H> {
 
     /// Adds recordings of the user's input, saved in `dir`.
     #[must_use]
-    pub fn with_recordings(mut self, dir: std::path::PathBuf) -> Self {
+    pub fn with_recordings(mut self, dir: PathBuf) -> Self {
         self.recorder = Some(Recorder::new(dir, Arc::clone(&self.actions)));
         self
     }
@@ -165,6 +166,20 @@ impl<H: Handler> Daemon<H> {
         if let Some(r) = &self.recorder {
             r.finish().await;
         }
+    }
+
+    /// Adds the plugin tools, which run only while `script_run` is on.
+    #[must_use]
+    pub fn with_plugins(mut self, plugins: Vec<Plugin>) -> Self {
+        self.plugins = plugins;
+        self
+    }
+
+    /// Adds the service tools, by name, with the socket of their service.
+    #[must_use]
+    pub fn with_services(mut self, services: HashMap<String, String>) -> Self {
+        self.services = services;
+        self
     }
 
     async fn record(&self, tool: &str, mut args: Value) -> Result<String, String> {
@@ -208,20 +223,6 @@ impl<H: Handler> Daemon<H> {
                 Ok(draft.to_string())
             }
         }
-    }
-
-    /// Adds the plugin tools, which run only while `script_run` is on.
-    #[must_use]
-    pub fn with_plugins(mut self, plugins: Vec<Plugin>) -> Self {
-        self.plugins = plugins;
-        self
-    }
-
-    /// Adds the service tools, by name, with the socket of their service.
-    #[must_use]
-    pub fn with_services(mut self, services: HashMap<String, String>) -> Self {
-        self.services = services;
-        self
     }
 
     fn plugin(&self, tool: &str) -> Option<&Plugin> {
@@ -316,10 +317,8 @@ impl<H: Handler> Daemon<H> {
         Output::text(json!({"ok": true, "stopped": stopped}).to_string())
     }
 
-    fn running(&self) -> std::sync::MutexGuard<'_, Option<String>> {
-        self.running
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn running(&self) -> MutexGuard<'_, Option<String>> {
+        self.running.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     async fn model(&self, tool: &str, args: Value) -> Result<String, String> {
@@ -472,10 +471,7 @@ struct Running<'a>(&'a Mutex<Option<String>>, &'a str);
 
 impl Drop for Running<'_> {
     fn drop(&mut self) {
-        let mut running = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut running = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         if running.as_deref() == Some(self.1) {
             *running = None;
         }
@@ -546,6 +542,8 @@ fn encode<T: Serialize>(v: &T) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use shuttle_models::config::Config;
 
     use super::*;
@@ -620,8 +618,8 @@ mod tests {
         )
     }
 
-    fn runner_at(endpoint: String, flows: std::path::PathBuf) -> Runner {
-        let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
+    fn runner_at(endpoint: String, flows: PathBuf) -> Runner {
+        let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
         Runner::new("node".into(), runtime, endpoint, flows, Vec::new())
     }
 
@@ -640,7 +638,7 @@ mod tests {
         (asker, pending)
     }
 
-    fn demo(bin: std::path::PathBuf) -> Plugin {
+    fn demo(bin: PathBuf) -> Plugin {
         Plugin {
             name: "demo_run".into(),
             description: "Run a demo script.".into(),
@@ -1265,7 +1263,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn started_child(pid_file: &std::path::Path) -> i32 {
+    async fn started_child(pid_file: &Path) -> i32 {
         for _ in 0..200 {
             if let Some(pid) = std::fs::read_to_string(pid_file)
                 .ok()

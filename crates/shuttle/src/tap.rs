@@ -6,9 +6,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 
-use tokio::sync::mpsc::UnboundedSender;
-
 use shuttle_desk::ax;
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::record::{Field, Hit, Input};
 
