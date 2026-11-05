@@ -182,9 +182,10 @@ impl Computer {
             }
             "desk_title_at" => {
                 let a: PointArgs = parse(args)?;
-                Ok(Output::text(
-                    json!({"title": self.title_at(a.x, a.y)}).to_string(),
-                ))
+                let title = self
+                    .shm(|g| g.title_at(a.x.round() as i32, a.y.round() as i32))
+                    .unwrap_or(false);
+                Ok(Output::text(json!({"title": title}).to_string()))
             }
             other => Err(format!("unknown computer verb {other}")),
         }
@@ -194,10 +195,7 @@ impl Computer {
         self.touch();
         let session = session_of(&args);
         let a: StateArgs = parse(args)?;
-        let windows = self
-            .request(&session, "list_windows", json!({"on_screen_only": true}))
-            .await?;
-        let listed = window_list(&windows);
+        let listed = self.listed(&session).await?;
         let mut text = String::new();
         let target = match a.pid {
             Some(pid) => Some((
@@ -226,7 +224,8 @@ impl Computer {
             }
             match self.request(&session, "get_window_state", req).await {
                 Ok(state) => {
-                    elements = Some((pid, window_id_of(&state).or(window_id), state));
+                    let id = state["structuredContent"]["window_id"].as_i64();
+                    elements = Some((pid, id.or(window_id), state));
                 }
                 Err(e) => {
                     let _ = writeln!(text, "\nElements of pid={pid} unavailable: {e}");
@@ -252,7 +251,7 @@ impl Computer {
                 w.h as f64 / k
             );
         }
-        for m in self.modals() {
+        for m in self.shm(Grabber::modals).unwrap_or_default() {
             head.push_str(&modal_line(&m));
         }
         text.insert_str(0, &head);
@@ -527,10 +526,6 @@ impl Computer {
             image_b64: Some(image),
             ..Output::default()
         })
-    }
-
-    fn modals(&self) -> Vec<Modal> {
-        self.shm(Grabber::modals).unwrap_or_default()
     }
 
     /// Base64 PNG of the whole desktop, scaled so its long edge is at most `max_edge`.
@@ -1126,23 +1121,22 @@ impl Computer {
 
     /// On-screen windows of `app`, frontmost first, matched on the app name case-insensitively.
     async fn app_windows(&self, session: &str, app: &str) -> Result<Vec<Window>, String> {
-        let windows = self
-            .request(session, "list_windows", json!({"on_screen_only": true}))
-            .await?;
-        Ok(window_list(&windows)
-            .into_iter()
-            .filter(|w| runs_app(&w.app, app))
-            .collect())
+        let mut windows = self.listed(session).await?;
+        windows.retain(|w| runs_app(&w.app, app));
+        Ok(windows)
     }
 
     /// The frontmost application window, skipping the desktop and panels.
     async fn app_window(&self, session: &str) -> Result<Option<(i64, i64)>, String> {
-        let windows = self
-            .request(session, "list_windows", json!({"on_screen_only": true}))
-            .await?;
-        Ok(self
-            .app_of(&window_list(&windows))
-            .map(|w| (w.pid, w.window_id)))
+        let windows = self.listed(session).await?;
+        Ok(self.app_of(&windows).map(|w| (w.pid, w.window_id)))
+    }
+
+    async fn listed(&self, session: &str) -> Result<Vec<Window>, String> {
+        let on_screen = json!({"on_screen_only": true});
+        Ok(window_list(
+            &self.request(session, "list_windows", on_screen).await?,
+        ))
     }
 
     /// The first of `listed` that is no dock or desktop window by its X window type.
@@ -1626,12 +1620,6 @@ impl Computer {
         let _ = self
             .desktop_input("press_key", json!({"key": "Escape"}))
             .await;
-    }
-
-    /// Whether the screen point `(x, y)` shows a window title: a desktop panel or a window manager's title bar.
-    fn title_at(&self, x: f64, y: f64) -> bool {
-        self.shm(|g| g.title_at(x.round() as i32, y.round() as i32))
-            .unwrap_or(false)
     }
 
     /// The screen rectangle `[x, y, w, h]` clipped to the screen, and its RGB rows over MIT-SHM; none without MIT-SHM.
@@ -2149,9 +2137,7 @@ fn clicks_left(a: &ActArgs) -> bool {
 fn commits(a: &ActArgs) -> bool {
     match a.action.as_str() {
         "type" => a.text.as_deref().is_some_and(|t| t.ends_with(['\n', '\r'])),
-        "click" | "double_click" | "triple_click" => {
-            a.button.as_deref().is_none_or(|b| b == "left")
-        }
+        _ if clicks_left(a) => true,
         _ => combo(a).is_some_and(|k| COMMIT_KEYS.contains(&k.as_str())),
     }
 }
@@ -2196,10 +2182,6 @@ fn window_list(result: &Value) -> Vec<Window> {
         .collect();
     out.sort_by_key(|w| std::cmp::Reverse(w.z));
     out
-}
-
-fn window_id_of(state: &Value) -> Option<i64> {
-    state["structuredContent"]["window_id"].as_i64()
 }
 
 /// `text` without U+FFFC, which accessibility text holds where an embedded object (an image, a widget) sits.
