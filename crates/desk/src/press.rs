@@ -386,14 +386,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_libreoffice_dialog_button_takes_a_click_and_a_main_window_button_its_action() {
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("soffice.bin");
-        std::os::unix::fs::symlink("/bin/sleep", &bin).unwrap();
-        let mut office = std::process::Command::new(&bin).arg("30").spawn().unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !libreoffice(office.id()) && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        let (_dir, mut office) = office();
         let mut f = notepad();
         f.pid = Some(office.id());
         f.add(
@@ -429,15 +422,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn only_a_soffice_bin_process_counts_as_libreoffice() {
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("soffice.bin");
-        std::os::unix::fs::symlink("/bin/sleep", &bin).unwrap();
-        let mut office = std::process::Command::new(&bin).arg("30").spawn().unwrap();
+        let (_dir, mut office) = office();
         let pid = office.id();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !libreoffice(pid) && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
         assert!(
             libreoffice(pid),
             "the soffice.bin link never showed in /proc/{pid}/comm"
@@ -445,5 +431,18 @@ mod tests {
         assert!(!libreoffice(std::process::id()));
         office.kill().unwrap();
         office.wait().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn office() -> (tempfile::TempDir, std::process::Child) {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("soffice.bin");
+        std::os::unix::fs::symlink("/bin/sleep", &bin).unwrap();
+        let office = std::process::Command::new(&bin).arg("30").spawn().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !libreoffice(office.id()) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        (dir, office)
     }
 }
