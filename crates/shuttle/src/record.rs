@@ -185,6 +185,14 @@ impl Recorder {
         }
     }
 
+    pub async fn finish(&self) {
+        self.end();
+        let made = lock(&self.ended).as_mut().and_then(|e| e.made.take());
+        if let Some(made) = made {
+            let _ = made.await;
+        }
+    }
+
     pub fn path(&self, id: &str) -> PathBuf {
         self.dir.join(format!("{id}.json"))
     }
@@ -1126,6 +1134,30 @@ mod tests {
             ],
             "{r}"
         );
+    }
+
+    #[tokio::test]
+    async fn finishing_waits_until_the_ended_recording_is_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = Recorder::new(dir.path().into(), Arc::default());
+        r.finish().await;
+        let (saved, made) = oneshot::channel();
+        *lock(&r.ended) = Some(Ended {
+            path: r.path("r"),
+            made: Some(made),
+        });
+        let finished = r.finish();
+        tokio::pin!(finished);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut finished)
+                .await
+                .is_err(),
+            "the finish did not wait for the save"
+        );
+        saved.send(json!({})).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), finished)
+            .await
+            .expect("the finish outlived the save");
     }
 
     #[tokio::test]

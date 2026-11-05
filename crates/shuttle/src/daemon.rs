@@ -156,6 +156,12 @@ impl<H: Handler> Daemon<H> {
         }
     }
 
+    pub async fn end_recording(&self) {
+        if let Some(r) = &self.recorder {
+            r.finish().await;
+        }
+    }
+
     async fn record(&self, tool: &str, mut args: Value) -> Result<String, String> {
         let r = self
             .recorder
