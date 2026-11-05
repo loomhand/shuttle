@@ -40,7 +40,8 @@ type Rec = {
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
 type Text = { value?: string; field: boolean }
-type Escalation = Seen & { reason: string; step?: number; plan_step?: Step }
+type Bare = Omit<Step, 'recorded' | 'fp' | 'blank'>
+type Escalation = Seen & { reason: string; step?: number; plan_step?: Bare }
 type Grounding = { what: string; ok: boolean; check: string; p?: number; p_zoom?: number | null; p_full?: number | null; why?: string; cover?: string }
 type Ground = Omit<Grounding, 'what' | 'ok' | 'why' | 'cover'> & { hit: string }
 type Trace = { i: number; op?: string; how?: string; input?: 'foreground'; ms?: number; was?: 'on' | 'off' | 'mixed'; now?: 'on' | 'off'; noop?: boolean; ground?: Ground }
@@ -171,7 +172,7 @@ async function perform(p: Params): Promise<Result> {
   if (held && !held.dirty) putPending({ ...held, dirty: true })
   const left = () => {
     const at = (p.start ?? 0) + trace.length
-    try { if (RUN) writeFileSync(`${RUN}/result.json`, JSON.stringify({ ok: false, done: at, trace, escalate: { step: at, plan_step: plan[at], reason: `the run ended during step ${at}: the steps before it ran, and step ${at} may have acted in part` } })) } catch {}
+    try { if (RUN) writeFileSync(`${RUN}/result.json`, JSON.stringify({ ok: false, done: at, trace, escalate: { step: at, plan_step: plan[at] && unrecorded(plan[at]), reason: `the run ended during step ${at}: the steps before it ran, and step ${at} may have acted in part` } })) } catch {}
   }
   left()
   for (const [i, planned] of plan.entries()) {
@@ -216,7 +217,7 @@ async function perform(p: Params): Promise<Result> {
       const note = step === i ? recs[i - 1]?.unverified : undefined
       const theft = BG && !(e instanceof Stolen) ? taken(await desk.windows()) : null
       const reason = `${sp.reason}${note ? ` (the step before was sent but not confirmed: ${note})` : ''}${theft ? `; meanwhile ${theft}` : ''}`
-      escalate = { step, plan_step: plan[step] ?? planned, reason, ...sp.seen }; done = step
+      escalate = { step, plan_step: unrecorded(plan[step] ?? planned), reason, ...sp.seen }; done = step
       diverged = e instanceof Diverged
     }
     stepWs = null
@@ -298,9 +299,11 @@ async function perform(p: Params): Promise<Result> {
   return out
 }
 
+function unrecorded({ recorded: _, fp: __, blank: ___, ...s }: Step): Bare { return s }
+
 function stopped(plan: Step[], e: Escalation) {
   const step = e.step ?? 0
-  const remaining = plan.slice(step).map(({ recorded: _, fp: __, blank: ___, ...s }) => s)
+  const remaining = plan.slice(step).map(unrecorded)
   return { step, intent: plan[step]?.intent ?? null, reason: e.reason, remaining }
 }
 

@@ -101,6 +101,7 @@ test('a recorded point in a window of another size is no fallback, and the step 
   assert.equal(r.ok, false, JSON.stringify(r))
   assert.deepEqual([seen.clicks, seen.shots], [[], 2])
   assert.match(r.escalate?.reason ?? '', /recorded crop matched nothing.*grounding pointed at/)
+  assert.deepEqual(r.escalate?.plan_step, { click: 'the Green button' })
 })
 
 test('a step whose recorded after-window does not come stops the plan as an error', async (t) => {
