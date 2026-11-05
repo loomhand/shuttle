@@ -4,9 +4,9 @@
 
 ```
 agent (Claude Code, Codex, Cursor)
-  │ MCP, JSON-RPC over stdio
+  │ MCP, JSON-RPC over stdio, or over HTTP with `--http`
   ▼
-shuttle mcp ───────── one per agent session; a thin proxy
+shuttle mcp ───────── one per agent session on stdio, one per address on HTTP; a thin proxy
   │ desk wire (u32 length + JSON) over a 0600 unix socket or a local-only named pipe
   ▼
 shuttle serve ─────── one per user; owns the desktop, the model keys and the safety controls

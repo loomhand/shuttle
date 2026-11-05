@@ -1,4 +1,4 @@
-//! The command line: `mcp`, `serve`, `stop`, `resume`, `desk VERB` and `--version`.
+//! The command line: `mcp [--http ADDR]`, `serve`, `stop`, `resume`, `desk VERB` and `--version`.
 
 use std::fmt::Display;
 use std::io::Write as _;
@@ -32,7 +32,7 @@ use crate::services::{self, Services};
 use crate::tools::{self, DESK_VERBS};
 #[cfg(windows)]
 use crate::win as controls;
-use crate::{NAME, VENDOR, VERSION, home, log, mcp, plugins};
+use crate::{NAME, VENDOR, VERSION, home, http, log, mcp, plugins};
 
 /// Runs the command in `args` (the program name excluded) and returns its exit code.
 pub fn run(args: &[String]) -> ExitCode {
@@ -52,11 +52,25 @@ pub fn run(args: &[String]) -> ExitCode {
             if !config.as_ref().is_ok_and(|c| c.tools.script_run) {
                 listed.runs.clear();
             }
-            let stdin = tokio::io::BufReader::new(tokio::io::stdin());
-            exit(block_on(
-                Builder::new_current_thread(),
-                mcp::serve(stdin, tokio::io::stdout(), &endpoint, &listed),
-            ))
+            match rest {
+                [] => {
+                    let stdin = tokio::io::BufReader::new(tokio::io::stdin());
+                    exit(block_on(
+                        Builder::new_current_thread(),
+                        mcp::serve(stdin, tokio::io::stdout(), &endpoint, &listed),
+                    ))
+                }
+                [flag, addr] if flag == "--http" => {
+                    let token = std::env::var(http::TOKEN_ENV)
+                        .ok()
+                        .filter(|t| !t.is_empty());
+                    exit(block_on(
+                        Builder::new_multi_thread(),
+                        http::Server::new(endpoint, listed, token).serve(addr),
+                    ))
+                }
+                _ => usage(),
+            }
         }
         "serve" => {
             let endpoint = rest.first().cloned().unwrap_or_else(desk_endpoint);
@@ -376,7 +390,7 @@ fn exit(done: Result<(), String>) -> ExitCode {
 fn usage() -> ExitCode {
     let _ = writeln!(
         std::io::stderr(),
-        "usage: {NAME} mcp | {NAME} serve [ENDPOINT] | {NAME} stop | {NAME} resume | {NAME} desk VERB [key=value ...|JSON] | {NAME} --version; desk verbs: {}",
+        "usage: {NAME} mcp [--http ADDR] | {NAME} serve [ENDPOINT] | {NAME} stop | {NAME} resume | {NAME} desk VERB [key=value ...|JSON] | {NAME} --version; desk verbs: {}",
         DESK_VERBS.join(", ")
     );
     ExitCode::from(2)
