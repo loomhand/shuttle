@@ -65,6 +65,7 @@ pub(crate) const BACKGROUND_UIA: &str = "background input: on Windows UI Automat
 pub(crate) const TYPER: Typer = crate::xtest::type_mapped;
 #[cfg(not(target_os = "linux"))]
 pub(crate) const TYPER: Typer = |_, _| Ok(false);
+
 const APP_INPUT: [&str; 5] = [
     "desk_key",
     "desk_type",
@@ -72,13 +73,16 @@ const APP_INPUT: [&str; 5] = [
     "desk_scroll",
     "desk_drag",
 ];
+
 const CALL_LIMIT: Duration = Duration::from_secs(3);
 const TREE_LIMIT: Duration = Duration::from_secs(10);
 const READ_CHARS: usize = 64 << 10;
 const WAIT_MAX: Duration = Duration::from_secs(5);
 const WAIT_POLL: Duration = Duration::from_millis(10);
 const WAIT_CHECK: Duration = Duration::from_millis(100);
+
 const FRAME_BORDER: f64 = 16.0;
+
 const OTHER_DISPLAY: &str =
     "; name the window with `window` to capture a window on another display";
 const NO_WINDOW_UNDER: &str =
@@ -86,28 +90,35 @@ const NO_WINDOW_UNDER: &str =
 const NO_WINDOW_AT: &str = "no app window at the point; name one with window or pid";
 const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
 const WINDOW_NEVER_READ: &str = "window_never_read";
+
 const COVERED: &str = "covers the point, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
 const COVER_UNKNOWN: &str = "the point could not be checked for another app's window on top, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
 const ANOTHER_SPACE: &str = "accessibility does not reach it there, so a snapshot or an element action needs it on the current Space; background key, type, click, scroll and drag reach it by its title or pid";
 const UNSEEN_SENT: &str = "the app may not repaint a window nobody sees, so the input may have taken effect even if a screenshot looks unchanged: do not send it again, and confirm its effect by a read-back you can trust or by asking the user";
 const UNSEEN_TYPED: &str = "the app may not repaint a window nobody sees, so the text may be there even if a screenshot looks unchanged: do not type it again, and before you submit it with Return or Send, confirm that it is there by a read-back you can trust or by asking the user";
+
 const MASK_TRIES: usize = 3;
 const WINDOWS_MOVING: &str = "the windows kept changing while the screenshot was taken, so it could not be masked to the app allowlist; take it again";
+
 const SCROLL_POINT: &str = "scroll needs both x and y, or neither";
 const OK: &str = r#"{"ok":true}"#;
 const SCROLL_AMOUNT: u32 = 3;
+
 const STILL_TIMEOUT: Duration = Duration::from_millis(600);
 const STILL_MAX: Duration = Duration::from_secs(5);
 const STILL_HOLD: Duration = Duration::from_millis(40);
 const STILL_POLL: Duration = Duration::from_millis(10);
 const STILL_EDGE: u32 = 320;
+
 const RUN_CHARS: usize = 8;
 const TYPE_SETTLE: Duration = Duration::from_millis(100);
 const TYPE_POLL: Duration = Duration::from_millis(10);
 const TYPE_TAIL: usize = 16;
 const MAC_TYPE_DELAY_MS: u64 = 0;
+
 const FIELD_ROLES: [&str; 2] = ["textbox", "searchbox"];
 const FOCUS_UNREAD: &str = "type refused, nothing was typed: the keyboard focus cannot be read in this window, so the text could go into another field than the one clicked; confirm the focused field in a screenshot, then call type again with focus: \"unverified\"";
+
 const LOCKED_TOOLS: [&str; 2] = ["type_text", "press_key"];
 const LOCKED_INPUT_UNSUPPORTED: &str = "nothing was sent: [desk] locked_input is on, but this cua-driver does not take locked_input; update shuttle, whose bundled driver does";
 const FOCUS_UNKNOWN: &str = "focus unverified: accessibility shows no focused text field in the app, so which field took the text is unknown: confirm it in a screenshot before you press Return or Send";

@@ -419,11 +419,7 @@ fn spi_extras(e: Extras) -> atspi::Extras {
 }
 
 /// What `lookup` answers within `within` on `rt`; none once the time is up, which drops the lookup and frees the runtime.
-fn answered<T>(
-    rt: &tokio::runtime::Runtime,
-    within: Duration,
-    lookup: impl Future<Output = T>,
-) -> Option<T> {
+fn answered<T>(rt: &Runtime, within: Duration, lookup: impl Future<Output = T>) -> Option<T> {
     rt.block_on(async { tokio::time::timeout(within, lookup).await })
         .ok()
 }

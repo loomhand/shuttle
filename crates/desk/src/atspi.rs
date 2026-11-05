@@ -25,26 +25,31 @@ const ACTION: &str = "org.a11y.atspi.Action";
 const COMPONENT: &str = "org.a11y.atspi.Component";
 const TEXT: &str = "org.a11y.atspi.Text";
 const COLLECTION: &str = "org.a11y.atspi.Collection";
-const MATCH_ALL: i32 = 1;
-const SORT_CANONICAL: u32 = 1;
 const VALUE: &str = "org.a11y.atspi.Value";
 const SELECTION: &str = "org.a11y.atspi.Selection";
 const APPLICATION: &str = "org.a11y.atspi.Application";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 const DBUS: &str = "org.freedesktop.DBus";
 const DBUS_PATH: &str = "/org/freedesktop/DBus";
+
+const MATCH_ALL: i32 = 1;
+const SORT_CANONICAL: u32 = 1;
+
 const CALL_TIMEOUT: Duration = Duration::from_millis(2500);
 const HUNG_FOR: Duration = Duration::from_secs(10);
 const WRITES: [&str; 3] = ["DoAction", "GrabFocus", "SelectChild"];
 const APP_FRAMES: Duration = Duration::from_millis(500);
 const MANAGED_KIDS: i32 = 200;
+
 const LIST_ROLES: [u32; 4] = [31, 55, 65, 66];
 const PASSWORD_TEXT: u32 = 40;
 const SCREEN: u32 = 0;
+
 const IF_ACTION: u8 = 1;
 const IF_COMPONENT: u8 = 2;
 const IF_TEXT: u8 = 4;
 const IF_VALUE: u8 = 8;
+
 const ACTIVE: u32 = 1;
 const ENABLED: u32 = 8;
 const SENSITIVE: u32 = 24;
@@ -53,6 +58,7 @@ const FOCUSED: u32 = 12;
 const SHOWING: u32 = 25;
 const MANAGES_DESCENDANTS: u32 = 31;
 const LABELLED_BY: u32 = 2;
+
 const STATE_NAMES: [(u32, &str); 16] = [
     (1, "active"),
     (4, "checked"),
@@ -71,6 +77,7 @@ const STATE_NAMES: [(u32, &str); 16] = [
     (41, "checkable"),
     (43, "read-only"),
 ];
+
 const ROLE_FILLER: u32 = 20;
 const ROLE_PANEL: u32 = 39;
 const ROLE_DOCUMENT_WEB: u32 = 95;

@@ -6,8 +6,6 @@ use std::sync::{Arc, Mutex};
 
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
-use x11rb::protocol::ErrorKind;
-use x11rb::protocol::Event;
 use x11rb::protocol::shape::{ConnectionExt as _, SK};
 use x11rb::protocol::shm::ConnectionExt as _;
 use x11rb::protocol::xinput::{ConnectionExt as _, DeviceType};
@@ -15,6 +13,7 @@ use x11rb::protocol::xproto::{
     Atom, AtomEnum, ChangeWindowAttributesAux, ConnectionExt as _, EventMask, GrabMode, GrabStatus,
     ImageFormat, ImageOrder, MapState, Window, WindowClass,
 };
+use x11rb::protocol::{ErrorKind, Event};
 use x11rb::rust_connection::RustConnection;
 
 use crate::model::Modal;

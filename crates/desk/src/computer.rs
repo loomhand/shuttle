@@ -41,6 +41,7 @@ const TREE_CHARS: usize = 15_000;
 const MIN_WINDOW: i64 = 10;
 const CHROME_CLASS: &str = "Google-chrome";
 const COMMIT_KEYS: [&str; 6] = ["return", "enter", "kp_enter", "f5", "alt+left", "alt+right"];
+
 const SETTLE: Duration = Duration::from_millis(600);
 const NO_CHANGE: Duration = Duration::from_millis(300);
 const COMMIT_SETTLE: Duration = Duration::from_millis(3000);
@@ -53,9 +54,11 @@ const COMMIT_FIRST: Duration = Duration::from_millis(1500);
 const RETURN_GAP: Duration = Duration::from_millis(300);
 #[cfg(target_os = "linux")]
 const RETURN_POLL: Duration = Duration::from_millis(10);
+
 const STILL_EDGE: u32 = 160;
 const STILL_TOLERANCE: u8 = 48;
 const MOVED_PERCENT: usize = 5;
+
 const POPUP_ROWS: [&str; 6] = [
     "menu item",
     "menu",
@@ -77,6 +80,7 @@ const FIELDS: [&str; 5] = [
     "Edit",
     "ComboBox",
 ];
+
 const JPEG_QUALITY: u8 = 80;
 const DEFAULT_EDGE: u32 = 1024;
 const PIXELS_PER_TOKEN: u32 = 750;
@@ -85,18 +89,22 @@ const PHOTO_COLORS: usize = 2500;
 const COLOR_STRIDE: usize = 7;
 const COLOR_BITS: u32 = 14;
 const COLOR_EMPTY: u32 = u32::MAX;
+
 const MAX_WAIT_SECS: f64 = 10.0;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_SESSION: &str = "computer";
 const SKIPPED: &str = "had no keycode";
+
 const WM_WAIT: Duration = Duration::from_secs(10);
 const WM_POLL: Duration = Duration::from_millis(100);
+
 const AX_UNSUPPORTED: &str = "returned -25206";
 const PRESSED_INSTEAD: &str = "the field got its press action instead, which may not move the keyboard focus to it: read the field before typing into it";
 const XTEST_TYPED: &str = "Typed text into the focused desktop application.";
 const SHOT_FAILED: &str = "the action ran, but the screenshot after it failed";
 const NO_TEXT_TARGET: &str =
     "no application window is on the screen to type into; open or focus one first";
+
 const RETRIED: [&str; 4] = [
     "list_windows",
     "get_window_state",

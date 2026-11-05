@@ -292,6 +292,11 @@ pub fn image_of(v: &Value) -> Option<&str> {
         .and_then(|c| c["data"].as_str())
 }
 
+#[cfg(all(test, unix))]
+pub(crate) fn user_input_since(seconds: f64) {
+    USER_SINCE.with(|s| s.set(seconds));
+}
+
 fn result(tool: &str, reply: &str) -> Result<Value, String> {
     let mut v: Value =
         serde_json::from_str(reply).map_err(|e| format!("decode cua-driver reply: {e}"))?;
@@ -336,11 +341,6 @@ fn since_user_input() -> f64 {
 #[cfg(test)]
 fn since_user_input() -> f64 {
     USER_SINCE.with(std::cell::Cell::get)
-}
-
-#[cfg(all(test, unix))]
-pub(crate) fn user_input_since(seconds: f64) {
-    USER_SINCE.with(|s| s.set(seconds));
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
