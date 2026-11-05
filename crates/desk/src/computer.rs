@@ -122,8 +122,6 @@ pub struct Computer {
     /// The screen blocks that change while no action runs, which the settle ignores; sampled from the first computer call.
     volatile: OnceLock<Volatile>,
     ids: AtomicU64,
-    /// How many default sessions were ended, which names every caller's next default.
-    defaults: AtomicU64,
     background: bool,
     #[cfg(target_os = "linux")]
     spi: OnceLock<Worker<Spi>>,
@@ -145,7 +143,6 @@ impl Computer {
             backing: std::sync::Mutex::new(1.0),
             volatile: OnceLock::new(),
             ids: AtomicU64::new(0),
-            defaults: AtomicU64::new(0),
             background: false,
             #[cfg(target_os = "linux")]
             spi: OnceLock::new(),
@@ -174,13 +171,7 @@ impl Computer {
             "desk_computer_state" => self.state(args).await,
             "desk_computer_act" if self.background => Err(BACKGROUND_ACT.to_owned()),
             "desk_computer_act" => self.act(args).await,
-            "desk_computer_end" => {
-                let ended = self.end(args).await;
-                if default {
-                    self.defaults.fetch_add(1, Ordering::Relaxed);
-                }
-                ended.map(Output::text)
-            }
+            "desk_computer_end" => self.end(args).await.map(Output::text),
             "desk_look" => self.look(&args).await,
             "desk_computer_scale" => {
                 let scale = self.scale_of(&session_of(&args));
@@ -965,7 +956,7 @@ impl Computer {
         (report.unwrap_or_default(), None)
     }
 
-    /// The session of `agent` when its call names none; every default takes a new name once one is ended, since the driver refuses an ended name.
+    /// The session of `agent` when its call names none; once ended, it starts again on its next call (see [`Self::call`]).
     fn default_session(&self, agent: &str) -> String {
         let mut name = DEFAULT_SESSION.to_owned();
         if !agent.is_empty() {
@@ -976,10 +967,7 @@ impl Computer {
                     .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }),
             );
         }
-        match self.defaults.load(Ordering::Relaxed) {
-            0 => name,
-            n => format!("{name}-{n}"),
-        }
+        name
     }
 
     /// A driver session of its own for one step, named uniquely in this process.
@@ -4278,7 +4266,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn callers_without_a_session_get_their_own_and_an_ended_default_is_named_anew() {
+    async fn callers_without_a_session_get_their_own_and_an_ended_default_starts_again() {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let listener = Fake::bind(&socket).unwrap();
@@ -4298,8 +4286,11 @@ mod tests {
                     .unwrap_or_default()
                     .to_owned();
                 log.lock().unwrap().push((name.clone(), session.clone()));
-                let reply = if ended.contains(&session) {
-                    json!({"ok": false, "error": format!("session {session} ended")})
+                let reply = if name == "start_session" {
+                    ended.retain(|s| *s != session);
+                    json!({"ok": true, "result": {}})
+                } else if ended.contains(&session) {
+                    json!({"ok": false, "error": format!("session has ended; tool call '{name}' was rejected")})
                 } else if name == "end_session" {
                     ended.push(session);
                     json!({"ok": true, "result": {}})
@@ -4335,15 +4326,20 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(foreign, "no element list yet; call computer_state first");
-        let own = cua.run(
-            "a",
-            "desk_computer_act",
-            json!({"action": "click", "element": 0}),
-        );
-        assert!(!own.await.unwrap().is_error);
+        state("b:c").await.unwrap();
+        let click = |agent| {
+            cua.run(
+                agent,
+                "desk_computer_act",
+                json!({"action": "click", "element": 0}),
+            )
+        };
+        assert!(!click("a").await.unwrap().is_error);
         cua.run("a", "desk_computer_end", Value::Null)
             .await
             .unwrap();
+        let kept = click("b:c").await.unwrap();
+        assert!(!kept.is_error, "{}", kept.text);
         let again = state("a").await.unwrap();
         assert!(!again.is_error, "{}", again.text);
         let named: Vec<String> = sessions
@@ -4356,7 +4352,14 @@ mod tests {
             .collect();
         assert_eq!(
             named,
-            ["computer-a", "computer-b-c", "computer-a", "computer-a-1"]
+            [
+                "computer-a",
+                "computer-b-c",
+                "computer-b-c",
+                "computer-a",
+                "computer-a",
+                "computer-a"
+            ]
         );
         driver.abort();
     }
