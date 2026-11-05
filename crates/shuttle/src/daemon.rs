@@ -277,6 +277,7 @@ impl<H: Handler> Daemon<H> {
             if !allowed {
                 return Output::error(DECLINED);
             }
+            self.desk.allowed();
         }
         if *self.halted.borrow() {
             return Output::error(STOPPED);
@@ -552,6 +553,19 @@ mod tests {
 
         fn release(&self, holder: &str) {
             self.0.lock().unwrap().push(holder.to_owned());
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct Allowed(Arc<AtomicUsize>);
+
+    impl Handler for Allowed {
+        async fn answer(&self, call: Call) -> Output {
+            Output::text(format!("desk answered {}", call.tool))
+        }
+
+        fn allowed(&self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -858,6 +872,28 @@ mod tests {
         let out = run.await.unwrap();
         assert_eq!((out.is_error, out.text.as_str()), (true, crate::STOPPED));
         assert!(!marker.exists(), "the run went on after the stop");
+    }
+
+    #[tokio::test]
+    async fn an_allowed_confirm_counts_as_the_desks_own_input_and_a_declined_one_does_not() {
+        for (yes, want) in [(true, 1), (false, 0)] {
+            let allowed = Allowed::default();
+            let asker: Asker = Arc::new(move |_| {
+                let (tx, rx) = oneshot::channel();
+                let _ = tx.send(yes);
+                rx
+            });
+            let d = daemon(
+                allowed.clone(),
+                Guard {
+                    confirm: Confirm::Every,
+                    asker: Some(asker),
+                    ..Guard::default()
+                },
+            );
+            d.answer(call("desk_key", json!({"keys": "ctrl+s"}))).await;
+            assert_eq!(allowed.0.load(Ordering::Relaxed), want, "{yes}");
+        }
     }
 
     #[tokio::test]

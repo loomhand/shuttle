@@ -29,6 +29,12 @@ impl<N: Handler> Handler for Desks<N> {
             native.release(holder);
         }
     }
+
+    fn allowed(&self) {
+        if let Self::Native(native) = self {
+            native.allowed();
+        }
+    }
 }
 
 /// The Android device of `settings`.
