@@ -228,9 +228,12 @@ impl<H: Handler> Daemon<H> {
         if tool == "gui_plan" && self.guard.background {
             return Err(PLAN_BACKGROUND.to_owned());
         }
-        let _turn = tokio::time::timeout(self.wait, self.turn.lock())
-            .await
-            .map_err(|_| BUSY.to_owned())?;
+        let mut halted = self.halted.subscribe();
+        let _turn = tokio::select! {
+            biased;
+            _ = halted.wait_for(|h| *h) => return Err(STOPPED.to_owned()),
+            turn = tokio::time::timeout(self.wait, self.turn.lock()) => turn.map_err(|_| BUSY.to_owned())?,
+        };
         let n = self.runs.fetch_add(1, Ordering::Relaxed);
         let agent = format!("run-{:x}-{n}", self.nonce);
         *self.running() = Some(agent.clone());
@@ -830,6 +833,30 @@ mod tests {
         }
         assert!(!d.answer(call("safety_resume", json!({}))).await.is_error);
         assert!(!d.answer(call("desk_screen", json!({}))).await.is_error);
+    }
+
+    #[tokio::test]
+    async fn a_run_waiting_for_the_turn_ends_at_a_stop_even_after_a_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let d = Arc::new(daemon(Echo, Guard::default()));
+        let held = d.turn.lock().await;
+        let run = tokio::spawn({
+            let d = Arc::clone(&d);
+            let code = format!(
+                "import {{ writeFileSync }} from 'node:fs'; export function main() {{ writeFileSync({:?}, '') }}",
+                marker.to_string_lossy()
+            );
+            async move { d.answer(call("script_run", json!({"code": code}))).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        d.answer(call("safety_stop", json!({}))).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        d.answer(call("safety_resume", json!({}))).await;
+        drop(held);
+        let out = run.await.unwrap();
+        assert_eq!((out.is_error, out.text.as_str()), (true, crate::STOPPED));
+        assert!(!marker.exists(), "the run went on after the stop");
     }
 
     #[tokio::test]
