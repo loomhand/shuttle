@@ -231,11 +231,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         } else {
             None
         };
+        let foreground = self.auto && args["delivery_mode"] == "foreground";
         if !self.allow.is_open() {
-            self.admit(tool, &args).await?;
+            FOREGROUND
+                .scope(foreground, self.admit(tool, &args))
+                .await?;
         }
         let scale = Cell::new(None);
-        let foreground = self.auto && args["delivery_mode"] == "foreground";
         if self.auto && !foreground && auto::VERBS.contains(&tool) {
             return SCALE.scope(scale, self.auto_run(tool, args, turn)).await;
         }
@@ -2696,6 +2698,24 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(err.contains(BACKGROUND_TARGET), "{err}");
+        assert!(order(&calls).is_empty(), "{:?}", order(&calls));
+    }
+
+    #[tokio::test]
+    async fn auto_input_asked_for_the_foreground_passes_the_allowlist_by_the_front_window() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Windows)
+            .background(true)
+            .auto(true)
+            .allow(&["Mail".to_owned()]);
+        let err = desk
+            .run(
+                "desk_key",
+                json!({"keys": "ctrl+s", "window": "Inbox", "delivery_mode": "foreground"}),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("allowlist"), "{err}");
         assert!(order(&calls).is_empty(), "{:?}", order(&calls));
     }
 
