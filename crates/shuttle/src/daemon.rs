@@ -62,6 +62,7 @@ pub struct Guard {
     pub background: bool,
 }
 
+#[cfg(test)]
 impl Default for Guard {
     fn default() -> Self {
         Self {
@@ -80,16 +81,10 @@ pub trait Controls: Send + Sync {
     fn halted(&self) -> bool;
     /// Whether a run or a desk action is in flight.
     fn acting(&self) -> bool;
-    fn recording(&self) -> bool {
-        false
-    }
+    fn recording(&self) -> bool;
     /// Starts or ends a recording of the user's input.
-    fn record(&self, _on: bool) -> Result<(), String> {
-        Ok(())
-    }
-    fn hotkey(&self, _code: u32) {
-        self.halt(true);
-    }
+    fn record(&self, on: bool) -> Result<(), String>;
+    fn hotkey(&self, code: u32);
 }
 
 /// What the controls show and how to reach the daemon.
@@ -175,7 +170,6 @@ impl<H: Handler> Daemon<H> {
         self
     }
 
-    /// Adds the service tools, by name, with the socket of their service.
     #[must_use]
     pub fn with_services(mut self, services: HashMap<String, String>) -> Self {
         self.services = services;

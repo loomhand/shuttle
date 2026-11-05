@@ -19,7 +19,6 @@ use tokio::time::Instant;
 use crate::tap::{self, Tap};
 
 const SETTLE: Duration = Duration::from_millis(700);
-const IDLE: Duration = Duration::from_secs(3600);
 const CROP_PT: [f64; 2] = [200.0, 100.0];
 const ROOT_ROLES: [&str; 5] = ["window", "frame", "application", "dialog", "document"];
 const BLOCKED: [&str; 10] = [
@@ -279,7 +278,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
     let mut events = Vec::new();
     let mut hotkey = None;
     loop {
-        let wake = settle.unwrap_or_else(|| Instant::now() + IDLE);
+        let wake = settle.unwrap_or(t0);
         tokio::select! {
             input = inputs.recv() => {
                 let Some(input) = input else { break };
