@@ -57,11 +57,16 @@ impl Plugin {
         if !self.bin.is_absolute() {
             return Err(format!("bin {} is not absolute", self.bin.display()));
         }
-        if let Some(r) = self.resources.iter().find(|r| !r.path.is_absolute()) {
-            return Err(format!(
-                "resource path {} is not absolute",
-                r.path.display()
-            ));
+        for (i, r) in self.resources.iter().enumerate() {
+            if !r.path.is_absolute() {
+                return Err(format!(
+                    "resource path {} is not absolute",
+                    r.path.display()
+                ));
+            }
+            if self.resources[..i].iter().any(|q| q.uri == r.uri) {
+                return Err(format!("resource {} is named twice", r.uri));
+            }
         }
         Ok(())
     }
@@ -193,6 +198,16 @@ fn add(plugins: &mut Plugins, file: &Path, builtins: &[&str]) -> Result<(), Stri
         if plugins.runs.iter().any(|q| q.name == p.name) {
             return Err(format!("name {} is taken", p.name));
         }
+        let taken = |uri: &str| {
+            plugins
+                .runs
+                .iter()
+                .flat_map(|q| &q.resources)
+                .any(|r| r.uri == uri)
+        };
+        if let Some(r) = p.resources.iter().find(|r| taken(&r.uri)) {
+            return Err(format!("resource {} is taken", r.uri));
+        }
         plugins.runs.push(p);
         return Ok(());
     }
@@ -289,6 +304,14 @@ mod tests {
             (
                 "38-relative-resource.json",
                 r#"{"name": "relres_run", "description": "c", "bin": "/usr/bin/c", "resources": [{"uri": "demo://r", "path": "r.md", "mime": "text/markdown", "description": "r"}]}"#,
+            ),
+            (
+                "39-taken-uri.json",
+                r#"{"name": "gamma_run", "description": "c", "bin": "/usr/bin/c", "resources": [{"uri": "demo://a/GUIDE.md", "path": "/opt/c.md", "mime": "text/markdown", "description": "c"}]}"#,
+            ),
+            (
+                "39-twice-uri.json",
+                r#"{"name": "delta_run", "description": "c", "bin": "/usr/bin/c", "resources": [{"uri": "demo://d", "path": "/opt/d.md", "mime": "text/markdown", "description": "d"}, {"uri": "demo://d", "path": "/opt/e.md", "mime": "text/markdown", "description": "e"}]}"#,
             ),
             (
                 "40-c.txt",
