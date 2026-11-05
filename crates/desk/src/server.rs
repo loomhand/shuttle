@@ -1,5 +1,6 @@
 //! The desk endpoint: a unix socket on macOS and Linux, a named pipe on Windows, one framed call per connection.
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use desk_core::wire::{Call, Output, read_body, read_frame, tool_of, write_frame};
@@ -310,7 +311,7 @@ pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<()
 pub fn pipe_sddl(user: &str, group: Option<&str>) -> String {
     let mut sddl = format!("D:P(A;;GA;;;SY)(A;;GA;;;{user})");
     if let Some(group) = group {
-        sddl.push_str(&format!("(A;;{GROUP_RIGHTS};;;{group})"));
+        let _ = write!(sddl, "(A;;{GROUP_RIGHTS};;;{group})");
     }
     sddl
 }

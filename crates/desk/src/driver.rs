@@ -222,12 +222,12 @@ impl Input for Driver {
     async fn call(&self, tool: &str, mut args: Value) -> Result<Value, String> {
         if cfg!(target_os = "linux") {
             // the Linux driver keeps a session's last capture scale and a master keyboard that Chrome's core-keyboard input loses to
-            let once = format!(
+            args["session"] = format!(
                 "desk-{}-{}",
                 std::process::id(),
                 self.calls.fetch_add(1, Ordering::Relaxed)
-            );
-            args["session"] = once.as_str().into();
+            )
+            .into();
             let point = (tool == "click")
                 .then(|| args["x"].as_f64().zip(args["y"].as_f64()))
                 .flatten();
@@ -235,7 +235,9 @@ impl Input for Driver {
                 Some(point) => self.spaced(point, self.send(tool, &args)).await,
                 None => self.send(tool, &args).await,
             };
-            let _ = self.send("end_session", &json!({"session": once})).await;
+            let _ = self
+                .send("end_session", &json!({"session": args["session"]}))
+                .await;
             return done;
         }
         let foreground = self.admit(tool, &args)?;
