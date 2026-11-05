@@ -168,12 +168,11 @@ async function perform(p: Params): Promise<Result> {
   const recs: Rec[] = []; const tops: (string | undefined)[] = []
   let escalate: Escalation | null = null; let done = plan.length; let diverged = false
   if (held && !held.dirty) putPending({ ...held, dirty: true })
-  const halt = () => {
+  const left = () => {
     const at = (p.start ?? 0) + trace.length
-    try { writeFileSync(`${RUN}/result.json`, JSON.stringify({ ok: false, done: at, trace, escalate: { step: at, plan_step: plan[at], reason: `the run was stopped during step ${at}: the steps before it ran, and step ${at} may have acted in part` } })) } catch {}
-    process.exit(1)
+    try { if (RUN) writeFileSync(`${RUN}/result.json`, JSON.stringify({ ok: false, done: at, trace, escalate: { step: at, plan_step: plan[at], reason: `the run ended during step ${at}: the steps before it ran, and step ${at} may have acted in part` } })) } catch {}
   }
-  if (RUN) process.once('SIGTERM', halt)
+  left()
   for (const [i, planned] of plan.entries()) {
     if (i < (p.start ?? 0)) continue
     const s = fill(planned, params); T = {}; const rec: Rec = { i, op: OPS.find((k) => k in s) }
@@ -224,6 +223,7 @@ async function perform(p: Params): Promise<Result> {
     log.push({ ...rec, ...T }); recs[i] = rec
     trace.push(traced(i, rec, s, !!escalate))
     if (escalate) break
+    left()
   }
   const last = plan.at(-1) ?? {}
   let opened = false
@@ -283,7 +283,6 @@ async function perform(p: Params): Promise<Result> {
   const ms = Date.now() - t0
   try { if (statSync(LOG).size > LOG_MAX) rmSync(LOG) } catch {}
   try { appendFileSync(LOG, `${JSON.stringify({ at: new Date().toISOString(), flow: p.flow ?? null, ok: !escalate, ms, jevs, saved: saved ?? null, usage: desk.usage, steps: log })}\n`, PRIVATE) } catch {}
-  process.off('SIGTERM', halt)
   const out: Result = { ok: !escalate, done, ms, trace }
   if (saved) out[flow ? 'flow' : 'saved'] = saved
   if (flow?.usage) out.recorded_usage = flow.usage

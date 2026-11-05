@@ -7,7 +7,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 
 import { daemon } from './daemon.mts'
 
-test('a plan the runner stops leaves the steps it finished as its result', { skip: process.platform === 'win32' }, async (t) => {
+test('a plan killed outright leaves the steps it finished as its result', { skip: process.platform === 'win32' }, async (t) => {
   const win = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }
   let keyed = false
   await daemon(t, ({ tool }) => {
@@ -23,7 +23,7 @@ test('a plan the runner stops leaves the steps it finished as its result', { ski
   const ended = new Promise((r) => child.on('exit', r))
   for (let i = 0; i < 200 && !keyed; i++) await sleep(25)
   await sleep(200)
-  child.kill('SIGTERM')
+  child.kill('SIGKILL')
   await ended
   const r = JSON.parse(readFileSync(`${run}/result.json`, 'utf8')) as { ok: boolean; done: number; trace: { op: string }[] }
   assert.equal(r.ok, false)
