@@ -7,6 +7,7 @@ import * as desk from './desk.mts'
 import type { Win } from './desk.mts'
 import { cut, find as match, ring, unpng } from './png.mts'
 
+export type Result = { ok?: boolean; done?: number; ms?: number; trace?: Trace[]; escalate?: Escalation; served?: desk.Served[]; [key: string]: unknown }
 type Step = {
   app?: string; title?: string; menu?: string; click?: string; check?: string; on?: boolean; set?: string; value?: string
   type?: string; key?: string; wait?: string; expect?: string; verify?: string; close?: boolean; role?: string; window?: string
@@ -40,7 +41,6 @@ type Escalation = Seen & { reason: string; step?: number; plan_step?: Step }
 type Grounding = { what: string; ok: boolean; check: string; p?: number; p_zoom?: number | null; p_full?: number | null; why?: string; cover?: string }
 type Ground = Omit<Grounding, 'what' | 'ok' | 'why' | 'cover'> & { hit: string }
 type Trace = { i: number; op?: string; how?: string; input?: 'foreground'; ms?: number; was?: 'on' | 'off' | 'mixed'; now?: 'on' | 'off'; noop?: boolean; ground?: Ground }
-export type Result = { ok?: boolean; done?: number; ms?: number; trace?: Trace[]; escalate?: Escalation; served?: desk.Served[]; [key: string]: unknown }
 
 const OS = process.platform
 // with [desk] input = "background" a plan drives its target window, never the front one
@@ -98,7 +98,10 @@ const CHOOSER = CHOOSER_BY_OS[OS] ?? /(?!)/
 const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
 const ACTION_ONLY = 'an accessibility action ran, and on Linux its success does not show its effect; no later step read it back'
 const TOGGLE_UNREAD = 'the menu toggle was pressed, and its state after the press could not be read; no later step read it back'
+const SHORTCUT_VERBS: Record<string, string> = { 'ctrl+n': 'new', 'ctrl+s': 'save', 'ctrl+shift+s': 'save as', 'ctrl+o': 'open' }
 const known = new Set<string>()
+const asked = new Set<number>()
+const foreground = { steps: 0 }
 let busNames: string[] | null = null
 let gitWorks: boolean | undefined
 let lastSeen = ''
@@ -115,8 +118,6 @@ let actioned = false
 let userFront: Win | null = null
 let BG = BEHIND
 let fronted = false
-const asked = new Set<number>()
-const foreground = { steps: 0 }
 let T: Record<string, number> = {}
 let stepWs: { ws: Win[]; at: number } | null = null
 
@@ -1489,8 +1490,7 @@ function bare(s: Step, p: Record<string, string>) { return JSON.stringify(Object
 
 function store(chain: Chain) {
   const tpl = templated(chain.steps, chain.params)
-  const keys: Record<string, string> = { 'ctrl+n': 'new', 'ctrl+s': 'save', 'ctrl+shift+s': 'save as', 'ctrl+o': 'open' }
-  const targets = chain.steps.filter((s) => s.menu || s.check || s.set || s.click || keys[s.key?.toLowerCase() ?? '']).slice(-2).map((s) => s.key ? keys[s.key.toLowerCase()] : (s.menu ?? s.check ?? s.set ?? s.click ?? '').split('>').at(-1))
+  const targets = chain.steps.filter((s) => s.menu || s.check || s.set || s.click || SHORTCUT_VERBS[s.key?.toLowerCase() ?? '']).slice(-2).map((s) => s.key ? SHORTCUT_VERBS[s.key.toLowerCase()] : (s.menu ?? s.check ?? s.set ?? s.click ?? '').split('>').at(-1))
   const auto = slug([chain.steps[0]?.app, ...targets].filter((x): x is string => !!x).map((x) => x.split(' ').slice(0, 3).join(' ')).join(' ')) || undefined
   if (!chain.named && auto && chain.name && auto !== chain.name) rmSync(`${FLOWS}/${chain.name}.json`, { force: true })
   if (!chain.named) chain.name = auto

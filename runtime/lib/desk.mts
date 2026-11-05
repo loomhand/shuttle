@@ -22,14 +22,14 @@ type Output = { text: string; is_error: boolean; image_b64?: string }
 type Metered = { usage: { model: string; input_tokens: number; output_tokens: number; cached_tokens: number } }
 type Decided = Metered & { answers: Record<string, Judgment>; served: Omit<Served, 'image'> }
 
-const LOOK_TIMEOUT = 5_000
-
-let screenSize: Size | null = null
 /** How many inputs `[desk] input = "auto"` ran in the foreground after a refusal before anything was sent, their window brought to the front. */
 export const foreground = { runs: 0 }
 export const usage: Usage = {}
 /** One entry per decide/look call: the answering model, whether an image went in, and the build and id it named. */
 export const served: Served[] = []
+const LOOK_TIMEOUT = 5_000
+
+let screenSize: Size | null = null
 
 export function call<T>(op: string, args: Record<string, unknown> = {}): Promise<T> {
   return request<T>(`desk_${op}`, args)

@@ -1,6 +1,7 @@
 import { crc32, deflateSync, inflateSync } from 'node:zlib'
 
 export type Image = { w: number; h: number; type: number; bpp: number; px: Buffer }
+type Plane = { w: number; h: number; v: Float32Array }
 
 // 8-bit RGB or RGBA PNGs, as the daemon writes them
 export function unpng(buf: Buffer): Image {
@@ -63,8 +64,6 @@ export function find(img: Image, part: Image, k = 1, c = 1): { x: number; y: num
   const [score, x, y] = best(fine, pin1, cx * coarse - coarse, cy * coarse - coarse, cx * coarse + coarse, cy * coarse + coarse)
   return { x: (x + pin1.w / 2) * k, y: (y + pin1.h / 2) * k, score }
 }
-
-type Plane = { w: number; h: number; v: Float32Array }
 
 function luma({ w, h, bpp, px }: Image, f: number): Plane {
   const ow = Math.max(1, Math.floor(w / f)), oh = Math.max(1, Math.floor(h / f)), v = new Float32Array(ow * oh)
