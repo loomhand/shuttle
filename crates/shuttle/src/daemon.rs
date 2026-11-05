@@ -249,10 +249,22 @@ impl<H: Handler> Daemon<H> {
     }
 
     async fn act(&self, call: Call) -> Output {
-        if self.asks(&call) {
-            let Some(ask) = &self.guard.asker else {
-                return Output::error(NO_ASK);
+        let asker = match (self.asks(&call), &self.guard.asker) {
+            (false, _) => None,
+            (true, Some(ask)) => Some(ask),
+            (true, None) => return Output::error(NO_ASK),
+        };
+        self.actions.fetch_add(1, Ordering::Relaxed);
+        let _acting = Acting(&self.actions);
+        let _turn = if self.running().as_deref() == Some(call.agent_id.as_str()) {
+            None
+        } else {
+            let Ok(turn) = tokio::time::timeout(self.wait, self.turn.lock()).await else {
+                return Output::error(BUSY);
             };
+            Some(turn)
+        };
+        if let Some(ask) = asker {
             if self.asking.swap(true, Ordering::AcqRel) {
                 return Output::error(CONFIRM_OPEN);
             }
@@ -263,9 +275,10 @@ impl<H: Handler> Daemon<H> {
                 return Output::error(DECLINED);
             }
         }
-        self.actions.fetch_add(1, Ordering::Relaxed);
-        let _acting = Acting(&self.actions);
-        self.locked(call).await
+        if *self.halted.borrow() {
+            return Output::error(STOPPED);
+        }
+        self.desk.answer(call).await
     }
 
     fn asks(&self, call: &Call) -> bool {
@@ -282,22 +295,6 @@ impl<H: Handler> Daemon<H> {
             },
             Confirm::Every => true,
         }
-    }
-
-    async fn locked(&self, call: Call) -> Output {
-        if self.running().as_deref() == Some(call.agent_id.as_str()) {
-            return self.desk.answer(call).await;
-        }
-        let Ok(_turn) = tokio::time::timeout(self.wait, self.turn.lock()).await else {
-            return Output::error(BUSY);
-        };
-        if *self.halted.borrow() {
-            return Output::error(STOPPED);
-        }
-        if self.asking.load(Ordering::Acquire) {
-            return Output::error(CONFIRM_OPEN);
-        }
-        self.desk.answer(call).await
     }
 
     fn stop(&self, stopped: bool) -> Output {
@@ -933,7 +930,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_action_queued_before_a_confirm_dialog_opens_is_refused_when_its_turn_comes() {
+    async fn a_confirm_dialog_opens_only_once_the_actions_queued_before_it_are_done() {
         let (asker, pending) = held();
         let d = daemon(
             Typing,
@@ -944,7 +941,7 @@ mod tests {
             },
         );
         let pause = |ms| tokio::time::sleep(Duration::from_millis(ms));
-        let (typed, queued, asked) = tokio::join!(
+        let (typed, queued, (asked, open_while_typing)) = tokio::join!(
             d.answer(call("desk_type", json!({"text": "a"}))),
             async {
                 pause(50).await;
@@ -954,15 +951,51 @@ mod tests {
                 pause(100).await;
                 let out = d.answer(call("desk_click", json!({"x": 1, "y": 2})));
                 let answer = async {
-                    pause(400).await;
-                    let _ = pending.lock().unwrap().take().unwrap().send(false);
+                    pause(100).await;
+                    let open = pending.lock().unwrap().is_some();
+                    loop {
+                        if let Some(tx) = pending.lock().unwrap().take() {
+                            let _ = tx.send(false);
+                            break;
+                        }
+                        pause(10).await;
+                    }
+                    open
                 };
-                tokio::join!(out, answer).0
+                tokio::join!(out, answer)
             }
         );
+        assert!(
+            !open_while_typing,
+            "the dialog opened while another action typed"
+        );
         assert_eq!(typed.text, "desk answered desk_type");
-        assert_eq!(queued.text, CONFIRM_OPEN);
+        assert_eq!(queued.text, "desk answered desk_key");
         assert_eq!(asked.text, DECLINED);
+    }
+
+    #[tokio::test]
+    async fn an_action_waiting_for_the_turn_never_opens_its_dialog() {
+        let (asker, pending) = held();
+        let mut d = daemon(
+            Echo,
+            Guard {
+                confirm: Confirm::Coordinate,
+                asker: Some(asker),
+                ..Guard::default()
+            },
+        );
+        d.wait = Duration::from_millis(100);
+        let held = d.turn.lock().await;
+        let out = tokio::time::timeout(
+            Duration::from_secs(2),
+            d.answer(call("desk_click", json!({"x": 1, "y": 2}))),
+        )
+        .await
+        .expect("the action waited on a dialog it opened before its turn");
+        drop(held);
+        assert_eq!((out.is_error, out.text.as_str()), (true, BUSY));
+        assert!(pending.lock().unwrap().is_none());
     }
 
     #[tokio::test]
