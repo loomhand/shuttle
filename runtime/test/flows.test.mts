@@ -81,3 +81,23 @@ test('a value typed into a password field is never written to a saved flow or th
   assert.equal(literal.ok, true, JSON.stringify(literal))
   assert.ok(!readFileSync(`${process.env.SHUTTLE_FLOWS}/login2.json`, 'utf8').includes('hunter3'))
 })
+
+test('the chain record holds no password, neither from a password step that stopped nor typed as a literal', async (t) => {
+  const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: '', states: ['showing', 'focused', 'protected'] }
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([notepad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field] })
+    return '{"ok":true}'
+  })
+  const pending = () => readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')
+  const stopped = await main({ steps: [{ app: 'Notepad' }, { type: '{{password}}', focus: { role: 'textbox', name: 'PIN', secure: true } }], params: { password: 'hunter4' } })
+  assert.equal(stopped.escalate?.step, 1, JSON.stringify(stopped))
+  assert.ok(!pending().includes('hunter4'), pending())
+  const literal = await main({ steps: [{ app: 'Notepad' }, { type: 'hunter5\n', focus: { secure: true } }] })
+  assert.equal(literal.ok, true, JSON.stringify(literal))
+  assert.ok(!pending().includes('hunter5'), pending())
+  const saved = await main({ save: 'login3' })
+  assert.equal(saved.ok, true, JSON.stringify(saved))
+  const flow = readFileSync(`${process.env.SHUTTLE_FLOWS}/login3.json`, 'utf8')
+  assert.ok(!flow.includes('hunter5') && flow.includes('"type": "{{text}}\\n"'), flow)
+})

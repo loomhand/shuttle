@@ -251,7 +251,7 @@ async function perform(p: Params): Promise<Result> {
   const settled = !escalate && !opened
   if (flow) {
     const front = escalate ? await focused() : null
-    putPending(escalate ? { at: Date.now(), window: front?.title ?? null, pid: front && !isShell(front) ? front.pid : null, name: flow.name, named: true, params, steps: plan.slice(0, done), dirty: recs.some((r) => r?.unsaved), escalated: true, saved: false, usage: plus({}, desk.usage) } : null)
+    putPending(escalate ? { at: Date.now(), window: front?.title ?? null, pid: front && !isShell(front) ? front.pid : null, name: flow.name, named: true, params, steps: plan.slice(0, done), dirty: recs.some((r) => r?.unsaved), escalated: true, saved: false, usage: plus({}, desk.usage) } : null, plan)
     if (settled && recs.every((r) => !r?.unsaved)) {
       const rewrites = recs.filter((r, i) => r?.fp && !isDeepStrictEqual(r.fp, flow.steps[i]?.fp))
       flow.runs += 1
@@ -276,7 +276,7 @@ async function perform(p: Params): Promise<Result> {
       const front = escalate ? await focused() : end
       chain.window = front?.title ?? null
       if (front && !isShell(front)) chain.pid = front.pid
-      putPending(chain)
+      putPending(chain, plan)
     } else if (prev) putPending({ ...prev, saved: false, escalated: false })
   }
   const ms = Date.now() - t0
@@ -1436,8 +1436,20 @@ function templated(steps: Step[], params: Record<string, string>) {
 
 function unsecret(steps: Step[], params: Record<string, string>) {
   const out = { ...params }
-  for (const s of steps) if (typeof s.focus === 'object' && s.focus.secure && s.type) for (const [, n] of s.type.matchAll(/\{\{(\w+)/g)) if (n) delete out[n]
+  for (const s of steps) if (secure(s) && s.type) for (const [, n] of s.type.matchAll(/\{\{(\w+)/g)) if (n) delete out[n]
   return out
+}
+
+function secure(s: Step) { return typeof s.focus === 'object' && !!s.focus.secure }
+
+function sealed(c: Chain, plan: Step[]): Chain {
+  const p = { ...c.params }
+  const steps = c.steps.map((s) => {
+    if (!secure(s) || s.type === undefined || !s.type.replace(/\n$/, '') || /\{\{\w+\}\}/.test(s.type)) return s
+    let name = 'text'; for (let n = 2; name in p; n++) name = `text_${n}`
+    p[name] = ''; return { ...s, type: `{{${name}}}${s.type.endsWith('\n') ? '\n' : ''}` }
+  })
+  return { ...c, steps, params: unsecret([...steps, ...plan], p) }
 }
 
 function git(...args: string[]) {
@@ -1510,8 +1522,8 @@ function pending(): Chain | null {
   try { return JSON.parse(readFileSync(PENDING, 'utf8')) as Chain | null } catch { return null }
 }
 
-function putPending(c: Chain | null) {
-  try { writeFileSync(PENDING, JSON.stringify(c && { ...c, params: unsecret(c.steps, c.params) }), PRIVATE) } catch {}
+function putPending(c: Chain | null, plan: Step[] = []) {
+  try { writeFileSync(PENDING, JSON.stringify(c && sealed(c, plan)), PRIVATE) } catch {}
 }
 
 function loadFlow(name: string): Flow {
