@@ -73,6 +73,11 @@ pub(crate) fn plan_press<B: Access>(
     Ok(Press::Acted(b.act(id, Act::Action)?))
 }
 
+/// Whether process `pid` is LibreOffice, whose control extents can sit above the control.
+pub(crate) fn libreoffice(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim() == "soffice.bin")
+}
+
 fn in_front<B: Access>(b: &mut B, id: &str) -> Result<bool, String> {
     let Some(pid) = b.pid_of(id)? else {
         return Ok(false);
@@ -81,11 +86,6 @@ fn in_front<B: Access>(b: &mut B, id: &str) -> Result<bool, String> {
     Ok(b.frames_of(pid)?
         .into_iter()
         .any(|f| f.active && root.as_ref() == Some(&f.id)))
-}
-
-/// Whether process `pid` is LibreOffice, whose control extents can sit above the control.
-pub(crate) fn libreoffice(pid: u32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim() == "soffice.bin")
 }
 
 /// Whether the top-level window of `chain` is a dialog or an alert, where LibreOffice draws its controls at their extents and a control's action that opens a modal blocks the app until the modal closes.

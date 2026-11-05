@@ -54,13 +54,6 @@ pub const ACTIONS: [&str; 10] = [
     "desk_launch",
 ];
 
-const APP_INPUT: [&str; 5] = [
-    "desk_key",
-    "desk_type",
-    "desk_click",
-    "desk_scroll",
-    "desk_drag",
-];
 pub(crate) const BACKGROUND_TARGET: &str =
     "background input needs its target window: pass window or pid";
 pub(crate) const BACKGROUND_DESKTOP: &str = "background input: this window takes no pointer input without the foreground, and background input never brings a window to the front";
@@ -72,6 +65,13 @@ pub(crate) const BACKGROUND_UIA: &str = "background input: on Windows UI Automat
 pub(crate) const TYPER: Typer = crate::xtest::type_mapped;
 #[cfg(not(target_os = "linux"))]
 pub(crate) const TYPER: Typer = |_, _| Ok(false);
+const APP_INPUT: [&str; 5] = [
+    "desk_key",
+    "desk_type",
+    "desk_click",
+    "desk_scroll",
+    "desk_drag",
+];
 const CALL_LIMIT: Duration = Duration::from_secs(3);
 const TREE_LIMIT: Duration = Duration::from_secs(10);
 const READ_CHARS: usize = 64 << 10;
@@ -168,12 +168,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
     }
 
-    #[cfg(test)]
-    fn with_typer(mut self, typer: Typer) -> Self {
-        self.typer = typer;
-        self
-    }
-
     /// Limits the desk calls to windows of `apps`, matched by app name or executable, case-insensitive; empty allows every app.
     pub fn allow(mut self, apps: &[String]) -> Self {
         self.allow = Allow(apps.iter().map(|a| app_key(a)).collect());
@@ -234,6 +228,19 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return self.auto_run(tool, args, turn).await;
         }
         self.dispatch(tool, args, turn).await
+    }
+
+    pub fn release(&self, holder: &str) {
+        let pids: Vec<u32> = self.webs().keys().copied().collect();
+        for pid in pids.into_iter().filter(|&p| self.release_one(p, holder)) {
+            self.access.post(move |b| drop(b.web(pid, false)));
+        }
+    }
+
+    #[cfg(test)]
+    fn with_typer(mut self, typer: Typer) -> Self {
+        self.typer = typer;
+        self
     }
 
     /// Turns an input call's `app` into the `pid` of that app's window, so its input goes to that app or nowhere.
@@ -559,7 +566,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     #[cfg(test)]
     fn now(&self) -> Instant {
-        Instant::now() + Duration::from_millis(self.skew.load(std::sync::atomic::Ordering::Relaxed))
+        Instant::now() + Duration::from_millis(self.skew.load(Ordering::Relaxed))
     }
 
     async fn admit(&self, tool: &str, args: &Value) -> Result<(), String> {
@@ -732,13 +739,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             h.holders.insert(a.holder);
         }
         Ok(json!({"ok": true, "was": was}).to_string())
-    }
-
-    pub fn release(&self, holder: &str) {
-        let pids: Vec<u32> = self.webs().keys().copied().collect();
-        for pid in pids.into_iter().filter(|&p| self.release_one(p, holder)) {
-            self.access.post(move |b| drop(b.web(pid, false)));
-        }
     }
 
     fn release_one(&self, pid: u32, holder: &str) -> bool {
@@ -2193,6 +2193,25 @@ pub(crate) fn runs_app(window_app: &str, app: &str) -> bool {
     names_app(window_app, app) || names_app(window_app, &launch_name(app))
 }
 
+/// Runs of `text` with at most [`RUN_CHARS`] distinct non-ASCII characters; the Linux driver binds a spare keycode to each for the call and has fewer than 20 to lend.
+pub(crate) fn text_runs(text: &str) -> Vec<&str> {
+    let (mut runs, mut start, mut seen) = (Vec::new(), 0, Vec::new());
+    for (i, c) in text.char_indices() {
+        if c.is_ascii() || seen.contains(&c) {
+            continue;
+        }
+        if seen.len() == RUN_CHARS {
+            runs.push(&text[start..i]);
+            (start, seen) = (i, Vec::new());
+        }
+        seen.push(c);
+    }
+    if start < text.len() {
+        runs.push(&text[start..]);
+    }
+    runs
+}
+
 fn names_app(window_app: &str, wanted: &str) -> bool {
     let (have, want) = (words(window_app), words(wanted));
     !have.is_empty()
@@ -2215,25 +2234,6 @@ fn words(name: &str) -> Vec<String> {
         .filter(|w| !w.is_empty())
         .map(str::to_lowercase)
         .collect()
-}
-
-/// Runs of `text` with at most [`RUN_CHARS`] distinct non-ASCII characters; the Linux driver binds a spare keycode to each for the call and has fewer than 20 to lend.
-pub(crate) fn text_runs(text: &str) -> Vec<&str> {
-    let (mut runs, mut start, mut seen) = (Vec::new(), 0, Vec::new());
-    for (i, c) in text.char_indices() {
-        if c.is_ascii() || seen.contains(&c) {
-            continue;
-        }
-        if seen.len() == RUN_CHARS {
-            runs.push(&text[start..i]);
-            (start, seen) = (i, Vec::new());
-        }
-        seen.push(c);
-    }
-    if start < text.len() {
-        runs.push(&text[start..]);
-    }
-    runs
 }
 
 /// The windows a call picks from: the app of `pid` alone, unless the allowlist needs every window to judge the call.
@@ -2490,7 +2490,6 @@ fn outline(nodes: &[Node], max_chars: usize) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::collections::HashMap;
     use std::sync::Mutex;
 
     use super::*;
@@ -2503,7 +2502,12 @@ pub(crate) mod tests {
         ("desk_close", r#"{"window": "Notepad", "pid": 4}"#),
     ];
 
+    const LONG_TITLE: &str = "Example Competitive Analysis: Pricing and GTM (October 2026) - Example Docs - Google Chrome \u{2013} Work (example.com)";
+
     static ACTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static PAGE_LIT: AtomicBool = AtomicBool::new(false);
+    static LAUNCHED: AtomicBool = AtomicBool::new(false);
+    static STOPPED: AtomicBool = AtomicBool::new(false);
 
     #[test]
     fn an_outline_shows_a_linux_raw_key_binding_in_place_of_the_shortcut() {
@@ -2816,8 +2820,7 @@ pub(crate) mod tests {
     impl Opens {
         fn frames(&mut self) -> Vec<Frame> {
             self.lists += 1;
-            self.skew
-                .fetch_add(self.list_ms, std::sync::atomic::Ordering::Relaxed);
+            self.skew.fetch_add(self.list_ms, Ordering::Relaxed);
             if !self.hinted {
                 self.t += 1;
             }
@@ -4977,10 +4980,6 @@ pub(crate) mod tests {
         }
     }
 
-    static PAGE_LIT: AtomicBool = AtomicBool::new(false);
-
-    struct Page;
-
     struct Launches(Arc<Mutex<Vec<Value>>>);
 
     impl Input for Launches {
@@ -4996,6 +4995,8 @@ pub(crate) mod tests {
             Ok(json!({"content": [{"type": "text", "text": "Launched"}]}))
         }
     }
+
+    struct Page;
 
     impl Access for Page {
         fn frames(&mut self) -> Result<Vec<Frame>, String> {
@@ -5121,8 +5122,6 @@ pub(crate) mod tests {
             Ok(())
         }
     }
-
-    const LONG_TITLE: &str = "Example Competitive Analysis: Pricing and GTM (October 2026) - Example Docs - Google Chrome \u{2013} Work (example.com)";
 
     struct Long;
 
@@ -5348,8 +5347,6 @@ pub(crate) mod tests {
             assert_eq!(v["launched"], "Launched TextEdit (pid 7) in background.");
         }
     }
-
-    static LAUNCHED: AtomicBool = AtomicBool::new(false);
 
     struct Launched;
 
@@ -5776,7 +5773,7 @@ pub(crate) mod tests {
 
     impl Input for Shifting {
         async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
-            let captures = self.0.load(std::sync::atomic::Ordering::Relaxed);
+            let captures = self.0.load(Ordering::Relaxed);
             Ok(match tool {
                 "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
                 "list_windows" => {
@@ -5786,7 +5783,7 @@ pub(crate) mod tests {
                     ]}})
                 }
                 "get_desktop_state" => {
-                    self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    self.0.fetch_add(1, Ordering::Relaxed);
                     let shade = if captures == 0 { 255 } else { 128 };
                     let mut png = Vec::new();
                     let mut enc = png::Encoder::new(&mut png, 10, 10);
@@ -6020,8 +6017,6 @@ pub(crate) mod tests {
             ]
         );
     }
-
-    static STOPPED: AtomicBool = AtomicBool::new(false);
 
     #[tokio::test]
     async fn a_linux_line_xtest_types_skips_the_driver_and_a_stop_ends_xtest_at_its_next_key() {
