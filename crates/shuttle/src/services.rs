@@ -127,6 +127,8 @@ impl Proc {
     }
 
     async fn supervise(self, mut stopped: oneshot::Receiver<()>) {
+        #[cfg(unix)]
+        self.stop_stale().await;
         let mut backoff = Backoff::default();
         loop {
             let started = Instant::now();
@@ -146,6 +148,27 @@ impl Proc {
                 _ = &mut stopped => return,
                 () = tokio::time::sleep(backoff.after(started.elapsed())) => {}
             }
+        }
+    }
+
+    #[cfg(unix)]
+    async fn stop_stale(&self) {
+        let Ok(conn) = server::connect(&self.socket).await else {
+            return;
+        };
+        let pid = conn
+            .peer_cred()
+            .ok()
+            .and_then(|c| c.pid())
+            .and_then(|p| u32::try_from(p).ok())
+            .filter(|p| *p > 0);
+        drop(conn);
+        if let Some(pid) = pid {
+            log(format_args!(
+                "service {}: stopping process {pid}, which an earlier daemon left at {}",
+                self.name, self.socket
+            ));
+            crate::end_group(pid, STOP_WAIT).await;
         }
     }
 }
@@ -669,6 +692,52 @@ server.serve_forever()
         assert_ne!(second, first, "the restarted service did not bind");
         assert!(!s.echo().await.is_error);
         s.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_copy_a_dead_daemon_left_is_stopped_before_the_service_starts_again() {
+        use std::os::unix::process::CommandExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let bin = dir.path().join("demo-service");
+        crate::script(&bin, FAKE).unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        private_dir(&super::dir(&endpoint)).unwrap();
+        let mut left = std::process::Command::new(&bin)
+            .arg(&state)
+            .env(SOCKET_VAR, socket(&endpoint, "demo"))
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = state.join("pid");
+        assert!(appears(&pid).await, "the left copy never started");
+        let first = std::fs::read_to_string(&pid).unwrap();
+        let service: Service = serde_json::from_value(json!({
+            "service": "demo",
+            "bin": bin,
+            "args": [state],
+            "tools": [{"name": "demo_echo", "description": "d", "input_schema": {"type": "object"}}],
+        }))
+        .unwrap();
+        let running = Services::start(&[service], &endpoint, &[]).unwrap();
+        let mut exited = None;
+        let mut second = first.clone();
+        for _ in 0..100 {
+            exited = exited.or_else(|| left.try_wait().unwrap());
+            second = std::fs::read_to_string(&pid).unwrap_or_default();
+            if exited.is_some() && !second.is_empty() && second != first {
+                break;
+            }
+            tokio::time::sleep(POLL).await;
+        }
+        running.stop().await;
+        if exited.is_none() {
+            let _ = left.kill();
+        }
+        assert!(exited.is_some(), "the copy a dead daemon left still runs");
+        assert_ne!(second, first, "the service did not start again");
     }
 
     #[tokio::test]
