@@ -1410,14 +1410,14 @@ function fill(s: Step, p: Record<string, string>): Step {
 }
 
 function templated(steps: Step[], params: Record<string, string>) {
-  const p = { ...params }
+  const p = { ...params }; const used = new Set([...JSON.stringify(steps).matchAll(/\{\{(\w+)/g)].map((m) => m[1]))
   const out = steps.map((s) => {
     const t = { ...s }
     for (const k of ['value', 'type'] as const) {
       const v = t[k]; if (v === undefined || /\{\{\w+\}\}/.test(v) || !v.replace(/\n$/, '')) continue
       const body = v.replace(/\n$/, ''); const have = Object.entries(p).find(([, x]) => x === body)
       let name = have?.[0] ?? (slug(k === 'value' ? t.set ?? 'value' : 'text').replace(/-/g, '_') || 'value')
-      for (let n = 2; !have && name in p; n++) name = `${name.replace(/_\d+$/, '')}_${n}`
+      for (let n = 2; !have && (name in p || used.has(name)); n++) name = `${name.replace(/_\d+$/, '')}_${n}`
       p[name] = body; t[k] = `{{${name}}}${v.endsWith('\n') ? '\n' : ''}`
     }
     return t
@@ -1443,13 +1443,9 @@ function unsecret(steps: Step[], params: Record<string, string>) {
 function secure(s: Step) { return typeof s.focus === 'object' && !!s.focus.secure }
 
 function sealed(c: Chain, plan: Step[]): Chain {
-  const p = { ...c.params }
-  const steps = c.steps.map((s) => {
-    if (!secure(s) || s.type === undefined || !s.type.replace(/\n$/, '') || /\{\{\w+\}\}/.test(s.type)) return s
-    let name = 'text'; for (let n = 2; name in p; n++) name = `text_${n}`
-    p[name] = ''; return { ...s, type: `{{${name}}}${s.type.endsWith('\n') ? '\n' : ''}` }
-  })
-  return { ...c, steps, params: unsecret([...steps, ...plan], p) }
+  const named = templated(c.steps, c.params).steps
+  const steps = c.steps.map((s, i) => secure(s) ? { ...s, type: named[i]?.type ?? s.type } : s)
+  return { ...c, steps, params: unsecret([...steps, ...plan], c.params) }
 }
 
 function git(...args: string[]) {

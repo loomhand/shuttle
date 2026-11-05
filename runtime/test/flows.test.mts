@@ -101,3 +101,24 @@ test('the chain record holds no password, neither from a password step that stop
   const flow = readFileSync(`${process.env.SHUTTLE_FLOWS}/login3.json`, 'utf8')
   assert.ok(!flow.includes('hunter5') && flow.includes('"type": "{{text}}\\n"'), flow)
 })
+
+test('a typed username and a typed password get distinct names whether the flow is saved from the plan or from the chain record', async (t) => {
+  const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: '', states: ['showing', 'focused', 'protected'] }
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([notepad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field] })
+    return '{"ok":true}'
+  })
+  const steps = [{ app: 'Notepad' }, { type: 'alice' }, { type: 'pw123', focus: { secure: true } }]
+  const ran = await main({ steps })
+  assert.equal(ran.ok, true, JSON.stringify(ran))
+  const later = await main({ save: 'login4' })
+  assert.equal(later.ok, true, JSON.stringify(later))
+  const direct = await main({ steps, save: 'login5' })
+  assert.equal(direct.ok, true, JSON.stringify(direct))
+  for (const name of ['login4', 'login5']) {
+    const f = flow(name)
+    assert.deepEqual(f.steps.map((s) => s.type), [undefined, '{{text}}', '{{text_2}}'], `${name} ${JSON.stringify(f)}`)
+    assert.deepEqual(f.params, { text: 'alice' }, name)
+  }
+})
