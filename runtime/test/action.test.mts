@@ -20,13 +20,13 @@ test('a Linux step that only ran an accessibility action carries a caveat that n
   const blind = await plan({ steps: [{ click: 'Save' }] })
   assert.equal(blind.ok, true, JSON.stringify(blind))
   assert.equal(blind.escalate, undefined)
-  assert.deepEqual((blind.caveats as { step: number }[]).map((c) => c.step), [0], JSON.stringify(blind))
+  assert.deepEqual(blind.caveats?.map((c) => c.step), [0], JSON.stringify(blind))
   const read = await plan({ steps: [{ click: 'Save' }, { verify: 'Save', enabled: true }] })
   assert.equal(read.ok, true, JSON.stringify(read))
   assert.equal(read.caveats, undefined, JSON.stringify(read))
   how = 'select'
   const selected = await plan({ steps: [{ click: 'Save' }] })
-  assert.deepEqual((selected.caveats as { step: number }[]).map((c) => c.step), [0], JSON.stringify(selected))
+  assert.deepEqual(selected.caveats?.map((c) => c.step), [0], JSON.stringify(selected))
   how = 'click'
   const clicked = await plan({ steps: [{ click: 'Save' }] })
   assert.equal(clicked.ok, true, JSON.stringify(clicked))

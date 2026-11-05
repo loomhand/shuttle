@@ -31,33 +31,32 @@ const rest = [{ key: 'return', intent: 'press return' }]
 
 test('a missed after stops with the step, its intent, the reason and the steps left', async (t) => {
   await desktop(t, [{ id: '7/3', role: 'button', name: 'Pay' }])
-  const r = await main({ steps: [{ click: 'Pay', role: 'button', after: 'Paid', timeout_ms: 300, intent: 'pay the order' } as never, ...rest as never[]] })
+  const r = await main({ steps: [{ click: 'Pay', role: 'button', after: 'Paid', timeout_ms: 300, intent: 'pay the order' }, ...rest] })
   assert.deepEqual(r.stopped, { step: 0, intent: 'pay the order', reason: r.error, remaining: [{ click: 'Pay', role: 'button', after: 'Paid', timeout_ms: 300, intent: 'pay the order' }, ...rest] })
   assert.match(String(r.error), /after this step the recording saw "Paid"/)
 })
 
 test('a focus elsewhere stops with a stop report', async (t) => {
   await desktop(t, [{ id: '7/3', role: 'textbox', name: 'Email', states: ['focused'] }])
-  const r = await main({ steps: [{ type: 'bob', focus: { role: 'textbox', name: 'Name' }, intent: 'type the name' } as never, ...rest as never[]] })
-  assert.equal((r.stopped as { step: number }).step, 0)
-  assert.equal((r.stopped as { intent: string }).intent, 'type the name')
-  assert.match(String((r.stopped as { reason: string }).reason), /the focus is on textbox "Email"/)
-  assert.equal((r.stopped as { remaining: unknown[] }).remaining.length, 2)
+  const r = await main({ steps: [{ type: 'bob', focus: { role: 'textbox', name: 'Name' }, intent: 'type the name' }, ...rest] })
+  assert.equal(r.stopped?.step, 0)
+  assert.equal(r.stopped?.intent, 'type the name')
+  assert.match(String(r.stopped?.reason), /the focus is on textbox "Email"/)
+  assert.equal(r.stopped?.remaining.length, 2)
 })
 
 test('another page stops a web step with a stop report and keeps the recorded crop out of it', async (t) => {
   await desktop(t, [{ id: '7/3', role: 'button', name: 'Pay' }], 'https://shop.test/login')
   const step = { click: 'Pay', role: 'button', web: { url: 'https://shop.test/form' }, recorded: { text: 'Pay', crop: 'AAAA' }, intent: 'pay' }
-  const r = await main({ steps: [{ key: 'tab', intent: 'move on' } as never, step as never] })
-  const s = r.stopped as { step: number; reason: string; remaining: Record<string, unknown>[] }
-  assert.equal(s.step, 1)
-  assert.match(s.reason, /the recording acted on https:\/\/shop\.test\/form/)
-  assert.deepEqual(s.remaining, [{ click: 'Pay', role: 'button', web: { url: 'https://shop.test/form' }, intent: 'pay' }])
+  const r = await main({ steps: [{ key: 'tab', intent: 'move on' }, step] })
+  assert.equal(r.stopped?.step, 1)
+  assert.match(String(r.stopped?.reason), /the recording acted on https:\/\/shop\.test\/form/)
+  assert.deepEqual(r.stopped?.remaining, [{ click: 'Pay', role: 'button', web: { url: 'https://shop.test/form' }, intent: 'pay' }])
 })
 
 test('a recorded click whose fallbacks all miss stops as an error with a stop report', async (t) => {
   await desktop(t, [{ id: '7/3', role: 'button', name: 'Cancel' }])
-  const r = await main({ steps: [{ click: 'Pay', recorded: { text: 'Pay now' }, intent: 'pay' } as never] })
+  const r = await main({ steps: [{ click: 'Pay', recorded: { text: 'Pay now' }, intent: 'pay' }] })
   assert.match(String(r.error), /no element matches "Pay"; grounding failed/)
   assert.deepEqual(r.stopped, { step: 0, intent: 'pay', reason: r.error, remaining: [{ click: 'Pay', intent: 'pay' }] })
 })

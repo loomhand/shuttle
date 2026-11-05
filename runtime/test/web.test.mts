@@ -93,8 +93,7 @@ test('the page check reads the nodes the step acts on, after the menu bar read r
     if (c.tool === 'desk_windows') return JSON.stringify([win])
     if (c.tool === 'desk_snapshot') {
       const menus = c.args.menus === true
-      const nodes = [{ ref: 0, id: '7/1', parent: -1, depth: 0, role: 'window', name: win.title, states: ['showing'] }, { ref: 1, id: menus ? '7/9' : '7/2', parent: 0, depth: 1, role: 'document', name: '', states: ['showing'] }]
-      if (menus) nodes.push({ ref: 2, id: '7/3', parent: 1, depth: 2, role: 'button', name: 'Pay', states: ['showing'], bounds: [10, 10, 40, 20] } as never)
+      const nodes = [{ ref: 0, id: '7/1', parent: -1, depth: 0, role: 'window', name: win.title, states: ['showing'] }, { ref: 1, id: menus ? '7/9' : '7/2', parent: 0, depth: 1, role: 'document', name: '', states: ['showing'] }, ...(menus ? [{ ref: 2, id: '7/3', parent: 1, depth: 2, role: 'button', name: 'Pay', states: ['showing'], bounds: [10, 10, 40, 20] }] : [])]
       return JSON.stringify({ window: win, truncated: false, nodes })
     }
     if (c.tool === 'desk_read') return JSON.stringify({ ref: 0, id: c.args.id, role: 'document', name: '', states: [], url: c.args.id === '7/9' ? 'https://shop.test/login' : 'https://shop.test/form' })
@@ -131,7 +130,7 @@ test('a page that never shows a document stops the web step with a stop report',
   const calls = await browser(t, { url: () => 'https://shop.test/form', tree: () => false, els: [{ id: '7/3', role: 'button', name: 'Pay' }] })
   const r = await main({ steps: [{ click: 'Pay', role: 'button', web: { url: 'https://shop.test/form' } }] })
   assert.match(String(r.error), /the plan's window shows no address now/)
-  assert.equal((r.stopped as { step: number }).step, 0)
+  assert.equal(r.stopped?.step, 0)
   assert.deepEqual(pressed(calls), [])
 })
 

@@ -1,16 +1,16 @@
 import * as desk from './desk.mts'
 import { ring, unpng } from './png.mts'
 
-type Hit = { role?: string; name?: string; description?: string }
-type Field = { role: string; name: string; frame: string; window?: string; secure?: boolean; url?: string; id?: string }
-type Web = { url: string; id?: string }
-type Event = {
+export type Event = {
   t: number; kind: 'click' | 'key' | 'after' | 'note' | 'skipped' | 'password'
   x?: number; y?: number; button?: string; count?: number; mods?: string[]; app?: string | null
   element?: Hit | null; path?: { role: string; name: string }[]; root?: boolean
   window?: { title?: string; bounds?: [number, number, number, number] | null } | string
   crop?: string; crop_scale?: number; crop_offset?: [number, number]; focus?: Field | null; code?: number; text?: string; secret?: boolean; role?: string; web?: Web
 }
+type Hit = { role?: string; name?: string; description?: string }
+type Field = { role: string; name: string; frame: string; window?: string; secure?: boolean; url?: string; id?: string }
+type Web = { url: string; id?: string }
 type Recording = { id: string; apps?: string[]; events: Event[] }
 type Step = Record<string, unknown> & { intent: string }
 type Params = { recording: Recording; params?: Record<string, string> }

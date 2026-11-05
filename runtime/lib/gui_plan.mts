@@ -7,12 +7,15 @@ import * as desk from './desk.mts'
 import type { Win } from './desk.mts'
 import { cut, find as match, ring, unpng } from './png.mts'
 
-export type Result = { ok?: boolean; done?: number; ms?: number; trace?: Trace[]; escalate?: Escalation; served?: desk.Served[]; [key: string]: unknown }
+export type Result = {
+  ok?: boolean; done?: number; ms?: number; trace?: Trace[]; escalate?: Escalation; served?: desk.Served[]; error?: string; stopped?: ReturnType<typeof stopped>
+  caveats?: { step: number; note?: string }[]; [key: string]: unknown
+}
 type Step = {
   app?: string; title?: string; menu?: string; click?: string; check?: string; on?: boolean; set?: string; value?: string
   type?: string; key?: string; wait?: string; expect?: string; verify?: string; close?: boolean; role?: string; window?: string
   timeout_ms?: number; enabled?: boolean; fp?: Fp; seen?: string; blank?: Fp; after?: string; recorded?: Recorded; focus?: Focus | 'unverified'
-  button?: string; count?: number; mods?: string[]; url?: string; web?: Web
+  button?: string; count?: number; mods?: string[]; url?: string; web?: Web; intent?: string
 }
 // frame is the role of the field's window or sheet
 type Focus = { role?: string; name?: string; frame?: string; secure?: boolean; id?: string }
@@ -297,7 +300,7 @@ async function perform(p: Params): Promise<Result> {
 function stopped(plan: Step[], e: Escalation) {
   const step = e.step ?? 0
   const remaining = plan.slice(step).map(({ recorded: _, fp: __, blank: ___, ...s }) => s)
-  return { step, intent: (plan[step] as Step & { intent?: string } | undefined)?.intent ?? null, reason: e.reason, remaining }
+  return { step, intent: plan[step]?.intent ?? null, reason: e.reason, remaining }
 }
 
 class Surprise extends Error {

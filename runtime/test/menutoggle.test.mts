@@ -46,5 +46,5 @@ test('a menu toggle whose state only pixels show reports no state after its pres
   const r = await main({ steps: [step] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(r.trace?.[0]?.now, undefined, JSON.stringify(r))
-  assert.deepEqual((r.caveats as { step: number }[]).map((c) => c.step), [0], JSON.stringify(r))
+  assert.deepEqual(r.caveats?.map((c) => c.step), [0], JSON.stringify(r))
 })
