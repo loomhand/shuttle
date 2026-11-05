@@ -26,21 +26,22 @@ impl Block {
     }
 
     pub(crate) fn of(contents: impl Iterator<Item = u64>) -> Self {
-        let mut runs: Vec<u64> = Vec::new();
+        let (mut runs, mut last, mut pair, mut more) = (0, None, None, false);
         for h in contents {
-            if runs.last() != Some(&h) {
-                runs.push(h);
+            if last == Some(h) {
+                continue;
             }
+            match (last, pair) {
+                (Some(a), None) => pair = Some((a.min(h), a.max(h))),
+                (_, Some((a, b))) => more |= h != a && h != b,
+                (None, _) => {}
+            }
+            (runs, last) = (runs + 1, Some(h));
         }
-        if runs.len() < 3 {
-            return Self::Quiet;
-        }
-        runs.sort_unstable();
-        runs.dedup();
-        if runs.len() == 2 {
-            Self::Toggling(runs)
-        } else {
-            Self::Churning
+        match pair {
+            Some((a, b)) if runs >= 3 && !more => Self::Toggling(vec![a, b]),
+            Some(_) if runs >= 3 => Self::Churning,
+            _ => Self::Quiet,
         }
     }
 }
