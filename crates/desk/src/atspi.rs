@@ -1382,9 +1382,7 @@ fn iface_bits(names: &[String]) -> u8 {
     })
 }
 
-/// The Collection.GetMatches arguments for the first focused descendant in tree order.
-#[allow(clippy::type_complexity)]
-fn focused_rule() -> (
+type Rule = (
     (
         Vec<i32>,
         i32,
@@ -1399,7 +1397,10 @@ fn focused_rule() -> (
     u32,
     i32,
     bool,
-) {
+);
+
+/// The Collection.GetMatches arguments for the first focused descendant in tree order.
+fn focused_rule() -> Rule {
     let rule = (
         vec![1 << FOCUSED, 0],
         MATCH_ALL,
@@ -1552,26 +1553,7 @@ mod tests {
         use zbus::zvariant::Type as _;
 
         let args = focused_rule();
-        assert_eq!(
-            <(
-                (
-                    Vec<i32>,
-                    i32,
-                    HashMap<String, String>,
-                    i32,
-                    Vec<i32>,
-                    i32,
-                    Vec<String>,
-                    i32,
-                    bool
-                ),
-                u32,
-                i32,
-                bool
-            )>::SIGNATURE
-                .to_string(),
-            "((aiia{ss}iaiiasib)uib)"
-        );
+        assert_eq!(Rule::SIGNATURE.to_string(), "((aiia{ss}iaiiasib)uib)");
         assert_eq!(args.0.0, [1 << 12, 0]);
         assert_eq!((args.1, args.2, args.3), (1, 1, true));
     }
