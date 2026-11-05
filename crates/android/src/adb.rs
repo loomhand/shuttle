@@ -104,7 +104,7 @@ pub struct Android {
     server_shot: AtomicBool,
     server_show: AtomicBool,
     control: Mutex<Option<Control>>,
-    screen: OnceCell<(i32, i32)>,
+    natural: OnceCell<(i32, i32)>,
 }
 
 impl Android {
@@ -118,16 +118,16 @@ impl Android {
             server_shot: AtomicBool::new(true),
             server_show: AtomicBool::new(true),
             control: Mutex::new(None),
-            screen: OnceCell::new(),
+            natural: OnceCell::new(),
         }
     }
 
     /// The screen as PNG.
     pub async fn look(&self) -> Result<Output, String> {
         let png = self.screenshot().await?;
-        let (w, h) = self.screen().await?;
         Ok(Output {
-            text: format!("{w}x{h} screen"),
+            text: desk::png_size(&png)
+                .map_or_else(|| "screen".to_owned(), |(w, h)| format!("{w}x{h} screen")),
             image_b64: Some(B64.encode(png)),
             ..Output::default()
         })
@@ -217,7 +217,7 @@ impl Android {
                 format!("swiped {},{} to {},{}", from.0, from.1, to.0, to.1)
             }
             "scroll" => {
-                let (w, h) = self.screen().await?;
+                let (w, h) = desk::screen(self).await?;
                 let (x, y) = point.unwrap_or((w / 2, h / 2));
                 let (dx, dy) = match args.direction.as_deref().unwrap_or("down") {
                     "up" => (0, h / SCROLL_FRACTION),
@@ -429,9 +429,9 @@ impl Android {
         }
     }
 
-    /// The screen size `wm size` reports, read once per device.
-    pub(crate) async fn screen(&self) -> Result<(i32, i32), String> {
-        self.screen
+    /// The screen size `wm size` reports in the device's natural rotation, read once per device.
+    pub(crate) async fn natural(&self) -> Result<(i32, i32), String> {
+        self.natural
             .get_or_try_init(|| async {
                 let out = self.adb(&["shell", "wm", "size"]).await?;
                 let out = String::from_utf8_lossy(&out);
@@ -1431,6 +1431,10 @@ mod tests {
                     r#"[{{"id":8,"type":2,"layer":3,"title":"","package":"com.android.inputmethod.latin","active":false,"focused":false,"bounds":[0,700,720,1184]}},{bar},{}]"#,
                     app(true)
                 ),
+                "landscape" => format!(
+                    r#"[{{"id":5,"type":3,"layer":2,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[1184,0,1280,720]}},{}]"#,
+                    app(true).replace("[0,0,720,1280]", "[0,0,1280,720]")
+                ),
                 "none" => "[]".to_owned(),
                 _ => format!("[{bar},{}]", app(true)),
             };
@@ -1832,6 +1836,49 @@ mod tests {
         fake.dump("dump-first.xml", "9");
         let err = fake.android.state(serde_json::json!({})).await.unwrap_err();
         assert_eq!(err, "the screen is changing; call computer_state again");
+    }
+
+    #[cfg(unix)]
+    async fn desk(fake: &Fake, verb: &str, args: Value) -> Result<Value, String> {
+        let out = crate::desk::run(&fake.android, verb, args).await?;
+        Ok(serde_json::from_str(&out.text).unwrap())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_device_on_its_side_has_the_turned_screen() {
+        let fake = Fake::new();
+        fake.windows("landscape");
+        fake.put(
+            "dump.xml",
+            r#"<hierarchy window="7"><node text="Far" class="android.widget.TextView" clickable="true" visible="true" path="0.0" bounds="[900,200][1100,300]" /></hierarchy>"#,
+        );
+        let mut png = Vec::new();
+        let mut enc = png::Encoder::new(&mut png, 1280, 720);
+        enc.set_color(png::ColorType::Grayscale);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()
+            .unwrap()
+            .write_image_data(&vec![0; 1280 * 720])
+            .unwrap();
+        std::fs::write(fake.dir.path().join("screen.png"), &png).unwrap();
+        let screen = desk(&fake, "desk_screen", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(
+            (screen["width"].as_i64(), screen["height"].as_i64()),
+            (Some(1280), Some(720))
+        );
+        let state = fake.android.state(serde_json::json!({})).await.unwrap();
+        assert_eq!(state.text, "[0] button \"Far\" at 1000,250");
+        let shot = desk(&fake, "desk_shot", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(
+            (shot["width"].as_i64(), shot["height"].as_i64()),
+            (Some(1280), Some(720))
+        );
+        assert_eq!(fake.android.look().await.unwrap().text, "1280x720 screen");
     }
 
     #[tokio::test]

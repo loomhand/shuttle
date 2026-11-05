@@ -325,7 +325,7 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
             json!({"ok": true, "launched": android.launch(&app).await?}).to_string()
         }
         "desk_screen" => {
-            let (width, height) = android.screen().await?;
+            let (width, height) = screen(android).await?;
             json!({"width": width, "height": height}).to_string()
         }
         "desk_shot" => return shot(android, parse(args)?).await,
@@ -359,19 +359,33 @@ pub(crate) async fn front(android: &Android) -> Result<Frame, String> {
     match frames.into_iter().find(|f| f.active) {
         Some(frame) => Ok(frame),
         None => Ok(Frame {
-            screen: android.screen().await?,
+            screen: screen(android).await?,
             ..Frame::default()
         }),
     }
 }
 
+pub(crate) async fn screen(android: &Android) -> Result<(i32, i32), String> {
+    Ok(turned(
+        android.natural().await?,
+        &window_list(android).await?,
+    ))
+}
+
+/// The width and height a PNG's header gives.
+pub(crate) fn png_size(png: &[u8]) -> Option<(u32, u32)> {
+    let size = |at: usize| Some(u32::from_be_bytes(png.get(at..at + 4)?.try_into().ok()?));
+    png.starts_with(b"\x89PNG\r\n\x1a\n").then_some(())?;
+    Some((size(16)?, size(20)?))
+}
+
 /// The listed windows, the front one active; an activity switch lists none for a moment, which this waits out.
 async fn frames(android: &Android) -> Result<Vec<Frame>, String> {
-    let screen = android.screen().await?;
+    let natural = android.natural().await?;
     let mut shown = Vec::new();
     for _ in 0..SWITCH_POLLS {
-        let list: Vec<WindowInfo> = serde_json::from_str(android.windows().await?.trim())
-            .map_err(|e| format!("decode windows: {e}"))?;
+        let list = window_list(android).await?;
+        let screen = turned(natural, &list);
         shown = frames_of(list, screen);
         if !shown.is_empty() {
             break;
@@ -379,6 +393,22 @@ async fn frames(android: &Android) -> Result<Vec<Frame>, String> {
         tokio::time::sleep(FOCUS_POLL).await;
     }
     Ok(shown)
+}
+
+async fn window_list(android: &Android) -> Result<Vec<WindowInfo>, String> {
+    serde_json::from_str(android.windows().await?.trim())
+        .map_err(|e| format!("decode windows: {e}"))
+}
+
+fn turned((w, h): (i32, i32), list: &[WindowInfo]) -> (i32, i32) {
+    let (right, bottom) = list.iter().fold((0, 0), |(r, b), win| {
+        (r.max(win.bounds[2]), b.max(win.bounds[3]))
+    });
+    if (right > w || bottom > h) && right <= h && bottom <= w {
+        (h, w)
+    } else {
+        (w, h)
+    }
 }
 
 fn frames_of(list: Vec<WindowInfo>, screen: (i32, i32)) -> Vec<Frame> {
@@ -952,23 +982,21 @@ async fn shot(android: &Android, a: ShotArgs) -> Result<Output, String> {
         );
     }
     let png = android.screenshot().await?;
-    let (w, h) = android.screen().await?;
+    let (iw, ih) = png_size(&png).ok_or("the screenshot is not a PNG")?;
     let rect = [
         a.x.unwrap_or(0.0),
         a.y.unwrap_or(0.0),
-        a.w.unwrap_or(f64::from(w)),
-        a.h.unwrap_or(f64::from(h)),
+        a.w.unwrap_or(f64::from(iw)),
+        a.h.unwrap_or(f64::from(ih)),
     ];
-    let (w, h, png) = match png_size(&png) {
-        Some((iw, ih))
-            if rect[0] <= 0.0
-                && rect[1] <= 0.0
-                && rect[0] + rect[2] >= f64::from(iw)
-                && rect[1] + rect[3] >= f64::from(ih) =>
-        {
-            (iw, ih, png)
-        }
-        _ => crop_png(&png, rect, 1.0, None)?,
+    let (w, h, png) = if rect[0] <= 0.0
+        && rect[1] <= 0.0
+        && rect[0] + rect[2] >= f64::from(iw)
+        && rect[1] + rect[3] >= f64::from(ih)
+    {
+        (iw, ih, png)
+    } else {
+        crop_png(&png, rect, 1.0, None)?
     };
     let mut out = json!({"ok": true, "width": w, "height": h});
     if let Some(path) = a.path {
@@ -980,13 +1008,6 @@ async fn shot(android: &Android, a: ShotArgs) -> Result<Output, String> {
         image_b64: Some(B64.encode(&png)),
         ..Output::default()
     })
-}
-
-/// The width and height a PNG's header gives.
-fn png_size(png: &[u8]) -> Option<(u32, u32)> {
-    let size = |at: usize| Some(u32::from_be_bytes(png.get(at..at + 4)?.try_into().ok()?));
-    png.starts_with(b"\x89PNG\r\n\x1a\n").then_some(())?;
-    Some((size(16)?, size(20)?))
 }
 
 /// Lists the windows until they differ from `since` or `limit` of wall time passes, list reads included, 5 s at most.
@@ -1134,6 +1155,14 @@ mod tests {
             Some((760, 820)),
             "a refreshed frame without the keyboard"
         );
+    }
+
+    #[test]
+    fn the_screen_turns_only_when_the_windows_fit_it_turned() {
+        assert_eq!(turned(REDROID, &[window([0, 0, 720, 1280])]), REDROID);
+        assert_eq!(turned(REDROID, &[window([0, 0, 1280, 720])]), (1280, 720));
+        assert_eq!(turned(REDROID, &[window([0, 0, 1400, 1280])]), REDROID);
+        assert_eq!(turned(REDROID, &[]), REDROID);
     }
 
     #[test]
