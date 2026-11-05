@@ -136,7 +136,7 @@ impl Models {
     }
 }
 
-/// The arguments of `model_decide`; `questions` maps keys to `{type: noul|choice, instructions, criteria?}`, and `timeout_ms` caps the configured timeout.
+/// The arguments of `model_decide`; `questions` maps keys to `{type: noul|choice, instructions, criteria?}`.
 #[derive(Debug, Deserialize)]
 pub struct DecideArgs {
     pub state: Value,
