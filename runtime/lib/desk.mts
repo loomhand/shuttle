@@ -41,9 +41,7 @@ export const unanswered = (): Promise<Win | null> => call('unanswered')
 export const wait = (since: Win[], timeout_ms: number): Promise<{ changed: boolean; windows: Win[] }> =>
   call('wait', { since, timeout_ms: Math.max(0, Math.round(timeout_ms)) })
 export const front = (ws: Win[]): Win | null => ws.find((w) => w.active && (w.title !== '' || w.role !== 'window')) ?? null
-export async function focused(): Promise<Win | null> {
-  return front(await windows())
-}
+export const focused = async (): Promise<Win | null> => front(await windows())
 export const snapshot = (window?: string, o: { pid?: number | null; id?: string; keys?: boolean; menus?: boolean; bounds?: boolean } = {}): Promise<Snap> =>
   call('snapshot', { window, pid: o.pid ?? undefined, id: o.id, keys: o.keys, menus: o.menus, bounds: o.bounds })
 export const outline = async (window?: string): Promise<string> => (await call<{ text: string }>('snapshot', { window, text: true })).text

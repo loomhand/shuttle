@@ -129,7 +129,7 @@ export async function main(p: Params): Promise<Result> {
 async function perform(p: Params): Promise<Result> {
   const t0 = Date.now()
   if (!FLOWS) return { ok: false, error: 'SHUTTLE_FLOWS names no flows directory' }
-  try { flowsDir() } catch {}
+  try { mkdirSync(FLOWS, { recursive: true, mode: 0o700 }); chmodSync(FLOWS, 0o700) } catch {}
   if (p.reindex) { repo(); writeIndex(); git('add', '-A'); git('commit', '-q', '-m', 'sync from the flow library'); return { ok: true } }
   if (p.find) return await find(p.find)
   if (p.locate) return await locate(p.locate.target, p.locate.press ?? false)
@@ -1432,10 +1432,6 @@ function unsecret(steps: Step[], params: Record<string, string>) {
   const out = { ...params }
   for (const s of steps) if (typeof s.focus === 'object' && s.focus.secure && s.type) for (const [, n] of s.type.matchAll(/\{\{(\w+)/g)) if (n) delete out[n]
   return out
-}
-
-function flowsDir() {
-  mkdirSync(FLOWS, { recursive: true, mode: 0o700 }); chmodSync(FLOWS, 0o700)
 }
 
 function git(...args: string[]) {
