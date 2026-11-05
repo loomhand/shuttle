@@ -66,11 +66,7 @@ impl Driver {
     pub fn new(endpoint: String) -> Self {
         Self {
             endpoint,
-            started: [
-                AtomicBool::new(false),
-                AtomicBool::new(false),
-                AtomicBool::new(false),
-            ],
+            started: Default::default(),
             calls: AtomicU64::new(0),
             last_click: Mutex::new(None),
             last_input: std::sync::Mutex::new(None),
