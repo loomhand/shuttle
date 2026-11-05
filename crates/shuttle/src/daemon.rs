@@ -537,164 +537,6 @@ mod tests {
 
     use super::*;
 
-    struct Echo;
-
-    impl Handler for Echo {
-        async fn answer(&self, call: Call) -> Output {
-            Output::text(format!("desk answered {}", call.tool))
-        }
-    }
-
-    #[derive(Clone, Default)]
-    struct Releases(Arc<Mutex<Vec<String>>>);
-
-    impl Handler for Releases {
-        async fn answer(&self, call: Call) -> Output {
-            Output::text(format!("desk answered {}", call.tool))
-        }
-
-        fn release(&self, holder: &str) {
-            self.0.lock().unwrap().push(holder.to_owned());
-        }
-    }
-
-    #[derive(Clone, Default)]
-    struct Allowed(Arc<AtomicUsize>);
-
-    impl Handler for Allowed {
-        async fn answer(&self, call: Call) -> Output {
-            Output::text(format!("desk answered {}", call.tool))
-        }
-
-        fn allowed(&self) {
-            self.0.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    struct Slow;
-
-    impl Handler for Slow {
-        async fn answer(&self, _: Call) -> Output {
-            tokio::time::sleep(Duration::from_secs(10)).await;
-            Output::text("too late")
-        }
-    }
-
-    struct Typing;
-
-    impl Handler for Typing {
-        async fn answer(&self, call: Call) -> Output {
-            if call.tool == "desk_type" {
-                tokio::time::sleep(Duration::from_millis(300)).await;
-            }
-            Output::text(format!("desk answered {}", call.tool))
-        }
-    }
-
-    #[cfg(unix)]
-    #[derive(Clone, Default)]
-    struct Keys(Arc<Mutex<Vec<String>>>);
-
-    #[cfg(unix)]
-    impl Handler for Keys {
-        async fn answer(&self, call: Call) -> Output {
-            if let Some(k) = call.args["keys"].as_str() {
-                self.0.lock().unwrap().push(k.to_owned());
-            }
-            Output::text("{}")
-        }
-    }
-
-    fn call(tool: &str, args: Value) -> Call {
-        Call {
-            agent_id: String::new(),
-            tool: tool.into(),
-            args,
-        }
-    }
-
-    fn runner() -> Runner {
-        runner_at(
-            "unused".into(),
-            std::env::temp_dir().join("shuttle-test-flows"),
-        )
-    }
-
-    fn runner_at(endpoint: String, flows: PathBuf) -> Runner {
-        let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
-        Runner::new("node".into(), runtime, endpoint, flows, Vec::new())
-    }
-
-    fn daemon<H: Handler>(desk: H, guard: Guard) -> Daemon<H> {
-        Daemon::new(desk, Ok(Models::new(Config::default())), runner(), guard)
-    }
-
-    fn held() -> (Asker, Arc<Mutex<Option<oneshot::Sender<bool>>>>) {
-        let pending = Arc::new(Mutex::new(None));
-        let held = pending.clone();
-        let asker: Asker = Arc::new(move |_| {
-            let (tx, rx) = oneshot::channel();
-            *held.lock().unwrap() = Some(tx);
-            rx
-        });
-        (asker, pending)
-    }
-
-    fn demo(bin: PathBuf) -> Plugin {
-        Plugin {
-            name: "demo_run".into(),
-            description: "Run a demo script.".into(),
-            bin,
-            resources: Vec::new(),
-        }
-    }
-
-    #[cfg(unix)]
-    async fn served(wait: Duration) -> (Arc<Daemon<Keys>>, Keys, tempfile::TempDir) {
-        served_with(wait, Vec::new()).await
-    }
-
-    #[cfg(unix)]
-    async fn served_with(
-        wait: Duration,
-        plugins: Vec<Plugin>,
-    ) -> (Arc<Daemon<Keys>>, Keys, tempfile::TempDir) {
-        let dir = tempfile::tempdir().unwrap();
-        let endpoint = dir.path().join("d.sock").to_string_lossy().into_owned();
-        let keys = Keys::default();
-        let mut d = Daemon::new(
-            keys.clone(),
-            Ok(Models::new(Config::default())),
-            runner_at(endpoint.clone(), dir.path().join("flows")),
-            Guard::default(),
-        )
-        .with_plugins(plugins);
-        d.wait = wait;
-        let d = Arc::new(d);
-        tokio::spawn({
-            let (d, endpoint) = (Arc::clone(&d), endpoint.clone());
-            async move {
-                shuttle_desk::server::serve(d, shuttle_desk::server::bind(&endpoint).await?).await
-            }
-        });
-        for _ in 0..50 {
-            if shuttle_desk::server::connect(&endpoint).await.is_ok() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        (d, keys, dir)
-    }
-
-    #[cfg(unix)]
-    fn script(code: &str) -> Call {
-        Call {
-            agent_id: "agent".into(),
-            tool: "script_run".into(),
-            args: json!({"code": code}),
-        }
-    }
-
     #[tokio::test]
     async fn stop_ends_a_desk_call_in_flight() {
         let d = Arc::new(daemon(Slow, Guard::default()));
@@ -1298,20 +1140,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn started_child(pid_file: &Path) -> i32 {
-        for _ in 0..200 {
-            if let Some(pid) = std::fs::read_to_string(pid_file)
-                .ok()
-                .and_then(|pid| pid.trim().parse().ok())
-            {
-                return pid;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        panic!("the run started no child");
-    }
-
-    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_closed_connection_kills_its_run_with_its_children_and_frees_the_turn() {
         let (d, _keys, dir) = served(Duration::from_secs(10)).await;
@@ -1447,5 +1275,177 @@ mod tests {
         assert_eq!(*keys.0.lock().unwrap(), ["p"]);
         let argv = std::fs::read_to_string(bins.path().join("demo-bin.argv")).unwrap();
         assert!(argv.contains("entry."), "{argv}");
+    }
+
+    struct Echo;
+
+    impl Handler for Echo {
+        async fn answer(&self, call: Call) -> Output {
+            Output::text(format!("desk answered {}", call.tool))
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct Releases(Arc<Mutex<Vec<String>>>);
+
+    impl Handler for Releases {
+        async fn answer(&self, call: Call) -> Output {
+            Output::text(format!("desk answered {}", call.tool))
+        }
+
+        fn release(&self, holder: &str) {
+            self.0.lock().unwrap().push(holder.to_owned());
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct Allowed(Arc<AtomicUsize>);
+
+    impl Handler for Allowed {
+        async fn answer(&self, call: Call) -> Output {
+            Output::text(format!("desk answered {}", call.tool))
+        }
+
+        fn allowed(&self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct Slow;
+
+    impl Handler for Slow {
+        async fn answer(&self, _: Call) -> Output {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            Output::text("too late")
+        }
+    }
+
+    struct Typing;
+
+    impl Handler for Typing {
+        async fn answer(&self, call: Call) -> Output {
+            if call.tool == "desk_type" {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            Output::text(format!("desk answered {}", call.tool))
+        }
+    }
+
+    #[cfg(unix)]
+    #[derive(Clone, Default)]
+    struct Keys(Arc<Mutex<Vec<String>>>);
+
+    #[cfg(unix)]
+    impl Handler for Keys {
+        async fn answer(&self, call: Call) -> Output {
+            if let Some(k) = call.args["keys"].as_str() {
+                self.0.lock().unwrap().push(k.to_owned());
+            }
+            Output::text("{}")
+        }
+    }
+
+    fn call(tool: &str, args: Value) -> Call {
+        Call {
+            agent_id: String::new(),
+            tool: tool.into(),
+            args,
+        }
+    }
+
+    fn runner() -> Runner {
+        runner_at(
+            "unused".into(),
+            std::env::temp_dir().join("shuttle-test-flows"),
+        )
+    }
+
+    fn runner_at(endpoint: String, flows: PathBuf) -> Runner {
+        let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
+        Runner::new("node".into(), runtime, endpoint, flows, Vec::new())
+    }
+
+    fn daemon<H: Handler>(desk: H, guard: Guard) -> Daemon<H> {
+        Daemon::new(desk, Ok(Models::new(Config::default())), runner(), guard)
+    }
+
+    fn held() -> (Asker, Arc<Mutex<Option<oneshot::Sender<bool>>>>) {
+        let pending = Arc::new(Mutex::new(None));
+        let held = pending.clone();
+        let asker: Asker = Arc::new(move |_| {
+            let (tx, rx) = oneshot::channel();
+            *held.lock().unwrap() = Some(tx);
+            rx
+        });
+        (asker, pending)
+    }
+
+    fn demo(bin: PathBuf) -> Plugin {
+        Plugin {
+            name: "demo_run".into(),
+            description: "Run a demo script.".into(),
+            bin,
+            resources: Vec::new(),
+        }
+    }
+
+    #[cfg(unix)]
+    async fn served(wait: Duration) -> (Arc<Daemon<Keys>>, Keys, tempfile::TempDir) {
+        served_with(wait, Vec::new()).await
+    }
+
+    #[cfg(unix)]
+    async fn served_with(
+        wait: Duration,
+        plugins: Vec<Plugin>,
+    ) -> (Arc<Daemon<Keys>>, Keys, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("d.sock").to_string_lossy().into_owned();
+        let keys = Keys::default();
+        let mut d = Daemon::new(
+            keys.clone(),
+            Ok(Models::new(Config::default())),
+            runner_at(endpoint.clone(), dir.path().join("flows")),
+            Guard::default(),
+        )
+        .with_plugins(plugins);
+        d.wait = wait;
+        let d = Arc::new(d);
+        tokio::spawn({
+            let (d, endpoint) = (Arc::clone(&d), endpoint.clone());
+            async move {
+                shuttle_desk::server::serve(d, shuttle_desk::server::bind(&endpoint).await?).await
+            }
+        });
+        for _ in 0..50 {
+            if shuttle_desk::server::connect(&endpoint).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        (d, keys, dir)
+    }
+
+    #[cfg(unix)]
+    fn script(code: &str) -> Call {
+        Call {
+            agent_id: "agent".into(),
+            tool: "script_run".into(),
+            args: json!({"code": code}),
+        }
+    }
+
+    #[cfg(unix)]
+    async fn started_child(pid_file: &Path) -> i32 {
+        for _ in 0..200 {
+            if let Some(pid) = std::fs::read_to_string(pid_file)
+                .ok()
+                .and_then(|pid| pid.trim().parse().ok())
+            {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("the run started no child");
     }
 }

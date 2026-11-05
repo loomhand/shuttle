@@ -446,129 +446,6 @@ mark("pid", str(os.getpid()))
 server.serve_forever()
 "#;
 
-    struct Served {
-        dir: tempfile::TempDir,
-        endpoint: String,
-        daemon: Arc<Daemon<NoDesk>>,
-        services: Option<Services>,
-        plugins: Plugins,
-    }
-
-    impl Served {
-        fn state(&self, name: &str) -> PathBuf {
-            self.dir.path().join("state").join(name)
-        }
-
-        fn pid(&self) -> Option<i32> {
-            std::fs::read_to_string(self.state("pid"))
-                .ok()?
-                .parse()
-                .ok()
-        }
-
-        async fn open(&self, tool: &str, args: Value) -> Conn {
-            let mut conn = server::connect(&self.endpoint).await.unwrap();
-            let call = Call {
-                agent_id: "agent-1".into(),
-                tool: tool.into(),
-                args,
-            };
-            write_frame(&mut conn, &call).await.unwrap();
-            conn
-        }
-
-        async fn echo(&self) -> Output {
-            read_frame(&mut self.open("demo_echo", json!({"say": "hi"})).await)
-                .await
-                .unwrap()
-        }
-
-        async fn restarted(&self, first: i32) -> i32 {
-            let mut second = first;
-            crate::until(100, || {
-                second = self.pid().unwrap_or(first);
-                second != first
-            })
-            .await;
-            second
-        }
-
-        async fn stop(mut self) {
-            if let Some(s) = self.services.take() {
-                s.stop().await;
-            }
-        }
-    }
-
-    async fn served(guard: Guard) -> Served {
-        let dir = tempfile::tempdir().unwrap();
-        let state = dir.path().join("state");
-        std::fs::create_dir(&state).unwrap();
-        let bin = dir.path().join("demo-service");
-        crate::script(&bin, FAKE).unwrap();
-        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
-        let tool = |name: &str, mcp: bool| json!({"name": name, "description": name, "input_schema": {"type": "object", "properties": {"say": {"type": "string"}}}, "mcp": mcp});
-        let plugins = Plugins {
-            runs: Vec::new(),
-            services: vec![
-                serde_json::from_value(json!({
-                    "service": "demo",
-                    "bin": bin,
-                    "args": [state],
-                    "tools": [tool("demo_echo", true), tool("demo_stream", false), tool("demo_blob", false), tool("demo_hold", false), tool("demo_early", false)],
-                }))
-                .unwrap(),
-            ],
-        };
-        let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
-        let runner = Runner::new(
-            "node".into(),
-            runtime,
-            endpoint.clone(),
-            dir.path().join("flows"),
-            Vec::new(),
-        );
-        let daemon = Arc::new(
-            Daemon::new(NoDesk, Ok(Models::new(Config::default())), runner, guard)
-                .with_services(routes(&plugins.services, &endpoint)),
-        );
-        let listener = server::bind(&endpoint).await.unwrap();
-        let services =
-            Services::start(&plugins.services, &endpoint, &["CARGO_PKG_NAME".to_owned()]).unwrap();
-        tokio::spawn(server::serve(Arc::clone(&daemon), listener));
-        let served = Served {
-            dir,
-            endpoint,
-            daemon,
-            services: Some(services),
-            plugins,
-        };
-        for _ in 0..100 {
-            if served.pid().is_some() {
-                break;
-            }
-            tokio::time::sleep(POLL).await;
-        }
-        served
-    }
-
-    fn control(tool: &str) -> Call {
-        Call {
-            agent_id: String::new(),
-            tool: tool.into(),
-            args: json!({}),
-        }
-    }
-
-    fn alive(pid: i32) -> bool {
-        // SAFETY: signal 0 only checks that the process exists.
-        unsafe { libc::kill(pid, 0) == 0 }
-    }
-
-    async fn appears(path: &Path) -> bool {
-        crate::until(100, || path.exists()).await
-    }
-
     #[tokio::test]
     async fn a_call_reaches_the_service_byte_for_byte_and_the_service_gets_its_environment() {
         let s = served(Guard::default()).await;
@@ -805,6 +682,212 @@ server.serve_forever()
         s.stop().await;
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "a microbench: cargo test -p shuttle --release splice_cost -- --ignored --nocapture"]
+    async fn splice_cost() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        crate::private_dir(&super::dir(&endpoint)).unwrap();
+        let socket = socket(&endpoint, "bench");
+        tokio::spawn(bench_service(socket.clone()));
+        let runner = Runner::new(
+            "node".into(),
+            dir.path().into(),
+            endpoint.clone(),
+            dir.path().join("flows"),
+            Vec::new(),
+        );
+        let routes = ["bench_echo", "bench_sink"]
+            .map(|t| (t.to_owned(), socket.clone()))
+            .into();
+        let daemon = Arc::new(
+            Daemon::new(
+                NoDesk,
+                Ok(Models::new(Config::default())),
+                runner,
+                Guard::default(),
+            )
+            .with_services(routes),
+        );
+        tokio::spawn(server::serve(
+            daemon,
+            server::bind(&endpoint).await.unwrap(),
+        ));
+        listening(&socket).await.unwrap();
+        let (mut direct, mut spliced) = (Vec::new(), Vec::new());
+        for round in 0..40 {
+            let order = if round % 2 == 0 {
+                [&socket, &endpoint]
+            } else {
+                [&endpoint, &socket]
+            };
+            for at in order {
+                for _ in 0..50 {
+                    let d = bench_call(at, "bench_echo", 0).await;
+                    if at == &socket {
+                        direct.push(d)
+                    } else {
+                        spliced.push(d)
+                    }
+                }
+            }
+        }
+        let p = |v: &mut Vec<Duration>, q: usize| {
+            v.sort();
+            v[v.len() * q / 100].as_secs_f64() * 1e6
+        };
+        let (d50, d90, s50, s90) = (
+            p(&mut direct, 50),
+            p(&mut direct, 90),
+            p(&mut spliced, 50),
+            p(&mut spliced, 90),
+        );
+        println!(
+            "1 KB call, {} each, ABBA: direct p50 {d50:.1} us p90 {d90:.1} us; spliced p50 {s50:.1} us p90 {s90:.1} us; added p50 {:.1} us",
+            direct.len(),
+            s50 - d50
+        );
+        let mut big = [Vec::new(), Vec::new()];
+        for round in 0..6 {
+            let order = if round % 2 == 0 { [0, 1] } else { [1, 0] };
+            for arm in order {
+                let at = if arm == 0 { &socket } else { &endpoint };
+                big[arm].push(bench_call(at, "bench_sink", 64).await);
+            }
+        }
+        for (arm, name) in [(0, "direct"), (1, "spliced")] {
+            let best = big[arm].iter().min().unwrap().as_secs_f64();
+            println!(
+                "64 MiB {name}: best {:.1} ms, {:.0} MiB/s",
+                best * 1e3,
+                64.0 / best
+            );
+        }
+    }
+
+    struct Served {
+        dir: tempfile::TempDir,
+        endpoint: String,
+        daemon: Arc<Daemon<NoDesk>>,
+        services: Option<Services>,
+        plugins: Plugins,
+    }
+
+    impl Served {
+        fn state(&self, name: &str) -> PathBuf {
+            self.dir.path().join("state").join(name)
+        }
+
+        fn pid(&self) -> Option<i32> {
+            std::fs::read_to_string(self.state("pid"))
+                .ok()?
+                .parse()
+                .ok()
+        }
+
+        async fn open(&self, tool: &str, args: Value) -> Conn {
+            let mut conn = server::connect(&self.endpoint).await.unwrap();
+            let call = Call {
+                agent_id: "agent-1".into(),
+                tool: tool.into(),
+                args,
+            };
+            write_frame(&mut conn, &call).await.unwrap();
+            conn
+        }
+
+        async fn echo(&self) -> Output {
+            read_frame(&mut self.open("demo_echo", json!({"say": "hi"})).await)
+                .await
+                .unwrap()
+        }
+
+        async fn restarted(&self, first: i32) -> i32 {
+            let mut second = first;
+            crate::until(100, || {
+                second = self.pid().unwrap_or(first);
+                second != first
+            })
+            .await;
+            second
+        }
+
+        async fn stop(mut self) {
+            if let Some(s) = self.services.take() {
+                s.stop().await;
+            }
+        }
+    }
+
+    async fn served(guard: Guard) -> Served {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let bin = dir.path().join("demo-service");
+        crate::script(&bin, FAKE).unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let tool = |name: &str, mcp: bool| json!({"name": name, "description": name, "input_schema": {"type": "object", "properties": {"say": {"type": "string"}}}, "mcp": mcp});
+        let plugins = Plugins {
+            runs: Vec::new(),
+            services: vec![
+                serde_json::from_value(json!({
+                    "service": "demo",
+                    "bin": bin,
+                    "args": [state],
+                    "tools": [tool("demo_echo", true), tool("demo_stream", false), tool("demo_blob", false), tool("demo_hold", false), tool("demo_early", false)],
+                }))
+                .unwrap(),
+            ],
+        };
+        let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
+        let runner = Runner::new(
+            "node".into(),
+            runtime,
+            endpoint.clone(),
+            dir.path().join("flows"),
+            Vec::new(),
+        );
+        let daemon = Arc::new(
+            Daemon::new(NoDesk, Ok(Models::new(Config::default())), runner, guard)
+                .with_services(routes(&plugins.services, &endpoint)),
+        );
+        let listener = server::bind(&endpoint).await.unwrap();
+        let services =
+            Services::start(&plugins.services, &endpoint, &["CARGO_PKG_NAME".to_owned()]).unwrap();
+        tokio::spawn(server::serve(Arc::clone(&daemon), listener));
+        let served = Served {
+            dir,
+            endpoint,
+            daemon,
+            services: Some(services),
+            plugins,
+        };
+        for _ in 0..100 {
+            if served.pid().is_some() {
+                break;
+            }
+            tokio::time::sleep(POLL).await;
+        }
+        served
+    }
+
+    fn control(tool: &str) -> Call {
+        Call {
+            agent_id: String::new(),
+            tool: tool.into(),
+            args: json!({}),
+        }
+    }
+
+    fn alive(pid: i32) -> bool {
+        // SAFETY: signal 0 only checks that the process exists.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    async fn appears(path: &Path) -> bool {
+        crate::until(100, || path.exists()).await
+    }
+
     async fn stale_copy_is_stopped(leader: bool) {
         use std::os::unix::process::CommandExt;
 
@@ -895,89 +978,6 @@ server.serve_forever()
         assert_eq!(out.text, "ok");
         started.elapsed()
     }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[ignore = "a microbench: cargo test -p shuttle --release splice_cost -- --ignored --nocapture"]
-    async fn splice_cost() {
-        let dir = tempfile::tempdir().unwrap();
-        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
-        crate::private_dir(&super::dir(&endpoint)).unwrap();
-        let socket = socket(&endpoint, "bench");
-        tokio::spawn(bench_service(socket.clone()));
-        let runner = Runner::new(
-            "node".into(),
-            dir.path().into(),
-            endpoint.clone(),
-            dir.path().join("flows"),
-            Vec::new(),
-        );
-        let routes = ["bench_echo", "bench_sink"]
-            .map(|t| (t.to_owned(), socket.clone()))
-            .into();
-        let daemon = Arc::new(
-            Daemon::new(
-                NoDesk,
-                Ok(Models::new(Config::default())),
-                runner,
-                Guard::default(),
-            )
-            .with_services(routes),
-        );
-        tokio::spawn(server::serve(
-            daemon,
-            server::bind(&endpoint).await.unwrap(),
-        ));
-        listening(&socket).await.unwrap();
-        let (mut direct, mut spliced) = (Vec::new(), Vec::new());
-        for round in 0..40 {
-            let order = if round % 2 == 0 {
-                [&socket, &endpoint]
-            } else {
-                [&endpoint, &socket]
-            };
-            for at in order {
-                for _ in 0..50 {
-                    let d = bench_call(at, "bench_echo", 0).await;
-                    if at == &socket {
-                        direct.push(d)
-                    } else {
-                        spliced.push(d)
-                    }
-                }
-            }
-        }
-        let p = |v: &mut Vec<Duration>, q: usize| {
-            v.sort();
-            v[v.len() * q / 100].as_secs_f64() * 1e6
-        };
-        let (d50, d90, s50, s90) = (
-            p(&mut direct, 50),
-            p(&mut direct, 90),
-            p(&mut spliced, 50),
-            p(&mut spliced, 90),
-        );
-        println!(
-            "1 KB call, {} each, ABBA: direct p50 {d50:.1} us p90 {d90:.1} us; spliced p50 {s50:.1} us p90 {s90:.1} us; added p50 {:.1} us",
-            direct.len(),
-            s50 - d50
-        );
-        let mut big = [Vec::new(), Vec::new()];
-        for round in 0..6 {
-            let order = if round % 2 == 0 { [0, 1] } else { [1, 0] };
-            for arm in order {
-                let at = if arm == 0 { &socket } else { &endpoint };
-                big[arm].push(bench_call(at, "bench_sink", 64).await);
-            }
-        }
-        for (arm, name) in [(0, "direct"), (1, "spliced")] {
-            let best = big[arm].iter().min().unwrap().as_secs_f64();
-            println!(
-                "64 MiB {name}: best {:.1} ms, {:.0} MiB/s",
-                best * 1e3,
-                64.0 / best
-            );
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1006,37 +1006,6 @@ while ($true) {
   $p.Write($len, 0, 4); $p.Write($out, 0, $out.Length); $p.Flush(); $p.WaitForPipeDrain(); $p.Dispose()
 }
 "#;
-
-    fn service(bin: &str, args: Vec<String>) -> Service {
-        Service {
-            service: "demo".into(),
-            bin: bin.into(),
-            args,
-            tools: vec![ServiceTool {
-                name: "demo_ping".into(),
-                description: "d".into(),
-                input_schema: json!({"type": "object"}),
-                mcp: true,
-            }],
-        }
-    }
-
-    fn body() -> Zeroizing<Vec<u8>> {
-        let call = Call {
-            agent_id: "a".into(),
-            tool: "demo_ping".into(),
-            args: json!({}),
-        };
-        Zeroizing::new(serde_json::to_vec(&call).unwrap())
-    }
-
-    fn alive(pid: &str) -> bool {
-        let out = std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-            .output()
-            .unwrap();
-        String::from_utf8_lossy(&out.stdout).contains(pid)
-    }
 
     #[tokio::test]
     async fn a_service_serves_its_pipe_and_a_stop_ends_it_with_the_process_it_started() {
@@ -1127,6 +1096,73 @@ while ($true) {
             .unwrap();
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reply_the_service_sends_before_it_closes_reaches_a_caller_that_reads_late() {
+        let mut runs = JoinSet::new();
+        for size in [64 << 10, 1 << 20] {
+            for run in 0..20 {
+                runs.spawn(reply_through(size, run));
+            }
+        }
+        let lost: Vec<String> = runs
+            .join_all()
+            .await
+            .into_iter()
+            .filter_map(Result::err)
+            .collect();
+        assert!(lost.is_empty(), "{lost:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pipe_that_stays_busy_fails_the_call_after_the_listen_wait() {
+        let pipe = format!(r"\\.\pipe\shuttle-test-busy-{}", std::process::id());
+        let _service = tokio::net::windows::named_pipe::ServerOptions::new()
+            .max_instances(1)
+            .create(&pipe)
+            .unwrap();
+        let _held = tokio::net::windows::named_pipe::ClientOptions::new()
+            .open(&pipe)
+            .unwrap();
+        let start = tokio::time::Instant::now();
+        let err = listening(&pipe).await.unwrap_err();
+        assert!(
+            err.contains("no service listens") && start.elapsed() >= LISTEN_WAIT,
+            "{err} after {:?}",
+            start.elapsed()
+        );
+    }
+
+    fn service(bin: &str, args: Vec<String>) -> Service {
+        Service {
+            service: "demo".into(),
+            bin: bin.into(),
+            args,
+            tools: vec![ServiceTool {
+                name: "demo_ping".into(),
+                description: "d".into(),
+                input_schema: json!({"type": "object"}),
+                mcp: true,
+            }],
+        }
+    }
+
+    fn body() -> Zeroizing<Vec<u8>> {
+        let call = Call {
+            agent_id: "a".into(),
+            tool: "demo_ping".into(),
+            args: json!({}),
+        };
+        Zeroizing::new(serde_json::to_vec(&call).unwrap())
+    }
+
+    fn alive(pid: &str) -> bool {
+        let out = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).contains(pid)
+    }
+
     async fn reply_through(size: usize, run: usize) -> Result<(), String> {
         use tokio::net::windows::named_pipe::ServerOptions;
 
@@ -1166,41 +1202,5 @@ while ($true) {
         } else {
             Err(format!("{size} bytes, run {run}: {} arrived", got.len()))
         }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_reply_the_service_sends_before_it_closes_reaches_a_caller_that_reads_late() {
-        let mut runs = JoinSet::new();
-        for size in [64 << 10, 1 << 20] {
-            for run in 0..20 {
-                runs.spawn(reply_through(size, run));
-            }
-        }
-        let lost: Vec<String> = runs
-            .join_all()
-            .await
-            .into_iter()
-            .filter_map(Result::err)
-            .collect();
-        assert!(lost.is_empty(), "{lost:?}");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_pipe_that_stays_busy_fails_the_call_after_the_listen_wait() {
-        let pipe = format!(r"\\.\pipe\shuttle-test-busy-{}", std::process::id());
-        let _service = tokio::net::windows::named_pipe::ServerOptions::new()
-            .max_instances(1)
-            .create(&pipe)
-            .unwrap();
-        let _held = tokio::net::windows::named_pipe::ClientOptions::new()
-            .open(&pipe)
-            .unwrap();
-        let start = tokio::time::Instant::now();
-        let err = listening(&pipe).await.unwrap_err();
-        assert!(
-            err.contains("no service listens") && start.elapsed() >= LISTEN_WAIT,
-            "{err} after {:?}",
-            start.elapsed()
-        );
     }
 }

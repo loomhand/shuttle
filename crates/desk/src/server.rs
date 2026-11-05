@@ -1133,20 +1133,6 @@ mod tests {
 mod pipe_tests {
     use super::*;
 
-    #[cfg(windows)]
-    struct Guarded;
-
-    #[cfg(windows)]
-    impl Handler for Guarded {
-        async fn answer(&self, call: Call) -> Output {
-            Output::text(format!("{} answered", call.tool))
-        }
-
-        fn owner_only(&self, tool: &str) -> bool {
-            tool == "halt"
-        }
-    }
-
     #[test]
     fn the_pipe_admits_system_and_its_user_and_a_group_reads_and_writes_without_making_instances() {
         assert_eq!(
@@ -1267,5 +1253,19 @@ mod pipe_tests {
         .unwrap();
         assert_eq!((out.is_error, out.text.as_str()), (false, "halt answered"));
         server.abort();
+    }
+
+    #[cfg(windows)]
+    struct Guarded;
+
+    #[cfg(windows)]
+    impl Handler for Guarded {
+        async fn answer(&self, call: Call) -> Output {
+            Output::text(format!("{} answered", call.tool))
+        }
+
+        fn owner_only(&self, tool: &str) -> bool {
+            tool == "halt"
+        }
     }
 }

@@ -101,17 +101,6 @@ pub fn cli_args(rest: &[String]) -> Result<Value, String> {
 mod tests {
     use super::*;
 
-    struct N(&'static str, &'static str);
-
-    impl Named for N {
-        fn name(&self) -> &str {
-            self.0
-        }
-        fn role(&self) -> &str {
-            self.1
-        }
-    }
-
     #[test]
     fn names_compare_without_label_punctuation() {
         assert_eq!(norm("  _Save As...  "), "save as");
@@ -155,5 +144,16 @@ mod tests {
             json!({"id": "1/2"})
         );
         assert!(cli_args(&["nope".into()]).is_err());
+    }
+
+    struct N(&'static str, &'static str);
+
+    impl Named for N {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn role(&self) -> &str {
+            self.1
+        }
     }
 }

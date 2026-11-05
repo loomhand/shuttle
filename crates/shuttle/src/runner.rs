@@ -366,24 +366,6 @@ mod tests {
     #[cfg(unix)]
     const ON_TERM: &str = "import { writeFileSync } from 'node:fs'\nexport async function main({ marker }) { process.on('SIGTERM', () => { writeFileSync(marker, 'term'); process.exit(0) }); writeFileSync(`${marker}.ready`, ''); await new Promise((r) => setTimeout(r, 30000)) }";
 
-    fn runner(dir: &Path) -> Runner {
-        let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib/entry.mts");
-        std::fs::copy(lib, dir.join("entry.mts")).unwrap();
-        std::fs::write(dir.join("desk.mts"), "export const here = true\n").unwrap();
-        std::fs::write(
-            dir.join("gui_plan.mts"),
-            "export async function main(p) { return { ok: true, steps: p.steps.length, socket: process.env.SHUTTLE_SOCKET, home: process.env.HOME === undefined && process.env.CARGO_PKG_NAME === undefined } }\n",
-        )
-        .unwrap();
-        Runner::new(
-            "node".into(),
-            dir.to_path_buf(),
-            "/tmp/desk.sock".into(),
-            dir.join("flows"),
-            vec!["HOME".into(), "CARGO_PKG_NAME".into()],
-        )
-    }
-
     #[tokio::test]
     async fn a_run_knows_whether_desk_input_goes_in_the_background() {
         let dir = tempfile::tempdir().unwrap();
@@ -497,16 +479,6 @@ mod tests {
             stray,
             "the detached pipe holder is gone, so the test proves nothing"
         );
-    }
-
-    #[cfg(unix)]
-    fn alive(pid: &str) -> bool {
-        let out = std::process::Command::new("ps")
-            .args(["-o", "stat=", "-p", pid.trim()])
-            .output()
-            .unwrap();
-        let stat = String::from_utf8_lossy(&out.stdout);
-        !stat.trim().is_empty() && !stat.trim_start().starts_with('Z')
     }
 
     #[cfg(unix)]
@@ -893,5 +865,33 @@ mod tests {
             out,
             json!({"ok": true, "steps": 2, "socket": "/tmp/desk.sock", "home": true})
         );
+    }
+
+    fn runner(dir: &Path) -> Runner {
+        let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib/entry.mts");
+        std::fs::copy(lib, dir.join("entry.mts")).unwrap();
+        std::fs::write(dir.join("desk.mts"), "export const here = true\n").unwrap();
+        std::fs::write(
+            dir.join("gui_plan.mts"),
+            "export async function main(p) { return { ok: true, steps: p.steps.length, socket: process.env.SHUTTLE_SOCKET, home: process.env.HOME === undefined && process.env.CARGO_PKG_NAME === undefined } }\n",
+        )
+        .unwrap();
+        Runner::new(
+            "node".into(),
+            dir.to_path_buf(),
+            "/tmp/desk.sock".into(),
+            dir.join("flows"),
+            vec!["HOME".into(), "CARGO_PKG_NAME".into()],
+        )
+    }
+
+    #[cfg(unix)]
+    fn alive(pid: &str) -> bool {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", pid.trim()])
+            .output()
+            .unwrap();
+        let stat = String::from_utf8_lossy(&out.stdout);
+        !stat.trim().is_empty() && !stat.trim_start().starts_with('Z')
     }
 }

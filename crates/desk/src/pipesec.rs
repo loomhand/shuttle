@@ -233,6 +233,17 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test]
+    async fn a_client_the_group_rights_alone_admit_opens_the_pipe_and_one_without_write_is_refused()
+    {
+        let me = own_sid().unwrap();
+        open("group", &pipe_sddl("SY", Some(me))).await.unwrap();
+        let err = open("readonly", &format!("D:P(A;;GA;;;SY)(A;;0x120089;;;{me})"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(5), "{err}");
+    }
+
     async fn open(case: &str, sddl: &str) -> std::io::Result<()> {
         let name = format!(r"\\.\pipe\shuttle-test-{case}-{}", std::process::id());
         let security = Security::from_sddl(sddl).unwrap();
@@ -244,16 +255,5 @@ mod tests {
         }
         .unwrap();
         crate::server::connect(&name).await.map(drop)
-    }
-
-    #[tokio::test]
-    async fn a_client_the_group_rights_alone_admit_opens_the_pipe_and_one_without_write_is_refused()
-    {
-        let me = own_sid().unwrap();
-        open("group", &pipe_sddl("SY", Some(me))).await.unwrap();
-        let err = open("readonly", &format!("D:P(A;;GA;;;SY)(A;;0x120089;;;{me})"))
-            .await
-            .unwrap_err();
-        assert_eq!(err.raw_os_error(), Some(5), "{err}");
     }
 }
