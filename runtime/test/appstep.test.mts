@@ -168,3 +168,23 @@ test('an app step takes the window of the app it names before a window whose tit
   assert.equal(running.window, 'Inbox')
   assert.ok(!calls.includes('desk_launch'), calls.join(' '))
 })
+
+test('an app step after a launch takes a new window of the launched app, never a window another app retitled meanwhile', async (t) => {
+  const tab = { id: '1', title: 'Docs - Browser', role: 'window', pid: 7, active: true, app: 'Browser' }
+  const mail = { id: '2', title: 'Inbox', role: 'window', pid: 8, active: true, app: 'Mailer' }
+  let lists = -1
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') {
+      if (lists < 0) return JSON.stringify([tab])
+      lists += 1
+      return JSON.stringify(lists < 4 ? [{ ...tab, title: 'News - Browser' }] : [{ ...tab, title: 'News - Browser', active: false }, mail])
+    }
+    if (tool === 'desk_focus') return { text: 'no window', error: true }
+    if (tool === 'desk_launch') { lists = 0; return JSON.stringify({ ok: true, launched: 'Mail' }) }
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: mail, nodes: [], truncated: false })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'Mail' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.window, 'Inbox')
+})

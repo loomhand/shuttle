@@ -1088,7 +1088,7 @@ async function cropState(n: Node, unsent = true) {
 async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.app && s.url) { await openPage(s.app, s.url, rec); return }
   if (s.app) {
-    const ws = await listNow(); const before = new Set(ws.map((w) => w.title))
+    const ws = await listNow(); const before = new Set(ws.map((w) => w.id)); const pids = new Set(ws.map((w) => w.pid))
     let launched = false; let background = false
     const name = norm(s.title ?? s.app); const word = !s.title && /^[\w.-]+$/.test(s.app)
     const entries = word ? entryNames(s.app) : []
@@ -1099,7 +1099,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const own = (w: Win) => titled(w) || (word && (ownedBy(w.pid, name) || entries.some((e) => worded(w.title, e))))
     const mine = (ws: Win[]) => [...ws.filter(named), ...ws.filter(own)]
     let started: Awaited<ReturnType<typeof desk.launch>> | undefined
-    const has = async () => { const ws = await desk.windows(); return mine(ws)[0] ?? (started?.running ? ws.find((w) => w.title === started?.title && w.pid === started?.pid) : launched ? ws.find((w) => w.title && !before.has(w.title)) : undefined) }
+    const has = async () => { const ws = await desk.windows(); return mine(ws)[0] ?? (started?.running ? ws.find((w) => w.title === started?.title && w.pid === started?.pid) : launched ? ws.find((w) => w.title && !before.has(w.id) && (!pids.has(w.pid) || (!!w.app && terms(w.app).some((x) => terms(app).includes(x))))) : undefined) }
     const owned = mine(ws); let w = (BG ? owned.find((x) => !!x.title.trim()) : undefined) ?? owned[0]
     const listed = !w && word && !BG ? await desk.focus(s.app).catch(() => null) : null
     if (listed) { known.add(listed.title); rec.window = lastSeen = listed.title; return }
