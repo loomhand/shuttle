@@ -14,11 +14,10 @@ type Step = {
   timeout_ms?: number; enabled?: boolean; fp?: Fp; seen?: string; blank?: Fp; after?: string; recorded?: Recorded; focus?: Focus | 'unverified'
   button?: string; count?: number; mods?: string[]; url?: string; web?: Web
 }
-// a click as a recording saw it: its target text, a crop around the point at scale pixels per desk unit with the point offset from its centre, the point in its window and that window's size, and whether the point hit no element
-// the element a recording typed into, as a snapshot names it, the role of its window or sheet, and whether it is a password field
+// frame is the role of the field's window or sheet
 type Focus = { role?: string; name?: string; frame?: string; secure?: boolean; id?: string }
-// the page a recorded web step acted on, and the DOM id of its element
 type Web = { url: string; id?: string }
+// scale is crop pixels per desk unit; root means the click hit no element
 type Recorded = { text: string; crop?: string; scale?: number; offset?: [number, number]; at?: [number, number]; size?: [number, number]; root?: boolean }
 type Reads = { keys?: boolean; menus?: boolean }
 type Kept = Reads & { id: string; snap: desk.Snap; nodes: Node[] }
@@ -43,7 +42,6 @@ type Ground = Omit<Grounding, 'what' | 'ok' | 'why' | 'cover'> & { hit: string }
 type Trace = { i: number; op?: string; how?: string; input?: 'foreground'; ms?: number; was?: 'on' | 'off' | 'mixed'; now?: 'on' | 'off'; noop?: boolean; ground?: Ground }
 
 const OS = process.platform
-// with [desk] input = "background" a plan drives its target window, never the front one
 const BEHIND = process.env.SHUTTLE_INPUT === 'background' || process.env.SHUTTLE_INPUT === 'auto'
 const AUTO = process.env.SHUTTLE_INPUT === 'auto'
 const NO_PIXELS = 'background gui_plan does not read the screen, which shows whatever covers the plan\'s window'
@@ -121,7 +119,6 @@ let fronted = false
 let T: Record<string, number> = {}
 let stepWs: { ws: Win[]; at: number } | null = null
 
-/** Runs one gui_plan call: a plan, a saved flow, or a flow-library verb. */
 export async function main(p: Params): Promise<Result> {
   return { ...(await perform(p)), usage: desk.usage }
 }
@@ -262,7 +259,7 @@ async function perform(p: Params): Promise<Result> {
       saved = flow.name
     }
   } else {
-    // a task done over several calls is one chain: it starts at a call whose first step is an app, and later calls extend it from the window it left
+    // a chain spans calls: it starts at an app step, and later calls extend it from the window it left
     const ran = plan.slice(p.start ?? 0, done).map((s, k) => { const r = recs[(p.start ?? 0) + k]; const o: Step = { ...s }; if (r?.fp) o.fp = r.fp; if (r?.seen && !s.app) o.seen = r.seen; if (r?.blank) o.blank = r.blank; return o })
     const dirty = recs.some((r) => r?.unsaved)
     let chain: Chain | null = null; const prev = held
@@ -297,7 +294,6 @@ async function perform(p: Params): Promise<Result> {
   return out
 }
 
-// where a recorded check stopped the plan, for an agent to take over: the step, what it meant, why, and the steps left from it on
 function stopped(plan: Step[], e: Escalation) {
   const step = e.step ?? 0
   const remaining = plan.slice(step).map(({ recorded: _, fp: __, blank: ___, ...s }) => s)
@@ -310,9 +306,7 @@ class Surprise extends Error {
   late: boolean
   constructor(reason: string, seen: Seen = {}, late = false) { super(reason); this.reason = reason; this.seen = seen; this.late = late }
 }
-// the window a step's recording saw after it did not come
 class Diverged extends Surprise {}
-// the app of the plan's window came to the front during a step that sent no fronting call
 class Stolen extends Surprise {
   step: number
   constructor(reason: string, step: number) { super(reason); this.step = step }
@@ -366,7 +360,6 @@ function focusedIn(ws: Win[]) {
   const own = ws.filter((x) => x.title.trim() && ws.some((p) => p.active && !p.title.trim() && p.pid === x.pid))
   return own.find((x) => x.title === lastSeen) ?? own.at(-1) ?? null
 }
-// the window a step acts in: the front one, or in the background the plan's target or the newest window it owns
 function frontOf(ws: Win[]) { return BG ? targetIn(ws) : focusedIn(ws) }
 function targetIn(ws: Win[]): Win | null {
   listed = ws
@@ -382,7 +375,7 @@ function targetIn(ws: Win[]): Win | null {
   }
   const leaves = owned.filter((x) => !owned.some((y) => y.owner === x.id))
   return leaves.find((x) => x.active) ?? leaves.at(-1) ?? live
-  // the OS names a window's owner where it knows it; on macOS one new dialog of the app with no owner after input to the target is the target's
+  // on macOS the one new ownerless dialog of the target's app belongs to the target
   function belongs(x: Win) {
     if (x.owner !== undefined) return mine.has(x.owner)
     if (OS !== 'darwin' || x.pid !== t.pid || x.role === 'window') return false
@@ -458,7 +451,7 @@ function targetRole(s: Step) {
 function reads(s: Step): Reads {
   return { keys: !!(s.menu || s.click), menus: !!s.menu || (!!s.verify && s.on !== undefined) }
 }
-// the preamble's snapshot of the front window serves the step's first read of that window, which comes before any action
+// the preamble snapshot serves the step's first read, which comes before any action
 function reuse(kept: Kept | undefined, w: Win, r: Reads) {
   return kept?.id === w.id && !!kept.keys === !!r.keys && !!kept.menus === !!r.menus && kept.nodes.length > 1 ? kept : null
 }
@@ -489,7 +482,7 @@ async function seen(): Promise<Seen> {
   const windows = ws.filter((x) => x.title && !isShell(x)).map((x) => x.modal ? `${x.title} (modal dialog, ${x.modal})` : x.title)
   return { window: w?.title ?? null, windows, outline: await outline(w, { keys: true }) }
 }
-// a modal dialog of the focused app that the screen does not show takes the app's input: typing lands in it, and clicks do nothing
+// a modal dialog the screen does not show takes its app's input
 async function hiddenModal(ws: Win[], f: Win | null) {
   const of = (list: Win[]) => f && list.find((x) => x.modal && x.pid === f.pid)
   if (!of(ws)) return null
@@ -503,7 +496,7 @@ async function selectLine(w: Win | null) { if (OS === 'darwin') await desk.key(S
 function unanswered(title: string) { return `"${title}" answers no accessibility calls (a dialog opened by an accessibility action blocks its app, and a key would deadlock it): close it with {close: true}, then reopen it by its keyboard shortcut` }
 function isAlert(o: string) { return /^- alert/.test(o) }
 function isDialog(o: string) { return /^- (alert|dialog|file chooser)/.test(o) }
-// a dialog AT-SPI maps before its children answers with its root alone; read it again until the children show
+// AT-SPI can map a dialog before its children, so a first read holds its root alone
 async function filled(w: Win, kept?: Kept) {
   let o = await outline(w, {}, kept, Infinity)
   for (let i = 0; i < 20 && isDialog(o) && !o.trim().includes('\n'); i++) { await sleep(50); o = await outline(w, {}, undefined, Infinity) }
@@ -541,7 +534,7 @@ function ownedBy(pid: number | null, app: string) {
   if (OS !== 'linux' || !pid) return false
   try { return readFileSync(`/proc/${pid}/cmdline`, 'utf8').toLowerCase().split(/[\0/\s]+/).some((x) => x.startsWith(app)) } catch { return false }
 }
-// the names of the desktop entries a launcher script such as localc (`soffice --calc "$@"`) stands for: entries run with its arguments
+// a launcher script such as localc (`soffice --calc "$@"`) stands for the desktop entries run with its arguments
 function entryNames(app: string): string[] {
   if (OS !== 'linux') return []
   try {
@@ -699,14 +692,14 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   return { ...hit.c, how: `${viewed ? 'jev-image' : 'jev'}(${p1.toFixed(2)})`, p: p1, margin: p1 - p2 }
 }
 
-// a menu bar entry that several menu bars repeat (LibreOffice exposes its menu bar more than once) resolves in the first of them
+// LibreOffice repeats its menu bar, so a repeated bar entry resolves in the first one
 function barMenu(nodes: Node[], name: string): Hit | null {
   const tops = nodes.map((n, i) => ({ n, i })).filter(({ n }) => n.role === 'menu' && norm(n.name) === norm(name) && nodes[n.parent]?.role === 'menubar')
   const [first, second] = tops
   return first && second ? { ...first, how: 'ax' } : null
 }
 
-// jev's pick on a screenshot, which tells apart elements of the same name by where they are; on any failure its pick on the text
+// the screenshot tells apart same-named elements by position
 async function pick(target: string, pool: Node[], opts: Record<string, string>) {
   const t0 = Date.now()
   try {
@@ -724,7 +717,6 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>) 
   } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
 
-// a click the tree cannot place: a recorded target takes its crop, then grounding, then its point in a window of the recorded size; a changed target takes grounding alone
 async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec): Promise<[number, number]> {
   const same = r?.text === target
   const roots = !!r?.root
@@ -794,7 +786,6 @@ async function typingInto(want: Focus, w: Win | null) {
   if (want.id && (await desk.read(f.id, { web: true })).dom_id !== want.id) throw new Diverged(`the recording typed into the element with DOM id "${want.id}", and the focused ${f.role} "${f.name}" in "${w.title}" has another`, await seen())
 }
 
-// an app step with a url opens it in that browser and takes the window that shows it
 async function openPage(app: string, url: string, rec: Rec) {
   const t0 = Date.now(); const name = norm(app)
   await desk.launch(app, [url])
@@ -812,7 +803,6 @@ async function openPage(app: string, url: string, rec: Rec) {
   }
 }
 
-// a web step acts only on the page it was recorded on: the address waits for a navigation to finish, then must match
 async function onPage(want: Web, w: Win, nodes?: Node[], read: Reads = {}): Promise<Node[]> {
   let p = await page(w, nodes, read)
   for (const end = Date.now() + ON_PAGE_MS; !samePage(p.url, want.url) && Date.now() < end; await sleep(200)) p = await page(w, undefined, read)
@@ -820,7 +810,7 @@ async function onPage(want: Web, w: Win, nodes?: Node[], read: Reads = {}): Prom
   return p.nodes
 }
 
-// the window's page and its address; a browser that keeps its page tree off gets it on, and the daemon lets it go when the plan ends
+// the daemon turns the web tree off again when the plan ends
 async function page(w: Win, nodes?: Node[], read: Reads = {}): Promise<{ nodes: Node[]; url: string }> {
   let ns = nodes ?? parse(await snapOf(w, read))
   let doc = ns.find((n) => n.role === 'document')
@@ -832,13 +822,11 @@ async function page(w: Win, nodes?: Node[], read: Reads = {}): Promise<{ nodes: 
   return { nodes: ns, url: doc ? (await desk.read(doc.id, { web: true })).url ?? '' : '' }
 }
 
-// origin and path decide; the query, the fragment and a trailing slash do not
 function samePage(a: string, b: string) {
   const at = (u: string) => { try { const x = new URL(u); return `${x.origin}${x.pathname}`.replace(/\/+$/, '') } catch { return u.replace(/[?#].*$/, '').replace(/\/+$/, '') } }
   return !!a && at(a) === at(b)
 }
 
-// a recorded DOM id picks among the elements; where none has it, the name match stands
 async function byDom(nodes: Node[], id: string, hit: Hit | null, target: string, role?: string): Promise<Hit | null> {
   const idOf = async (n: Node) => (await desk.read(n.id, { web: true }).catch(() => null))?.dom_id
   if (hit && await idOf(hit.n) === id) return hit
@@ -859,7 +847,6 @@ async function landed(want: string, ms: number) {
   known.add(f.title); lastSeen = f.title
 }
 
-// where a click at (x, y) lands: refused under another window, in another window or app, and on a window or document root unless a recording clicked one
 async function placed(x: number, y: number, w: Win, roots = false): Promise<Grounding & { found?: desk.El }> {
   let under: Awaited<ReturnType<typeof desk.at>>
   try { under = await desk.at(x, y, w.title, w.pid) } catch (e: unknown) { return { what: '', ok: false, check: 'at-error', why: String(e).slice(0, 120) } }
@@ -969,7 +956,7 @@ async function ready(w: Win) {
   tick('ready', t0)
 }
 
-// a typed line that ends in a newline submits a file chooser: Return until it closes, since the first one may only close the completion popup
+// the first Return may only close the completion popup
 async function submit(w: Win, chooser = false) {
   if (chooser) await ready(w)
   const t0 = Date.now()
@@ -1007,7 +994,6 @@ async function typedInto(w: Win, text: string): Promise<{ fp?: Fp; kept?: Kept }
     return { fp, kept }
   } catch { return {} } finally { tick('blank', t0) }
 }
-// the text of each element of `w` that holds text, by id, read before and after typing the driver may not confirm
 async function texts(w: Win): Promise<Map<string, Text> | null> {
   try {
     const out = new Map<string, Text>()
@@ -1188,7 +1174,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   }
   if (s.wait) { const w = await windowFor(s.wait, s.timeout_ms ?? 5000, s.seen); rec.seen = lastSeen = w.title; return }
   if (s.close) {
-    // close shuts a dialog: the named window, else the focused dialog, else a dialog of the focused app; never an app's main window unless named
+    // close never shuts an app's main window unless the step names it
     const t0 = Date.now(); const ws = s.window ? [] : await listNow(); let w: Win | null = s.window ? await windowFor(s.window, 3000, s.seen) : frontOf(ws)
     const o = w && !s.window ? await outline(w, {}, kept) : ''
     const self = w

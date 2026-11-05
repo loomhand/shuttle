@@ -14,18 +14,18 @@ export type Usage = Record<string, { calls: number; input_tokens: number; output
 export type ImagePart = { type: 'image_url'; image_url: { url: string } }
 export type Served = { model: string; image: boolean; build: string | null; id: string | null }
 export type Size = { left?: number; top?: number; width: number; height: number }
-/** The window that background input goes to, by title or process; required with `[desk] input = "background"`, ignored otherwise. */
+/** The window background input goes to, by title or process; required with `[desk] input = "background"`. */
 export type Target = { window?: string; pid?: number | null }
-/** An input result; background input the driver could not confirm carries `unverified`, so read its effect back before relying on it. */
+/** Background input the driver could not confirm carries `unverified`. */
 export type Sent = { ok: boolean; chars?: number; unverified?: string; input?: 'foreground' }
 type Output = { text: string; is_error: boolean; image_b64?: string }
 type Metered = { usage: { model: string; input_tokens: number; output_tokens: number; cached_tokens: number } }
 type Decided = Metered & { answers: Record<string, Judgment>; served: Omit<Served, 'image'> }
 
-/** How many inputs `[desk] input = "auto"` ran in the foreground after a refusal before anything was sent, their window brought to the front. */
+/** How many inputs `[desk] input = "auto"` ran in the foreground after a refusal. */
 export const foreground = { runs: 0 }
 export const usage: Usage = {}
-/** One entry per decide/look call: the answering model, whether an image went in, and the build and id it named. */
+/** One entry per decide or look call, with the model, build and id that answered. */
 export const served: Served[] = []
 const LOOK_TIMEOUT = 5_000
 
@@ -36,9 +36,8 @@ export function call<T>(op: string, args: Record<string, unknown> = {}): Promise
 }
 
 export const windows = (): Promise<Win[]> => call('windows')
-/** The window the window manager names active when its app lists no window, as an app that stopped answering leaves it; null when there is none. */
+/** The active window of an app that lists no window, as a hung app leaves it; null when there is none. */
 export const unanswered = (): Promise<Win | null> => call('unanswered')
-/** Waits until the window list differs from `since` or `timeout_ms` of waiting passes, and returns the list. */
 export const wait = (since: Win[], timeout_ms: number): Promise<{ changed: boolean; windows: Win[] }> =>
   call('wait', { since, timeout_ms: Math.max(0, Math.round(timeout_ms)) })
 export const front = (ws: Win[]): Win | null => ws.find((w) => w.active && (w.title !== '' || w.role !== 'window')) ?? null
@@ -59,7 +58,7 @@ export const click = async (x: number, y: number, o: { button?: string; count?: 
 export const focus = (window: string, pid?: number | null): Promise<{ ok: boolean; title: string; pid: number | null; path?: string; front?: number | null }> => call('focus', { window, pid: pid ?? undefined })
 export const close = (window: string, pid?: number | null): Promise<unknown> => call('close', { window, pid: pid ?? undefined })
 export const launch = (app: string, args?: string[]): Promise<{ ok: boolean; launched: string; background?: boolean; running?: boolean; title?: string; pid?: number | null }> => call('launch', { app, args })
-/** Turns the web accessibility tree of the browser of process `pid` on or off; `was` says whether it was on. */
+/** Turns a browser's web accessibility tree on or off; `was` is its state before. */
 export const web = (pid: number, on: boolean): Promise<{ ok: boolean; was: boolean }> => call('web', { pid, on })
 export async function screen(): Promise<Size> {
   screenSize ??= await call<Size>('screen')
@@ -72,7 +71,7 @@ export async function shot(r: { x?: number; y?: number; w?: number; h?: number; 
   return Buffer.from(out.image_b64, 'base64')
 }
 
-/** A setting from the environment; an empty value reads as unset. */
+/** An empty environment value reads as unset. */
 export function setting(k: string): string | undefined {
   return process.env[k] || undefined
 }
@@ -80,10 +79,10 @@ export function setting(k: string): string | undefined {
 export const yes = (instructions: string): Question => ({ type: 'noul', instructions })
 export const choice = (instructions: string, criteria: Record<string, string>): Question => ({ type: 'choice', instructions, criteria })
 
-/** The decide model over text or JSON state: a yes question answers {probability}, a choice {choice, confidence, probabilities}. */
+/** A yes question answers {probability}; a choice answers {choice, confidence, probabilities}. */
 export const decide = (state: unknown, questions: Record<string, Question>): Promise<Record<string, Judgment>> => judge(state, questions, false)
 
-/** The same over a state that holds PNG parts (image), within 5 s. */
+/** As decide, over a state with image parts, within 5 s. */
 export const look = (state: unknown[], questions: Record<string, Question>): Promise<Record<string, Judgment>> => judge(state, questions, true, LOOK_TIMEOUT)
 
 export function image(png: Buffer): ImagePart {

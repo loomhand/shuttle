@@ -21,7 +21,7 @@ const NAMED_ROLES = new Set(['button', 'checkbox', 'radio', 'tab', 'link', 'swit
 const CAPTION = 'The image is a crop of a screen; a red ring with four ticks marks the point a user clicked. Name the control under the ring as a short noun phrase a person would use to find it on screen, such as: the Save button. At most 8 words; answer with the phrase only.'
 const RING_PT = 14
 
-/** Turns a recording into a draft gui_plan: one step per action with its intent, the recorded crop and point of each click, the window each action left in front, and `params` for the typed values the caller names. */
+/** Turns a recording into a draft gui_plan, with `params` for the typed values the caller names. */
 export async function main(p: Params): Promise<Draft> {
   const examples = Object.entries(p.params ?? {}).filter(([, v]) => v).sort((a, b) => b[1].length - a[1].length)
   const params: Draft['params'] = Object.fromEntries(examples.map(([k, v]) => [k, { example: v }]))
