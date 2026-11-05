@@ -507,10 +507,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let (allow, background) = (self.allow.clone(), self.bg());
         self.access
             .run(CALL_LIMIT, (), move |b| {
-                let mut frames = b.frames()?;
-                if background {
-                    frames.extend(b.off_space());
-                }
+                let mut frames = shown(b, background)?;
                 frames.retain(|f| allow.admits(f.app.as_deref()));
                 frames.sort_by_key(|f| !f.active);
                 let modals = b.modals();
@@ -591,8 +588,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_key" | "desk_type" => None,
             _ => return Ok(()),
         };
-        let allow = self.allow.clone();
-        let named = self.bg().then(|| {
+        let (allow, background) = (self.allow.clone(), self.bg());
+        let named = background.then(|| {
             (
                 args["window"].as_str().map(str::to_owned),
                 args["pid"].as_u64(),
@@ -607,7 +604,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 None => {
                     let (window, pid) = named.unwrap_or_default();
                     let pid = pid.and_then(|p| u32::try_from(p).ok());
-                    allow.pick(b.frames()?, window.as_deref(), pid).map(drop)
+                    allow
+                        .pick(shown(b, background)?, window.as_deref(), pid)
+                        .map(drop)
                 }
             })
             .await
@@ -1857,7 +1856,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .count()
             == 1;
         if !self.allow.is_open() || !unique {
-            let frames = self.access.run(CALL_LIMIT, (), |b| b.frames()).await?;
+            let background = self.bg();
+            let frames = self
+                .access
+                .run(CALL_LIMIT, (), move |b| shown(b, background))
+                .await?;
             for w in &mut windows {
                 w.app = app_of(&frames, w.pid).map(str::to_owned);
                 let number = w.id.parse::<u32>().ok();
@@ -2241,6 +2244,14 @@ fn words(name: &str) -> Vec<String> {
 }
 
 /// The windows a call picks from: the app of `pid` alone, unless the allowlist needs every window to judge the call.
+fn shown<B: Access>(b: &mut B, background: bool) -> Result<Vec<Frame>, String> {
+    let mut frames = b.frames()?;
+    if background {
+        frames.extend(b.off_space());
+    }
+    Ok(frames)
+}
+
 fn frames<B: Access>(b: &mut B, pid: Option<u32>, allow: &Allow) -> Result<Vec<Frame>, String> {
     match pid {
         Some(p) if allow.is_open() => b.frames_of(p),
@@ -3919,6 +3930,27 @@ pub(crate) mod tests {
         let fore = Desk::new(|| Ok(Apps), Spaces(Arc::clone(&calls)), Os::Mac);
         let listed = fore.run("desk_windows", json!({})).await.unwrap().text;
         assert!(!listed.contains("\"space\""), "{listed}");
+    }
+
+    #[tokio::test]
+    async fn an_allowlisted_app_whose_windows_are_all_on_another_space_takes_background_input() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Spaces(Arc::clone(&calls)), Os::Mac)
+            .background(true)
+            .allow(&["WeChat".to_owned()]);
+        for (tool, args) in [
+            (
+                "desk_type",
+                json!({"text": "x", "window": "\u{5fae}\u{4fe1}"}),
+            ),
+            (
+                "desk_key",
+                json!({"keys": "cmd+a", "window": "\u{5fae}\u{4fe1}"}),
+            ),
+        ] {
+            desk.run(tool, args).await.unwrap();
+        }
+        assert_eq!(sent(&calls, "type_text").len(), 1);
     }
 
     #[tokio::test]
