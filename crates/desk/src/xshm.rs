@@ -334,13 +334,21 @@ impl Grabber {
 
     pub fn dialog(&self, w: Window) -> bool {
         let (kind, dialog) = (self.net_wm_type, self.type_dialog);
-        let children = self.kids(w);
-        std::iter::once(w).chain(children).any(|c| {
-            self.transient_for(c).is_some()
-                || self
-                    .conn
-                    .get_property(false, c, kind, AtomEnum::ATOM, 0, 16)
-                    .ok()
+        let transient = u32::from(AtomEnum::WM_TRANSIENT_FOR);
+        let (window, atom) = (u32::from(AtomEnum::WINDOW), u32::from(AtomEnum::ATOM));
+        let asked: Vec<_> = std::iter::once(w)
+            .chain(self.kids(w))
+            .map(|c| {
+                let get = |p, t, len| self.conn.get_property(false, c, p, t, 0, len).ok();
+                (get(transient, window, 1), get(kind, atom, 16))
+            })
+            .collect();
+        asked.into_iter().any(|(owner, types)| {
+            owner
+                .and_then(|r| r.reply().ok())
+                .and_then(|r| r.value32().and_then(|mut v| v.next()))
+                .is_some_and(|o| o != 0)
+                || types
                     .and_then(|r| r.reply().ok())
                     .and_then(|r| r.value32().map(|mut v| v.any(|a| a == dialog)))
                     .unwrap_or(false)
@@ -391,17 +399,18 @@ impl Grabber {
 
     /// The WM_CLASS class of `w`, such as `Google-chrome`, or of the client inside it when `w` is a window manager frame.
     pub fn class(&self, w: Window) -> String {
-        let children = self.kids(w);
-        std::iter::once(w)
-            .chain(children)
-            .find_map(|c| {
-                let value = self
-                    .conn
+        let asked: Vec<_> = std::iter::once(w)
+            .chain(self.kids(w))
+            .map(|c| {
+                self.conn
                     .get_property(false, c, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 64)
-                    .ok()?
-                    .reply()
-                    .ok()?
-                    .value;
+                    .ok()
+            })
+            .collect();
+        asked
+            .into_iter()
+            .find_map(|asked| {
+                let value = asked?.reply().ok()?.value;
                 let class = value.split(|b| *b == 0).nth(1)?;
                 (!class.is_empty()).then(|| String::from_utf8_lossy(class).into_owned())
             })
