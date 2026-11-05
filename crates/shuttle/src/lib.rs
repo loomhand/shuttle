@@ -133,6 +133,22 @@ pub(crate) fn log(line: impl Display) {
     let _ = writeln!(std::io::stderr(), "{NAME}: {line}");
 }
 
+#[cfg(unix)]
+pub(crate) fn private_dir(dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .and_then(|()| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)))
+        .map_err(|e| format!("create {}: {e}", dir.display()))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn private_dir(dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))
+}
+
 /// Sends `sig` to the live members of the group `group` leads that share this process's cgroup; how many it reached.
 #[cfg(target_os = "linux")]
 pub(crate) fn signal_group(group: u32, sig: libc::c_int) -> usize {

@@ -46,7 +46,7 @@ impl Services {
             .map(|s| bindable(desk, &s.service))
             .collect::<Result<Vec<_>, _>>()?;
         #[cfg(unix)]
-        private_dir(&dir(desk))?;
+        crate::private_dir(&dir(desk))?;
         for (s, socket) in services.iter().zip(sockets) {
             let proc = Proc {
                 name: s.service.clone(),
@@ -339,15 +339,6 @@ fn serves(socket: &str, service: &server::Conn) -> Result<(), String> {
         .ok_or_else(|| format!("no service runs for {socket}"))?;
     job.serves(windows::Win32::Foundation::HANDLE(service.as_raw_handle()))
         .map_err(|e| format!("{socket}: {e}"))
-}
-
-#[cfg(unix)]
-fn private_dir(dir: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-
-    std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-        .map_err(|e| format!("chmod {}: {e}", dir.display()))
 }
 
 #[cfg(test)]
@@ -725,7 +716,7 @@ server.serve_forever()
         let bin = dir.path().join("demo-service");
         crate::script(&bin, FAKE).unwrap();
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
-        private_dir(&super::dir(&endpoint)).unwrap();
+        crate::private_dir(&super::dir(&endpoint)).unwrap();
         let mut left = std::process::Command::new(&bin)
             .arg(&state)
             .env(SOCKET_VAR, socket(&endpoint, "demo"))
@@ -907,7 +898,7 @@ server.serve_forever()
     async fn splice_cost() {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
-        private_dir(&super::dir(&endpoint)).unwrap();
+        crate::private_dir(&super::dir(&endpoint)).unwrap();
         let socket = socket(&endpoint, "bench");
         tokio::spawn(bench_service(socket.clone()));
         let runner = Runner::new(

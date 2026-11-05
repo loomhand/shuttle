@@ -602,26 +602,10 @@ fn asked(tool: &str, args: Value) -> Call {
 
 fn save(path: &Path, recording: &Value) -> Result<(), String> {
     if let Some(dir) = path.parent() {
-        private_dir(dir)?;
+        crate::private_dir(dir)?;
     }
     let body = serde_json::to_vec(recording).map_err(|e| e.to_string())?;
     write_private(path, &body).map_err(|e| format!("write {}: {e}", path.display()))
-}
-
-#[cfg(unix)]
-fn private_dir(dir: &Path) -> Result<(), String> {
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .and_then(|()| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)))
-        .map_err(|e| format!("create {}: {e}", dir.display()))
-}
-
-#[cfg(not(unix))]
-fn private_dir(dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))
 }
 
 #[cfg(unix)]
