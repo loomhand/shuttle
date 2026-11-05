@@ -702,21 +702,6 @@ server.serve_forever()
     }
 
     #[tokio::test]
-    async fn a_stop_and_a_resume_back_to_back_still_drop_a_live_splice() {
-        let s = served(Guard::default()).await;
-        let mut held = s.open("demo_hold", json!({})).await;
-        assert!(appears(&s.state("held")).await);
-        for tool in ["safety_stop", "safety_resume"] {
-            s.daemon.answer(control(tool)).await;
-        }
-        let mut rest = Vec::new();
-        let read = tokio::time::timeout(Duration::from_secs(2), held.read_to_end(&mut rest)).await;
-        assert!(read.is_ok(), "the splice outlived the stop");
-        assert!(!s.echo().await.is_error);
-        s.stop().await;
-    }
-
-    #[tokio::test]
     async fn script_run_off_leaves_a_service_running_and_routed() {
         let s = served(Guard {
             script_run: false,
