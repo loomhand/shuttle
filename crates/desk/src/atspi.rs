@@ -598,10 +598,11 @@ impl Atspi {
             description: r.description,
             states: r.states,
             ifaces: r.ifaces,
+            parent: None,
+            depth: 0,
             value,
             bounds,
             keys,
-            ..Node::default()
         })
     }
 
@@ -1344,7 +1345,9 @@ fn flatten<'a>(
             ifaces: r.ifaces,
             parent,
             depth: parent.map_or(0, |p| out[p].depth + 1),
-            ..Node::default()
+            value: None,
+            keys: None,
+            bounds: None,
         });
         Some(out.len() - 1)
     };

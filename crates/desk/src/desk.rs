@@ -2246,7 +2246,6 @@ fn words(name: &str) -> Vec<String> {
         .collect()
 }
 
-/// The windows a call picks from: the app of `pid` alone, unless the allowlist needs every window to judge the call.
 fn shown<B: Access>(b: &mut B, background: bool) -> Result<Vec<Frame>, String> {
     let mut frames = b.frames()?;
     if background {
@@ -2255,6 +2254,7 @@ fn shown<B: Access>(b: &mut B, background: bool) -> Result<Vec<Frame>, String> {
     Ok(frames)
 }
 
+/// The windows a call picks from: the app of `pid` alone, unless the allowlist needs every window to judge the call.
 fn frames<B: Access>(b: &mut B, pid: Option<u32>, allow: &Allow) -> Result<Vec<Frame>, String> {
     match pid {
         Some(p) if allow.is_open() => b.frames_of(p),
