@@ -2158,12 +2158,15 @@ fn names_app(window_app: &str, wanted: &str) -> bool {
 
 fn part_of_word(word: &str, part: &str) -> bool {
     word == part
-        || (part.len() >= 3 && word.starts_with(part))
+        || (part.len() >= 3
+            && word
+                .strip_prefix(part)
+                .is_some_and(|rest| rest.starts_with(char::is_alphanumeric)))
         || (part.len() >= 4 && word.ends_with(part))
 }
 
 fn words(name: &str) -> Vec<String> {
-    name.split(|c: char| !c.is_alphanumeric())
+    name.split(|c: char| !c.is_alphanumeric() && c != '+')
         .filter(|w| !w.is_empty())
         .map(str::to_lowercase)
         .collect()
@@ -4241,6 +4244,7 @@ pub(crate) mod tests {
             ("mousepad", "mouse"),
             ("mspaint.exe", "Paint"),
             ("msedge.exe", "Edge"),
+            ("notepad++.exe", "Notepad++"),
         ] {
             assert!(names_app(app, name), "{app} {name}");
         }
@@ -4252,6 +4256,8 @@ pub(crate) mod tests {
             ("xfce4-terminal", ""),
             ("xfce4-terminal", "  "),
             ("Notepad.exe", "No"),
+            ("notepad++.exe", "notepad"),
+            ("Notepad.exe", "notepad++"),
         ] {
             assert!(!names_app(app, name), "{app} {name:?}");
         }
