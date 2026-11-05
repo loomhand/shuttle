@@ -7,7 +7,7 @@ agent (Claude Code, Codex, Cursor)
   │ MCP, JSON-RPC over stdio, or over HTTP with `--http`
   ▼
 shuttle mcp ───────── one per agent session on stdio, one per address on HTTP; a thin proxy
-  │ desk wire (u32 length + JSON) over a 0600 unix socket or a local-only named pipe
+  │ desk wire (u32 length + JSON) over a unix socket (0600, 0660 with `socket_group`) or a local-only named pipe
   ▼
 shuttle serve ─────── one per user; owns the desktop, the model keys and the safety controls
   ├── desk verbs ─────────── AX (macOS), UI Automation (Windows), AT-SPI (Linux)
@@ -39,6 +39,6 @@ shuttle is thin and embeddable: it sends each model call once, non-streaming, to
 | `android/ui` | The UI server the Android desk pushes to the device and runs under `app_process`, built into `shuttle-ui.jar` |
 | `crates/models` (`shuttle-models`) | The model calls: chat completions and decisions over one OpenAI-compatible endpoint, a model name per role; usable as a library with a `Config` value |
 | `crates/shuttle` | The `shuttle` binary: the MCP proxy (`mcp`), the daemon with its script runner and service plugins (`serve`), `desk VERB`, `stop` and `resume`, and the safety controls (kill hotkey, indicator, confirm dialog) |
-| `runtime/lib` | `desk.mts` (the desk API for scripts) and `gui_plan.mts` (the plan executor, flows and replays) |
+| `runtime/lib` | `entry.mts` (the module the runner starts), `desk.mts` (the desk API for scripts), `gui_plan.mts` (the plan executor, flows and replays), `draft.mts` (a recording's draft plan) and `png.mts` |
 | `runtime/test` | Node tests that drive the runtime against fake desk sockets and fake model servers |
 | `packaging` | The release archive builder, the runtime type stripper, the third-party pins, the macOS bundle template and the installers |
