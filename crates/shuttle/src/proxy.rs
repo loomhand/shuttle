@@ -75,19 +75,26 @@ async fn start(endpoint: &str) -> Result<Option<Child>, String> {
         }
         return Ok(None);
     }
-    let mut cmd = Command::new(&exe);
+    daemon(&exe, endpoint)
+        .spawn()
+        .map(Some)
+        .map_err(|e| format!("start the daemon: {e}"))
+}
+
+fn daemon(exe: &Path, endpoint: &str) -> Command {
+    let mut cmd = Command::new(exe);
     cmd.args(["serve", endpoint])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    #[cfg(unix)]
+    cmd.process_group(0);
     #[cfg(windows)]
     {
         cmd.creation_flags(CREATE_NO_WINDOW);
         crate::win::disinherit_stdio();
     }
-    cmd.spawn()
-        .map(Some)
-        .map_err(|e| format!("start the daemon: {e}"))
+    cmd
 }
 
 fn app_bundle(exe: &Path) -> Option<&Path> {
@@ -116,6 +123,26 @@ mod tests {
             .then_some(Path::new("/Users/u/Applications/Loomhand/Shuttle.app"));
         assert_eq!(app_bundle(inside), want);
         assert_eq!(app_bundle(bare), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn the_started_daemon_leads_a_process_group_of_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("serve"), "sleep 5\n").unwrap();
+        let mut child = daemon(Path::new("/bin/sh"), "unused")
+            .current_dir(dir.path())
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let group: u32 = stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().nth(2))
+            .and_then(|g| g.parse().ok())
+            .unwrap();
+        child.kill().await.unwrap();
+        assert_eq!(group, pid, "{stat}");
     }
 
     #[cfg(unix)]
