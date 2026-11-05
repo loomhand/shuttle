@@ -21,7 +21,7 @@ type Web = { url: string; id?: string }
 type Recorded = { text: string; crop?: string; scale?: number; offset?: [number, number]; at?: [number, number]; size?: [number, number]; root?: boolean }
 type Reads = { keys?: boolean; menus?: boolean }
 type Kept = Reads & { id: string; snap: desk.Snap; nodes: Node[] }
-type Fp = { role: string; name: string; parent: string; nth: number; label?: string }
+type Fp = { role: string; name: string; parent: string; nth: number; of?: number; label?: string }
 type Node = { ref: number; id: string; depth: number; role: string; name: string; value: string; disabled: boolean; parent: number; shortcut: string; checked: boolean; shown: boolean; bounds?: [number, number, number, number] }
 type Hit = { n: Node; i: number; how: string; p?: number; margin?: number }
 type Flow = { name: string; params: Record<string, string>; steps: Step[]; idempotent: boolean; runs: number; saved_at: string; rewrites: number; usage?: desk.Usage }
@@ -617,7 +617,8 @@ function sibling(nodes: Node[], i: number) { return nodes.slice(Math.max(0, i - 
 function fingerprint(nodes: Node[], h: { n: Node; i: number }): Fp {
   const fp: Fp = { role: h.n.role, name: h.n.name, parent: named(nodes, h.i), nth: 0 }
   const label = sibling(nodes, h.i); if (label) fp.label = label
-  fp.nth = matches(nodes, fp).findIndex((x) => x.i === h.i)
+  const same = matches(nodes, fp); fp.nth = same.findIndex((x) => x.i === h.i)
+  if (same.length > 1) fp.of = same.length
   return fp
 }
 function matches(nodes: Node[], fp: Fp, within?: number) {
@@ -626,7 +627,7 @@ function matches(nodes: Node[], fp: Fp, within?: number) {
 function byFp(nodes: Node[], fp: Fp | undefined, within?: number): Hit | null {
   if (!fp) return null
   const same = matches(nodes, fp, within)
-  const hit = same.length === 1 ? same[0] : same[fp.nth]
+  const hit = same.length === (fp.of ?? 1) ? same[fp.nth] : undefined
   return hit ? { ...hit, how: 'fp' } : null
 }
 
