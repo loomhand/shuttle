@@ -41,6 +41,7 @@
 - **Recording (macOS).** The draft's click captions run at once, so a recording with many unnamed clicks no longer fails `record_stop` on the draft's time limit; secure input already on at the start, as in a terminal with Secure Keyboard Entry, adds no password step; a click deeper than 16 elements keeps its window and crop; the menu starts no recording while stopped; `record_start` refuses `apps` that is not a list of names.
 - **Android.** A screenshot the UI server refuses no longer restarts the server before the `screencap` fallback; the shims for a UI jar older than the daemon are gone.
 - **`shuttle desk`** saves a computer verb's WebP or JPEG screenshot under its own extension instead of `.png`.
+- **Foreground `key` and `type` on Windows and Linux** that name a pid or an app together with a window title bring that window to the front first, as a pid or app alone does; before, they went to whatever window was focused.
 - **The MCP proxy** reports a connect error other than an absent daemon, such as a refused Windows pipe server of another user, instead of starting a second daemon.
 - **A stop** ends the running script before it ends a recording, and a `gui_plan` escalation's `plan_step` leaves out the recorded crop.
 - **Bundled:** cua-driver v0.38.0-loomhand.12 (was v0.38.0-loomhand.11). On Windows its daemon claims its pipe name on the first instance, and its clients refuse a pipe that another user serves.

@@ -1590,11 +1590,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         window: Option<&str>,
         pid: Option<u32>,
     ) -> Result<Option<(i64, i64)>, String> {
-        let named = if self.os == Os::Mac {
-            window.is_some() || pid.is_some()
-        } else {
-            window.is_none() && pid.is_some()
-        };
+        let named = pid.is_some() || (self.os == Os::Mac && window.is_some());
         if self.bg() || !named {
             return Ok(None);
         }
@@ -4095,6 +4091,10 @@ pub(crate) mod tests {
         assert_eq!(
             input,
             [
+                (
+                    "bring_to_front".to_owned(),
+                    json!({"pid": 8, "window_id": 2})
+                ),
                 (
                     "press_key".to_owned(),
                     json!({"key": "a", "scope": "desktop"})
