@@ -365,10 +365,11 @@ impl Computer {
         if a.action == "wait" {
             let secs = a.seconds.unwrap_or(1.0).clamp(0.1, MAX_WAIT_SECS);
             tokio::time::sleep(Duration::from_secs_f64(secs)).await;
+            let (shot, missed) = self.settled(session, None, &a).await;
             return Ok(Output {
-                text: format!("waited {secs:.1}s"),
+                text: format!("waited {secs:.1}s{missed}"),
                 is_error: false,
-                image_b64: self.step_shot(session, &a).await?,
+                image_b64: shot,
                 ..Output::default()
             });
         }
@@ -570,18 +571,11 @@ impl Computer {
         }
     }
 
-    async fn step_shot(&self, session: &str, a: &ActArgs) -> Result<Option<String>, String> {
-        if a.shot_discarded {
-            return Ok(None);
-        }
-        self.screenshot(session, a.max_edge).await
-    }
-
     async fn screenshot_once(&self, max_edge: Option<u32>) -> Result<Option<String>, String> {
         let session = self.own("shot");
         let shot = self.screenshot(session.name(), max_edge).await;
         self.scales().remove(session.name());
-        self.end_own(session).await?;
+        self.end_once(Some(session)).await;
         shot
     }
 
@@ -783,10 +777,11 @@ impl Computer {
                     let _ = self.end_own(probe).await;
                 }
                 drop(input);
+                let (shot, missed) = self.settled(session, None, a).await;
                 return Ok(Output {
-                    text: e,
+                    text: e + &missed,
                     is_error: true,
-                    image_b64: self.step_shot(session, a).await?,
+                    image_b64: shot,
                     ..Output::default()
                 });
             }
@@ -3947,6 +3942,16 @@ mod tests {
             .unwrap();
         assert!(!list.is_error, "{}", list.text);
         assert_eq!(landed.lock().unwrap().len(), 3);
+        let wait = cua
+            .act(json!({"action": "wait", "seconds": 0.1}))
+            .await
+            .unwrap();
+        assert!(
+            !wait.is_error && wait.text.starts_with("waited 0.1s"),
+            "{}",
+            wait.text
+        );
+        assert!(wait.text.contains(SHOT_FAILED), "{}", wait.text);
         driver.abort();
     }
 
