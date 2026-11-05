@@ -1,13 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { daemon, gray } from './daemon.mts'
-import type { Call, Reply } from './daemon.mts'
+import { daemon, gray, notepad, user } from './daemon.mts'
+import type { Call, Reply, W } from './daemon.mts'
 
 process.env.SHUTTLE_INPUT = 'background'
 const { main } = await import('../lib/gui_plan.mts')
-
-type W = { id: string; title: string; role: string; pid: number; active: boolean; owner?: string }
 
 function desktop(ws: W[], answer: (c: Call) => Reply | undefined = () => undefined) {
   const calls: Call[] = []
@@ -23,8 +21,6 @@ function desktop(ws: W[], answer: (c: Call) => Reply | undefined = () => undefin
   return { calls, reply }
 }
 
-const user = (): W => ({ id: 'c', title: 'Calculator', role: 'window', pid: 9, active: true })
-const notepad = (): W => ({ id: '1', title: 'Untitled - Notepad', role: 'window', pid: 4, active: false })
 const sent = (calls: Call[], tool: string) => calls.filter((c) => c.tool === tool).map((c) => c.args)
 
 test('a background plan types into its app window behind the front one, names it on every input and fronts nothing', async (t) => {

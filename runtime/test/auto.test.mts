@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { daemon } from './daemon.mts'
-import type { Call } from './daemon.mts'
+import { daemon, notepad, user } from './daemon.mts'
+import type { Call, W } from './daemon.mts'
 
 type Lib = typeof import('../lib/gui_plan.mts')
 const load = async (input: string): Promise<Lib['main']> => {
@@ -12,11 +12,8 @@ const load = async (input: string): Promise<Lib['main']> => {
 const background = await load('background')
 const auto = await load('auto')
 
-type W = { id: string; title: string; role: string; pid: number; active: boolean }
 type Plan = typeof auto
 
-const user = (): W => ({ id: 'c', title: 'Calculator', role: 'window', pid: 9, active: true })
-const notepad = (): W => ({ id: '1', title: 'Untitled - Notepad', role: 'window', pid: 4, active: false })
 const NOTE = 'unverifiable: Sent 2 char(s) via PostMessage (not verified).'
 
 function desktop(typed: (before: string, text: string) => string, note: boolean) {

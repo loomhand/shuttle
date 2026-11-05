@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { daemon } from './daemon.mts'
+import { daemon, root } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
-
-const root = (role: string, name: string) => ({ ref: 0, id: '1/1', parent: -1, depth: 0, role, name, states: ['showing'] })
 
 function desktop() {
   const doc = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: true }

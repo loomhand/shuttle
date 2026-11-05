@@ -14,6 +14,11 @@ export const endpoint = (dir: string): string => process.platform === 'win32' ? 
 
 export type Call = { tool: string; args: Record<string, unknown> }
 export type Reply = string | { text: string; error?: boolean; image?: string }
+export type W = { id: string; title: string; role: string; pid: number; active: boolean; owner?: string }
+
+export const user = (): W => ({ id: 'c', title: 'Calculator', role: 'window', pid: 9, active: true })
+export const notepad = (): W => ({ id: '1', title: 'Untitled - Notepad', role: 'window', pid: 4, active: false })
+export const root = (role: string, name: string) => ({ ref: 0, id: '1/1', parent: -1, depth: 0, role, name, states: ['showing'] })
 
 export async function daemon(t: { after(fn: () => void): void }, answer: (c: Call) => Reply): Promise<void> {
   const server = createServer((s) => {

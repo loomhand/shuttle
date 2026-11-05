@@ -69,9 +69,8 @@ test('a browser whose page tree was already on keeps it on', async (t) => {
 })
 
 test('an app step with a url opens it in that browser and takes the window that shows it', async (t) => {
-  let opened = false
-  const calls = await browser(t, { url: () => opened ? 'https://shop.test/form' : 'about:blank', tree: () => opened, els: [] })
-  calls.push = new Proxy(calls.push, { apply: (f, me, [c]: [Call]) => { if (c.tool === 'desk_launch') opened = true; return Reflect.apply(f, me, [c]) } })
+  const opened = (): boolean => calls.some((c) => c.tool === 'desk_launch')
+  const calls = await browser(t, { url: () => opened() ? 'https://shop.test/form' : 'about:blank', tree: opened, els: [] })
   const r = await main({ steps: [{ app: 'Browser', url: 'https://shop.test/{{page}}' }], params: { page: 'form' } })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(calls.filter((c) => c.tool === 'desk_launch').map((c) => c.args), [{ app: 'Browser', args: ['https://shop.test/form'] }])
