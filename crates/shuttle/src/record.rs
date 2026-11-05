@@ -300,7 +300,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                         light(desk, &windows, &apps, &mut asked).await;
                         let win = window_of(&windows, &at);
                         let app = win.and_then(|w| w["app"].as_str()).map(str::to_owned).or_else(|| app_of(&windows, pid));
-                        if kept(app.as_deref(), &apps) {
+                        if (app.is_some() || pid.is_none()) && kept(app.as_deref(), &apps) {
                             let late = frame.as_ref().is_none_or(|f| f.at < acted || win.is_none_or(|w| w["id"] != f.window.as_str()));
                             if late {
                                 frame = framed(desk, &windows, win, &apps).await;
@@ -351,8 +351,11 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                         if pid.is_some_and(|p| !windows.iter().any(|w| w["pid"].as_u64() == Some(p))) {
                             windows = list(desk).await;
                         }
-                        let app = app_of(&windows, pid).or_else(|| front.as_ref().and_then(|w| w["app"].as_str()).map(str::to_owned));
-                        if !kept(app.as_deref(), &apps) {
+                        let app = match pid {
+                            Some(_) => app_of(&windows, pid),
+                            None => front.as_ref().and_then(|w| w["app"].as_str()).map(str::to_owned),
+                        };
+                        if (app.is_none() && pid.is_some()) || !kept(app.as_deref(), &apps) {
                             json!({"t": t, "kind": "skipped"})
                         } else if secret {
                             json!({"t": t, "kind": "key", "secret": true, "app": app})
@@ -1089,6 +1092,38 @@ mod tests {
             .map(|e| &e["kind"])
             .collect();
         assert_eq!(kinds, [&json!("key"), &json!("skipped")], "{r}");
+    }
+
+    #[tokio::test]
+    async fn input_to_a_process_with_no_window_is_skipped_and_not_given_to_the_front_app() {
+        let desk = Desk::new(
+            json!({"found": {"role": "textbox", "name": "Search"}, "path": [], "pid": 42}),
+        );
+        let panel = Input::Key {
+            code: 0,
+            text: "p".into(),
+            mods: Vec::new(),
+            secret: false,
+            pid: Some(42),
+            focus: None,
+            read: false,
+        };
+        let r = run(&desk, &[], vec![click(5.0, 5.0), panel, key("a", false)]).await;
+        let seen: Vec<(&Value, &Value)> = r["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| (&e["kind"], &e["app"]))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (&json!("skipped"), &Value::Null),
+                (&json!("skipped"), &Value::Null),
+                (&json!("key"), &json!("TextEdit")),
+            ],
+            "{r}"
+        );
     }
 
     #[tokio::test]
