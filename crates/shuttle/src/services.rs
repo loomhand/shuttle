@@ -41,14 +41,18 @@ impl Services {
         if services.is_empty() {
             return Ok(running);
         }
+        let sockets = services
+            .iter()
+            .map(|s| bindable(desk, &s.service))
+            .collect::<Result<Vec<_>, _>>()?;
         #[cfg(unix)]
         private_dir(&dir(desk))?;
-        for s in services {
+        for (s, socket) in services.iter().zip(sockets) {
             let proc = Proc {
                 name: s.service.clone(),
                 bin: s.bin.clone(),
                 args: s.args.clone(),
-                socket: socket(desk, &s.service),
+                socket,
                 desk: desk.to_owned(),
                 key_vars: key_vars.to_vec(),
             };
@@ -294,6 +298,23 @@ fn socket(desk: &str, service: &str) -> String {
 #[cfg(windows)]
 fn socket(desk: &str, service: &str) -> String {
     format!("{desk}-svc-{service}")
+}
+
+#[cfg(unix)]
+fn bindable(desk: &str, service: &str) -> Result<String, String> {
+    let socket = socket(desk, service);
+    std::os::unix::net::SocketAddr::from_pathname(&socket).map_err(|e| {
+        format!(
+            "service {service}: socket {socket} is {} bytes: {e}; give the service a shorter name or the daemon a shorter endpoint",
+            socket.len()
+        )
+    })?;
+    Ok(socket)
+}
+
+#[cfg(windows)]
+fn bindable(desk: &str, service: &str) -> Result<String, String> {
+    Ok(socket(desk, service))
 }
 
 /// The job of the service last started on each pipe, which alone may serve it.
@@ -738,6 +759,28 @@ server.serve_forever()
         }
         assert!(exited.is_some(), "the copy a dead daemon left still runs");
         assert_ne!(second, first, "the service did not start again");
+    }
+
+    #[tokio::test]
+    async fn a_service_whose_socket_path_is_too_long_fails_the_start_and_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let deep = dir.path().join("d".repeat(60));
+        let endpoint = deep.join("desk.sock").to_string_lossy().into_owned();
+        let name = "a".repeat(32);
+        let service: Service = serde_json::from_value(json!({
+            "service": name,
+            "bin": "/bin/true",
+            "tools": [{"name": "demo_echo", "description": "d", "input_schema": {"type": "object"}}],
+        }))
+        .unwrap();
+        let Err(e) = Services::start(&[service], &endpoint, &[]) else {
+            panic!("a service with an unbindable socket started");
+        };
+        assert!(
+            e.starts_with(&format!("service {name}: socket ")) && e.contains("shorter"),
+            "{e}"
+        );
+        assert!(!deep.exists(), "the start made the services directory");
     }
 
     #[tokio::test]
