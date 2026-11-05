@@ -123,10 +123,6 @@ impl Proc {
             .spawn()
             .map_err(|e| format!("start {}: {e}", self.bin.display()))
             .and_then(|c| Running::jobbed(c, false))?;
-        #[cfg(windows)]
-        if let Some(job) = &running.job {
-            servers().insert(self.socket.clone(), std::sync::Arc::downgrade(job));
-        }
         Ok(running)
     }
 
@@ -200,8 +196,6 @@ where
     C: AsyncRead + AsyncWrite + Unpin,
 {
     let mut service = listening(socket).await?;
-    #[cfg(windows)]
-    serves(socket, &service)?;
     let len = u32::try_from(body.len()).map_err(|_| "frame too large".to_owned())?;
     let sent = async {
         service.write_all(&len.to_be_bytes()).await?;
@@ -319,30 +313,6 @@ fn bindable(desk: &str, service: &str) -> Result<String, String> {
 #[cfg(windows)]
 fn bindable(desk: &str, service: &str) -> Result<String, String> {
     Ok(socket(desk, service))
-}
-
-/// The job of the service last started on each pipe, which alone may serve it.
-#[cfg(windows)]
-fn servers() -> std::sync::MutexGuard<'static, HashMap<String, std::sync::Weak<crate::job::Job>>> {
-    static SERVERS: std::sync::LazyLock<
-        std::sync::Mutex<HashMap<String, std::sync::Weak<crate::job::Job>>>,
-    > = std::sync::LazyLock::new(Default::default);
-    SERVERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-// anyone can create a pipe of any free name, so a call goes only to a server inside the service's job
-#[cfg(windows)]
-fn serves(socket: &str, service: &server::Conn) -> Result<(), String> {
-    use std::os::windows::io::AsRawHandle;
-
-    let job = servers()
-        .get(socket)
-        .and_then(std::sync::Weak::upgrade)
-        .ok_or_else(|| format!("no service runs for {socket}"))?;
-    job.serves(windows::Win32::Foundation::HANDLE(service.as_raw_handle()))
-        .map_err(|e| format!("{socket}: {e}"))
 }
 
 #[cfg(test)]
@@ -990,7 +960,6 @@ mod pipe_tests {
     use crate::plugins::ServiceTool;
 
     const POWERSHELL: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
-    const PING: &str = r"C:\Windows\System32\PING.EXE";
     const FAKE: &str = r#"
 $child = Start-Process -FilePath ping -ArgumentList '-n','60','127.0.0.1' -WindowStyle Hidden -PassThru
 Set-Content -Path $args[0] -Value $child.Id
@@ -1042,36 +1011,6 @@ while ($true) {
         running.stop().await;
         let gone = crate::until(40, || !alive(&child)).await;
         assert!(gone, "{child} outlived the service's stop");
-    }
-
-    #[tokio::test]
-    async fn a_call_is_refused_by_a_pipe_served_outside_the_services_tree() {
-        let desk = format!(r"\\.\pipe\shuttle-test-squat-{}", std::process::id());
-        let args = ["-n", "60", "127.0.0.1"].map(str::to_owned).to_vec();
-        let running = Services::start(&[service(PING, args)], &desk, &[]).unwrap();
-        let pipe = socket(&desk, "demo");
-        let squatter = tokio::net::windows::named_pipe::ServerOptions::new()
-            .create(&pipe)
-            .unwrap();
-        let held = tokio::spawn(async move {
-            let _ = squatter.connect().await;
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        });
-        for _ in 0..100 {
-            if servers().contains_key(&pipe) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        let (_client, mut far) = tokio::io::duplex(1 << 16);
-        let err = route(&pipe, body(), &mut far).await.unwrap_err();
-        assert!(
-            err.contains(&format!("process {}", std::process::id()))
-                && err.contains("outside the service's process tree"),
-            "{err}"
-        );
-        held.abort();
-        running.stop().await;
     }
 
     #[tokio::test]
