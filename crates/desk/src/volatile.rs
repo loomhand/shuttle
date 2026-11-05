@@ -43,16 +43,17 @@ pub struct Volatile {
 }
 
 impl Volatile {
-    /// Starts the sampler thread, which samples only within [`IDLE`] of a [`Volatile::touch`].
+    /// Starts the sampler thread where MIT-SHM exists, which samples only within [`IDLE`] of a [`Volatile::touch`].
     pub fn start() -> Self {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             wake: Condvar::new(),
         });
         let sampler = Arc::clone(&shared);
-        if let Err(e) = std::thread::Builder::new()
-            .name("settle-sampler".to_owned())
-            .spawn(move || sampler.run())
+        if cfg!(target_os = "linux")
+            && let Err(e) = std::thread::Builder::new()
+                .name("settle-sampler".to_owned())
+                .spawn(move || sampler.run())
         {
             eprintln!("desk: settle sampler: {e}");
         }
