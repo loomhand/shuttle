@@ -520,9 +520,9 @@ impl Grabber {
 
     /// The title and process of the topmost managed window at the screen point `(x, y)`, past the desktop shell's windows.
     pub fn client_at(&self, x: i32, y: i32) -> Result<Option<(String, Option<u32>)>, String> {
-        let shell = self.shell().windows.clone();
+        let shell = self.shell();
         for w in self.clients()?.into_iter().rev() {
-            if shell.contains(&w) {
+            if shell.windows.contains(&w) {
                 continue;
             }
             if self.on_root(w).is_some_and(|[left, top, width, height]| {
@@ -813,7 +813,10 @@ impl Grabber {
                     .map(|r| (r.value, r.bytes_after))
             })?;
             if !value.is_empty() {
-                return Some(String::from_utf8_lossy(&value).into_owned());
+                return Some(
+                    String::from_utf8(value)
+                        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
+                );
             }
         }
         Some(String::new())
