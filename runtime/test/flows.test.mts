@@ -47,3 +47,20 @@ test('a chain that ends in an untitled window keeps that window\'s process', { s
   const chain = JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as { pid: number | null }
   assert.equal(chain.pid, 4242)
 })
+
+test('a plan marks the chain record dirty before it acts and clears the mark when it ends, so a killed run never chains over its steps', async (t) => {
+  const seen: (boolean | undefined)[] = []; let watch = false
+  const pend = () => JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as { dirty?: boolean; steps: unknown[] }
+  await daemon(t, (c) => {
+    if (watch && c.tool === 'desk_type') seen.push(pend().dirty)
+    return answer(() => [notepad])(c)
+  })
+  const first = await main({ steps: [{ app: 'Notepad' }, { type: 'hello' }] })
+  assert.equal(first.ok, true, JSON.stringify(first))
+  watch = true
+  const next = await main({ steps: [{ type: ' world' }] })
+  assert.equal(next.ok, true, JSON.stringify(next))
+  assert.deepEqual(seen, [true])
+  assert.equal(pend().dirty, false)
+  assert.equal(pend().steps.length, 3)
+})

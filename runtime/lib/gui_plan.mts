@@ -155,14 +155,16 @@ async function perform(p: Params): Promise<Result> {
   const gapStep = plan[gap]
   if (gapStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: gapStep, reason: `no value for {{${unfilled(gapStep)}}}: pass it in params; nothing ran` } }
   BG = BEHIND
+  const held = pending()
   const ws0 = await desk.windows(); for (const w of ws0) known.add(w.title)
-  if (BG) { target = null; adopted = new Set(); doubt = null; fronted = false; userFront = desk.front(ws0); const c = pending(); const was = c && Date.now() - c.at < CHAIN_AGE ? ws0.find((w) => w.title === c.window && w.pid === c.pid) : undefined; if (was) follow(was, ws0) }
+  if (BG) { target = null; adopted = new Set(); doubt = null; fronted = false; userFront = desk.front(ws0); const c = held; const was = c && Date.now() - c.at < CHAIN_AGE ? ws0.find((w) => w.title === c.window && w.pid === c.pid) : undefined; if (was) follow(was, ws0) }
   const vetted = new Set<string>()
   const startTitles = new Set(known)
   const start = frontOf(ws0); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
   const startAlert = !start?.title.trim() && isAlert(await outline(start))
   const recs: Rec[] = []; const tops: (string | undefined)[] = []
   let escalate: Escalation | null = null; let done = plan.length; let diverged = false
+  if (held && !held.dirty) putPending({ ...held, dirty: true })
   for (const [i, planned] of plan.entries()) {
     if (i < (p.start ?? 0)) continue
     const s = fill(planned, params); T = {}; const rec: Rec = { i, op: OPS.find((k) => k in s) }
@@ -255,7 +257,7 @@ async function perform(p: Params): Promise<Result> {
     // a task done over several calls is one chain: it starts at a call whose first step is an app, and later calls extend it from the window it left
     const ran = plan.slice(p.start ?? 0, done).map((s, k) => { const r = recs[(p.start ?? 0) + k]; const o: Step = { ...s }; if (r?.fp) o.fp = r.fp; if (r?.seen && !s.app) o.seen = r.seen; if (r?.blank) o.blank = r.blank; return o })
     const dirty = recs.some((r) => r?.unsaved)
-    let chain: Chain | null = null; const prev = pending()
+    let chain: Chain | null = null; const prev = held
     if (plan[0]?.app && !(p.start ?? 0)) chain = { at: Date.now(), window: null, pid: null, params: { ...(p.params ?? {}) }, steps: ran, dirty, usage: plus({}, desk.usage) }
     else if (prev && Date.now() - prev.at < CHAIN_AGE && (prev.window === startWindow || (prev.pid !== null && prev.pid === startPid))) chain = { ...prev, at: Date.now(), params: { ...prev.params, ...(p.params ?? {}) }, steps: [...prev.steps, ...ran], dirty: prev.dirty || dirty, usage: plus(prev.usage, desk.usage) }
     if (chain) {
