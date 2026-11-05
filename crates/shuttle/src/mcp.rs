@@ -209,7 +209,7 @@ mod tests {
     }
 
     async fn session_with(lines: &[Value], endpoint: &str, plugins: &Plugins) -> Vec<Value> {
-        exchange_with(
+        exchange(
             &lines.iter().map(|l| format!("{l}\n")).collect::<String>(),
             endpoint,
             plugins,
@@ -217,11 +217,7 @@ mod tests {
         .await
     }
 
-    async fn exchange(input: &str, endpoint: &str) -> Vec<Value> {
-        exchange_with(input, endpoint, &Plugins::default()).await
-    }
-
-    async fn exchange_with(input: &str, endpoint: &str, plugins: &Plugins) -> Vec<Value> {
+    async fn exchange(input: &str, endpoint: &str, plugins: &Plugins) -> Vec<Value> {
         let mut output = Vec::new();
         serve(input.as_bytes(), &mut output, endpoint, plugins)
             .await
@@ -295,7 +291,7 @@ mod tests {
     #[tokio::test]
     async fn bad_requests_get_json_rpc_errors() {
         let input = "not json\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"nope\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"rm\"}}\n{\"jsonrpc\":\"2.0\",\"id\":3}\n";
-        let out = exchange(input, "unused").await;
+        let out = exchange(input, "unused", &Plugins::default()).await;
         let codes: Vec<i64> = out
             .iter()
             .map(|r| r["error"]["code"].as_i64().unwrap())
@@ -317,21 +313,11 @@ mod tests {
     #[tokio::test]
     async fn a_cancelled_call_closes_its_daemon_connection_gets_no_reply_and_later_requests_go_on()
     {
-        use tokio::io::{AsyncReadExt, BufReader};
+        use tokio::io::BufReader;
 
         let dir = tempfile::tempdir().unwrap();
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
-        let daemon = tokio::net::UnixListener::bind(&endpoint).unwrap();
-        let (got, got_call) = tokio::sync::oneshot::channel();
-        let (shut, closed) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let (mut conn, _) = daemon.accept().await.unwrap();
-            let call: Call = desk_core::wire::read_frame(&mut conn).await.unwrap();
-            let _ = got.send(call.tool);
-            let mut rest = Vec::new();
-            let _ = conn.read_to_end(&mut rest).await;
-            let _ = shut.send(());
-        });
+        let (got_call, closed) = crate::one_call_daemon(&endpoint);
         let (mut to_mcp, input) = tokio::io::duplex(1 << 16);
         let (output, from_mcp) = tokio::io::duplex(1 << 16);
         let mcp = tokio::spawn({

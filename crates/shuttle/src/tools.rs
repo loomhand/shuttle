@@ -251,12 +251,7 @@ mod tests {
     #[test]
     fn no_mcp_tool_reaches_the_safety_controls() {
         let tools = list(&Plugins::default());
-        let names: Vec<&str> = tools["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|t| t["name"].as_str())
-            .collect();
+        let names = names(&tools);
         let mut routed = Vec::new();
         for name in names.iter().chain(&["safety_stop", "safety_resume"]) {
             let verbs = DESK_VERBS
@@ -284,12 +279,7 @@ mod tests {
             services: Vec::new(),
         };
         let listed = list(&plugins);
-        let names: Vec<&str> = listed["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|t| t["name"].as_str())
-            .collect();
+        let names = names(&listed);
         assert_eq!(names[..NAMES.len()], NAMES);
         assert_eq!(names[NAMES.len()..], ["demo_run"]);
         assert_eq!(
@@ -345,5 +335,14 @@ mod tests {
                 "{verb}"
             );
         }
+    }
+
+    fn names(listed: &Value) -> Vec<&str> {
+        listed["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect()
     }
 }

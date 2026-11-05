@@ -484,14 +484,7 @@ mod tests {
         assert_eq!(report["error"]["kind"], "timeout", "{report}");
         let logs = report["logs"].as_str().unwrap().trim().to_owned();
         let (same, away) = logs.split_once(' ').unwrap();
-        let mut gone = false;
-        for _ in 0..40 {
-            gone = !alive(same);
-            if gone {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        let gone = crate::until(40, || !alive(same)).await;
         let stray = alive(away);
         let _ = std::process::Command::new("kill")
             .args(["-9", away])
@@ -619,14 +612,7 @@ mod tests {
         .await
         .expect("the run got no TERM");
         let pid = std::fs::read_to_string(&pid_file).unwrap();
-        let mut gone = false;
-        for _ in 0..20 {
-            gone = !alive(&pid);
-            if gone {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        let gone = crate::until(20, || !alive(&pid)).await;
         if !gone {
             let _ = std::process::Command::new("kill")
                 .args(["-9", pid.trim()])
@@ -656,14 +642,7 @@ mod tests {
         })
         .await
         .expect("the script never got ready");
-        let mut gone = false;
-        for _ in 0..60 {
-            gone = closed.exists();
-            if gone {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        let gone = crate::until(60, || closed.exists()).await;
         assert!(
             gone,
             "the dropped run still reads the pipe of its detached child"
@@ -688,14 +667,7 @@ mod tests {
             .unwrap();
         let pid = report["logs"].as_str().unwrap().trim().to_owned();
         assert!(!pid.is_empty(), "{report}");
-        let mut gone = false;
-        for _ in 0..60 {
-            gone = !alive(&pid);
-            if gone {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        let gone = crate::until(60, || !alive(&pid)).await;
         if !gone {
             let _ = std::process::Command::new("kill")
                 .args(["-9", &pid])
@@ -724,14 +696,10 @@ mod tests {
         })
         .await
         .expect("the script never got ready");
-        let mut termed = false;
-        for _ in 0..40 {
-            termed = std::fs::read_to_string(&marker).is_ok_and(|m| m == "term");
-            if termed {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        let termed = crate::until(40, || {
+            std::fs::read_to_string(&marker).is_ok_and(|m| m == "term")
+        })
+        .await;
         assert!(termed, "the dropped run got no TERM");
     }
 
@@ -767,14 +735,7 @@ mod tests {
         let report = report.unwrap();
         let mut checked = Err(String::new());
         if let Ok((app, helper)) = &moved {
-            let mut gone = false;
-            for _ in 0..40 {
-                gone = !alive(helper);
-                if gone {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
+            let gone = crate::until(40, || !alive(helper)).await;
             checked = Ok((alive(app), gone));
             let _ = std::process::Command::new("kill")
                 .args(["-9", app])
@@ -819,14 +780,7 @@ mod tests {
             !pid.is_empty(),
             "the script printed no pid before its timeout: {report}"
         );
-        let mut gone = false;
-        for _ in 0..40 {
-            gone = !alive(&pid);
-            if gone {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        let gone = crate::until(40, || !alive(&pid)).await;
         assert!(gone, "{pid} outlived the timeout");
         let done = format!("{started}export function main() {{ return 1 }}");
         let report = r.script(json!({"code": done}), "run-test").await.unwrap();

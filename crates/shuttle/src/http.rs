@@ -559,17 +559,7 @@ mod tests {
     async fn a_dropped_client_closes_its_daemon_connection() {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
-        let daemon = tokio::net::UnixListener::bind(&endpoint).unwrap();
-        let (got, got_call) = tokio::sync::oneshot::channel();
-        let (shut, closed) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let (mut conn, _) = daemon.accept().await.unwrap();
-            let call: desk_core::wire::Call = desk_core::wire::read_frame(&mut conn).await.unwrap();
-            let _ = got.send(call.tool);
-            let mut rest = Vec::new();
-            let _ = conn.read_to_end(&mut rest).await;
-            let _ = shut.send(());
-        });
+        let (got_call, closed) = crate::one_call_daemon(&endpoint);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(Server::new(endpoint, Plugins::default(), TOKEN.to_owned()).run(listener));

@@ -479,6 +479,16 @@ server.serve_forever()
                 .unwrap()
         }
 
+        async fn restarted(&self, first: i32) -> i32 {
+            let mut second = first;
+            crate::until(100, || {
+                second = self.pid().unwrap_or(first);
+                second != first
+            })
+            .await;
+            second
+        }
+
         async fn stop(mut self) {
             if let Some(s) = self.services.take() {
                 s.stop().await;
@@ -552,13 +562,7 @@ server.serve_forever()
     }
 
     async fn appears(path: &Path) -> bool {
-        for _ in 0..100 {
-            if path.exists() {
-                return true;
-            }
-            tokio::time::sleep(POLL).await;
-        }
-        false
+        crate::until(100, || path.exists()).await
     }
 
     #[tokio::test]
@@ -672,14 +676,7 @@ server.serve_forever()
         let first = s.pid().unwrap();
         // SAFETY: the pid is the fake service this test started.
         unsafe { libc::kill(first, libc::SIGKILL) };
-        let mut second = first;
-        for _ in 0..100 {
-            tokio::time::sleep(POLL).await;
-            second = s.pid().unwrap_or(first);
-            if second != first {
-                break;
-            }
-        }
+        let second = s.restarted(first).await;
         assert_ne!(second, first, "the service came back");
         assert!(!s.echo().await.is_error);
         s.stop().await;
@@ -693,14 +690,7 @@ server.serve_forever()
         let first = s.pid().unwrap();
         // SAFETY: the pid is the fake service this test started.
         unsafe { libc::kill(first, libc::SIGKILL) };
-        let mut second = first;
-        for _ in 0..100 {
-            tokio::time::sleep(POLL).await;
-            second = s.pid().unwrap_or(first);
-            if second != first {
-                break;
-            }
-        }
+        let second = s.restarted(first).await;
         assert_ne!(second, first, "the restarted service did not bind");
         assert!(!s.echo().await.is_error);
         s.stop().await;
@@ -1068,14 +1058,7 @@ while ($true) {
         }
         assert!(alive(&child), "{child} never started");
         running.stop().await;
-        let mut gone = false;
-        for _ in 0..40 {
-            gone = !alive(&child);
-            if gone {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        let gone = crate::until(40, || !alive(&child)).await;
         assert!(gone, "{child} outlived the service's stop");
     }
 

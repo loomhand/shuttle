@@ -711,19 +711,36 @@ mod tests {
         out
     }
 
-    async fn run(desk: &Desk, apps: &[&str], inputs: Vec<Input>) -> Value {
-        let dir = tempfile::tempdir().unwrap();
+    fn session(
+        path: PathBuf,
+        apps: &[&str],
+    ) -> (UnboundedSender<Input>, oneshot::Receiver<Value>, Session) {
         let (tx, rx) = unbounded_channel();
         let (done, made) = oneshot::channel();
-        let path = dir.path().join("rec/r.json");
         let s = Session {
             id: "r".into(),
             apps: apps.iter().map(|a| (*a).to_owned()).collect(),
             per_point: 1.0,
-            path: path.clone(),
+            path,
             inputs: rx,
             done,
         };
+        (tx, made, s)
+    }
+
+    fn each<'a>(r: &'a Value, key: &str) -> Vec<&'a Value> {
+        r["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| &e[key])
+            .collect()
+    }
+
+    async fn run(desk: &Desk, apps: &[&str], inputs: Vec<Input>) -> Value {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rec/r.json");
+        let (tx, made, s) = session(path.clone(), apps);
         for i in inputs {
             tx.send(i).unwrap();
         }
@@ -896,17 +913,8 @@ mod tests {
         let desk = Desk::new(
             json!({"found": {"role": "button", "name": "Save"}, "path": [{"id": "7/1", "role": "window", "name": "report.rtf"}], "pid": 7}),
         );
-        let (tx, rx) = unbounded_channel();
-        let (done, made) = oneshot::channel();
         let dir = tempfile::tempdir().unwrap();
-        let s = Session {
-            id: "r".into(),
-            apps: Vec::new(),
-            per_point: 1.0,
-            path: dir.path().join("r.json"),
-            inputs: rx,
-            done,
-        };
+        let (tx, made, s) = session(dir.path().join("r.json"), &[]);
         let worker = async { work(&desk, s).await };
         let user = async {
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1083,12 +1091,7 @@ mod tests {
             json!({"found": {"role": "button", "name": "Save"}, "path": [{"id": "7/1", "role": "window", "name": "Untitled"}], "pid": 7}),
         );
         let r = run(&only, &["Notes"], vec![click(5.0, 5.0), key("x", false)]).await;
-        let kinds: Vec<&Value> = r["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|e| &e["kind"])
-            .collect();
+        let kinds = each(&r, "kind");
         assert_eq!(kinds, [&json!("skipped"), &json!("skipped")]);
         assert!(lock(&only.shots).is_empty());
         let vault = Input::Key {
@@ -1101,12 +1104,7 @@ mod tests {
             read: false,
         };
         let r = run(&only, &[], vec![key("a", false), vault]).await;
-        let kinds: Vec<&Value> = r["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|e| &e["kind"])
-            .collect();
+        let kinds = each(&r, "kind");
         assert_eq!(kinds, [&json!("key"), &json!("skipped")], "{r}");
     }
 
@@ -1181,12 +1179,7 @@ mod tests {
         let before = run(&desk, &[], vec![press(53), press(47), Input::Hotkey(47)]).await;
         let after = run(&desk, &[], vec![press(53), Input::Hotkey(47), press(47)]).await;
         for r in [before, after] {
-            let codes: Vec<&Value> = r["events"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|e| &e["code"])
-                .collect();
+            let codes = each(&r, "code");
             assert_eq!(codes, [&json!(53)], "{r}");
         }
     }
@@ -1194,17 +1187,8 @@ mod tests {
     #[tokio::test]
     async fn a_window_that_came_after_the_last_input_settled_is_kept_when_the_recording_stops() {
         let desk = Desk::new(Value::Null);
-        let (tx, rx) = unbounded_channel();
-        let (done, made) = oneshot::channel();
         let dir = tempfile::tempdir().unwrap();
-        let s = Session {
-            id: "r".into(),
-            apps: Vec::new(),
-            per_point: 1.0,
-            path: dir.path().join("r.json"),
-            inputs: rx,
-            done,
-        };
+        let (tx, made, s) = session(dir.path().join("r.json"), &[]);
         let worker = async { work(&desk, s).await };
         let user = async {
             tx.send(key("s", false)).unwrap();
@@ -1225,17 +1209,8 @@ mod tests {
     #[tokio::test]
     async fn a_new_front_window_after_input_is_kept_with_notes_in_order() {
         let desk = Desk::new(Value::Null);
-        let (tx, rx) = unbounded_channel();
-        let (done, made) = oneshot::channel();
         let dir = tempfile::tempdir().unwrap();
-        let s = Session {
-            id: "r".into(),
-            apps: Vec::new(),
-            per_point: 1.0,
-            path: dir.path().join("r.json"),
-            inputs: rx,
-            done,
-        };
+        let (tx, made, s) = session(dir.path().join("r.json"), &[]);
         let worker = async { work(&desk, s).await };
         let user = async {
             tx.send(Input::Note("the name is a parameter".into()))
@@ -1247,12 +1222,7 @@ mod tests {
         };
         tokio::join!(worker, user);
         let r = made.await.unwrap();
-        let kinds: Vec<&Value> = r["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|e| &e["kind"])
-            .collect();
+        let kinds = each(&r, "kind");
         assert_eq!(
             kinds,
             [&json!("note"), &json!("key"), &json!("after")],

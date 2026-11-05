@@ -1124,13 +1124,7 @@ mod tests {
                 .await
             }
         });
-        for _ in 0..200 {
-            if d.acting() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(d.acting());
+        assert!(crate::until(40, || d.acting()).await);
         run.abort();
         let _ = run.await;
         assert!(!d.acting());
@@ -1156,12 +1150,7 @@ mod tests {
                 .await
             }
         });
-        for _ in 0..200 {
-            if d.acting() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        crate::until(40, || d.acting()).await;
         run.abort();
         let _ = run.await;
         let holders = released.0.lock().unwrap().clone();

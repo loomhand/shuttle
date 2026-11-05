@@ -221,7 +221,8 @@ fn pid_file(endpoint: &str) -> Result<PathBuf, String> {
     Ok(dir.join(format!("{pipe}.pid")))
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use crate::NAME;
@@ -297,13 +298,18 @@ while True:
     }
 
     async fn gone(pid: i32) -> bool {
-        for _ in 0..50 {
-            if !alive(pid) {
-                return true;
-            }
-            tokio::time::sleep(POLL).await;
-        }
-        false
+        crate::until(100, || !alive(pid)).await
+    }
+
+    async fn started(script: &str, overlay: bool) -> (tempfile::TempDir, String, Bundled) {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake(dir.path(), script).unwrap();
+        let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
+        let driver = Bundled::start(&exe, &endpoint, overlay, false, false)
+            .await
+            .unwrap()
+            .unwrap();
+        (dir, endpoint, driver)
     }
 
     #[tokio::test]
@@ -317,13 +323,7 @@ while True:
     #[tokio::test]
     async fn the_driver_listens_on_its_own_socket_comes_back_after_it_dies_and_stops_with_the_daemon()
      {
-        let dir = tempfile::tempdir().unwrap();
-        let exe = fake(dir.path(), FAKE).unwrap();
-        let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, true, false, false)
-            .await
-            .unwrap()
-            .unwrap();
+        let (_dir, endpoint, driver) = started(FAKE, true).await;
         assert!(server::connect(&endpoint).await.is_ok());
         let first = pid(&endpoint).unwrap();
         // SAFETY: the pid is the fake driver this test started.
@@ -344,13 +344,7 @@ while True:
 
     #[tokio::test]
     async fn a_driver_that_keeps_failing_is_started_again_less_and_less_often() {
-        let dir = tempfile::tempdir().unwrap();
-        let exe = fake(dir.path(), FAILING).unwrap();
-        let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, true, false, false)
-            .await
-            .unwrap()
-            .unwrap();
+        let (_dir, endpoint, driver) = started(FAILING, true).await;
         std::fs::write(format!("{endpoint}.fail"), "").unwrap();
         let first = pid(&endpoint).unwrap();
         std::process::Command::new("kill")
@@ -370,13 +364,7 @@ while True:
 
     #[tokio::test]
     async fn the_driver_draws_its_cursor_and_glides_it_in_one_millisecond() {
-        let dir = tempfile::tempdir().unwrap();
-        let exe = fake(dir.path(), FAKE).unwrap();
-        let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, true, false, false)
-            .await
-            .unwrap()
-            .unwrap();
+        let (_dir, endpoint, driver) = started(FAKE, true).await;
         let argv = std::fs::read_to_string(format!("{endpoint}.argv")).unwrap_or_default();
         driver.stop().await;
         assert!(argv.contains("--glide-ms 1"), "{argv}");
@@ -385,13 +373,7 @@ while True:
 
     #[tokio::test]
     async fn with_the_overlay_off_the_driver_starts_without_its_cursor_except_on_macos() {
-        let dir = tempfile::tempdir().unwrap();
-        let exe = fake(dir.path(), FAKE).unwrap();
-        let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, false, false, false)
-            .await
-            .unwrap()
-            .unwrap();
+        let (_dir, endpoint, driver) = started(FAKE, false).await;
         let argv = std::fs::read_to_string(format!("{endpoint}.argv")).unwrap_or_default();
         driver.stop().await;
         assert_eq!(
@@ -421,13 +403,7 @@ while True:
 
     #[tokio::test]
     async fn a_stop_the_driver_never_answers_still_leaves_no_driver() {
-        let dir = tempfile::tempdir().unwrap();
-        let exe = fake(dir.path(), FAKE).unwrap();
-        let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, true, false, false)
-            .await
-            .unwrap()
-            .unwrap();
+        let (_dir, endpoint, driver) = started(FAKE, true).await;
         let server = pid(&endpoint).unwrap();
         std::fs::write(format!("{endpoint}.hang"), "").unwrap();
         driver.stop().await;
@@ -436,13 +412,7 @@ while True:
 
     #[tokio::test]
     async fn a_stop_while_the_driver_restarts_leaves_no_half_started_driver() {
-        let dir = tempfile::tempdir().unwrap();
-        let exe = fake(dir.path(), FAKE).unwrap();
-        let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, true, false, false)
-            .await
-            .unwrap()
-            .unwrap();
+        let (_dir, endpoint, driver) = started(FAKE, true).await;
         let first = pid(&endpoint).unwrap();
         std::fs::write(format!("{endpoint}.slow"), "").unwrap();
         std::fs::write(format!("{endpoint}.hang"), "").unwrap();

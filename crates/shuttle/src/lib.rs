@@ -256,6 +256,41 @@ async fn kill_after(group: u32, grace: Duration) {
     signal_group(group, libc::SIGKILL);
 }
 
+#[cfg(test)]
+pub(crate) async fn until(tries: u32, mut done: impl FnMut() -> bool) -> bool {
+    for _ in 0..tries {
+        if done() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    false
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+pub(crate) fn one_call_daemon(
+    endpoint: &str,
+) -> (
+    tokio::sync::oneshot::Receiver<String>,
+    tokio::sync::oneshot::Receiver<()>,
+) {
+    use tokio::io::AsyncReadExt;
+
+    let daemon = tokio::net::UnixListener::bind(endpoint).unwrap();
+    let (got, got_call) = tokio::sync::oneshot::channel();
+    let (shut, closed) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let (mut conn, _) = daemon.accept().await.unwrap();
+        let call: desk_core::wire::Call = desk_core::wire::read_frame(&mut conn).await.unwrap();
+        let _ = got.send(call.tool);
+        let mut rest = Vec::new();
+        let _ = conn.read_to_end(&mut rest).await;
+        let _ = shut.send(());
+    });
+    (got_call, closed)
+}
+
 #[cfg(all(test, unix))]
 pub(crate) fn script(path: &Path, body: &str) -> std::io::Result<()> {
     let made = std::process::Command::new("/bin/sh")
