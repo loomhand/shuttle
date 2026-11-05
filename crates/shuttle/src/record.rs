@@ -71,6 +71,7 @@ pub enum Input {
         focus: Option<Field>,
     },
     Note(String),
+    Hotkey(i64),
 }
 
 /// The element with the keyboard focus, as a snapshot names it, the role of its window or sheet, the title of its window, whether it takes a password, and the address of its web page with its DOM id.
@@ -174,6 +175,12 @@ impl Recorder {
             .map_err(|_| GONE.to_owned())
     }
 
+    pub fn hotkey(&self, code: u32) {
+        if let Some(live) = lock(&self.live).as_ref() {
+            let _ = live.notes.send(Input::Hotkey(i64::from(code)));
+        }
+    }
+
     /// Ends the running recording; the worker saves it once it has read the last input.
     pub fn end(&self) {
         let live = lock(&self.live).take();
@@ -270,6 +277,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
     let mut acted = t0;
     let mut settle: Option<Instant> = None;
     let mut events = Vec::new();
+    let mut hotkey = None;
     loop {
         let wake = settle.unwrap_or_else(|| Instant::now() + IDLE);
         tokio::select! {
@@ -283,6 +291,11 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                         events.push(e);
                         continue;
                     }
+                    Input::Hotkey(code) => {
+                        hotkey = Some(code);
+                        continue;
+                    }
+                    Input::Key { code, .. } if hotkey == Some(code) => continue,
                     Input::Click { x, y, right, count, mods, found } => {
                         let mut at = match found {
                             Some(h) => {
@@ -392,6 +405,13 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                 front = now;
             }
         }
+    }
+    if let Some(code) = hotkey
+        && events
+            .last()
+            .is_some_and(|e| e["kind"] == "key" && e["code"] == code)
+    {
+        events.pop();
     }
     events.extend(came(
         front_of(&list(desk).await).as_ref(),
@@ -1158,6 +1178,31 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), finished)
             .await
             .expect("the finish outlived the save");
+    }
+
+    #[tokio::test]
+    async fn the_kill_hotkey_that_ends_a_recording_is_no_step_of_it() {
+        let desk = Desk::new(Value::Null);
+        let press = |code: i64| Input::Key {
+            code,
+            text: String::new(),
+            mods: vec!["ctrl", "alt", "cmd"],
+            secret: false,
+            pid: None,
+            focus: None,
+            read: false,
+        };
+        let before = run(&desk, &[], vec![press(53), press(47), Input::Hotkey(47)]).await;
+        let after = run(&desk, &[], vec![press(53), Input::Hotkey(47), press(47)]).await;
+        for r in [before, after] {
+            let codes: Vec<&Value> = r["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| &e["code"])
+                .collect();
+            assert_eq!(codes, [&json!(53)], "{r}");
+        }
     }
 
     #[tokio::test]

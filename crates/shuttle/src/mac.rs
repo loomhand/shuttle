@@ -313,14 +313,14 @@ unsafe extern "C" {
 }
 
 extern "C" fn pressed(_: *mut c_void, _: *mut c_void, user: *mut c_void) -> i32 {
-    // SAFETY: `user` is the leaked `Arc<dyn Controls>` box that `register` installs for the life of the process.
-    let controls = unsafe { &*(user as *const Arc<dyn Controls>) };
-    controls.halt(true);
+    // SAFETY: `user` is the leaked controls and key code box that `register` installs for the life of the process.
+    let (controls, code) = unsafe { &*(user as *const (Arc<dyn Controls>, u32)) };
+    controls.hotkey(*code);
     0
 }
 
 fn register(hotkey: Hotkey, controls: Arc<dyn Controls>) {
-    let user = Box::into_raw(Box::new(controls)).cast::<c_void>();
+    let user = Box::into_raw(Box::new((controls, hotkey.code))).cast::<c_void>();
     let spec = EventTypeSpec {
         class: KEYBOARD_CLASS,
         kind: HOT_KEY_PRESSED,

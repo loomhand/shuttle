@@ -84,6 +84,9 @@ pub trait Controls: Send + Sync {
     }
     /// Starts or ends a recording of the user's input.
     fn record(&self, _on: bool) {}
+    fn hotkey(&self, _code: u32) {
+        self.halt(true);
+    }
 }
 
 /// What the controls show and how to reach the daemon.
@@ -417,6 +420,13 @@ impl<H: Handler> Controls for Daemon<H> {
 
     fn halted(&self) -> bool {
         *self.halted.borrow()
+    }
+
+    fn hotkey(&self, code: u32) {
+        if let Some(r) = &self.recorder {
+            r.hotkey(code);
+        }
+        self.halt(true);
     }
 
     fn acting(&self) -> bool {
