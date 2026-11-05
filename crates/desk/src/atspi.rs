@@ -226,6 +226,8 @@ static WOKEN: LazyLock<std::sync::Mutex<HashSet<String>>> =
 static SCREEN_COORDS: LazyLock<std::sync::Mutex<HashMap<String, bool>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
+static BUS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 /// An accessible object: the bus name of its app and its object path.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Obj {
@@ -1043,6 +1045,14 @@ impl Atspi {
             .build()
             .await
             .map_err(|e| format!("connect the accessibility bus: {e}"))?;
+        if new_bus(
+            &mut BUS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            conn.server_guid().as_str(),
+        ) {
+            forget_apps();
+        }
         *slot = Some(conn.clone());
         Ok(conn)
     }
@@ -1076,6 +1086,31 @@ fn first_wake(bus: &str) -> bool {
 /// Whether a toolkit answers screen coordinates; GTK 4 answers every screen point and extent with the origin.
 fn answers_screen_coords(toolkit: &str, version: &str) -> bool {
     !(toolkit == "GTK" && version.split('.').next() == Some("4"))
+}
+
+fn new_bus(last: &mut Option<String>, guid: &str) -> bool {
+    if last.as_deref() == Some(guid) {
+        return false;
+    }
+    *last = Some(guid.to_owned());
+    true
+}
+
+fn forget_apps() {
+    HUNG.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
+    SEEN.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
+    WOKEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
+    SCREEN_COORDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
 }
 
 fn mark_hung(bus: &str) {
@@ -1500,6 +1535,16 @@ mod tests {
         assert!(!first_wake(":9.97"));
         assert!(first_wake(":9.96"));
         assert!(!first_wake(":9.96"));
+    }
+
+    #[test]
+    fn only_a_new_accessibility_bus_forgets_the_apps_of_the_last_one() {
+        let mut last = None;
+        assert!(new_bus(&mut last, "a1"));
+        assert!(!new_bus(&mut last, "a1"));
+        assert!(new_bus(&mut last, "b2"));
+        assert!(!new_bus(&mut last, "b2"));
+        assert_eq!(last.as_deref(), Some("b2"));
     }
 
     #[tokio::test(start_paused = true)]
