@@ -1048,7 +1048,7 @@ fn launcher(out: &str, app: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Pastes `line` into the field `focus` names, pasting again while the field's text did not change: Some(true) when it shows, Some(false) when the text stayed the same for 1.5 s. None is a paste it does not check (no field, a password field, or text that changed otherwise); an error when no paste key was delivered or the field under `at` has no focus.
+/// Pastes `line` into the field `focus` names, pressing the paste key again only while the device refuses it: Some(true) when it shows, Some(false) when the text stayed the same for 1.5 s. None is a paste it does not check (no field, a password field, or text that changed otherwise); an error when no paste key was delivered or the field under `at` has no focus.
 async fn type_with<F, Ff, P, Pf>(
     line: &str,
     at: Option<(i32, i32)>,
@@ -1094,8 +1094,10 @@ where
     let shows = |f: &Focus| !f.same_text(&before) && f.ends_with(line);
     let mut delivered = false;
     loop {
-        if paste().await? {
-            delivered = true;
+        if !delivered {
+            delivered = paste().await?;
+        }
+        if delivered {
             let deadline = tokio::time::Instant::now() + VERIFY_WAIT;
             loop {
                 if focus(false)
@@ -2327,13 +2329,26 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_paste_that_left_the_field_unchanged_is_pasted_again_until_the_deadline() {
-        assert_eq!(typed("abc", None, "", &["", "abc"]).await, (Some(true), 2));
-        assert_eq!(
-            typed("abc", None, "", &["", "", "abc"]).await,
-            (Some(true), 3)
-        );
-        assert_eq!(typed("abc", None, "", &[""]).await, (Some(false), 5));
+    async fn a_delivered_paste_is_never_pasted_again_and_may_show_late() {
+        assert_eq!(typed("abc", None, "", &[""]).await, (Some(false), 1));
+        let pastes = std::cell::Cell::new(0);
+        let started = tokio::time::Instant::now();
+        let out = type_with(
+            "abc",
+            None,
+            |_| {
+                let late = started.elapsed() >= Duration::from_millis(800);
+                let f = field(if pastes.get() > 0 && late { "abc" } else { "" });
+                async move { Ok(Some(f)) }
+            },
+            || {
+                pastes.set(pastes.get() + 1);
+                async { Ok(true) }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!((out, pastes.get()), (Some(true), 1));
     }
 
     #[tokio::test(start_paused = true)]
@@ -2377,12 +2392,12 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!((out, pastes.get()), (Some(false), 5));
+        assert_eq!((out, pastes.get()), (Some(false), 1));
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_field_that_already_ends_with_the_line_shows_the_paste_only_once_it_changes() {
-        assert_eq!(typed("bc", None, "abc", &["abc"]).await, (Some(false), 5));
+        assert_eq!(typed("bc", None, "abc", &["abc"]).await, (Some(false), 1));
         assert_eq!(typed("bc", None, "abc", &["abcbc"]).await, (Some(true), 1));
     }
 
