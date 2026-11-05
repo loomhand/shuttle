@@ -55,6 +55,15 @@ Cursor (`~/.cursor/mcp.json`):
 { "mcpServers": { "shuttle": { "command": "shuttle", "args": ["mcp"] } } }
 ```
 
+### Over HTTP
+
+`shuttle mcp --http ADDR` serves the same tools over MCP Streamable HTTP at `http://ADDR/mcp`, for an agent that reaches shuttle across a container boundary or the LAN instead of starting it. It is off unless you run it. Each `POST` carries one JSON-RPC message and gets its reply as JSON; there are no sessions and no server-sent events, and a client that drops its connection cancels the call. A non-loopback address needs a token in `SHUTTLE_MCP_TOKEN`, and once set every request must send `Authorization: Bearer <token>`. A request whose browser `Origin` is not localhost gets 403. The traffic is plain HTTP, so put TLS in front of it to cross an untrusted network.
+
+```sh
+docker run -p 8765:8765 -e SHUTTLE_MCP_TOKEN=... IMAGE shuttle mcp --http 0.0.0.0:8765
+claude mcp add --transport http shuttle http://localhost:8765/mcp --header "Authorization: Bearer ..."
+```
+
 ## Tools
 
 | Tool | What it does |

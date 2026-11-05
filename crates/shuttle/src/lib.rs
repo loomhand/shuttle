@@ -1,4 +1,4 @@
-//! shuttle: a local computer-use host that agents call over MCP stdio to drive this desktop.
+//! shuttle: a local computer-use host that agents call over MCP, on stdio or HTTP, to drive this desktop.
 
 pub mod android;
 pub mod cli;
@@ -6,6 +6,7 @@ pub mod daemon;
 pub mod driver;
 #[cfg(any(target_os = "macos", windows, test))]
 pub mod hotkey;
+pub mod http;
 #[cfg(windows)]
 mod job;
 #[cfg(target_os = "macos")]

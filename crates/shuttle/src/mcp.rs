@@ -1,4 +1,4 @@
-//! The MCP server on stdio: newline-delimited JSON-RPC 2.0 with the tools of `tools` and the resources of the script plugins.
+//! The MCP server: newline-delimited JSON-RPC 2.0 on stdio with the tools of `tools` and the resources of the script plugins; `http` answers the same messages over HTTP.
 
 use std::collections::VecDeque;
 use std::pin::Pin;
@@ -67,6 +67,12 @@ where
         }
     }
     Ok(())
+}
+
+/// Answers the one JSON-RPC message in `body`; none for a notification.
+pub(crate) async fn answer_one(body: &[u8], endpoint: &str, plugins: &Plugins) -> Option<Value> {
+    let msg: Message = serde_json::from_slice(body).map_err(|e| format!("parse: {e}"));
+    answer(msg, endpoint, plugins).await
 }
 
 async fn write<W: AsyncWrite + Unpin>(output: &mut W, reply: &Value) -> Result<(), String> {
