@@ -938,8 +938,13 @@ impl Computer {
             changed = differs;
             let moved = last.as_ref().is_none_or(|l| l.changes(&frame, &volatile));
             if let Frame::Blocks(blocks) = &frame {
-                if let (Frame::Blocks(first), Some(prev)) = (&first, prev.as_deref()) {
-                    shown.learn(first, prev, blocks, &mut volatile);
+                if let Frame::Blocks(first) = &first {
+                    shown.learn(
+                        first,
+                        prev.as_deref().unwrap_or(first),
+                        blocks,
+                        &mut volatile,
+                    );
                 }
                 prev.get_or_insert_default().clone_from(blocks);
             }
