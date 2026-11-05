@@ -420,7 +420,9 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
         t0,
     ));
     desk.release(AGENT);
-    let recording = json!({"id": id, "started_ms": started, "stopped_ms": now_ms(), "apps": apps, "events": events});
+    let mut recording = json!({"id": id, "started_ms": started, "stopped_ms": now_ms()});
+    recording["apps"] = apps.into();
+    recording["events"] = Value::Array(events);
     if let Err(e) = save(&path, &recording) {
         crate::log(e);
     }
