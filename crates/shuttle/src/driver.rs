@@ -4,14 +4,14 @@
 use std::os::unix::fs::FileTypeExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use shuttle_desk::server;
 use tokio::process::Command;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::{Running, home, log};
+use crate::{Backoff, Running, home, log};
 
 const TELEMETRY: &str = "CUA_DRIVER_RS_TELEMETRY_ENABLED";
 const DRIVER_EMBEDDED: &str = "CUA_DRIVER_EMBEDDED";
@@ -22,7 +22,6 @@ const LISTEN_WAIT: Duration = Duration::from_secs(10);
 const STOP_WAIT: Duration = Duration::from_secs(3);
 const POLL: Duration = Duration::from_millis(100);
 const LISTEN_POLL: Duration = Duration::from_millis(10);
-const RESTART_DELAY: Duration = Duration::from_secs(1);
 
 /// A cua-driver this daemon runs.
 pub struct Bundled {
@@ -127,32 +126,37 @@ impl Proc {
         Ok(running)
     }
 
-    async fn supervise(self, mut running: Running, mut stopped: oneshot::Receiver<()>) {
+    async fn supervise(self, first: Running, mut stopped: oneshot::Receiver<()>) {
+        let mut backoff = Backoff::default();
+        let mut started = Instant::now();
+        let mut running = Some(first);
         loop {
-            tokio::select! {
-                _ = &mut stopped => break,
-                status = running.child.wait() => log(format_args!("cua-driver exited with {status:?}; starting it again")),
+            if let Some(mut r) = running.take() {
+                tokio::select! {
+                    _ = &mut stopped => {
+                        self.request_stop().await;
+                        if tokio::time::timeout(STOP_WAIT, r.child.wait()).await.is_err() {
+                            let _ = r.child.kill().await;
+                        }
+                        return;
+                    }
+                    status = r.child.wait() => log(format_args!("cua-driver exited with {status:?}; starting it again")),
+                }
             }
+            let delay = backoff.after(started.elapsed());
             tokio::select! {
                 _ = &mut stopped => {
                     self.request_stop().await;
                     return;
                 }
                 spawned = async {
-                    tokio::time::sleep(RESTART_DELAY).await;
+                    tokio::time::sleep(delay).await;
                     self.spawn().await
-                } => match spawned {
-                    Ok(r) => running = r,
-                    Err(e) => log(e),
-                },
+                } => {
+                    started = Instant::now();
+                    running = spawned.map_err(log).ok();
+                }
             }
-        }
-        self.request_stop().await;
-        if tokio::time::timeout(STOP_WAIT, running.child.wait())
-            .await
-            .is_err()
-        {
-            let _ = running.child.kill().await;
         }
     }
 
@@ -255,6 +259,26 @@ while True:
     s.accept()[0].close()
 "#;
 
+    const FAILING: &str = r#"#!/usr/bin/env python3
+import os, socket, sys
+args = dict(zip(sys.argv[2::2], sys.argv[3::2]))
+if sys.argv[1] == "stop":
+    sys.exit(0)
+sock = args["--socket"]
+with open(sock + ".starts", "a") as f:
+    f.write("x")
+if os.path.exists(sock + ".fail"):
+    sys.exit(3)
+open(sock + ".fake-pid", "w").write(str(os.getpid()))
+if os.path.exists(sock):
+    os.remove(sock)
+s = socket.socket(socket.AF_UNIX)
+s.bind(sock)
+s.listen(8)
+while True:
+    s.accept()[0].close()
+"#;
+
     fn fake(dir: &Path, script: &str) -> std::io::Result<PathBuf> {
         crate::script(&dir.join("cua-driver"), script)?;
         Ok(dir.join(NAME))
@@ -316,6 +340,32 @@ while True:
         driver.stop().await;
         assert_ne!(second, first, "the driver came back");
         assert!(gone(second).await, "the driver stopped with the daemon");
+    }
+
+    #[tokio::test]
+    async fn a_driver_that_keeps_failing_is_started_again_less_and_less_often() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake(dir.path(), FAILING).unwrap();
+        let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
+        let driver = Bundled::start(&exe, &endpoint, true, false, false)
+            .await
+            .unwrap()
+            .unwrap();
+        std::fs::write(format!("{endpoint}.fail"), "").unwrap();
+        let first = pid(&endpoint).unwrap();
+        std::process::Command::new("kill")
+            .args(["-9", &first.to_string()])
+            .status()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(4500)).await;
+        let starts = std::fs::read_to_string(format!("{endpoint}.starts"))
+            .unwrap_or_default()
+            .len();
+        driver.stop().await;
+        assert!(
+            (2..=3).contains(&starts),
+            "{starts} starts in 4.5 s after the first one died"
+        );
     }
 
     #[tokio::test]

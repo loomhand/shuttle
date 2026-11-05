@@ -15,13 +15,11 @@ use tokio::task::JoinSet;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::plugins::Service;
-use crate::{Running, log};
+use crate::{Backoff, Running, log};
 
 const SOCKET_VAR: &str = "SHUTTLE_SERVICE_SOCKET";
 #[cfg(unix)]
 const DIR: &str = "services";
-const FIRST_DELAY: Duration = Duration::from_secs(1);
-const MAX_DELAY: Duration = Duration::from_secs(30);
 const STOP_WAIT: Duration = Duration::from_secs(3);
 const LISTEN_WAIT: Duration = Duration::from_secs(10);
 const POLL: Duration = Duration::from_millis(50);
@@ -129,7 +127,7 @@ impl Proc {
     }
 
     async fn supervise(self, mut stopped: oneshot::Receiver<()>) {
-        let mut delay = FIRST_DELAY;
+        let mut backoff = Backoff::default();
         loop {
             let started = Instant::now();
             match self.spawn() {
@@ -144,14 +142,10 @@ impl Proc {
                 }
                 Err(e) => log(format_args!("service {}: {e}", self.name)),
             }
-            if started.elapsed() >= MAX_DELAY {
-                delay = FIRST_DELAY;
-            }
             tokio::select! {
                 _ = &mut stopped => return,
-                () = tokio::time::sleep(delay) => {}
+                () = tokio::time::sleep(backoff.after(started.elapsed())) => {}
             }
-            delay = (delay * 2).min(MAX_DELAY);
         }
     }
 }

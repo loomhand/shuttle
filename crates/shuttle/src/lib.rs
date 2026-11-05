@@ -29,7 +29,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 #[cfg(unix)]
 use std::sync::{Mutex, PoisonError};
-#[cfg(unix)]
 use std::time::Duration;
 
 use tokio::process::Child;
@@ -45,6 +44,8 @@ pub const STOPPED: &str = "stopped by the user: run `shuttle resume` to go on";
 /// The environment variable whose value `1` tells `serve` and `mcp` that a host app owns the daemon, its driver and their permissions.
 pub const EMBEDDED: &str = "SHUTTLE_EMBEDDED";
 
+const FIRST_DELAY: Duration = Duration::from_secs(1);
+const MAX_DELAY: Duration = Duration::from_secs(30);
 #[cfg(unix)]
 const GROUP_POLL: Duration = Duration::from_millis(20);
 
@@ -107,6 +108,25 @@ impl Drop for Running {
         if let Some(g) = self.group {
             crate::signal_group(g, libc::SIGKILL);
         }
+    }
+}
+
+pub(crate) struct Backoff(Duration);
+
+impl Default for Backoff {
+    fn default() -> Self {
+        Self(FIRST_DELAY)
+    }
+}
+
+impl Backoff {
+    pub(crate) fn after(&mut self, ran: Duration) -> Duration {
+        if ran >= MAX_DELAY {
+            self.0 = FIRST_DELAY;
+        }
+        let wait = self.0;
+        self.0 = (self.0 * 2).min(MAX_DELAY);
+        wait
     }
 }
 
