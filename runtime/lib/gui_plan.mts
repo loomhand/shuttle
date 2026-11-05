@@ -1485,7 +1485,7 @@ function summary(steps: Step[]) {
 }
 
 function idempotent(steps: Step[]) { return steps.every((s) => s.type === undefined && (!s.key || /^(esc|escape|tab|shift\+tab)$/i.test(s.key))) }
-function bare(s: Step, p: Record<string, string>) { return JSON.stringify(Object.entries(fill(s, p)).filter(([k]) => k !== 'fp' && k !== 'seen' && k !== 'blank' && !(k === 'type' && secure(s))).sort()) }
+function bare(s: Step, p: Record<string, string>) { return JSON.stringify(Object.entries(fill(s, p)).filter(([k]) => k !== 'fp' && k !== 'seen' && k !== 'blank').map(([k, v]) => k === 'type' && secure(s) && typeof v === 'string' ? [k, v.endsWith('\n')] : [k, v]).sort()) }
 
 function store(chain: Chain) {
   const tpl = templated(chain.steps, chain.params)

@@ -144,3 +144,20 @@ test('saving the steps of a plan that just typed a password stores them without 
     assert.deepEqual(typed, [])
   }
 })
+
+test('saving a plan whose password step adds a Return runs it again', async (t) => {
+  const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: '', states: ['showing', 'focused', 'protected'] }
+  const typed: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_type') typed.push(args.text)
+    if (tool === 'desk_windows') return JSON.stringify([notepad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field] })
+    return '{"ok":true}'
+  })
+  const ran = await main({ steps: [{ app: 'Notepad' }, { type: 'hunter7', focus: { secure: true } }] })
+  assert.equal(ran.ok, true, JSON.stringify(ran))
+  typed.length = 0
+  const saved = await main({ steps: [{ app: 'Notepad' }, { type: 'hunter7\n', focus: { secure: true } }], save: 'login7' })
+  assert.notEqual(saved.ran, false, JSON.stringify(saved))
+  assert.deepEqual(typed, ['hunter7'])
+})
