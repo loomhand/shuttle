@@ -816,12 +816,16 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn at(&self, mut a: AtArgs) -> Result<String, String> {
         let under = a.window.is_none() && a.pid.is_none();
+        let mut number = None;
         if under {
             let scale = self.scale().await?;
             let point = (f64::from(a.x) / scale, f64::from(a.y) / scale);
             let top = self.top_at(point).await?.ok_or(NO_WINDOW_AT)?;
             a.window = Some(top["title"].as_str().unwrap_or_default().to_owned());
             a.pid = top["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
+            number = top["window_id"]
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok());
         }
         let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
         self.access
@@ -830,6 +834,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     check_process(b, &allow, a.pid)?;
                 }
                 let frames = frames(b, a.pid, &allow)?;
+                if let Some(f) = number.and_then(|n| frames.iter().find(|f| f.number == Some(n))) {
+                    a.window = Some(f.title.clone());
+                }
                 let kept = (!allow.is_open()).then(|| frames.clone());
                 let window = a.window.as_deref();
                 let held = under
@@ -5730,6 +5737,18 @@ pub(crate) mod tests {
                 .unwrap();
         }
         assert!(desk.run("desk_snapshot", json!({})).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn at_a_point_reads_the_window_the_driver_lists_there_by_its_number_not_its_elided_title()
+    {
+        let desk = Desk::new(|| Ok(Long), Elided(Arc::default()), Os::Mac);
+        let out = desk
+            .run("desk_at", json!({"x": 10, "y": 10}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(v["window"]["title"], LONG_TITLE, "{v}");
     }
 
     #[tokio::test]
