@@ -13,6 +13,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: The tag names the workspace version
         run: |
@@ -21,6 +23,17 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME but Cargo.toml says $version: bump the version in a release commit before tagging"
             exit 1
           fi
+
+      - name: The tagged commit is on main
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::tag $GITHUB_REF_NAME is not on main: tag a release commit on main"
+            exit 1
+          fi
+
+  ci:
+    needs: version
+    uses: ./.github/workflows/ci.yml
 
   ui-jar:
     needs: version
@@ -50,7 +63,7 @@ jobs:
           path: shuttle-ui.jar
 
   build:
-    needs: ui-jar
+    needs: [ui-jar, ci]
     strategy:
       fail-fast: false
       matrix:
