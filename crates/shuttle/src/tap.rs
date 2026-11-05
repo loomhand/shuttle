@@ -3,7 +3,7 @@
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 
 use tokio::sync::mpsc::UnboundedSender;
@@ -39,14 +39,15 @@ pub struct Tap {
 }
 
 impl Tap {
-    /// Starts a tap on its own thread that sends each click and key to `tx`.
-    pub fn start(tx: UnboundedSender<Input>) -> Result<Self, String> {
+    /// Starts a tap on its own thread that sends each click and key to `tx`, but none while `acting` counts shuttle's own actions.
+    pub fn start(tx: UnboundedSender<Input>, acting: Arc<AtomicUsize>) -> Result<Self, String> {
         let (ready, started) = std::sync::mpsc::channel();
         let done = Arc::new(AtomicBool::new(false));
         let ended = Arc::clone(&done);
         let thread = std::thread::spawn(move || {
             let seen = Box::into_raw(Box::new(Seen {
                 tx,
+                acting,
                 port: std::ptr::null_mut(),
                 scale: ax::display_scale(),
                 fresh: Cell::new(true),
@@ -76,7 +77,7 @@ impl Tap {
                 while !ended.load(Ordering::Acquire) {
                     CFRunLoopRunInMode(kCFRunLoopDefaultMode, TURN_S, false);
                     let now = ax::secure_input();
-                    if now && !secure {
+                    if now && !secure && (*seen).acting.load(Ordering::Relaxed) == 0 {
                         let (pid, _) = ax::typing();
                         let _ = (*seen).tx.send(Input::Password {
                             pid,
@@ -125,6 +126,7 @@ pub fn ask() {
 
 struct Seen {
     tx: UnboundedSender<Input>,
+    acting: Arc<AtomicUsize>,
     port: *mut c_void,
     scale: f64,
     /// Whether the next key starts a run of typing, whose target the tap reads.
@@ -142,6 +144,9 @@ extern "C" fn heard(
     if kind == DISABLED_BY_TIMEOUT || kind == DISABLED_BY_INPUT {
         // SAFETY: the port is the live tap that was disabled.
         unsafe { CGEventTapEnable(seen.port, true) };
+        return event;
+    }
+    if seen.acting.load(Ordering::Relaxed) > 0 {
         return event;
     }
     if let Some(input) = read(&Event(event), kind, seen) {

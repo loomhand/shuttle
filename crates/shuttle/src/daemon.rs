@@ -107,7 +107,7 @@ pub struct Daemon<H> {
     plugins: Vec<Plugin>,
     services: HashMap<String, String>,
     halted: tokio::sync::watch::Sender<bool>,
-    actions: AtomicUsize,
+    actions: Arc<AtomicUsize>,
     asking: AtomicBool,
     turn: tokio::sync::Mutex<()>,
     running: Mutex<Option<String>>,
@@ -128,7 +128,7 @@ impl<H: Handler> Daemon<H> {
             plugins: Vec::new(),
             services: HashMap::new(),
             halted: tokio::sync::watch::Sender::new(false),
-            actions: AtomicUsize::new(0),
+            actions: Arc::new(AtomicUsize::new(0)),
             asking: AtomicBool::new(false),
             turn: tokio::sync::Mutex::new(()),
             running: Mutex::new(None),
@@ -142,7 +142,7 @@ impl<H: Handler> Daemon<H> {
     /// Adds recordings of the user's input, saved in `dir`.
     #[must_use]
     pub fn with_recordings(mut self, dir: std::path::PathBuf) -> Self {
-        self.recorder = Some(Recorder::new(dir));
+        self.recorder = Some(Recorder::new(dir, Arc::clone(&self.actions)));
         self
     }
 
@@ -152,7 +152,7 @@ impl<H: Handler> Daemon<H> {
             return;
         };
         while let Some(s) = sessions.recv().await {
-            record::work(&self.desk, s, || self.acting()).await;
+            record::work(&self.desk, s).await;
         }
     }
 
@@ -236,6 +236,8 @@ impl<H: Handler> Daemon<H> {
         let agent = format!("run-{:x}-{n}", self.nonce);
         *self.running() = Some(agent.clone());
         let _running = Running(&self.running, &agent);
+        self.actions.fetch_add(1, Ordering::Relaxed);
+        let _acting = Acting(&self.actions);
         let _held = Held(&self.desk, &agent);
         let report = match plugin {
             Some(p) => self.runner.plugin(&p.bin, args, &agent).await,
@@ -412,7 +414,7 @@ impl<H: Handler> Controls for Daemon<H> {
     }
 
     fn acting(&self) -> bool {
-        self.actions.load(Ordering::Relaxed) > 0 || self.running().is_some()
+        self.actions.load(Ordering::Relaxed) > 0
     }
 
     fn recording(&self) -> bool {

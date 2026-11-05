@@ -1,7 +1,8 @@
 //! Recordings of what the user does: each click and key with what the desk saw then, for a draft of replayable steps.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -103,6 +104,7 @@ pub struct Hit {
 /// The recordings of this daemon: at most one running, and the last one made.
 pub struct Recorder {
     dir: PathBuf,
+    acting: Arc<AtomicUsize>,
     queue: UnboundedSender<Session>,
     sessions: Mutex<Option<UnboundedReceiver<Session>>>,
     live: Mutex<Option<Live>>,
@@ -110,11 +112,12 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    /// A recorder that saves each recording in `dir`, readable by this user only.
-    pub fn new(dir: PathBuf) -> Self {
+    /// A recorder that saves each recording in `dir`, readable by this user only, and leaves out input while `acting` counts shuttle's own actions.
+    pub fn new(dir: PathBuf, acting: Arc<AtomicUsize>) -> Self {
         let (queue, sessions) = unbounded_channel();
         Self {
             dir,
+            acting,
             queue,
             sessions: Mutex::new(Some(sessions)),
             live: Mutex::new(None),
@@ -138,7 +141,7 @@ impl Recorder {
             return Err(RECORDING.to_owned());
         }
         let (notes, inputs) = unbounded_channel();
-        let tap = listen(notes.clone())?;
+        let tap = listen(notes.clone(), Arc::clone(&self.acting))?;
         let id = format!("rec-{}", now_ms());
         let path = self.path(&id);
         let (done, made) = oneshot::channel();
@@ -239,8 +242,8 @@ type Listening = Tap;
 #[cfg(not(target_os = "macos"))]
 type Listening = std::convert::Infallible;
 
-/// Runs `s` against `desk` until its inputs end, then saves it and sends it on; input while `acting` says shuttle itself acts is no user's.
-pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
+/// Runs `s` against `desk` until its inputs end, then saves it and sends it on.
+pub async fn work<H: Handler>(desk: &H, s: Session) {
     let Session {
         id,
         apps,
@@ -272,7 +275,6 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                         events.push(e);
                         continue;
                     }
-                    _ if acting() => continue,
                     Input::Click { x, y, right, count, mods, found } => {
                         let mut at = match found {
                             Some(h) => {
@@ -398,16 +400,16 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
 }
 
 #[cfg(target_os = "macos")]
-fn listen(tx: UnboundedSender<Input>) -> Result<Listening, String> {
+fn listen(tx: UnboundedSender<Input>, acting: Arc<AtomicUsize>) -> Result<Listening, String> {
     if !tap::allowed() {
         tap::ask();
         return Err(INPUT_MONITORING.to_owned());
     }
-    Tap::start(tx)
+    Tap::start(tx, acting)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn listen(_: UnboundedSender<Input>) -> Result<Listening, String> {
+fn listen(_: UnboundedSender<Input>, _: Arc<AtomicUsize>) -> Result<Listening, String> {
     Err(OTHER_OS.to_owned())
 }
 
@@ -712,7 +714,7 @@ mod tests {
             tx.send(i).unwrap();
         }
         drop(tx);
-        work(desk, s, || false).await;
+        work(desk, s).await;
         let r = made.await.unwrap();
         #[cfg(unix)]
         {
@@ -891,7 +893,7 @@ mod tests {
             inputs: rx,
             done,
         };
-        let worker = async { work(&desk, s, || false).await };
+        let worker = async { work(&desk, s).await };
         let user = async {
             tokio::time::sleep(Duration::from_millis(50)).await;
             *lock(&desk.front) = "report.rtf";
@@ -1140,7 +1142,7 @@ mod tests {
             inputs: rx,
             done,
         };
-        let worker = async { work(&desk, s, || false).await };
+        let worker = async { work(&desk, s).await };
         let user = async {
             tx.send(key("s", false)).unwrap();
             tokio::time::sleep(SETTLE + Duration::from_millis(300)).await;
@@ -1171,7 +1173,7 @@ mod tests {
             inputs: rx,
             done,
         };
-        let worker = async { work(&desk, s, || false).await };
+        let worker = async { work(&desk, s).await };
         let user = async {
             tx.send(Input::Note("the name is a parameter".into()))
                 .unwrap();
