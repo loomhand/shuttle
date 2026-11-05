@@ -190,6 +190,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self
     }
 
+    pub fn turn(&self) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(&self.acting)
+    }
+
     /// Whether a background action refused before any input was sent runs once more in the foreground, its target window brought to the front.
     pub fn auto(mut self, on: bool) -> Self {
         self.auto = on;

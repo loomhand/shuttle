@@ -151,6 +151,11 @@ impl Computer {
         }
     }
 
+    pub fn turn(mut self, turn: Arc<Mutex<()>>) -> Self {
+        self.input = turn;
+        self
+    }
+
     /// Whether input must reach its window without raising it or moving the pointer; the computer actions refuse then.
     pub fn background(mut self, on: bool) -> Self {
         self.background = on;
@@ -3037,6 +3042,32 @@ mod tests {
             "{:?}",
             start.elapsed()
         );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_computer_action_waits_while_a_desk_action_holds_the_shared_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        let desk = crate::desk::Desk::new(
+            || Ok(crate::desk::tests::notepad()),
+            Arc::new(Driver::new(socket.to_string_lossy().into_owned())),
+            Os::Linux,
+        );
+        let cua = cua(&socket).turn(desk.turn());
+        let held = desk.turn().lock_owned().await;
+        let act = json!({"action": "key", "key": "escape"});
+        let waited = tokio::time::timeout(Duration::from_millis(200), cua.act(act.clone())).await;
+        assert!(waited.is_err());
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "{:?}",
+            calls.lock().unwrap()
+        );
+        drop(held);
+        assert!(!cua.act(act).await.unwrap().is_error);
         driver.abort();
     }
 

@@ -400,14 +400,17 @@ pub fn native(
     locked_input: bool,
 ) -> impl Handler {
     let driver = Arc::new(Driver::new(driver));
+    let desk = Desk::new(Backend::open, Arc::clone(&driver), HOST)
+        .allow(apps)
+        .overlay(overlay)
+        .background(background || auto)
+        .auto(auto)
+        .locked_input(locked_input);
     Native {
-        desk: Desk::new(Backend::open, Arc::clone(&driver), HOST)
-            .allow(apps)
-            .overlay(overlay)
-            .background(background || auto)
-            .auto(auto)
-            .locked_input(locked_input),
-        computer: Computer::new(driver, HOST).background(background),
+        computer: Computer::new(driver, HOST)
+            .turn(desk.turn())
+            .background(background),
+        desk,
         open: apps.is_empty(),
     }
 }
