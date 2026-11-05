@@ -17,7 +17,7 @@
   - A menu toggle reads its state back after the press and fails when the press did not take; the vision path carries a caveat instead.
   - A later step confirms the step before it only when it reads what that step could change, a recorded click among several equal matches resolves again when their number changed, and a grounded point is checked again right before its click.
   - A value typed into a password field is never saved: it stays out of the flow and `.pending.json`, so a replay passes it in `params` ([config.md](docs/config.md#saved-flows)).
-  - A plan that a timeout or a stop ends reports `{ok: false, done, trace, escalate}` in its error on macOS and Linux, so a rerun does not repeat steps that acted ([wire.md](docs/wire.md#runs)). A plan killed after it acted is never saved as a flow missing those steps.
+  - A plan that a timeout or a stop ends reports `{ok: false, done, trace, escalate}` in its error, so a rerun does not repeat steps that acted ([wire.md](docs/wire.md#runs)). A plan killed after it acted is never saved as a flow missing those steps.
   - In the background, `save` takes up the window the chain left, so it no longer refuses every escalated chain with "no window is in front".
 - **Android.**
   - The screen follows the device's rotation: in landscape, elements right of the portrait width are back in `computer_state`, `press` reaches them, and `shot` and `look` take the full screen.
