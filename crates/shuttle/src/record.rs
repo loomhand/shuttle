@@ -173,7 +173,7 @@ impl Recorder {
     pub fn note(&self, text: String) -> Result<(), String> {
         lock(&self.live)
             .as_ref()
-            .ok_or_else(|| NOTHING.to_owned())?
+            .ok_or("no recording is running")?
             .notes
             .send(Input::Note(text))
             .map_err(|_| GONE.to_owned())

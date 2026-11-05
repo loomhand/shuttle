@@ -72,7 +72,7 @@ impl Tap {
                 CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
                 CGEventTapEnable(port, true);
                 let _ = ready.send(Ok(()));
-                let mut secure = false;
+                let mut secure = ax::secure_input() && !ax::focused().is_some_and(|f| f.secure);
                 while !ended.load(Ordering::Acquire) {
                     CFRunLoopRunInMode(kCFRunLoopDefaultMode, TURN_S, false);
                     let now = ax::secure_input();

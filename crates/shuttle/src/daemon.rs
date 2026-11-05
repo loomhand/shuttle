@@ -430,7 +430,9 @@ impl<H: Handler> Controls for Daemon<H> {
         let Some(r) = &self.recorder else {
             return Ok(());
         };
-        if on {
+        if on && self.halted() {
+            Err(crate::STOPPED.to_owned())
+        } else if on {
             r.start(Vec::new()).map(drop)
         } else {
             r.end();
@@ -1113,6 +1115,14 @@ mod tests {
             d.record(true),
             Err("recording runs only on macOS".to_owned())
         );
+        assert!(!d.recording());
+    }
+
+    #[test]
+    fn the_menu_starts_no_recording_while_stopped() {
+        let d = daemon(Echo, Guard::default()).with_recordings(std::env::temp_dir());
+        d.halt(true);
+        assert_eq!(d.record(true), Err(crate::STOPPED.to_owned()));
         assert!(!d.recording());
     }
 
