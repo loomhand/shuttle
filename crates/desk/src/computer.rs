@@ -80,6 +80,7 @@ const FIELDS: [&str; 5] = [
 const JPEG_QUALITY: u8 = 80;
 const DEFAULT_EDGE: u32 = 1024;
 const PIXELS_PER_TOKEN: u32 = 750;
+const HEAD_CHARS: usize = 4096;
 const PHOTO_COLORS: usize = 2500;
 const COLOR_STRIDE: usize = 7;
 const COLOR_BITS: u32 = 14;
@@ -620,10 +621,16 @@ impl Computer {
             .unwrap_or(1.0);
         self.keep_backing(state);
         let (image, ratio) = match image_of(v) {
-            Some(png) => fitted(png, edge).map_or_else(
-                || (Some(shrink(png).unwrap_or_else(|| png.to_owned())), 1.0),
-                |(image, ratio)| (Some(image), ratio),
-            ),
+            Some(png) => {
+                let data = B64.decode(png).ok();
+                data.as_deref().and_then(|d| fitted(d, edge)).map_or_else(
+                    || {
+                        let small = data.as_deref().and_then(shrink);
+                        (Some(small.unwrap_or_else(|| png.to_owned())), 1.0)
+                    },
+                    |(image, ratio)| (Some(image), ratio),
+                )
+            }
             None => (None, 1.0),
         };
         let scale = native * ratio;
@@ -2366,10 +2373,9 @@ fn shot_points(text: &str, scale: f64) -> String {
     out
 }
 
-/// The opaque RGBA PNG `b64` re-encoded at the same size by [`encode`]; `None` when that is not smaller.
-fn shrink(b64: &str) -> Option<String> {
-    let data = B64.decode(b64).ok()?;
-    let (info, rgba) = decode_png(&data)?;
+/// The opaque RGBA PNG `data` re-encoded at the same size by [`encode`]; `None` when that is not smaller.
+fn shrink(data: &[u8]) -> Option<String> {
+    let (info, rgba) = decode_png(data)?;
     if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
         return None;
     }
@@ -2385,14 +2391,13 @@ fn rgb(rgba: &[u8]) -> Vec<u8> {
     rgb
 }
 
-/// The PNG `b64` shrunk by [`lanczos`] so its long edge is `edge` and made by [`encode`], with its pixels per image pixel; none when it is no larger.
-fn fitted(b64: &str, edge: u32) -> Option<(String, f64)> {
-    let data = B64.decode(b64).ok()?;
-    let (_, w, h) = image_size(&data)?;
+/// The PNG `data` shrunk by [`lanczos`] so its long edge is `edge` and made by [`encode`], with its pixels per image pixel; none when it is no larger.
+fn fitted(data: &[u8], edge: u32) -> Option<(String, f64)> {
+    let (_, w, h) = image_size(data)?;
     if edge == 0 || edge >= w.max(h) {
         return None;
     }
-    let (info, rgba) = decode_png(&data)?;
+    let (info, rgba) = decode_png(data)?;
     let (tw, th, small) = lanczos(&info, &rgba, edge)?;
     let image = encode(tw, th, &rgb(&small))?;
     Some((B64.encode(image), f64::from(w) / f64::from(tw)))
@@ -2420,9 +2425,13 @@ fn lanczos(info: &png::OutputInfo, rgba: &[u8], edge: u32) -> Option<(u32, u32, 
 
 /// The format, pixel size, bytes and estimated input tokens of the base64 image `b64`.
 fn weigh(b64: &str) -> String {
-    let data = B64.decode(b64).unwrap_or_default();
-    let kb = data.len().div_ceil(1024);
-    match image_size(&data) {
+    let b64 = b64.as_bytes();
+    let padding = b64.iter().rev().take_while(|&&c| c == b'=').count();
+    let kb = (b64.len() / 4 * 3).saturating_sub(padding).div_ceil(1024);
+    let head = B64
+        .decode(&b64[..b64.len().min(HEAD_CHARS)])
+        .unwrap_or_default();
+    match image_size(&head).or_else(|| image_size(&B64.decode(b64).ok()?)) {
         Some((format, w, h)) => format!(
             "{w}x{h} {format}, {kb} KB, about {} input tokens",
             (w * h).div_ceil(PIXELS_PER_TOKEN)
@@ -4392,7 +4401,7 @@ mod tests {
             })
             .collect();
         let driver = fast_png(w, h, &flat);
-        let small = B64.decode(shrink(&B64.encode(&driver)).unwrap()).unwrap();
+        let small = B64.decode(shrink(&driver).unwrap()).unwrap();
         assert!(small.len() < driver.len());
         let mut webp = image_webp::WebPDecoder::new(std::io::Cursor::new(&small)).unwrap();
         assert_eq!((webp.dimensions(), webp.has_alpha()), ((w, h), false));
@@ -4405,7 +4414,7 @@ mod tests {
             .flat_map(|p| [p[0], p[1], p[2]])
             .collect();
         assert_eq!(decoded, rgb);
-        assert!(shrink("iVBORw0KGgoAAAANSUhEUg==").is_none());
+        assert!(shrink(&B64.decode("iVBORw0KGgoAAAANSUhEUg==").unwrap()).is_none());
 
         let mut seed = 7u32;
         let noise: Vec<u8> = (0..w * h * 4)
@@ -4415,7 +4424,7 @@ mod tests {
             })
             .collect();
         let photo = B64
-            .decode(shrink(&B64.encode(fast_png(w, h, &noise))).unwrap())
+            .decode(shrink(&fast_png(w, h, &noise)).unwrap())
             .unwrap();
         assert!(photo.starts_with(&[0xff, 0xd8]), "{:?}", &photo[..4]);
     }
@@ -4503,7 +4512,9 @@ mod tests {
 
     #[test]
     fn fitted_shrinks_a_full_size_capture_to_the_long_edge_and_leaves_a_small_one() {
-        let png = png_of(64, 32, &[30, 120, 200, 255].repeat(64 * 32));
+        let png = B64
+            .decode(png_of(64, 32, &[30, 120, 200, 255].repeat(64 * 32)))
+            .unwrap();
         let (image, ratio) = fitted(&png, 16).unwrap();
         assert_eq!(ratio, 4.0);
         let data = B64.decode(image).unwrap();
