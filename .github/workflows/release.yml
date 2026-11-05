@@ -69,10 +69,12 @@ jobs:
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             container: debian:11
+            rustup-sha256: 5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4
           - platform: linux-arm64
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             container: debian:11
+            rustup-sha256: a9c168dbea81a84671c6b7a5c1795cb0eb699020110d107ddfca427bd797e697
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
     env:
@@ -89,7 +91,10 @@ jobs:
           apt-get -o Dir::Etc::sourceparts=- -o Acquire::Retries=5 update
           apt-get -o Dir::Etc::sourceparts=- -o Acquire::Retries=5 install -y --no-install-recommends \
             git ca-certificates curl build-essential xz-utils
-          curl -fsSL --retry 3 https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/rustup-init" "https://static.rust-lang.org/rustup/archive/1.29.2/${{ matrix.target }}/rustup-init"
+          echo "${{ matrix.rustup-sha256 }}  $RUNNER_TEMP/rustup-init" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/rustup-init"
+          "$RUNNER_TEMP/rustup-init" -y --profile minimal --default-toolchain none
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Checkout
