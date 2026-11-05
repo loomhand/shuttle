@@ -126,7 +126,7 @@ mod tests {
         assert_eq!(keysym('/'), Some(0x2f));
         assert_eq!(keysym('\t'), Some(TAB));
         assert_eq!(keysym('é'), None);
-        assert_eq!(keysym('草'), None);
+        assert_eq!(keysym('\u{8349}'), None);
         assert_eq!(keysym('\n'), None);
     }
 }

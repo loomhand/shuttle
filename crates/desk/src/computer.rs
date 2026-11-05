@@ -244,7 +244,6 @@ impl Computer {
         // the capture comes last: a later get_window_state replaces the session's pixel-click context
         let (image_b64, scale, screen) =
             self.capture(&session, a.max_edge, a.workspace_only).await?;
-        let k = scale;
         let mut head = String::from("Windows (frontmost first):\n");
         for w in &listed {
             let _ = writeln!(
@@ -254,10 +253,10 @@ impl Computer {
                 w.window_id,
                 w.app,
                 w.title,
-                w.x as f64 / k,
-                w.y as f64 / k,
-                w.w as f64 / k,
-                w.h as f64 / k
+                w.x as f64 / scale,
+                w.y as f64 / scale,
+                w.w as f64 / scale,
+                w.h as f64 / scale
             );
         }
         for m in self.shm(Grabber::modals).unwrap_or_default() {
@@ -3552,7 +3551,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let listener = Fake::bind(&socket).unwrap();
-        let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(f64, f64)>::new()));
+        let clicks = Clicks::default();
         let log = std::sync::Arc::clone(&clicks);
         let full = full_shot(1280, 800, 640);
         let driver = tokio::spawn(listener.serve(move |req| {
@@ -3585,7 +3584,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let listener = Fake::bind(&socket).unwrap();
-        let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(f64, f64)>::new()));
+        let clicks = Clicks::default();
         let log = std::sync::Arc::clone(&clicks);
         let full = full_shot(1280, 800, 1280);
         let driver = tokio::spawn(listener.serve(move |req| {
@@ -4028,7 +4027,7 @@ mod tests {
     fn scaling_driver(dir: &Path) -> (PathBuf, Clicks, tokio::task::JoinHandle<()>) {
         let socket = endpoint(dir);
         let listener = Fake::bind(&socket).unwrap();
-        let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(f64, f64)>::new()));
+        let clicks = Clicks::default();
         let log = std::sync::Arc::clone(&clicks);
         let full = full_shot(1280, 800, 1280);
         let driver = tokio::spawn(listener.serve(move |req| {

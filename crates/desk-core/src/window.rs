@@ -171,8 +171,9 @@ mod tests {
         let title = |windows: Vec<W>, want| {
             pick(windows, Some(want), None).map(|w| (w.title, w.pid, w.shown))
         };
-        let twin = vec![w("微信", false, 9), hidden("微信", 9)];
-        assert_eq!(title(twin, "微信").unwrap(), ("微信", 9, true));
+        let wechat = "\u{5fae}\u{4fe1}";
+        let twin = vec![w(wechat, false, 9), hidden(wechat, 9)];
+        assert_eq!(title(twin, wechat).unwrap(), (wechat, 9, true));
         let lone = vec![w("Untitled - Notepad", false, 4), hidden("Doc", 5)];
         assert_eq!(title(lone, "Doc").unwrap(), ("Doc", 5, false));
         let both = vec![w("Report", false, 1), w("Report", false, 2)];
