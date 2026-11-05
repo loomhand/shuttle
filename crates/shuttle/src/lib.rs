@@ -305,7 +305,8 @@ pub(crate) fn one_call_daemon(
     (got_call, closed)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 pub(crate) fn script(path: &Path, body: &str) -> std::io::Result<()> {
     let made = std::process::Command::new("/bin/sh")
         .args(["-c", r#"printf '%s' "$1" > "$0" && chmod 755 "$0""#])

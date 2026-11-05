@@ -440,18 +440,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    struct Gone(Option<String>, Arc<std::sync::Mutex<Vec<String>>>);
-
-    #[cfg(unix)]
-    impl Drop for Gone {
-        fn drop(&mut self) {
-            if let Some(tag) = self.0.take() {
-                self.1.lock().unwrap().push(tag);
-            }
-        }
-    }
-
-    #[cfg(unix)]
     impl shuttle_desk::server::Handler for Held {
         async fn answer(&self, call: desk_core::wire::Call) -> desk_core::wire::Output {
             let tag = call.args["tag"].as_str().unwrap_or_default().to_owned();
@@ -463,6 +451,18 @@ mod tests {
             self.release.notified().await;
             gone.0 = None;
             desk_core::wire::Output::text(tag)
+        }
+    }
+
+    #[cfg(unix)]
+    struct Gone(Option<String>, Arc<std::sync::Mutex<Vec<String>>>);
+
+    #[cfg(unix)]
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            if let Some(tag) = self.0.take() {
+                self.1.lock().unwrap().push(tag);
+            }
         }
     }
 

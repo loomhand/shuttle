@@ -1,7 +1,6 @@
 //! Screenshot, UI elements and input on an Android device through adb, with text pasted by a scrcpy control session.
 
 use std::collections::HashMap;
-use std::future::Future;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};

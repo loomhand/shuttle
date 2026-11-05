@@ -363,6 +363,9 @@ fn text(captured: &Captured) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    const ON_TERM: &str = "import { writeFileSync } from 'node:fs'\nexport async function main({ marker }) { process.on('SIGTERM', () => { writeFileSync(marker, 'term'); process.exit(0) }); writeFileSync(`${marker}.ready`, ''); await new Promise((r) => setTimeout(r, 30000)) }";
+
     fn runner(dir: &Path) -> Runner {
         let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib/entry.mts");
         std::fs::copy(lib, dir.join("entry.mts")).unwrap();
@@ -505,9 +508,6 @@ mod tests {
         let stat = String::from_utf8_lossy(&out.stdout);
         !stat.trim().is_empty() && !stat.trim_start().starts_with('Z')
     }
-
-    #[cfg(unix)]
-    const ON_TERM: &str = "import { writeFileSync } from 'node:fs'\nexport async function main({ marker }) { process.on('SIGTERM', () => { writeFileSync(marker, 'term'); process.exit(0) }); writeFileSync(`${marker}.ready`, ''); await new Promise((r) => setTimeout(r, 30000)) }";
 
     #[cfg(unix)]
     #[tokio::test]

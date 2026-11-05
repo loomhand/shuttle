@@ -43,6 +43,11 @@ const RECORDING: &str = "a recording is already running: stop it first";
 const NOTHING: &str = "no recording is running, and none was made since the daemon started";
 const GONE: &str = "the recording worker is gone";
 
+#[cfg(target_os = "macos")]
+type Listening = Tap;
+#[cfg(not(target_os = "macos"))]
+type Listening = std::convert::Infallible;
+
 /// One thing the user did, in desk coordinates, or a note.
 #[derive(Debug)]
 pub enum Input {
@@ -251,11 +256,6 @@ struct Frame {
     bounds: [f64; 4],
     at: Instant,
 }
-
-#[cfg(target_os = "macos")]
-type Listening = Tap;
-#[cfg(not(target_os = "macos"))]
-type Listening = std::convert::Infallible;
 
 /// Runs `s` against `desk` until its inputs end, then saves it and sends it on.
 pub async fn work<H: Handler>(desk: &H, s: Session) {

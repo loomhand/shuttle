@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 use std::fmt::Write as _;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -1030,7 +1031,7 @@ async fn shot(android: &Android, a: ShotArgs) -> Result<Output, String> {
     };
     let mut out = json!({"ok": true, "width": w, "height": h});
     if let Some(path) = a.path {
-        write_bytes(std::path::Path::new(&path), &png).await?;
+        write_bytes(Path::new(&path), &png).await?;
         out["path"] = path.into();
     }
     Ok(Output {
@@ -1044,7 +1045,7 @@ async fn shot(android: &Android, a: ShotArgs) -> Result<Output, String> {
 async fn wait_for<F, Fut>(since: Value, limit: Duration, mut read: F) -> Result<Value, String>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<Value, String>>,
+    Fut: Future<Output = Result<Value, String>>,
 {
     let started = tokio::time::Instant::now();
     let limit = limit.min(WAIT_MAX);
@@ -1067,7 +1068,7 @@ where
     }
 }
 
-async fn write_bytes(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
+async fn write_bytes(path: &Path, data: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await

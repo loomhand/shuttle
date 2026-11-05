@@ -16,8 +16,8 @@ const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const INSTRUCTIONS: &str = "These tools act on the user's own desktop. GUI work in a desktop app goes to gui_plan, the whole plan in one call; a loop or logic a plan cannot hold goes to one script_run; one look or one click goes to desk or screenshot. To learn a task by watching the user, record_start, let them do it, then record_stop and run its draft with gui_plan.";
 
-type Answer<'a> = Pin<Box<dyn Future<Output = Option<Value>> + Send + 'a>>;
 pub(crate) type Message = Result<Map<String, Value>, String>;
+type Answer<'a> = Pin<Box<dyn Future<Output = Option<Value>> + Send + 'a>>;
 
 /// Answers MCP requests from `input` on `output` in order, one JSON line each way; desk and plugin tools go to the daemon at `endpoint`; a `notifications/cancelled` drops the request it names without a reply, and a running one closes its daemon connection.
 pub async fn serve<R, W>(
@@ -73,14 +73,6 @@ pub(crate) fn parse(body: &[u8]) -> Message {
     serde_json::from_slice(body).map_err(|e| format!("parse: {e}"))
 }
 
-async fn write<W: AsyncWrite + Unpin>(output: &mut W, reply: &Value) -> Result<(), String> {
-    let sent = async {
-        output.write_all(format!("{reply}\n").as_bytes()).await?;
-        output.flush().await
-    };
-    sent.await.map_err(|e| format!("write stdout: {e}"))
-}
-
 pub(crate) fn method(msg: &Message) -> Option<&str> {
     msg.as_ref().ok()?.get("method")?.as_str()
 }
@@ -130,6 +122,14 @@ pub(crate) async fn answer(msg: Message, endpoint: &str, plugins: &Plugins) -> O
         _ => Err((METHOD_NOT_FOUND, format!("unknown method {method}"))),
     };
     Some(reply(id, result))
+}
+
+async fn write<W: AsyncWrite + Unpin>(output: &mut W, reply: &Value) -> Result<(), String> {
+    let sent = async {
+        output.write_all(format!("{reply}\n").as_bytes()).await?;
+        output.flush().await
+    };
+    sent.await.map_err(|e| format!("write stdout: {e}"))
 }
 
 fn initialize(params: &Value, plugins: &Plugins) -> Value {
