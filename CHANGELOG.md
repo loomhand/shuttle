@@ -33,6 +33,7 @@
 - **Recording (macOS).** A daemon told to stop saves the recording in progress, the kill hotkey's own key press is no longer a step of the recording it ends, and input to a process with no window, such as Spotlight, is skipped instead of being kept under the front app. shuttle's own clicks and keys are left out as the tap hears them, so those of an action that just ended are no longer kept as yours, and a recording the menu cannot start says why in a dialog.
 - **Installers.** `install.sh` refuses to upgrade while a process runs from the install directory, as `install.ps1` does, and changes nothing. It keeps the old install until the new one is in place, so a move cut off by a full disk or Ctrl-C no longer leaves no install.
 - **Releases** build only from a tag on `main` after CI passes, and a release is marked the latest only when no newer one is out. The Linux build installs rustup from a pinned, checksummed `rustup-init`.
+- **Bundled:** cua-driver v0.38.0-loomhand.12 (was v0.38.0-loomhand.11). On Windows its daemon claims its pipe name on the first instance, and its clients refuse a pipe that another user serves.
 
 ## 0.1.39 - 2026-11-04
 
