@@ -482,14 +482,14 @@ impl Computer {
         })
     }
 
-    /// `region` {x, y, w, h} in the pixels of `session`'s last screenshot, at full resolution unless `max_edge` is smaller.
+    /// `region` {x, y, w, h} in the pixels of `session`'s last screenshot, else of any session's, at full resolution unless `max_edge` is smaller.
     async fn zoom(
         &self,
         session: Option<&str>,
         region: &Value,
         max_edge: Option<u32>,
     ) -> Result<Output, String> {
-        let k = session.map_or(1.0, |s| self.scale_of(s));
+        let k = session.map_or_else(|| *self.last_scale(), |s| self.scale_of(s));
         let [Some(x), Some(y), Some(w), Some(h)] = ["x", "y", "w", "h"].map(|f| region[f].as_f64())
         else {
             return Err("region needs x, y, w and h".to_owned());
@@ -3475,6 +3475,53 @@ mod tests {
         assert!(out.text.contains("4x2"), "{}", out.text);
         assert!(
             out.text.contains("x = 1 + px*0.50, y = 0 + py*0.50"),
+            "{}",
+            out.text
+        );
+        driver.abort();
+    }
+
+    fn shot_driver(
+        socket: &Path,
+        calls: &std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    ) -> tokio::task::JoinHandle<()> {
+        let listener = Fake::bind(socket).unwrap();
+        let log = std::sync::Arc::clone(calls);
+        let full = full_shot(2048, 1280, 2048);
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let name = req["name"].as_str().unwrap_or_default().to_owned();
+                let session = req["args"]["session"].as_str().unwrap_or_default();
+                log.lock().unwrap().push((name.clone(), session.to_owned()));
+                let reply = match name.as_str() {
+                    "get_desktop_state" => full.clone(),
+                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+                };
+                let mut out = serde_json::to_vec(&reply).unwrap();
+                out.push(b'\n');
+                reader.into_inner().write_all(&out).await.unwrap();
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn a_region_without_a_session_maps_by_the_latest_screenshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = shot_driver(&socket, &calls);
+        let cua = cua(&socket);
+        cua.look(&json!({})).await.unwrap();
+        let region = json!({"region": {"x": 10, "y": 10, "w": 10, "h": 10}, "max_edge": 0});
+        let out = cua.look(&region).await.unwrap();
+        assert!(out.text.contains("20x20"), "{}", out.text);
+        assert!(
+            out.text.contains("x = 10 + px*0.50, y = 10 + py*0.50"),
             "{}",
             out.text
         );
