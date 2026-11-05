@@ -65,8 +65,8 @@ impl Volatile {
         self.shared.wake.notify_one();
     }
 
-    /// Marks an action begun and returns what each block did in the last [`WINDOW`] of samples, in `now` (the hashes just before the action) and in the kept [`State::pauses`].
-    pub fn begin(&self, now: &[u64]) -> Vec<Block> {
+    /// Marks an action begun until the returned [`Paused`] drops, and returns what each block did in the last [`WINDOW`] of samples, in `now` (the hashes just before the action) and in the kept [`State::pauses`].
+    pub fn begin(&self, now: &[u64]) -> (Vec<Block>, Paused) {
         let mut s = self.shared.lock();
         s.actions += 1;
         s.acting = true;
@@ -91,23 +91,27 @@ impl Volatile {
             })
             .count();
         s.pauses.truncate(kept);
-        (0..now.len())
+        let blocks = (0..now.len())
             .map(|i| {
                 s.pauses.iter().fold(Block::Quiet, |carried, p| {
                     merge(Block::of(p.iter().map(|(_, h)| h[i])), &carried)
                 })
             })
-            .collect()
+            .collect();
+        (blocks, Paused(Arc::clone(&self.shared)))
     }
+}
 
-    /// Marks the action ended; the samples taken across it are dropped.
-    pub fn end(&self) {
-        let mut s = self.shared.lock();
+pub struct Paused(Arc<Shared>);
+
+impl Drop for Paused {
+    fn drop(&mut self) {
+        let mut s = self.0.lock();
         s.acting = false;
         s.samples.clear();
         s.touched = Some(Instant::now());
         drop(s);
-        self.shared.wake.notify_one();
+        self.0.wake.notify_one();
     }
 }
 
@@ -206,7 +210,7 @@ mod tests {
             (at, vec![1, 2, 5, 1]),
             (at, vec![1, 1, 6, 3]),
         ]);
-        let blocks = volatile.begin(&[1, 2, 7, 3]);
+        let (blocks, paused) = volatile.begin(&[1, 2, 7, 3]);
         assert_eq!(
             blocks,
             [
@@ -218,23 +222,31 @@ mod tests {
         );
         assert!(blocks[0].counts(1) && !blocks[1].counts(2) && blocks[1].counts(3));
         assert!(!blocks[2].counts(9));
-        volatile.end();
+        drop(paused);
         assert!(volatile.shared.lock().samples.is_empty());
-        assert_eq!(
-            volatile.begin(&[1, 3, 7, 1])[1],
-            Block::Toggling(vec![1, 2])
-        );
+        let (blocks, mut paused) = volatile.begin(&[1, 3, 7, 1]);
+        assert_eq!(blocks[1], Block::Toggling(vec![1, 2]));
         for kept in [true, false] {
-            volatile.end();
+            drop(paused);
             let t = Instant::now();
             volatile.shared.lock().samples.extend([
                 (t - WINDOW * 3 / 4, vec![1, 3, 7, 1]),
                 (t - WINDOW / 2, vec![1, 3, 7, 1]),
             ]);
-            let blocks = volatile.begin(&[1, 3, 7, 1]);
+            let blocks;
+            (blocks, paused) = volatile.begin(&[1, 3, 7, 1]);
             assert_eq!(blocks[2] == Block::Churning, kept);
             assert_eq!(blocks.iter().all(|b| *b == Block::Quiet), !kept);
         }
+    }
+
+    #[test]
+    fn an_action_dropped_before_its_settle_lets_the_sampler_run_again() {
+        let volatile = Volatile::start();
+        let (_, paused) = volatile.begin(&[1]);
+        assert!(volatile.shared.lock().acting);
+        drop(paused);
+        assert!(!volatile.shared.lock().acting);
     }
 
     #[test]

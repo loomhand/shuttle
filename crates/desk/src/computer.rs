@@ -30,7 +30,7 @@ use crate::press::libreoffice;
 #[cfg(target_os = "linux")]
 use crate::spi::Spi;
 use crate::still::{Block, VISIBLE_STEP};
-use crate::volatile::{Shown, Volatile};
+use crate::volatile::{Paused, Shown, Volatile};
 #[cfg(target_os = "linux")]
 use crate::worker::Worker;
 use crate::xshm::{self, Grabber, Placement, clip};
@@ -773,7 +773,6 @@ impl Computer {
         let text = match launched {
             Ok(text) => text,
             Err(e) => {
-                self.end_volatile();
                 if let Some(probe) = before.and_then(|b| b.probe) {
                     let _ = self.end_own(probe).await;
                 }
@@ -817,9 +816,10 @@ impl Computer {
             };
             Ok((pixels, blocks, g.mapped()?, active, page, wait))
         }) {
-            let volatile = self.volatile.get_or_init(Volatile::start).begin(&blocks);
+            let (volatile, paused) = self.volatile.get_or_init(Volatile::start).begin(&blocks);
             return Some(Before {
                 probe: None,
+                paused: Some(paused),
                 frame: Frame::Blocks(blocks),
                 pixels,
                 volatile,
@@ -833,6 +833,7 @@ impl Computer {
         match self.frame(probe.name()).await {
             Some((frame, _)) => Some(Before {
                 probe: Some(probe),
+                paused: None,
                 frame: Frame::Thumb(frame),
                 pixels: Vec::new(),
                 volatile: Vec::new(),
@@ -852,6 +853,7 @@ impl Computer {
     async fn settle(&self, before: Option<Before>, scale: f64) -> (String, Option<Value>) {
         let Some(Before {
             probe,
+            paused,
             frame: first,
             pixels,
             mut volatile,
@@ -951,7 +953,7 @@ impl Computer {
             };
             still = changed && since.elapsed() >= hold;
         }
-        self.end_volatile();
+        drop(paused);
         if let Some(probe) = probe {
             let _ = self.end_own(probe).await;
             return (String::new(), capture.filter(|_| still));
@@ -999,12 +1001,6 @@ impl Computer {
 
     fn touch(&self) {
         self.volatile.get_or_init(Volatile::start).touch();
-    }
-
-    fn end_volatile(&self) {
-        if let Some(v) = self.volatile.get() {
-            v.end();
-        }
     }
 
     /// The windows that opened, closed or moved between `before` and `after`, and a new front window.
@@ -1830,6 +1826,7 @@ impl Computer {
 
 struct Before {
     probe: Option<Owned>,
+    paused: Option<Paused>,
     frame: Frame,
     /// The BGRX pixels of a [`Frame::Blocks`].
     pixels: Vec<u8>,
