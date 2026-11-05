@@ -79,7 +79,7 @@ pub fn title_matches(tier: usize, title: &str, want: &str) -> bool {
 }
 
 /// The only, else the active, window titled with the app part of `want` (` - Thunar` of `inbox - Thunar`); else an error naming them.
-pub fn app_window<W: Window>(windows: &[W], want: &str) -> Result<W, String> {
+fn app_window<W: Window>(windows: &[W], want: &str) -> Result<W, String> {
     let hits: Vec<&W> = windows.iter().filter(|w| of_app(w.title(), want)).collect();
     let active: Vec<&W> = hits.iter().copied().filter(|w| w.active()).collect();
     match (hits.as_slice(), active.as_slice()) {
