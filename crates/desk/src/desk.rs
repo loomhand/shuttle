@@ -395,8 +395,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     }
                     req["additional_arguments"] = a.args.into();
                 }
-                let v = match self.call("launch_app", req.clone()).await {
-                    Err(e) if self.os == Os::Mac => {
+                let retry = (self.os == Os::Mac).then(|| req.clone());
+                let v = match (self.call("launch_app", req).await, retry) {
+                    (Err(e), Some(mut req)) => {
                         let app = a.app;
                         let named = self
                             .access
@@ -406,7 +407,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         req["name"] = named.into();
                         self.call("launch_app", req).await?
                     }
-                    v => v?,
+                    (v, _) => v?,
                 };
                 let mut out = json!({"ok": true, "launched": text_of(&v)});
                 if self.os == Os::Mac {
@@ -861,7 +862,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     .into_iter()
                     .filter_map(|id| {
                         let n = b.node(&id, Extras::default(), 0).ok()?;
-                        Some(json!({"id": id, "role": n.role, "name": n.name}))
+                        Some(Value::from_iter([
+                            ("id", Value::from(id)),
+                            ("role", n.role.into()),
+                            ("name", n.name.into()),
+                        ]))
                     })
                     .collect();
                 let mut out = json!({});
@@ -869,7 +874,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 out["path"] = Value::Array(path);
                 out["pid"] = pid.into();
                 if let Some((title, pid)) = covered {
-                    out["covered"] = json!({"title": title, "pid": pid});
+                    out["covered"] =
+                        Value::from_iter([("title", Value::from(title)), ("pid", pid.into())]);
                 }
                 Ok(out.to_string())
             })
@@ -883,7 +889,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 let listed = frames(b, a.pid, &allow)?;
                 let frame = live(pick(b, &allow, background, listed, Some(&a.window), a.pid)?)?;
                 b.close(&frame)?;
-                Ok(json!({"ok": true, "title": frame.title}).to_string())
+                Ok(
+                    Value::from_iter([("ok", Value::from(true)), ("title", frame.title.into())])
+                        .to_string(),
+                )
             })
             .await
     }
@@ -1334,10 +1343,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 None => (x, y),
             },
             (None, None) => {
-                let target = self.front_window().await?;
+                let mut target = self.front_window().await?;
                 if self.os == Os::Mac {
-                    req["pid"] = target["pid"].clone();
-                    req["window_id"] = target["window_id"].clone();
+                    req["pid"] = target["pid"].take();
+                    req["window_id"] = target["window_id"].take();
                     req["session"] = WINDOW_SESSION.into();
                     self.call("scroll", req).await?;
                     return Ok(OK.to_owned());
@@ -1810,7 +1819,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 json!({"pid": w.pid, "window_id": window_id}),
             )
             .await?;
-        let mut out = json!({"ok": true, "title": w.title, "pid": w.pid});
+        let mut out = Value::from_iter([
+            ("ok", Value::from(true)),
+            ("title", w.title.into()),
+            ("pid", w.pid.into()),
+        ]);
         let done = &mut v["structuredContent"];
         if let Some(path) = done.get_mut("path") {
             out["path"] = path.take();
@@ -2436,7 +2449,9 @@ fn holds(n: &Node, (x, y): (f64, f64)) -> Option<bool> {
 
 fn ok_with(unverified: Option<String>) -> String {
     match unverified {
-        Some(note) => json!({"ok": true, "unverified": note}).to_string(),
+        Some(note) => {
+            Value::from_iter([("ok", Value::from(true)), ("unverified", note.into())]).to_string()
+        }
         None => OK.to_owned(),
     }
 }
