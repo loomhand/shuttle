@@ -288,9 +288,7 @@ impl Ax {
             editable: matches!(a.role.as_str(), "AXTextField" | "AXTextArea"),
             shown,
             value: if kind.marked { Some(1) } else { number },
-            secure: [&a.role, &a.subrole]
-                .iter()
-                .any(|r| *r == "AXSecureTextField"),
+            secure: a.secure(),
         };
         let name = name_of(a, chars);
         let bounds = match (a.pos, a.size) {
@@ -528,7 +526,37 @@ impl Access for Ax {
     }
 
     fn web(&mut self, pid: u32, on: bool) -> Result<bool, String> {
-        web(pid, on)
+        if !chromium(pid) {
+            return Err(format!("process {pid} is no Chromium app"));
+        }
+        let app = application(i32::try_from(pid).map_err(|_| format!("no process {pid}"))?);
+        let read: Vec<(&str, bool)> = WEB_SWITCHES
+            .into_iter()
+            .filter_map(|s| Some((s, boolean(attr(&app, s))?)))
+            .collect();
+        if read.is_empty() {
+            return Err(format!("process {pid} takes no web accessibility switch"));
+        }
+        let was = read.iter().any(|(_, now)| *now);
+        if !on {
+            for (switch, _) in read.iter().filter(|(_, now)| *now) {
+                set_bool(&app, switch, false);
+            }
+            return Ok(was);
+        }
+        if was {
+            return Ok(true);
+        }
+        for (switch, _) in &read {
+            // chrome answers the set with kAXErrorNotImplemented and applies it, so the read back decides
+            set_bool(&app, switch, true);
+            if boolean(attr(&app, switch)) == Some(true) {
+                return Ok(false);
+            }
+        }
+        Err(format!(
+            "process {pid} kept its web accessibility switches off"
+        ))
     }
 
     fn owner_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
@@ -597,8 +625,8 @@ impl Access for Ax {
             Act::Select if string(attr(&el, "AXRole")) == "AXRadioButton" => {
                 perform(&el, "AXPress")
             }
-            Act::Select => set_true(&el, "AXSelected"),
-            Act::Focus => set_true(&el, "AXFocused"),
+            Act::Select => set_bool(&el, "AXSelected", true),
+            Act::Focus => set_bool(&el, "AXFocused", true),
         })
     }
 
@@ -670,6 +698,12 @@ struct Attrs {
     cmd_modifiers: Option<i64>,
     mark: String,
     modal: bool,
+}
+
+impl Attrs {
+    fn secure(&self) -> bool {
+        self.role == "AXSecureTextField" || self.subrole == "AXSecureTextField"
+    }
 }
 
 #[repr(C)]
@@ -810,12 +844,10 @@ pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
     Some(Seen {
         role: ax_roles::role(kind_of(&a)).unwrap_or("generic"),
         name: name_of(&mut a, NAME_CHARS),
+        secret: a.secure(),
         description: a.help,
         pid: pid(&el).and_then(|p| u32::try_from(p).ok()),
         path,
-        secret: [&a.role, &a.subrole]
-            .iter()
-            .any(|r| *r == "AXSecureTextField"),
         page: url.map(|url| page(&el, url)),
     })
 }
@@ -828,7 +860,18 @@ pub fn secure_input() -> bool {
 
 /// The process of the focused element, and whether typing goes to a password field.
 pub fn typing() -> (Option<u32>, bool) {
-    typing_at(attr(&system_wide(), "AXFocusedUIElement"))
+    let focused = attr(&system_wide(), "AXFocusedUIElement");
+    let pid = focused
+        .as_ref()
+        .and_then(pid)
+        .and_then(|p| u32::try_from(p).ok());
+    let secure = secure_input();
+    let field = focused.is_some_and(|f| {
+        [attr(&f, "AXSubrole"), attr(&f, "AXRole")]
+            .into_iter()
+            .any(|a| string(a) == "AXSecureTextField")
+    });
+    (pid, secure || field)
 }
 
 pub fn focused() -> Option<Focused> {
@@ -868,62 +911,9 @@ pub fn focused() -> Option<Focused> {
         name: name_of(&mut a, NAME_CHARS),
         frame: frame.unwrap_or("window"),
         window,
-        secure: [&a.role, &a.subrole]
-            .iter()
-            .any(|r| *r == "AXSecureTextField"),
+        secure: a.secure(),
         page: url.map(|url| page(&el, url)),
     })
-}
-
-/// Whether process `pid` is a Chromium or Electron app, whose bundle holds a framework with helper apps.
-pub fn chromium(pid: u32) -> bool {
-    let Some(exe) = i32::try_from(pid).ok().and_then(exe_path) else {
-        return false;
-    };
-    let Some(contents) = exe.ancestors().find(|a| a.ends_with("Contents")) else {
-        return false;
-    };
-    std::fs::read_dir(contents.join("Frameworks")).is_ok_and(|dir| {
-        dir.flatten().any(|f| {
-            let p = f.path();
-            p.extension().is_some_and(|e| e == "framework") && p.join("Helpers").is_dir()
-        })
-    })
-}
-
-/// Turns the web accessibility tree of Chromium app `pid` on or off and answers whether it was on before.
-pub fn web(pid: u32, on: bool) -> Result<bool, String> {
-    if !chromium(pid) {
-        return Err(format!("process {pid} is no Chromium app"));
-    }
-    let app = application(i32::try_from(pid).map_err(|_| format!("no process {pid}"))?);
-    let read: Vec<(&str, bool)> = WEB_SWITCHES
-        .into_iter()
-        .filter_map(|s| Some((s, boolean(attr(&app, s))?)))
-        .collect();
-    if read.is_empty() {
-        return Err(format!("process {pid} takes no web accessibility switch"));
-    }
-    let was = read.iter().any(|(_, now)| *now);
-    if !on {
-        for (switch, _) in read.iter().filter(|(_, now)| *now) {
-            set_bool(&app, switch, false);
-        }
-        return Ok(was);
-    }
-    if was {
-        return Ok(true);
-    }
-    for (switch, _) in &read {
-        // chrome answers the set with kAXErrorNotImplemented and applies it, so the read back decides
-        set_bool(&app, switch, true);
-        if boolean(attr(&app, switch)) == Some(true) {
-            return Ok(false);
-        }
-    }
-    Err(format!(
-        "process {pid} kept its web accessibility switches off"
-    ))
 }
 
 /// The main display's backing scale: desk coordinates per point.
@@ -941,6 +931,22 @@ pub fn display_scale() -> f64 {
         CGDisplayModeRelease(mode);
         if pt == 0 { 1.0 } else { px as f64 / pt as f64 }
     }
+}
+
+/// Whether process `pid` is a Chromium or Electron app, whose bundle holds a framework with helper apps.
+fn chromium(pid: u32) -> bool {
+    let Some(exe) = i32::try_from(pid).ok().and_then(exe_path) else {
+        return false;
+    };
+    let Some(contents) = exe.ancestors().find(|a| a.ends_with("Contents")) else {
+        return false;
+    };
+    std::fs::read_dir(contents.join("Frameworks")).is_ok_and(|dir| {
+        dir.flatten().any(|f| {
+            let p = f.path();
+            p.extension().is_some_and(|e| e == "framework") && p.join("Helpers").is_dir()
+        })
+    })
 }
 
 fn attrs(names: &CFArray<CFString>, el: &CFType) -> Attrs {
@@ -1124,10 +1130,6 @@ fn perform_code(el: &CFType, action: &'static str) -> i32 {
     unsafe { AXUIElementPerformAction(el.as_CFTypeRef(), action.as_concrete_TypeRef()) }
 }
 
-fn set_true(el: &CFType, name: &'static str) -> bool {
-    set_bool(el, name, true)
-}
-
 fn set_bool(el: &CFType, name: &'static str, on: bool) -> bool {
     let name = CFString::from_static_string(name);
     let value = CFBoolean::from(on);
@@ -1195,20 +1197,6 @@ fn name_of(a: &mut Attrs, chars: usize) -> String {
     };
     name.truncate(name.trim_end().len());
     name
-}
-
-fn typing_at(focused: Option<CFType>) -> (Option<u32>, bool) {
-    let pid = focused
-        .as_ref()
-        .and_then(pid)
-        .and_then(|p| u32::try_from(p).ok());
-    let secure = secure_input();
-    let field = focused.is_some_and(|f| {
-        [attr(&f, "AXSubrole"), attr(&f, "AXRole")]
-            .into_iter()
-            .any(|a| string(a) == "AXSecureTextField")
-    });
-    (pid, secure || field)
 }
 
 fn system_wide() -> CFType {
