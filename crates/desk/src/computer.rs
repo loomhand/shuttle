@@ -2626,6 +2626,21 @@ mod tests {
         }
     }
 
+    impl Fake {
+        async fn serve(self, mut answer: impl FnMut(&Value) -> Value) {
+            loop {
+                let (stream, ()) = self.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let mut out = serde_json::to_vec(&answer(&req)).unwrap();
+                out.push(b'\n');
+                reader.into_inner().write_all(&out).await.unwrap();
+            }
+        }
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn computer_input_takes_the_same_user_check_and_counts_as_the_drivers_own() {
@@ -2888,13 +2903,7 @@ mod tests {
     ) -> tokio::task::JoinHandle<()> {
         let listener = Fake::bind(socket).unwrap();
         let log = std::sync::Arc::clone(calls);
-        tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
+        tokio::spawn(listener.serve(move |req| {
                 let text = req["args"]["text"].as_str().unwrap_or_default().to_owned();
                 let types = log
                     .lock()
@@ -2912,12 +2921,9 @@ mod tests {
                     }
                     _ => json!({"ok": true, "result": {"structuredContent": {}}}),
                 };
-                log.lock().unwrap().push(req);
-                let mut out = reply.to_string().into_bytes();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
-            }
-        })
+                log.lock().unwrap().push(req.clone());
+                reply
+        }))
     }
 
     #[tokio::test]
@@ -3180,13 +3186,7 @@ mod tests {
     ) -> tokio::task::JoinHandle<()> {
         let listener = Fake::bind(socket).unwrap();
         let log = std::sync::Arc::clone(calls);
-        tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
+        tokio::spawn(listener.serve(move |req| {
                 let reply = match req["name"].as_str().unwrap_or_default() {
                     "list_windows" if hit == "windowless" => {
                         json!({"ok": true, "result": {"structuredContent": {"windows": []}}})
@@ -3227,12 +3227,9 @@ mod tests {
                     }
                     _ => json!({"ok": true, "result": {"structuredContent": {}}}),
                 };
-                log.lock().unwrap().push(req);
-                let mut out = reply.to_string().into_bytes();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
-            }
-        })
+                log.lock().unwrap().push(req.clone());
+                reply
+        }))
     }
 
     #[tokio::test]
@@ -3458,24 +3455,14 @@ mod tests {
         let socket = endpoint(dir.path());
         let listener = Fake::bind(&socket).unwrap();
         let image = png_of(8, 4, &[200; 8 * 4 * 4]);
-        let driver = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
-                let reply = match req["name"].as_str().unwrap_or_default() {
+        let driver = tokio::spawn(listener.serve(move |req| {
+                match req["name"].as_str().unwrap_or_default() {
                     "get_desktop_state" => {
                         json!({"ok": true, "result": {"content": [{"type": "image", "data": image, "mimeType": "image/png"}], "structuredContent": {"screen_width": 4, "screen_height": 2}}})
                     }
                     _ => json!({"ok": true, "result": {"structuredContent": {}}}),
-                };
-                let mut out = reply.to_string().into_bytes();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
-            }
-        });
+                }
+        }));
         let cua = cua(&socket);
         let out = cua
             .look(&json!({"region": {"x": 1, "y": 0, "w": 2, "h": 1}, "max_edge": 0}))
@@ -3498,25 +3485,15 @@ mod tests {
         let listener = Fake::bind(socket).unwrap();
         let log = std::sync::Arc::clone(calls);
         let full = full_shot(2048, 1280, 2048);
-        tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
-                let name = req["name"].as_str().unwrap_or_default().to_owned();
-                let session = req["args"]["session"].as_str().unwrap_or_default();
-                log.lock().unwrap().push((name.clone(), session.to_owned()));
-                let reply = match name.as_str() {
-                    "get_desktop_state" => full.clone(),
-                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
-                };
-                let mut out = serde_json::to_vec(&reply).unwrap();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
+        tokio::spawn(listener.serve(move |req| {
+            let name = req["name"].as_str().unwrap_or_default().to_owned();
+            let session = req["args"]["session"].as_str().unwrap_or_default();
+            log.lock().unwrap().push((name.clone(), session.to_owned()));
+            match name.as_str() {
+                "get_desktop_state" => full.clone(),
+                _ => json!({"ok": true, "result": {"structuredContent": {}}}),
             }
-        })
+        }))
     }
 
     #[tokio::test]
@@ -3569,30 +3546,20 @@ mod tests {
         let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(f64, f64)>::new()));
         let log = std::sync::Arc::clone(&clicks);
         let full = full_shot(1280, 800, 640);
-        let driver = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
-                let args = &req["args"];
-                let reply = match req["name"].as_str().unwrap_or_default() {
-                    "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
-                    name => {
-                        if name == "click" {
-                            log.lock()
-                                .unwrap()
-                                .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
-                        }
-                        json!({"ok": true, "result": {"structuredContent": {}}})
+        let driver = tokio::spawn(listener.serve(move |req| {
+            let args = &req["args"];
+            match req["name"].as_str().unwrap_or_default() {
+                "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
+                name => {
+                    if name == "click" {
+                        log.lock()
+                            .unwrap()
+                            .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
                     }
-                };
-                let mut out = serde_json::to_vec(&reply).unwrap();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
+                    json!({"ok": true, "result": {"structuredContent": {}}})
+                }
             }
-        });
+        }));
         let cua = cua(&socket);
         cua.state(json!({})).await.unwrap();
         let out = cua
@@ -3612,30 +3579,20 @@ mod tests {
         let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(f64, f64)>::new()));
         let log = std::sync::Arc::clone(&clicks);
         let full = full_shot(1280, 800, 1280);
-        let driver = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
-                let args = &req["args"];
-                let reply = match req["name"].as_str().unwrap_or_default() {
-                    "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
-                    name => {
-                        if name == "click" {
-                            log.lock()
-                                .unwrap()
-                                .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
-                        }
-                        json!({"ok": true, "result": {"structuredContent": {}}})
+        let driver = tokio::spawn(listener.serve(move |req| {
+            let args = &req["args"];
+            match req["name"].as_str().unwrap_or_default() {
+                "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
+                name => {
+                    if name == "click" {
+                        log.lock()
+                            .unwrap()
+                            .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
                     }
-                };
-                let mut out = serde_json::to_vec(&reply).unwrap();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
+                    json!({"ok": true, "result": {"structuredContent": {}}})
+                }
             }
-        });
+        }));
         let cua = cua(&socket);
         let click = |x: f64| json!({"action": "click", "x": x, "y": 30.0});
         cua.state(json!({"max_edge": 0})).await.unwrap();
@@ -3759,20 +3716,14 @@ mod tests {
         let listener = Fake::bind(&socket).unwrap();
         let landed = Landed::default();
         let log = std::sync::Arc::clone(&landed);
-        let driver = tokio::spawn(async move {
-            let mut factors = HashMap::<String, f64>::new();
-            let (mut ended, mut idle_ends) = (HashSet::<String>::new(), idle_ends);
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
+        let mut factors = HashMap::<String, f64>::new();
+        let (mut ended, mut idle_ends) = (HashSet::<String>::new(), idle_ends);
+        let driver = tokio::spawn(listener.serve(move |req| {
                 let args = &req["args"];
                 let session = args["session"].as_str().unwrap_or_default().to_owned();
                 let windowless = args["pid"].is_null() && args["element_token"].is_null();
                 let refused = |text: &str| json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": text}]}});
-                let reply = match req["name"].as_str().unwrap_or_default() {
+                match req["name"].as_str().unwrap_or_default() {
                     name if ended.contains(&session) && name != "start_session" => {
                         json!({"ok": false, "error": format!("session has ended; tool call '{name}' was rejected")})
                     }
@@ -3838,12 +3789,8 @@ mod tests {
                         }
                         json!({"ok": true, "result": {"content": [{"type": "text", "text": text}]}})
                     }
-                };
-                let mut out = serde_json::to_vec(&reply).unwrap();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
-            }
-        });
+                }
+        }));
         (socket, landed, driver)
     }
 
@@ -3855,33 +3802,23 @@ mod tests {
         let full = full_shot(1280, 800, 1280);
         let captures = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, Value)>::new()));
         let log = std::sync::Arc::clone(&captures);
-        let driver = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
-                let args = &req["args"];
-                let reply = match req["name"].as_str().unwrap_or_default() {
-                    "get_desktop_state" => {
-                        let session = args["session"].as_str().unwrap_or_default().to_owned();
-                        log.lock()
-                            .unwrap()
-                            .push((session, args["max_image_dimension"].clone()));
-                        if args["max_image_dimension"] == 0 {
-                            full.clone()
-                        } else {
-                            json!({"ok": true, "result": {"structuredContent": {}}})
-                        }
+        let driver = tokio::spawn(listener.serve(move |req| {
+            let args = &req["args"];
+            match req["name"].as_str().unwrap_or_default() {
+                "get_desktop_state" => {
+                    let session = args["session"].as_str().unwrap_or_default().to_owned();
+                    log.lock()
+                        .unwrap()
+                        .push((session, args["max_image_dimension"].clone()));
+                    if args["max_image_dimension"] == 0 {
+                        full.clone()
+                    } else {
+                        json!({"ok": true, "result": {"structuredContent": {}}})
                     }
-                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
-                };
-                let mut out = serde_json::to_vec(&reply).unwrap();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
+                }
+                _ => json!({"ok": true, "result": {"structuredContent": {}}}),
             }
-        });
+        }));
         let cua = cua_on(&socket, Os::Windows);
         cua.state(json!({})).await.unwrap();
         let out = cua
@@ -3910,35 +3847,25 @@ mod tests {
         dark["result"]["content"][0]["data"] = png_of(1280, 800, &vec![0; 1280 * 800 * 4]).into();
         let captures = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let log = std::sync::Arc::clone(&captures);
-        let driver = tokio::spawn(async move {
-            let mut probes = 0;
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
-                let session = req["args"]["session"].as_str().unwrap_or_default();
-                let reply = match req["name"].as_str().unwrap_or_default() {
-                    "get_desktop_state" if session.starts_with("still-") => {
-                        probes += 1;
-                        if probes == 1 {
-                            light.clone()
-                        } else {
-                            dark.clone()
-                        }
-                    }
-                    "get_desktop_state" => {
-                        log.lock().unwrap().push(session.to_owned());
+        let mut probes = 0;
+        let driver = tokio::spawn(listener.serve(move |req| {
+            let session = req["args"]["session"].as_str().unwrap_or_default();
+            match req["name"].as_str().unwrap_or_default() {
+                "get_desktop_state" if session.starts_with("still-") => {
+                    probes += 1;
+                    if probes == 1 {
                         light.clone()
+                    } else {
+                        dark.clone()
                     }
-                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
-                };
-                let mut out = serde_json::to_vec(&reply).unwrap();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
+                }
+                "get_desktop_state" => {
+                    log.lock().unwrap().push(session.to_owned());
+                    light.clone()
+                }
+                _ => json!({"ok": true, "result": {"structuredContent": {}}}),
             }
-        });
+        }));
         let cua = cua_on(&socket, Os::Windows);
         cua.state(json!({})).await.unwrap();
         let out = cua
@@ -4066,30 +3993,20 @@ mod tests {
         let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(f64, f64)>::new()));
         let log = std::sync::Arc::clone(&clicks);
         let full = full_shot(1280, 800, 1280);
-        let driver = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
-                let args = &req["args"];
-                let reply = match req["name"].as_str().unwrap_or_default() {
-                    "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
-                    name => {
-                        if name == "click" {
-                            log.lock()
-                                .unwrap()
-                                .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
-                        }
-                        json!({"ok": true, "result": {"structuredContent": {}}})
+        let driver = tokio::spawn(listener.serve(move |req| {
+            let args = &req["args"];
+            match req["name"].as_str().unwrap_or_default() {
+                "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
+                name => {
+                    if name == "click" {
+                        log.lock()
+                            .unwrap()
+                            .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
                     }
-                };
-                let mut out = serde_json::to_vec(&reply).unwrap();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
+                    json!({"ok": true, "result": {"structuredContent": {}}})
+                }
             }
-        });
+        }));
         (socket, clicks, driver)
     }
 
@@ -4099,15 +4016,9 @@ mod tests {
         let socket = endpoint(dir.path());
         let listener = Fake::bind(&socket).unwrap();
         let full = full_shot(1280, 800, 1280);
-        let driver = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
+        let driver = tokio::spawn(listener.serve(move |req| {
                 let args = &req["args"];
-                let reply = match req["name"].as_str().unwrap_or_default() {
+                match req["name"].as_str().unwrap_or_default() {
                     "list_windows" => {
                         json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Mousepad", "title": "notes", "bounds": {"x": 100, "y": 50, "width": 640, "height": 480}, "z_index": 1}]}}})
                     }
@@ -4120,12 +4031,8 @@ mod tests {
                         json!({"ok": true, "result": {"content": [{"type": "text", "text": text}]}})
                     }
                     _ => json!({"ok": true, "result": {"structuredContent": {}}}),
-                };
-                let mut out = serde_json::to_vec(&reply).unwrap();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
-            }
-        });
+                }
+        }));
         let cua = cua(&socket);
         let state = cua.state(json!({})).await.unwrap();
         assert!(
@@ -4211,14 +4118,8 @@ mod tests {
         let listener = Fake::bind(&socket).unwrap();
         let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
         let log = std::sync::Arc::clone(&sent);
-        let driver = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
-                let reply = match req["name"].as_str().unwrap_or_default() {
+        let driver = tokio::spawn(listener.serve(move |req| {
+                match req["name"].as_str().unwrap_or_default() {
                     "list_windows" => {
                         json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Notepad.exe", "title": "notes", "bounds": {"x": 0, "y": 0, "width": 800, "height": 600}, "z_index": 1}]}}})
                     }
@@ -4227,12 +4128,8 @@ mod tests {
                         json!({"ok": true, "result": {}})
                     }
                     _ => json!({"ok": true, "result": {"structuredContent": {}}}),
-                };
-                let mut out = reply.to_string().into_bytes();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
-            }
-        });
+                }
+        }));
         let cua = cua_on(&socket, Os::Mac);
         cua.act(json!({"action": "key", "key": "escape"}))
             .await
@@ -4278,21 +4175,15 @@ mod tests {
         let listener = Fake::bind(&socket).unwrap();
         let sessions = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
         let log = std::sync::Arc::clone(&sessions);
-        let driver = tokio::spawn(async move {
-            let mut ended = Vec::<String>::new();
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
+        let mut ended = Vec::<String>::new();
+        let driver = tokio::spawn(listener.serve(move |req| {
                 let name = req["name"].as_str().unwrap_or_default().to_owned();
                 let session = req["args"]["session"]
                     .as_str()
                     .unwrap_or_default()
                     .to_owned();
                 log.lock().unwrap().push((name.clone(), session.clone()));
-                let reply = if name == "start_session" {
+                if name == "start_session" {
                     ended.retain(|s| *s != session);
                     json!({"ok": true, "result": {}})
                 } else if ended.contains(&session) {
@@ -4306,12 +4197,8 @@ mod tests {
                     json!({"ok": true, "result": {"structuredContent": {"elements": [{"element_index": 0, "element_token": "t0", "role": "push button", "label": "OK"}]}}})
                 } else {
                     json!({"ok": true, "result": {"structuredContent": {}}})
-                };
-                let mut out = reply.to_string().into_bytes();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
-            }
-        });
+                }
+        }));
         let cua = cua(&socket);
         let state = |agent: &'static str| cua.run(agent, "desk_computer_state", json!({}));
         state("a").await.unwrap();
