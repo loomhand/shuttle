@@ -906,16 +906,7 @@ mod tests {
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
         let listener = bind(&endpoint).await.unwrap();
         let server = tokio::spawn(serve(Arc::new(Guarded), listener));
-        let out = answer(
-            &endpoint,
-            &Call {
-                agent_id: String::new(),
-                tool: "halt".into(),
-                args: Value::Null,
-            },
-        )
-        .await
-        .unwrap();
+        let out = answer(&endpoint, &ask("halt", Value::Null)).await.unwrap();
         assert_eq!((out.is_error, out.text.as_str()), (false, "halt answered"));
         server.abort();
     }
@@ -928,12 +919,8 @@ mod tests {
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
         let server = tokio::spawn(serve(Arc::new(Spliced), bind(&endpoint).await.unwrap()));
         let mut conn = connect(&endpoint).await.unwrap();
-        let ask = Call {
-            agent_id: String::new(),
-            tool: "svc".into(),
-            args: Value::Null,
-        };
-        write_frame(&mut conn, &ask).await.unwrap();
+        let sent = ask("svc", Value::Null);
+        write_frame(&mut conn, &sent).await.unwrap();
         conn.write_all(b"upload").await.unwrap();
         conn.shutdown().await.unwrap();
         let mut back = Vec::new();
@@ -958,12 +945,8 @@ mod tests {
             bind(&endpoint).await.unwrap(),
         ));
         let mut conn = connect(&endpoint).await.unwrap();
-        let ask = Call {
-            agent_id: String::new(),
-            tool: "wait".into(),
-            args: Value::Null,
-        };
-        write_frame(&mut conn, &ask).await.unwrap();
+        let sent = ask("wait", Value::Null);
+        write_frame(&mut conn, &sent).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(!cancelled.load(std::sync::atomic::Ordering::SeqCst));
         drop(conn);
@@ -1010,13 +993,9 @@ mod tests {
             loser.unwrap().unwrap_err(),
             format!("another daemon serves {endpoint}")
         );
-        let ask = Call {
-            agent_id: "desk".into(),
-            tool: "desk_screen".into(),
-            args: json!({}),
-        };
+        let sent = ask("desk_screen", json!({}));
         assert!(
-            answer(&endpoint, &ask)
+            answer(&endpoint, &sent)
                 .await
                 .unwrap()
                 .text
@@ -1035,11 +1014,6 @@ mod tests {
             let endpoint = endpoint.clone();
             async move { serve(desk, bind(&endpoint).await?).await }
         });
-        let ask = |tool: &str, args: Value| Call {
-            agent_id: "desk".into(),
-            tool: tool.into(),
-            args,
-        };
         assert_eq!(
             answer(&endpoint, &ask("desk_windows", json!({})))
                 .await
@@ -1069,13 +1043,7 @@ mod tests {
     #[tokio::test]
     async fn a_web_call_whose_args_are_not_an_object_is_an_error() {
         let desk = Desk::new(|| Ok(Stub::default()), NoDriver, Os::Mac);
-        let out = desk
-            .answer(Call {
-                agent_id: "a".into(),
-                tool: "desk_web".into(),
-                args: json!([1]),
-            })
-            .await;
+        let out = desk.answer(ask("desk_web", json!([1]))).await;
         assert_eq!(
             (out.is_error, out.text.as_str()),
             (true, "desk_web: args are not an object")
@@ -1085,19 +1053,7 @@ mod tests {
     #[tokio::test]
     async fn the_native_desk_answers_the_computer_verbs_unless_an_app_allowlist_or_background_input_is_set()
      {
-        let ask = |tool: &str, args: Value| Call {
-            agent_id: "desk".into(),
-            tool: tool.into(),
-            args,
-        };
-        let open = native(
-            "/nonexistent/driver.sock".into(),
-            &[],
-            false,
-            false,
-            false,
-            false,
-        );
+        let open = no_driver(&[], false);
         let title = open
             .answer(ask("desk_title_at", json!({"x": 10, "y": 10})))
             .await;
@@ -1107,14 +1063,7 @@ mod tests {
         );
         let scale = open.answer(ask("desk_computer_scale", json!({}))).await;
         assert_eq!(scale.text, r#"{"scale":1.0}"#);
-        let listed = native(
-            "/nonexistent/driver.sock".into(),
-            &["mousepad".to_owned()],
-            false,
-            false,
-            false,
-            false,
-        );
+        let listed = no_driver(&["mousepad".to_owned()], false);
         for tool in COMPUTER_VERBS {
             let out = listed.answer(ask(tool, json!({}))).await;
             assert_eq!(
@@ -1124,14 +1073,7 @@ mod tests {
         }
         let other = listed.answer(ask("shell", json!({}))).await;
         assert_eq!(other.text, "unknown desk tool shell");
-        let background = native(
-            "/nonexistent/driver.sock".into(),
-            &[],
-            false,
-            true,
-            false,
-            false,
-        );
+        let background = no_driver(&[], true);
         let act = background
             .answer(ask(
                 "desk_computer_act",
@@ -1159,6 +1101,25 @@ mod tests {
 
     fn real(dir: &tempfile::TempDir) -> std::io::Result<std::path::PathBuf> {
         std::fs::canonicalize(dir.path())
+    }
+
+    fn ask(tool: &str, args: Value) -> Call {
+        Call {
+            agent_id: "desk".into(),
+            tool: tool.into(),
+            args,
+        }
+    }
+
+    fn no_driver(apps: &[String], background: bool) -> impl Handler {
+        native(
+            "/nonexistent/driver.sock".into(),
+            apps,
+            false,
+            background,
+            false,
+            false,
+        )
     }
 }
 
