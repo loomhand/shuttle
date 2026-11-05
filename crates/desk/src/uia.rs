@@ -312,10 +312,16 @@ impl Access for Uia {
     }
 
     fn hint(&mut self) -> Option<u64> {
-        let mut h = DefaultHasher::new();
+        let (mut h, mut buf) = (DefaultHasher::new(), [0u16; TITLE_CHARS]);
         (foreground().0 as isize).hash(&mut h);
         for s in shown() {
-            (s.hwnd.0 as isize, s.owner, s.pid, title(s.hwnd)).hash(&mut h);
+            (
+                s.hwnd.0 as isize,
+                s.owner,
+                s.pid,
+                title_units(s.hwnd, &mut buf),
+            )
+                .hash(&mut h);
         }
         Some(h.finish())
     }
@@ -742,10 +748,13 @@ fn link(shown: &[Shown], root: usize, top: &Frame, found: Vec<(usize, Frame)>) -
 }
 
 fn title(hwnd: HWND) -> String {
-    let mut buf = [0u16; TITLE_CHARS];
+    String::from_utf16_lossy(title_units(hwnd, &mut [0u16; TITLE_CHARS]))
+}
+
+fn title_units(hwnd: HWND, buf: &mut [u16; TITLE_CHARS]) -> &[u16] {
     // SAFETY: GetWindowTextW writes at most `buf.len()` UTF-16 units into `buf`.
-    let n = unsafe { GetWindowTextW(hwnd, &mut buf) };
-    String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0)])
+    let n = unsafe { GetWindowTextW(hwnd, buf) };
+    &buf[..usize::try_from(n).unwrap_or(0)]
 }
 
 fn foreground() -> HWND {
