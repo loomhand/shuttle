@@ -122,7 +122,7 @@ impl Proc {
         let running = cmd
             .spawn()
             .map_err(|e| format!("start {}: {e}", self.bin.display()))
-            .and_then(Running::jobbed)?;
+            .and_then(|c| Running::jobbed(c, false))?;
         #[cfg(windows)]
         if let Some(job) = &running.job {
             servers().insert(self.socket.clone(), std::sync::Arc::downgrade(job));

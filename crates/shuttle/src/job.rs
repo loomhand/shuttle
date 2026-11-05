@@ -2,10 +2,9 @@
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, TerminateJobObject,
+    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
 };
 use windows::Win32::System::Pipes::GetNamedPipeServerProcessId;
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
@@ -20,26 +19,16 @@ unsafe impl Send for Job {}
 unsafe impl Sync for Job {}
 
 impl Job {
-    /// Puts `child`, a process handle from a spawn just now, into a new job that kills its tree on close.
-    pub(crate) fn hold(child: Option<std::os::windows::io::RawHandle>) -> Result<Self, String> {
-        Self::with(child, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
-    }
-
-    /// Like [`Job::hold`] for `child` alone: the processes it starts stay outside the job and outlive it.
-    pub(crate) fn hold_alone(
+    /// Puts `child`, a process handle from a spawn just now, into a new job that kills its tree on close, or with `alone` the child but not the processes it starts.
+    pub(crate) fn hold(
         child: Option<std::os::windows::io::RawHandle>,
-    ) -> Result<Self, String> {
-        Self::with(
-            child,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
-        )
-    }
-
-    fn with(
-        child: Option<std::os::windows::io::RawHandle>,
-        flags: JOB_OBJECT_LIMIT,
+        alone: bool,
     ) -> Result<Self, String> {
         let child = child.ok_or("the child has no process handle")?;
+        let mut flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if alone {
+            flags |= JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
+        }
         // SAFETY: no attributes and no name: CreateJobObjectW returns a fresh handle owned by `job` below.
         let job = Self(
             unsafe { CreateJobObjectW(None, PCWSTR::null()) }

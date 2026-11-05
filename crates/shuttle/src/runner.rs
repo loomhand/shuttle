@@ -190,7 +190,7 @@ impl Runner {
             termed: false,
         };
         #[cfg(windows)]
-        let job = crate::job::Job::hold(child.raw_handle())?;
+        let job = crate::job::Job::hold(child.raw_handle(), false)?;
         let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
             return Err("the script's pipes are missing".to_owned());
         };

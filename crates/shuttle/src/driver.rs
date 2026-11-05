@@ -105,7 +105,7 @@ impl Proc {
         let mut running = cmd
             .spawn()
             .map_err(|e| format!("start {}: {e}", self.bin.display()))
-            .and_then(Running::alone)?;
+            .and_then(|c| Running::jobbed(c, true))?;
         let mut waited = Duration::ZERO;
         while server::connect(&self.endpoint).await.is_err() {
             if let Ok(Some(status)) = running.child.try_wait() {

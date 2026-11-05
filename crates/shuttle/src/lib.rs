@@ -74,32 +74,21 @@ impl Running {
         }
     }
 
-    /// Like [`Running::new`]; on Windows the child alone also goes into a job that ends it with this value, and the apps it starts stay out of it.
-    pub(crate) fn alone(child: Child) -> Result<Self, String> {
+    /// Like [`Running::new`]; on Windows the child also goes into a job that ends its whole tree with it, or with `alone` the child but not the apps it starts.
+    pub(crate) fn jobbed(child: Child, alone: bool) -> Result<Self, String> {
         #[cfg(windows)]
         {
-            let job = crate::job::Job::hold_alone(child.raw_handle())?;
+            let job = crate::job::Job::hold(child.raw_handle(), alone)?;
             Ok(Self {
                 job: Some(std::sync::Arc::new(job)),
                 ..Self::new(child)
             })
         }
         #[cfg(not(windows))]
-        Ok(Self::new(child))
-    }
-
-    /// Like [`Running::new`]; on Windows the child also goes into a job that ends its whole tree with it.
-    pub(crate) fn jobbed(child: Child) -> Result<Self, String> {
-        #[cfg(windows)]
         {
-            let job = crate::job::Job::hold(child.raw_handle())?;
-            Ok(Self {
-                job: Some(std::sync::Arc::new(job)),
-                ..Self::new(child)
-            })
+            let _ = alone;
+            Ok(Self::new(child))
         }
-        #[cfg(not(windows))]
-        Ok(Self::new(child))
     }
 }
 
