@@ -6,11 +6,13 @@ use std::time::Duration;
 
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::body::{Bytes, Incoming};
-use hyper::header::{ALLOW, AUTHORIZATION, CONTENT_TYPE, HeaderValue, ORIGIN, WWW_AUTHENTICATE};
+use hyper::header::{
+    ALLOW, AUTHORIZATION, CONNECTION, CONTENT_TYPE, HeaderValue, ORIGIN, WWW_AUTHENTICATE,
+};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode, Uri};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
@@ -25,6 +27,7 @@ const PATH: &str = "/mcp";
 const MAX_BODY: usize = 8 << 20;
 const MAX_CONNECTIONS: usize = 64;
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What every HTTP request is checked against and answered with.
 pub struct Server {
@@ -82,6 +85,8 @@ impl Server {
                 let service =
                     service_fn(|req| async { Ok::<_, Infallible>(server.respond(req).await) });
                 if let Err(e) = http1::Builder::new()
+                    .timer(TokioTimer::new())
+                    .header_read_timeout(HEADER_TIMEOUT)
                     .serve_connection(TokioIo::new(stream), service)
                     .await
                 {
@@ -93,17 +98,17 @@ impl Server {
     }
 
     async fn respond(&self, req: Request<Incoming>) -> Response<Full<Bytes>> {
-        if req.uri().path() != PATH {
-            return status(StatusCode::NOT_FOUND);
-        }
-        if !local_origin(req.headers().get(ORIGIN)) {
-            return status(StatusCode::FORBIDDEN);
-        }
         if !self.authorized(req.headers().get(AUTHORIZATION)) {
-            let mut out = status(StatusCode::UNAUTHORIZED);
+            let mut out = refused(StatusCode::UNAUTHORIZED);
             out.headers_mut()
                 .insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
             return out;
+        }
+        if !local_origin(req.headers().get(ORIGIN)) {
+            return refused(StatusCode::FORBIDDEN);
+        }
+        if req.uri().path() != PATH {
+            return status(StatusCode::NOT_FOUND);
         }
         if req.method() != Method::POST {
             let mut out = status(StatusCode::METHOD_NOT_ALLOWED);
@@ -156,6 +161,13 @@ fn same(a: &[u8], b: &[u8]) -> bool {
 fn status(code: StatusCode) -> Response<Full<Bytes>> {
     let mut out = Response::new(Full::new(Bytes::new()));
     *out.status_mut() = code;
+    out
+}
+
+fn refused(code: StatusCode) -> Response<Full<Bytes>> {
+    let mut out = status(code);
+    out.headers_mut()
+        .insert(CONNECTION, HeaderValue::from_static("close"));
     out
 }
 
@@ -325,6 +337,37 @@ mod tests {
         .await;
         let err = served.expect("a bind without a token served").unwrap_err();
         assert!(err.contains(TOKEN_ENV), "{err}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_client_that_never_finishes_its_header_is_closed() {
+        let addr = start().await;
+        let mut conn = TcpStream::connect(addr).await.unwrap();
+        conn.write_all(b"POST /mcp HTTP/1.1\r\n").await.unwrap();
+        let mut out = Vec::new();
+        tokio::time::timeout(Duration::from_secs(60), conn.read_to_end(&mut out))
+            .await
+            .expect("a half-sent header held its connection")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_refused_request_closes_its_kept_alive_connection() {
+        let addr = start().await;
+        let mut conn = TcpStream::connect(addr).await.unwrap();
+        conn.write_all(b"POST /mcp HTTP/1.1\r\nhost: localhost\r\ncontent-length: 0\r\n\r\n")
+            .await
+            .unwrap();
+        let mut out = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), conn.read_to_end(&mut out))
+            .await
+            .expect("a refused client kept its connection")
+            .unwrap();
+        let out = String::from_utf8_lossy(&out).to_ascii_lowercase();
+        assert!(
+            out.starts_with("http/1.1 401") && out.contains("connection: close"),
+            "{out}"
+        );
     }
 
     #[cfg(unix)]
