@@ -42,8 +42,13 @@ pub fn device(settings: AndroidSettings, exe: &Path) -> Result<Android, String> 
     }))
 }
 
+/// Whether the daemon starts this desktop's own driver, indicator and stop hotkey: never for an Android device.
+pub fn local_controls(android: Option<&AndroidSettings>) -> bool {
+    android.is_none()
+}
+
 /// The UI server jar: the configured one, else the one the archive installs beside the program `exe`.
-pub fn ui_jar(configured: Option<PathBuf>, exe: &Path) -> Result<PathBuf, String> {
+fn ui_jar(configured: Option<PathBuf>, exe: &Path) -> Result<PathBuf, String> {
     if let Some(jar) = configured {
         return Ok(jar);
     }
@@ -56,11 +61,6 @@ pub fn ui_jar(configured: Option<PathBuf>, exe: &Path) -> Result<PathBuf, String
             bundled.display()
         ))
     }
-}
-
-/// Whether the daemon starts this desktop's own driver, indicator and stop hotkey: never for an Android device.
-pub fn local_controls(android: Option<&AndroidSettings>) -> bool {
-    android.is_none()
 }
 
 async fn answer(android: &Android, call: Call) -> Output {
