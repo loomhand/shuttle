@@ -14,7 +14,7 @@ use desk_core::shot::OFF_SCREEN;
 use desk_core::text::norm;
 use desk_core::wire::Output;
 use fast_image_resize as fr;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
@@ -264,7 +264,7 @@ impl Computer {
             );
             text.push_str(&tree);
             self.last.lock().await.insert(
-                session.clone(),
+                session,
                 Snapshot {
                     pid,
                     window_id,
@@ -928,7 +928,7 @@ impl Computer {
                 if let (Frame::Blocks(first), Some(prev)) = (&first, prev.as_deref()) {
                     shown.learn(first, prev, blocks, &mut volatile);
                 }
-                prev = Some(blocks.clone());
+                prev.get_or_insert_default().clone_from(blocks);
             }
             if moved {
                 since = Instant::now();
@@ -1082,7 +1082,11 @@ impl Computer {
     }
 
     fn keep_scale(&self, session: &str, scale: f64, shared: bool) {
-        self.scales().insert(session.to_owned(), scale);
+        if let Some(kept) = self.scales().get_mut(session) {
+            *kept = scale;
+        } else {
+            self.scales().insert(session.to_owned(), scale);
+        }
         if !shared {
             *self.last_scale() = scale;
         }
@@ -1230,8 +1234,7 @@ impl Computer {
                 "press_key"
             }
             "hotkey" => {
-                let keys = a.keys.clone().ok_or("hotkey needs keys")?;
-                req["keys"] = keys.into();
+                req["keys"] = a.keys.as_deref().ok_or("hotkey needs keys")?.into();
                 "hotkey"
             }
             "scroll" => {
@@ -1752,11 +1755,13 @@ impl Computer {
     }
 
     /// One driver call, sent once more after starting `session` again when the driver had ended it; a result the driver marks isError comes back as is.
-    async fn call(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
-        let mut v = self.reply(session, name, args.clone()).await?;
+    async fn call(&self, session: &str, name: &str, mut args: Value) -> Result<Value, String> {
+        args["session"] = session.into();
+        let mut v = self.reply(name, &args).await?;
         if name != "end_session" && v["error"].as_str().is_some_and(|e| e.contains(ENDED)) {
-            self.reply(session, "start_session", json!({})).await?;
-            v = self.reply(session, name, args).await?;
+            self.reply("start_session", &json!({"session": session}))
+                .await?;
+            v = self.reply(name, &args).await?;
         }
         if v["ok"] != true {
             return Err(format!(
@@ -1768,28 +1773,29 @@ impl Computer {
     }
 
     /// The driver's decoded reply to one call.
-    async fn reply(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
-        let foreground = self.driver.admit(name, &args)?;
-        let retry = RETRIED.contains(&name).then(|| args.clone());
-        let sent = self.exchange(session, name, args).await;
+    async fn reply(&self, name: &str, args: &Value) -> Result<Value, String> {
+        let foreground = self.driver.admit(name, args)?;
+        let sent = self.exchange(name, args).await;
         if foreground {
             self.driver.stamp();
         }
         let mut reply = sent?;
-        if let Some(args) = retry.filter(|_| reply.trim().is_empty()) {
+        if RETRIED.contains(&name) && reply.trim().is_empty() {
             tokio::time::sleep(CONNECT_RETRY).await;
-            reply = self.exchange(session, name, args).await?;
+            reply = self.exchange(name, args).await?;
         }
         serde_json::from_str::<Value>(&reply).map_err(|e| format!("decode cua-driver reply: {e}"))
     }
 
     /// Sends one call and returns the raw reply line, empty when the driver closed without one.
-    async fn exchange(&self, session: &str, name: &str, args: Value) -> Result<String, String> {
+    async fn exchange(&self, name: &str, args: &Value) -> Result<String, String> {
         let exchange = async {
             let mut stream = self.driver.connect().await?;
-            let mut line = json!({"method": "call", "name": name});
-            line["args"] = args;
-            line["args"]["session"] = session.into();
+            let line = Call {
+                method: "call",
+                name,
+                args,
+            };
             let mut bytes = serde_json::to_vec(&line).map_err(|e| format!("encode: {e}"))?;
             bytes.push(b'\n');
             stream
@@ -1824,6 +1830,13 @@ struct Before {
     wait: Duration,
 }
 
+#[derive(Serialize)]
+struct Call<'a> {
+    method: &'static str,
+    name: &'a str,
+    args: &'a Value,
+}
+
 /// A driver session for one step; one dropped while open is ended by a detached call.
 struct Owned {
     driver: Arc<Driver>,
@@ -1848,7 +1861,7 @@ impl Drop for Owned {
         let (driver, session) = (Arc::clone(&self.driver), std::mem::take(&mut self.name));
         rt.spawn(async move {
             let _ = driver
-                .send("end_session", &json!({"session": session}))
+                .send("end_session", &Value::from_iter([("session", session)]))
                 .await;
         });
     }
