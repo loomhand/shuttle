@@ -396,17 +396,36 @@ impl Atspi {
                 answering.push(app);
             }
         }
+        let known: Vec<Option<u32>> = {
+            let seen = locked(&SEEN);
+            answering
+                .iter()
+                .map(|app| seen.get(&app.bus).and_then(|s| s.pid))
+                .collect()
+        };
         let asked = Instant::now();
-        let reads = join_all(answering.into_iter().map(|app| async move {
-            let read = tokio::time::timeout(APP_FRAMES, self.app_frames(app)).await;
-            (app.bus.as_str(), read.ok())
-        }))
+        let reads = join_all(
+            answering
+                .into_iter()
+                .zip(known)
+                .map(|(app, pid)| async move {
+                    let read = tokio::time::timeout(APP_FRAMES, self.app_frames(app, pid)).await;
+                    (app.bus.as_str(), read.ok())
+                }),
+        )
         .await;
         let mut seen = locked(&SEEN);
         seen.retain(|bus, _| apps.iter().any(|app| app.bus == *bus));
         Ok(reads
             .into_iter()
-            .flat_map(|(bus, read)| settle(&mut seen, bus, read, asked))
+            .flat_map(|(bus, read)| {
+                let (pid, read) = read.unzip();
+                let frames = settle(&mut seen, bus, read, asked);
+                if let (Some(pid), Some(s)) = (pid.flatten(), seen.get_mut(bus)) {
+                    s.pid = Some(pid);
+                }
+                frames
+            })
             .collect())
     }
 
@@ -717,13 +736,18 @@ impl Atspi {
         *self.conn.lock().await = None;
     }
 
-    async fn app_frames(&self, app: &Obj) -> Vec<Frame> {
-        let (kids, pid) = tokio::join!(self.children(app), self.pid(&app.bus));
-        let Ok(kids) = kids else {
-            return Vec::new();
+    async fn app_frames(&self, app: &Obj, known: Option<u32>) -> (Option<u32>, Vec<Frame>) {
+        let pid = async {
+            match known {
+                Some(pid) => Some(pid),
+                None => self.pid(&app.bus).await.ok(),
+            }
         };
-        let pid = pid.ok();
-        join_all(kids.into_iter().map(|obj| async move {
+        let (kids, pid) = tokio::join!(self.children(app), pid);
+        let Ok(kids) = kids else {
+            return (pid, Vec::new());
+        };
+        let frames = join_all(kids.into_iter().map(|obj| async move {
             let (role, name, states) =
                 tokio::join!(self.role(&obj), self.name(&obj), self.state(&obj));
             Some(Frame {
@@ -738,7 +762,8 @@ impl Atspi {
         .await
         .into_iter()
         .flatten()
-        .collect::<Vec<_>>()
+        .collect();
+        (pid, frames)
     }
 
     async fn extras(&self, nodes: &mut [Node], extras: Extras) {
@@ -990,6 +1015,7 @@ struct Seen {
     listed: Instant,
     slow: Option<Instant>,
     last: Vec<Frame>,
+    pid: Option<u32>,
 }
 
 /// Raw data of one object, from the cache or from live calls.
@@ -1107,6 +1133,7 @@ fn settle(
         listed: asked,
         slow: None,
         last: Vec::new(),
+        pid: None,
     });
     if let Some(frames) = read {
         s.slow = None;
