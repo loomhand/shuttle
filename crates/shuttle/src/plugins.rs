@@ -164,12 +164,12 @@ pub fn configured(config: &Result<Config, String>, path: &Path, builtins: &[&str
 }
 
 /// Whether `name` has a plugin tool's form: `^[a-z][a-z0-9_]*_run$`.
-pub fn is_name(name: &str) -> bool {
+fn is_name(name: &str) -> bool {
     name.len() > SUFFIX.len() && name.ends_with(SUFFIX) && is_word(name)
 }
 
 /// Reads the `*.json` plugins in `dir` in file-name order: a file with a `service` key is a service, any other a script tool. A missing directory has none, and a file that breaks a rule, names a built-in tool or repeats a name is skipped whole with one log line.
-pub fn load(dir: &Path, builtins: &[&str]) -> Plugins {
+fn load(dir: &Path, builtins: &[&str]) -> Plugins {
     let mut plugins = Plugins::default();
     let Ok(entries) = std::fs::read_dir(dir) else {
         return plugins;
