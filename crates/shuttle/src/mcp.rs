@@ -17,7 +17,7 @@ const INVALID_PARAMS: i64 = -32602;
 const INSTRUCTIONS: &str = "These tools act on the user's own desktop. GUI work in a desktop app goes to gui_plan, the whole plan in one call; a loop or logic a plan cannot hold goes to one script_run; one look or one click goes to desk or screenshot. To learn a task by watching the user, record_start, let them do it, then record_stop and run its draft with gui_plan.";
 
 type Answer<'a> = Pin<Box<dyn Future<Output = Option<Value>> + Send + 'a>>;
-type Message = Result<Map<String, Value>, String>;
+pub(crate) type Message = Result<Map<String, Value>, String>;
 
 /// Answers MCP requests from `input` on `output` in order, one JSON line each way; desk and plugin tools go to the daemon at `endpoint`; a `notifications/cancelled` drops the request it names without a reply, and a running one closes its daemon connection.
 pub async fn serve<R, W>(
@@ -45,7 +45,7 @@ where
                 None => open = false,
                 Some(line) if line.trim().is_empty() => {}
                 Some(line) => {
-                    let msg: Message = serde_json::from_str(&line).map_err(|e| format!("parse: {e}"));
+                    let msg = parse(line.as_bytes());
                     match cancelled(&msg) {
                         Some(id) if running.as_ref().is_some_and(|(r, _)| r.as_ref() == Some(&id)) => running = None,
                         Some(id) => queued.retain(|q| request_id(q).as_ref() != Some(&id)),
@@ -69,10 +69,8 @@ where
     Ok(())
 }
 
-/// Answers the one JSON-RPC message in `body`; none for a notification.
-pub(crate) async fn answer_one(body: &[u8], endpoint: &str, plugins: &Plugins) -> Option<Value> {
-    let msg: Message = serde_json::from_slice(body).map_err(|e| format!("parse: {e}"));
-    answer(msg, endpoint, plugins).await
+pub(crate) fn parse(body: &[u8]) -> Message {
+    serde_json::from_slice(body).map_err(|e| format!("parse: {e}"))
 }
 
 async fn write<W: AsyncWrite + Unpin>(output: &mut W, reply: &Value) -> Result<(), String> {
@@ -86,13 +84,17 @@ async fn write<W: AsyncWrite + Unpin>(output: &mut W, reply: &Value) -> Result<(
         .map_err(|e| format!("write stdout: {e}"))
 }
 
+pub(crate) fn method(msg: &Message) -> Option<&str> {
+    msg.as_ref().ok()?.get("method")?.as_str()
+}
+
 /// The id of the request `msg` as JSON text; none for a notification or a line that does not parse.
-fn request_id(msg: &Message) -> Option<String> {
+pub(crate) fn request_id(msg: &Message) -> Option<String> {
     msg.as_ref().ok()?.get("id").map(Value::to_string)
 }
 
 /// The request id a `notifications/cancelled` names, as JSON text.
-fn cancelled(msg: &Message) -> Option<String> {
+pub(crate) fn cancelled(msg: &Message) -> Option<String> {
     let msg = msg.as_ref().ok()?;
     if msg.get("method").and_then(Value::as_str) != Some("notifications/cancelled")
         || msg.contains_key("id")
@@ -102,7 +104,8 @@ fn cancelled(msg: &Message) -> Option<String> {
     msg.get("params")?.get("requestId").map(Value::to_string)
 }
 
-async fn answer(msg: Message, endpoint: &str, plugins: &Plugins) -> Option<Value> {
+/// Answers `msg`; none for a notification.
+pub(crate) async fn answer(msg: Message, endpoint: &str, plugins: &Plugins) -> Option<Value> {
     let mut msg = match msg {
         Ok(m) => m,
         Err(e) => return Some(reply(Value::Null, Err((PARSE_ERROR, e)))),

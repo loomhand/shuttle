@@ -1,13 +1,16 @@
 //! The MCP server over Streamable HTTP: `POST /mcp` takes one JSON-RPC message and answers it as JSON, so an agent on the network can drive this desktop.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::Arc;
+use std::hash::{BuildHasher, RandomState};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::body::{Bytes, Incoming};
 use hyper::header::{
-    ALLOW, AUTHORIZATION, CONNECTION, CONTENT_TYPE, HeaderValue, ORIGIN, WWW_AUTHENTICATE,
+    ALLOW, AUTHORIZATION, CONNECTION, CONTENT_TYPE, HeaderName, HeaderValue, ORIGIN,
+    WWW_AUTHENTICATE,
 };
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -15,7 +18,7 @@ use hyper::{Method, Request, Response, StatusCode, Uri};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use serde_json::Value;
 use tokio::net::TcpListener;
-use tokio::sync::Semaphore;
+use tokio::sync::{Notify, Semaphore};
 
 use crate::plugins::Plugins;
 use crate::{log, mcp};
@@ -28,12 +31,16 @@ const MAX_BODY: usize = 8 << 20;
 const MAX_CONNECTIONS: usize = 64;
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+const SESSION: HeaderName = HeaderName::from_static("mcp-session-id");
+
+type Calls = Mutex<HashMap<(String, String), Arc<Notify>>>;
 
 /// What every HTTP request is checked against and answered with.
 pub struct Server {
     endpoint: String,
     plugins: Plugins,
     token: String,
+    calls: Calls,
 }
 
 impl Server {
@@ -43,6 +50,7 @@ impl Server {
             endpoint,
             plugins,
             token,
+            calls: Calls::default(),
         }
     }
 
@@ -116,28 +124,73 @@ impl Server {
                 .insert(ALLOW, HeaderValue::from_static("POST"));
             return out;
         }
-        let body = match Limited::new(req.into_body(), MAX_BODY).collect().await {
+        let (head, body) = req.into_parts();
+        let body = match Limited::new(body, MAX_BODY).collect().await {
             Ok(body) => body.to_bytes(),
             Err(e) if e.is::<LengthLimitError>() => return status(StatusCode::PAYLOAD_TOO_LARGE),
             Err(_) => return status(StatusCode::BAD_REQUEST),
         };
-        match mcp::answer_one(&body, &self.endpoint, &self.plugins).await {
-            None => status(StatusCode::ACCEPTED),
-            Some(reply) => {
-                let code = if reply["id"].is_null() {
-                    StatusCode::BAD_REQUEST
-                } else {
-                    StatusCode::OK
-                };
-                json(code, &reply)
+        let session = head
+            .headers
+            .get(SESSION)
+            .and_then(|s| s.to_str().ok())
+            .unwrap_or_default();
+        let msg = mcp::parse(&body);
+        if let Some(id) = mcp::cancelled(&msg) {
+            if let Some(call) = lock(&self.calls).remove(&(session.to_owned(), id)) {
+                call.notify_one();
             }
+            return status(StatusCode::ACCEPTED);
         }
+        let opens = mcp::method(&msg) == Some("initialize");
+        let reply = match mcp::request_id(&msg) {
+            Some(id) => {
+                let call = Tracked::new(&self.calls, (session.to_owned(), id));
+                tokio::select! {
+                    reply = mcp::answer(msg, &self.endpoint, &self.plugins) => reply,
+                    () = call.cancel.notified() => None,
+                }
+            }
+            None => mcp::answer(msg, &self.endpoint, &self.plugins).await,
+        };
+        let Some(reply) = reply else {
+            return status(StatusCode::ACCEPTED);
+        };
+        let code = if reply["id"].is_null() {
+            StatusCode::BAD_REQUEST
+        } else {
+            StatusCode::OK
+        };
+        let mut out = json(code, &reply);
+        if opens && let Ok(id) = HeaderValue::try_from(session_id()) {
+            out.headers_mut().insert(SESSION, id);
+        }
+        out
     }
 
     fn authorized(&self, header: Option<&HeaderValue>) -> bool {
         header
             .and_then(|h| h.as_bytes().strip_prefix(b"Bearer "))
             .is_some_and(|got| same(got, self.token.as_bytes()))
+    }
+}
+
+struct Tracked<'a> {
+    calls: &'a Calls,
+    cancel: Arc<Notify>,
+}
+
+impl<'a> Tracked<'a> {
+    fn new(calls: &'a Calls, key: (String, String)) -> Self {
+        let cancel = Arc::new(Notify::new());
+        lock(calls).insert(key, Arc::clone(&cancel));
+        Self { calls, cancel }
+    }
+}
+
+impl Drop for Tracked<'_> {
+    fn drop(&mut self) {
+        lock(self.calls).retain(|_, c| !Arc::ptr_eq(c, &self.cancel));
     }
 }
 
@@ -156,6 +209,15 @@ fn local_origin(origin: Option<&HeaderValue>) -> bool {
 /// Compares in time that does not depend on where the inputs differ.
 fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+fn lock(calls: &Calls) -> MutexGuard<'_, HashMap<(String, String), Arc<Notify>>> {
+    calls.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn session_id() -> String {
+    let half = || RandomState::new().hash_one(());
+    format!("{:016x}{:016x}", half(), half())
 }
 
 fn status(code: StatusCode) -> Response<Full<Bytes>> {
@@ -367,6 +429,128 @@ mod tests {
         assert!(
             out.starts_with("http/1.1 401") && out.contains("connection: close"),
             "{out}"
+        );
+    }
+
+    #[cfg(unix)]
+    struct Held {
+        started: tokio::sync::mpsc::UnboundedSender<String>,
+        dropped: Arc<std::sync::Mutex<Vec<String>>>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[cfg(unix)]
+    struct Gone(Option<String>, Arc<std::sync::Mutex<Vec<String>>>);
+
+    #[cfg(unix)]
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            if let Some(tag) = self.0.take() {
+                self.1.lock().unwrap().push(tag);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl shuttle_desk::server::Handler for Held {
+        async fn answer(&self, call: desk_core::wire::Call) -> desk_core::wire::Output {
+            let tag = call.args["tag"].as_str().unwrap_or_default().to_owned();
+            let mut gone = Gone(Some(tag.clone()), Arc::clone(&self.dropped));
+            let _ = self.started.send(tag.clone());
+            if tag == "a" {
+                std::future::pending::<()>().await;
+            }
+            self.release.notified().await;
+            gone.0 = None;
+            desk_core::wire::Output::text(tag)
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cancel_stops_the_call_of_its_own_session_and_spares_the_same_id_of_another() {
+        use shuttle_desk::server;
+
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let (started, mut began) = tokio::sync::mpsc::unbounded_channel();
+        let dropped = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let release = Arc::new(tokio::sync::Notify::new());
+        let held = Held {
+            started,
+            dropped: Arc::clone(&dropped),
+            release: Arc::clone(&release),
+        };
+        tokio::spawn(server::serve(
+            Arc::new(held),
+            server::bind(&endpoint).await.unwrap(),
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(Server::new(endpoint, Plugins::default(), TOKEN.to_owned()).run(listener));
+        let open = |session: &str| {
+            let body = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+                .to_string();
+            let raw = request("POST", PATH, &[BEARER, ("mcp-session-id", session)], &body);
+            async move { send(addr, raw.as_bytes()).await }
+        };
+        let (_, head_a, _) = open("").await;
+        let session_a = head_a
+            .lines()
+            .find_map(|l| l.strip_prefix("mcp-session-id: "))
+            .expect("the initialize reply named no session")
+            .to_owned();
+        let (_, head_b, _) = open("").await;
+        let session_b = head_b
+            .lines()
+            .find_map(|l| l.strip_prefix("mcp-session-id: "))
+            .expect("the initialize reply named no session")
+            .to_owned();
+        assert_ne!(session_a, session_b);
+        let windows = |session: &str, tag: &str| {
+            let body = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "desk", "arguments": {"verb": "windows", "args": {"tag": tag}}}}).to_string();
+            let raw = request("POST", PATH, &[BEARER, ("mcp-session-id", session)], &body);
+            tokio::spawn(async move { send(addr, raw.as_bytes()).await })
+        };
+        let a = windows(&session_a, "a");
+        let b = windows(&session_b, "b");
+        let mut seen = vec![began.recv().await.unwrap(), began.recv().await.unwrap()];
+        seen.sort();
+        assert_eq!(seen, ["a", "b"]);
+        let cancel = json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}}).to_string();
+        let (code, _, _) = send(
+            addr,
+            request(
+                "POST",
+                PATH,
+                &[BEARER, ("mcp-session-id", &session_a)],
+                &cancel,
+            )
+            .as_bytes(),
+        )
+        .await;
+        assert_eq!(code, 202);
+        let (code, _, body) = tokio::time::timeout(Duration::from_secs(2), a)
+            .await
+            .expect("the cancelled call's POST stayed open")
+            .unwrap();
+        assert_eq!((code, body.as_str()), (202, ""));
+        for _ in 0..100 {
+            if !dropped.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(*dropped.lock().unwrap(), ["a"]);
+        release.notify_one();
+        let (code, _, body) = tokio::time::timeout(Duration::from_secs(2), b)
+            .await
+            .expect("the other session's call never answered")
+            .unwrap();
+        let reply: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            (code, &reply["id"], &reply["result"]["content"][0]["text"]),
+            (200, &json!(1), &json!("b"))
         );
     }
 
