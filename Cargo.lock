@@ -1251,7 +1251,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "shuttle"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "base64 0.23.1",
  "dispatch2",
@@ -1277,7 +1277,7 @@ dependencies = [
 
 [[package]]
 name = "shuttle-android"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "base64 0.23.1",
  "png",
@@ -1290,7 +1290,7 @@ dependencies = [
 
 [[package]]
 name = "shuttle-desk"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "base64 0.23.1",
  "core-foundation",
@@ -1313,7 +1313,7 @@ dependencies = [
 
 [[package]]
 name = "shuttle-desk-core"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "png",
  "serde",
@@ -1324,7 +1324,7 @@ dependencies = [
 
 [[package]]
 name = "shuttle-models"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "reqwest",
  "serde",

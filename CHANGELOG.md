@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.40 - 2026-11-05
 
 - **`shuttle mcp --http ADDR` serves the tools over MCP Streamable HTTP**, for an agent that reaches shuttle across a container boundary or the LAN. It needs a token in `SHUTTLE_MCP_TOKEN` on every bind, loopback included, refuses a browser `Origin` that is not localhost, and a `notifications/cancelled` stops the call it names in its `Mcp-Session-Id`. A connection that sends no request headers for 10 s is closed, so idle clients cannot hold its 64 connection slots ([README](README.md#over-http)).
 - **Windows: pipe names carry your user SID.** The desk pipe is `\\.\pipe\loomhand-shuttle-desk-<SID>`, the driver and service pipes derive from it, and a client refuses a pipe that another user serves, so a local user who takes the name first no longer receives your calls. **Upgrade:** on Windows, quit a running v0.1.39 daemon before upgrading, or a new `shuttle mcp` starts a second daemon.
@@ -44,6 +44,9 @@
 - **Foreground `key` and `type` on Windows and Linux** that name a pid or an app together with a window title bring that window to the front first, as a pid or app alone does; before, they went to whatever window was focused.
 - **The MCP proxy** reports a connect error other than an absent daemon, such as a refused Windows pipe server of another user, instead of starting a second daemon.
 - **A stop** ends the running script before it ends a recording, and a `gui_plan` escalation's `plan_step` leaves out the recorded crop.
+- **Linux snapshots stop at the node cap.** A snapshot that reached its 2,500-node cap no longer keeps asking the accessibility bus for children it drops; a Chrome page past the cap snapshots about 11% faster with the same nodes.
+- **Android: covered elements.** With a navigation drawer open, the content behind it is left out of `computer_state`, carries `covered`, and `press` refuses it; a window above the front one, such as another app's floating window or the text selection toolbar, now covers what it overlaps, so a tap no longer lands on it while answering ok. `press` on an element that shows but is covered says so instead of "off the screen".
+- **Windows: a hung app no longer slows every read.** After a read timed out on an app that stopped answering, every later desk read took about 2 s, reads of other apps included; a window Windows marks as not responding is now left out of the window list.
 - **Bundled:** cua-driver v0.38.0-loomhand.12 (was v0.38.0-loomhand.11). On Windows its daemon claims its pipe name on the first instance, and its clients refuse a pipe that another user serves.
 
 ## 0.1.39 - 2026-11-04
