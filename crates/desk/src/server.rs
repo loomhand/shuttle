@@ -306,6 +306,17 @@ pub fn pipe_sddl(user: &str, group: Option<&str>) -> String {
     sddl
 }
 
+pub fn pipe_owner(endpoint: &str) -> Option<&str> {
+    let sid = &endpoint[endpoint.find("-S-1-")? + 1..];
+    let len: usize = sid
+        .split('-')
+        .skip(1)
+        .take_while(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        .map(|p| p.len() + 1)
+        .sum();
+    Some(&sid[..=len])
+}
+
 /// Sends one call to the endpoint and returns its output.
 pub async fn call(endpoint: &str, call: &Call) -> Result<Output, String> {
     let conn = connect(endpoint)
@@ -317,6 +328,10 @@ pub async fn call(endpoint: &str, call: &Call) -> Result<Output, String> {
 pub fn cache_endpoint(var: &str, pipe: &str, dir: &str, file: &str) -> String {
     if let Some(e) = std::env::var(var).ok().filter(|e| !e.is_empty()) {
         return e;
+    }
+    #[cfg(windows)]
+    if let Ok(sid) = crate::pipesec::own_sid() {
+        return format!(r"\\.\pipe\{pipe}-{sid}");
     }
     if cfg!(windows) {
         return format!(r"\\.\pipe\{pipe}");
@@ -338,13 +353,23 @@ pub async fn connect(endpoint: &str) -> std::io::Result<Conn> {
     tokio::net::UnixStream::connect(endpoint).await
 }
 
-/// Connects to the endpoint, waiting while a Windows pipe is busy.
+/// Connects to the endpoint, waiting while a Windows pipe is busy, and refuses a server that runs as another user than [`pipe_owner`] names, or than this process's user for a name without one.
 #[cfg(windows)]
 pub async fn connect(endpoint: &str) -> std::io::Result<Conn> {
+    use std::os::windows::io::AsRawHandle as _;
+
     loop {
         match tokio::net::windows::named_pipe::ClientOptions::new().open(endpoint) {
             Err(e) if e.raw_os_error() == Some(PIPE_BUSY) => tokio::time::sleep(BUSY_POLL).await,
-            done => return done.map(PipeClient),
+            done => {
+                let client = PipeClient(done?);
+                crate::pipesec::check_server(
+                    windows::Win32::Foundation::HANDLE(client.as_raw_handle()),
+                    pipe_owner(endpoint),
+                )
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))?;
+                return Ok(client);
+            }
         }
     }
 }
@@ -1124,6 +1149,43 @@ mod pipe_tests {
             pipe_sddl("S-1-5-21-1", Some("S-1-5-32-545")),
             "D:P(A;;GA;;;SY)(A;;GA;;;S-1-5-21-1)(A;;0x12019b;;;S-1-5-32-545)"
         );
+    }
+
+    #[test]
+    fn a_pipe_name_carries_the_sid_of_its_owner_and_so_do_the_pipes_named_after_it() {
+        let sid = "S-1-5-21-1004336348-1177238915-682003330-1001";
+        let desk = format!(r"\\.\pipe\loomhand-shuttle-desk-{sid}");
+        assert_eq!(pipe_owner(&desk), Some(sid));
+        assert_eq!(pipe_owner(&format!("{desk}-driver")), Some(sid));
+        assert_eq!(pipe_owner(&format!("{desk}-svc-files")), Some(sid));
+        assert_eq!(pipe_owner(r"\\.\pipe\x-S-1-5-18-svc-9"), Some("S-1-5-18"));
+        assert_eq!(pipe_owner(r"\\.\pipe\cua-driver"), None);
+        assert_eq!(pipe_owner(r"\\.\pipe\shuttle-test-owner-42"), None);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_pipe_served_by_another_user_than_its_name_carries_is_refused() {
+        use tokio::net::windows::named_pipe::ServerOptions;
+
+        let base = format!(r"\\.\pipe\shuttle-test-served-{}", std::process::id());
+        let own = crate::pipesec::own_sid().unwrap();
+        for (name, admitted) in [
+            (format!("{base}-S-1-5-18-driver"), false),
+            (format!("{base}-{own}-driver"), true),
+            (format!("{base}-plain"), true),
+        ] {
+            let _server = ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(&name)
+                .unwrap();
+            let got = connect(&name).await;
+            assert_eq!(got.is_ok(), admitted, "{name}: {got:?}");
+            if let Err(e) = got {
+                assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{e}");
+                assert!(e.to_string().contains("S-1-5-18"), "{e}");
+            }
+        }
     }
 
     #[cfg(windows)]

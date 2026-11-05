@@ -18,6 +18,7 @@ pub(crate) const CLICK_SPACING: Duration = Duration::from_millis(500);
 pub(crate) const CONNECT_RETRY: Duration = Duration::from_millis(250);
 pub(crate) const ENDED: &str = "session has ended";
 
+const DEFAULT_PIPE: &str = r"\\.\pipe\cua-driver";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_WAIT: Duration = Duration::from_secs(10);
 const SESSION: &str = "desk";
@@ -73,6 +74,12 @@ impl Driver {
 
     /// The daemon's endpoint: `CUA_DRIVER_SOCKET`, else the driver's default for this OS.
     pub fn default_endpoint() -> String {
+        if cfg!(windows) {
+            return std::env::var("CUA_DRIVER_SOCKET")
+                .ok()
+                .filter(|e| !e.is_empty())
+                .unwrap_or_else(|| DEFAULT_PIPE.to_owned());
+        }
         crate::server::cache_endpoint(
             "CUA_DRIVER_SOCKET",
             "cua-driver",
