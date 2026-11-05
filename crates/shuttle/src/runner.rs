@@ -137,7 +137,8 @@ impl Runner {
             )
             .await?;
         match report["error"]["message"].as_str() {
-            Some(e) => Err(format!("{name}: {e}")),
+            Some(e) if report["result"].is_null() => Err(format!("{name}: {e}")),
+            Some(e) => Err(format!("{name}: {e}; what it left: {}", report["result"])),
             None => Ok(report["result"].take()),
         }
     }
@@ -550,6 +551,26 @@ mod tests {
         let report = report.unwrap();
         assert_eq!(report["error"]["kind"], "stopped", "{report}");
         assert_eq!(std::fs::read_to_string(&marker).unwrap(), "term");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_plan_stopped_at_its_timeout_reports_the_steps_it_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = runner(dir.path());
+        std::fs::write(
+            dir.path().join("gui_plan.mts"),
+            "import { writeFileSync } from 'node:fs'\nexport async function main() { process.on('SIGTERM', () => { writeFileSync(`${process.env.SHUTTLE_RUN}/result.json`, '{\"done\":1}'); process.exit(1) }); await new Promise((r) => setTimeout(r, 30000)) }\n",
+        )
+        .unwrap();
+        let err = r
+            .plan(json!({"steps": [], "timeout_s": 2}), "run-test")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "gui_plan: the run passed 2s and was stopped; what it left: {\"done\":1}"
+        );
     }
 
     #[cfg(unix)]

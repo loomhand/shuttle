@@ -18,6 +18,7 @@ export type Reply = string | { text: string; error?: boolean; image?: string }
 export async function daemon(t: { after(fn: () => void): void }, answer: (c: Call) => Reply): Promise<void> {
   const server = createServer((s) => {
     let buf = Buffer.alloc(0)
+    s.on('error', () => {})
     s.on('data', async (d: Buffer) => {
       buf = Buffer.concat([buf, d])
       if (buf.length < 4 || buf.length < 4 + buf.readUInt32BE(0)) return
