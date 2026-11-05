@@ -212,10 +212,16 @@ jobs:
   promote:
     needs: install
     runs-on: ubuntu-24.04
+    concurrency:
+      group: release-promote
     permissions:
       contents: write
     steps:
-      - name: Mark the release as the latest
+      - name: Mark the release as the latest unless a newer one is out
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --prerelease=false --latest
+        run: |
+          newest=$({ echo "$GITHUB_REF_NAME"; gh release list -R "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName'; } | sort -V | tail -1)
+          latest=false
+          [ "$newest" != "$GITHUB_REF_NAME" ] || latest=true
+          gh release edit "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --prerelease=false --latest="$latest"
