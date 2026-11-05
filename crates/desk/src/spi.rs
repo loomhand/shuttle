@@ -98,14 +98,7 @@ impl Access for Spi {
     }
 
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
-        let window = atspi::Frame {
-            obj: Obj::parse(&frame.id)?,
-            role: 0,
-            name: frame.title.clone(),
-            states: 0,
-            pid: frame.pid,
-            stale: false,
-        };
+        let window = Obj::parse(&frame.id)?;
         let t = self
             .rt
             .block_on(self.atspi.tree(window, spi_extras(extras)))?;

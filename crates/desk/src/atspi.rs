@@ -360,7 +360,6 @@ pub struct Extras {
 
 /// The tree of one window with the time each phase took.
 pub struct Tree {
-    pub frame: Frame,
     pub nodes: Vec<Node>,
     pub truncated: bool,
     pub phases: Vec<(&'static str, u128)>,
@@ -429,16 +428,16 @@ impl Atspi {
             .collect())
     }
 
-    /// The tree under `frame`: shown nodes in preorder, with `extras` read live.
-    pub async fn tree(&self, frame: Frame, extras: Extras) -> Result<Tree, String> {
+    /// The tree under the window `window`: shown nodes in preorder, with `extras` read live.
+    pub async fn tree(&self, window: Obj, extras: Extras) -> Result<Tree, String> {
         let mut phases = Vec::new();
         let mut clock = Instant::now();
         let mut lap = |name: &'static str, phases: &mut Vec<(&'static str, u128)>| {
             phases.push((name, clock.elapsed().as_micros()));
             clock = Instant::now();
         };
-        self.wake(&frame.obj.bus).await;
-        let items = self.items(&frame.obj.bus).await.unwrap_or_default();
+        self.wake(&window.bus).await;
+        let items = self.items(&window.bus).await.unwrap_or_default();
         lap("items", &mut phases);
         let mut raw: HashMap<Rc<Obj>, Raw> = HashMap::with_capacity(items.len());
         let mut cached: HashMap<Obj, Vec<(i32, Rc<Obj>)>> = HashMap::new();
@@ -461,7 +460,7 @@ impl Atspi {
             );
         }
         lap("parse", &mut phases);
-        let root = Rc::new(frame.obj.clone());
+        let root = Rc::new(window);
         if !raw.contains_key(&root) {
             let r = self.raw(&root).await?;
             raw.insert(Rc::clone(&root), r);
@@ -568,7 +567,6 @@ impl Atspi {
         flatten(&root, &raw, &kids, None, &mut Vec::new(), &mut nodes);
         truncated |= nodes.len() >= MAX_NODES;
         let mut tree = Tree {
-            frame,
             nodes,
             truncated,
             phases,
