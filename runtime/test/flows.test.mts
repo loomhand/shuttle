@@ -122,3 +122,25 @@ test('a typed username and a typed password get distinct names whether the flow 
     assert.deepEqual(f.params, { text: 'alice' }, name)
   }
 })
+
+test('saving the steps of a plan that just typed a password stores them without typing again', async (t) => {
+  const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: '', states: ['showing', 'focused', 'protected'] }
+  const typed: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_type') typed.push(args.text)
+    if (tool === 'desk_windows') return JSON.stringify([notepad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field] })
+    return '{"ok":true}'
+  })
+  for (const [steps, params] of [
+    [[{ app: 'Notepad' }, { type: '{{password}}', focus: { secure: true } }], { password: 'hunter6' }],
+    [[{ app: 'Notepad' }, { type: 'hunter7', focus: { secure: true } }], {}],
+  ] as const) {
+    const ran = await main({ steps: [...steps], params })
+    assert.equal(ran.ok, true, JSON.stringify(ran))
+    typed.length = 0
+    const saved = await main({ steps: [...steps], params, save: 'login6' })
+    assert.equal(saved.ran, false, JSON.stringify(saved))
+    assert.deepEqual(typed, [])
+  }
+})
