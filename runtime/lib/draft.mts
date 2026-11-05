@@ -32,7 +32,7 @@ export async function main(p: Params): Promise<Draft> {
   let typed = ''; let secrets = 0; let secret = false; let filled = false
   let into: Field | null | undefined
   let clicked: { e: Event; step: Step } | undefined
-  // a run whose recording read no focus checks none on replay; one it never read keeps the plan's own rules
+  // a recording that read no focus checks none on replay
   const focus = (f: Field | null | undefined) => f === null ? { focus: 'unverified' } : f ? onPage(f, f) : {}
   const onPage = (f: Partial<Field>, to: Partial<Field>) => { const { url, ...field } = to; return { focus: field, ...(f.url ? { web: { url: templ(f.url) } } : {}) } }
   const password = (f?: Field | null) => {

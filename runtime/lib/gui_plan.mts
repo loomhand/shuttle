@@ -3,6 +3,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFile
 import { win32 } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { isDeepStrictEqual } from 'node:util'
+
 import * as desk from './desk.mts'
 import type { Win } from './desk.mts'
 import { cut, find as match, ring, unpng } from './png.mts'
@@ -20,7 +21,7 @@ type Step = {
 // frame is the role of the field's window or sheet
 type Focus = { role?: string; name?: string; frame?: string; secure?: boolean; id?: string }
 type Web = { url: string; id?: string }
-// scale is crop pixels per desk unit; root means the click hit no element
+// scale is crop pixels per desk unit
 type Recorded = { text: string; crop?: string; scale?: number; offset?: [number, number]; at?: [number, number]; size?: [number, number]; root?: boolean }
 type Reads = { keys?: boolean; menus?: boolean }
 type Kept = Reads & { id: string; snap: desk.Snap; nodes: Node[] }
@@ -1143,7 +1144,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const first = !typed; typed = true
     const was = BG && w ? await texts(w) : null
     if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field in a plan that continues the flow from this step, which saves the fix into the flow`, await seen())
-    // GTK preselects the name up to its last dot: a bare name keeps the extension, a path or a name with its own extension replaces the whole field
+    // GTK preselects a file name only up to its last dot
     if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine(w)
     // a line break goes as Return, which GTK text views take where they ignore a Linefeed
     for (const [i, part] of (sub ? s.type.slice(0, -1) : s.type).split(/\r?\n/).entries()) { if (i) heard(await desk.key('Return', at(w)), rec); if (part) heard(await desk.typeText(part, at(w)), rec) }
