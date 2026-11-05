@@ -91,6 +91,8 @@ const COVER_UNKNOWN: &str = "the point could not be checked for another app's wi
 const ANOTHER_SPACE: &str = "accessibility does not reach it there, so a snapshot or an element action needs it on the current Space; background key, type, click, scroll and drag reach it by its title or pid";
 const UNSEEN_SENT: &str = "the app may not repaint a window nobody sees, so the input may have taken effect even if a screenshot looks unchanged: do not send it again, and confirm its effect by a read-back you can trust or by asking the user";
 const UNSEEN_TYPED: &str = "the app may not repaint a window nobody sees, so the text may be there even if a screenshot looks unchanged: do not type it again, and before you submit it with Return or Send, confirm that it is there by a read-back you can trust or by asking the user";
+const MASK_TRIES: usize = 3;
+const WINDOWS_MOVING: &str = "the windows kept changing while the screenshot was taken, so it could not be masked to the app allowlist; take it again";
 const SCROLL_POINT: &str = "scroll needs both x and y, or neither";
 const OK: &str = r#"{"ok":true}"#;
 const SCROLL_AMOUNT: u32 = 3;
@@ -1942,13 +1944,40 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if let Some(window) = a.window.as_deref() {
             return self.window_shot(window, a.pid, rect, a.path).await;
         }
+        let (grab, shown) = if self.allow.is_open() {
+            (self.grab(rect).await?, None)
+        } else {
+            let (grab, shown) = self.steady_grab(rect).await?;
+            (grab, Some(shown))
+        };
+        match grab {
+            Grab::Read(c) => {
+                let mask = self.mask(shown, 1.0).await?;
+                let png = rgb_png(c.rgb, c.rect, mask.as_deref())?;
+                delivered(png, c.rect[2], c.rect[3], a.path).await
+            }
+            Grab::Driver(png, factor) => {
+                let mask = self.mask(shown, factor).await?;
+                let (w, h, png) = crop_png(&png, rect, factor, mask.as_deref()).map_err(|e| {
+                    if e == OFF_SCREEN {
+                        format!("{e}{OTHER_DISPLAY}")
+                    } else {
+                        e
+                    }
+                })?;
+                self.shot_out(png, w, h, a.path).await
+            }
+        }
+    }
+
+    async fn grab(&self, rect: [f64; 4]) -> Result<Grab, String> {
         let overlay = self.overlay;
         if let Some(c) = self
             .access
             .run(CALL_LIMIT, (), move |b| b.capture(rect, overlay))
             .await?
         {
-            return self.captured(c, a.path).await;
+            return Ok(Grab::Read(c));
         }
         let v = self
             .call("get_desktop_state", json!({"session": CAPTURE_SESSION}))
@@ -1961,19 +1990,19 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let shot_w = s["screenshot_width"].as_f64().unwrap_or(0.0);
         let full_w = s["screenshot_original_width"].as_f64().unwrap_or(shot_w);
         let factor = if full_w > 0.0 { shot_w / full_w } else { 1.0 };
-        let mask = if self.allow.is_open() {
-            None
-        } else {
-            Some(self.mask(factor).await?)
-        };
-        let (w, h, png) = crop_png(&png, rect, factor, mask.as_deref()).map_err(|e| {
-            if e == OFF_SCREEN {
-                format!("{e}{OTHER_DISPLAY}")
-            } else {
-                e
+        Ok(Grab::Driver(png, factor))
+    }
+
+    async fn steady_grab(&self, rect: [f64; 4]) -> Result<(Grab, Vec<([f64; 4], bool)>), String> {
+        for _ in 0..MASK_TRIES {
+            let before = self.shown().await?;
+            let grab = self.grab(rect).await?;
+            let after = self.shown().await?;
+            if after == before {
+                return Ok((grab, after));
             }
-        })?;
-        self.shot_out(png, w, h, a.path).await
+        }
+        Err(WINDOWS_MOVING.to_owned())
     }
 
     async fn shot_out(
@@ -2044,20 +2073,22 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(out)
     }
 
-    /// A capture the backend read itself, as a PNG image, also written to `path` when one is given.
-    async fn captured(&self, c: Capture, path: Option<String>) -> Result<Output, String> {
-        let rect = c.rect;
-        let mask = if self.allow.is_open() {
-            None
-        } else {
-            Some(self.mask(1.0).await?)
+    async fn mask(
+        &self,
+        shown: Option<Vec<([f64; 4], bool)>>,
+        factor: f64,
+    ) -> Result<Option<Vec<([f64; 4], bool)>>, String> {
+        let Some(mut mask) = shown else {
+            return Ok(None);
         };
-        let png = rgb_png(c.rgb, rect, mask.as_deref())?;
-        delivered(png, rect[2], rect[3], path).await
+        let k = self.scale().await? * factor;
+        for (rect, _) in &mut mask {
+            *rect = rect.map(|v| v * k);
+        }
+        Ok(Some(mask))
     }
 
-    async fn mask(&self, factor: f64) -> Result<Vec<([f64; 4], bool)>, String> {
-        let k = self.scale().await? * factor;
+    async fn shown(&self) -> Result<Vec<([f64; 4], bool)>, String> {
         let mut windows = self.on_screen().await?;
         let frames = self.access.run(CALL_LIMIT, (), |b| b.frames()).await?;
         windows.sort_by_key(|w| w["z_index"].as_i64().unwrap_or(i64::MIN));
@@ -2065,10 +2096,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .into_iter()
             .map(|w| {
                 let pid = w["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
-                (
-                    bounds(&w).map(|v| v * k),
-                    self.allow.admits(app_of(&frames, pid)),
-                )
+                (bounds(&w), self.allow.admits(app_of(&frames, pid)))
             })
             .collect())
     }
@@ -2081,6 +2109,11 @@ impl Drop for Cancel {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Relaxed);
     }
+}
+
+enum Grab {
+    Read(Capture),
+    Driver(Vec<u8>, f64),
 }
 
 struct Under {
@@ -5737,6 +5770,46 @@ pub(crate) mod tests {
                 .unwrap();
         }
         assert!(desk.run("desk_snapshot", json!({})).await.is_err());
+    }
+
+    struct Shifting(std::sync::atomic::AtomicUsize);
+
+    impl Input for Shifting {
+        async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
+            let captures = self.0.load(std::sync::atomic::Ordering::Relaxed);
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
+                "list_windows" => {
+                    let pid = if captures == 0 { 8 } else { 4 };
+                    json!({"structuredContent": {"windows": [
+                        {"pid": pid, "window_id": pid, "layer": 0, "z_index": 1, "bounds": {"x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0}}
+                    ]}})
+                }
+                "get_desktop_state" => {
+                    self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let shade = if captures == 0 { 255 } else { 128 };
+                    let mut png = Vec::new();
+                    let mut enc = png::Encoder::new(&mut png, 10, 10);
+                    enc.set_color(png::ColorType::Rgb);
+                    enc.write_header()
+                        .unwrap()
+                        .write_image_data(&[shade; 300])
+                        .unwrap();
+                    let mut v = json!({"structuredContent": {"screenshot_width": 10}});
+                    v["content"] = json!([{"type": "image", "data": B64.encode(&png)}]);
+                    v
+                }
+                _ => json!({}),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_masked_shot_never_shows_a_window_that_left_while_it_was_taken() {
+        let desk = Desk::new(|| Ok(Apps), Shifting(Default::default()), Os::Windows)
+            .allow(&["notepad".into()]);
+        let shot = pixels(&desk.run("desk_shot", json!({})).await.unwrap());
+        assert!(shot.iter().all(|p| *p != [255; 3]), "{shot:?}");
     }
 
     #[tokio::test]
