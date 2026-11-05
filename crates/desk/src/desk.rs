@@ -932,7 +932,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
             let line = line.trim_end_matches('\r');
             if self.os == Os::Linux {
-                if line.is_empty() || (to.is_none() && self.xtest(line, turn.clone()).await?) {
+                if line.is_empty()
+                    || (to.is_none() && xtest(self.typer, line, turn.clone()).await?)
+                {
                     continue;
                 }
                 for run in text_runs(line) {
@@ -1063,19 +1065,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 _ => note,
             },
         )
-    }
-
-    /// Whether the typer typed `line`; a drop of this call stops it at its next key.
-    async fn xtest(&self, line: &str, turn: Option<Turn>) -> Result<bool, String> {
-        let stop = Arc::new(AtomicBool::new(false));
-        let _cancel = Cancel(stop.clone());
-        let (line, typer) = (line.to_owned(), self.typer);
-        tokio::task::spawn_blocking(move || {
-            let _turn = turn;
-            typer(&line, &stop)
-        })
-        .await
-        .map_err(|e| format!("XTest: {e}"))?
     }
 
     /// Waits at most [`TYPE_SETTLE`] until the focused element holds the end of the typed text.
@@ -2206,6 +2195,19 @@ pub(crate) fn text_runs(text: &str) -> Vec<&str> {
         runs.push(&text[start..]);
     }
     runs
+}
+
+/// Whether the typer typed `text`; a drop of this call stops it at its next key.
+pub(crate) async fn xtest(typer: Typer, text: &str, turn: Option<Turn>) -> Result<bool, String> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let _cancel = Cancel(stop.clone());
+    let text = text.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let _turn = turn;
+        typer(&text, &stop)
+    })
+    .await
+    .map_err(|e| format!("XTest: {e}"))?
 }
 
 pub(crate) fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {

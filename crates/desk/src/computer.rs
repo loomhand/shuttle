@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -20,7 +20,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use crate::desk::{Cancel, Turn, Typer, launch_name, lock, runs_app, text_runs};
+use crate::desk::{Turn, Typer, launch_name, lock, runs_app, text_runs, xtest};
 use crate::driver::{CONNECT_RETRY, Driver, ENDED, image_of, text_of};
 use crate::keys::{Os, key_names};
 use crate::model::Modal;
@@ -1334,26 +1334,16 @@ impl Computer {
         if tool == "type_text"
             && !enter
             && req["target"]["kind"] == "desktop"
-            && self
-                .xtest(req["text"].as_str().unwrap_or_default(), input.clone())
-                .await?
+            && xtest(
+                self.typer,
+                req["text"].as_str().unwrap_or_default(),
+                Some(input.clone()),
+            )
+            .await?
         {
             return Ok(json!({"content": [{"type": "text", "text": XTEST_TYPED}]}));
         }
         self.request(session, tool, req).await
-    }
-
-    /// Whether the typer typed `text`; a drop of this call stops it at its next key.
-    async fn xtest(&self, text: &str, turn: Turn) -> Result<bool, String> {
-        let stop = Arc::new(AtomicBool::new(false));
-        let _cancel = Cancel(stop.clone());
-        let (text, typer) = (text.to_owned(), self.typer);
-        tokio::task::spawn_blocking(move || {
-            let _turn = turn;
-            typer(&text, &stop)
-        })
-        .await
-        .map_err(|e| format!("XTest: {e}"))?
     }
 
     /// One `verify_hit` click on the element `pressed` names, for a left click whose press failed with `e`; `e` and the refusal when the driver refuses.
