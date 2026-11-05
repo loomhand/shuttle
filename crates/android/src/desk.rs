@@ -641,6 +641,7 @@ fn nodes(frame: &Frame, raws: &[Raw<'_>]) -> Vec<Node> {
         visible: true,
         scroller: None,
     }];
+    let hidden = behind_drawers(raws);
     let mut listed: Vec<(usize, usize)> = Vec::new();
     for (i, r) in raws.iter().enumerate() {
         let interactive = r.clickable || r.checkable || r.editable;
@@ -669,7 +670,11 @@ fn nodes(frame: &Frame, raws: &[Raw<'_>]) -> Vec<Node> {
             Some((_, at)) if name.is_empty() && r.checkable => out[at].name.clone(),
             _ => one_line(name),
         };
+        let behind = hidden.iter().any(|h| r.path == *h || under(&r.path, h));
         let mut states = vec!["showing"];
+        if behind {
+            states.push("covered");
+        }
         if !r.enabled {
             states.push("disabled");
         }
@@ -701,8 +706,8 @@ fn nodes(frame: &Frame, raws: &[Raw<'_>]) -> Vec<Node> {
             value,
             states,
             bounds: xywh(r.rect),
-            visible: r.visible,
-            scroller: viewport(raws, &r.path),
+            visible: r.visible && !behind,
+            scroller: (!behind).then(|| viewport(raws, &r.path)).flatten(),
         });
     }
     out
@@ -725,6 +730,26 @@ fn viewport(raws: &[Raw<'_>], path: &str) -> Option<[i32; 4]> {
                 ..r
             })
         })
+}
+
+fn behind_drawers<'a>(raws: &'a [Raw<'a>]) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    for layout in raws.iter().filter(|r| r.class.ends_with("DrawerLayout")) {
+        let width = layout.rect.right - layout.rect.left;
+        let kids = || {
+            raws.iter().filter(|r| {
+                r.path
+                    .strip_prefix(&*layout.path)
+                    .and_then(|rest| rest.strip_prefix('.'))
+                    .is_some_and(|rest| !rest.contains('.'))
+            })
+        };
+        let open = |r: &Raw<'_>| r.visible && (1..width).contains(&(r.rect.right - r.rect.left));
+        if kids().any(open) {
+            out.extend(kids().filter(|r| !open(r)).map(|r| &*r.path));
+        }
+    }
+    out
 }
 
 fn under(path: &str, ancestor: &str) -> bool {
@@ -862,6 +887,11 @@ async fn read(android: &Android, a: ReadArgs) -> Result<String, String> {
 /// Taps an element, after scrolling its list until it shows.
 async fn press(android: &Android, id: &str) -> Result<String, String> {
     let (mut frame, mut node) = node(android, id).await?;
+    if node.states.contains(&"covered") {
+        return Err(format!(
+            "element {id} is behind an open drawer; close it first"
+        ));
+    }
     let mut ask = true;
     for _ in 0..SCROLL_TRIES {
         if let Some((x, y)) = frame.tap_at(&node) {
@@ -1306,6 +1336,35 @@ mod tests {
             "com.android.settings:0.0:checkbox:Dark theme",
             "an element id is its app, path, role and name"
         );
+    }
+
+    #[test]
+    fn an_open_drawer_hides_the_layout_behind_it() {
+        let drawer = |visible: bool, bounds: &str, item: &str| {
+            format!(
+                r#"<hierarchy><node text="" class="androidx.drawerlayout.widget.DrawerLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0" bounds="[0,0][720,1280]" /><node text="" class="android.widget.FrameLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0" bounds="[0,0][720,1280]" />{}<node text="" class="com.google.android.material.navigation.NavigationView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="{visible}" path="0.1" bounds="{bounds}" />{}</hierarchy>"#,
+                row("0.0.0", false, "[100,800][620,890]"),
+                row("0.1.0", false, item),
+            )
+        };
+        let names = |dump: &str| -> Vec<String> {
+            elements(dump, &settings())
+                .into_iter()
+                .map(|n| n.name)
+                .collect()
+        };
+        assert_eq!(
+            names(&drawer(true, "[0,0][640,1280]", "[0,200][640,300]")),
+            ["0.1.0"]
+        );
+        assert_eq!(
+            names(&drawer(false, "[-640,0][0,1280]", "[-640,200][0,300]")),
+            ["0.0.0"]
+        );
+        let open = drawer(true, "[0,0][640,1280]", "[0,200][640,300]");
+        let all = nodes(&settings(), &raws(&open));
+        let hidden = all.iter().find(|n| n.name == "0.0.0").unwrap();
+        assert!(hidden.states.contains(&"covered") && hidden.scroller.is_none());
     }
 
     #[test]
