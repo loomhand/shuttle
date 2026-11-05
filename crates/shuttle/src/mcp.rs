@@ -74,14 +74,11 @@ pub(crate) fn parse(body: &[u8]) -> Message {
 }
 
 async fn write<W: AsyncWrite + Unpin>(output: &mut W, reply: &Value) -> Result<(), String> {
-    output
-        .write_all(format!("{reply}\n").as_bytes())
-        .await
-        .map_err(|e| format!("write stdout: {e}"))?;
-    output
-        .flush()
-        .await
-        .map_err(|e| format!("write stdout: {e}"))
+    let sent = async {
+        output.write_all(format!("{reply}\n").as_bytes()).await?;
+        output.flush().await
+    };
+    sent.await.map_err(|e| format!("write stdout: {e}"))
 }
 
 pub(crate) fn method(msg: &Message) -> Option<&str> {
