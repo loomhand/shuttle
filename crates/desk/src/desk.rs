@@ -1575,7 +1575,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         window: Option<&str>,
         pid: Option<u32>,
     ) -> Result<Option<(i64, i64)>, String> {
-        if self.bg() || self.os != Os::Mac || (window.is_none() && pid.is_none()) {
+        let named = if self.os == Os::Mac {
+            window.is_some() || pid.is_some()
+        } else {
+            window.is_none() && pid.is_some()
+        };
+        if self.bg() || !named {
             return Ok(None);
         }
         let (_, w) = self.pick_window(window, pid, true).await?;
@@ -5725,6 +5730,29 @@ pub(crate) mod tests {
                 .unwrap();
         }
         assert!(desk.run("desk_snapshot", json!({})).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn foreground_keys_naming_an_app_bring_its_window_to_the_front_first() {
+        for os in [Os::Windows, Os::Linux] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(notepad()), Behind(Arc::clone(&calls)), os);
+            desk.run("desk_key", json!({"keys": "a", "app": "Notepad"}))
+                .await
+                .unwrap();
+            let calls = calls.lock().unwrap();
+            let at = |tool: &str| calls.iter().position(|(t, _)| t == tool);
+            let raised = at("bring_to_front");
+            assert!(
+                raised.is_some() && raised < at("press_key"),
+                "{os:?}: {calls:?}"
+            );
+            assert_eq!(
+                calls[raised.unwrap()].1,
+                json!({"pid": 4, "window_id": 1}),
+                "{os:?}"
+            );
+        }
     }
 
     #[tokio::test]
