@@ -56,3 +56,21 @@ test('set sends no key when the field takes no focus, so another field keeps its
   assert.equal(r.ok, false, JSON.stringify(r))
   assert.ok(!calls.includes('desk_key') && !calls.includes('desk_type'), calls.join(' '))
 })
+
+test('set on a spin button passes only when it reads the number it typed, with or without a unit', async (t) => {
+  const win = { id: '1', title: 'Format', role: 'dialog', pid: process.pid, active: true }
+  let value = '12'; let lands = false
+  const spin = () => ({ ref: 1, id: '1/2', parent: 0, depth: 1, role: 'spinbutton', name: 'Size', states: ['showing'], bounds: [10, 10, 100, 20], value })
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'dialog', name: 'Format', states: ['showing'] }, spin()] })
+    if (tool === 'desk_read') return JSON.stringify(spin())
+    if (tool === 'desk_type' && lands) value = `${String(args.text)} pt`
+    return '{"ok":true}'
+  })
+  const dropped = await main({ steps: [{ set: 'Size', value: '1' }] })
+  assert.match(dropped.escalate?.reason ?? '', /reads "12" after set/, JSON.stringify(dropped))
+  lands = true
+  const unit = await main({ steps: [{ set: 'Size', value: '14' }] })
+  assert.equal(unit.ok, true, JSON.stringify(unit))
+})
