@@ -364,12 +364,13 @@ impl Computer {
                 ..Output::default()
             });
         }
+        let input: Turn = Arc::new(self.input.clone().lock_owned().await);
         if a.action == "type"
             && (a.text.as_deref().is_some_and(|t| !t.is_ascii())
                 || (a.element.is_none() && a.x.is_some() && a.y.is_some())
                 || self.web_pixel(session, &a).await)
         {
-            return self.type_mixed(session, &a).await;
+            return self.type_mixed(session, &a, input).await;
         }
         let (tool, mut req) = self.action_request(session, &a).await?;
         let line = req["text"]
@@ -383,7 +384,6 @@ impl Computer {
         if enter && let Some(line) = line {
             req["text"] = line.into();
         }
-        let input: Turn = Arc::new(self.input.clone().lock_owned().await);
         let before = self.before_input(Some(&a)).await;
         let once = self.once(&req);
         let target = once.as_ref().map_or(session, Owned::name);
@@ -626,9 +626,8 @@ impl Computer {
     }
 
     /// Types text with non-ASCII characters or at a point, which a click focuses first, in the calls [`text_runs`] cuts.
-    async fn type_mixed(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
+    async fn type_mixed(&self, session: &str, a: &ActArgs, input: Turn) -> Result<Output, String> {
         let full = a.text.as_deref().unwrap_or_default();
-        let input = self.input.lock().await;
         let before = self.before_input(Some(a)).await;
         let mut failure = None;
         if a.element.is_some() || (a.x.is_some() && a.y.is_some()) {
@@ -3038,6 +3037,35 @@ mod tests {
             "{:?}",
             start.elapsed()
         );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn an_action_takes_the_input_turn_before_any_driver_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        let cua = cua(&socket);
+        let held = turn(&cua).await;
+        for act in [
+            json!({"action": "key", "key": "escape"}),
+            json!({"action": "type", "text": "héllo"}),
+        ] {
+            let waited = tokio::time::timeout(Duration::from_millis(200), cua.act(act)).await;
+            assert!(waited.is_err());
+        }
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "{:?}",
+            calls.lock().unwrap()
+        );
+        drop(held);
+        let out = cua
+            .act(json!({"action": "key", "key": "escape"}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.text);
         driver.abort();
     }
 
