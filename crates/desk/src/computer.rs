@@ -20,7 +20,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use crate::desk::{Cancel, Turn, Typer, launch_name, runs_app, text_runs};
+use crate::desk::{Cancel, Turn, Typer, launch_name, lock, runs_app, text_runs};
 use crate::driver::{CONNECT_RETRY, Driver, ENDED, image_of, text_of};
 use crate::keys::{Os, key_names};
 use crate::model::Modal;
@@ -2016,10 +2016,6 @@ fn positive(scale: Option<f64>) -> Result<(), String> {
         }
         _ => Ok(()),
     }
-}
-
-fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn before_newline(text: &str) -> Option<&str> {

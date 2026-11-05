@@ -211,16 +211,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let turn = tokio::time::timeout(self.turn_wait, self.acting.clone().lock_owned())
                 .await
                 .map_err(|_| "desk busy: a previous action is still running".to_owned())?;
+            self.check_mode(&args)?;
+            if tool != "desk_type" {
+                *lock(&self.clicked) = None;
+            }
             Some(Arc::new(turn))
         } else {
             None
         };
-        if ACTIONS.contains(&tool) {
-            self.check_mode(&args)?;
-            if tool != "desk_type" {
-                *self.clicks() = None;
-            }
-        }
         if !self.allow.is_open() {
             self.admit(tool, &args).await?;
         }
@@ -231,7 +229,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     pub fn release(&self, holder: &str) {
-        let pids: Vec<u32> = self.webs().keys().copied().collect();
+        let pids: Vec<u32> = lock(&self.webs).keys().copied().collect();
         for pid in pids.into_iter().filter(|&p| self.release_one(p, holder)) {
             self.access.post(move |b| drop(b.web(pid, false)));
         }
@@ -714,7 +712,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn web(&self, a: WebArgs) -> Result<String, String> {
-        let held = self.webs().get(&a.pid).map(|h| h.was);
+        let held = lock(&self.webs).get(&a.pid).map(|h| h.was);
         let was = match (a.on, held) {
             (true, Some(was)) => was,
             (false, Some(was)) if !self.release_one(a.pid, &a.holder) => was,
@@ -731,7 +729,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
         };
         if a.on {
-            let mut webs = self.webs();
+            let mut webs = lock(&self.webs);
             let h = webs.entry(a.pid).or_insert_with(|| Held {
                 was,
                 holders: HashSet::new(),
@@ -742,7 +740,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     fn release_one(&self, pid: u32, holder: &str) -> bool {
-        let mut webs = self.webs();
+        let mut webs = lock(&self.webs);
         let Some(h) = webs.get_mut(&pid) else {
             return false;
         };
@@ -752,12 +750,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             webs.remove(&pid);
         }
         last
-    }
-
-    fn webs(&self) -> std::sync::MutexGuard<'_, HashMap<u32, Held>> {
-        self.webs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     async fn press(&self, id: String, turn: Option<Turn>) -> Result<String, String> {
@@ -979,7 +971,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         to: (i64, i64),
         unverified: bool,
     ) -> Result<(Value, bool), String> {
-        let clicked = self.clicks().filter(|c| c.to == to).map(|c| c.at);
+        let clicked = lock(&self.clicked).filter(|c| c.to == to).map(|c| c.at);
         let n = self.keyboard_focus(to.0).await;
         let field = n.as_ref().is_some_and(|n| FIELD_ROLES.contains(&n.role));
         if !field && clicked.is_some() && !unverified {
@@ -1044,7 +1036,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let effect = c["effect"]
             .as_str()
             .filter(|e| self.bg() && *e != "confirmed")?;
-        if let Some(u) = to.and_then(|t| self.unseens().get(&t).copied()) {
+        if let Some(u) = to.and_then(|t| lock(&self.unseen).get(&t).copied()) {
             let then = if typed { UNSEEN_TYPED } else { UNSEEN_SENT };
             return Some(format!("{effect}; {}: {then}", u.why()));
         }
@@ -1144,7 +1136,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if let Some(note) = note {
             out["unverified"] = note.into();
         }
-        let clicked = *self.clicks();
+        let clicked = *lock(&self.clicked);
         if let Some(c) = clicked.filter(|_| self.os == Os::Mac)
             && let Some(n) = self.keyboard_focus(c.to.0).await
         {
@@ -1475,12 +1467,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let _session = self.session.lock().await;
         let mut cover = None;
         if !self.bg() {
-            let front = json!({"pid": w.pid, "window_id": w.id});
-            self.call("bring_to_front", front).await?;
+            self.raise(Some((w.pid, w.id))).await?;
             cover = self.cover(&req, w.pid).await?;
         }
-        let cached = self
-            .reads()
+        let cached = lock(&self.read)
             .filter(|r| (r.pid, r.id, r.bounds) == (w.pid, w.id, w.bounds))
             .map(|r| r.k);
         let k = match cached {
@@ -1526,7 +1516,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if self.bg()
             && let Some(at) = req["x"].as_f64().zip(req["y"].as_f64())
         {
-            *self.clicks() = Some(Clicked {
+            *lock(&self.clicked) = Some(Clicked {
                 to: (w.pid, w.id),
                 at,
             });
@@ -1658,8 +1648,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             bounds: bounds(w),
             point: (x / scale, y / scale),
         };
-        let cached = self
-            .reads()
+        let cached = lock(&self.read)
             .filter(|r| (r.pid, r.id, r.bounds) == (pid, id, under.bounds))
             .map(|r| r.k);
         let (kx, ky) = match cached {
@@ -1741,12 +1730,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         v: &Value,
         full: bool,
     ) -> Result<Option<(f64, f64)>, String> {
-        *self.reads() = None;
+        *lock(&self.read) = None;
         if refuses_pointer(v) {
             return Ok(None);
         }
         let k = image_scale(v, id)?;
-        *self.reads() = Some(Read {
+        *lock(&self.read) = Some(Read {
             pid,
             id,
             bounds,
@@ -1759,8 +1748,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     /// The desk point of pixel `(x, y)` in the `shot` image of driver window `w`.
     async fn desk_point(&self, w: &Value, (x, y): (f64, f64)) -> Result<(f64, f64), String> {
         let key = window_key(w)?;
-        let cached = self
-            .reads()
+        let cached = lock(&self.read)
             .filter(|r| r.full && (r.pid, r.id, r.bounds) == key)
             .map(|r| r.k);
         let (kx, ky) = match cached {
@@ -1779,33 +1767,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(((key.2[0] + x / kx) * scale, (key.2[1] + y / ky) * scale))
     }
 
-    fn reads(&self) -> std::sync::MutexGuard<'_, Option<Read>> {
-        self.read
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     /// Keeps why nobody sees driver window `w`, which the note on unconfirmed input to it gives.
     fn classify(&self, w: &Value) {
         if let Some(to) = w["pid"].as_i64().zip(w["window_id"].as_i64()) {
-            let mut unseen = self.unseens();
+            let mut unseen = lock(&self.unseen);
             match unseen_of(w, self.os == Os::Mac) {
                 Some(u) => unseen.insert(to, u),
                 None => unseen.remove(&to),
             };
         }
-    }
-
-    fn unseens(&self) -> std::sync::MutexGuard<'_, HashMap<(i64, i64), Unseen>> {
-        self.unseen
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    fn clicks(&self) -> std::sync::MutexGuard<'_, Option<Clicked>> {
-        self.clicked
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     async fn focus(&self, a: WindowArgs) -> Result<String, String> {
@@ -2041,8 +2011,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     ) -> Result<Output, String> {
         let (_, w) = self.pick_window(Some(window), pid, true).await?;
         let key = window_key(&w)?;
-        let stale = self
-            .unseens()
+        let stale = lock(&self.unseen)
             .get(&(key.0, key.1))
             .filter(|_| self.os == Os::Mac)
             .map(|u| {
@@ -2219,6 +2188,10 @@ pub(crate) fn text_runs(text: &str) -> Vec<&str> {
         runs.push(&text[start..]);
     }
     runs
+}
+
+pub(crate) fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn names_app(window_app: &str, wanted: &str) -> bool {
