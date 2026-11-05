@@ -83,7 +83,9 @@ pub trait Controls: Send + Sync {
         false
     }
     /// Starts or ends a recording of the user's input.
-    fn record(&self, _on: bool) {}
+    fn record(&self, _on: bool) -> Result<(), String> {
+        Ok(())
+    }
     fn hotkey(&self, _code: u32) {
         self.halt(true);
     }
@@ -437,12 +439,15 @@ impl<H: Handler> Controls for Daemon<H> {
         self.recorder.as_ref().is_some_and(Recorder::recording)
     }
 
-    fn record(&self, on: bool) {
-        let Some(r) = &self.recorder else { return };
-        if !on {
+    fn record(&self, on: bool) -> Result<(), String> {
+        let Some(r) = &self.recorder else {
+            return Ok(());
+        };
+        if on {
+            r.start(Vec::new()).map(drop)
+        } else {
             r.end();
-        } else if let Err(e) = r.start(Vec::new()) {
-            crate::log(e);
+            Ok(())
         }
     }
 }
@@ -1078,6 +1083,17 @@ mod tests {
                 .await
                 .is_error
         );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_recording_the_menu_cannot_start_answers_why() {
+        let d = daemon(Echo, Guard::default()).with_recordings(std::env::temp_dir());
+        assert_eq!(
+            Controls::record(&d, true),
+            Err("recording runs only on macOS".to_owned())
+        );
+        assert!(!d.recording());
     }
 
     #[tokio::test]

@@ -93,6 +93,15 @@ fn ask(mtm: MainThreadMarker, question: &str, tx: oneshot::Sender<bool>) {
     }
 }
 
+fn tell(mtm: MainThreadMarker, text: &str) {
+    #[allow(deprecated)]
+    NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str("Shuttle"));
+    alert.setInformativeText(&NSString::from_str(text));
+    alert.runModal();
+}
+
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
@@ -250,7 +259,10 @@ define_class!(
         #[unsafe(method(record:))]
         fn record(&self, _sender: Option<&AnyObject>) {
             let on = !self.ivars().controls.recording();
-            self.ivars().controls.record(on);
+            if let Err(e) = self.ivars().controls.record(on) {
+                log(&e);
+                tell(self.mtm(), &e);
+            }
             self.ivars().show(self.mtm());
         }
 
