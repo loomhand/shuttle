@@ -20,6 +20,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
+#[cfg(target_os = "linux")]
+use crate::desk::CALL_LIMIT;
 use crate::desk::{Turn, Typer, launch_name, lock, runs_app, text_runs, xtest};
 use crate::driver::{CONNECT_RETRY, Driver, ENDED, Request, image_of, text_of};
 use crate::keys::{Os, key_names};
@@ -1390,10 +1392,11 @@ impl Computer {
         let spi = self.spi.get_or_init(|| Worker::new(Spi::open));
         let end = Instant::now() + RETURN_GAP;
         while Instant::now() < end {
-            match spi.run(end - Instant::now(), (), default_enabled).await {
-                Ok(true) => return,
-                Ok(false) => tokio::time::sleep(RETURN_POLL).await,
-                Err(_) => return tokio::time::sleep_until(end).await,
+            let poll = spi.run(CALL_LIMIT, (), default_enabled);
+            match tokio::time::timeout(end - Instant::now(), poll).await {
+                Ok(Ok(true)) => return,
+                Ok(Ok(false)) => tokio::time::sleep(RETURN_POLL).await,
+                _ => return tokio::time::sleep_until(end).await,
             }
         }
     }

@@ -61,6 +61,7 @@ pub(crate) const BACKGROUND_NO_WINDOW: &str = "background input: no window under
 pub(crate) const BACKGROUND_ELEMENT: &str = "background input: the element's own window could not be found, and background input never clicks a window that covers it";
 pub(crate) const BACKGROUND_TWINS: &str = "background input: the element's own window is ambiguous (same or no title, and no single frame match), and background input never guesses which window to click";
 pub(crate) const BACKGROUND_UIA: &str = "background input: on Windows UI Automation focuses, selects or runs an element only by bringing its window to the front; click it in its window, or use input = \"foreground\"";
+pub(crate) const CALL_LIMIT: Duration = Duration::from_secs(3);
 #[cfg(target_os = "linux")]
 pub(crate) const TYPER: Typer = crate::xtest::type_mapped;
 #[cfg(not(target_os = "linux"))]
@@ -74,7 +75,6 @@ const APP_INPUT: [&str; 5] = [
     "desk_drag",
 ];
 
-const CALL_LIMIT: Duration = Duration::from_secs(3);
 const TREE_LIMIT: Duration = Duration::from_secs(10);
 const READ_CHARS: usize = 64 << 10;
 const WAIT_MAX: Duration = Duration::from_secs(5);
@@ -925,42 +925,51 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         };
         let raised = self.raised_window(a.window.as_deref(), a.pid).await?;
         let mut note = None;
+        let lines = text.split('\n').count();
         for (i, line) in text.split('\n').enumerate() {
-            self.raise(raised).await?;
-            if i > 0 {
-                self.send("press_key", json!({"key": "return"}), to, &mut note)
-                    .await?;
-            }
-            let line = line.trim_end_matches('\r');
-            if self.os == Os::Linux {
-                if line.is_empty()
-                    || (to.is_none() && xtest(self.typer, line, turn.clone()).await?)
-                {
-                    continue;
-                }
-                for run in text_runs(line) {
-                    self.send("type_text", json!({"text": run}), to, &mut note)
+            let sent: Result<(), String> = async {
+                self.raise(raised).await?;
+                if i > 0 {
+                    self.send("press_key", json!({"key": "return"}), to, &mut note)
                         .await?;
                 }
-                continue;
-            }
-            if self.os == Os::Mac {
-                if !line.is_empty() {
-                    let mut req = json!({"text": line});
-                    if !self.bg() && line.chars().all(|c| c.len_utf16() == 1) {
-                        req["delay_ms"] = MAC_TYPE_DELAY_MS.into();
+                let line = line.trim_end_matches('\r');
+                if self.os == Os::Linux {
+                    if line.is_empty()
+                        || (to.is_none() && xtest(self.typer, line, turn.clone()).await?)
+                    {
+                        return Ok(());
                     }
-                    self.send("type_text", req, to, &mut note).await?;
+                    for run in text_runs(line) {
+                        self.send("type_text", json!({"text": run}), to, &mut note)
+                            .await?;
+                    }
+                    return Ok(());
                 }
-                continue;
+                if self.os == Os::Mac {
+                    if !line.is_empty() {
+                        let mut req = json!({"text": line});
+                        if !self.bg() && line.chars().all(|c| c.len_utf16() == 1) {
+                            req["delay_ms"] = MAC_TYPE_DELAY_MS.into();
+                        }
+                        self.send("type_text", req, to, &mut note).await?;
+                    }
+                    return Ok(());
+                }
+                for (at, c) in line.char_indices() {
+                    let (tool, req) = match keystroke(c) {
+                        Some(keys) => key_request(keys),
+                        None => ("type_text", json!({"text": &line[at..at + c.len_utf8()]})),
+                    };
+                    self.send(tool, req, to, &mut note).await?;
+                }
+                Ok(())
             }
-            for (at, c) in line.char_indices() {
-                let (tool, req) = match keystroke(c) {
-                    Some(keys) => key_request(keys),
-                    None => ("type_text", json!({"text": &line[at..at + c.len_utf8()]})),
-                };
-                self.send(tool, req, to, &mut note).await?;
-            }
+            .await;
+            sent.map_err(|e| match i {
+                0 => e,
+                _ => format!("{e}; {i} of {lines} lines were typed before it"),
+            })?;
         }
         if self.os == Os::Linux && to.is_none() {
             self.typed(text).await;
@@ -3177,6 +3186,24 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_type_that_fails_on_a_later_line_says_how_many_went_in() {
+        let desk = Desk::new(|| Ok(Apps), FailsOn("b"), Os::Mac);
+        let err = desk
+            .run("desk_type", json!({"text": "a\nb\nc"}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.ends_with("; 1 of 3 lines were typed before it"),
+            "{err}"
+        );
+        let err = desk
+            .run("desk_type", json!({"text": "b"}))
+            .await
+            .unwrap_err();
+        assert!(!err.contains("lines were typed"), "{err}");
+    }
+
+    #[tokio::test]
     async fn auto_input_without_a_window_to_front_stays_refused() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Mac)
@@ -3286,6 +3313,17 @@ pub(crate) mod tests {
             out.text
         );
         assert_eq!(order(&calls), ["bring_to_front -", "drag desktop"]);
+    }
+
+    struct FailsOn(&'static str);
+
+    impl Input for FailsOn {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            if args["text"] == self.0 {
+                return Err(format!("{tool}: refused"));
+            }
+            Ok(json!({}))
+        }
     }
 
     struct Spaces(Arc<Mutex<Vec<(String, Value)>>>);
