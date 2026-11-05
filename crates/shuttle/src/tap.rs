@@ -31,6 +31,8 @@ const MODIFIERS: [(u64, &str); 4] = [
     (1 << 17, "shift"),
 ];
 
+type Callback = extern "C" fn(*mut c_void, u32, *mut c_void, *mut c_void) -> *mut c_void;
+
 /// A running tap; dropping it stops it.
 pub struct Tap {
     done: Arc<AtomicBool>,
@@ -111,6 +113,49 @@ impl Drop for Tap {
     }
 }
 
+struct Seen {
+    tx: UnboundedSender<Input>,
+    acting: Arc<AtomicUsize>,
+    port: *mut c_void,
+    scale: f64,
+    /// Whether the next key starts a run of typing, whose target the tap reads.
+    fresh: Cell<bool>,
+}
+
+/// The live event a tap callback gets, for the length of the call.
+struct Event(*mut c_void);
+
+impl Event {
+    fn flags(&self) -> u64 {
+        // SAFETY: the event is live for the callback that wraps it.
+        unsafe { CGEventGetFlags(self.0) }
+    }
+
+    fn at(&self) -> Point {
+        // SAFETY: the event is live for the callback that wraps it.
+        unsafe { CGEventGetLocation(self.0) }
+    }
+
+    fn field(&self, f: u32) -> i64 {
+        // SAFETY: the event is live for the callback that wraps it.
+        unsafe { CGEventGetIntegerValueField(self.0, f) }
+    }
+
+    fn text(&self) -> String {
+        let mut buf = [0u16; 8];
+        let mut len = 0usize;
+        // SAFETY: the event is live for the callback that wraps it, and the call writes at most `buf.len()` units into `buf`.
+        unsafe { CGEventKeyboardGetUnicodeString(self.0, buf.len(), &mut len, buf.as_mut_ptr()) };
+        String::from_utf16_lossy(&buf[..len.min(buf.len())])
+    }
+}
+
+#[repr(C)]
+struct Point {
+    x: f64,
+    y: f64,
+}
+
 /// Whether this process may listen to the keyboard (Input Monitoring).
 pub fn allowed() -> bool {
     // SAFETY: the call only reads this process's TCC state.
@@ -121,15 +166,6 @@ pub fn allowed() -> bool {
 pub fn ask() {
     // SAFETY: the call reads and may register this process's TCC state.
     unsafe { CGRequestListenEventAccess() };
-}
-
-struct Seen {
-    tx: UnboundedSender<Input>,
-    acting: Arc<AtomicUsize>,
-    port: *mut c_void,
-    scale: f64,
-    /// Whether the next key starts a run of typing, whose target the tap reads.
-    fresh: Cell<bool>,
 }
 
 extern "C" fn heard(
@@ -170,34 +206,6 @@ fn focused(secret: bool) -> Option<Field> {
             id,
         }
     })
-}
-
-/// The live event a tap callback gets, for the length of the call.
-struct Event(*mut c_void);
-
-impl Event {
-    fn flags(&self) -> u64 {
-        // SAFETY: the event is live for the callback that wraps it.
-        unsafe { CGEventGetFlags(self.0) }
-    }
-
-    fn at(&self) -> Point {
-        // SAFETY: the event is live for the callback that wraps it.
-        unsafe { CGEventGetLocation(self.0) }
-    }
-
-    fn field(&self, f: u32) -> i64 {
-        // SAFETY: the event is live for the callback that wraps it.
-        unsafe { CGEventGetIntegerValueField(self.0, f) }
-    }
-
-    fn text(&self) -> String {
-        let mut buf = [0u16; 8];
-        let mut len = 0usize;
-        // SAFETY: the event is live for the callback that wraps it, and the call writes at most `buf.len()` units into `buf`.
-        unsafe { CGEventKeyboardGetUnicodeString(self.0, buf.len(), &mut len, buf.as_mut_ptr()) };
-        String::from_utf16_lossy(&buf[..len.min(buf.len())])
-    }
 }
 
 fn read(e: &Event, kind: u32, seen: &Seen) -> Option<Input> {
@@ -253,14 +261,6 @@ fn read(e: &Event, kind: u32, seen: &Seen) -> Option<Input> {
         _ => None,
     }
 }
-
-#[repr(C)]
-struct Point {
-    x: f64,
-    y: f64,
-}
-
-type Callback = extern "C" fn(*mut c_void, u32, *mut c_void, *mut c_void) -> *mut c_void;
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {

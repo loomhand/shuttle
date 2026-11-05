@@ -36,71 +36,7 @@ const STATES: [(&str, &[u8]); 4] = [
 ];
 const RECORD: [&str; 2] = ["Start recording", "Stop recording"];
 
-/// Runs the controls on this, the main, thread until the process exits.
-pub fn run(ui: Ui) -> ! {
-    #[allow(clippy::expect_used)]
-    let mtm = MainThreadMarker::new().expect("the macOS controls run on the main thread");
-    let app = NSApplication::sharedApplication(mtm);
-    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-    if let Some(hotkey) = ui.hotkey {
-        register(hotkey, Arc::clone(&ui.controls));
-    }
-    let _indicator = ui
-        .indicator
-        .then(|| indicator(mtm, &ui.controls, &ui.stop_label, ui.about));
-    app.run();
-    std::process::exit(0)
-}
-
-/// The asker that shows each question as a dialog on the main thread.
-pub fn asker() -> Asker {
-    Arc::new(|question| {
-        let (tx, rx) = oneshot::channel();
-        DispatchQueue::main().exec_async(move || {
-            if let Some(mtm) = MainThreadMarker::new() {
-                ask(mtm, &question, tx);
-            }
-        });
-        rx
-    })
-}
-
-fn ask(mtm: MainThreadMarker, question: &str, tx: oneshot::Sender<bool>) {
-    #[allow(deprecated)]
-    NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
-    let alert = NSAlert::new(mtm);
-    alert.setMessageText(&NSString::from_str("Shuttle"));
-    alert.setInformativeText(&NSString::from_str(question));
-    alert.addButtonWithTitle(&NSString::from_str("Cancel"));
-    alert.addButtonWithTitle(&NSString::from_str("Allow"));
-    let watch = Watch::new(mtm, tx);
-    // SAFETY: `watch` is a `Watch`, whose `watch:` method takes the timer, and there is no user info; the timer joins this thread's run loop in the common modes, which include the dialog's modal mode.
-    let timer = unsafe {
-        let timer = NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(
-            POLL_S,
-            &watch,
-            sel!(watch:),
-            None,
-            true,
-        );
-        NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
-        timer
-    };
-    let allowed = alert.runModal() == NSAlertSecondButtonReturn;
-    timer.invalidate();
-    if let Some(tx) = watch.ivars().take() {
-        let _ = tx.send(allowed);
-    }
-}
-
-fn tell(mtm: MainThreadMarker, text: &str) {
-    #[allow(deprecated)]
-    NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
-    let alert = NSAlert::new(mtm);
-    alert.setMessageText(&NSString::from_str("Shuttle"));
-    alert.setInformativeText(&NSString::from_str(text));
-    alert.runModal();
-}
+type Handler = extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> i32;
 
 define_class!(
     #[unsafe(super(NSObject))]
@@ -135,73 +71,6 @@ impl Watch {
 struct Indicator {
     _target: Retained<Target>,
     _timer: Retained<NSTimer>,
-}
-
-fn indicator(
-    mtm: MainThreadMarker,
-    controls: &Arc<dyn Controls>,
-    stop: &str,
-    about: String,
-) -> Indicator {
-    let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSSquareStatusItemLength);
-    #[allow(clippy::expect_used)]
-    let icons = STATES.map(|(name, pdf)| icon(name, pdf).expect("the bundled icons are PDFs"));
-    let menu = NSMenu::new(mtm);
-    let header = NSMenuItem::new(mtm);
-    header.setTitle(&NSString::from_str(&about));
-    menu.addItem(&header);
-    menu.addItem(&NSMenuItem::separatorItem(mtm));
-    let record = entry(mtm, RECORD[0], sel!(record:));
-    let target = Target::new(
-        mtm,
-        Shown {
-            controls: Arc::clone(controls),
-            item: item.clone(),
-            icons,
-            about,
-            record: record.clone(),
-            state: Cell::new(None),
-        },
-    );
-    for e in [
-        entry(mtm, stop, sel!(stop:)),
-        entry(mtm, "Resume", sel!(resume:)),
-        record,
-    ] {
-        // SAFETY: `target` outlives the menu: the indicator holds both until the process exits.
-        unsafe { e.setTarget(Some(&target)) };
-        menu.addItem(&e);
-    }
-    item.setMenu(Some(&menu));
-    target.ivars().show(mtm);
-    // SAFETY: `target` is a `Target`, whose `tick:` method takes the timer, and there is no user info; the timer joins this thread's run loop in the common modes, which include the confirm dialog's modal mode.
-    let timer = unsafe {
-        let timer = NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(
-            POLL_S,
-            &target,
-            sel!(tick:),
-            None,
-            true,
-        );
-        NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
-        timer
-    };
-    Indicator {
-        _target: target,
-        _timer: timer,
-    }
-}
-
-fn entry(mtm: MainThreadMarker, title: &str, action: objc2::runtime::Sel) -> Retained<NSMenuItem> {
-    // SAFETY: the item is a fresh NSMenuItem; the action names a method `Target` defines.
-    unsafe {
-        NSMenuItem::initWithTitle_action_keyEquivalent(
-            NSMenuItem::alloc(mtm),
-            &NSString::from_str(title),
-            Some(action),
-            &NSString::from_str(""),
-        )
-    }
 }
 
 struct Shown {
@@ -281,14 +150,6 @@ impl Target {
     }
 }
 
-fn icon(name: &str, pdf: &[u8]) -> Option<Retained<NSImage>> {
-    let image = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(pdf))?;
-    image.setTemplate(true);
-    image.setSize(NSSize::new(ICON_PT, ICON_PT));
-    image.setAccessibilityDescription(Some(&NSString::from_str(&format!("Shuttle {name}"))));
-    Some(image)
-}
-
 #[repr(C)]
 struct EventTypeSpec {
     class: u32,
@@ -301,27 +162,145 @@ struct EventHotKeyId {
     id: u32,
 }
 
-type Handler = extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> i32;
+/// Runs the controls on this, the main, thread until the process exits.
+pub fn run(ui: Ui) -> ! {
+    #[allow(clippy::expect_used)]
+    let mtm = MainThreadMarker::new().expect("the macOS controls run on the main thread");
+    let app = NSApplication::sharedApplication(mtm);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    if let Some(hotkey) = ui.hotkey {
+        register(hotkey, Arc::clone(&ui.controls));
+    }
+    let _indicator = ui
+        .indicator
+        .then(|| indicator(mtm, &ui.controls, &ui.stop_label, ui.about));
+    app.run();
+    std::process::exit(0)
+}
 
-#[link(name = "Carbon", kind = "framework")]
-unsafe extern "C" {
-    fn GetApplicationEventTarget() -> *mut c_void;
-    fn InstallEventHandler(
-        target: *mut c_void,
-        handler: Handler,
-        count: u32,
-        types: *const EventTypeSpec,
-        user: *mut c_void,
-        out: *mut *mut c_void,
-    ) -> i32;
-    fn RegisterEventHotKey(
-        code: u32,
-        modifiers: u32,
-        id: EventHotKeyId,
-        target: *mut c_void,
-        options: u32,
-        out: *mut *mut c_void,
-    ) -> i32;
+/// The asker that shows each question as a dialog on the main thread.
+pub fn asker() -> Asker {
+    Arc::new(|question| {
+        let (tx, rx) = oneshot::channel();
+        DispatchQueue::main().exec_async(move || {
+            if let Some(mtm) = MainThreadMarker::new() {
+                ask(mtm, &question, tx);
+            }
+        });
+        rx
+    })
+}
+
+fn ask(mtm: MainThreadMarker, question: &str, tx: oneshot::Sender<bool>) {
+    #[allow(deprecated)]
+    NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str("Shuttle"));
+    alert.setInformativeText(&NSString::from_str(question));
+    alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+    alert.addButtonWithTitle(&NSString::from_str("Allow"));
+    let watch = Watch::new(mtm, tx);
+    // SAFETY: `watch` is a `Watch`, whose `watch:` method takes the timer, and there is no user info; the timer joins this thread's run loop in the common modes, which include the dialog's modal mode.
+    let timer = unsafe {
+        let timer = NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(
+            POLL_S,
+            &watch,
+            sel!(watch:),
+            None,
+            true,
+        );
+        NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
+        timer
+    };
+    let allowed = alert.runModal() == NSAlertSecondButtonReturn;
+    timer.invalidate();
+    if let Some(tx) = watch.ivars().take() {
+        let _ = tx.send(allowed);
+    }
+}
+
+fn tell(mtm: MainThreadMarker, text: &str) {
+    #[allow(deprecated)]
+    NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str("Shuttle"));
+    alert.setInformativeText(&NSString::from_str(text));
+    alert.runModal();
+}
+
+fn indicator(
+    mtm: MainThreadMarker,
+    controls: &Arc<dyn Controls>,
+    stop: &str,
+    about: String,
+) -> Indicator {
+    let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSSquareStatusItemLength);
+    #[allow(clippy::expect_used)]
+    let icons = STATES.map(|(name, pdf)| icon(name, pdf).expect("the bundled icons are PDFs"));
+    let menu = NSMenu::new(mtm);
+    let header = NSMenuItem::new(mtm);
+    header.setTitle(&NSString::from_str(&about));
+    menu.addItem(&header);
+    menu.addItem(&NSMenuItem::separatorItem(mtm));
+    let record = entry(mtm, RECORD[0], sel!(record:));
+    let target = Target::new(
+        mtm,
+        Shown {
+            controls: Arc::clone(controls),
+            item: item.clone(),
+            icons,
+            about,
+            record: record.clone(),
+            state: Cell::new(None),
+        },
+    );
+    for e in [
+        entry(mtm, stop, sel!(stop:)),
+        entry(mtm, "Resume", sel!(resume:)),
+        record,
+    ] {
+        // SAFETY: `target` outlives the menu: the indicator holds both until the process exits.
+        unsafe { e.setTarget(Some(&target)) };
+        menu.addItem(&e);
+    }
+    item.setMenu(Some(&menu));
+    target.ivars().show(mtm);
+    // SAFETY: `target` is a `Target`, whose `tick:` method takes the timer, and there is no user info; the timer joins this thread's run loop in the common modes, which include the confirm dialog's modal mode.
+    let timer = unsafe {
+        let timer = NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(
+            POLL_S,
+            &target,
+            sel!(tick:),
+            None,
+            true,
+        );
+        NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
+        timer
+    };
+    Indicator {
+        _target: target,
+        _timer: timer,
+    }
+}
+
+fn entry(mtm: MainThreadMarker, title: &str, action: objc2::runtime::Sel) -> Retained<NSMenuItem> {
+    // SAFETY: the item is a fresh NSMenuItem; the action names a method `Target` defines.
+    unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &NSString::from_str(title),
+            Some(action),
+            &NSString::from_str(""),
+        )
+    }
+}
+
+fn icon(name: &str, pdf: &[u8]) -> Option<Retained<NSImage>> {
+    let image = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(pdf))?;
+    image.setTemplate(true);
+    image.setSize(NSSize::new(ICON_PT, ICON_PT));
+    image.setAccessibilityDescription(Some(&NSString::from_str(&format!("Shuttle {name}"))));
+    Some(image)
 }
 
 extern "C" fn pressed(_: *mut c_void, _: *mut c_void, user: *mut c_void) -> i32 {
@@ -362,6 +341,27 @@ fn register(hotkey: Hotkey, controls: Arc<dyn Controls>) {
             "the kill hotkey did not register (handler {installed}, hotkey {registered}); shuttle stop still works"
         ));
     }
+}
+
+#[link(name = "Carbon", kind = "framework")]
+unsafe extern "C" {
+    fn GetApplicationEventTarget() -> *mut c_void;
+    fn InstallEventHandler(
+        target: *mut c_void,
+        handler: Handler,
+        count: u32,
+        types: *const EventTypeSpec,
+        user: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> i32;
+    fn RegisterEventHotKey(
+        code: u32,
+        modifiers: u32,
+        id: EventHotKeyId,
+        target: *mut c_void,
+        options: u32,
+        out: *mut *mut c_void,
+    ) -> i32;
 }
 
 #[cfg(test)]

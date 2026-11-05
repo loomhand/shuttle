@@ -1039,6 +1039,23 @@ type OldItem = (
     Vec<u32>,
 );
 
+type Rule = (
+    (
+        Vec<i32>,
+        i32,
+        HashMap<String, String>,
+        i32,
+        Vec<i32>,
+        i32,
+        Vec<String>,
+        i32,
+        bool,
+    ),
+    u32,
+    i32,
+    bool,
+);
+
 /// The ARIA role of AT-SPI role `role` after W3C Core-AAM, else its AT-SPI name; a nameless generic container has none.
 pub fn role_name(role: u32, named: bool) -> &'static str {
     aria_role(role, named).unwrap_or_else(|| native_role(role))
@@ -1357,23 +1374,6 @@ fn iface_bits(names: &[String]) -> u8 {
         }
     })
 }
-
-type Rule = (
-    (
-        Vec<i32>,
-        i32,
-        HashMap<String, String>,
-        i32,
-        Vec<i32>,
-        i32,
-        Vec<String>,
-        i32,
-        bool,
-    ),
-    u32,
-    i32,
-    bool,
-);
 
 /// The Collection.GetMatches arguments for the first focused descendant in tree order.
 fn focused_rule() -> Rule {
