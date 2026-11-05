@@ -331,11 +331,13 @@ async fn serve(
     tokio::spawn(async move { recorder.recordings().await });
     #[cfg(any(target_os = "macos", windows))]
     ready(daemon.clone(), safety, hotkey.filter(|_| local), input);
+    let ending = Arc::clone(&daemon);
     let mut serving = Box::pin(server::serve(daemon, listener));
     let served = tokio::select! {
         r = &mut serving => r,
         () = shutdown() => Ok(()),
     };
+    ending.end_recording().await;
     crate::ENDING.store(true, std::sync::atomic::Ordering::Relaxed);
     #[cfg(unix)]
     crate::kill_graced();
