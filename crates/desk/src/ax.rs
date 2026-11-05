@@ -1,5 +1,6 @@
 //! The macOS desk backend: window trees by a budgeted AX walk with one batched attribute read per element.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::{CStr, c_void};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -492,8 +493,9 @@ impl Access for Ax {
             CFString::from_static_string("kCGWindowName"),
         );
         for d in on_screen() {
-            let title = string(d.find(&name).map(|v| (*v).clone()));
-            (number(&d, &owner), number(&d, &window), title).hash(&mut h);
+            let title = d.find(&name).and_then(|v| v.downcast::<CFString>());
+            let title = title.as_ref().map(Cow::from).unwrap_or_default();
+            (number(&d, &owner), number(&d, &window), &*title).hash(&mut h);
         }
         Some(h.finish())
     }
