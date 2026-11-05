@@ -157,7 +157,7 @@ async function perform(p: Params): Promise<Result> {
   BG = BEHIND
   const held = pending()
   const ws0 = await desk.windows(); for (const w of ws0) known.add(w.title)
-  if (BG) { target = null; adopted = new Set(); doubt = null; fronted = false; userFront = desk.front(ws0); const c = held; const was = c && Date.now() - c.at < CHAIN_AGE ? ws0.find((w) => w.title === c.window && w.pid === c.pid) : undefined; if (was) follow(was, ws0) }
+  if (BG) { target = null; adopted = new Set(); doubt = null; fronted = false; userFront = desk.front(ws0); rejoin(held, ws0) }
   const vetted = new Set<string>()
   const startTitles = new Set(known)
   const start = frontOf(ws0); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
@@ -399,6 +399,7 @@ async function front(w: Win | null) {
   BG = false; fronted = true; foreground.steps += 1
 }
 function follow(w: Win, ws: Win[]) { target = w; doubt = null; targetSince = new Set(ws.map((x) => x.id)) }
+function rejoin(c: Chain | null, ws: Win[]) { const was = c && Date.now() - c.at < CHAIN_AGE ? ws.find((w) => w.title === c.window && w.pid === c.pid) : undefined; if (was) follow(was, ws) }
 // a macOS sheet has no window of its own, so its input goes to the window it hangs on
 function at(w: Win | null): desk.Target {
   if (!BG || !w) return {}
@@ -1488,7 +1489,8 @@ async function promote(name: string, params: Record<string, string> = {}, rerun 
   if (!c || Date.now() - c.at >= CHAIN_AGE || !(c.saved || c.escalated) || c.dirty || !c.steps.some((s) => !s.app) || !slug(name))
     return { ok: false, reason: 'nothing to save: the last gui_plan run of the last 10 minutes must start at an app step, pass, and click no target found by vision' }
   if (c.escalated || rerun) {
-    const f = await focused(); const o = f ? await outline(f) : ''
+    const ws = await desk.windows(); if (BG) rejoin(c, ws)
+    const f = frontOf(ws); const o = f ? await outline(f) : ''
     if (!f || f.title !== c.window || blocked(o) || isDialog(o)) return { ok: false, reason: `the last plan stopped at a surprise and "${f?.title ?? 'no window'}" is in front: continue it with gui_plan from the failing step, and the passing run is saved` }
   }
   const old = c.saved && !c.named ? c.name : undefined
@@ -1545,7 +1547,7 @@ async function locate(target: string, press: boolean) {
 
 async function located(target: string, press: boolean) {
   const t0 = Date.now()
-  const w = await focused()
+  const w = focusedIn(await desk.windows())
   if (!w) return { found: false, why: 'no focused window', ms: Date.now() - t0 }
   let nodes = parse(await desk.snapshot(w.title, { pid: w.pid, bounds: true, menus: true }))
   let hit: Hit | null = null

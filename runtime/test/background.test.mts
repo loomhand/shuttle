@@ -267,3 +267,20 @@ test('a background click with a count takes the image scale from the window of i
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(sent(d.calls, 'desk_click'), [{ x: 440, y: 420, count: 2, window: 'Downloads', pid: 4 }])
 })
+
+test('a fresh background run saves the chain the last plan left at its window and locates in the front window', async (t) => {
+  const nodes = [
+    { ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: 'Untitled - Notepad', states: [] },
+    { ref: 1, id: 'b', parent: 0, depth: 1, role: 'button', name: 'Bold', states: ['showing'], bounds: [10, 10, 20, 20] },
+  ]
+  const d = desktop([user(), notepad()], ({ tool }) => tool === 'desk_snapshot' ? JSON.stringify({ window: notepad(), nodes, truncated: false }) : undefined)
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+b' }, { click: 'Italic' }] })
+  assert.equal(r.escalate?.step, 2, JSON.stringify(r))
+  const query = 'fresh'
+  const fresh = ((await import(`../lib/gui_plan.mts?${query}`)) as typeof import('../lib/gui_plan.mts')).main
+  const saved = await fresh({ save: 'bold' })
+  assert.equal(saved.ok, true, JSON.stringify(saved))
+  const found = await fresh({ locate: { target: 'Bold' } })
+  assert.equal(found.found, true, JSON.stringify(found))
+})
