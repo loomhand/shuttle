@@ -123,7 +123,7 @@ pub trait Handler: Send + Sync + 'static {
 
     fn release(&self, _holder: &str) {}
 
-    /// Counts the user's answer to a confirm question as this desk's own input, which no input check takes for the user's.
+    /// Counts the user's answer to a confirm question as this desk's own input.
     fn allowed(&self) {}
 
     /// Whether some tool takes its whole connection through [`Handler::splice`], which costs every call a read of its tool.
