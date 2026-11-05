@@ -3386,13 +3386,7 @@ pub(crate) mod tests {
         }
 
         fn sent(&self, tool: &str) -> Vec<Value> {
-            self.calls
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(t, _)| t == tool)
-                .map(|(_, a)| a.clone())
-                .collect()
+            sent(&self.calls, tool)
         }
 
         fn landed(&self) -> Vec<(f64, f64)> {
@@ -3745,10 +3739,6 @@ pub(crate) mod tests {
                 Os::Mac,
             )
             .background(true);
-            let note = |out: Output| {
-                let v: Value = serde_json::from_str(&out.text).unwrap();
-                v["unverified"].as_str().unwrap_or_default().to_owned()
-            };
             let clicked = desk
                 .run("desk_click", json!({"x": 10.0, "y": 10.0, "window": "Doc"}))
                 .await
@@ -3933,10 +3923,6 @@ pub(crate) mod tests {
      {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(Apps), Spaces(Arc::clone(&calls)), Os::Mac).background(true);
-        let note = |out: Output| {
-            let v: Value = serde_json::from_str(&out.text).unwrap();
-            v["unverified"].as_str().unwrap_or_default().to_owned()
-        };
         let typed = desk
             .run(
                 "desk_type",
@@ -3979,7 +3965,7 @@ pub(crate) mod tests {
         assert!(sent(&calls, "type_text").is_empty());
     }
 
-    fn sent(calls: &Arc<Mutex<Vec<(String, Value)>>>, tool: &str) -> Vec<Value> {
+    fn sent(calls: &Mutex<Vec<(String, Value)>>, tool: &str) -> Vec<Value> {
         calls
             .lock()
             .unwrap()
@@ -3987,6 +3973,16 @@ pub(crate) mod tests {
             .filter(|(t, _)| t == tool)
             .map(|(_, a)| a.clone())
             .collect()
+    }
+
+    fn refused(r: Result<Output, String>) -> bool {
+        r.err()
+            .is_some_and(|e| e.contains("not in the app allowlist"))
+    }
+
+    fn note(out: Output) -> String {
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        v["unverified"].as_str().unwrap_or_default().to_owned()
     }
 
     #[tokio::test]
@@ -6263,10 +6259,6 @@ pub(crate) mod tests {
     async fn an_app_allowlist_hides_and_refuses_the_windows_of_other_apps() {
         let desk =
             Desk::new(|| Ok(Apps), Screen(Arc::default()), Os::Mac).allow(&["NOTEPAD.EXE".into()]);
-        let refused = |r: Result<Output, String>| {
-            r.err()
-                .is_some_and(|e| e.contains("not in the app allowlist"))
-        };
         let listed = desk.run("desk_windows", json!({})).await.unwrap().text;
         assert!(
             listed.contains("Notepad") && !listed.contains("Inbox"),
@@ -6308,10 +6300,6 @@ pub(crate) mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk =
             Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Mac).allow(&["notepad".into()]);
-        let refused = |r: Result<Output, String>| {
-            r.err()
-                .is_some_and(|e| e.contains("not in the app allowlist"))
-        };
         assert!(refused(desk.run("desk_at", json!({"x": 5, "y": 5})).await));
         assert!(refused(
             desk.run("desk_act", json!({"id": "4/5", "action": "click"}))
@@ -6952,10 +6940,6 @@ pub(crate) mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk =
             Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Windows).allow(&["notepad".into()]);
-        let refused = |r: Result<Output, String>| {
-            r.err()
-                .is_some_and(|e| e.contains("not in the app allowlist"))
-        };
         let drag = |to: (f64, f64)| json!({"x": 100.0, "y": 800.0, "to_x": to.0, "to_y": to.1});
         assert!(refused(desk.run("desk_drag", drag((50.0, 950.0))).await));
         assert!(refused(desk.run("desk_drag", drag((50.0, 600.0))).await));
