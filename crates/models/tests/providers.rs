@@ -53,13 +53,7 @@ mod tests {
         })
         .await
         .unwrap();
-        m.ground(GroundArgs {
-            png_b64: "UE5H".into(),
-            target: "OK button".into(),
-            area: serde_json::from_value(json!({"width": 1280, "height": 800})).unwrap(),
-        })
-        .await
-        .unwrap();
+        m.ground(ground_ok("UE5H")).await.unwrap();
         let seen = seen.lock().unwrap();
         let calls: Vec<(&str, &str, Option<&str>)> = seen
             .iter()
@@ -128,12 +122,7 @@ mod tests {
 
     #[tokio::test]
     async fn with_a_decide_build_pattern_only_a_matching_build_answers() {
-        let ask = || DecideArgs {
-            state: json!("a window"),
-            questions: questions(json!({"on": {"type": "noul", "instructions": "On?"}})),
-            image: false,
-            timeout_ms: None,
-        };
+        let ask = || decide_on(json!("a window"));
         let answer = |model: Option<&str>| {
             let mut r = json!({"id": "gen-1", "answers": {"on": {"type": "noul", "noul": 0.9}}});
             if let Some(m) = model {
@@ -179,15 +168,7 @@ mod tests {
             ..Config::default()
         });
         let state = json!(["the list", {"type": "image_url", "image_url": {"url": "data:image/png;base64,UE5H"}}]);
-        let out = m
-            .decide(DecideArgs {
-                state,
-                questions: questions(json!({"on": {"type": "noul", "instructions": "On?"}})),
-                image: false,
-                timeout_ms: None,
-            })
-            .await
-            .unwrap();
+        let out = m.decide(decide_on(state)).await.unwrap();
         assert_eq!(out.answers["on"], json!({"probability": 0.2}));
         assert_eq!(out.served.build.as_deref(), Some("local-vl"));
         let seen = seen.lock().unwrap();
@@ -208,11 +189,7 @@ mod tests {
             let content = format!("{{\"point_2d\": {said}}}");
             let (base, _) = fake(json!({"choices": [{"message": {"content": content}}]})).await;
             let out = Models::new(gateway(&base))
-                .ground(GroundArgs {
-                    png_b64: png_2560x1600.into(),
-                    target: "OK button".into(),
-                    area: serde_json::from_value(json!({"width": 1280, "height": 800})).unwrap(),
-                })
+                .ground(ground_ok(png_2560x1600))
                 .await
                 .unwrap();
             assert_eq!((out.x, out.y), want, "{said}");
@@ -229,13 +206,7 @@ mod tests {
             }
         })
         .await;
-        let err = Models::new(gateway(&base))
-            .ask(AskArgs {
-                prompt: "x".into(),
-                images: vec![],
-            })
-            .await
-            .unwrap_err();
+        let err = Models::new(gateway(&base)).ask(ask_x()).await.unwrap_err();
         assert_eq!(
             err,
             format!(
@@ -262,30 +233,9 @@ mod tests {
             })
             .await;
             let m = Models::new(gateway(&base));
-            let decided = m
-                .decide(DecideArgs {
-                    state: json!("x"),
-                    questions: questions(json!({"on": {"type": "noul", "instructions": "On?"}})),
-                    image: false,
-                    timeout_ms: None,
-                })
-                .await
-                .unwrap_err();
-            let grounded = m
-                .ground(GroundArgs {
-                    png_b64: "UE5H".into(),
-                    target: "OK button".into(),
-                    area: serde_json::from_value(json!({"width": 1280, "height": 800})).unwrap(),
-                })
-                .await
-                .unwrap_err();
-            let asked = m
-                .ask(AskArgs {
-                    prompt: "x".into(),
-                    images: vec![],
-                })
-                .await
-                .unwrap_err();
+            let decided = m.decide(decide_on(json!("x"))).await.unwrap_err();
+            let grounded = m.ground(ground_ok("UE5H")).await.unwrap_err();
+            let asked = m.ask(ask_x()).await.unwrap_err();
             let spent = |model: &str, path: &str| {
                 format!(
                     "model credits are used up: {model} at {base}{path} returned 402 Payment Required{why}; add credit or upgrade the plan, then try again"
@@ -310,13 +260,7 @@ mod tests {
             "HTTP/1.1 308 Permanent Redirect\r\nlocation: http://127.0.0.1:9/elsewhere\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_owned()
         })
         .await;
-        let err = Models::new(gateway(&base))
-            .ask(AskArgs {
-                prompt: "x".into(),
-                images: vec![],
-            })
-            .await
-            .unwrap_err();
+        let err = Models::new(gateway(&base)).ask(ask_x()).await.unwrap_err();
         assert!(
             err.starts_with(&format!(
                 "anthropic/claude-sonnet-5 request to {base}/v1/chat/completions: "
@@ -328,24 +272,13 @@ mod tests {
     #[tokio::test]
     async fn an_empty_or_partial_reply_is_an_error() {
         let (base, _) = fake(json!({"choices": []})).await;
-        let err = Models::new(gateway(&base))
-            .ask(AskArgs {
-                prompt: "x".into(),
-                images: vec![],
-            })
-            .await
-            .unwrap_err();
+        let err = Models::new(gateway(&base)).ask(ask_x()).await.unwrap_err();
         assert_eq!(
             err,
             "anthropic/claude-sonnet-5: the reply holds no message text"
         );
         let (base, _) = fake(json!({"answers": {}})).await;
-        let args = DecideArgs {
-            state: json!("x"),
-            questions: questions(json!({"on": {"type": "noul", "instructions": "On?"}})),
-            image: false,
-            timeout_ms: None,
-        };
+        let args = decide_on(json!("x"));
         assert_eq!(
             Models::new(gateway(&base)).decide(args).await.unwrap_err(),
             "typesafe/jev-1.14: no answer for on"
@@ -435,5 +368,29 @@ mod tests {
 
     fn questions(v: Value) -> Map<String, Value> {
         serde_json::from_value(v).unwrap()
+    }
+
+    fn decide_on(state: Value) -> DecideArgs {
+        DecideArgs {
+            state,
+            questions: questions(json!({"on": {"type": "noul", "instructions": "On?"}})),
+            image: false,
+            timeout_ms: None,
+        }
+    }
+
+    fn ask_x() -> AskArgs {
+        AskArgs {
+            prompt: "x".into(),
+            images: vec![],
+        }
+    }
+
+    fn ground_ok(png_b64: &str) -> GroundArgs {
+        GroundArgs {
+            png_b64: png_b64.into(),
+            target: "OK button".into(),
+            area: serde_json::from_value(json!({"width": 1280, "height": 800})).unwrap(),
+        }
     }
 }
