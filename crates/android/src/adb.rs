@@ -520,12 +520,8 @@ impl Android {
             return Injection::NotSent;
         }
         let mut slot = self.ui.lock().await;
-        let mut server = match slot.take() {
-            Some(server) => server,
-            None => match self.start_ui().await {
-                Ok(server) => server,
-                Err(_) => return Injection::NotSent,
-            },
+        let Ok(mut server) = self.ui_server(&mut slot).await else {
+            return Injection::NotSent;
         };
         if server.send(cmd).await.is_err() {
             return Injection::NotSent;
@@ -615,10 +611,7 @@ impl Android {
     /// One answer of the UI server, which is dropped when it fails or is cancelled mid-answer.
     async fn served(&self, cmd: &str) -> Result<String, String> {
         let mut slot = self.ui.lock().await;
-        let mut server = match slot.take() {
-            Some(server) => server,
-            None => self.start_ui().await?,
-        };
+        let mut server = self.ui_server(&mut slot).await?;
         let answer = tokio::time::timeout(UI_TIMEOUT, server.ask(cmd))
             .await
             .map_err(|_| "UI server: timed out".to_owned())??;
@@ -632,15 +625,19 @@ impl Android {
     /// The server's PNG frame; none from a server that predates the `shot` request.
     async fn served_png(&self) -> Result<Option<Vec<u8>>, String> {
         let mut slot = self.ui.lock().await;
-        let mut server = match slot.take() {
-            Some(server) => server,
-            None => self.start_ui().await?,
-        };
+        let mut server = self.ui_server(&mut slot).await?;
         let png = tokio::time::timeout(UI_TIMEOUT, server.ask_png())
             .await
             .map_err(|_| "UI server: timed out".to_owned())??;
         *slot = Some(server);
         Ok(png)
+    }
+
+    async fn ui_server(&self, slot: &mut Option<UiServer>) -> Result<UiServer, String> {
+        match slot.take() {
+            Some(server) => Ok(server),
+            None => self.start_ui().await,
+        }
     }
 
     async fn start_ui(&self) -> Result<UiServer, String> {
