@@ -40,7 +40,7 @@ const BACKGROUND_ACT: &str = "background input: computer actions send desktop in
 const TREE_CHARS: usize = 15_000;
 const MIN_WINDOW: i64 = 10;
 const CHROME_CLASS: &str = "Google-chrome";
-const COMMIT_KEYS: [&str; 6] = ["return", "enter", "kp_enter", "f5", "alt+left", "alt+right"];
+const COMMIT_KEYS: [&str; 3] = ["f5", "alt+left", "alt+right"];
 
 const SETTLE: Duration = Duration::from_millis(600);
 const NO_CHANGE: Duration = Duration::from_millis(300);
@@ -537,7 +537,7 @@ impl Computer {
         })
     }
 
-    /// Base64 PNG of the whole desktop, scaled so its long edge is at most `max_edge`.
+    /// A base64 image of the whole desktop, scaled so its long edge is at most `max_edge`.
     async fn screenshot(
         &self,
         session: &str,
@@ -2118,7 +2118,7 @@ fn confirms(a: &ActArgs) -> bool {
     if a.action == "type" {
         return a.text.as_deref().is_some_and(|t| t.ends_with(['\n', '\r']));
     }
-    combo(a).is_some_and(|k| ["return", "enter", "kp_enter"].contains(&k.as_str()))
+    combo(a).is_some_and(|k| k == "return")
 }
 
 fn gtk(pid: i64) -> bool {
@@ -2141,11 +2141,7 @@ fn clicks_left(a: &ActArgs) -> bool {
 
 /// Whether `a` may commit a page load: a left click, Return or a navigation key, or text ending in a newline.
 fn commits(a: &ActArgs) -> bool {
-    match a.action.as_str() {
-        "type" => a.text.as_deref().is_some_and(|t| t.ends_with(['\n', '\r'])),
-        _ if clicks_left(a) => true,
-        _ => combo(a).is_some_and(|k| COMMIT_KEYS.contains(&k.as_str())),
-    }
+    confirms(a) || clicks_left(a) || combo(a).is_some_and(|k| COMMIT_KEYS.contains(&k.as_str()))
 }
 
 /// The lowercase combination a `key` or `hotkey` action presses.
@@ -4724,7 +4720,6 @@ mod tests {
         assert!(!commits(&act("click", None, None, Some("right"))));
         assert!(!commits(&act("right_click", None, None, None)));
         assert!(commits(&act("key", Some("Return"), None, None)));
-        assert!(commits(&act("key", Some("KP_Enter"), None, None)));
         assert!(!commits(&act("key", Some("Tab"), None, None)));
         assert!(commits(&act("hotkey", None, Some(&["alt", "Left"]), None)));
         assert!(!commits(&act("hotkey", None, Some(&["ctrl", "l"]), None)));
@@ -4739,7 +4734,7 @@ mod tests {
     }
 
     #[test]
-    fn return_enter_and_a_typed_line_confirm_and_only_left_clicks_click_left() {
+    fn return_and_a_typed_line_confirm_and_only_left_clicks_click_left() {
         let act =
             |action: &str, key: Option<&str>, text: Option<&str>, button: Option<&str>| ActArgs {
                 action: action.to_owned(),
@@ -4749,7 +4744,6 @@ mod tests {
                 ..ActArgs::default()
             };
         assert!(confirms(&act("key", Some("Return"), None, None)));
-        assert!(confirms(&act("key", Some("KP_Enter"), None, None)));
         assert!(!confirms(&act("key", Some("F5"), None, None)));
         assert!(confirms(&act("type", None, Some("name.txt\n"), None)));
         assert!(!confirms(&act("type", None, Some("name.txt"), None)));
