@@ -25,7 +25,7 @@ const FOCUS_WAIT: Duration = Duration::from_secs(5);
 const FOCUS_POLL: Duration = Duration::from_millis(100);
 const SWITCH_POLLS: u32 = 10;
 const SCROLL_TRIES: u32 = 6;
-const SCROLL_MS: &str = "600";
+const SCROLL_MS: u32 = 600;
 const SCROLL_SETTLE: Duration = Duration::from_millis(400);
 const MIN_SPAN: i32 = 8;
 const MIN_SWIPE: i32 = 48;
@@ -891,16 +891,7 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
         let (cx, from, to) = frame
             .swipe([sx, sy, sw, sh], node.bounds[1])
             .ok_or_else(|| format!("element {id} is off the screen, and its list is covered"))?;
-        android
-            .input(&[
-                "swipe",
-                &cx.to_string(),
-                &from.to_string(),
-                &cx.to_string(),
-                &to.to_string(),
-                SCROLL_MS,
-            ])
-            .await?;
+        android.swipe((cx, from), (cx, to), SCROLL_MS).await?;
         tokio::time::sleep(SCROLL_SETTLE).await;
         let (refreshed, mut nodes) = app_tree(android, &frame.package).await?;
         frame = refreshed;

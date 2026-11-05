@@ -373,6 +373,18 @@ impl Android {
         self.adb(&argv).await.map(drop)
     }
 
+    pub(crate) async fn swipe(
+        &self,
+        from: (i32, i32),
+        to: (i32, i32),
+        ms: u32,
+    ) -> Result<(), String> {
+        let args = [from.0, from.1, to.0, to.1].map(|v| v.to_string());
+        let ms = ms.to_string();
+        self.input(&["swipe", &args[0], &args[1], &args[2], &args[3], &ms])
+            .await
+    }
+
     /// The UI tree of window `window`, else of the active one, from the image's UI server.
     pub(crate) async fn tree(&self, window: Option<&str>) -> Result<String, String> {
         match window {
@@ -599,13 +611,6 @@ impl Android {
             ));
         }
         Ok(Some(point))
-    }
-
-    async fn swipe(&self, from: (i32, i32), to: (i32, i32), ms: u32) -> Result<(), String> {
-        let args = [from.0, from.1, to.0, to.1].map(|v| v.to_string());
-        let ms = ms.to_string();
-        self.input(&["swipe", &args[0], &args[1], &args[2], &args[3], &ms])
-            .await
     }
 
     /// One answer of the UI server, which is dropped when it fails or is cancelled mid-answer.
