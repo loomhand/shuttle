@@ -154,11 +154,11 @@ async function perform(p: Params): Promise<Result> {
   }
   const trace: Trace[] = []; const log: Record<string, unknown>[] = []
   const bad = plan.findIndex((s) => OPS.filter((k) => k in s).length !== 1)
-  if (bad >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: bad, plan_step: plan[bad], reason: `step ${bad} needs exactly one op of ${OPS.join(', ')}; nothing ran` } }
+  if (bad >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: bad, plan_step: plan[bad] && unrecorded(plan[bad]), reason: `step ${bad} needs exactly one op of ${OPS.join(', ')}; nothing ran` } }
   const unfilled = (s: Step) => Object.values(s).flatMap((v) => typeof v === 'string' ? [...v.matchAll(/\{\{(\w+)(?::base)?\}\}/g)].map((x) => x[1] ?? '') : []).find((n) => params[n] === undefined)
   const gap = plan.findIndex((s, i) => i >= (p.start ?? 0) && unfilled(s))
   const gapStep = plan[gap]
-  if (gapStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: gapStep, reason: `no value for {{${unfilled(gapStep)}}}: pass it in params; nothing ran` } }
+  if (gapStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: unrecorded(gapStep), reason: `no value for {{${unfilled(gapStep)}}}: pass it in params; nothing ran` } }
   BG = BEHIND
   const held = pending()
   const ws0 = await desk.windows(); for (const w of ws0) known.add(w.title)
