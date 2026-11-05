@@ -28,6 +28,7 @@ export async function main(p: Params): Promise<Draft> {
   const templ = (s: string) => examples.reduce((out, [k, v]) => out.split(v).join(`{{${k}}}`), s)
   const draft: Draft = { id: p.recording.id, apps: p.recording.apps ?? [], params, steps: [], notes: [], gaps: [] }
   const events = p.recording.events
+  const captions = new Map(events.flatMap((e) => e.kind === 'click' && e.crop && !own(e) ? [[e, caption(e.crop, e.crop_scale ?? 1, e.crop_offset ?? [0, 0], e.element?.role)] as const] : []))
   const seen = new Set<string>()
   let typed = ''; let secrets = 0; let secret = false; let filled = false
   let into: Field | null | undefined
@@ -108,7 +109,7 @@ export async function main(p: Params): Promise<Draft> {
       }
       const again = (e.count ?? 1) > 1 && clicked && draft.steps.at(-1) === clicked.step && Math.hypot((e.x ?? 0) - (clicked.e.x ?? 0), (e.y ?? 0) - (clicked.e.y ?? 0)) <= 4
       if (again) draft.steps.pop()
-      clicked = { e, step: await click(e, templ) }
+      clicked = { e, step: await click(e, templ, await captions.get(e)) }
       draft.steps.push(clicked.step)
       filled = !!e.secret
       if (filled) password()
@@ -126,10 +127,14 @@ function windowOf(e: Event) {
   return (typeof e.window === 'object' ? e.window.title : e.focus?.window) || undefined
 }
 
-async function click(e: Event, templ: (s: string) => string): Promise<Step> {
+function own(e: Event) {
+  return !e.root && e.element?.name ? e.element.name : ''
+}
+
+async function click(e: Event, templ: (s: string) => string, captioned = ''): Promise<Step> {
   const el = e.element ?? {}
-  const own = !e.root && el.name ? el.name : ''
-  const said = own || (e.crop ? await caption(e.crop, e.crop_scale ?? 1, e.crop_offset ?? [0, 0], el.role) : '') || `the ${el.role || 'point'} at ${Math.round(e.x ?? 0)}, ${Math.round(e.y ?? 0)}`
+  const named = own(e)
+  const said = named || captioned || `the ${el.role || 'point'} at ${Math.round(e.x ?? 0)}, ${Math.round(e.y ?? 0)}`
   const target = templ(said)
   const win = typeof e.window === 'object' ? e.window : undefined
   const b = win?.bounds
@@ -141,10 +146,10 @@ async function click(e: Event, templ: (s: string) => string): Promise<Step> {
     ...(e.button && e.button !== 'left' ? { button: e.button } : {}),
     ...((e.count ?? 1) > 1 ? { count: e.count } : {}),
     ...(e.mods?.length ? { mods: e.mods } : {}),
-    ...(own && el.role && NAMED_ROLES.has(el.role) ? { role: el.role } : {}),
+    ...(named && el.role && NAMED_ROLES.has(el.role) ? { role: el.role } : {}),
     ...(e.web ? { web: { url: templ(e.web.url), ...(e.web.id ? { id: e.web.id } : {}) } } : {}),
     recorded,
-    intent: `click ${own ? `the ${el.role} "${own}"` : said}${win?.title ? ` in "${win.title}"` : ''}`,
+    intent: `click ${named ? `the ${el.role} "${named}"` : said}${win?.title ? ` in "${win.title}"` : ''}`,
   }
 }
 
