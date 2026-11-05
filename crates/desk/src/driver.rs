@@ -41,6 +41,11 @@ const HID_SYSTEM_STATE: i32 = 1;
 #[cfg(all(target_os = "macos", not(test)))]
 const USER_EVENTS: [u32; 10] = [1, 3, 5, 6, 7, 10, 12, 22, 25, 27];
 
+#[cfg(test)]
+thread_local! {
+    static USER_SINCE: std::cell::Cell<f64> = const { std::cell::Cell::new(f64::INFINITY) };
+}
+
 /// The driver calls the desk makes: input, windows, launch and capture.
 pub trait Input {
     /// Calls driver tool `tool` and returns its result.
@@ -117,21 +122,6 @@ impl Driver {
         result(tool, &reply)
     }
 
-    async fn start(&self, kind: usize) -> Result<(), String> {
-        let (scope, session) = match kind {
-            1 => ("window", WINDOW_SESSION),
-            2 => ("desktop", CAPTURE_SESSION),
-            _ => ("desktop", SESSION),
-        };
-        self.send(
-            "start_session",
-            &json!({"capture_scope": scope, "session": session}),
-        )
-        .await?;
-        self.started[kind].store(true, Ordering::Relaxed);
-        Ok(())
-    }
-
     /// Connects to the daemon, waiting out a restart: the one each desktop session start triggers, or the supervisor's after the driver died.
     pub(crate) async fn connect(&self) -> Result<Conn, String> {
         let deadline = Instant::now() + CONNECT_WAIT;
@@ -147,21 +137,6 @@ impl Driver {
                 Err(e) => return Err(format!("connect cua-driver {}: {e}", self.endpoint)),
             }
         }
-    }
-
-    async fn exchange(&self, line: Vec<u8>) -> Result<String, String> {
-        let mut stream = BufReader::new(self.connect().await?);
-        stream
-            .get_mut()
-            .write_all(&line)
-            .await
-            .map_err(|e| format!("write cua-driver: {e}"))?;
-        let mut reply = String::new();
-        stream
-            .read_line(&mut reply)
-            .await
-            .map_err(|e| format!("read cua-driver: {e}"))?;
-        Ok(reply)
     }
 
     pub(crate) fn admit(&self, tool: &str, args: &Value) -> Result<bool, String> {
@@ -182,6 +157,36 @@ impl Driver {
             .last_input
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::time::Instant::now());
+    }
+
+    async fn start(&self, kind: usize) -> Result<(), String> {
+        let (scope, session) = match kind {
+            1 => ("window", WINDOW_SESSION),
+            2 => ("desktop", CAPTURE_SESSION),
+            _ => ("desktop", SESSION),
+        };
+        self.send(
+            "start_session",
+            &json!({"capture_scope": scope, "session": session}),
+        )
+        .await?;
+        self.started[kind].store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn exchange(&self, line: Vec<u8>) -> Result<String, String> {
+        let mut stream = BufReader::new(self.connect().await?);
+        stream
+            .get_mut()
+            .write_all(&line)
+            .await
+            .map_err(|e| format!("write cua-driver: {e}"))?;
+        let mut reply = String::new();
+        stream
+            .read_line(&mut reply)
+            .await
+            .map_err(|e| format!("read cua-driver: {e}"))?;
+        Ok(reply)
     }
 
     fn since_own_input(&self) -> Option<Duration> {
@@ -255,49 +260,6 @@ struct Request<'a> {
     args: &'a Value,
 }
 
-/// Whether HID input `since` seconds ago is the user's: it is within [`USER_IDLE`] and more than [`OWN_INPUT_LAG`] after the end of the driver's own last input, whose events reach the HID counter up to that late.
-fn user_busy(since: f64, own: Option<Duration>) -> bool {
-    since < USER_IDLE.as_secs_f64()
-        && own.is_none_or(|own| since < own.saturating_sub(OWN_INPUT_LAG).as_secs_f64())
-}
-
-#[cfg(all(target_os = "macos", not(test)))]
-fn since_user_input() -> f64 {
-    USER_EVENTS
-        .iter()
-        .map(|&kind| {
-            // SAFETY: CGEventSourceSecondsSinceLastEventType reads a counter and takes two plain integers.
-            unsafe { CGEventSourceSecondsSinceLastEventType(HID_SYSTEM_STATE, kind) }
-        })
-        .fold(f64::INFINITY, f64::min)
-}
-
-#[cfg(all(not(target_os = "macos"), not(test)))]
-fn since_user_input() -> f64 {
-    f64::INFINITY
-}
-
-#[cfg(test)]
-thread_local! {
-    static USER_SINCE: std::cell::Cell<f64> = const { std::cell::Cell::new(f64::INFINITY) };
-}
-
-#[cfg(test)]
-fn since_user_input() -> f64 {
-    USER_SINCE.with(std::cell::Cell::get)
-}
-
-#[cfg(all(test, unix))]
-pub(crate) fn user_input_since(seconds: f64) {
-    USER_SINCE.with(|s| s.set(seconds));
-}
-
-#[cfg(all(target_os = "macos", not(test)))]
-#[link(name = "CoreGraphics", kind = "framework")]
-unsafe extern "C" {
-    fn CGEventSourceSecondsSinceLastEventType(state: i32, kind: u32) -> f64;
-}
-
 /// `req` addressed to the screen, not to a window.
 pub fn desktop(mut req: Value) -> Value {
     req["scope"] = "desktop".into();
@@ -349,6 +311,44 @@ fn result(tool: &str, reply: &str) -> Result<Value, String> {
         });
     }
     Ok(out)
+}
+
+/// Whether HID input `since` seconds ago is the user's: it is within [`USER_IDLE`] and more than [`OWN_INPUT_LAG`] after the end of the driver's own last input, whose events reach the HID counter up to that late.
+fn user_busy(since: f64, own: Option<Duration>) -> bool {
+    since < USER_IDLE.as_secs_f64()
+        && own.is_none_or(|own| since < own.saturating_sub(OWN_INPUT_LAG).as_secs_f64())
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn since_user_input() -> f64 {
+    USER_EVENTS
+        .iter()
+        .map(|&kind| {
+            // SAFETY: CGEventSourceSecondsSinceLastEventType reads a counter and takes two plain integers.
+            unsafe { CGEventSourceSecondsSinceLastEventType(HID_SYSTEM_STATE, kind) }
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+#[cfg(all(not(target_os = "macos"), not(test)))]
+fn since_user_input() -> f64 {
+    f64::INFINITY
+}
+
+#[cfg(test)]
+fn since_user_input() -> f64 {
+    USER_SINCE.with(std::cell::Cell::get)
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn user_input_since(seconds: f64) {
+    USER_SINCE.with(|s| s.set(seconds));
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGEventSourceSecondsSinceLastEventType(state: i32, kind: u32) -> f64;
 }
 
 #[cfg(test)]
@@ -550,27 +550,6 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
-    fn answering(socket: &std::path::Path) -> tokio::task::JoinHandle<Vec<Value>> {
-        let listener = tokio::net::UnixListener::bind(socket).unwrap();
-        tokio::spawn(async move {
-            let mut lines = Vec::new();
-            while let Ok(Ok((s, _))) =
-                tokio::time::timeout(Duration::from_millis(500), listener.accept()).await
-            {
-                let mut s = BufReader::new(s);
-                let mut line = String::new();
-                s.read_line(&mut line).await.unwrap();
-                s.get_mut()
-                    .write_all(b"{\"ok\":true,\"result\":{}}\n")
-                    .await
-                    .unwrap();
-                lines.push(serde_json::from_str::<Value>(&line).unwrap());
-            }
-            lines
-        })
-    }
-
-    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn only_foreground_input_counts_as_the_drivers_own() {
         let dir = tempfile::tempdir().unwrap();
@@ -633,5 +612,26 @@ mod tests {
             d.spaced((104.0, 100.0), async {})
         );
         assert_eq!(started.elapsed(), Duration::from_millis(50) + CLICK_SPACING);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn answering(socket: &std::path::Path) -> tokio::task::JoinHandle<Vec<Value>> {
+        let listener = tokio::net::UnixListener::bind(socket).unwrap();
+        tokio::spawn(async move {
+            let mut lines = Vec::new();
+            while let Ok(Ok((s, _))) =
+                tokio::time::timeout(Duration::from_millis(500), listener.accept()).await
+            {
+                let mut s = BufReader::new(s);
+                let mut line = String::new();
+                s.read_line(&mut line).await.unwrap();
+                s.get_mut()
+                    .write_all(b"{\"ok\":true,\"result\":{}}\n")
+                    .await
+                    .unwrap();
+                lines.push(serde_json::from_str::<Value>(&line).unwrap());
+            }
+            lines
+        })
     }
 }

@@ -148,28 +148,6 @@ pub trait Handler: Send + Sync + 'static {
     }
 }
 
-/// A connection, which can say whether its peer runs as this process's user.
-trait Peer {
-    fn is_owner(&self) -> bool;
-}
-
-#[cfg(unix)]
-impl Peer for tokio::net::UnixStream {
-    fn is_owner(&self) -> bool {
-        // SAFETY: geteuid takes no arguments and always succeeds.
-        let own = unsafe { libc::geteuid() };
-        self.peer_cred().is_ok_and(|c| c.uid() == own)
-    }
-}
-
-#[cfg(windows)]
-impl Peer for tokio::net::windows::named_pipe::NamedPipeServer {
-    fn is_owner(&self) -> bool {
-        use std::os::windows::io::AsRawHandle;
-        crate::pipesec::client_is_owner(windows::Win32::Foundation::HANDLE(self.as_raw_handle()))
-    }
-}
-
 impl<B: Access + 'static, D: Input + Send + Sync + 'static> Handler for Desk<B, D> {
     async fn answer(&self, call: Call) -> Output {
         let mut args = call.args;
@@ -209,6 +187,28 @@ pub struct Listener {
     #[cfg(windows)]
     security: crate::pipesec::Security,
     endpoint: String,
+}
+
+/// A connection, which can say whether its peer runs as this process's user.
+trait Peer {
+    fn is_owner(&self) -> bool;
+}
+
+#[cfg(unix)]
+impl Peer for tokio::net::UnixStream {
+    fn is_owner(&self) -> bool {
+        // SAFETY: geteuid takes no arguments and always succeeds.
+        let own = unsafe { libc::geteuid() };
+        self.peer_cred().is_ok_and(|c| c.uid() == own)
+    }
+}
+
+#[cfg(windows)]
+impl Peer for tokio::net::windows::named_pipe::NamedPipeServer {
+    fn is_owner(&self) -> bool {
+        use std::os::windows::io::AsRawHandle;
+        crate::pipesec::client_is_owner(windows::Win32::Foundation::HANDLE(self.as_raw_handle()))
+    }
 }
 
 /// One path component as `lstat` sees it.
@@ -665,7 +665,6 @@ mod tests {
 
     use super::*;
     use crate::desk::tests::Stub;
-    use crate::keys::Os;
 
     struct NoDriver;
 
@@ -675,16 +674,66 @@ mod tests {
         }
     }
 
-    async fn answer(endpoint: &str, ask: &Call) -> Result<Output, String> {
-        let mut out = Err(String::new());
-        for _ in 0..50 {
-            out = call(endpoint, ask).await;
-            if out.is_ok() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    struct Guarded;
+
+    impl Handler for Guarded {
+        async fn answer(&self, call: Call) -> Output {
+            Output::text(format!("{} answered", call.tool))
         }
-        out
+
+        fn owner_only(&self, tool: &str) -> bool {
+            tool == "halt"
+        }
+    }
+
+    struct Foreign;
+
+    impl Peer for Foreign {
+        fn is_owner(&self) -> bool {
+            false
+        }
+    }
+
+    struct Endless(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Handler for Endless {
+        async fn answer(&self, _: Call) -> Output {
+            let _dropped = Dropped(self.0.clone());
+            std::future::pending::<()>().await;
+            Output::text(String::new())
+        }
+    }
+
+    struct Dropped(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    struct Spliced;
+
+    impl Handler for Spliced {
+        async fn answer(&self, _: Call) -> Output {
+            std::future::pending::<Output>().await
+        }
+
+        fn splicing(&self) -> bool {
+            true
+        }
+
+        fn splices(&self, tool: &str) -> bool {
+            tool == "svc"
+        }
+
+        async fn splice(&self, _: &str, _: Zeroizing<Vec<u8>>, mut stream: Accepted) {
+            use tokio::io::AsyncWriteExt;
+
+            let mut upload = Vec::new();
+            let _ = stream.read_to_end(&mut upload).await;
+            let _ = stream.write_all(&upload).await;
+        }
     }
 
     #[tokio::test]
@@ -768,10 +817,6 @@ mod tests {
         let _listener = bind_for(&endpoint, &own).await.unwrap();
     }
 
-    fn real(dir: &tempfile::TempDir) -> std::io::Result<std::path::PathBuf> {
-        std::fs::canonicalize(dir.path())
-    }
-
     #[tokio::test]
     async fn a_shared_socket_with_a_link_in_its_path_is_refused() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -847,26 +892,6 @@ mod tests {
         assert!(err.contains("is not the socket just bound"), "{err}");
     }
 
-    struct Guarded;
-
-    impl Handler for Guarded {
-        async fn answer(&self, call: Call) -> Output {
-            Output::text(format!("{} answered", call.tool))
-        }
-
-        fn owner_only(&self, tool: &str) -> bool {
-            tool == "halt"
-        }
-    }
-
-    struct Foreign;
-
-    impl Peer for Foreign {
-        fn is_owner(&self) -> bool {
-            false
-        }
-    }
-
     #[test]
     fn an_owner_only_call_from_another_user_is_refused_and_the_rest_answered() {
         let refused = refusal(&Guarded, "halt", &Foreign).unwrap();
@@ -893,48 +918,6 @@ mod tests {
         .unwrap();
         assert_eq!((out.is_error, out.text.as_str()), (false, "halt answered"));
         server.abort();
-    }
-
-    struct Endless(Arc<std::sync::atomic::AtomicBool>);
-
-    struct Dropped(Arc<std::sync::atomic::AtomicBool>);
-
-    impl Drop for Dropped {
-        fn drop(&mut self) {
-            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-
-    impl Handler for Endless {
-        async fn answer(&self, _: Call) -> Output {
-            let _dropped = Dropped(self.0.clone());
-            std::future::pending::<()>().await;
-            Output::text(String::new())
-        }
-    }
-
-    struct Spliced;
-
-    impl Handler for Spliced {
-        async fn answer(&self, _: Call) -> Output {
-            std::future::pending::<Output>().await
-        }
-
-        fn splicing(&self) -> bool {
-            true
-        }
-
-        fn splices(&self, tool: &str) -> bool {
-            tool == "svc"
-        }
-
-        async fn splice(&self, _: &str, _: Zeroizing<Vec<u8>>, mut stream: Accepted) {
-            use tokio::io::AsyncWriteExt;
-
-            let mut upload = Vec::new();
-            let _ = stream.read_to_end(&mut upload).await;
-            let _ = stream.write_all(&upload).await;
-        }
     }
 
     #[tokio::test]
@@ -1161,11 +1144,41 @@ mod tests {
             act.text
         );
     }
+
+    async fn answer(endpoint: &str, ask: &Call) -> Result<Output, String> {
+        let mut out = Err(String::new());
+        for _ in 0..50 {
+            out = call(endpoint, ask).await;
+            if out.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        out
+    }
+
+    fn real(dir: &tempfile::TempDir) -> std::io::Result<std::path::PathBuf> {
+        std::fs::canonicalize(dir.path())
+    }
 }
 
 #[cfg(test)]
 mod pipe_tests {
     use super::*;
+
+    #[cfg(windows)]
+    struct Guarded;
+
+    #[cfg(windows)]
+    impl Handler for Guarded {
+        async fn answer(&self, call: Call) -> Output {
+            Output::text(format!("{} answered", call.tool))
+        }
+
+        fn owner_only(&self, tool: &str) -> bool {
+            tool == "halt"
+        }
+    }
 
     #[test]
     fn the_pipe_admits_system_and_its_user_and_a_group_reads_and_writes_without_making_instances() {
@@ -1229,20 +1242,6 @@ mod pipe_tests {
         );
         let err = crate::pipesec::sid_of("no-such-account-8d1f").unwrap_err();
         assert!(err.contains("no-such-account-8d1f"), "{err}");
-    }
-
-    #[cfg(windows)]
-    struct Guarded;
-
-    #[cfg(windows)]
-    impl Handler for Guarded {
-        async fn answer(&self, call: Call) -> Output {
-            Output::text(format!("{} answered", call.tool))
-        }
-
-        fn owner_only(&self, tool: &str) -> bool {
-            tool == "halt"
-        }
     }
 
     #[cfg(windows)]

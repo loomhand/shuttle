@@ -41,6 +41,11 @@ impl Security {
         Self::from_sddl(&pipe_sddl(own_sid()?, group.as_deref()))
     }
 
+    /// The `SECURITY_ATTRIBUTES` to create a pipe instance with, valid while `self` lives.
+    pub fn attributes(&self) -> *mut c_void {
+        (&raw const self.attributes).cast_mut().cast()
+    }
+
     fn from_sddl(sddl: &str) -> Result<Self, String> {
         let sddl = HSTRING::from(sddl);
         let mut descriptor = PSECURITY_DESCRIPTOR::default();
@@ -62,11 +67,6 @@ impl Security {
                 bInheritHandle: false.into(),
             },
         })
-    }
-
-    /// The `SECURITY_ATTRIBUTES` to create a pipe instance with, valid while `self` lives.
-    pub fn attributes(&self) -> *mut c_void {
-        (&raw const self.attributes).cast_mut().cast()
     }
 }
 
