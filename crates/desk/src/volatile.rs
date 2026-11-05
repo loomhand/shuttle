@@ -153,6 +153,9 @@ impl Shared {
                 }
                 s.actions
             };
+            if !grabber.as_ref().is_some_and(Grabber::current) {
+                grabber = None;
+            }
             if grabber.is_none() {
                 grabber = Grabber::open().ok();
             }

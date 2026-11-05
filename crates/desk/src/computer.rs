@@ -1100,13 +1100,14 @@ impl Computer {
         own.unwrap_or_else(|| *self.last_scale())
     }
 
-    /// Runs `read` on the MIT-SHM grabber, opening it when needed; `None` when it is unavailable or fails.
+    /// Runs `read` on the MIT-SHM grabber, opening it when needed or after the screen changed size; `None` when it is unavailable or fails.
     fn shm<T>(&self, read: impl FnOnce(&Grabber) -> Result<T, String>) -> Option<T> {
         if !cfg!(target_os = "linux") {
             return None;
         }
         let mut slot = lock(&self.grabber);
-        if slot.is_none() {
+        if !slot.as_ref().is_some_and(Grabber::current) {
+            *slot = None;
             match Grabber::open() {
                 Ok(g) => *slot = Some(g),
                 Err(e) => {

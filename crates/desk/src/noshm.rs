@@ -33,6 +33,10 @@ impl Grabber {
         match *self {}
     }
 
+    pub fn current(&self) -> bool {
+        match *self {}
+    }
+
     pub fn docks(&self) -> Arc<[bool]> {
         match *self {}
     }
