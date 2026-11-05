@@ -1,5 +1,6 @@
 //! The desk calls of GUI plans and scripts on Android: windows and element trees from the UI server, input through adb.
 
+use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
@@ -242,12 +243,13 @@ struct WindowInfo {
     bounds: [i32; 4],
 }
 
-struct Raw {
-    path: String,
-    class: String,
-    text: String,
-    desc: String,
-    hint: String,
+#[derive(Default)]
+struct Raw<'a> {
+    path: Cow<'a, str>,
+    class: Cow<'a, str>,
+    text: Cow<'a, str>,
+    desc: Cow<'a, str>,
+    hint: Cow<'a, str>,
     showing_hint: bool,
     clickable: bool,
     checkable: bool,
@@ -261,7 +263,7 @@ struct Raw {
     rect: Rect,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Rect {
     left: i32,
     top: i32,
@@ -356,7 +358,10 @@ pub(crate) fn elements(xml: &str, frame: &Frame) -> Vec<Node> {
 
 /// Whether a dump is of the window `front`; a dump without a window id, or a front frame without one, is not told apart.
 pub(crate) fn same_window(xml: &str, front: &Frame) -> bool {
-    front.window().is_empty() || attribute(xml, "window").is_none_or(|w| w == front.window())
+    front.window().is_empty()
+        || attributes(xml)
+            .find(|&(key, _)| key == "window")
+            .is_none_or(|(_, w)| unescape(w) == front.window())
 }
 
 /// The front window with the system windows over it; with none listed, a bare frame of the screen.
@@ -521,49 +526,57 @@ async fn app_tree(android: &Android, app: &str) -> Result<(Frame, Vec<Node>), St
     Ok((frame, nodes))
 }
 
-fn raws(xml: &str) -> Vec<Raw> {
-    xml.split("<node ")
-        .skip(1)
-        .filter_map(|node| {
-            let attr = |key: &str| attribute(node, key).unwrap_or_default();
-            let flag = |key: &str| attr(key) == "true";
-            Some(Raw {
-                path: attr("path"),
-                class: attr("class"),
-                text: attr("text"),
-                desc: attr("content-desc"),
-                hint: attr("hint"),
-                showing_hint: flag("showing-hint"),
-                clickable: flag("clickable") || flag("long-clickable"),
-                checkable: flag("checkable"),
-                checked: flag("checked"),
-                editable: flag("editable"),
-                enabled: attr("enabled") != "false",
-                focused: flag("focused"),
-                selected: flag("selected"),
-                scrollable: flag("scrollable"),
-                visible: attr("visible") != "false",
-                rect: bounds(&attr("bounds"))?,
-            })
-        })
-        .collect()
+fn raws(xml: &str) -> Vec<Raw<'_>> {
+    xml.split("<node ").skip(1).filter_map(raw).collect()
 }
 
-/// The unescaped value of `key="..."` in the attributes of one node.
-fn attribute(node: &str, key: &str) -> Option<String> {
-    let head = node.split('>').next()?;
-    let start = head
-        .find(&format!(" {key}=\""))
-        .map(|i| i + key.len() + 3)
-        .or_else(|| {
-            head.strip_prefix(&format!("{key}=\""))
-                .map(|_| key.len() + 2)
-        })?;
-    let len = head[start..].find('"')?;
-    Some(unescape(&head[start..start + len]))
+fn raw(node: &str) -> Option<Raw<'_>> {
+    let mut r = Raw {
+        enabled: true,
+        visible: true,
+        ..Raw::default()
+    };
+    let mut rect = None;
+    for (key, value) in attributes(node) {
+        let on = value == "true";
+        match key {
+            "path" => r.path = unescape(value),
+            "class" => r.class = unescape(value),
+            "text" => r.text = unescape(value),
+            "content-desc" => r.desc = unescape(value),
+            "hint" => r.hint = unescape(value),
+            "showing-hint" => r.showing_hint = on,
+            "clickable" | "long-clickable" => r.clickable |= on,
+            "checkable" => r.checkable = on,
+            "checked" => r.checked = on,
+            "editable" => r.editable = on,
+            "enabled" => r.enabled = value != "false",
+            "focused" => r.focused = on,
+            "selected" => r.selected = on,
+            "scrollable" => r.scrollable = on,
+            "visible" => r.visible = value != "false",
+            "bounds" => rect = bounds(&unescape(value)),
+            _ => {}
+        }
+    }
+    Some(Raw { rect: rect?, ..r })
 }
 
-fn unescape(value: &str) -> String {
+/// The `key="value"` pairs of a tag up to its first `>`, with the values still escaped.
+fn attributes(tag: &str) -> impl Iterator<Item = (&str, &str)> {
+    let mut rest = tag.split_once('>').map_or(tag, |(head, _)| head);
+    std::iter::from_fn(move || {
+        let (key, after) = rest.split_once("=\"")?;
+        let (value, next) = after.split_once('"')?;
+        rest = next;
+        Some((key.rsplit(' ').next().unwrap_or(key), value))
+    })
+}
+
+fn unescape(value: &str) -> Cow<'_, str> {
+    if !value.contains('&') {
+        return Cow::Borrowed(value);
+    }
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
     while let Some(i) = rest.find('&') {
@@ -595,7 +608,7 @@ fn unescape(value: &str) -> String {
         }
     }
     out.push_str(rest);
-    out
+    Cow::Owned(out)
 }
 
 /// `[l,t][r,b]` of a dump node.
@@ -618,7 +631,7 @@ fn bounds(value: &str) -> Option<Rect> {
 }
 
 /// The window, then each element that shows text or takes input; a toggle in a checkable row is the row.
-fn nodes(frame: &Frame, raws: &[Raw]) -> Vec<Node> {
+fn nodes(frame: &Frame, raws: &[Raw<'_>]) -> Vec<Node> {
     let mut out = vec![Node {
         path: "w".to_owned(),
         parent: -1,
@@ -635,11 +648,7 @@ fn nodes(frame: &Frame, raws: &[Raw]) -> Vec<Node> {
     let mut listed: Vec<(usize, usize)> = Vec::new();
     for (i, r) in raws.iter().enumerate() {
         let interactive = r.clickable || r.checkable || r.editable;
-        let own = if r.editable {
-            r.hint.as_str()
-        } else {
-            r.text.as_str()
-        };
+        let own: &str = if r.editable { &r.hint } else { &r.text };
         if !interactive && r.text.is_empty() && r.desc.is_empty() {
             continue;
         }
@@ -651,25 +660,19 @@ fn nodes(frame: &Frame, raws: &[Raw]) -> Vec<Node> {
         if r.checkable && up.is_some_and(|(raw, _)| raws[raw].checkable) {
             continue;
         }
-        let mut name = if own.is_empty() {
-            r.desc.clone()
-        } else {
-            own.to_owned()
-        };
+        let mut name: &str = if own.is_empty() { &r.desc } else { own };
         let mut description = String::new();
         if name.is_empty() && interactive {
-            let mut texts = labels_of(raws, i);
-            if !texts.is_empty() {
-                name = texts.remove(0);
-                description = texts.join(" ");
+            let mut labels = labels_of(raws, i);
+            if let Some(first) = labels.next() {
+                name = first;
+                description = labels.next().unwrap_or_default().to_owned();
             }
         }
-        if name.is_empty()
-            && r.checkable
-            && let Some((_, at)) = up
-        {
-            name = out[at].name.clone();
-        }
+        let name = match up {
+            Some((_, at)) if name.is_empty() && r.checkable => out[at].name.clone(),
+            _ => one_line(name),
+        };
         let mut states = vec!["showing"];
         if !r.enabled {
             states.push("disabled");
@@ -687,17 +690,17 @@ fn nodes(frame: &Frame, raws: &[Raw]) -> Vec<Node> {
             if r.showing_hint {
                 String::new()
             } else {
-                r.text.clone()
+                r.text.to_string()
             }
         });
         let (parent, depth) = up.map_or((0, 1), |(_, at)| (at as i64, out[at].depth + 1));
         listed.push((i, out.len()));
         out.push(Node {
-            path: r.path.clone(),
+            path: r.path.to_string(),
             parent,
             depth,
             role: role(r),
-            name: one_line(&name),
+            name,
             description,
             value,
             states,
@@ -709,7 +712,7 @@ fn nodes(frame: &Frame, raws: &[Raw]) -> Vec<Node> {
     out
 }
 
-fn viewport(raws: &[Raw], path: &str) -> Option<[i32; 4]> {
+fn viewport(raws: &[Raw<'_>], path: &str) -> Option<[i32; 4]> {
     raws.iter()
         .filter(|a| a.scrollable && under(path, &a.path))
         .map(|a| a.rect)
@@ -734,7 +737,14 @@ fn under(path: &str, ancestor: &str) -> bool {
 }
 
 fn one_line(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
+    let mut out = String::with_capacity(s.len());
+    for word in s.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
 }
 
 fn xywh(r: Rect) -> [i32; 4] {
@@ -742,17 +752,15 @@ fn xywh(r: Rect) -> [i32; 4] {
 }
 
 /// The texts of the descendants of raw node `i` in screen-reader order: a row's title, then its summary.
-fn labels_of(raws: &[Raw], i: usize) -> Vec<String> {
+fn labels_of<'r>(raws: &'r [Raw<'_>], i: usize) -> impl Iterator<Item = &'r str> {
     raws.iter()
-        .filter(|r| under(&r.path, &raws[i].path))
+        .filter(move |r| under(&r.path, &raws[i].path))
         .map(|r| if r.text.is_empty() { &r.desc } else { &r.text })
+        .map(Cow::as_ref)
         .filter(|t| !t.is_empty())
-        .take(2)
-        .cloned()
-        .collect()
 }
 
-fn role(r: &Raw) -> &'static str {
+fn role(r: &Raw<'_>) -> &'static str {
     let class = r.class.rsplit('.').next().unwrap_or_default();
     match class {
         c if c.contains("Switch") => "switch",
