@@ -93,7 +93,7 @@ impl Driver {
         )
     }
 
-    /// Runs `click` at `(x, y)` once [`CLICK_SPACING`] has passed since a click within [`CLICK_DISTANCE`] of it, and records it before the next click may check, so two clicks never make a double click.
+    /// Runs `click` at `(x, y)` once [`CLICK_SPACING`] has passed since a click within [`CLICK_DISTANCE`] of it, so two clicks never make a double click.
     pub(crate) async fn spaced<T>(&self, (x, y): (f64, f64), click: impl Future<Output = T>) -> T {
         let mut last = self.last_click.lock().await;
         let wait = last
@@ -313,7 +313,7 @@ fn result(tool: &str, reply: &str) -> Result<Value, String> {
     Ok(out)
 }
 
-/// Whether HID input `since` seconds ago is the user's: it is within [`USER_IDLE`] and more than [`OWN_INPUT_LAG`] after the end of the driver's own last input, whose events reach the HID counter up to that late.
+/// Whether HID input `since` seconds ago is the user's: within [`USER_IDLE`], and over [`OWN_INPUT_LAG`] after the driver's own last input, whose events reach the HID counter that late.
 fn user_busy(since: f64, own: Option<Duration>) -> bool {
     since < USER_IDLE.as_secs_f64()
         && own.is_none_or(|own| since < own.saturating_sub(OWN_INPUT_LAG).as_secs_f64())

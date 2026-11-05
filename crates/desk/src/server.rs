@@ -33,7 +33,7 @@ const HOST: Os = Os::Linux;
 const HOST: Os = Os::Windows;
 
 const ALLOWLIST_REFUSED: &str = "the computer verbs see and click the whole screen, which an app allowlist does not bound: empty [safety] apps in config.toml to use them";
-// a group may read and write the pipe but not create instances of it: FILE_GENERIC_READ and FILE_GENERIC_WRITE less FILE_CREATE_PIPE_INSTANCE
+// FILE_GENERIC_READ and FILE_GENERIC_WRITE less FILE_CREATE_PIPE_INSTANCE
 const GROUP_RIGHTS: &str = "0x12019b";
 #[cfg(windows)]
 const PIPE_BUSY: i32 = 231;
@@ -252,7 +252,7 @@ pub async fn bind(endpoint: &str) -> Result<Listener, String> {
     bind_at(endpoint, None)
 }
 
-/// Takes the unix socket `endpoint` like [`bind`], open to the members of `group`, a group name or number: mode 0660, owned by that group. Its directory must belong to this user and be writable by no one else.
+/// Takes the unix socket `endpoint` like [`bind`] with mode 0660 for `group`, a group name or number, in a directory only this user can write.
 #[cfg(unix)]
 pub async fn bind_for(endpoint: &str, group: &str) -> Result<Listener, String> {
     bind_at(endpoint, Some(gid(group)?))
@@ -280,7 +280,7 @@ pub async fn bind(endpoint: &str) -> Result<Listener, String> {
     bind_at(endpoint, None)
 }
 
-/// Takes the named pipe `endpoint` like [`bind`], open also to `group`, an account name or SID string, to read and write but not to create instances.
+/// Takes the named pipe `endpoint` like [`bind`], open also to `group`, an account name or SID string.
 #[cfg(windows)]
 pub async fn bind_for(endpoint: &str, group: &str) -> Result<Listener, String> {
     bind_at(endpoint, Some(group))
@@ -389,7 +389,7 @@ pub async fn exchange(mut conn: Conn, call: &Call) -> Result<Output, String> {
     read_frame(&mut conn).await
 }
 
-/// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty; `overlay` says whether that driver may show its cursor overlay, `locked_input` whether background keys may reach a window while the screen is locked.
+/// This OS's desk with the computer verbs, its input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 pub fn native(
     driver: String,
@@ -643,7 +643,6 @@ async fn handle<H: Handler>(handler: Arc<H>, mut stream: Accepted) {
     let _ = write_frame(&mut stream, &out).await;
 }
 
-/// The refusal of a call of `tool` that only this process's user may send, when `peer` runs as another user.
 fn refusal<H: Handler, P: Peer>(handler: &H, tool: &str, peer: &P) -> Option<Output> {
     (handler.owner_only(tool) && !peer.is_owner())
         .then(|| Output::error(format!("{tool}: only the daemon's own user can send it")))
