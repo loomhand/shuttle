@@ -459,7 +459,7 @@ impl Atspi {
         let mut seen: HashSet<Rc<Obj>> = HashSet::from([Rc::clone(&root)]);
         let mut truncated = false;
         let mut by_index: HashSet<Rc<Obj>> = HashSet::new();
-        while !frontier.is_empty() {
+        while !frontier.is_empty() && seen.len() <= MAX_NODES {
             let uncounted: Vec<&Rc<Obj>> = frontier
                 .iter()
                 .filter(|o| {
