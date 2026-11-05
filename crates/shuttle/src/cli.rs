@@ -131,7 +131,7 @@ fn send(call: &Call, what: impl Display) -> ExitCode {
         Ok(out) if !out.is_error => {
             let _ = writeln!(std::io::stdout(), "{}", out.text);
             if let Some(png) = &out.image_b64 {
-                match save_png(png) {
+                match save_image(png) {
                     Ok(path) => {
                         let _ = writeln!(std::io::stdout(), "image: {}", path.display());
                     }
@@ -146,16 +146,21 @@ fn send(call: &Call, what: impl Display) -> ExitCode {
 }
 
 /// Writes a call's screenshot to a new file in the temporary directory; its path.
-fn save_png(b64: &str) -> Result<PathBuf, String> {
-    let png = B64
+fn save_image(b64: &str) -> Result<PathBuf, String> {
+    let image = B64
         .decode(b64)
         .map_err(|e| format!("decode screenshot: {e}"))?;
+    let suffix = match image.get(..12) {
+        Some([0xff, 0xd8, ..]) => ".jpg",
+        Some([b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P']) => ".webp",
+        _ => ".png",
+    };
     let mut file = tempfile::Builder::new()
         .prefix(&format!("{NAME}-"))
-        .suffix(".png")
+        .suffix(suffix)
         .tempfile()
         .map_err(|e| format!("create screenshot file: {e}"))?;
-    file.write_all(&png)
+    file.write_all(&image)
         .map_err(|e| format!("write screenshot: {e}"))?;
     file.keep()
         .map(|(_, path)| path)
@@ -411,11 +416,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_screenshot_lands_in_a_png_file() {
-        let path = save_png(&B64.encode(b"\x89PNG")).unwrap();
-        assert_eq!(path.extension().and_then(|e| e.to_str()), Some("png"));
-        assert_eq!(std::fs::read(&path).unwrap(), b"\x89PNG");
-        std::fs::remove_file(path).unwrap();
-        assert!(save_png("not base64!").is_err());
+    fn a_screenshot_lands_in_a_file_named_by_its_format() {
+        for (image, ext) in [
+            (&b"\x89PNG\r\n\x1a\n\0\0\0\r"[..], "png"),
+            (b"\xff\xd8\xff\xe0\0\x10JFIF\0\x01\x01", "jpg"),
+            (b"RIFF\x24\0\0\0WEBPVP8L", "webp"),
+        ] {
+            let path = save_image(&B64.encode(image)).unwrap();
+            assert_eq!(path.extension().and_then(|e| e.to_str()), Some(ext));
+            assert_eq!(std::fs::read(&path).unwrap(), image);
+            std::fs::remove_file(path).unwrap();
+        }
+        assert!(save_image("not base64!").is_err());
     }
 }
