@@ -1001,13 +1001,12 @@ async function typedInto(w: Win, text: string): Promise<{ fp?: Fp; kept?: Kept }
 }
 async function texts(w: Win): Promise<Map<string, Text> | null> {
   try {
-    const out = new Map<string, Text>()
-    for (const n of parse(await snapOf(w))) {
+    const all = await Promise.all(parse(await snapOf(w)).map(async (n): Promise<[string, Text][]> => {
       const field = n.role === 'document' || FIELD_ROLES.has(n.role)
-      if (n.value) out.set(n.id, { value: n.value, field })
-      else if (field) out.set(n.id, { value: (await desk.read(n.id, { text: true }).catch(() => null))?.value, field })
-    }
-    return out
+      if (n.value) return [[n.id, { value: n.value, field }]]
+      return field ? [[n.id, { value: (await desk.read(n.id, { text: true }).catch(() => null))?.value, field }]] : []
+    }))
+    return new Map(all.flat())
   } catch { return null }
 }
 function unchanged(before: Map<string, Text> | null, after: Map<string, Text> | null) {
