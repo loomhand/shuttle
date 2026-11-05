@@ -14,14 +14,14 @@ use desk_core::shot::OFF_SCREEN;
 use desk_core::text::norm;
 use desk_core::wire::Output;
 use fast_image_resize as fr;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 use crate::desk::{Turn, Typer, launch_name, lock, runs_app, text_runs, xtest};
-use crate::driver::{CONNECT_RETRY, Driver, ENDED, image_of, text_of};
+use crate::driver::{CONNECT_RETRY, Driver, ENDED, Request, image_of, text_of};
 use crate::keys::{Os, key_names};
 use crate::model::Modal;
 #[cfg(target_os = "linux")]
@@ -1792,7 +1792,7 @@ impl Computer {
     async fn exchange(&self, name: &str, args: &Value) -> Result<String, String> {
         let exchange = async {
             let mut stream = self.driver.connect().await?;
-            let line = Call {
+            let line = Request {
                 method: "call",
                 name,
                 args,
@@ -1829,13 +1829,6 @@ struct Before {
     /// A commit action in Chrome: the settle holds [`COMMIT_STILL_FOR`], at most [`COMMIT_SETTLE`].
     page: bool,
     wait: Duration,
-}
-
-#[derive(Serialize)]
-struct Call<'a> {
-    method: &'static str,
-    name: &'a str,
-    args: &'a Value,
 }
 
 /// A driver session for one step; one dropped while open is ended by a detached call.

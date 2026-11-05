@@ -252,10 +252,10 @@ impl Input for std::sync::Arc<Driver> {
 }
 
 #[derive(Serialize)]
-struct Request<'a> {
-    method: &'static str,
-    name: &'a str,
-    args: &'a Value,
+pub(crate) struct Request<'a> {
+    pub(crate) method: &'static str,
+    pub(crate) name: &'a str,
+    pub(crate) args: &'a Value,
 }
 
 /// `req` addressed to the screen, not to a window.
