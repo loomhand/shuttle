@@ -6,7 +6,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use core_foundation::array::{CFArray, CFArrayCreate, CFArrayRef};
@@ -77,16 +77,16 @@ const FRAME_ATTRS: [&str; 6] = [
 ];
 
 static PROMPTED: AtomicBool = AtomicBool::new(false);
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static CGS: OnceLock<Option<Cgs>> = OnceLock::new();
 
-/// The AX backend: element ids are `pid/n`, kept while this backend lives.
+/// The AX backend: element ids are `pid/n`, `n` unique in this process, kept while this backend lives.
 pub struct Ax {
     names: CFArray<CFString>,
     app_names: CFArray<CFString>,
     frame_names: CFArray<CFString>,
     ids: HashMap<String, CFType>,
     hashes: HashMap<usize, Vec<(CFType, String)>>,
-    next: u64,
     hung: HashMap<i32, Instant>,
     slow: HashMap<i32, Instant>,
     last: HashMap<i32, Vec<Frame>>,
@@ -112,7 +112,6 @@ impl Ax {
             frame_names: names(FRAME_ATTRS),
             ids: HashMap::new(),
             hashes: HashMap::new(),
-            next: 0,
             hung: HashMap::new(),
             slow: HashMap::new(),
             last: HashMap::new(),
@@ -249,8 +248,8 @@ impl Ax {
             self.ids.clear();
             self.hashes.clear();
         }
-        self.next += 1;
-        let id = format!("{}/{}", pid(el).unwrap_or(0), self.next);
+        let n = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let id = format!("{}/{n}", pid(el).unwrap_or(0));
         self.ids.insert(id.clone(), el.clone());
         self.hashes
             .entry(hash)
