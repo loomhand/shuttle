@@ -91,11 +91,11 @@ pub struct Uia {
 impl Uia {
     /// The backend on a COM multithreaded apartment, with per-monitor DPI awareness so bounds are pixels.
     pub fn open() -> Result<Self, String> {
-        // SAFETY: `CUIAutomation` is a static CLSID; a repeated COM or DPI setup returns S_FALSE or an ignored error.
+        // SAFETY: `CUIAutomation8` is a static CLSID; a repeated COM or DPI setup returns S_FALSE or an ignored error.
         let auto: IUIAutomation = unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+            CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)
         }
         .map_err(|e| format!("start UI Automation: {e}"))?;
         let subtree = request(&auto, TreeScope_Subtree, &PROPS)?;
@@ -902,6 +902,15 @@ fn runtime_id(el: &IUIAutomationElement) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_backend_can_bound_an_action_by_a_transaction_timeout() {
+        let uia = Uia::open().expect("UI Automation starts");
+        assert!(
+            Bounded::new(&uia.auto).0.is_some(),
+            "the automation object lacks IUIAutomation2"
+        );
+    }
 
     #[test]
     fn only_a_dialog_with_a_listed_window_of_its_own_leaves_the_tree() {
