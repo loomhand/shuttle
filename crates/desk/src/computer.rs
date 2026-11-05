@@ -3133,11 +3133,14 @@ mod tests {
             .await
             .unwrap();
         let out = cua
-            .act(json!({"action": "type", "text": "中文测试"}))
+            .act(json!({"action": "type", "text": "\u{4e2d}\u{6587}\u{6d4b}\u{8bd5}"}))
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.text);
-        assert_eq!(types(&calls), ["abc", "name", "中文测试"]);
+        assert_eq!(
+            types(&calls),
+            ["abc", "name", "\u{4e2d}\u{6587}\u{6d4b}\u{8bd5}"]
+        );
         driver.abort();
     }
 
@@ -3147,7 +3150,7 @@ mod tests {
         let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
-        let text = "一二三四五六七八九十百千万亿甲乙丙丁戊己";
+        let text = "\u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}\u{516d}\u{4e03}\u{516b}\u{4e5d}\u{5341}\u{767e}\u{5343}\u{4e07}\u{4ebf}\u{7532}\u{4e59}\u{4e19}\u{4e01}\u{620a}\u{5df1}";
         calls.lock().unwrap().clear();
         let cua = cua(&socket);
         let out = cua
@@ -4840,11 +4843,14 @@ mod tests {
 
     #[test]
     fn a_failed_type_counts_the_characters_that_landed() {
-        let mpx = json!({"isError": true, "content": [{"type": "text", "text": "Typed 5 character(s)"}], "structuredContent": {"skipped_characters": "三四"}});
-        assert_eq!(landed("一二三四五", &mpx), 3);
+        let mpx = json!({"isError": true, "content": [{"type": "text", "text": "Typed 5 character(s)"}], "structuredContent": {"skipped_characters": "\u{4e09}\u{56db}"}});
+        assert_eq!(landed("\u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}", &mpx), 3);
         let xtest = json!({"isError": true, "content": [{"type": "text", "text": "type_text failed: typed 2 of 5 characters: no spare keycode"}]});
-        assert_eq!(landed("一二三四五", &xtest), 2);
-        assert_eq!(landed("一二", &json!({"isError": true})), 0);
+        assert_eq!(
+            landed("\u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}", &xtest),
+            2
+        );
+        assert_eq!(landed("\u{4e00}\u{4e8c}", &json!({"isError": true})), 0);
     }
 
     #[test]

@@ -3248,8 +3248,8 @@ pub(crate) mod tests {
             Ok(match tool {
                 "list_windows" => json!({"structuredContent": {"windows": [
                     {"pid": 4, "window_id": 1, "layer": 0, "title": "Untitled - Notepad", "app_name": "Notepad", "is_on_screen": true, "on_current_space": true, "space_ids": [8]},
-                    {"pid": 9, "window_id": 84080, "layer": 0, "title": "微信", "app_name": "WeChat", "is_on_screen": false, "on_current_space": false, "space_ids": [18]},
-                    {"pid": 9, "window_id": 727, "layer": 0, "title": "微信", "app_name": "WeChat", "is_on_screen": false, "on_current_space": null, "space_ids": null},
+                    {"pid": 9, "window_id": 84080, "layer": 0, "title": "\u{5fae}\u{4fe1}", "app_name": "WeChat", "is_on_screen": false, "on_current_space": false, "space_ids": [18]},
+                    {"pid": 9, "window_id": 727, "layer": 0, "title": "\u{5fae}\u{4fe1}", "app_name": "WeChat", "is_on_screen": false, "on_current_space": null, "space_ids": null},
                     {"pid": 9, "window_id": 37333, "layer": 3, "title": "", "app_name": "WeChat", "is_on_screen": false, "on_current_space": false, "space_ids": [18]},
                     {"pid": 5, "window_id": 2, "layer": 0, "title": "Untitled", "app_name": "TextEdit", "is_on_screen": true, "on_current_space": true, "space_ids": [8]},
                     {"pid": 5, "window_id": 3, "layer": 0, "title": "Untitled", "app_name": "TextEdit", "is_on_screen": false, "on_current_space": false, "space_ids": [18]}
@@ -3272,7 +3272,7 @@ pub(crate) mod tests {
                 "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
                 "list_windows" => json!({"structuredContent": {"windows": [
                     {"pid": 4, "window_id": 1, "layer": 0, "z_index": 2, "title": "Untitled - Notepad", "app_name": "Notepad", "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}},
-                    {"pid": 9, "window_id": 100, "layer": 0, "z_index": 1, "title": "微信", "app_name": "WeChat", "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": -1416.0, "y": 0.0, "width": 846.0, "height": 774.0}}
+                    {"pid": 9, "window_id": 100, "layer": 0, "z_index": 1, "title": "\u{5fae}\u{4fe1}", "app_name": "WeChat", "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": -1416.0, "y": 0.0, "width": 846.0, "height": 774.0}}
                 ]}}),
                 "get_window_state" => {
                     let mut v = json!({"structuredContent": {"screenshot_width": 846, "screenshot_height": 774}});
@@ -3313,7 +3313,7 @@ pub(crate) mod tests {
             )
         };
         let whole = desk
-            .run("desk_shot", json!({"window": "微信"}))
+            .run("desk_shot", json!({"window": "\u{5fae}\u{4fe1}"}))
             .await
             .unwrap();
         assert_eq!(size(whole), (json!(846), json!(774), true));
@@ -3330,7 +3330,7 @@ pub(crate) mod tests {
         let part = desk
             .run(
                 "desk_shot",
-                json!({"window": "微信", "x": 10, "y": 20, "w": 100, "h": 50}),
+                json!({"window": "\u{5fae}\u{4fe1}", "x": 10, "y": 20, "w": 100, "h": 50}),
             )
             .await
             .unwrap();
@@ -3351,12 +3351,12 @@ pub(crate) mod tests {
         )
         .allow(&["notepad".into()]);
         let refused = gated
-            .run("desk_shot", json!({"window": "微信"}))
+            .run("desk_shot", json!({"window": "\u{5fae}\u{4fe1}"}))
             .await
             .unwrap_err();
         assert_eq!(
             refused,
-            "no window \"微信\"; windows: [\"Untitled - Notepad\"]"
+            "no window \"\u{5fae}\u{4fe1}\"; windows: [\"Untitled - Notepad\"]"
         );
         assert!(sent(&gated_calls, "get_window_state").is_empty());
     }
@@ -3639,9 +3639,13 @@ pub(crate) mod tests {
             let out = desk.run("desk_shot", args).await.unwrap();
             serde_json::from_str::<Value>(&out.text).unwrap()["origin"].clone()
         };
-        assert_eq!(origin(json!({"window": "微信"})).await, json!([0, 0]));
         assert_eq!(
-            origin(json!({"window": "微信", "x": 10.5, "y": 20, "w": 100, "h": 50})).await,
+            origin(json!({"window": "\u{5fae}\u{4fe1}"})).await,
+            json!([0, 0])
+        );
+        assert_eq!(
+            origin(json!({"window": "\u{5fae}\u{4fe1}", "x": 10.5, "y": 20, "w": 100, "h": 50}))
+                .await,
             json!([10, 20])
         );
     }
@@ -3824,8 +3828,8 @@ pub(crate) mod tests {
             Ok(match tool {
                 "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
                 "list_windows" => json!({"structuredContent": {"windows": [
-                    {"pid": 9, "window_id": 100, "layer": 0, "z_index": 2, "title": "微信", "app_name": "WeChat", "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": -1416.0, "y": 0.0, "width": 846.0, "height": 774.0}},
-                    {"pid": 9, "window_id": 200, "layer": 0, "z_index": 1, "title": "微信", "app_name": "WeChat", "is_on_screen": false, "on_current_space": true, "space_ids": [8], "bounds": {"x": 0.0, "y": 0.0, "width": 280.0, "height": 380.0}},
+                    {"pid": 9, "window_id": 100, "layer": 0, "z_index": 2, "title": "\u{5fae}\u{4fe1}", "app_name": "WeChat", "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": -1416.0, "y": 0.0, "width": 846.0, "height": 774.0}},
+                    {"pid": 9, "window_id": 200, "layer": 0, "z_index": 1, "title": "\u{5fae}\u{4fe1}", "app_name": "WeChat", "is_on_screen": false, "on_current_space": true, "space_ids": [8], "bounds": {"x": 0.0, "y": 0.0, "width": 280.0, "height": 380.0}},
                     {"pid": 5, "window_id": 300, "layer": 0, "z_index": 0, "title": "Doc", "app_name": "TextEdit", "is_on_screen": false, "on_current_space": true, "space_ids": [8], "bounds": {"x": 0.0, "y": 0.0, "width": 500.0, "height": 400.0}}
                 ]}}),
                 "get_window_state" if window == Some(200) => json!({"structuredContent": {
@@ -3848,7 +3852,7 @@ pub(crate) mod tests {
         let desk = Desk::new(|| Ok(Apps), HiddenTwin(Arc::clone(&calls)), Os::Mac).background(true);
         desk.run(
             "desk_click",
-            json!({"x": -1000.0, "y": 300.0, "window": "微信"}),
+            json!({"x": -1000.0, "y": 300.0, "window": "\u{5fae}\u{4fe1}"}),
         )
         .await
         .unwrap();
@@ -3878,7 +3882,12 @@ pub(crate) mod tests {
                 &other[0]["pid"],
                 &other[0]["active"]
             ),
-            (&json!("84080"), &json!("微信"), &json!(9), &json!(false))
+            (
+                &json!("84080"),
+                &json!("\u{5fae}\u{4fe1}"),
+                &json!(9),
+                &json!(false)
+            )
         );
         let fore = Desk::new(|| Ok(Apps), Spaces(Arc::clone(&calls)), Os::Mac);
         let listed = fore.run("desk_windows", json!({})).await.unwrap().text;
@@ -3893,7 +3902,10 @@ pub(crate) mod tests {
                 .background(background)
                 .auto(auto);
             let background = background && !auto;
-            for args in [json!({"window": "微信"}), json!({"id": "84080"})] {
+            for args in [
+                json!({"window": "\u{5fae}\u{4fe1}"}),
+                json!({"id": "84080"}),
+            ] {
                 let err = desk.run("desk_snapshot", args.clone()).await.unwrap_err();
                 assert_eq!(
                     err.contains("is on another Space"),
@@ -3902,7 +3914,10 @@ pub(crate) mod tests {
                 );
             }
             let err = desk
-                .run("desk_find", json!({"name": "x", "window": "微信"}))
+                .run(
+                    "desk_find",
+                    json!({"name": "x", "window": "\u{5fae}\u{4fe1}"}),
+                )
                 .await
                 .unwrap_err();
             assert_eq!(
@@ -3928,7 +3943,10 @@ pub(crate) mod tests {
             v["unverified"].as_str().unwrap_or_default().to_owned()
         };
         let typed = desk
-            .run("desk_type", json!({"text": "x", "window": "微信"}))
+            .run(
+                "desk_type",
+                json!({"text": "x", "window": "\u{5fae}\u{4fe1}"}),
+            )
             .await
             .unwrap();
         let sent_text = sent(&calls, "type_text");
@@ -3941,7 +3959,10 @@ pub(crate) mod tests {
             "{typed}"
         );
         let key = desk
-            .run("desk_key", json!({"keys": "return", "window": "微信"}))
+            .run(
+                "desk_key",
+                json!({"keys": "return", "window": "\u{5fae}\u{4fe1}"}),
+            )
             .await
             .unwrap();
         let key = note(key);
@@ -5055,7 +5076,7 @@ pub(crate) mod tests {
         fn off_space(&mut self) -> Vec<Frame> {
             vec![Frame {
                 space: Some("other"),
-                ..frame("84080", "微信", 9, false, Some("WeChat"))
+                ..frame("84080", "\u{5fae}\u{4fe1}", 9, false, Some("WeChat"))
             }]
         }
 
@@ -5979,7 +6000,7 @@ pub(crate) mod tests {
         desk.run("desk_key", json!({"keys": "Super_L+ctrl++"}))
             .await
             .unwrap();
-        desk.run("desk_type", json!({"text": "一二三四五六七八九十\nok"}))
+        desk.run("desk_type", json!({"text": "\u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}\u{516d}\u{4e03}\u{516b}\u{4e5d}\u{5341}\nok"}))
             .await
             .unwrap();
         let got = calls.lock().unwrap().clone();
@@ -5992,11 +6013,11 @@ pub(crate) mod tests {
                 ),
                 (
                     "type_text".to_owned(),
-                    json!({"text": "一二三四五六七八", "scope": "desktop"})
+                    json!({"text": "\u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}\u{516d}\u{4e03}\u{516b}", "scope": "desktop"})
                 ),
                 (
                     "type_text".to_owned(),
-                    json!({"text": "九十", "scope": "desktop"})
+                    json!({"text": "\u{4e5d}\u{5341}", "scope": "desktop"})
                 ),
                 (
                     "press_key".to_owned(),
@@ -6050,12 +6071,21 @@ pub(crate) mod tests {
         assert_eq!(text_runs("éé abc é"), ["éé abc é"]);
         assert_eq!(text_runs(""), Vec::<&str>::new());
         assert_eq!(
-            text_runs("MCP — 你好 café 🙂! 一二三四五六七八九十"),
-            ["MCP — 你好 café 🙂! 一二三", "四五六七八九十"]
+            text_runs(
+                "MCP — \u{4f60}\u{597d} café 🙂! \u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}\u{516d}\u{4e03}\u{516b}\u{4e5d}\u{5341}"
+            ),
+            [
+                "MCP — \u{4f60}\u{597d} café 🙂! \u{4e00}\u{4e8c}\u{4e09}",
+                "\u{56db}\u{4e94}\u{516d}\u{4e03}\u{516b}\u{4e5d}\u{5341}"
+            ]
         );
         assert_eq!(
-            text_runs("你你你你你你你你你你好"),
-            ["你你你你你你你你你你好"]
+            text_runs(
+                "\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{597d}"
+            ),
+            [
+                "\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{597d}"
+            ]
         );
         assert_eq!(text_runs("plain"), ["plain"]);
         assert_eq!(typed_tail("x\r\nhello").as_deref(), Some("hello"));
