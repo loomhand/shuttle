@@ -150,9 +150,12 @@ test('an app step takes the window of the app it names before a window whose tit
     calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify(open ? [gmail, mail] : [gmail])
     if (tool === 'desk_focus') {
-      if (!open || args.window !== mail.title) return { text: `no window "${String(args.window)}"`, error: true }
-      mail.active = true; gmail.active = false
-      return JSON.stringify({ ok: true, title: mail.title, pid: mail.pid })
+      const want = String(args.window); const lower = want.trim().toLowerCase()
+      const all = (open ? [gmail, mail] : [gmail]).filter((w) => args.pid === undefined || w.pid === args.pid)
+      const w = all.find((x) => x.title === want) ?? all.find((x) => x.title.trim().toLowerCase() === lower) ?? all.find((x) => x.title.toLowerCase().includes(lower))
+      if (!w) return { text: `no window "${want}"`, error: true }
+      for (const x of [gmail, mail]) x.active = x === w
+      return JSON.stringify({ ok: true, title: w.title, pid: w.pid })
     }
     if (tool === 'desk_launch') { open = true; return JSON.stringify({ ok: true, launched: 'Mail' }) }
     if (tool === 'desk_snapshot') return JSON.stringify({ window: mail, nodes: [], truncated: false })

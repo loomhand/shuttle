@@ -7,12 +7,13 @@ import { main } from '../lib/gui_plan.mts'
 
 test('an app step focuses the app\'s open window, by its process or the window list, instead of launching the app, and names an app that does not exist', { skip: process.platform !== 'linux' }, async (t) => {
   const app = spawn('sleep', ['30'])
-  t.after(() => app.kill())
+  const geo = spawn('sleep', ['30'], { argv0: 'geogebra' })
+  t.after(() => { app.kill(); geo.kill() })
   const wins = [
     { id: '1', title: 'Terminal - user@box: ~', role: 'frame', pid: app.pid, active: false },
     { id: '2', title: 'notes.txt - Mousepad', role: 'frame', pid: process.pid, active: true },
   ]
-  const listed = ['GeoGebra Classic 5']
+  const listed = [{ title: 'GeoGebra Classic 5', pid: geo.pid }]
   const calls: string[] = []
   await daemon(t, ({ tool, args }) => {
     calls.push(tool)
@@ -20,10 +21,10 @@ test('an app step focuses the app\'s open window, by its process or the window l
     if (tool === 'desk_snapshot') return JSON.stringify({ window: wins.find((w) => w.active), nodes: [], truncated: false })
     if (tool === 'desk_focus') {
       const want = String(args.window).toLowerCase()
-      const w = wins.find((x) => x.title.toLowerCase().includes(want))
-      const title = w?.title ?? listed.find((t) => t.toLowerCase().includes(want))
+      const all = [...wins, ...listed].filter((x) => args.pid === undefined || x.pid === args.pid)
+      const w = all.find((x) => x.title.toLowerCase().includes(want))
       for (const x of wins) x.active = x === w
-      return { text: JSON.stringify({ ok: true, title, pid: 7 }), error: !title }
+      return { text: JSON.stringify({ ok: true, title: w?.title, pid: w?.pid }), error: !w }
     }
     if (tool === 'desk_launch') return { text: `no app named "${String(args.app)}"`, error: true }
     return '{"ok":true}'

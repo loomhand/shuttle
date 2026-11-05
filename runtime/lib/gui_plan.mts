@@ -537,6 +537,10 @@ function ownedBy(pid: number | null, app: string) {
   if (OS !== 'linux' || !pid) return false
   try { return readFileSync(`/proc/${pid}/cmdline`, 'utf8').toLowerCase().split(/[\0/\s]+/).some((x) => x.startsWith(app)) } catch { return false }
 }
+function running(app: string): number[] {
+  if (OS !== 'linux') return []
+  try { return readdirSync('/proc').filter((d) => /^\d+$/.test(d)).map(Number).filter((pid) => ownedBy(pid, app)) } catch { return [] }
+}
 // a launcher script such as localc (`soffice --calc "$@"`) stands for the desktop entries run with its arguments
 function entryNames(app: string): string[] {
   if (OS !== 'linux') return []
@@ -1112,7 +1116,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     let started: Awaited<ReturnType<typeof desk.launch>> | undefined
     const has = async () => { const ws = await desk.windows(); return mine(ws)[0] ?? (started?.running ? ws.find((w) => w.title === started?.title && w.pid === started?.pid) : launched ? ws.find((w) => w.title && !before.has(w.id) && (!pids.has(w.pid) || (!!w.app && terms(w.app).some((x) => terms(app).includes(x))))) : undefined) }
     const owned = mine(ws); let w = (BG ? owned.find((x) => !!x.title.trim()) : undefined) ?? owned[0]
-    const listed = !w && word && !BG ? await desk.focus(s.app).catch(() => null) : null
+    let listed: Awaited<ReturnType<typeof desk.focus>> | null = null
+    if (!w && word && !BG) for (const pid of running(name)) if ((listed = await desk.focus(s.app, pid).catch(() => null))) break
     if (listed) { known.add(listed.title); rec.window = lastSeen = listed.title; return }
     if (!w) {
       const t0 = Date.now(); launched = true
