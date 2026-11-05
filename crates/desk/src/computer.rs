@@ -311,6 +311,7 @@ impl Computer {
         for (i, mut a) in list.actions.into_iter().enumerate() {
             a.max_edge = list.max_edge;
             a.scale = Some(seen);
+            a.shot_discarded = i + 1 < total;
             let action = a.action.clone();
             let step = self.act_one(session, a).await.unwrap_or_else(Output::error);
             let failed = if step.is_error { " failed" } else { "" };
@@ -360,7 +361,7 @@ impl Computer {
             return Ok(Output {
                 text: format!("waited {secs:.1}s"),
                 is_error: false,
-                image_b64: self.screenshot(session, a.max_edge).await?,
+                image_b64: self.step_shot(session, &a).await?,
                 ..Output::default()
             });
         }
@@ -429,7 +430,7 @@ impl Computer {
         self.end_once(once).await;
         let k = self.mapped(session, a.scale);
         let (changes, still) = self.settle(before, k).await;
-        let (shot, missed) = self.settled(session, still, a.max_edge).await;
+        let (shot, missed) = self.settled(session, still, &a).await;
         drop(input);
         let (text, is_error) = match result {
             Ok(v) => {
@@ -544,21 +545,29 @@ impl Computer {
         &self,
         session: &str,
         still: Option<Value>,
-        max_edge: Option<u32>,
+        a: &ActArgs,
     ) -> (Option<String>, String) {
         let shot = match still {
+            _ if a.shot_discarded => Ok(None),
             Some(v) => {
                 self.touch();
                 Ok(self
-                    .adopt(session, &v, max_edge.unwrap_or(DEFAULT_EDGE), false)
+                    .adopt(session, &v, a.max_edge.unwrap_or(DEFAULT_EDGE), false)
                     .0)
             }
-            None => self.screenshot(session, max_edge).await,
+            None => self.screenshot(session, a.max_edge).await,
         };
         match shot {
             Ok(image) => (image, String::new()),
             Err(e) => (None, format!("\n{SHOT_FAILED}: {e}")),
         }
+    }
+
+    async fn step_shot(&self, session: &str, a: &ActArgs) -> Result<Option<String>, String> {
+        if a.shot_discarded {
+            return Ok(None);
+        }
+        self.screenshot(session, a.max_edge).await
     }
 
     async fn screenshot_once(&self, max_edge: Option<u32>) -> Result<Option<String>, String> {
@@ -710,7 +719,7 @@ impl Computer {
         }
         self.end_once(once).await;
         let (changes, still) = self.settle(before, self.mapped(session, a.scale)).await;
-        let (shot, missed) = self.settled(session, still, a.max_edge).await;
+        let (shot, missed) = self.settled(session, still, a).await;
         drop(input);
         let total = full.chars().count();
         let summary = format!(
@@ -770,13 +779,13 @@ impl Computer {
                 return Ok(Output {
                     text: e,
                     is_error: true,
-                    image_b64: self.screenshot(session, a.max_edge).await?,
+                    image_b64: self.step_shot(session, a).await?,
                     ..Output::default()
                 });
             }
         };
         let (changes, still) = self.settle(before, self.mapped(session, a.scale)).await;
-        let (shot, missed) = self.settled(session, still, a.max_edge).await;
+        let (shot, missed) = self.settled(session, still, a).await;
         drop(input);
         Ok(Output {
             text: text + &changes + &missed,
@@ -1966,6 +1975,8 @@ struct ActArgs {
     /// Screen pixels per pixel of the screenshot the caller saw, in place of the session's latest.
     #[serde(default)]
     scale: Option<f64>,
+    #[serde(skip)]
+    shot_discarded: bool,
 }
 
 #[derive(Deserialize)]
@@ -3620,6 +3631,35 @@ mod tests {
                 (220.0, 60.0)
             ]
         );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn an_action_list_captures_the_screen_after_its_last_action_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let shots = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let log = std::sync::Arc::clone(&shots);
+        let full = full_shot(64, 40, 64);
+        let driver = tokio::spawn(listener.serve(move |req| {
+            let session = req["args"]["session"].as_str().unwrap_or_default();
+            match req["name"].as_str().unwrap_or_default() {
+                "get_desktop_state" => {
+                    if !session.starts_with("still-") {
+                        log.lock().unwrap().push(session.to_owned());
+                    }
+                    full.clone()
+                }
+                _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+            }
+        }));
+        let cua = cua(&socket);
+        let click = |x: f64| json!({"action": "click", "x": x, "y": 10.0, "session": "s"});
+        let list = json!({"actions": [click(1.0), click(2.0), click(3.0)], "session": "s"});
+        let out = cua.act(list).await.unwrap();
+        assert!(!out.is_error && out.image_b64.is_some(), "{}", out.text);
+        assert_eq!(*shots.lock().unwrap(), ["s"]);
         driver.abort();
     }
 
