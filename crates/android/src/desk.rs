@@ -955,9 +955,9 @@ async fn click(android: &Android, a: ClickArgs) -> Result<String, String> {
         return Err("a tap on a device takes no modifier keys".to_owned());
     }
     in_front(android, a.window.as_deref(), a.pid).await?;
-    for _ in 0..a.count.unwrap_or(1).max(1) {
-        android.tap((a.x as i32, a.y as i32)).await?;
-    }
+    android
+        .taps((a.x as i32, a.y as i32), a.count.unwrap_or(1))
+        .await?;
     Ok(json!({"ok": true}).to_string())
 }
 

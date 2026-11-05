@@ -26,6 +26,7 @@ const MAX_WAIT: f64 = 10.0;
 const MAX_ELEMENTS: usize = 200;
 const LONG_PRESS_MS: u32 = 800;
 const SWIPE_MS: u32 = 300;
+const TAP_GAP: Duration = Duration::from_millis(100);
 const SCROLL_FRACTION: i32 = 3;
 const DEVICE_JAR: &str = "/data/local/tmp/shuttle-scrcpy.jar";
 const DEVICE_SU: &str = "/data/local/tmp/su1000";
@@ -198,8 +199,7 @@ impl Android {
             }
             "double_tap" | "double_click" => {
                 let (x, y) = target()?;
-                self.tap((x, y)).await?;
-                self.tap((x, y)).await?;
+                self.taps((x, y), 2).await?;
                 format!("double-tapped {x},{y}")
             }
             "long_press" => {
@@ -315,6 +315,33 @@ impl Android {
             Injection::NotSent => {}
         }
         self.input(&["tap", &x.to_string(), &y.to_string()]).await
+    }
+
+    pub(crate) async fn taps(&self, (x, y): (i32, i32), count: u32) -> Result<(), String> {
+        if count <= 1 {
+            return self.tap((x, y)).await;
+        }
+        let cmd = format!("tap {x} {y}");
+        for i in 1..=count {
+            if i > 1 {
+                tokio::time::sleep(TAP_GAP).await;
+            }
+            match self.inject(&cmd).await {
+                Injection::Done => {}
+                Injection::Unconfirmed(why) => {
+                    return Err(unconfirmed(&format!("tap {i} of {count} at {x},{y}"), &why));
+                }
+                Injection::NotSent if i == 1 => {
+                    return Err(format!(
+                        "{count} taps at {x},{y} need the UI server's touch injection, since adb input taps too slowly for one gesture"
+                    ));
+                }
+                Injection::NotSent => {
+                    return Err(format!("tap {i} of {count} at {x},{y} was not sent"));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Presses a key or a combination such as `ctrl+a`; a single key is injected by the UI server, a combination by `input`.
@@ -1984,6 +2011,33 @@ mod tests {
             err.ends_with("; 2 of 3 lines were typed before it"),
             "{err}"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_double_tap_is_two_server_taps_inside_the_double_tap_window() {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.android.tap((1, 2)).await.unwrap();
+        let started = std::time::Instant::now();
+        desk(
+            &fake,
+            "desk_click",
+            serde_json::json!({"x": 10, "y": 20, "count": 2}),
+        )
+        .await
+        .unwrap();
+        assert!(started.elapsed() >= TAP_GAP);
+        assert_eq!(log(&fake, "requests"), "tap 1 2\ntap 10 20\ntap 10 20\n");
+        let fake = Fake::new();
+        fake.put("inject.answer", "unavailable");
+        let err = fake
+            .android
+            .act(serde_json::json!({"action": "double_tap", "x": 10, "y": 20}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("too slowly"), "{err}");
+        assert_eq!(log(&fake, "adbinput"), "");
     }
 
     #[tokio::test]
