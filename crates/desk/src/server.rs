@@ -173,6 +173,9 @@ impl<B: Access + 'static, D: Input + Send + Sync + 'static> Handler for Desk<B, 
     async fn answer(&self, call: Call) -> Output {
         let mut args = call.args;
         if call.tool == "desk_web" {
+            if !args.is_object() && !args.is_null() {
+                return Output::error(format!("{}: args are not an object", call.tool));
+            }
             args["holder"] = call.agent_id.into();
         }
         self.run(&call.tool, args)
@@ -1069,6 +1072,22 @@ mod tests {
             (true, "desk_look: this desk answers no computer verbs")
         );
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_web_call_whose_args_are_not_an_object_is_an_error() {
+        let desk = Desk::new(|| Ok(Stub::default()), NoDriver, Os::Mac);
+        let out = desk
+            .answer(Call {
+                agent_id: "a".into(),
+                tool: "desk_web".into(),
+                args: json!([1]),
+            })
+            .await;
+        assert_eq!(
+            (out.is_error, out.text.as_str()),
+            (true, "desk_web: args are not an object")
+        );
     }
 
     #[tokio::test]
