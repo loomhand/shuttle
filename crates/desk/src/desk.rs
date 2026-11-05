@@ -115,6 +115,7 @@ const FOCUS_UNKNOWN: &str = "focus unverified: accessibility shows no focused te
 tokio::task_local! {
     static FOREGROUND: bool;
     static SENT: Cell<usize>;
+    static SCALE: Cell<Option<f64>>;
 }
 
 pub(crate) type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
@@ -222,10 +223,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if !self.allow.is_open() {
             self.admit(tool, &args).await?;
         }
+        let scale = Cell::new(None);
         if self.auto && auto::VERBS.contains(&tool) {
-            return self.auto_run(tool, args, turn).await;
+            return SCALE.scope(scale, self.auto_run(tool, args, turn)).await;
         }
-        self.dispatch(tool, args, turn).await
+        SCALE.scope(scale, self.dispatch(tool, args, turn)).await
     }
 
     pub fn release(&self, holder: &str) {
@@ -1665,10 +1667,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if self.os == Os::Windows {
             return Ok(1.0);
         }
+        if let Ok(Some(k)) = SCALE.try_with(Cell::get) {
+            return Ok(k);
+        }
         let v = self.call("get_screen_size", json!({})).await?;
-        Ok(v["structuredContent"]["scale_factor"]
+        let k = v["structuredContent"]["scale_factor"]
             .as_f64()
-            .unwrap_or(1.0))
+            .unwrap_or(1.0);
+        let _ = SCALE.try_with(|s| s.set(Some(k)));
+        Ok(k)
     }
 
     async fn window_at(&self, x: f64, y: f64) -> Result<Option<Under>, String> {
@@ -4891,6 +4898,25 @@ pub(crate) mod tests {
         }
     }
 
+    struct Sized(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for Sized {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 2.0}}),
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 4, "window_id": 40, "title": "Untitled - Notepad", "app_name": "Notepad", "bounds": {"x": 100.0, "y": 50.0, "width": 300.0, "height": 200.0}}
+                ]}}),
+                "get_window_state" => json!({"structuredContent": {
+                    "screenshot_width": 600, "screenshot_height": 400,
+                    "window_bounds": {"x": 100.0, "y": 50.0, "width": 300.0, "height": 200.0}
+                }}),
+                _ => json!({}),
+            })
+        }
+    }
+
     #[derive(Default)]
     struct Reads {
         reads: Mutex<usize>,
@@ -6382,6 +6408,18 @@ pub(crate) mod tests {
             B64.encode(std::fs::read(&path).unwrap()),
             shot.image_b64.unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn a_drag_in_a_window_reads_the_screen_scale_once() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(notepad()), Sized(calls.clone()), Os::Mac);
+        let drag = json!({"window": "Untitled - Notepad", "x": 10.0, "y": 10.0, "to_x": 50.0, "to_y": 20.0});
+        desk.run("desk_drag", drag).await.unwrap();
+        let calls = calls.lock().unwrap();
+        let sizes = calls.iter().filter(|(t, _)| t == "get_screen_size").count();
+        assert_eq!(sizes, 1, "{calls:?}");
+        assert!(calls.iter().any(|(t, _)| t == "drag"), "{calls:?}");
     }
 
     #[tokio::test]
