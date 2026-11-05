@@ -166,12 +166,13 @@ impl Android {
             elements.retain(|e| e.mentions(&q));
         }
         elements.truncate(MAX_ELEMENTS);
-        let text = elements
-            .iter()
-            .enumerate()
-            .map(|(i, e)| e.line(i))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let mut text = String::new();
+        for (i, e) in elements.iter().enumerate() {
+            if i > 0 {
+                text.push('\n');
+            }
+            text.push_str(&e.line(i));
+        }
         let saved = Saved {
             window: front.window().to_owned(),
             points: elements.iter().map(Node::center).collect(),
@@ -346,8 +347,8 @@ impl Android {
 
     /// Presses a key or a combination such as `ctrl+a`.
     pub(crate) async fn keys(&self, keys: &str) -> Result<(), String> {
-        let codes: Vec<String> = keycodes(keys)?.iter().map(u32::to_string).collect();
-        if let [code] = codes.as_slice() {
+        let codes = keycodes(keys)?;
+        if let [code] = codes[..] {
             match self.inject(&format!("key {code}")).await {
                 Injection::Done => return Ok(()),
                 Injection::Unconfirmed(why) => {
@@ -356,6 +357,7 @@ impl Android {
                 Injection::NotSent => {}
             }
         }
+        let codes: Vec<String> = codes.iter().map(u32::to_string).collect();
         let mut argv = vec![if codes.len() == 1 {
             "keyevent"
         } else {
@@ -803,8 +805,8 @@ impl UiServer {
             .and_then(|n| n.trim().parse::<usize>().ok())
             .filter(|n| *n <= MAX_PNG)
         else {
-            let mut line = head.clone();
-            while line.trim_end() != UI_END {
+            let mut line = String::new();
+            while head.trim_end() != UI_END && line.trim_end() != UI_END {
                 line.clear();
                 let n = self
                     .stdout
@@ -949,9 +951,12 @@ impl Focus {
     }
 
     fn ends_with(&self, line: &str) -> bool {
-        let n = line.chars().count();
-        let tail: String = line.chars().skip(n.saturating_sub(VERIFY_TAIL)).collect();
-        self.tail.ends_with(&tail)
+        let start = line
+            .char_indices()
+            .rev()
+            .nth(VERIFY_TAIL - 1)
+            .map_or(0, |(i, _)| i);
+        self.tail.ends_with(&line[start..])
     }
 }
 
