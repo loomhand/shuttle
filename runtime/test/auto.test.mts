@@ -26,7 +26,7 @@ function desktop(typed: (before: string, text: string) => string, note: boolean)
     if (c.tool === 'desk_snapshot') return JSON.stringify({ window: ws[1], nodes: [{ ref: 0, id: 'd', parent: -1, depth: 0, role: 'document', name: '', states: [], value: doc }], truncated: false })
     if (c.tool === 'desk_focus') { ws[0] = { ...user(), active: false }; ws[1] = { ...notepad(), active: true }; return JSON.stringify({ ok: true, title: ws[1].title, pid: 4 }) }
     if (c.tool === 'desk_type') {
-      if (c.args.window === undefined) { doc += String(c.args.text); return JSON.stringify({ ok: true, chars: 2, input: 'foreground' }) }
+      if (c.args.delivery_mode === 'foreground') { doc += String(c.args.text); return JSON.stringify({ ok: true, chars: 2 }) }
       doc = typed(doc, String(c.args.text))
       return JSON.stringify({ ok: true, chars: 2, ...(note ? { unverified: NOTE } : {}) })
     }
@@ -89,7 +89,7 @@ test('after auto ran a step in the foreground, a dialog of the app in front fail
   const r = await auto({ steps: [{ app: 'Notepad' }, { key: 'ctrl+shift+s' }, { type: 'name' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(r.trace?.[1]?.input, 'foreground')
-  assert.deepEqual(calls.filter((c) => c.tool === 'desk_type').map((c) => c.args), [{ text: 'name' }])
+  assert.deepEqual(calls.filter((c) => c.tool === 'desk_type').map((c) => c.args), [{ text: 'name', delivery_mode: 'foreground' }])
 })
 
 test('an auto macOS menu step fronts the plan window and runs the entry in the foreground, where background refuses', { skip: process.platform !== 'darwin' }, async (t) => {

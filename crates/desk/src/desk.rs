@@ -235,10 +235,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             self.admit(tool, &args).await?;
         }
         let scale = Cell::new(None);
-        if self.auto && auto::VERBS.contains(&tool) {
+        let foreground = self.auto && args["delivery_mode"] == "foreground";
+        if self.auto && !foreground && auto::VERBS.contains(&tool) {
             return SCALE.scope(scale, self.auto_run(tool, args, turn)).await;
         }
-        SCALE.scope(scale, self.dispatch(tool, args, turn)).await
+        let run = FOREGROUND.scope(foreground, self.dispatch(tool, args, turn));
+        SCALE.scope(scale, run).await
     }
 
     pub fn release(&self, holder: &str) {
@@ -291,7 +293,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "foreground"
         };
         match args["delivery_mode"].as_str() {
-            Some(mode) if mode != input => Err(format!(
+            Some(mode) if mode != input && !(self.auto && mode == "foreground") => Err(format!(
                 "delivery_mode {mode:?} refused, nothing was sent: this desk sends input in the {input}, as the user's [desk] input setting says, and a call cannot change that"
             )),
             _ => Ok(()),
@@ -3175,6 +3177,33 @@ pub(crate) mod tests {
             .unwrap_err();
         assert!(err.contains(BACKGROUND_TARGET), "{err}");
         assert!(order(&calls).is_empty(), "{:?}", order(&calls));
+    }
+
+    #[tokio::test]
+    async fn auto_input_asked_for_the_foreground_runs_there_without_a_window() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Mac)
+            .background(true)
+            .auto(true);
+        desk.run(
+            "desk_key",
+            json!({"keys": "cmd+0", "delivery_mode": "foreground"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(order(&calls), ["hotkey desktop"]);
+        let err = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Mac)
+            .background(true)
+            .run(
+                "desk_key",
+                json!({"keys": "cmd+0", "delivery_mode": "foreground"}),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("delivery_mode \"foreground\" refused"),
+            "{err}"
+        );
     }
 
     #[tokio::test]

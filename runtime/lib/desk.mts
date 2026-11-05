@@ -15,7 +15,7 @@ export type ImagePart = { type: 'image_url'; image_url: { url: string } }
 export type Served = { model: string; image: boolean; build: string | null; id: string | null }
 export type Size = { left?: number; top?: number; width: number; height: number }
 /** The window background input goes to, by title or process; required with `[desk] input = "background"`. */
-export type Target = { window?: string; pid?: number | null }
+export type Target = { window?: string; pid?: number | null; delivery_mode?: 'foreground' }
 /** Background input the driver could not confirm carries `unverified`. */
 export type Sent = { ok: boolean; chars?: number; unverified?: string; input?: 'foreground' }
 type Output = { text: string; is_error: boolean; image_b64?: string }
@@ -152,4 +152,4 @@ function ran<T extends { input?: string }>(r: T): T {
   return r
 }
 
-function target(to: Target) { return { window: to.window, pid: to.pid ?? undefined } }
+function target(to: Target) { return { window: to.window, pid: to.pid ?? undefined, delivery_mode: to.delivery_mode } }
