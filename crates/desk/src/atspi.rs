@@ -11,7 +11,10 @@ use tokio::sync::Mutex;
 use zbus::Connection;
 use zbus::zvariant::{DynamicType, OwnedObjectPath, OwnedValue};
 
-use crate::model::{MAX_DEPTH, MAX_NODES, VALUE_CHARS, format_number, hung, is_active, is_field};
+use crate::desk::lock;
+use crate::model::{
+    Extras, MAX_DEPTH, MAX_NODES, VALUE_CHARS, format_number, hung, is_active, is_field,
+};
 
 const BUS_NAME: &str = "org.a11y.Bus";
 const BUS_PATH: &str = "/org/a11y/bus";
@@ -234,7 +237,7 @@ static SCREEN_COORDS: LazyLock<std::sync::Mutex<HashMap<String, bool>>> =
 static BUS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// An accessible object: the bus name of its app and its object path.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Obj {
     pub bus: String,
     pub path: String,
@@ -284,7 +287,7 @@ impl Obj {
 /// One node of a snapshot, in preorder; `parent` indexes the nearest shown ancestor.
 #[derive(Clone, Debug, Default)]
 pub struct Node {
-    pub obj: Option<Rc<Obj>>,
+    pub obj: Rc<Obj>,
     pub role: u32,
     pub name: String,
     pub description: String,
@@ -356,15 +359,6 @@ impl Frame {
     }
 }
 
-/// What a snapshot also reads live, beyond the cached tree.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Extras {
-    pub values: bool,
-    pub bounds: bool,
-    pub keys: bool,
-    pub frame: bool,
-}
-
 /// The tree of one window with the time each phase took.
 pub struct Tree {
     pub nodes: Vec<Node>,
@@ -373,25 +367,13 @@ pub struct Tree {
 }
 
 /// A lazily opened connection to the accessibility bus, shared by all calls.
+#[derive(Default)]
 pub struct Atspi {
     conn: Mutex<Option<Connection>>,
     probing: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
-impl Default for Atspi {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Atspi {
-    pub fn new() -> Self {
-        Self {
-            conn: Mutex::new(None),
-            probing: Arc::default(),
-        }
-    }
-
     /// The top-level windows of every app with their pids; a late app gives its last ones, marked stale.
     pub async fn frames(&self) -> Result<Vec<Frame>, String> {
         let registry = Obj::at(REGISTRY, ROOT);
@@ -403,7 +385,7 @@ impl Atspi {
             }
         }
         let known: Vec<Option<u32>> = {
-            let seen = locked(&SEEN);
+            let seen = lock(&SEEN);
             answering
                 .iter()
                 .map(|app| seen.get(&app.bus).and_then(|s| s.pid))
@@ -420,7 +402,7 @@ impl Atspi {
                 }),
         )
         .await;
-        let mut seen = locked(&SEEN);
+        let mut seen = lock(&SEEN);
         seen.retain(|bus, _| apps.iter().any(|app| app.bus == *bus));
         Ok(reads
             .into_iter()
@@ -610,7 +592,7 @@ impl Atspi {
             }
         );
         Ok(Node {
-            obj: Some(Rc::new(obj.clone())),
+            obj: Rc::new(obj.clone()),
             role: r.role,
             name: r.name.trim_end().to_owned(),
             description: r.description,
@@ -773,15 +755,13 @@ impl Atspi {
 
     async fn extras(&self, nodes: &mut [Node], extras: Extras) {
         if extras.bounds
-            && let Some(first) = nodes.first().and_then(|n| n.obj.as_ref())
+            && let Some(first) = nodes.first()
         {
-            self.screen_coords(&first.bus).await;
+            self.screen_coords(&first.obj.bus).await;
         }
         let all = &*nodes;
         let reads = join_all(nodes.iter().map(|n| async move {
-            let Some(obj) = n.obj.as_ref() else {
-                return (None, None, None, None);
-            };
+            let obj = &*n.obj;
             let role = n.role();
             let value = async {
                 if !(extras.values && is_field(role)) {
@@ -816,7 +796,7 @@ impl Atspi {
                     .await
                     .ok()?;
                 let by = labelled_by(set)?;
-                match all.iter().find(|m| m.obj.as_deref() == Some(&by)) {
+                match all.iter().find(|m| *m.obj == by) {
                     Some(m) => Some(m.name.clone()),
                     None => self.name(&by).await.ok(),
                 }
@@ -865,7 +845,7 @@ impl Atspi {
 
     /// Whether the app on `bus` answers screen coordinates, read once from its toolkit name and version.
     async fn screen_coords(&self, bus: &str) -> bool {
-        if let Some(known) = locked(&SCREEN_COORDS).get(bus) {
+        if let Some(known) = lock(&SCREEN_COORDS).get(bus) {
             return *known;
         }
         let root = Obj::at(bus, ROOT);
@@ -876,7 +856,7 @@ impl Atspi {
             return true;
         };
         let known = answers_screen_coords(&name, &version);
-        locked(&SCREEN_COORDS).insert(bus.to_owned(), known);
+        lock(&SCREEN_COORDS).insert(bus.to_owned(), known);
         known
     }
 
@@ -967,7 +947,7 @@ impl Atspi {
     }
 
     fn is_hung(&self, bus: &str) -> bool {
-        let mut hung = locked(&HUNG);
+        let mut hung = lock(&HUNG);
         hung.retain(|_, at| at.elapsed() < HUNG_FOR);
         hung.contains_key(bus)
     }
@@ -1008,7 +988,7 @@ impl Atspi {
             .build()
             .await
             .map_err(|e| format!("connect the accessibility bus: {e}"))?;
-        if new_bus(&mut locked(&BUS), conn.server_guid().as_str()) {
+        if new_bus(&mut lock(&BUS), conn.server_guid().as_str()) {
             forget_apps();
         }
         *slot = Some(conn.clone());
@@ -1077,12 +1057,8 @@ pub fn key_combos(binding: &str) -> (Option<String>, Option<String>) {
     (mnemonic, shortcut)
 }
 
-fn locked<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 fn first_wake(bus: &str) -> bool {
-    let mut woken = locked(&WOKEN);
+    let mut woken = lock(&WOKEN);
     !woken.contains(bus) && woken.insert(bus.to_owned())
 }
 
@@ -1100,14 +1076,14 @@ fn new_bus(last: &mut Option<String>, guid: &str) -> bool {
 }
 
 fn forget_apps() {
-    locked(&HUNG).clear();
-    locked(&SEEN).clear();
-    locked(&WOKEN).clear();
-    locked(&SCREEN_COORDS).clear();
+    lock(&HUNG).clear();
+    lock(&SEEN).clear();
+    lock(&WOKEN).clear();
+    lock(&SCREEN_COORDS).clear();
 }
 
 fn mark_hung(bus: &str) {
-    locked(&HUNG).insert(bus.to_owned(), Instant::now());
+    lock(&HUNG).insert(bus.to_owned(), Instant::now());
 }
 
 fn release_on_answer(
@@ -1115,15 +1091,15 @@ fn release_on_answer(
     bus: &str,
     answer: impl Future<Output = bool> + Send + 'static,
 ) {
-    if !locked(probing).insert(bus.to_owned()) {
+    if !lock(probing).insert(bus.to_owned()) {
         return;
     }
     let (probing, bus) = (Arc::clone(probing), bus.to_owned());
     tokio::spawn(async move {
         if answer.await {
-            locked(&HUNG).remove(&bus);
+            lock(&HUNG).remove(&bus);
         }
-        locked(&probing).remove(&bus);
+        lock(&probing).remove(&bus);
     });
 }
 
@@ -1343,7 +1319,7 @@ fn flatten<'a>(
         parent
     } else {
         out.push(Node {
-            obj: Some(Rc::clone(obj)),
+            obj: Rc::clone(obj),
             role: r.role,
             name: name.to_owned(),
             description: r.description.clone(),
@@ -1472,10 +1448,10 @@ mod tests {
         let late = settle(&mut seen, ":9.94", None, now);
         assert_eq!(late.len(), 1);
         assert!(late[0].stale && late[0].name == "Doc");
-        assert!(!Atspi::new().is_hung(":9.94"));
+        assert!(!Atspi::default().is_hung(":9.94"));
         seen.get_mut(":9.94").unwrap().slow = Some(ago(2));
         assert!(settle(&mut seen, ":9.94", None, now).is_empty());
-        assert!(Atspi::new().is_hung(":9.94"));
+        assert!(Atspi::default().is_hung(":9.94"));
         assert!(seen[":9.94"].last.is_empty());
     }
 
@@ -1486,7 +1462,7 @@ mod tests {
         let ago = |s: u64| now.checked_sub(Duration::from_secs(s)).unwrap();
         assert!(settle(&mut seen, ":9.93", None, ago(5)).is_empty());
         assert!(settle(&mut seen, ":9.93", None, now).is_empty());
-        assert!(!Atspi::new().is_hung(":9.93"));
+        assert!(!Atspi::default().is_hung(":9.93"));
         assert!(settle(&mut seen, ":9.93", Some(Vec::new()), now).is_empty());
         assert_eq!(seen[":9.93"].slow, None);
     }
@@ -1499,18 +1475,18 @@ mod tests {
         release_on_answer(&probing, ":9.92", async { rx.await.is_ok() });
         release_on_answer(&probing, ":9.92", async { true });
         tokio::task::yield_now().await;
-        assert!(Atspi::new().is_hung(":9.92"));
+        assert!(Atspi::default().is_hung(":9.92"));
         tx.send(()).unwrap();
         while probing.lock().unwrap().contains(":9.92") {
             tokio::task::yield_now().await;
         }
-        assert!(!Atspi::new().is_hung(":9.92"));
+        assert!(!Atspi::default().is_hung(":9.92"));
         mark_hung(":9.91");
         release_on_answer(&probing, ":9.91", async { false });
         while probing.lock().unwrap().contains(":9.91") {
             tokio::task::yield_now().await;
         }
-        assert!(Atspi::new().is_hung(":9.91"));
+        assert!(Atspi::default().is_hung(":9.91"));
     }
 
     #[test]
@@ -1543,7 +1519,7 @@ mod tests {
     async fn a_hung_app_costs_its_wake_no_wait_and_is_not_asked_again() {
         let started = tokio::time::Instant::now();
         mark_hung(":9.95");
-        Atspi::new().wake(":9.95").await;
+        Atspi::default().wake(":9.95").await;
         assert_eq!(started.elapsed(), Duration::ZERO);
         assert!(!first_wake(":9.95"));
     }

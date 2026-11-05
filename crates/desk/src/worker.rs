@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use tokio::sync::oneshot;
 
+use crate::desk::lock;
+
 type Job<B> = Box<dyn FnOnce(Result<&mut B, &str>) + Send>;
 
 /// Runs calls on the backend that `open` makes on the worker thread.
@@ -70,17 +72,11 @@ impl<B: 'static> Worker<B> {
     }
 
     fn sender(&self) -> Sender<Job<B>> {
-        self.jobs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        lock(&self.jobs).clone()
     }
 
     fn restart(&self) {
-        *self
-            .jobs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = spawn(self.open);
+        *lock(&self.jobs) = spawn(self.open);
     }
 }
 

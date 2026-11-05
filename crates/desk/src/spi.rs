@@ -30,7 +30,7 @@ impl Spi {
             .map_err(|e| format!("start the AT-SPI runtime: {e}"))?;
         Ok(Self {
             rt,
-            atspi: Atspi::new(),
+            atspi: Atspi::default(),
             grabber: None,
         })
     }
@@ -99,9 +99,7 @@ impl Access for Spi {
 
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
         let window = Obj::parse(&frame.id)?;
-        let t = self
-            .rt
-            .block_on(self.atspi.tree(window, spi_extras(extras)))?;
+        let t = self.rt.block_on(self.atspi.tree(window, extras))?;
         Ok(Tree {
             frame: frame.clone(),
             nodes: t.nodes.into_iter().map(node).collect(),
@@ -121,9 +119,7 @@ impl Access for Spi {
 
     fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String> {
         let obj = Obj::parse(id)?;
-        let n = self
-            .rt
-            .block_on(self.atspi.node(&obj, spi_extras(extras), chars))?;
+        let n = self.rt.block_on(self.atspi.node(&obj, extras, chars))?;
         Ok(node(n))
     }
 
@@ -295,7 +291,7 @@ fn is_frame(frame: &Frame, (title, pid): &(String, Option<u32>), titles: &[Strin
 fn node(n: atspi::Node) -> Node {
     let (mnemonic, shortcut) = n.keys.as_deref().map_or((None, None), atspi::key_combos);
     Node {
-        id: n.obj.as_deref().map(Obj::id).unwrap_or_default(),
+        id: n.obj.id(),
         parent: n.parent,
         depth: n.depth,
         role: n.role(),
@@ -407,15 +403,6 @@ fn app(pid: u32) -> Option<String> {
     let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
     let name = exe.file_name()?.to_string_lossy();
     Some(name.trim_end_matches(" (deleted)").to_owned()).filter(|n| !n.is_empty())
-}
-
-fn spi_extras(e: Extras) -> atspi::Extras {
-    atspi::Extras {
-        values: e.values,
-        bounds: e.bounds,
-        keys: e.keys,
-        frame: e.frame,
-    }
 }
 
 /// What `lookup` answers within `within` on `rt`; none once the time is up, which drops the lookup and frees the runtime.
@@ -688,7 +675,7 @@ mod tests {
     #[test]
     fn a_node_keeps_the_atspi_states_role_and_raw_key_binding() {
         let n = atspi::Node {
-            obj: Some(std::rc::Rc::new(Obj::parse("1.17/5").unwrap())),
+            obj: std::rc::Rc::new(Obj::parse("1.17/5").unwrap()),
             role: 43,
             name: "Save".into(),
             states: (1 << 8) | (1 << 25) | (1 << 30),
