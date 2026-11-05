@@ -5,6 +5,16 @@ type Main = (params: unknown) => unknown
 
 const env = process.env
 const out = (name: string): string => `${env.SHUTTLE_RUN}/${name}`
+const parent = process.ppid
+
+setInterval(() => {
+  if (process.ppid === parent) return
+  try {
+    process.kill(-process.pid, 'SIGTERM')
+  } finally {
+    process.exit(1)
+  }
+}, 1000).unref()
 
 let main: Main | undefined
 try {

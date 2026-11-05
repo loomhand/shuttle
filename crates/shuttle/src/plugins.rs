@@ -39,7 +39,6 @@ impl Plugins {
 pub struct Plugin {
     pub name: String,
     pub description: String,
-    /// The program that runs the tool's scripts in place of Node.
     pub bin: PathBuf,
     #[serde(default)]
     pub resources: Vec<Resource>,
@@ -57,11 +56,16 @@ impl Plugin {
         if !self.bin.is_absolute() {
             return Err(format!("bin {} is not absolute", self.bin.display()));
         }
-        if let Some(r) = self.resources.iter().find(|r| !r.path.is_absolute()) {
-            return Err(format!(
-                "resource path {} is not absolute",
-                r.path.display()
-            ));
+        for (i, r) in self.resources.iter().enumerate() {
+            if !r.path.is_absolute() {
+                return Err(format!(
+                    "resource path {} is not absolute",
+                    r.path.display()
+                ));
+            }
+            if self.resources[..i].iter().any(|q| q.uri == r.uri) {
+                return Err(format!("resource {} is named twice", r.uri));
+            }
         }
         Ok(())
     }
@@ -160,12 +164,12 @@ pub fn configured(config: &Result<Config, String>, path: &Path, builtins: &[&str
 }
 
 /// Whether `name` has a plugin tool's form: `^[a-z][a-z0-9_]*_run$`.
-pub fn is_name(name: &str) -> bool {
+fn is_name(name: &str) -> bool {
     name.len() > SUFFIX.len() && name.ends_with(SUFFIX) && is_word(name)
 }
 
-/// Reads the `*.json` plugins in `dir` in file-name order: a file with a `service` key is a service, any other a script tool. A missing directory has none, and a file that breaks a rule, names a built-in tool or repeats a name is skipped whole with one log line.
-pub fn load(dir: &Path, builtins: &[&str]) -> Plugins {
+/// Reads the `*.json` plugins in `dir` in file-name order, so the first of two files with one name wins.
+fn load(dir: &Path, builtins: &[&str]) -> Plugins {
     let mut plugins = Plugins::default();
     let Ok(entries) = std::fs::read_dir(dir) else {
         return plugins;
@@ -192,6 +196,16 @@ fn add(plugins: &mut Plugins, file: &Path, builtins: &[&str]) -> Result<(), Stri
         p.check(builtins)?;
         if plugins.runs.iter().any(|q| q.name == p.name) {
             return Err(format!("name {} is taken", p.name));
+        }
+        let taken = |uri: &str| {
+            plugins
+                .runs
+                .iter()
+                .flat_map(|q| &q.resources)
+                .any(|r| r.uri == uri)
+        };
+        if let Some(r) = p.resources.iter().find(|r| taken(&r.uri)) {
+            return Err(format!("resource {} is taken", r.uri));
         }
         plugins.runs.push(p);
         return Ok(());
@@ -289,6 +303,14 @@ mod tests {
             (
                 "38-relative-resource.json",
                 r#"{"name": "relres_run", "description": "c", "bin": "/usr/bin/c", "resources": [{"uri": "demo://r", "path": "r.md", "mime": "text/markdown", "description": "r"}]}"#,
+            ),
+            (
+                "39-taken-uri.json",
+                r#"{"name": "gamma_run", "description": "c", "bin": "/usr/bin/c", "resources": [{"uri": "demo://a/GUIDE.md", "path": "/opt/c.md", "mime": "text/markdown", "description": "c"}]}"#,
+            ),
+            (
+                "39-twice-uri.json",
+                r#"{"name": "delta_run", "description": "c", "bin": "/usr/bin/c", "resources": [{"uri": "demo://d", "path": "/opt/d.md", "mime": "text/markdown", "description": "d"}, {"uri": "demo://d", "path": "/opt/e.md", "mime": "text/markdown", "description": "e"}]}"#,
             ),
             (
                 "40-c.txt",

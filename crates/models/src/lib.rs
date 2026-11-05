@@ -136,7 +136,7 @@ impl Models {
     }
 }
 
-/// The arguments of `model_decide`; `questions` maps keys to `{type: noul|choice, instructions, criteria?}`, and `timeout_ms` caps the configured timeout.
+/// The arguments of `model_decide`; `questions` maps keys to `{type: noul|choice, instructions, criteria?}`.
 #[derive(Debug, Deserialize)]
 pub struct DecideArgs {
     pub state: Value,
@@ -305,7 +305,7 @@ fn bare(url: &reqwest::Url) -> reqwest::Url {
     u
 }
 
-// a reqwest error prints only its kind; its sources name the cause, and without_url keeps any key in a query out
+// without_url keeps a key in the query string out of the message
 fn failed(model: &str, e: reqwest::Error) -> String {
     let e = e.without_url();
     let mut out = format!("{model}: {e}");
@@ -365,15 +365,6 @@ mod tests {
         );
     }
 
-    fn area(left: f64, top: f64, width: f64, height: f64) -> Area {
-        Area {
-            left,
-            top,
-            width,
-            height,
-        }
-    }
-
     #[test]
     fn a_point_lands_in_desk_coordinates_whatever_the_screenshot_size() {
         let screen = area(0.0, 0.0, 1280.0, 800.0);
@@ -405,5 +396,14 @@ mod tests {
             Err("grounding put OK at (1001, 5), outside 0 to 1000".to_owned())
         );
         assert!(point("[-3, 5]", "OK", &screen).is_err());
+    }
+
+    fn area(left: f64, top: f64, width: f64, height: f64) -> Area {
+        Area {
+            left,
+            top,
+            width,
+            height,
+        }
     }
 }

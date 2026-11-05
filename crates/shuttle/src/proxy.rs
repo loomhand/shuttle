@@ -1,7 +1,7 @@
 //! The way from the MCP server to the daemon: one call per connection, starting the daemon when nothing listens.
 
 use std::path::Path;
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
 use desk_core::wire::{Call, Output};
@@ -12,6 +12,7 @@ use tokio::process::{Child, Command};
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const START_WAIT: Duration = Duration::from_secs(10);
 const START_POLL: Duration = Duration::from_millis(100);
+const EXIT_WAIT: Duration = Duration::from_secs(1);
 
 /// Sends `call` to the daemon at `endpoint`, starting it when nothing listens unless a host app embeds shuttle; a call that may have reached it is never resent.
 pub async fn call(endpoint: &str, call: &Call) -> Result<Output, String> {
@@ -19,8 +20,8 @@ pub async fn call(endpoint: &str, call: &Call) -> Result<Output, String> {
 }
 
 async fn reach(endpoint: &str, call: &Call, embedded: bool) -> Result<Output, String> {
-    let conn = match server::connect(endpoint).await {
-        Ok(conn) => conn,
+    let (conn, child) = match server::connect(endpoint).await {
+        Ok(conn) => (conn, None),
         Err(_) if embedded => {
             return Err(format!(
                 "no {NAME} daemon answers at {endpoint}; with {EMBEDDED}=1 the app that embeds {NAME} starts `{NAME} serve` itself",
@@ -30,21 +31,21 @@ async fn reach(endpoint: &str, call: &Call, embedded: bool) -> Result<Output, St
         }
         Err(_) => started(endpoint).await?,
     };
-    server::exchange(conn, call).await
+    match (server::exchange(conn, call).await, child) {
+        (Err(e), Some(child)) => Err(daemon_error(child, e).await),
+        (out, _) => out,
+    }
 }
 
-async fn started(endpoint: &str) -> Result<Conn, String> {
+async fn started(endpoint: &str) -> Result<(Conn, Option<Child>), String> {
     let mut child = start(endpoint).await?;
     let mut waited = Duration::ZERO;
     loop {
         if let Ok(conn) = server::connect(endpoint).await {
-            return Ok(conn);
+            return Ok((conn, child));
         }
         if let Some(Ok(Some(status))) = child.as_mut().map(Child::try_wait) {
-            return Err(format!(
-                "the daemon exited with {status}; run `{} serve` to see why",
-                crate::NAME
-            ));
+            return Err(exited(status));
         }
         if waited >= START_WAIT {
             return Err(format!(
@@ -54,6 +55,20 @@ async fn started(endpoint: &str) -> Result<Conn, String> {
         tokio::time::sleep(START_POLL).await;
         waited += START_POLL;
     }
+}
+
+async fn daemon_error(mut child: Child, e: String) -> String {
+    match tokio::time::timeout(EXIT_WAIT, child.wait()).await {
+        Ok(Ok(status)) => exited(status),
+        _ => e,
+    }
+}
+
+fn exited(status: ExitStatus) -> String {
+    format!(
+        "the daemon exited with {status}; run `{} serve` to see why",
+        crate::NAME
+    )
 }
 
 /// Starts the daemon; returns the child to watch when it runs as one.
@@ -75,19 +90,26 @@ async fn start(endpoint: &str) -> Result<Option<Child>, String> {
         }
         return Ok(None);
     }
-    let mut cmd = Command::new(&exe);
+    daemon(&exe, endpoint)
+        .spawn()
+        .map(Some)
+        .map_err(|e| format!("start the daemon: {e}"))
+}
+
+fn daemon(exe: &Path, endpoint: &str) -> Command {
+    let mut cmd = Command::new(exe);
     cmd.args(["serve", endpoint])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    #[cfg(unix)]
+    cmd.process_group(0);
     #[cfg(windows)]
     {
         cmd.creation_flags(CREATE_NO_WINDOW);
         crate::win::disinherit_stdio();
     }
-    cmd.spawn()
-        .map(Some)
-        .map_err(|e| format!("start the daemon: {e}"))
+    cmd
 }
 
 fn app_bundle(exe: &Path) -> Option<&Path> {
@@ -116,6 +138,43 @@ mod tests {
             .then_some(Path::new("/Users/u/Applications/Loomhand/Shuttle.app"));
         assert_eq!(app_bundle(inside), want);
         assert_eq!(app_bundle(bare), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn the_started_daemon_leads_a_process_group_of_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("serve"), "sleep 5\n").unwrap();
+        let mut child = daemon(Path::new("/bin/sh"), "unused")
+            .current_dir(dir.path())
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let group: u32 = stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().nth(2))
+            .and_then(|g| g.parse().ok())
+            .unwrap();
+        child.kill().await.unwrap();
+        assert_eq!(group, pid, "{stat}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_started_daemon_that_exits_before_it_answers_names_its_exit() {
+        let gone = Command::new("sh").args(["-c", "exit 3"]).spawn().unwrap();
+        let err = daemon_error(gone, "read frame length: early eof".to_owned()).await;
+        assert!(err.contains("exited with exit status: 3"), "{err}");
+        let alive = Command::new("sleep")
+            .arg("5")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        assert_eq!(
+            daemon_error(alive, "early eof".to_owned()).await,
+            "early eof"
+        );
     }
 
     #[cfg(unix)]

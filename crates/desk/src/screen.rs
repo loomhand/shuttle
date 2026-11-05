@@ -19,15 +19,15 @@ pub struct Placement {
 }
 
 impl Placement {
+    /// Whether the screen rectangle `[x, y, w, h]` lies inside this window.
+    pub fn holds(&self, [x, y, w, h]: [i32; 4]) -> bool {
+        self.contains(x, y) && self.contains(x + w - 1, y + h - 1)
+    }
+
     pub(crate) fn contains(&self, x: i32, y: i32) -> bool {
         let (left, top) = (i32::from(self.x), i32::from(self.y));
         (left..left + i32::from(self.width)).contains(&x)
             && (top..top + i32::from(self.height)).contains(&y)
-    }
-
-    /// Whether the screen rectangle `[x, y, w, h]` lies inside this window.
-    pub fn holds(&self, [x, y, w, h]: [i32; 4]) -> bool {
-        self.contains(x, y) && self.contains(x + w - 1, y + h - 1)
     }
 }
 
@@ -58,7 +58,7 @@ pub fn block_hashes(bgrx: &[u8], width: usize, height: usize, skip: &[bool]) -> 
     hashes
 }
 
-/// Whether a pixel of block `block` (see [`block_hashes`]) of the BGRX frames `a` and `b`, `width` by `height`, differs by more than `step` in a colour channel; frames of different sizes always do.
+/// Whether a pixel of block `block` (see [`block_hashes`]) of the BGRX frames `a` and `b` differs by more than `step` in a colour channel; frames of different sizes always do.
 pub fn visible(a: &[u8], b: &[u8], width: usize, height: usize, block: usize, step: u8) -> bool {
     if a.len() != b.len() || a.len() < width * height * 4 {
         return true;

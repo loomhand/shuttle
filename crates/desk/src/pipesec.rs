@@ -1,7 +1,8 @@
-//! Who may open the daemon's named pipe, and whether a client runs as this process's user.
+//! Who may open the daemon's named pipe, whether a client runs as this process's user, and whether a server runs as the user a pipe belongs to.
 
 use std::ffi::c_void;
-use std::sync::OnceLock;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
 use windows::Win32::Security::Authorization::{
@@ -12,13 +13,15 @@ use windows::Win32::Security::{
     GetTokenInformation, LookupAccountNameW, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
     SID_NAME_USE, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
-use windows::Win32::System::Pipes::GetNamedPipeClientProcessId;
+use windows::Win32::System::Pipes::{GetNamedPipeClientProcessId, GetNamedPipeServerProcessId};
 use windows::Win32::System::Threading::{
     GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::core::{HSTRING, PWSTR};
 
 use crate::server::pipe_sddl;
+
+static SERVER: Mutex<Option<(u32, String, OwnedHandle)>> = Mutex::new(None);
 
 /// The security descriptor every instance of the daemon's pipe carries.
 pub struct Security {
@@ -36,6 +39,11 @@ impl Security {
     pub fn new(group: Option<&str>) -> Result<Self, String> {
         let group = group.map(sid_of).transpose()?;
         Self::from_sddl(&pipe_sddl(own_sid()?, group.as_deref()))
+    }
+
+    /// The `SECURITY_ATTRIBUTES` to create a pipe instance with, valid while `self` lives.
+    pub fn attributes(&self) -> *mut c_void {
+        (&raw const self.attributes).cast_mut().cast()
     }
 
     fn from_sddl(sddl: &str) -> Result<Self, String> {
@@ -59,11 +67,6 @@ impl Security {
                 bInheritHandle: false.into(),
             },
         })
-    }
-
-    /// The `SECURITY_ATTRIBUTES` to create a pipe instance with, valid while `self` lives.
-    pub fn attributes(&self) -> *mut c_void {
-        (&raw const self.attributes).cast_mut().cast()
     }
 }
 
@@ -93,6 +96,38 @@ pub fn client_is_owner(pipe: HANDLE) -> bool {
         (Ok(user), Ok(own)) => user == own,
         _ => false,
     }
+}
+
+pub fn check_server(pipe: HANDLE, owner: Option<&str>) -> Result<(), String> {
+    let owner = match owner {
+        Some(owner) => owner,
+        None => own_sid()?,
+    };
+    let mut pid = 0;
+    // SAFETY: `pipe` is a live client handle of a connected pipe; `pid` receives the server's id.
+    unsafe { GetNamedPipeServerProcessId(pipe, &raw mut pid) }
+        .map_err(|e| format!("read the pipe's server process: {e}"))?;
+    let mut last = SERVER.lock().unwrap_or_else(PoisonError::into_inner);
+    let server = match last.take() {
+        Some(known) if known.0 == pid => known,
+        _ => server_of(pid)?,
+    };
+    let refused = (server.1 != owner).then(|| {
+        format!(
+            "process {pid} serves the pipe as {}, not as {owner}",
+            server.1
+        )
+    });
+    *last = Some(server);
+    refused.map_or(Ok(()), Err)
+}
+
+pub fn own_sid() -> Result<&'static str, String> {
+    static OWN: OnceLock<Result<String, String>> = OnceLock::new();
+    // SAFETY: GetCurrentProcess returns a pseudo handle that needs no closing.
+    OWN.get_or_init(|| user_of(unsafe { GetCurrentProcess() }))
+        .as_deref()
+        .map_err(Clone::clone)
 }
 
 /// The SID string of `account`, an account name or a SID string.
@@ -139,12 +174,14 @@ pub fn sid_of(account: &str) -> Result<String, String> {
     sid_string(PSID(sid.as_mut_ptr().cast()), false)
 }
 
-fn own_sid() -> Result<&'static str, String> {
-    static OWN: OnceLock<Result<String, String>> = OnceLock::new();
-    // SAFETY: GetCurrentProcess returns a pseudo handle that needs no closing.
-    OWN.get_or_init(|| user_of(unsafe { GetCurrentProcess() }))
-        .as_deref()
-        .map_err(Clone::clone)
+fn server_of(pid: u32) -> Result<(u32, String, OwnedHandle), String> {
+    // SAFETY: OpenProcess takes plain values.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }
+        .map_err(|e| format!("open the pipe's server process {pid}: {e}"))?;
+    // SAFETY: `process` is a handle OpenProcess just returned, owned here alone.
+    let process = unsafe { OwnedHandle::from_raw_handle(process.0) };
+    let user = user_of(HANDLE(process.as_raw_handle()))?;
+    Ok((pid, user, process))
 }
 
 fn user_of(process: HANDLE) -> Result<String, String> {

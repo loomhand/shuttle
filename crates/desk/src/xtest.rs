@@ -12,7 +12,7 @@ use x11rb::rust_connection::RustConnection;
 const SHIFT_L: u32 = 0xffe1;
 const TAB: u32 = 0xff09;
 
-/// Types `text` with the keyboard map's own keycodes; false, typing nothing, when a character or modifier state needs the driver or X is unreachable. Once `stop` is set no further key goes out, and an error releases the held keys while X answers.
+/// Types `text` with the keyboard map's own keycodes; false, typing nothing, when a character or modifier state needs the driver or X is unreachable.
 pub fn type_mapped(text: &str, stop: &AtomicBool) -> Result<bool, String> {
     let Ok((conn, n)) = x11rb::connect(None) else {
         return Ok(false);
@@ -126,7 +126,7 @@ mod tests {
         assert_eq!(keysym('/'), Some(0x2f));
         assert_eq!(keysym('\t'), Some(TAB));
         assert_eq!(keysym('é'), None);
-        assert_eq!(keysym('草'), None);
+        assert_eq!(keysym('\u{8349}'), None);
         assert_eq!(keysym('\n'), None);
     }
 }

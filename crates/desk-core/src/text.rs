@@ -37,9 +37,19 @@ pub fn matches<N: Named>(nodes: &[N], name: &str, role: Option<&str>) -> Vec<usi
 
 /// Lower case without the punctuation that labels add: underscores, ellipses, a trailing colon.
 pub fn norm(s: &str) -> String {
-    let s = s.to_lowercase().replace(['_', '…'], "").replace("...", "");
-    let s = s.trim().trim_end_matches(':');
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
+    let mut s = s.to_lowercase();
+    s.retain(|c| c != '_' && c != '…');
+    if s.contains("...") {
+        s = s.replace("...", "");
+    }
+    let mut out = String::with_capacity(s.len());
+    for word in s.trim().trim_end_matches(':').split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
 }
 
 /// At most `max` characters of `s`, escaped for a double-quoted outline field.
@@ -107,6 +117,7 @@ mod tests {
         assert_eq!(norm("  _Save As...  "), "save as");
         assert_eq!(norm("Tab width:"), "tab width");
         assert_eq!(norm("Long  line\tmargin…"), "long line margin");
+        assert_eq!(norm("Go._.. on: :"), "go on:");
     }
 
     #[test]

@@ -221,7 +221,7 @@ pub struct DeskSettings {
     pub locked_input: bool,
 }
 
-/// `foreground` fronts the target app as a person would; `background` acts without moving the pointer or the focus and refuses what it cannot do so; `auto` acts as `background` and takes the foreground for an action refused before anything was sent, on macOS and Windows.
+/// `foreground` fronts the target app; `background` keeps the pointer and focus and refuses what needs them; `auto` is `background` that takes the foreground for an action refused before anything was sent, on macOS and Windows.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum InputMode {

@@ -32,7 +32,7 @@ test('with no window in front, a wait step takes and focuses the one listed wind
 test('with no window in front, a wait step does not choose between two windows of its title, and a step without one plan window stops', async (t) => {
   const calls = await unfocused(t, ['Open File', 'Open File'])
   const waited = await main({ steps: [{ wait: 'Open File', timeout_ms: 600 }] })
-  assert.equal(waited.escalate?.reason, 'expected window "Open File" did not appear', JSON.stringify(waited))
+  assert.equal(waited.escalate?.reason, '2 windows match "Open File", and the step never guesses which one: name the window more exactly', JSON.stringify(waited))
   const clicked = await main({ steps: [{ click: 'Cancel' }] })
   assert.equal(clicked.escalate?.reason, 'no focused window', JSON.stringify(clicked))
   assert.ok(!calls.some((c) => c.startsWith('desk_focus') || c.startsWith('desk_press')), calls.join(' '))

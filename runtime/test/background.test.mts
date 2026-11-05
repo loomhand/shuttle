@@ -1,13 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { daemon, gray } from './daemon.mts'
-import type { Call, Reply } from './daemon.mts'
+import { daemon, gray, notepad, user } from './daemon.mts'
+import type { Call, Reply, W } from './daemon.mts'
 
 process.env.SHUTTLE_INPUT = 'background'
 const { main } = await import('../lib/gui_plan.mts')
-
-type W = { id: string; title: string; role: string; pid: number; active: boolean; owner?: string }
 
 function desktop(ws: W[], answer: (c: Call) => Reply | undefined = () => undefined) {
   const calls: Call[] = []
@@ -23,8 +21,6 @@ function desktop(ws: W[], answer: (c: Call) => Reply | undefined = () => undefin
   return { calls, reply }
 }
 
-const user = (): W => ({ id: 'c', title: 'Calculator', role: 'window', pid: 9, active: true })
-const notepad = (): W => ({ id: '1', title: 'Untitled - Notepad', role: 'window', pid: 4, active: false })
 const sent = (calls: Call[], tool: string) => calls.filter((c) => c.tool === tool).map((c) => c.args)
 
 test('a background plan types into its app window behind the front one, names it on every input and fronts nothing', async (t) => {
@@ -161,6 +157,24 @@ test('a press the driver could not confirm and no later step reads back fails th
   assert.deepEqual(r.unverified, [{ step: 1, note: 'unverifiable: posted a click' }])
 })
 
+test('a later step confirms an unconfirmed press only when it reads something the press could change', async (t) => {
+  const nodes = [
+    { ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: 'Untitled - Notepad', states: [] },
+    { ref: 1, id: 'b', parent: 0, depth: 1, role: 'button', name: 'Bold', states: ['showing'], bounds: [10, 10, 20, 20] },
+  ]
+  const d = desktop([user(), notepad()], ({ tool }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes, truncated: false })
+    if (tool === 'desk_press') return JSON.stringify({ ok: true, how: 'click', unverified: 'unverifiable: posted a click' })
+    if (tool === 'model_decide') return JSON.stringify({ answers: { ok: { probability: 0.9 } }, usage: { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 }, served: { model: 'm', build: null, id: null } })
+    return undefined
+  })
+  await daemon(t, d.reply)
+  for (const [check, ok] of [[{ wait: 'Notepad' }, false], [{ verify: 'Bold' }, false], [{ verify: 'Bold', enabled: true }, true], [{ expect: 'the text is bold' }, true]] as const) {
+    const r = await main({ steps: [{ app: 'Notepad' }, { click: 'Bold' }, check] })
+    assert.equal(r.ok, ok, `${JSON.stringify(check)} ${JSON.stringify(r)}`)
+  }
+})
+
 test('typing the driver could not confirm passes only when a field holds the text more often than before it', async (t) => {
   for (const [after, ok] of [['hi there', false], ['hihi there', true]] as const) {
     let typed = false
@@ -248,4 +262,21 @@ test('a background click with a count takes the image scale from the window of i
   const r = await main({ steps: [{ app: 'Finder' }, { click: 'report.txt', count: 2 }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(sent(d.calls, 'desk_click'), [{ x: 440, y: 420, count: 2, window: 'Downloads', pid: 4 }])
+})
+
+test('a fresh background run saves the chain the last plan left at its window and locates in the front window', async (t) => {
+  const nodes = [
+    { ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: 'Untitled - Notepad', states: [] },
+    { ref: 1, id: 'b', parent: 0, depth: 1, role: 'button', name: 'Bold', states: ['showing'], bounds: [10, 10, 20, 20] },
+  ]
+  const d = desktop([user(), notepad()], ({ tool }) => tool === 'desk_snapshot' ? JSON.stringify({ window: notepad(), nodes, truncated: false }) : undefined)
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+b' }, { click: 'Italic' }] })
+  assert.equal(r.escalate?.step, 2, JSON.stringify(r))
+  const query = 'fresh'
+  const fresh = ((await import(`../lib/gui_plan.mts?${query}`)) as typeof import('../lib/gui_plan.mts')).main
+  const saved = await fresh({ save: 'bold' })
+  assert.equal(saved.ok, true, JSON.stringify(saved))
+  const found = await fresh({ locate: { target: 'Bold' } })
+  assert.equal(found.found, true, JSON.stringify(found))
 })

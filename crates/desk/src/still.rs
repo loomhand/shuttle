@@ -1,4 +1,4 @@
-//! The screen-still wait's block model: a block that keeps changing during the wait, like a clock, a spinner or a video, stops counting, a block toggling between two contents, like a caret, counts only with new contents, and a faint change does not count.
+//! The screen-still wait's block model: a block that keeps changing stops counting, and one toggling between two contents counts only with new contents.
 
 pub(crate) const VISIBLE_STEP: u8 = 24;
 
@@ -26,21 +26,22 @@ impl Block {
     }
 
     pub(crate) fn of(contents: impl Iterator<Item = u64>) -> Self {
-        let mut runs: Vec<u64> = Vec::new();
+        let (mut runs, mut last, mut pair, mut more) = (0, None, None, false);
         for h in contents {
-            if runs.last() != Some(&h) {
-                runs.push(h);
+            if last == Some(h) {
+                continue;
             }
+            match (last, pair) {
+                (Some(a), None) => pair = Some((a.min(h), a.max(h))),
+                (_, Some((a, b))) => more |= h != a && h != b,
+                (None, _) => {}
+            }
+            (runs, last) = (runs + 1, Some(h));
         }
-        if runs.len() < 3 {
-            return Self::Quiet;
-        }
-        runs.sort_unstable();
-        runs.dedup();
-        if runs.len() == 2 {
-            Self::Toggling(runs)
-        } else {
-            Self::Churning
+        match pair {
+            Some((a, b)) if runs >= 3 && !more => Self::Toggling(vec![a, b]),
+            Some(_) if runs >= 3 => Self::Churning,
+            _ => Self::Quiet,
         }
     }
 }
@@ -54,7 +55,6 @@ pub(crate) struct Frame {
 }
 
 impl Frame {
-    /// Decodes a PNG capture.
     pub(crate) fn decode(png: &[u8]) -> Result<Self, String> {
         let mut dec = png::Decoder::new(std::io::Cursor::new(png));
         dec.set_transformations(png::Transformations::normalize_to_color8());
@@ -155,7 +155,6 @@ impl Watch {
 pub(crate) mod tests {
     use super::*;
 
-    /// A `width` x `height` frame, black but for the 8-pixel blocks in `lit` painted `tone`.
     pub(crate) fn frame(width: usize, height: usize, lit: &[(usize, u8)]) -> Frame {
         let columns = width.div_ceil(BLOCK);
         let mut rgb = vec![0; width * height * 3];

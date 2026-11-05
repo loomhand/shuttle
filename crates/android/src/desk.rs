@@ -1,6 +1,8 @@
 //! The desk calls of GUI plans and scripts on Android: windows and element trees from the UI server, input through adb.
 
+use std::borrow::Cow;
 use std::fmt::Write as _;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -24,7 +26,7 @@ const FOCUS_WAIT: Duration = Duration::from_secs(5);
 const FOCUS_POLL: Duration = Duration::from_millis(100);
 const SWITCH_POLLS: u32 = 10;
 const SCROLL_TRIES: u32 = 6;
-const SCROLL_MS: &str = "600";
+const SCROLL_MS: u32 = 600;
 const SCROLL_SETTLE: Duration = Duration::from_millis(400);
 const MIN_SPAN: i32 = 8;
 const MIN_SWIPE: i32 = 48;
@@ -97,16 +99,14 @@ impl Node {
     }
 
     fn json(&self, i: usize, app: &str) -> Value {
-        let mut v = json!({
-            "ref": i,
-            "id": self.id(app),
-            "parent": self.parent,
-            "depth": self.depth,
-            "role": self.role,
-            "name": self.name,
-            "states": self.states,
-            "bounds": self.bounds,
-        });
+        let mut v = json!({"ref": i});
+        v["id"] = self.id(app).into();
+        v["parent"] = self.parent.into();
+        v["depth"] = self.depth.into();
+        v["role"] = self.role.into();
+        v["name"] = self.name.as_str().into();
+        v["states"] = self.states.as_slice().into();
+        v["bounds"] = self.bounds.as_slice().into();
         if let Some(value) = &self.value {
             v["value"] = value.as_str().into();
         }
@@ -242,12 +242,13 @@ struct WindowInfo {
     bounds: [i32; 4],
 }
 
-struct Raw {
-    path: String,
-    class: String,
-    text: String,
-    desc: String,
-    hint: String,
+#[derive(Default)]
+struct Raw<'a> {
+    path: Cow<'a, str>,
+    class: Cow<'a, str>,
+    text: Cow<'a, str>,
+    desc: Cow<'a, str>,
+    hint: Cow<'a, str>,
     showing_hint: bool,
     clickable: bool,
     checkable: bool,
@@ -261,7 +262,7 @@ struct Raw {
     rect: Rect,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Rect {
     left: i32,
     top: i32,
@@ -302,10 +303,16 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
         }
         "desk_at" => at(android, parse(args)?).await?,
         "desk_key" => {
-            android.keys(&parse::<KeyArgs>(args)?.keys).await?;
+            let a: KeyArgs = parse(args)?;
+            in_front(android, a.window.as_deref(), a.pid).await?;
+            android.keys(&a.keys).await?;
             json!({"ok": true}).to_string()
         }
-        "desk_type" => type_text(android, &parse::<TypeArgs>(args)?.text).await?,
+        "desk_type" => {
+            let a: TypeArgs = parse(args)?;
+            in_front(android, a.window.as_deref(), a.pid).await?;
+            type_text(android, &a.text).await?
+        }
         "desk_click" => click(android, parse(args)?).await?,
         "desk_focus" => focus(android, parse(args)?).await?,
         "desk_close" => {
@@ -318,14 +325,18 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
                 ));
             }
             android.keys("back").await?;
-            json!({"ok": true, "title": frame.title}).to_string()
+            let mut out = json!({"ok": true});
+            out["title"] = frame.title.into();
+            out.to_string()
         }
         "desk_launch" => {
             let app = parse::<LaunchArgs>(args)?.app;
-            json!({"ok": true, "launched": android.launch(&app).await?}).to_string()
+            let mut out = json!({"ok": true});
+            out["launched"] = android.launch(&app).await?.into();
+            out.to_string()
         }
         "desk_screen" => {
-            let (width, height) = android.screen().await?;
+            let (width, height) = screen(android).await?;
             json!({"width": width, "height": height}).to_string()
         }
         "desk_shot" => return shot(android, parse(args)?).await,
@@ -350,7 +361,10 @@ pub(crate) fn elements(xml: &str, frame: &Frame) -> Vec<Node> {
 
 /// Whether a dump is of the window `front`; a dump without a window id, or a front frame without one, is not told apart.
 pub(crate) fn same_window(xml: &str, front: &Frame) -> bool {
-    front.window().is_empty() || attribute(xml, "window").is_none_or(|w| w == front.window())
+    front.window().is_empty()
+        || attributes(xml)
+            .find(|&(key, _)| key == "window")
+            .is_none_or(|(_, w)| unescape(w) == front.window())
 }
 
 /// The front window with the system windows over it; with none listed, a bare frame of the screen.
@@ -359,19 +373,33 @@ pub(crate) async fn front(android: &Android) -> Result<Frame, String> {
     match frames.into_iter().find(|f| f.active) {
         Some(frame) => Ok(frame),
         None => Ok(Frame {
-            screen: android.screen().await?,
+            screen: screen(android).await?,
             ..Frame::default()
         }),
     }
 }
 
+pub(crate) async fn screen(android: &Android) -> Result<(i32, i32), String> {
+    Ok(turned(
+        android.natural().await?,
+        &window_list(android).await?,
+    ))
+}
+
+/// The width and height a PNG's header gives.
+pub(crate) fn png_size(png: &[u8]) -> Option<(u32, u32)> {
+    let size = |at: usize| Some(u32::from_be_bytes(png.get(at..at + 4)?.try_into().ok()?));
+    png.starts_with(b"\x89PNG\r\n\x1a\n").then_some(())?;
+    Some((size(16)?, size(20)?))
+}
+
 /// The listed windows, the front one active; an activity switch lists none for a moment, which this waits out.
 async fn frames(android: &Android) -> Result<Vec<Frame>, String> {
-    let screen = android.screen().await?;
+    let natural = android.natural().await?;
     let mut shown = Vec::new();
     for _ in 0..SWITCH_POLLS {
-        let list: Vec<WindowInfo> = serde_json::from_str(android.windows().await?.trim())
-            .map_err(|e| format!("decode windows: {e}"))?;
+        let list = window_list(android).await?;
+        let screen = turned(natural, &list);
         shown = frames_of(list, screen);
         if !shown.is_empty() {
             break;
@@ -379,6 +407,22 @@ async fn frames(android: &Android) -> Result<Vec<Frame>, String> {
         tokio::time::sleep(FOCUS_POLL).await;
     }
     Ok(shown)
+}
+
+async fn window_list(android: &Android) -> Result<Vec<WindowInfo>, String> {
+    serde_json::from_str(android.windows().await?.trim())
+        .map_err(|e| format!("decode windows: {e}"))
+}
+
+fn turned((w, h): (i32, i32), list: &[WindowInfo]) -> (i32, i32) {
+    let (right, bottom) = list.iter().fold((0, 0), |(r, b), win| {
+        (r.max(win.bounds[2]), b.max(win.bounds[3]))
+    });
+    if (right > w || bottom > h) && right <= h && bottom <= w {
+        (h, w)
+    } else {
+        (w, h)
+    }
 }
 
 fn frames_of(list: Vec<WindowInfo>, screen: (i32, i32)) -> Vec<Frame> {
@@ -470,64 +514,68 @@ async fn tree(
 
 /// The front window of package `app` with its nodes.
 async fn app_tree(android: &Android, app: &str) -> Result<(Frame, Vec<Node>), String> {
-    let mut own: Vec<Frame> = frames(android)
+    let frame = frames(android)
         .await?
         .into_iter()
         .filter(|f| f.package == app)
-        .collect();
-    own.sort_by_key(|f| !f.active);
-    let frame = own
-        .into_iter()
-        .next()
+        .min_by_key(|f| !f.active)
         .ok_or_else(|| format!("no window of {app}"))?;
     let xml = android.tree(Some(&frame.id)).await?;
     let nodes = nodes(&frame, &raws(&xml));
     Ok((frame, nodes))
 }
 
-fn raws(xml: &str) -> Vec<Raw> {
-    xml.split("<node ")
-        .skip(1)
-        .filter_map(|node| {
-            let attr = |key: &str| attribute(node, key).unwrap_or_default();
-            let flag = |key: &str| attr(key) == "true";
-            Some(Raw {
-                path: attr("path"),
-                class: attr("class"),
-                text: attr("text"),
-                desc: attr("content-desc"),
-                hint: attr("hint"),
-                showing_hint: flag("showing-hint"),
-                clickable: flag("clickable") || flag("long-clickable"),
-                checkable: flag("checkable"),
-                checked: flag("checked"),
-                editable: flag("editable"),
-                enabled: attr("enabled") != "false",
-                focused: flag("focused"),
-                selected: flag("selected"),
-                scrollable: flag("scrollable"),
-                visible: attr("visible") != "false",
-                rect: bounds(&attr("bounds"))?,
-            })
-        })
-        .collect()
+fn raws(xml: &str) -> Vec<Raw<'_>> {
+    xml.split("<node ").skip(1).filter_map(raw).collect()
 }
 
-/// The unescaped value of `key="..."` in the attributes of one node.
-fn attribute(node: &str, key: &str) -> Option<String> {
-    let head = node.split('>').next()?;
-    let start = head
-        .find(&format!(" {key}=\""))
-        .map(|i| i + key.len() + 3)
-        .or_else(|| {
-            head.strip_prefix(&format!("{key}=\""))
-                .map(|_| key.len() + 2)
-        })?;
-    let len = head[start..].find('"')?;
-    Some(unescape(&head[start..start + len]))
+fn raw(node: &str) -> Option<Raw<'_>> {
+    let mut r = Raw {
+        enabled: true,
+        visible: true,
+        ..Raw::default()
+    };
+    let mut rect = None;
+    for (key, value) in attributes(node) {
+        let on = value == "true";
+        match key {
+            "path" => r.path = unescape(value),
+            "class" => r.class = unescape(value),
+            "text" => r.text = unescape(value),
+            "content-desc" => r.desc = unescape(value),
+            "hint" => r.hint = unescape(value),
+            "showing-hint" => r.showing_hint = on,
+            "clickable" | "long-clickable" => r.clickable |= on,
+            "checkable" => r.checkable = on,
+            "checked" => r.checked = on,
+            "editable" => r.editable = on,
+            "enabled" => r.enabled = value != "false",
+            "focused" => r.focused = on,
+            "selected" => r.selected = on,
+            "scrollable" => r.scrollable = on,
+            "visible" => r.visible = value != "false",
+            "bounds" => rect = bounds(&unescape(value)),
+            _ => {}
+        }
+    }
+    Some(Raw { rect: rect?, ..r })
 }
 
-fn unescape(value: &str) -> String {
+/// The `key="value"` pairs of a tag up to its first `>`, with the values still escaped.
+fn attributes(tag: &str) -> impl Iterator<Item = (&str, &str)> {
+    let mut rest = tag.split_once('>').map_or(tag, |(head, _)| head);
+    std::iter::from_fn(move || {
+        let (key, after) = rest.split_once("=\"")?;
+        let (value, next) = after.split_once('"')?;
+        rest = next;
+        Some((key.rsplit(' ').next().unwrap_or(key), value))
+    })
+}
+
+fn unescape(value: &str) -> Cow<'_, str> {
+    if !value.contains('&') {
+        return Cow::Borrowed(value);
+    }
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
     while let Some(i) = rest.find('&') {
@@ -559,7 +607,7 @@ fn unescape(value: &str) -> String {
         }
     }
     out.push_str(rest);
-    out
+    Cow::Owned(out)
 }
 
 /// `[l,t][r,b]` of a dump node.
@@ -582,7 +630,7 @@ fn bounds(value: &str) -> Option<Rect> {
 }
 
 /// The window, then each element that shows text or takes input; a toggle in a checkable row is the row.
-fn nodes(frame: &Frame, raws: &[Raw]) -> Vec<Node> {
+fn nodes(frame: &Frame, raws: &[Raw<'_>]) -> Vec<Node> {
     let mut out = vec![Node {
         path: "w".to_owned(),
         parent: -1,
@@ -599,11 +647,7 @@ fn nodes(frame: &Frame, raws: &[Raw]) -> Vec<Node> {
     let mut listed: Vec<(usize, usize)> = Vec::new();
     for (i, r) in raws.iter().enumerate() {
         let interactive = r.clickable || r.checkable || r.editable;
-        let own = if r.editable {
-            r.hint.as_str()
-        } else {
-            r.text.as_str()
-        };
+        let own: &str = if r.editable { &r.hint } else { &r.text };
         if !interactive && r.text.is_empty() && r.desc.is_empty() {
             continue;
         }
@@ -615,25 +659,19 @@ fn nodes(frame: &Frame, raws: &[Raw]) -> Vec<Node> {
         if r.checkable && up.is_some_and(|(raw, _)| raws[raw].checkable) {
             continue;
         }
-        let mut name = if own.is_empty() {
-            r.desc.clone()
-        } else {
-            own.to_owned()
-        };
+        let mut name: &str = if own.is_empty() { &r.desc } else { own };
         let mut description = String::new();
         if name.is_empty() && interactive {
-            let mut texts = labels_of(raws, i);
-            if !texts.is_empty() {
-                name = texts.remove(0);
-                description = texts.join(" ");
+            let mut labels = labels_of(raws, i);
+            if let Some(first) = labels.next() {
+                name = first;
+                description = labels.next().unwrap_or_default().to_owned();
             }
         }
-        if name.is_empty()
-            && r.checkable
-            && let Some((_, at)) = up
-        {
-            name = out[at].name.clone();
-        }
+        let name = match up {
+            Some((_, at)) if name.is_empty() && r.checkable => out[at].name.clone(),
+            _ => one_line(name),
+        };
         let mut states = vec!["showing"];
         if !r.enabled {
             states.push("disabled");
@@ -651,17 +689,17 @@ fn nodes(frame: &Frame, raws: &[Raw]) -> Vec<Node> {
             if r.showing_hint {
                 String::new()
             } else {
-                r.text.clone()
+                r.text.to_string()
             }
         });
         let (parent, depth) = up.map_or((0, 1), |(_, at)| (at as i64, out[at].depth + 1));
         listed.push((i, out.len()));
         out.push(Node {
-            path: r.path.clone(),
+            path: r.path.to_string(),
             parent,
             depth,
             role: role(r),
-            name: one_line(&name),
+            name,
             description,
             value,
             states,
@@ -673,7 +711,7 @@ fn nodes(frame: &Frame, raws: &[Raw]) -> Vec<Node> {
     out
 }
 
-fn viewport(raws: &[Raw], path: &str) -> Option<[i32; 4]> {
+fn viewport(raws: &[Raw<'_>], path: &str) -> Option<[i32; 4]> {
     raws.iter()
         .filter(|a| a.scrollable && under(path, &a.path))
         .map(|a| a.rect)
@@ -698,7 +736,14 @@ fn under(path: &str, ancestor: &str) -> bool {
 }
 
 fn one_line(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
+    let mut out = String::with_capacity(s.len());
+    for word in s.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
 }
 
 fn xywh(r: Rect) -> [i32; 4] {
@@ -706,17 +751,15 @@ fn xywh(r: Rect) -> [i32; 4] {
 }
 
 /// The texts of the descendants of raw node `i` in screen-reader order: a row's title, then its summary.
-fn labels_of(raws: &[Raw], i: usize) -> Vec<String> {
+fn labels_of<'r>(raws: &'r [Raw<'_>], i: usize) -> impl Iterator<Item = &'r str> {
     raws.iter()
-        .filter(|r| under(&r.path, &raws[i].path))
+        .filter(move |r| under(&r.path, &raws[i].path))
         .map(|r| if r.text.is_empty() { &r.desc } else { &r.text })
+        .map(Cow::as_ref)
         .filter(|t| !t.is_empty())
-        .take(2)
-        .cloned()
-        .collect()
 }
 
-fn role(r: &Raw) -> &'static str {
+fn role(r: &Raw<'_>) -> &'static str {
     let class = r.class.rsplit('.').next().unwrap_or_default();
     match class {
         c if c.contains("Switch") => "switch",
@@ -740,11 +783,10 @@ fn role(r: &Raw) -> &'static str {
 async fn snapshot(android: &Android, a: SnapArgs) -> Result<String, String> {
     let started = Instant::now();
     let (frame, nodes) = tree(android, a.id.as_deref(), a.window.as_deref(), a.pid).await?;
-    let mut out = json!({
-        "window": frame.json(),
-        "ms": ms(started.elapsed().as_micros()),
-        "truncated": false,
-    });
+    let mut out = json!({});
+    out["window"] = frame.json();
+    out["ms"] = ms(started.elapsed().as_micros());
+    out["truncated"] = false.into();
     if a.text {
         out["text"] = outline(&nodes, &frame.package, a.max_chars.unwrap_or(NAME_CHARS)).into();
     } else {
@@ -760,7 +802,7 @@ async fn snapshot(android: &Android, a: SnapArgs) -> Result<String, String> {
 fn outline(nodes: &[Node], app: &str, max_chars: usize) -> String {
     let mut out = String::new();
     for n in nodes {
-        let _ = write!(out, "{}- {}", "  ".repeat(n.depth), n.role);
+        let _ = write!(out, "{:indent$}- {}", "", n.role, indent = 2 * n.depth);
         if !n.name.is_empty() {
             let _ = write!(out, " \"{}\"", quote(&n.name, max_chars));
         }
@@ -785,7 +827,8 @@ async fn find(android: &Android, a: FindArgs) -> Result<String, String> {
         .take(MAX_FOUND)
         .map(|i| nodes[i].json(i, &frame.package))
         .collect();
-    let mut out = json!({"window": frame.json()});
+    let mut out = json!({});
+    out["window"] = frame.json();
     out["found"] = Value::Array(found);
     Ok(out.to_string())
 }
@@ -819,7 +862,7 @@ async fn read(android: &Android, a: ReadArgs) -> Result<String, String> {
     Ok(node.json(0, &frame.package).to_string())
 }
 
-/// Taps an element, after scrolling its list until it shows: the element is asked to scroll itself into view first, and swiped for when it does not move.
+/// Taps an element, after scrolling its list until it shows.
 async fn press(android: &Android, id: &str) -> Result<String, String> {
     let (mut frame, mut node) = node(android, id).await?;
     let mut ask = true;
@@ -849,16 +892,7 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
         let (cx, from, to) = frame
             .swipe([sx, sy, sw, sh], node.bounds[1])
             .ok_or_else(|| format!("element {id} is off the screen, and its list is covered"))?;
-        android
-            .input(&[
-                "swipe",
-                &cx.to_string(),
-                &from.to_string(),
-                &cx.to_string(),
-                &to.to_string(),
-                SCROLL_MS,
-            ])
-            .await?;
+        android.swipe((cx, from), (cx, to), SCROLL_MS).await?;
         tokio::time::sleep(SCROLL_SETTLE).await;
         let (refreshed, mut nodes) = app_tree(android, &frame.package).await?;
         frame = refreshed;
@@ -884,16 +918,18 @@ async fn at(android: &Android, a: AtArgs) -> Result<String, String> {
         .filter(|(_, n)| inside(n))
         .max_by_key(|(i, n)| (n.depth, *i))
     else {
-        return Ok(json!({"found": null, "window": frame.json()}).to_string());
+        let mut out = json!({"found": null});
+        out["window"] = frame.json();
+        return Ok(out.to_string());
     };
     let mut path = Vec::new();
     let mut p = hit.parent;
     while p >= 0 {
         let n = &nodes[p as usize];
         let id = if p == 0 {
-            frame.id.clone()
+            Cow::Borrowed(frame.id.as_str())
         } else {
-            n.id(&frame.package)
+            Cow::Owned(n.id(&frame.package))
         };
         path.push(json!({"id": id, "role": n.role, "name": n.name}));
         p = n.parent;
@@ -912,10 +948,32 @@ async fn type_text(android: &Android, text: &str) -> Result<String, String> {
 }
 
 async fn click(android: &Android, a: ClickArgs) -> Result<String, String> {
-    for _ in 0..a.count.unwrap_or(1).max(1) {
-        android.tap((a.x as i32, a.y as i32)).await?;
+    if let Some(button) = a.button.as_deref().filter(|b| *b != "left") {
+        return Err(format!("a tap on a device has no {button} button"));
     }
+    if a.modifiers.as_ref().is_some_and(|m| !m.is_empty()) {
+        return Err("a tap on a device takes no modifier keys".to_owned());
+    }
+    in_front(android, a.window.as_deref(), a.pid).await?;
+    android
+        .taps((a.x as i32, a.y as i32), a.count.unwrap_or(1))
+        .await?;
     Ok(json!({"ok": true}).to_string())
+}
+
+async fn in_front(android: &Android, window: Option<&str>, pid: Option<u32>) -> Result<(), String> {
+    if window.is_none() && pid.is_none() {
+        return Ok(());
+    }
+    let frame = window::pick(frames(android).await?, window, pid)?;
+    if frame.active {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} is not in front, and input on a device reaches only the front window",
+            frame.title
+        ))
+    }
 }
 
 /// The window `window` names, which on Android is on the screen; a package name without a window starts its app.
@@ -941,7 +999,10 @@ async fn focus(android: &Android, a: WindowArgs) -> Result<String, String> {
         }
         Err(e) => return Err(e),
     };
-    Ok(json!({"ok": true, "title": frame.title, "pid": frame.pid}).to_string())
+    let mut out = json!({"ok": true});
+    out["title"] = frame.title.into();
+    out["pid"] = frame.pid.into();
+    Ok(out.to_string())
 }
 
 /// A PNG of a screen rectangle, the whole screen by default.
@@ -952,27 +1013,25 @@ async fn shot(android: &Android, a: ShotArgs) -> Result<Output, String> {
         );
     }
     let png = android.screenshot().await?;
-    let (w, h) = android.screen().await?;
+    let (iw, ih) = png_size(&png).ok_or("the screenshot is not a PNG")?;
     let rect = [
         a.x.unwrap_or(0.0),
         a.y.unwrap_or(0.0),
-        a.w.unwrap_or(f64::from(w)),
-        a.h.unwrap_or(f64::from(h)),
+        a.w.unwrap_or(f64::from(iw)),
+        a.h.unwrap_or(f64::from(ih)),
     ];
-    let (w, h, png) = match png_size(&png) {
-        Some((iw, ih))
-            if rect[0] <= 0.0
-                && rect[1] <= 0.0
-                && rect[0] + rect[2] >= f64::from(iw)
-                && rect[1] + rect[3] >= f64::from(ih) =>
-        {
-            (iw, ih, png)
-        }
-        _ => crop_png(&png, rect, 1.0, None)?,
+    let (w, h, png) = if rect[0] <= 0.0
+        && rect[1] <= 0.0
+        && rect[0] + rect[2] >= f64::from(iw)
+        && rect[1] + rect[3] >= f64::from(ih)
+    {
+        (iw, ih, png)
+    } else {
+        crop_png(&png, rect, 1.0, None)?
     };
     let mut out = json!({"ok": true, "width": w, "height": h});
     if let Some(path) = a.path {
-        write_bytes(std::path::Path::new(&path), &png).await?;
+        write_bytes(Path::new(&path), &png).await?;
         out["path"] = path.into();
     }
     Ok(Output {
@@ -982,18 +1041,11 @@ async fn shot(android: &Android, a: ShotArgs) -> Result<Output, String> {
     })
 }
 
-/// The width and height a PNG's header gives.
-fn png_size(png: &[u8]) -> Option<(u32, u32)> {
-    let size = |at: usize| Some(u32::from_be_bytes(png.get(at..at + 4)?.try_into().ok()?));
-    png.starts_with(b"\x89PNG\r\n\x1a\n").then_some(())?;
-    Some((size(16)?, size(20)?))
-}
-
 /// Lists the windows until they differ from `since` or `limit` of wall time passes, list reads included, 5 s at most.
 async fn wait_for<F, Fut>(since: Value, limit: Duration, mut read: F) -> Result<Value, String>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<Value, String>>,
+    Fut: Future<Output = Result<Value, String>>,
 {
     let started = tokio::time::Instant::now();
     let limit = limit.min(WAIT_MAX);
@@ -1016,7 +1068,7 @@ where
     }
 }
 
-async fn write_bytes(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
+async fn write_bytes(path: &Path, data: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -1033,19 +1085,6 @@ mod tests {
 
     const REDROID: (i32, i32) = (720, 1280);
     const DUMP: &str = r#"<hierarchy><node text="" class="android.widget.FrameLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0" bounds="[0,0][720,1280]" /><node text="" class="android.widget.LinearLayout" content-desc="" hint="" showing-hint="false" checkable="true" checked="true" clickable="true" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0" bounds="[0,300][720,400]" /><node text="Dark theme" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.0" bounds="[40,320][400,380]" /><node text="" class="android.widget.Switch" content-desc="" hint="" showing-hint="false" checkable="true" checked="true" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.1" bounds="[600,320][680,380]" /><node text="Search…" class="android.widget.EditText" content-desc="" hint="Search…" showing-hint="true" checkable="false" checked="false" clickable="true" long-clickable="false" editable="true" enabled="false" focused="true" selected="false" scrollable="false" visible="true" path="0.1" bounds="[40,100][680,180]" /><node text="gone" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="false" path="0.2" bounds="[0,0][0,0]" /></hierarchy>"#;
-
-    fn window(bounds: [i32; 4]) -> WindowInfo {
-        WindowInfo {
-            id: 7,
-            kind: APPLICATION,
-            title: "Settings".into(),
-            package: "com.android.settings".into(),
-            active: true,
-            focused: true,
-            layer: 0,
-            bounds,
-        }
-    }
 
     #[test]
     fn an_active_system_window_is_in_front_of_the_apps() {
@@ -1137,6 +1176,14 @@ mod tests {
     }
 
     #[test]
+    fn the_screen_turns_only_when_the_windows_fit_it_turned() {
+        assert_eq!(turned(REDROID, &[window([0, 0, 720, 1280])]), REDROID);
+        assert_eq!(turned(REDROID, &[window([0, 0, 1280, 720])]), (1280, 720));
+        assert_eq!(turned(REDROID, &[window([0, 0, 1400, 1280])]), REDROID);
+        assert_eq!(turned(REDROID, &[]), REDROID);
+    }
+
+    #[test]
     fn a_dump_is_told_from_the_front_window_by_its_id() {
         let front = frames_of(vec![window([0, 0, 720, 1280])], REDROID).remove(0);
         assert_eq!(front.window(), "7");
@@ -1214,23 +1261,6 @@ mod tests {
         assert_eq!(unique(&twice, "text", "Dark theme"), None);
     }
 
-    fn settings() -> Frame {
-        frame(window([0, 0, 720, 1280]), false, REDROID)
-    }
-
-    fn bar(id: i64, kind: i64, layer: i64, bounds: [i32; 4]) -> WindowInfo {
-        WindowInfo {
-            id,
-            kind,
-            title: String::new(),
-            package: "com.android.systemui".into(),
-            active: false,
-            focused: false,
-            layer,
-            bounds,
-        }
-    }
-
     #[test]
     fn a_window_is_titled_with_its_package() {
         let f = settings();
@@ -1298,27 +1328,6 @@ mod tests {
         );
         let shown = elements(DUMP, &settings());
         assert!(shown[0].mentions("dark") && !shown[0].mentions("search"));
-    }
-
-    fn row(path: &str, scrollable: bool, bounds: &str) -> String {
-        format!(
-            r#"<node text="{path}" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="{scrollable}" visible="true" path="{path}" bounds="{bounds}" />"#
-        )
-    }
-
-    fn list_dump() -> String {
-        format!(
-            "<hierarchy>{}{}{}{}</hierarchy>",
-            row("0.0", true, "[0,200][720,1184]"),
-            row("0.0.0", false, "[0,100][720,260]"),
-            row("0.0.1", false, "[0,260][720,420]"),
-            row("0.0.2", false, "[0,1200][720,1360]"),
-        )
-    }
-
-    fn tap_of(frame: &Frame, dump: &str, name: &str) -> Option<(i32, i32)> {
-        let nodes = nodes(frame, &raws(dump));
-        frame.tap_at(nodes.iter().find(|n| n.name == name).unwrap())
     }
 
     #[test]
@@ -1457,7 +1466,7 @@ mod tests {
         assert_eq!(bounds("[1,2]"), None);
         assert_eq!(
             unescape("a&lt;b&gt;&quot;&apos;&#20320;&#x597D;&bogus"),
-            "a<b>\"'你好&bogus"
+            "a<b>\"'\u{4f60}\u{597d}&bogus"
         );
     }
 
@@ -1614,5 +1623,56 @@ mod tests {
         assert_eq!(out["changed"], true);
         assert_eq!(out["windows"], after);
         assert_eq!(started.elapsed(), Duration::from_millis(151));
+    }
+
+    fn window(bounds: [i32; 4]) -> WindowInfo {
+        WindowInfo {
+            id: 7,
+            kind: APPLICATION,
+            title: "Settings".into(),
+            package: "com.android.settings".into(),
+            active: true,
+            focused: true,
+            layer: 0,
+            bounds,
+        }
+    }
+
+    fn settings() -> Frame {
+        frame(window([0, 0, 720, 1280]), false, REDROID)
+    }
+
+    fn bar(id: i64, kind: i64, layer: i64, bounds: [i32; 4]) -> WindowInfo {
+        WindowInfo {
+            id,
+            kind,
+            title: String::new(),
+            package: "com.android.systemui".into(),
+            active: false,
+            focused: false,
+            layer,
+            bounds,
+        }
+    }
+
+    fn row(path: &str, scrollable: bool, bounds: &str) -> String {
+        format!(
+            r#"<node text="{path}" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="{scrollable}" visible="true" path="{path}" bounds="{bounds}" />"#
+        )
+    }
+
+    fn list_dump() -> String {
+        format!(
+            "<hierarchy>{}{}{}{}</hierarchy>",
+            row("0.0", true, "[0,200][720,1184]"),
+            row("0.0.0", false, "[0,100][720,260]"),
+            row("0.0.1", false, "[0,260][720,420]"),
+            row("0.0.2", false, "[0,1200][720,1360]"),
+        )
+    }
+
+    fn tap_of(frame: &Frame, dump: &str, name: &str) -> Option<(i32, i32)> {
+        let nodes = nodes(frame, &raws(dump));
+        frame.tap_at(nodes.iter().find(|n| n.name == name).unwrap())
     }
 }

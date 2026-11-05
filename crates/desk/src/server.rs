@@ -1,5 +1,6 @@
 //! The desk endpoint: a unix socket on macOS and Linux, a named pipe on Windows, one framed call per connection.
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use desk_core::wire::{Call, Output, read_body, read_frame, tool_of, write_frame};
@@ -18,6 +19,7 @@ use crate::spi::Spi as Backend;
 #[cfg(windows)]
 use crate::uia::Uia as Backend;
 
+const ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
 #[cfg(unix)]
 const BACKLOG: u32 = 1024;
 #[cfg(target_os = "linux")]
@@ -32,7 +34,7 @@ const HOST: Os = Os::Linux;
 const HOST: Os = Os::Windows;
 
 const ALLOWLIST_REFUSED: &str = "the computer verbs see and click the whole screen, which an app allowlist does not bound: empty [safety] apps in config.toml to use them";
-// a group may read and write the pipe but not create instances of it: FILE_GENERIC_READ and FILE_GENERIC_WRITE less FILE_CREATE_PIPE_INSTANCE
+// FILE_GENERIC_READ and FILE_GENERIC_WRITE less FILE_CREATE_PIPE_INSTANCE
 const GROUP_RIGHTS: &str = "0x12019b";
 #[cfg(windows)]
 const PIPE_BUSY: i32 = 231;
@@ -52,7 +54,7 @@ pub type Accepted = tokio::net::UnixStream;
 #[cfg(windows)]
 pub type Accepted = tokio::net::windows::named_pipe::NamedPipeServer;
 
-/// The client end of a named pipe that cancels its pending I/O when dropped, so its server sees the hang-up at once: the runtime closes a pipe only after its writes finish.
+/// The client end of a named pipe that cancels its pending I/O when dropped, so its server sees the hang-up at once.
 #[cfg(windows)]
 #[derive(Debug)]
 pub struct PipeClient(tokio::net::windows::named_pipe::NamedPipeClient);
@@ -147,32 +149,13 @@ pub trait Handler: Send + Sync + 'static {
     }
 }
 
-/// A connection, which can say whether its peer runs as this process's user.
-trait Peer {
-    fn is_owner(&self) -> bool;
-}
-
-#[cfg(unix)]
-impl Peer for tokio::net::UnixStream {
-    fn is_owner(&self) -> bool {
-        // SAFETY: geteuid takes no arguments and always succeeds.
-        let own = unsafe { libc::geteuid() };
-        self.peer_cred().is_ok_and(|c| c.uid() == own)
-    }
-}
-
-#[cfg(windows)]
-impl Peer for tokio::net::windows::named_pipe::NamedPipeServer {
-    fn is_owner(&self) -> bool {
-        use std::os::windows::io::AsRawHandle;
-        crate::pipesec::client_is_owner(windows::Win32::Foundation::HANDLE(self.as_raw_handle()))
-    }
-}
-
 impl<B: Access + 'static, D: Input + Send + Sync + 'static> Handler for Desk<B, D> {
     async fn answer(&self, call: Call) -> Output {
         let mut args = call.args;
         if call.tool == "desk_web" {
+            if !args.is_object() && !args.is_null() {
+                return Output::error(format!("{}: args are not an object", call.tool));
+            }
             args["holder"] = call.agent_id.into();
         }
         self.run(&call.tool, args)
@@ -205,6 +188,28 @@ pub struct Listener {
     #[cfg(windows)]
     security: crate::pipesec::Security,
     endpoint: String,
+}
+
+/// A connection, which can say whether its peer runs as this process's user.
+trait Peer {
+    fn is_owner(&self) -> bool;
+}
+
+#[cfg(unix)]
+impl Peer for tokio::net::UnixStream {
+    fn is_owner(&self) -> bool {
+        // SAFETY: geteuid takes no arguments and always succeeds.
+        let own = unsafe { libc::geteuid() };
+        self.peer_cred().is_ok_and(|c| c.uid() == own)
+    }
+}
+
+#[cfg(windows)]
+impl Peer for tokio::net::windows::named_pipe::NamedPipeServer {
+    fn is_owner(&self) -> bool {
+        use std::os::windows::io::AsRawHandle;
+        crate::pipesec::client_is_owner(windows::Win32::Foundation::HANDLE(self.as_raw_handle()))
+    }
 }
 
 /// One path component as `lstat` sees it.
@@ -248,7 +253,7 @@ pub async fn bind(endpoint: &str) -> Result<Listener, String> {
     bind_at(endpoint, None)
 }
 
-/// Takes the unix socket `endpoint` like [`bind`], open to the members of `group`, a group name or number: mode 0660, owned by that group. Its directory must belong to this user and be writable by no one else.
+/// Takes the unix socket `endpoint` like [`bind`] with mode 0660 for `group`, a group name or number, in a directory only this user can write.
 #[cfg(unix)]
 pub async fn bind_for(endpoint: &str, group: &str) -> Result<Listener, String> {
     bind_at(endpoint, Some(gid(group)?))
@@ -258,12 +263,15 @@ pub async fn bind_for(endpoint: &str, group: &str) -> Result<Listener, String> {
 #[cfg(unix)]
 pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<(), String> {
     loop {
-        let (stream, _) = listener
-            .socket
-            .accept()
-            .await
-            .map_err(|e| format!("accept {}: {e}", listener.endpoint))?;
-        tokio::spawn(handle(handler.clone(), stream));
+        match listener.socket.accept().await {
+            Ok((stream, _)) => {
+                tokio::spawn(handle(handler.clone(), stream));
+            }
+            Err(e) => {
+                eprintln!("desk: accept {}: {e}", listener.endpoint);
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
+            }
+        }
     }
 }
 
@@ -273,7 +281,7 @@ pub async fn bind(endpoint: &str) -> Result<Listener, String> {
     bind_at(endpoint, None)
 }
 
-/// Takes the named pipe `endpoint` like [`bind`], open also to `group`, an account name or SID string, to read and write but not to create instances.
+/// Takes the named pipe `endpoint` like [`bind`], open also to `group`, an account name or SID string.
 #[cfg(windows)]
 pub async fn bind_for(endpoint: &str, group: &str) -> Result<Listener, String> {
     bind_at(endpoint, Some(group))
@@ -288,10 +296,12 @@ pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<()
         endpoint,
     } = listener;
     loop {
-        server
-            .connect()
-            .await
-            .map_err(|e| format!("accept {endpoint}: {e}"))?;
+        if let Err(e) = server.connect().await {
+            eprintln!("desk: accept {endpoint}: {e}");
+            server = pipe(&endpoint, false, &security)?;
+            tokio::time::sleep(ACCEPT_BACKOFF).await;
+            continue;
+        }
         let client = std::mem::replace(&mut server, pipe(&endpoint, false, &security)?);
         tokio::spawn(handle(handler.clone(), client));
     }
@@ -301,9 +311,20 @@ pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<()
 pub fn pipe_sddl(user: &str, group: Option<&str>) -> String {
     let mut sddl = format!("D:P(A;;GA;;;SY)(A;;GA;;;{user})");
     if let Some(group) = group {
-        sddl.push_str(&format!("(A;;{GROUP_RIGHTS};;;{group})"));
+        let _ = write!(sddl, "(A;;{GROUP_RIGHTS};;;{group})");
     }
     sddl
+}
+
+pub fn pipe_owner(endpoint: &str) -> Option<&str> {
+    let sid = &endpoint[endpoint.find("-S-1-")? + 1..];
+    let len: usize = sid
+        .split('-')
+        .skip(1)
+        .take_while(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        .map(|p| p.len() + 1)
+        .sum();
+    Some(&sid[..=len])
 }
 
 /// Sends one call to the endpoint and returns its output.
@@ -317,6 +338,10 @@ pub async fn call(endpoint: &str, call: &Call) -> Result<Output, String> {
 pub fn cache_endpoint(var: &str, pipe: &str, dir: &str, file: &str) -> String {
     if let Some(e) = std::env::var(var).ok().filter(|e| !e.is_empty()) {
         return e;
+    }
+    #[cfg(windows)]
+    if let Ok(sid) = crate::pipesec::own_sid() {
+        return format!(r"\\.\pipe\{pipe}-{sid}");
     }
     if cfg!(windows) {
         return format!(r"\\.\pipe\{pipe}");
@@ -338,13 +363,23 @@ pub async fn connect(endpoint: &str) -> std::io::Result<Conn> {
     tokio::net::UnixStream::connect(endpoint).await
 }
 
-/// Connects to the endpoint, waiting while a Windows pipe is busy.
+/// Connects to the endpoint, waiting while a Windows pipe is busy; refuses a server that runs as another user than [`pipe_owner`] names.
 #[cfg(windows)]
 pub async fn connect(endpoint: &str) -> std::io::Result<Conn> {
+    use std::os::windows::io::AsRawHandle as _;
+
     loop {
         match tokio::net::windows::named_pipe::ClientOptions::new().open(endpoint) {
             Err(e) if e.raw_os_error() == Some(PIPE_BUSY) => tokio::time::sleep(BUSY_POLL).await,
-            done => return done.map(PipeClient),
+            done => {
+                let client = PipeClient(done?);
+                crate::pipesec::check_server(
+                    windows::Win32::Foundation::HANDLE(client.as_raw_handle()),
+                    pipe_owner(endpoint),
+                )
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))?;
+                return Ok(client);
+            }
         }
     }
 }
@@ -355,7 +390,7 @@ pub async fn exchange(mut conn: Conn, call: &Call) -> Result<Output, String> {
     read_frame(&mut conn).await
 }
 
-/// This OS's desk: its accessibility tree and the computer verbs, with input through the cua-driver at `driver`, limited to the windows of `apps` unless empty; `overlay` says whether that driver may show its cursor overlay, `locked_input` whether background keys may reach a window while the screen is locked.
+/// This OS's desk with the computer verbs, its input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 pub fn native(
     driver: String,
@@ -366,14 +401,17 @@ pub fn native(
     locked_input: bool,
 ) -> impl Handler {
     let driver = Arc::new(Driver::new(driver));
+    let desk = Desk::new(Backend::open, Arc::clone(&driver), HOST)
+        .allow(apps)
+        .overlay(overlay)
+        .background(background || auto)
+        .auto(auto)
+        .locked_input(locked_input);
     Native {
-        desk: Desk::new(Backend::open, Arc::clone(&driver), HOST)
-            .allow(apps)
-            .overlay(overlay)
-            .background(background || auto)
-            .auto(auto)
-            .locked_input(locked_input),
-        computer: Computer::new(driver, HOST).background(background),
+        computer: Computer::new(driver, HOST)
+            .turn(desk.turn())
+            .background(background),
+        desk,
         open: apps.is_empty(),
     }
 }
@@ -441,7 +479,7 @@ fn bind_at(endpoint: &str, gid: Option<u32>) -> Result<Listener, String> {
     })
 }
 
-/// Refuses a socket directory that is not this user's or that its group or others can write, a link anywhere on its path, and any directory above it owned by another user or writable by others without the sticky bit: from any of them a member could swap the socket.
+/// Refuses a socket directory another user could swap the socket in: not this user's, group or world writable, or reached through a link.
 #[cfg(unix)]
 fn private_dir(dir: &std::path::Path) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
@@ -606,7 +644,6 @@ async fn handle<H: Handler>(handler: Arc<H>, mut stream: Accepted) {
     let _ = write_frame(&mut stream, &out).await;
 }
 
-/// The refusal of a call of `tool` that only this process's user may send, when `peer` runs as another user.
 fn refusal<H: Handler, P: Peer>(handler: &H, tool: &str, peer: &P) -> Option<Output> {
     (handler.owner_only(tool) && !peer.is_owner())
         .then(|| Output::error(format!("{tool}: only the daemon's own user can send it")))
@@ -628,7 +665,6 @@ mod tests {
 
     use super::*;
     use crate::desk::tests::Stub;
-    use crate::keys::Os;
 
     struct NoDriver;
 
@@ -638,16 +674,66 @@ mod tests {
         }
     }
 
-    async fn answer(endpoint: &str, ask: &Call) -> Result<Output, String> {
-        let mut out = Err(String::new());
-        for _ in 0..50 {
-            out = call(endpoint, ask).await;
-            if out.is_ok() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    struct Guarded;
+
+    impl Handler for Guarded {
+        async fn answer(&self, call: Call) -> Output {
+            Output::text(format!("{} answered", call.tool))
         }
-        out
+
+        fn owner_only(&self, tool: &str) -> bool {
+            tool == "halt"
+        }
+    }
+
+    struct Foreign;
+
+    impl Peer for Foreign {
+        fn is_owner(&self) -> bool {
+            false
+        }
+    }
+
+    struct Endless(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Handler for Endless {
+        async fn answer(&self, _: Call) -> Output {
+            let _dropped = Dropped(self.0.clone());
+            std::future::pending::<()>().await;
+            Output::text(String::new())
+        }
+    }
+
+    struct Dropped(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    struct Spliced;
+
+    impl Handler for Spliced {
+        async fn answer(&self, _: Call) -> Output {
+            std::future::pending::<Output>().await
+        }
+
+        fn splicing(&self) -> bool {
+            true
+        }
+
+        fn splices(&self, tool: &str) -> bool {
+            tool == "svc"
+        }
+
+        async fn splice(&self, _: &str, _: Zeroizing<Vec<u8>>, mut stream: Accepted) {
+            use tokio::io::AsyncWriteExt;
+
+            let mut upload = Vec::new();
+            let _ = stream.read_to_end(&mut upload).await;
+            let _ = stream.write_all(&upload).await;
+        }
     }
 
     #[tokio::test]
@@ -731,10 +817,6 @@ mod tests {
         let _listener = bind_for(&endpoint, &own).await.unwrap();
     }
 
-    fn real(dir: &tempfile::TempDir) -> std::io::Result<std::path::PathBuf> {
-        std::fs::canonicalize(dir.path())
-    }
-
     #[tokio::test]
     async fn a_shared_socket_with_a_link_in_its_path_is_refused() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -810,26 +892,6 @@ mod tests {
         assert!(err.contains("is not the socket just bound"), "{err}");
     }
 
-    struct Guarded;
-
-    impl Handler for Guarded {
-        async fn answer(&self, call: Call) -> Output {
-            Output::text(format!("{} answered", call.tool))
-        }
-
-        fn owner_only(&self, tool: &str) -> bool {
-            tool == "halt"
-        }
-    }
-
-    struct Foreign;
-
-    impl Peer for Foreign {
-        fn is_owner(&self) -> bool {
-            false
-        }
-    }
-
     #[test]
     fn an_owner_only_call_from_another_user_is_refused_and_the_rest_answered() {
         let refused = refusal(&Guarded, "halt", &Foreign).unwrap();
@@ -844,60 +906,9 @@ mod tests {
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
         let listener = bind(&endpoint).await.unwrap();
         let server = tokio::spawn(serve(Arc::new(Guarded), listener));
-        let out = answer(
-            &endpoint,
-            &Call {
-                agent_id: String::new(),
-                tool: "halt".into(),
-                args: Value::Null,
-            },
-        )
-        .await
-        .unwrap();
+        let out = answer(&endpoint, &ask("halt", Value::Null)).await.unwrap();
         assert_eq!((out.is_error, out.text.as_str()), (false, "halt answered"));
         server.abort();
-    }
-
-    struct Endless(Arc<std::sync::atomic::AtomicBool>);
-
-    struct Dropped(Arc<std::sync::atomic::AtomicBool>);
-
-    impl Drop for Dropped {
-        fn drop(&mut self) {
-            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-
-    impl Handler for Endless {
-        async fn answer(&self, _: Call) -> Output {
-            let _dropped = Dropped(self.0.clone());
-            std::future::pending::<()>().await;
-            Output::text(String::new())
-        }
-    }
-
-    struct Spliced;
-
-    impl Handler for Spliced {
-        async fn answer(&self, _: Call) -> Output {
-            std::future::pending::<Output>().await
-        }
-
-        fn splicing(&self) -> bool {
-            true
-        }
-
-        fn splices(&self, tool: &str) -> bool {
-            tool == "svc"
-        }
-
-        async fn splice(&self, _: &str, _: Zeroizing<Vec<u8>>, mut stream: Accepted) {
-            use tokio::io::AsyncWriteExt;
-
-            let mut upload = Vec::new();
-            let _ = stream.read_to_end(&mut upload).await;
-            let _ = stream.write_all(&upload).await;
-        }
     }
 
     #[tokio::test]
@@ -908,12 +919,8 @@ mod tests {
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
         let server = tokio::spawn(serve(Arc::new(Spliced), bind(&endpoint).await.unwrap()));
         let mut conn = connect(&endpoint).await.unwrap();
-        let ask = Call {
-            agent_id: String::new(),
-            tool: "svc".into(),
-            args: Value::Null,
-        };
-        write_frame(&mut conn, &ask).await.unwrap();
+        let sent = ask("svc", Value::Null);
+        write_frame(&mut conn, &sent).await.unwrap();
         conn.write_all(b"upload").await.unwrap();
         conn.shutdown().await.unwrap();
         let mut back = Vec::new();
@@ -938,12 +945,8 @@ mod tests {
             bind(&endpoint).await.unwrap(),
         ));
         let mut conn = connect(&endpoint).await.unwrap();
-        let ask = Call {
-            agent_id: String::new(),
-            tool: "wait".into(),
-            args: Value::Null,
-        };
-        write_frame(&mut conn, &ask).await.unwrap();
+        let sent = ask("wait", Value::Null);
+        write_frame(&mut conn, &sent).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(!cancelled.load(std::sync::atomic::Ordering::SeqCst));
         drop(conn);
@@ -990,13 +993,9 @@ mod tests {
             loser.unwrap().unwrap_err(),
             format!("another daemon serves {endpoint}")
         );
-        let ask = Call {
-            agent_id: "desk".into(),
-            tool: "desk_screen".into(),
-            args: json!({}),
-        };
+        let sent = ask("desk_screen", json!({}));
         assert!(
-            answer(&endpoint, &ask)
+            answer(&endpoint, &sent)
                 .await
                 .unwrap()
                 .text
@@ -1015,11 +1014,6 @@ mod tests {
             let endpoint = endpoint.clone();
             async move { serve(desk, bind(&endpoint).await?).await }
         });
-        let ask = |tool: &str, args: Value| Call {
-            agent_id: "desk".into(),
-            tool: tool.into(),
-            args,
-        };
         assert_eq!(
             answer(&endpoint, &ask("desk_windows", json!({})))
                 .await
@@ -1047,21 +1041,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_web_call_whose_args_are_not_an_object_is_an_error() {
+        let desk = Desk::new(|| Ok(Stub::default()), NoDriver, Os::Mac);
+        let out = desk.answer(ask("desk_web", json!([1]))).await;
+        assert_eq!(
+            (out.is_error, out.text.as_str()),
+            (true, "desk_web: args are not an object")
+        );
+    }
+
+    #[tokio::test]
     async fn the_native_desk_answers_the_computer_verbs_unless_an_app_allowlist_or_background_input_is_set()
      {
-        let ask = |tool: &str, args: Value| Call {
-            agent_id: "desk".into(),
-            tool: tool.into(),
-            args,
-        };
-        let open = native(
-            "/nonexistent/driver.sock".into(),
-            &[],
-            false,
-            false,
-            false,
-            false,
-        );
+        let open = no_driver(&[], false);
         let title = open
             .answer(ask("desk_title_at", json!({"x": 10, "y": 10})))
             .await;
@@ -1071,14 +1063,7 @@ mod tests {
         );
         let scale = open.answer(ask("desk_computer_scale", json!({}))).await;
         assert_eq!(scale.text, r#"{"scale":1.0}"#);
-        let listed = native(
-            "/nonexistent/driver.sock".into(),
-            &["mousepad".to_owned()],
-            false,
-            false,
-            false,
-            false,
-        );
+        let listed = no_driver(&["mousepad".to_owned()], false);
         for tool in COMPUTER_VERBS {
             let out = listed.answer(ask(tool, json!({}))).await;
             assert_eq!(
@@ -1088,14 +1073,7 @@ mod tests {
         }
         let other = listed.answer(ask("shell", json!({}))).await;
         assert_eq!(other.text, "unknown desk tool shell");
-        let background = native(
-            "/nonexistent/driver.sock".into(),
-            &[],
-            false,
-            true,
-            false,
-            false,
-        );
+        let background = no_driver(&[], true);
         let act = background
             .answer(ask(
                 "desk_computer_act",
@@ -1108,11 +1086,60 @@ mod tests {
             act.text
         );
     }
+
+    async fn answer(endpoint: &str, ask: &Call) -> Result<Output, String> {
+        let mut out = Err(String::new());
+        for _ in 0..50 {
+            out = call(endpoint, ask).await;
+            if out.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        out
+    }
+
+    fn real(dir: &tempfile::TempDir) -> std::io::Result<std::path::PathBuf> {
+        std::fs::canonicalize(dir.path())
+    }
+
+    fn ask(tool: &str, args: Value) -> Call {
+        Call {
+            agent_id: "desk".into(),
+            tool: tool.into(),
+            args,
+        }
+    }
+
+    fn no_driver(apps: &[String], background: bool) -> impl Handler {
+        native(
+            "/nonexistent/driver.sock".into(),
+            apps,
+            false,
+            background,
+            false,
+            false,
+        )
+    }
 }
 
 #[cfg(test)]
 mod pipe_tests {
     use super::*;
+
+    #[cfg(windows)]
+    struct Guarded;
+
+    #[cfg(windows)]
+    impl Handler for Guarded {
+        async fn answer(&self, call: Call) -> Output {
+            Output::text(format!("{} answered", call.tool))
+        }
+
+        fn owner_only(&self, tool: &str) -> bool {
+            tool == "halt"
+        }
+    }
 
     #[test]
     fn the_pipe_admits_system_and_its_user_and_a_group_reads_and_writes_without_making_instances() {
@@ -1124,6 +1151,43 @@ mod pipe_tests {
             pipe_sddl("S-1-5-21-1", Some("S-1-5-32-545")),
             "D:P(A;;GA;;;SY)(A;;GA;;;S-1-5-21-1)(A;;0x12019b;;;S-1-5-32-545)"
         );
+    }
+
+    #[test]
+    fn a_pipe_name_carries_the_sid_of_its_owner_and_so_do_the_pipes_named_after_it() {
+        let sid = "S-1-5-21-1004336348-1177238915-682003330-1001";
+        let desk = format!(r"\\.\pipe\loomhand-shuttle-desk-{sid}");
+        assert_eq!(pipe_owner(&desk), Some(sid));
+        assert_eq!(pipe_owner(&format!("{desk}-driver")), Some(sid));
+        assert_eq!(pipe_owner(&format!("{desk}-svc-files")), Some(sid));
+        assert_eq!(pipe_owner(r"\\.\pipe\x-S-1-5-18-svc-9"), Some("S-1-5-18"));
+        assert_eq!(pipe_owner(r"\\.\pipe\cua-driver"), None);
+        assert_eq!(pipe_owner(r"\\.\pipe\shuttle-test-owner-42"), None);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_pipe_served_by_another_user_than_its_name_carries_is_refused() {
+        use tokio::net::windows::named_pipe::ServerOptions;
+
+        let base = format!(r"\\.\pipe\shuttle-test-served-{}", std::process::id());
+        let own = crate::pipesec::own_sid().unwrap();
+        for (name, admitted) in [
+            (format!("{base}-S-1-5-18-driver"), false),
+            (format!("{base}-{own}-driver"), true),
+            (format!("{base}-plain"), true),
+        ] {
+            let _server = ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(&name)
+                .unwrap();
+            let got = connect(&name).await;
+            assert_eq!(got.is_ok(), admitted, "{name}: {got:?}");
+            if let Err(e) = got {
+                assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{e}");
+                assert!(e.to_string().contains("S-1-5-18"), "{e}");
+            }
+        }
     }
 
     #[cfg(windows)]
@@ -1139,20 +1203,6 @@ mod pipe_tests {
         );
         let err = crate::pipesec::sid_of("no-such-account-8d1f").unwrap_err();
         assert!(err.contains("no-such-account-8d1f"), "{err}");
-    }
-
-    #[cfg(windows)]
-    struct Guarded;
-
-    #[cfg(windows)]
-    impl Handler for Guarded {
-        async fn answer(&self, call: Call) -> Output {
-            Output::text(format!("{} answered", call.tool))
-        }
-
-        fn owner_only(&self, tool: &str) -> bool {
-            tool == "halt"
-        }
     }
 
     #[cfg(windows)]

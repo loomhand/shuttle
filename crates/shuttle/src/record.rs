@@ -1,13 +1,14 @@
 //! Recordings of what the user does: each click and key with what the desk saw then, for a draft of replayable steps.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use desk_core::wire::Call;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use shuttle_desk::server::Handler;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -42,6 +43,11 @@ const RECORDING: &str = "a recording is already running: stop it first";
 const NOTHING: &str = "no recording is running, and none was made since the daemon started";
 const GONE: &str = "the recording worker is gone";
 
+#[cfg(target_os = "macos")]
+type Listening = Tap;
+#[cfg(not(target_os = "macos"))]
+type Listening = std::convert::Infallible;
+
 /// One thing the user did, in desk coordinates, or a note.
 #[derive(Debug)]
 pub enum Input {
@@ -54,7 +60,7 @@ pub enum Input {
         mods: Vec<&'static str>,
         found: Option<Hit>,
     },
-    /// A key and the process it went to; `secret` when it went to a password field, and then `text` is empty. The first key of a run of typing was `read` for its `focus`.
+    /// A key and the process it went to; a `secret` key keeps no `text`.
     Key {
         code: i64,
         text: String,
@@ -70,10 +76,11 @@ pub enum Input {
         focus: Option<Field>,
     },
     Note(String),
+    Hotkey(i64),
 }
 
-/// The element with the keyboard focus, as a snapshot names it, the role of its window or sheet, the title of its window, whether it takes a password, and the address of its web page with its DOM id.
-#[derive(Debug, Default, serde::Serialize)]
+/// The element with the keyboard focus, as a snapshot names it.
+#[derive(Debug, Default, Serialize)]
 pub struct Field {
     pub role: &'static str,
     pub name: String,
@@ -88,7 +95,7 @@ pub struct Field {
     pub id: String,
 }
 
-/// An element under a click: its role and name as a snapshot names them, its help, its process, the role and name of its ancestors up to its window, innermost first, and the address of its web page with its DOM id.
+/// An element under a click, as a snapshot names it; `path` runs innermost first.
 #[derive(Debug, Default)]
 pub struct Hit {
     pub role: &'static str,
@@ -103,6 +110,7 @@ pub struct Hit {
 /// The recordings of this daemon: at most one running, and the last one made.
 pub struct Recorder {
     dir: PathBuf,
+    acting: Arc<AtomicUsize>,
     queue: UnboundedSender<Session>,
     sessions: Mutex<Option<UnboundedReceiver<Session>>>,
     live: Mutex<Option<Live>>,
@@ -110,11 +118,12 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    /// A recorder that saves each recording in `dir`, readable by this user only.
-    pub fn new(dir: PathBuf) -> Self {
+    /// A recorder that saves each recording in `dir`, readable by this user only, and leaves out input while `acting` counts shuttle's own actions.
+    pub fn new(dir: PathBuf, acting: Arc<AtomicUsize>) -> Self {
         let (queue, sessions) = unbounded_channel();
         Self {
             dir,
+            acting,
             queue,
             sessions: Mutex::new(Some(sessions)),
             live: Mutex::new(None),
@@ -138,7 +147,7 @@ impl Recorder {
             return Err(RECORDING.to_owned());
         }
         let (notes, inputs) = unbounded_channel();
-        let tap = listen(notes.clone())?;
+        let tap = listen(notes.clone(), Arc::clone(&self.acting))?;
         let id = format!("rec-{}", now_ms());
         let path = self.path(&id);
         let (done, made) = oneshot::channel();
@@ -171,6 +180,12 @@ impl Recorder {
             .map_err(|_| GONE.to_owned())
     }
 
+    pub fn hotkey(&self, code: u32) {
+        if let Some(live) = lock(&self.live).as_ref() {
+            let _ = live.notes.send(Input::Hotkey(i64::from(code)));
+        }
+    }
+
     /// Ends the running recording; the worker saves it once it has read the last input.
     pub fn end(&self) {
         let live = lock(&self.live).take();
@@ -179,6 +194,14 @@ impl Recorder {
                 path,
                 made: Some(made),
             });
+        }
+    }
+
+    pub async fn finish(&self) {
+        self.end();
+        let made = lock(&self.ended).as_mut().and_then(|e| e.made.take());
+        if let Some(made) = made {
+            let _ = made.await;
         }
     }
 
@@ -234,13 +257,8 @@ struct Frame {
     at: Instant,
 }
 
-#[cfg(target_os = "macos")]
-type Listening = Tap;
-#[cfg(not(target_os = "macos"))]
-type Listening = std::convert::Infallible;
-
-/// Runs `s` against `desk` until its inputs end, then saves it and sends it on; input while `acting` says shuttle itself acts is no user's.
-pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
+/// Runs `s` against `desk` until its inputs end, then saves it and sends it on.
+pub async fn work<H: Handler>(desk: &H, s: Session) {
     let Session {
         id,
         apps,
@@ -259,6 +277,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
     let mut acted = t0;
     let mut settle: Option<Instant> = None;
     let mut events = Vec::new();
+    let mut hotkey = None;
     loop {
         let wake = settle.unwrap_or_else(|| Instant::now() + IDLE);
         tokio::select! {
@@ -272,7 +291,11 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                         events.push(e);
                         continue;
                     }
-                    _ if acting() => continue,
+                    Input::Hotkey(code) => {
+                        hotkey = Some(code);
+                        continue;
+                    }
+                    Input::Key { code, .. } if hotkey == Some(code) => continue,
                     Input::Click { x, y, right, count, mods, found } => {
                         let mut at = match found {
                             Some(h) => {
@@ -300,7 +323,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                         light(desk, &windows, &apps, &mut asked).await;
                         let win = window_of(&windows, &at);
                         let app = win.and_then(|w| w["app"].as_str()).map(str::to_owned).or_else(|| app_of(&windows, pid));
-                        if kept(app.as_deref(), &apps) {
+                        if (app.is_some() || pid.is_none()) && kept(app.as_deref(), &apps) {
                             let late = frame.as_ref().is_none_or(|f| f.at < acted || win.is_none_or(|w| w["id"] != f.window.as_str()));
                             if late {
                                 frame = framed(desk, &windows, win, &apps).await;
@@ -351,8 +374,11 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
                         if pid.is_some_and(|p| !windows.iter().any(|w| w["pid"].as_u64() == Some(p))) {
                             windows = list(desk).await;
                         }
-                        let app = app_of(&windows, pid).or_else(|| front.as_ref().and_then(|w| w["app"].as_str()).map(str::to_owned));
-                        if !kept(app.as_deref(), &apps) {
+                        let app = match pid {
+                            Some(_) => app_of(&windows, pid),
+                            None => front.as_ref().and_then(|w| w["app"].as_str()).map(str::to_owned),
+                        };
+                        if (app.is_none() && pid.is_some()) || !kept(app.as_deref(), &apps) {
                             json!({"t": t, "kind": "skipped"})
                         } else if secret {
                             json!({"t": t, "kind": "key", "secret": true, "app": app})
@@ -380,6 +406,13 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
             }
         }
     }
+    if let Some(code) = hotkey
+        && events
+            .last()
+            .is_some_and(|e| e["kind"] == "key" && e["code"] == code)
+    {
+        events.pop();
+    }
     events.extend(came(
         front_of(&list(desk).await).as_ref(),
         front.as_ref(),
@@ -387,7 +420,9 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
         t0,
     ));
     desk.release(AGENT);
-    let recording = json!({"id": id, "started_ms": started, "stopped_ms": now_ms(), "apps": apps, "events": events});
+    let mut recording = json!({"id": id, "started_ms": started, "stopped_ms": now_ms()});
+    recording["apps"] = apps.into();
+    recording["events"] = Value::Array(events);
     if let Err(e) = save(&path, &recording) {
         crate::log(e);
     }
@@ -395,16 +430,16 @@ pub async fn work<H: Handler>(desk: &H, s: Session, acting: impl Fn() -> bool) {
 }
 
 #[cfg(target_os = "macos")]
-fn listen(tx: UnboundedSender<Input>) -> Result<Listening, String> {
+fn listen(tx: UnboundedSender<Input>, acting: Arc<AtomicUsize>) -> Result<Listening, String> {
     if !tap::allowed() {
         tap::ask();
         return Err(INPUT_MONITORING.to_owned());
     }
-    Tap::start(tx)
+    Tap::start(tx, acting)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn listen(_: UnboundedSender<Input>) -> Result<Listening, String> {
+fn listen(_: UnboundedSender<Input>, _: Arc<AtomicUsize>) -> Result<Listening, String> {
     Err(OTHER_OS.to_owned())
 }
 
@@ -415,7 +450,7 @@ fn rooted(found: &Value) -> bool {
             .is_some_and(|r| ROOT_ROLES.contains(&r))
 }
 
-// the crop is CROP_PT points around the point, cut to the window, with the point's offset from its centre in desk units
+// the point's offset from the crop's centre is in desk units
 fn crop(f: &Frame, x: f64, y: f64, per_point: f64) -> Option<(String, f64, [f64; 2])> {
     let [w, h] = CROP_PT.map(|v| v * per_point);
     let [x, y] = [x - f.bounds[0], y - f.bounds[1]];
@@ -488,7 +523,7 @@ fn came(now: Option<&Value>, was: Option<&Value>, apps: &[String], t0: Instant) 
     })
 }
 
-// a Chromium browser builds its page tree only for an assistive app that asks: each app the recording keeps is asked once, and the desk lets the trees go when the recording ends
+// a Chromium browser builds its page tree only for an assistive app that asks
 async fn light<H: Handler>(desk: &H, windows: &[Value], apps: &[String], asked: &mut Vec<u64>) {
     for w in windows {
         let Some(pid) = w["pid"].as_u64().filter(|p| !asked.contains(p)) else {
@@ -567,26 +602,10 @@ fn asked(tool: &str, args: Value) -> Call {
 
 fn save(path: &Path, recording: &Value) -> Result<(), String> {
     if let Some(dir) = path.parent() {
-        private_dir(dir)?;
+        crate::private_dir(dir)?;
     }
     let body = serde_json::to_vec(recording).map_err(|e| e.to_string())?;
     write_private(path, &body).map_err(|e| format!("write {}: {e}", path.display()))
-}
-
-#[cfg(unix)]
-fn private_dir(dir: &Path) -> Result<(), String> {
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .and_then(|()| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)))
-        .map_err(|e| format!("create {}: {e}", dir.display()))
-}
-
-#[cfg(not(unix))]
-fn private_dir(dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))
 }
 
 #[cfg(unix)]
@@ -613,8 +632,8 @@ fn now_ms() -> u128 {
         .map_or(0, |d| d.as_millis())
 }
 
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 #[cfg(test)]
@@ -692,24 +711,41 @@ mod tests {
         out
     }
 
-    async fn run(desk: &Desk, apps: &[&str], inputs: Vec<Input>) -> Value {
-        let dir = tempfile::tempdir().unwrap();
+    fn session(
+        path: PathBuf,
+        apps: &[&str],
+    ) -> (UnboundedSender<Input>, oneshot::Receiver<Value>, Session) {
         let (tx, rx) = unbounded_channel();
         let (done, made) = oneshot::channel();
-        let path = dir.path().join("rec/r.json");
         let s = Session {
             id: "r".into(),
             apps: apps.iter().map(|a| (*a).to_owned()).collect(),
             per_point: 1.0,
-            path: path.clone(),
+            path,
             inputs: rx,
             done,
         };
+        (tx, made, s)
+    }
+
+    fn each<'a>(r: &'a Value, key: &str) -> Vec<&'a Value> {
+        r["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| &e[key])
+            .collect()
+    }
+
+    async fn run(desk: &Desk, apps: &[&str], inputs: Vec<Input>) -> Value {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rec/r.json");
+        let (tx, made, s) = session(path.clone(), apps);
         for i in inputs {
             tx.send(i).unwrap();
         }
         drop(tx);
-        work(desk, s, || false).await;
+        work(desk, s).await;
         let r = made.await.unwrap();
         #[cfg(unix)]
         {
@@ -877,18 +913,9 @@ mod tests {
         let desk = Desk::new(
             json!({"found": {"role": "button", "name": "Save"}, "path": [{"id": "7/1", "role": "window", "name": "report.rtf"}], "pid": 7}),
         );
-        let (tx, rx) = unbounded_channel();
-        let (done, made) = oneshot::channel();
         let dir = tempfile::tempdir().unwrap();
-        let s = Session {
-            id: "r".into(),
-            apps: Vec::new(),
-            per_point: 1.0,
-            path: dir.path().join("r.json"),
-            inputs: rx,
-            done,
-        };
-        let worker = async { work(&desk, s, || false).await };
+        let (tx, made, s) = session(dir.path().join("r.json"), &[]);
+        let worker = async { work(&desk, s).await };
         let user = async {
             tokio::time::sleep(Duration::from_millis(50)).await;
             *lock(&desk.front) = "report.rtf";
@@ -1064,12 +1091,7 @@ mod tests {
             json!({"found": {"role": "button", "name": "Save"}, "path": [{"id": "7/1", "role": "window", "name": "Untitled"}], "pid": 7}),
         );
         let r = run(&only, &["Notes"], vec![click(5.0, 5.0), key("x", false)]).await;
-        let kinds: Vec<&Value> = r["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|e| &e["kind"])
-            .collect();
+        let kinds = each(&r, "kind");
         assert_eq!(kinds, [&json!("skipped"), &json!("skipped")]);
         assert!(lock(&only.shots).is_empty());
         let vault = Input::Key {
@@ -1082,30 +1104,92 @@ mod tests {
             read: false,
         };
         let r = run(&only, &[], vec![key("a", false), vault]).await;
-        let kinds: Vec<&Value> = r["events"]
+        let kinds = each(&r, "kind");
+        assert_eq!(kinds, [&json!("key"), &json!("skipped")], "{r}");
+    }
+
+    #[tokio::test]
+    async fn input_to_a_process_with_no_window_is_skipped_and_not_given_to_the_front_app() {
+        let desk = Desk::new(
+            json!({"found": {"role": "textbox", "name": "Search"}, "path": [], "pid": 42}),
+        );
+        let panel = Input::Key {
+            code: 0,
+            text: "p".into(),
+            mods: Vec::new(),
+            secret: false,
+            pid: Some(42),
+            focus: None,
+            read: false,
+        };
+        let r = run(&desk, &[], vec![click(5.0, 5.0), panel, key("a", false)]).await;
+        let seen: Vec<(&Value, &Value)> = r["events"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|e| &e["kind"])
+            .map(|e| (&e["kind"], &e["app"]))
             .collect();
-        assert_eq!(kinds, [&json!("key"), &json!("skipped")], "{r}");
+        assert_eq!(
+            seen,
+            [
+                (&json!("skipped"), &Value::Null),
+                (&json!("skipped"), &Value::Null),
+                (&json!("key"), &json!("TextEdit")),
+            ],
+            "{r}"
+        );
+    }
+
+    #[tokio::test]
+    async fn finishing_waits_until_the_ended_recording_is_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = Recorder::new(dir.path().into(), Arc::default());
+        r.finish().await;
+        let (saved, made) = oneshot::channel();
+        *lock(&r.ended) = Some(Ended {
+            path: r.path("r"),
+            made: Some(made),
+        });
+        let finished = r.finish();
+        tokio::pin!(finished);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut finished)
+                .await
+                .is_err(),
+            "the finish did not wait for the save"
+        );
+        saved.send(json!({})).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), finished)
+            .await
+            .expect("the finish outlived the save");
+    }
+
+    #[tokio::test]
+    async fn the_kill_hotkey_that_ends_a_recording_is_no_step_of_it() {
+        let desk = Desk::new(Value::Null);
+        let press = |code: i64| Input::Key {
+            code,
+            text: String::new(),
+            mods: vec!["ctrl", "alt", "cmd"],
+            secret: false,
+            pid: None,
+            focus: None,
+            read: false,
+        };
+        let before = run(&desk, &[], vec![press(53), press(47), Input::Hotkey(47)]).await;
+        let after = run(&desk, &[], vec![press(53), Input::Hotkey(47), press(47)]).await;
+        for r in [before, after] {
+            let codes = each(&r, "code");
+            assert_eq!(codes, [&json!(53)], "{r}");
+        }
     }
 
     #[tokio::test]
     async fn a_window_that_came_after_the_last_input_settled_is_kept_when_the_recording_stops() {
         let desk = Desk::new(Value::Null);
-        let (tx, rx) = unbounded_channel();
-        let (done, made) = oneshot::channel();
         let dir = tempfile::tempdir().unwrap();
-        let s = Session {
-            id: "r".into(),
-            apps: Vec::new(),
-            per_point: 1.0,
-            path: dir.path().join("r.json"),
-            inputs: rx,
-            done,
-        };
-        let worker = async { work(&desk, s, || false).await };
+        let (tx, made, s) = session(dir.path().join("r.json"), &[]);
+        let worker = async { work(&desk, s).await };
         let user = async {
             tx.send(key("s", false)).unwrap();
             tokio::time::sleep(SETTLE + Duration::from_millis(300)).await;
@@ -1125,18 +1209,9 @@ mod tests {
     #[tokio::test]
     async fn a_new_front_window_after_input_is_kept_with_notes_in_order() {
         let desk = Desk::new(Value::Null);
-        let (tx, rx) = unbounded_channel();
-        let (done, made) = oneshot::channel();
         let dir = tempfile::tempdir().unwrap();
-        let s = Session {
-            id: "r".into(),
-            apps: Vec::new(),
-            per_point: 1.0,
-            path: dir.path().join("r.json"),
-            inputs: rx,
-            done,
-        };
-        let worker = async { work(&desk, s, || false).await };
+        let (tx, made, s) = session(dir.path().join("r.json"), &[]);
+        let worker = async { work(&desk, s).await };
         let user = async {
             tx.send(Input::Note("the name is a parameter".into()))
                 .unwrap();
@@ -1147,12 +1222,7 @@ mod tests {
         };
         tokio::join!(worker, user);
         let r = made.await.unwrap();
-        let kinds: Vec<&Value> = r["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|e| &e["kind"])
-            .collect();
+        let kinds = each(&r, "kind");
         assert_eq!(
             kinds,
             [&json!("note"), &json!("key"), &json!("after")],

@@ -10,6 +10,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+use tokio::sync::watch;
+use tokio::task::JoinSet;
 
 const DEFAULT_TIMEOUT_S: u64 = 90;
 const MAX_TIMEOUT_S: u64 = 110;
@@ -29,7 +31,7 @@ pub struct Runner {
     flows: PathBuf,
     key_vars: Vec<String>,
     input: &'static str,
-    stop: tokio::sync::watch::Sender<bool>,
+    stop: watch::Sender<bool>,
 }
 
 impl Runner {
@@ -47,7 +49,7 @@ impl Runner {
             flows,
             key_vars,
             input: "foreground",
-            stop: tokio::sync::watch::Sender::new(false),
+            stop: watch::Sender::new(false),
         }
     }
 
@@ -83,6 +85,16 @@ impl Runner {
         self.script_on(bin, args, agent).await
     }
 
+    /// `gui_plan` for `agent`: the plan executor of the runtime with `args`; its result comes back as is.
+    pub async fn plan(&self, args: Value, agent: &str) -> Result<Value, String> {
+        self.module_result("gui_plan", args, agent).await
+    }
+
+    /// The draft plan of a recording for `agent`: the runtime's draft builder with `args`.
+    pub async fn draft(&self, args: Value, agent: &str) -> Result<Value, String> {
+        self.module_result("draft", args, agent).await
+    }
+
     async fn script_on(&self, program: &Path, args: Value, agent: &str) -> Result<Value, String> {
         let a: ScriptArgs = parse(args)?;
         let scratch = scratch()?;
@@ -112,16 +124,6 @@ impl Runner {
         .await
     }
 
-    /// `gui_plan` for `agent`: the plan executor of the runtime with `args`; its result comes back as is.
-    pub async fn plan(&self, args: Value, agent: &str) -> Result<Value, String> {
-        self.module_result("gui_plan", args, agent).await
-    }
-
-    /// The draft plan of a recording for `agent`: the runtime's draft builder with `args`.
-    pub async fn draft(&self, args: Value, agent: &str) -> Result<Value, String> {
-        self.module_result("draft", args, agent).await
-    }
-
     async fn module_result(&self, name: &str, args: Value, agent: &str) -> Result<Value, String> {
         let timeout_s = args.get("timeout_s").and_then(Value::as_u64);
         let scratch = scratch()?;
@@ -136,7 +138,8 @@ impl Runner {
             )
             .await?;
         match report["error"]["message"].as_str() {
-            Some(e) => Err(format!("{name}: {e}")),
+            Some(e) if report["result"].is_null() => Err(format!("{name}: {e}")),
+            Some(e) => Err(format!("{name}: {e}; what it left: {}", report["result"])),
             None => Ok(report["result"].take()),
         }
     }
@@ -161,7 +164,7 @@ impl Runner {
         let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
         let mut cmd = Command::new(program);
         cmd.arg(self.module("entry"))
-            .current_dir(home.map_or_else(|| scratch.to_path_buf(), PathBuf::from))
+            .current_dir(home.as_deref().map_or(scratch, Path::new))
             .env("SHUTTLE_SOCKET", &self.endpoint)
             .env("SHUTTLE_SCRIPT", script)
             .env("SHUTTLE_RUN", scratch)
@@ -187,15 +190,14 @@ impl Runner {
             termed: false,
         };
         #[cfg(windows)]
-        let job = crate::job::Job::hold(child.raw_handle())?;
+        let job = crate::job::Job::hold(child.raw_handle(), false)?;
         let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
             return Err("the script's pipes are missing".to_owned());
         };
         let (logs, stderr) = (Captured::default(), Captured::default());
-        let mut pipes = [
-            tokio::spawn(capture(out, Arc::clone(&logs))),
-            tokio::spawn(capture(err, Arc::clone(&stderr))),
-        ];
+        let mut pipes = JoinSet::new();
+        pipes.spawn(capture(out, Arc::clone(&logs)));
+        pipes.spawn(capture(err, Arc::clone(&stderr)));
         let mut stopped = self.stop.subscribe();
         let status = tokio::select! {
             s = tokio::time::timeout(timeout, child.wait()) => s.map_err(|_| Ended::Timeout),
@@ -218,15 +220,9 @@ impl Runner {
         {
             group.pid = None;
         }
-        let drained = async {
-            for p in &mut pipes {
-                let _ = p.await;
-            }
-        };
+        let drained = async { while pipes.join_next().await.is_some() {} };
         let _ = tokio::time::timeout(PIPE_GRACE, drained).await;
-        for p in &pipes {
-            p.abort();
-        }
+        drop(pipes);
         let mut report = json!({
             "duration_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         });
@@ -367,6 +363,9 @@ fn text(captured: &Captured) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    const ON_TERM: &str = "import { writeFileSync } from 'node:fs'\nexport async function main({ marker }) { process.on('SIGTERM', () => { writeFileSync(marker, 'term'); process.exit(0) }); writeFileSync(`${marker}.ready`, ''); await new Promise((r) => setTimeout(r, 30000)) }";
+
     fn runner(dir: &Path) -> Runner {
         let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib/entry.mts");
         std::fs::copy(lib, dir.join("entry.mts")).unwrap();
@@ -488,14 +487,7 @@ mod tests {
         assert_eq!(report["error"]["kind"], "timeout", "{report}");
         let logs = report["logs"].as_str().unwrap().trim().to_owned();
         let (same, away) = logs.split_once(' ').unwrap();
-        let mut gone = false;
-        for _ in 0..40 {
-            gone = !alive(same);
-            if gone {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        let gone = crate::until(40, || !alive(same)).await;
         let stray = alive(away);
         let _ = std::process::Command::new("kill")
             .args(["-9", away])
@@ -516,9 +508,6 @@ mod tests {
         let stat = String::from_utf8_lossy(&out.stdout);
         !stat.trim().is_empty() && !stat.trim_start().starts_with('Z')
     }
-
-    #[cfg(unix)]
-    const ON_TERM: &str = "import { writeFileSync } from 'node:fs'\nexport async function main({ marker }) { process.on('SIGTERM', () => { writeFileSync(marker, 'term'); process.exit(0) }); writeFileSync(`${marker}.ready`, ''); await new Promise((r) => setTimeout(r, 30000)) }";
 
     #[cfg(unix)]
     #[tokio::test]
@@ -556,6 +545,26 @@ mod tests {
         let report = report.unwrap();
         assert_eq!(report["error"]["kind"], "stopped", "{report}");
         assert_eq!(std::fs::read_to_string(&marker).unwrap(), "term");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_plan_stopped_at_its_timeout_reports_the_steps_it_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = runner(dir.path());
+        std::fs::write(
+            dir.path().join("gui_plan.mts"),
+            "import { writeFileSync } from 'node:fs'\nexport async function main() { process.on('SIGTERM', () => { writeFileSync(`${process.env.SHUTTLE_RUN}/result.json`, '{\"done\":1}'); process.exit(1) }); await new Promise((r) => setTimeout(r, 30000)) }\n",
+        )
+        .unwrap();
+        let err = r
+            .plan(json!({"steps": [], "timeout_s": 2}), "run-test")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "gui_plan: the run passed 2s and was stopped; what it left: {\"done\":1}"
+        );
     }
 
     #[cfg(unix)]
@@ -603,20 +612,68 @@ mod tests {
         .await
         .expect("the run got no TERM");
         let pid = std::fs::read_to_string(&pid_file).unwrap();
-        let mut gone = false;
-        for _ in 0..20 {
-            gone = !alive(&pid);
-            if gone {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        let gone = crate::until(20, || !alive(&pid)).await;
         if !gone {
             let _ = std::process::Command::new("kill")
                 .args(["-9", pid.trim()])
                 .status();
         }
         assert!(gone, "{pid} outlived the run dropped during its grace");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_dropped_run_lets_go_of_its_pipes_that_a_detached_child_still_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = runner(dir.path());
+        let (ready, closed) = (dir.path().join("ready"), dir.path().join("closed"));
+        let code = "import { spawn } from 'node:child_process'\nimport { writeFileSync } from 'node:fs'\nexport async function main({ ready, closed }) { spawn('sh', ['-c', `trap '' PIPE; while echo x; do sleep 0.05; done; : > ${closed}`], { stdio: 'inherit', detached: true }); writeFileSync(ready, ''); await new Promise((r) => setTimeout(r, 30000)) }";
+        let args =
+            json!({"code": code, "params": {"ready": ready, "closed": closed}, "timeout_s": 30});
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                report = r.script(args, "run-test") => panic!("the run ended: {report:?}"),
+                () = async {
+                    while !ready.exists() {
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                } => {}
+            }
+        })
+        .await
+        .expect("the script never got ready");
+        let gone = crate::until(60, || closed.exists()).await;
+        assert!(
+            gone,
+            "the dropped run still reads the pipe of its detached child"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_run_whose_parent_is_gone_ends_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = runner(dir.path());
+        let bin = dir.path().join("orphaning");
+        crate::script(
+            &bin,
+            "#!/bin/sh\nnode \"$@\" &\necho $!\nwhile [ ! -e \"$SHUTTLE_RUN/ready\" ]; do sleep 0.05; done\n",
+        )
+        .unwrap();
+        let code = "import { writeFileSync } from 'node:fs'\nexport async function main() { writeFileSync(`${process.env.SHUTTLE_RUN}/ready`, ''); await new Promise((r) => setTimeout(r, 30000)) }";
+        let report = r
+            .plugin(&bin, json!({"code": code}), "run-test")
+            .await
+            .unwrap();
+        let pid = report["logs"].as_str().unwrap().trim().to_owned();
+        assert!(!pid.is_empty(), "{report}");
+        let gone = crate::until(60, || !alive(&pid)).await;
+        if !gone {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid])
+                .status();
+        }
+        assert!(gone, "{pid} outlived its parent");
     }
 
     #[cfg(unix)]
@@ -639,14 +696,10 @@ mod tests {
         })
         .await
         .expect("the script never got ready");
-        let mut termed = false;
-        for _ in 0..40 {
-            termed = std::fs::read_to_string(&marker).is_ok_and(|m| m == "term");
-            if termed {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        let termed = crate::until(40, || {
+            std::fs::read_to_string(&marker).is_ok_and(|m| m == "term")
+        })
+        .await;
         assert!(termed, "the dropped run got no TERM");
     }
 
@@ -682,14 +735,7 @@ mod tests {
         let report = report.unwrap();
         let mut checked = Err(String::new());
         if let Ok((app, helper)) = &moved {
-            let mut gone = false;
-            for _ in 0..40 {
-                gone = !alive(helper);
-                if gone {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
+            let gone = crate::until(40, || !alive(helper)).await;
             checked = Ok((alive(app), gone));
             let _ = std::process::Command::new("kill")
                 .args(["-9", app])
@@ -734,14 +780,7 @@ mod tests {
             !pid.is_empty(),
             "the script printed no pid before its timeout: {report}"
         );
-        let mut gone = false;
-        for _ in 0..40 {
-            gone = !alive(&pid);
-            if gone {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        let gone = crate::until(40, || !alive(&pid)).await;
         assert!(gone, "{pid} outlived the timeout");
         let done = format!("{started}export function main() {{ return 1 }}");
         let report = r.script(json!({"code": done}), "run-test").await.unwrap();

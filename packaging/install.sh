@@ -70,16 +70,18 @@ elif [ -e "$link" ]; then
 	die "$link is another program's file; nothing was changed: remove it, or set SHUTTLE_PREFIX to another directory"
 fi
 
-mkdir -p "$PREFIX/bin"
-if [ "$os" = macos ]; then
-	mkdir -p "$APP_DIR"
-	rm -rf "${home:?}"
-	mv "$tmp/$APP.app" "$home"
-else
-	mkdir -p "$PREFIX/lib/loomhand"
-	rm -rf "${home:?}"
-	mv "$tmp/$NAME" "$home"
+if [ -d "$home" ]; then
+	real=$(cd "$home" && pwd -P)
+	running=$(ps -A -o args= | awk -v d="$real/" 'index($0, d) == 1 { n = substr($0, length(d) + 1); sub(/ .*/, "", n); sub(/.*\//, "", n); print n }' | sort -u | tr '\n' ' ')
+	[ -z "$running" ] || die "close the running $NAME first (${running% }), e.g. pkill -f '$NAME serve'; nothing was changed"
 fi
+
+mkdir -p "$PREFIX/bin" "${home%/*}"
+rm -rf "$home.new" "$home.old"
+if [ "$os" = macos ]; then mv "$tmp/$APP.app" "$home.new"; else mv "$tmp/$NAME" "$home.new"; fi
+[ ! -e "$home" ] || mv "$home" "$home.old"
+mv "$home.new" "$home"
+rm -rf "$home.old"
 ln -sf "$bin" "$link"
 
 say "installed $installed in $home"

@@ -1,16 +1,16 @@
 import * as desk from './desk.mts'
 import { ring, unpng } from './png.mts'
 
-type Hit = { role?: string; name?: string; description?: string }
-type Field = { role: string; name: string; frame: string; window?: string; secure?: boolean; url?: string; id?: string }
-type Web = { url: string; id?: string }
-type Event = {
+export type Event = {
   t: number; kind: 'click' | 'key' | 'after' | 'note' | 'skipped' | 'password'
   x?: number; y?: number; button?: string; count?: number; mods?: string[]; app?: string | null
   element?: Hit | null; path?: { role: string; name: string }[]; root?: boolean
   window?: { title?: string; bounds?: [number, number, number, number] | null } | string
   crop?: string; crop_scale?: number; crop_offset?: [number, number]; focus?: Field | null; code?: number; text?: string; secret?: boolean; role?: string; web?: Web
 }
+type Hit = { role?: string; name?: string; description?: string }
+type Field = { role: string; name: string; frame: string; window?: string; secure?: boolean; url?: string; id?: string }
+type Web = { url: string; id?: string }
 type Recording = { id: string; apps?: string[]; events: Event[] }
 type Step = Record<string, unknown> & { intent: string }
 type Params = { recording: Recording; params?: Record<string, string> }
@@ -21,7 +21,7 @@ const NAMED_ROLES = new Set(['button', 'checkbox', 'radio', 'tab', 'link', 'swit
 const CAPTION = 'The image is a crop of a screen; a red ring with four ticks marks the point a user clicked. Name the control under the ring as a short noun phrase a person would use to find it on screen, such as: the Save button. At most 8 words; answer with the phrase only.'
 const RING_PT = 14
 
-/** Turns a recording into a draft gui_plan: one step per action with its intent, the recorded crop and point of each click, the window each action left in front, and `params` for the typed values the caller names. */
+/** Turns a recording into a draft gui_plan, with `params` for the typed values the caller names. */
 export async function main(p: Params): Promise<Draft> {
   const examples = Object.entries(p.params ?? {}).filter(([, v]) => v).sort((a, b) => b[1].length - a[1].length)
   const params: Draft['params'] = Object.fromEntries(examples.map(([k, v]) => [k, { example: v }]))
@@ -32,7 +32,7 @@ export async function main(p: Params): Promise<Draft> {
   let typed = ''; let secrets = 0; let secret = false; let filled = false
   let into: Field | null | undefined
   let clicked: { e: Event; step: Step } | undefined
-  // a run whose recording read no focus checks none on replay; one it never read keeps the plan's own rules
+  // a recording that read no focus checks none on replay
   const focus = (f: Field | null | undefined) => f === null ? { focus: 'unverified' } : f ? onPage(f, f) : {}
   const onPage = (f: Partial<Field>, to: Partial<Field>) => { const { url, ...field } = to; return { focus: field, ...(f.url ? { web: { url: templ(f.url) } } : {}) } }
   const password = (f?: Field | null) => {

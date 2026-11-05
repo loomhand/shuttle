@@ -22,7 +22,7 @@ irm https://github.com/loomhand/shuttle/releases/latest/download/install.ps1 | i
 
 It installs to `%LOCALAPPDATA%\Programs\loomhand\shuttle` (`SHUTTLE_HOME` overrides it) and adds that directory to your user `PATH`. `SHUTTLE_VERSION` picks a release.
 
-Both installers download the archive and the release's `SHA256SUMS`, refuse an archive whose sha256 does not match, and need no administrator rights. Both run the new `shuttle --version` and keep the previous install when it does not start: `install.sh` checks the new program before it replaces the installed one, `install.ps1` moves the previous install aside and puts it back. `install.ps1` also refuses to replace a running install and changes nothing, so quit a running daemon and its `cua-driver.exe` first (see [Uninstall](#uninstall)). There are no Homebrew or Scoop packages yet.
+Both installers download the archive and the release's `SHA256SUMS`, refuse an archive whose sha256 does not match, and need no administrator rights. The checksums come from the same release, so they catch a damaged download, not a replaced release: to check that an archive was built by this repository's release workflow, install it by hand and verify its attestation ([Manual install and verification](#manual-install-and-verification)). Both run the new `shuttle --version` and keep the previous install when it does not start or the copy fails: `install.sh` checks the new program before it replaces the installed one, `install.ps1` moves the previous install aside and puts it back. Both refuse to replace a running install and change nothing, so quit a running daemon first (`pkill -f 'shuttle serve'`; Windows: also its `cua-driver.exe` and the agents' `shuttle mcp` sessions, which run from the install directory, see [Uninstall](#uninstall)). There are no Homebrew or Scoop packages yet.
 
 ## First-time setup
 
@@ -47,7 +47,7 @@ Both installers download the archive and the release's `SHA256SUMS`, refuse an a
    ```
 
    [safety.md](safety.md) describes each control and its limits.
-5. **Add shuttle to your agent:** `claude mcp add shuttle -- shuttle mcp` (Codex and Cursor: see the [README](https://github.com/loomhand/shuttle#use-it-from-an-agent)). The first tool call other than `status` starts the daemon.
+5. **Add shuttle to your agent:** `claude mcp add shuttle -- shuttle mcp` (Codex and Cursor: see the [README](https://github.com/loomhand/shuttle#use-it-from-an-agent)). The first tool call other than `status` starts the daemon. An agent that reaches shuttle across a container boundary or the LAN uses `shuttle mcp --http ADDR` with a token instead ([README](https://github.com/loomhand/shuttle#over-http)).
 6. **Check it:** ask the agent to call shuttle's `status` tool, which answers without the daemon, then to list your windows with the `desk` tool (verb `windows`), which starts it. With the allowlist above, only TextEdit's windows show.
 
 ## What an archive holds

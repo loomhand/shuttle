@@ -16,10 +16,10 @@ const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const INSTRUCTIONS: &str = "These tools act on the user's own desktop. GUI work in a desktop app goes to gui_plan, the whole plan in one call; a loop or logic a plan cannot hold goes to one script_run; one look or one click goes to desk or screenshot. To learn a task by watching the user, record_start, let them do it, then record_stop and run its draft with gui_plan.";
 
+pub(crate) type Message = Result<Map<String, Value>, String>;
 type Answer<'a> = Pin<Box<dyn Future<Output = Option<Value>> + Send + 'a>>;
-type Message = Result<Map<String, Value>, String>;
 
-/// Answers MCP requests from `input` on `output` in order, one JSON line each way; desk and plugin tools go to the daemon at `endpoint`; a `notifications/cancelled` drops the request it names without a reply, and a running one closes its daemon connection.
+/// Answers the MCP requests on `input` in order, one JSON line each way.
 pub async fn serve<R, W>(
     input: R,
     mut output: W,
@@ -45,7 +45,7 @@ where
                 None => open = false,
                 Some(line) if line.trim().is_empty() => {}
                 Some(line) => {
-                    let msg: Message = serde_json::from_str(&line).map_err(|e| format!("parse: {e}"));
+                    let msg = parse(line.as_bytes());
                     match cancelled(&msg) {
                         Some(id) if running.as_ref().is_some_and(|(r, _)| r.as_ref() == Some(&id)) => running = None,
                         Some(id) => queued.retain(|q| request_id(q).as_ref() != Some(&id)),
@@ -69,30 +69,21 @@ where
     Ok(())
 }
 
-/// Answers the one JSON-RPC message in `body`; none for a notification.
-pub(crate) async fn answer_one(body: &[u8], endpoint: &str, plugins: &Plugins) -> Option<Value> {
-    let msg: Message = serde_json::from_slice(body).map_err(|e| format!("parse: {e}"));
-    answer(msg, endpoint, plugins).await
+pub(crate) fn parse(body: &[u8]) -> Message {
+    serde_json::from_slice(body).map_err(|e| format!("parse: {e}"))
 }
 
-async fn write<W: AsyncWrite + Unpin>(output: &mut W, reply: &Value) -> Result<(), String> {
-    output
-        .write_all(format!("{reply}\n").as_bytes())
-        .await
-        .map_err(|e| format!("write stdout: {e}"))?;
-    output
-        .flush()
-        .await
-        .map_err(|e| format!("write stdout: {e}"))
+pub(crate) fn method(msg: &Message) -> Option<&str> {
+    msg.as_ref().ok()?.get("method")?.as_str()
 }
 
 /// The id of the request `msg` as JSON text; none for a notification or a line that does not parse.
-fn request_id(msg: &Message) -> Option<String> {
+pub(crate) fn request_id(msg: &Message) -> Option<String> {
     msg.as_ref().ok()?.get("id").map(Value::to_string)
 }
 
 /// The request id a `notifications/cancelled` names, as JSON text.
-fn cancelled(msg: &Message) -> Option<String> {
+pub(crate) fn cancelled(msg: &Message) -> Option<String> {
     let msg = msg.as_ref().ok()?;
     if msg.get("method").and_then(Value::as_str) != Some("notifications/cancelled")
         || msg.contains_key("id")
@@ -102,7 +93,8 @@ fn cancelled(msg: &Message) -> Option<String> {
     msg.get("params")?.get("requestId").map(Value::to_string)
 }
 
-async fn answer(msg: Message, endpoint: &str, plugins: &Plugins) -> Option<Value> {
+/// Answers `msg`; none for a notification.
+pub(crate) async fn answer(msg: Message, endpoint: &str, plugins: &Plugins) -> Option<Value> {
     let mut msg = match msg {
         Ok(m) => m,
         Err(e) => return Some(reply(Value::Null, Err((PARSE_ERROR, e)))),
@@ -130,6 +122,14 @@ async fn answer(msg: Message, endpoint: &str, plugins: &Plugins) -> Option<Value
         _ => Err((METHOD_NOT_FOUND, format!("unknown method {method}"))),
     };
     Some(reply(id, result))
+}
+
+async fn write<W: AsyncWrite + Unpin>(output: &mut W, reply: &Value) -> Result<(), String> {
+    let sent = async {
+        output.write_all(format!("{reply}\n").as_bytes()).await?;
+        output.flush().await
+    };
+    sent.await.map_err(|e| format!("write stdout: {e}"))
 }
 
 fn initialize(params: &Value, plugins: &Plugins) -> Value {
@@ -209,7 +209,7 @@ mod tests {
     }
 
     async fn session_with(lines: &[Value], endpoint: &str, plugins: &Plugins) -> Vec<Value> {
-        exchange_with(
+        exchange(
             &lines.iter().map(|l| format!("{l}\n")).collect::<String>(),
             endpoint,
             plugins,
@@ -217,11 +217,7 @@ mod tests {
         .await
     }
 
-    async fn exchange(input: &str, endpoint: &str) -> Vec<Value> {
-        exchange_with(input, endpoint, &Plugins::default()).await
-    }
-
-    async fn exchange_with(input: &str, endpoint: &str, plugins: &Plugins) -> Vec<Value> {
+    async fn exchange(input: &str, endpoint: &str, plugins: &Plugins) -> Vec<Value> {
         let mut output = Vec::new();
         serve(input.as_bytes(), &mut output, endpoint, plugins)
             .await
@@ -295,7 +291,7 @@ mod tests {
     #[tokio::test]
     async fn bad_requests_get_json_rpc_errors() {
         let input = "not json\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"nope\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"rm\"}}\n{\"jsonrpc\":\"2.0\",\"id\":3}\n";
-        let out = exchange(input, "unused").await;
+        let out = exchange(input, "unused", &Plugins::default()).await;
         let codes: Vec<i64> = out
             .iter()
             .map(|r| r["error"]["code"].as_i64().unwrap())
@@ -317,21 +313,11 @@ mod tests {
     #[tokio::test]
     async fn a_cancelled_call_closes_its_daemon_connection_gets_no_reply_and_later_requests_go_on()
     {
-        use tokio::io::{AsyncReadExt, BufReader};
+        use tokio::io::BufReader;
 
         let dir = tempfile::tempdir().unwrap();
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
-        let daemon = tokio::net::UnixListener::bind(&endpoint).unwrap();
-        let (got, got_call) = tokio::sync::oneshot::channel();
-        let (shut, closed) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let (mut conn, _) = daemon.accept().await.unwrap();
-            let call: Call = desk_core::wire::read_frame(&mut conn).await.unwrap();
-            let _ = got.send(call.tool);
-            let mut rest = Vec::new();
-            let _ = conn.read_to_end(&mut rest).await;
-            let _ = shut.send(());
-        });
+        let (got_call, closed) = crate::one_call_daemon(&endpoint);
         let (mut to_mcp, input) = tokio::io::duplex(1 << 16);
         let (output, from_mcp) = tokio::io::duplex(1 << 16);
         let mcp = tokio::spawn({

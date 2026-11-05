@@ -28,8 +28,9 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 #[cfg(unix)]
-use std::sync::{Mutex, PoisonError};
+use std::sync::atomic::Ordering;
 #[cfg(unix)]
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use tokio::process::Child;
@@ -38,13 +39,14 @@ use tokio::process::Child;
 pub const NAME: &str = "shuttle";
 /// The namespace of shuttle's directories and Windows global names, so another `shuttle` does not collide.
 pub const VENDOR: &str = "loomhand";
-/// The release version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The answer to every call while the user has stopped shuttle.
 pub const STOPPED: &str = "stopped by the user: run `shuttle resume` to go on";
 /// The environment variable whose value `1` tells `serve` and `mcp` that a host app owns the daemon, its driver and their permissions.
 pub const EMBEDDED: &str = "SHUTTLE_EMBEDDED";
 
+const FIRST_DELAY: Duration = Duration::from_secs(1);
+const MAX_DELAY: Duration = Duration::from_secs(30);
 #[cfg(unix)]
 const GROUP_POLL: Duration = Duration::from_millis(20);
 
@@ -72,32 +74,21 @@ impl Running {
         }
     }
 
-    /// Like [`Running::new`]; on Windows the child alone also goes into a job that ends it with this value, and the apps it starts stay out of it.
-    pub(crate) fn alone(child: Child) -> Result<Self, String> {
+    /// Like [`Running::new`]; on Windows the child also goes into a job that ends its whole tree with it, or with `alone` the child but not the apps it starts.
+    pub(crate) fn jobbed(child: Child, alone: bool) -> Result<Self, String> {
         #[cfg(windows)]
         {
-            let job = crate::job::Job::hold_alone(child.raw_handle())?;
+            let job = crate::job::Job::hold(child.raw_handle(), alone)?;
             Ok(Self {
                 job: Some(std::sync::Arc::new(job)),
                 ..Self::new(child)
             })
         }
         #[cfg(not(windows))]
-        Ok(Self::new(child))
-    }
-
-    /// Like [`Running::new`]; on Windows the child also goes into a job that ends its whole tree with it.
-    pub(crate) fn jobbed(child: Child) -> Result<Self, String> {
-        #[cfg(windows)]
         {
-            let job = crate::job::Job::hold(child.raw_handle())?;
-            Ok(Self {
-                job: Some(std::sync::Arc::new(job)),
-                ..Self::new(child)
-            })
+            let _ = alone;
+            Ok(Self::new(child))
         }
-        #[cfg(not(windows))]
-        Ok(Self::new(child))
     }
 }
 
@@ -110,12 +101,30 @@ impl Drop for Running {
     }
 }
 
+pub(crate) struct Backoff(Duration);
+
+impl Default for Backoff {
+    fn default() -> Self {
+        Self(FIRST_DELAY)
+    }
+}
+
+impl Backoff {
+    pub(crate) fn after(&mut self, ran: Duration) -> Duration {
+        if ran >= MAX_DELAY {
+            self.0 = FIRST_DELAY;
+        }
+        let wait = self.0;
+        self.0 = (self.0 * 2).min(MAX_DELAY);
+        wait
+    }
+}
+
 /// Shuttle's directory under a config or cache root: `loomhand/shuttle`.
 pub fn home() -> PathBuf {
     Path::new(VENDOR).join(NAME)
 }
 
-/// Whether [`EMBEDDED`] is exactly `1`.
 pub fn embedded() -> bool {
     std::env::var(EMBEDDED).is_ok_and(|v| v == "1")
 }
@@ -124,7 +133,23 @@ pub(crate) fn log(line: impl Display) {
     let _ = writeln!(std::io::stderr(), "{NAME}: {line}");
 }
 
-/// Sends `sig` to the live processes of the group `group` leads that are still in this process's cgroup, sparing the apps the desk moved into scopes of their own; how many it reached, so signal 0 counts them.
+#[cfg(unix)]
+pub(crate) fn private_dir(dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .and_then(|()| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)))
+        .map_err(|e| format!("create {}: {e}", dir.display()))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn private_dir(dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))
+}
+
+/// Sends `sig` to the live members of the group `group` leads that share this process's cgroup; how many it reached.
 #[cfg(target_os = "linux")]
 pub(crate) fn signal_group(group: u32, sig: libc::c_int) -> usize {
     let cgroup = |p: &str| std::fs::read_to_string(format!("/proc/{p}/cgroup")).ok();
@@ -179,27 +204,27 @@ pub(crate) async fn end_group(group: u32, grace: Duration) {
     if signal_group(group, libc::SIGTERM) == 0 {
         return;
     }
-    kill_after(group, grace).await;
+    kill_after(grace, |sig| signal_group(group, sig)).await;
 }
 
-/// KILLs whatever is left of the group `group` leads once `grace` has passed, or nothing once the group is gone.
 #[cfg(unix)]
-async fn kill_after(group: u32, grace: Duration) {
-    let deadline = tokio::time::Instant::now() + grace;
-    while tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(GROUP_POLL).await;
-        if signal_group(group, 0) == 0 {
-            return;
-        }
+pub(crate) async fn end_process(pid: u32, grace: Duration) -> bool {
+    if signal_group(pid, libc::SIGTERM) > 0 {
+        kill_after(grace, |sig| signal_group(pid, sig)).await;
+        return true;
     }
-    signal_group(group, libc::SIGKILL);
+    if signal_pid(pid, libc::SIGTERM) == 0 {
+        return false;
+    }
+    kill_after(grace, |sig| signal_pid(pid, sig)).await;
+    true
 }
 
 #[cfg(unix)]
 pub(crate) fn kill_later(rt: &tokio::runtime::Handle, group: u32, grace: Duration) {
     {
         let mut graced = GRACED.lock().unwrap_or_else(PoisonError::into_inner);
-        if ENDING.load(std::sync::atomic::Ordering::Relaxed) {
+        if ENDING.load(Ordering::Relaxed) {
             drop(graced);
             signal_group(group, libc::SIGKILL);
             return;
@@ -207,7 +232,7 @@ pub(crate) fn kill_later(rt: &tokio::runtime::Handle, group: u32, grace: Duratio
         graced.push(group);
     }
     rt.spawn(async move {
-        kill_after(group, grace).await;
+        kill_after(grace, move |sig| signal_group(group, sig)).await;
         GRACED
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -224,15 +249,65 @@ pub(crate) fn kill_graced() {
 }
 
 #[cfg(unix)]
-pub(crate) fn term(pid: u32) {
-    if let Ok(pid) = libc::pid_t::try_from(pid) {
-        // SAFETY: kill takes no pointers; `pid` names the child this daemon started.
-        unsafe { libc::kill(pid, libc::SIGTERM) };
-    }
+pub(crate) fn signal_pid(pid: u32, sig: libc::c_int) -> usize {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return 0;
+    };
+    // SAFETY: kill takes no pointers; `pid` names one process.
+    usize::from(unsafe { libc::kill(pid, sig) } == 0)
 }
 
-#[cfg(all(test, unix))]
-pub(crate) fn script(path: &std::path::Path, body: &str) -> std::io::Result<()> {
+/// KILLs whatever `signal` still reaches once `grace` has passed, or nothing once it reaches no process.
+#[cfg(unix)]
+async fn kill_after(grace: Duration, signal: impl Fn(libc::c_int) -> usize) {
+    let deadline = tokio::time::Instant::now() + grace;
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(GROUP_POLL).await;
+        if signal(0) == 0 {
+            return;
+        }
+    }
+    signal(libc::SIGKILL);
+}
+
+#[cfg(test)]
+pub(crate) async fn until(tries: u32, mut done: impl FnMut() -> bool) -> bool {
+    for _ in 0..tries {
+        if done() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    false
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+pub(crate) fn one_call_daemon(
+    endpoint: &str,
+) -> (
+    tokio::sync::oneshot::Receiver<String>,
+    tokio::sync::oneshot::Receiver<()>,
+) {
+    use tokio::io::AsyncReadExt;
+
+    let daemon = tokio::net::UnixListener::bind(endpoint).unwrap();
+    let (got, got_call) = tokio::sync::oneshot::channel();
+    let (shut, closed) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let (mut conn, _) = daemon.accept().await.unwrap();
+        let call: desk_core::wire::Call = desk_core::wire::read_frame(&mut conn).await.unwrap();
+        let _ = got.send(call.tool);
+        let mut rest = Vec::new();
+        let _ = conn.read_to_end(&mut rest).await;
+        let _ = shut.send(());
+    });
+    (got_call, closed)
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+pub(crate) fn script(path: &Path, body: &str) -> std::io::Result<()> {
     let made = std::process::Command::new("/bin/sh")
         .args(["-c", r#"printf '%s' "$1" > "$0" && chmod 755 "$0""#])
         .arg(path)

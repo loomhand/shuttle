@@ -17,7 +17,7 @@ pub(crate) enum Press {
     Acted(bool),
 }
 
-/// Presses `id` the way a user would; a menu entry runs its action, since a click right after its popup opens misses it, except on Linux, where it takes a click once it shows and a LibreOffice control outside a dialog runs its action; a Windows tree item takes a click first, since Explorer can ignore its select. With `background` input an element runs its action before any click, which needs no pointer, and so does a macOS button, check box, switch or link in the front window.
+/// Presses `id` the way a user would: a select, a click at a point, or the element's action.
 pub(crate) fn plan_press<B: Access>(
     b: &mut B,
     id: &str,
@@ -73,6 +73,11 @@ pub(crate) fn plan_press<B: Access>(
     Ok(Press::Acted(b.act(id, Act::Action)?))
 }
 
+/// Whether process `pid` is LibreOffice, whose control extents can sit above the control.
+pub(crate) fn libreoffice(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim() == "soffice.bin")
+}
+
 fn in_front<B: Access>(b: &mut B, id: &str) -> Result<bool, String> {
     let Some(pid) = b.pid_of(id)? else {
         return Ok(false);
@@ -83,12 +88,7 @@ fn in_front<B: Access>(b: &mut B, id: &str) -> Result<bool, String> {
         .any(|f| f.active && root.as_ref() == Some(&f.id)))
 }
 
-/// Whether process `pid` is LibreOffice, whose control extents can sit above the control.
-pub(crate) fn libreoffice(pid: u32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim() == "soffice.bin")
-}
-
-/// Whether the top-level window of `chain` is a dialog or an alert, where LibreOffice draws its controls at their extents and a control's action that opens a modal blocks the app until the modal closes.
+/// Whether the top-level window of `chain` is a dialog, where LibreOffice draws controls at their extents.
 fn in_dialog<B: Access>(b: &mut B, chain: &[String]) -> bool {
     chain
         .first()
@@ -386,14 +386,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_libreoffice_dialog_button_takes_a_click_and_a_main_window_button_its_action() {
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("soffice.bin");
-        std::os::unix::fs::symlink("/bin/sleep", &bin).unwrap();
-        let mut office = std::process::Command::new(&bin).arg("30").spawn().unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !libreoffice(office.id()) && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        let (_dir, mut office) = office();
         let mut f = notepad();
         f.pid = Some(office.id());
         f.add(
@@ -429,15 +422,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn only_a_soffice_bin_process_counts_as_libreoffice() {
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("soffice.bin");
-        std::os::unix::fs::symlink("/bin/sleep", &bin).unwrap();
-        let mut office = std::process::Command::new(&bin).arg("30").spawn().unwrap();
+        let (_dir, mut office) = office();
         let pid = office.id();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !libreoffice(pid) && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
         assert!(
             libreoffice(pid),
             "the soffice.bin link never showed in /proc/{pid}/comm"
@@ -445,5 +431,18 @@ mod tests {
         assert!(!libreoffice(std::process::id()));
         office.kill().unwrap();
         office.wait().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn office() -> (tempfile::TempDir, std::process::Child) {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("soffice.bin");
+        std::os::unix::fs::symlink("/bin/sleep", &bin).unwrap();
+        let office = std::process::Command::new(&bin).arg("30").spawn().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !libreoffice(office.id()) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        (dir, office)
     }
 }

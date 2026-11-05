@@ -18,21 +18,21 @@ function screen(w: number, h: number, at: [number, number]): Buffer {
   return png(w, h, 6, 4, px)
 }
 
-type Seen = { clicks: string[]; grounds: number; looks: number }
+type Seen = { clicks: string[]; grounds: number; shots: number }
 
 async function canvas(t: { after(fn: () => void): void }, o: { shown: Buffer; look?: number; title?: (s: Seen) => string; bounds?: [number, number, number, number] }): Promise<Seen> {
-  const seen: Seen = { clicks: [], grounds: 0, looks: 0 }
+  const seen: Seen = { clicks: [], grounds: 0, shots: 0 }
   const win = () => ({ id: '1/1', title: o.title?.(seen) ?? 'Canvas', role: 'window', pid: process.pid, active: true, app: 'Browser', bounds: o.bounds ?? [0, 0, 800, 600] })
   await daemon(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify([win()])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win(), truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: win().title, states: ['showing'] }, { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'document', name: '', states: ['showing'] }] })
     if (tool === 'desk_screen') return '{"width":800,"height":600}'
+    if (tool === 'desk_shot' && args.w === undefined) seen.shots += 1
     if (tool === 'desk_shot') return { text: '{"ok":true}', image: (args.w === undefined ? o.shown : gray(Number(args.w), Number(args.h))).toString('base64') }
     if (tool === 'desk_at') return JSON.stringify({ found: { ref: 0, id: '1/2', parent: -1, depth: 0, role: 'document', name: '', states: [] }, path: [{ id: '1/1', role: 'window', name: win().title }], pid: process.pid })
     if (tool === 'model_ground') { seen.grounds += 1; return JSON.stringify({ x: 500, y: 300, usage }) }
     if (tool === 'model_decide') {
       const a = args as { questions: Record<string, { type: string }> }
-      if (JSON.stringify(args).includes('image_url')) seen.looks += 1
       const answers = Object.fromEntries(Object.keys(a.questions).map((k) => [k, a.questions[k]?.type === 'noul' ? { probability: o.look ?? 0.95 } : { choice: 'none', confidence: 1, probabilities: { none: 1 } }]))
       return JSON.stringify({ answers, served: { model: 'm', build: BUILD, id: null }, usage })
     }
@@ -99,7 +99,7 @@ test('a recorded point in a window of another size is no fallback, and the step 
   const seen = await canvas(t, { shown: gray(800, 600), look: 0.1, bounds: [0, 0, 640, 480] })
   const r = await main({ steps: [{ click: 'the Green button', recorded: { text: 'the Green button', crop: crop(), at: [160, 130], size: [800, 600], root: true } }] })
   assert.equal(r.ok, false, JSON.stringify(r))
-  assert.deepEqual(seen.clicks, [])
+  assert.deepEqual([seen.clicks, seen.shots], [[], 2])
   assert.match(r.escalate?.reason ?? '', /recorded crop matched nothing.*grounding pointed at/)
 })
 

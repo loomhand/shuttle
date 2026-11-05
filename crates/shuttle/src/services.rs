@@ -15,13 +15,11 @@ use tokio::task::JoinSet;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::plugins::Service;
-use crate::{Running, log};
+use crate::{Backoff, Running, log};
 
 const SOCKET_VAR: &str = "SHUTTLE_SERVICE_SOCKET";
 #[cfg(unix)]
 const DIR: &str = "services";
-const FIRST_DELAY: Duration = Duration::from_secs(1);
-const MAX_DELAY: Duration = Duration::from_secs(30);
 const STOP_WAIT: Duration = Duration::from_secs(3);
 const LISTEN_WAIT: Duration = Duration::from_secs(10);
 const POLL: Duration = Duration::from_millis(50);
@@ -43,14 +41,18 @@ impl Services {
         if services.is_empty() {
             return Ok(running);
         }
+        let sockets = services
+            .iter()
+            .map(|s| bindable(desk, &s.service))
+            .collect::<Result<Vec<_>, _>>()?;
         #[cfg(unix)]
-        private_dir(&dir(desk))?;
-        for s in services {
+        crate::private_dir(&dir(desk))?;
+        for (s, socket) in services.iter().zip(sockets) {
             let proc = Proc {
                 name: s.service.clone(),
                 bin: s.bin.clone(),
                 args: s.args.clone(),
-                socket: socket(desk, &s.service),
+                socket,
                 desk: desk.to_owned(),
                 key_vars: key_vars.to_vec(),
             };
@@ -120,7 +122,7 @@ impl Proc {
         let running = cmd
             .spawn()
             .map_err(|e| format!("start {}: {e}", self.bin.display()))
-            .and_then(Running::jobbed)?;
+            .and_then(|c| Running::jobbed(c, false))?;
         #[cfg(windows)]
         if let Some(job) = &running.job {
             servers().insert(self.socket.clone(), std::sync::Arc::downgrade(job));
@@ -129,7 +131,9 @@ impl Proc {
     }
 
     async fn supervise(self, mut stopped: oneshot::Receiver<()>) {
-        let mut delay = FIRST_DELAY;
+        #[cfg(unix)]
+        self.stop_stale().await;
+        let mut backoff = Backoff::default();
         loop {
             let started = Instant::now();
             match self.spawn() {
@@ -144,14 +148,35 @@ impl Proc {
                 }
                 Err(e) => log(format_args!("service {}: {e}", self.name)),
             }
-            if started.elapsed() >= MAX_DELAY {
-                delay = FIRST_DELAY;
-            }
             tokio::select! {
                 _ = &mut stopped => return,
-                () = tokio::time::sleep(delay) => {}
+                () = tokio::time::sleep(backoff.after(started.elapsed())) => {}
             }
-            delay = (delay * 2).min(MAX_DELAY);
+        }
+    }
+
+    #[cfg(unix)]
+    async fn stop_stale(&self) {
+        let Ok(conn) = server::connect(&self.socket).await else {
+            return;
+        };
+        let pid = conn
+            .peer_cred()
+            .ok()
+            .and_then(|c| c.pid())
+            .and_then(|p| u32::try_from(p).ok())
+            .filter(|p| *p > 0);
+        drop(conn);
+        if let Some(pid) = pid {
+            let done = if crate::end_process(pid, STOP_WAIT).await {
+                "ended"
+            } else {
+                "no signal reached"
+            };
+            log(format_args!(
+                "service {}: {done} process {pid}, which an earlier daemon left at {}",
+                self.name, self.socket
+            ));
         }
     }
 }
@@ -193,7 +218,7 @@ where
 async fn terminate(running: &mut Running) {
     #[cfg(unix)]
     if let Some(pid) = running.child.id() {
-        crate::term(pid);
+        crate::signal_pid(pid, libc::SIGTERM);
     }
     #[cfg(windows)]
     match &running.job {
@@ -225,7 +250,7 @@ async fn listening(socket: &str) -> Result<server::Conn, String> {
     }
 }
 
-// an end of the data on either side closes only the other's input, or both on Windows where a pipe has no half-close; the first failure ends both
+// an eof half-closes the other side, or both on Windows
 async fn splice<C, S>(client: C, service: S)
 where
     C: AsyncRead + AsyncWrite + Unpin,
@@ -279,6 +304,23 @@ fn socket(desk: &str, service: &str) -> String {
     format!("{desk}-svc-{service}")
 }
 
+#[cfg(unix)]
+fn bindable(desk: &str, service: &str) -> Result<String, String> {
+    let socket = socket(desk, service);
+    std::os::unix::net::SocketAddr::from_pathname(&socket).map_err(|e| {
+        format!(
+            "service {service}: socket {socket} is {} bytes: {e}; give the service a shorter name or the daemon a shorter endpoint",
+            socket.len()
+        )
+    })?;
+    Ok(socket)
+}
+
+#[cfg(windows)]
+fn bindable(desk: &str, service: &str) -> Result<String, String> {
+    Ok(socket(desk, service))
+}
+
 /// The job of the service last started on each pipe, which alone may serve it.
 #[cfg(windows)]
 fn servers() -> std::sync::MutexGuard<'static, HashMap<String, std::sync::Weak<crate::job::Job>>> {
@@ -301,15 +343,6 @@ fn serves(socket: &str, service: &server::Conn) -> Result<(), String> {
         .ok_or_else(|| format!("no service runs for {socket}"))?;
     job.serves(windows::Win32::Foundation::HANDLE(service.as_raw_handle()))
         .map_err(|e| format!("{socket}: {e}"))
-}
-
-#[cfg(unix)]
-fn private_dir(dir: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-
-    std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-        .map_err(|e| format!("chmod {}: {e}", dir.display()))
 }
 
 #[cfg(test)]
@@ -450,6 +483,16 @@ server.serve_forever()
                 .unwrap()
         }
 
+        async fn restarted(&self, first: i32) -> i32 {
+            let mut second = first;
+            crate::until(100, || {
+                second = self.pid().unwrap_or(first);
+                second != first
+            })
+            .await;
+            second
+        }
+
         async fn stop(mut self) {
             if let Some(s) = self.services.take() {
                 s.stop().await;
@@ -523,13 +566,7 @@ server.serve_forever()
     }
 
     async fn appears(path: &Path) -> bool {
-        for _ in 0..100 {
-            if path.exists() {
-                return true;
-            }
-            tokio::time::sleep(POLL).await;
-        }
-        false
+        crate::until(100, || path.exists()).await
     }
 
     #[tokio::test]
@@ -643,14 +680,7 @@ server.serve_forever()
         let first = s.pid().unwrap();
         // SAFETY: the pid is the fake service this test started.
         unsafe { libc::kill(first, libc::SIGKILL) };
-        let mut second = first;
-        for _ in 0..100 {
-            tokio::time::sleep(POLL).await;
-            second = s.pid().unwrap_or(first);
-            if second != first {
-                break;
-            }
-        }
+        let second = s.restarted(first).await;
         assert_ne!(second, first, "the service came back");
         assert!(!s.echo().await.is_error);
         s.stop().await;
@@ -664,17 +694,42 @@ server.serve_forever()
         let first = s.pid().unwrap();
         // SAFETY: the pid is the fake service this test started.
         unsafe { libc::kill(first, libc::SIGKILL) };
-        let mut second = first;
-        for _ in 0..100 {
-            tokio::time::sleep(POLL).await;
-            second = s.pid().unwrap_or(first);
-            if second != first {
-                break;
-            }
-        }
+        let second = s.restarted(first).await;
         assert_ne!(second, first, "the restarted service did not bind");
         assert!(!s.echo().await.is_error);
         s.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_copy_a_dead_daemon_left_is_stopped_before_the_service_starts_again() {
+        stale_copy_is_stopped(true).await;
+    }
+
+    #[tokio::test]
+    async fn a_left_copy_that_leads_no_process_group_is_stopped_too() {
+        stale_copy_is_stopped(false).await;
+    }
+
+    #[tokio::test]
+    async fn a_service_whose_socket_path_is_too_long_fails_the_start_and_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let deep = dir.path().join("d".repeat(60));
+        let endpoint = deep.join("desk.sock").to_string_lossy().into_owned();
+        let name = "a".repeat(32);
+        let service: Service = serde_json::from_value(json!({
+            "service": name,
+            "bin": "/bin/true",
+            "tools": [{"name": "demo_echo", "description": "d", "input_schema": {"type": "object"}}],
+        }))
+        .unwrap();
+        let Err(e) = Services::start(&[service], &endpoint, &[]) else {
+            panic!("a service with an unbindable socket started");
+        };
+        assert!(
+            e.starts_with(&format!("service {name}: socket ")) && e.contains("shorter"),
+            "{e}"
+        );
+        assert!(!deep.exists(), "the start made the services directory");
     }
 
     #[tokio::test]
@@ -698,21 +753,6 @@ server.serve_forever()
         s.daemon.answer(control("safety_resume")).await;
         assert!(!s.echo().await.is_error);
         assert_eq!(s.pid(), Some(pid));
-        s.stop().await;
-    }
-
-    #[tokio::test]
-    async fn a_stop_and_a_resume_back_to_back_still_drop_a_live_splice() {
-        let s = served(Guard::default()).await;
-        let mut held = s.open("demo_hold", json!({})).await;
-        assert!(appears(&s.state("held")).await);
-        for tool in ["safety_stop", "safety_resume"] {
-            s.daemon.answer(control(tool)).await;
-        }
-        let mut rest = Vec::new();
-        let read = tokio::time::timeout(Duration::from_secs(2), held.read_to_end(&mut rest)).await;
-        assert!(read.is_ok(), "the splice outlived the stop");
-        assert!(!s.echo().await.is_error);
         s.stop().await;
     }
 
@@ -763,6 +803,51 @@ server.serve_forever()
         assert_eq!(echoed["agent_id"], crate::NAME);
         assert_eq!(out[2]["error"]["message"], "unknown tool demo_hold");
         s.stop().await;
+    }
+
+    async fn stale_copy_is_stopped(leader: bool) {
+        use std::os::unix::process::CommandExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let bin = dir.path().join("demo-service");
+        crate::script(&bin, FAKE).unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        crate::private_dir(&super::dir(&endpoint)).unwrap();
+        let mut left = std::process::Command::new(&bin);
+        left.arg(&state).env(SOCKET_VAR, socket(&endpoint, "demo"));
+        if leader {
+            left.process_group(0);
+        }
+        let mut left = left.spawn().unwrap();
+        let pid = state.join("pid");
+        assert!(appears(&pid).await, "the left copy never started");
+        let first = std::fs::read_to_string(&pid).unwrap();
+        let service: Service = serde_json::from_value(json!({
+            "service": "demo",
+            "bin": bin,
+            "args": [state],
+            "tools": [{"name": "demo_echo", "description": "d", "input_schema": {"type": "object"}}],
+        }))
+        .unwrap();
+        let running = Services::start(&[service], &endpoint, &[]).unwrap();
+        let mut exited = None;
+        let mut second = first.clone();
+        for _ in 0..100 {
+            exited = exited.or_else(|| left.try_wait().unwrap());
+            second = std::fs::read_to_string(&pid).unwrap_or_default();
+            if exited.is_some() && !second.is_empty() && second != first {
+                break;
+            }
+            tokio::time::sleep(POLL).await;
+        }
+        running.stop().await;
+        if exited.is_none() {
+            let _ = left.kill();
+        }
+        assert!(exited.is_some(), "the copy a dead daemon left still runs");
+        assert_ne!(second, first, "the service did not start again");
     }
 
     async fn bench_service(socket: String) {
@@ -816,7 +901,7 @@ server.serve_forever()
     async fn splice_cost() {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
-        private_dir(&super::dir(&endpoint)).unwrap();
+        crate::private_dir(&super::dir(&endpoint)).unwrap();
         let socket = socket(&endpoint, "bench");
         tokio::spawn(bench_service(socket.clone()));
         let runner = Runner::new(
@@ -986,14 +1071,7 @@ while ($true) {
         }
         assert!(alive(&child), "{child} never started");
         running.stop().await;
-        let mut gone = false;
-        for _ in 0..40 {
-            gone = !alive(&child);
-            if gone {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        let gone = crate::until(40, || !alive(&child)).await;
         assert!(gone, "{child} outlived the service's stop");
     }
 

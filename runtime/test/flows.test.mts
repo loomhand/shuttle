@@ -47,3 +47,117 @@ test('a chain that ends in an untitled window keeps that window\'s process', { s
   const chain = JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as { pid: number | null }
   assert.equal(chain.pid, 4242)
 })
+
+test('a plan marks the chain record dirty before it acts and clears the mark when it ends, so a killed run never chains over its steps', async (t) => {
+  const seen: (boolean | undefined)[] = []; let watch = false
+  const pend = () => JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as { dirty?: boolean; steps: unknown[] }
+  await daemon(t, (c) => {
+    if (watch && c.tool === 'desk_type') seen.push(pend().dirty)
+    return answer(() => [notepad])(c)
+  })
+  const first = await main({ steps: [{ app: 'Notepad' }, { type: 'hello' }] })
+  assert.equal(first.ok, true, JSON.stringify(first))
+  watch = true
+  const next = await main({ steps: [{ type: ' world' }] })
+  assert.equal(next.ok, true, JSON.stringify(next))
+  assert.deepEqual(seen, [true])
+  assert.equal(pend().dirty, false)
+  assert.equal(pend().steps.length, 3)
+})
+
+test('a value typed into a password field is never written to a saved flow or the chain record', async (t) => {
+  const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: '', states: ['showing', 'focused', 'protected'] }
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([notepad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field] })
+    return '{"ok":true}'
+  })
+  const pending = () => readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')
+  const param = await main({ steps: [{ app: 'Notepad' }, { type: '{{password}}', focus: { secure: true } }], params: { password: 'hunter2' }, save: 'login' })
+  assert.equal(param.ok, true, JSON.stringify(param))
+  assert.ok(!readFileSync(`${process.env.SHUTTLE_FLOWS}/login.json`, 'utf8').includes('hunter2'))
+  assert.ok(!pending().includes('hunter2'), pending())
+  const literal = await main({ steps: [{ app: 'Notepad' }, { type: 'hunter3', focus: { secure: true } }], save: 'login2' })
+  assert.equal(literal.ok, true, JSON.stringify(literal))
+  assert.ok(!readFileSync(`${process.env.SHUTTLE_FLOWS}/login2.json`, 'utf8').includes('hunter3'))
+})
+
+test('the chain record holds no password, neither from a password step that stopped nor typed as a literal', async (t) => {
+  const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: '', states: ['showing', 'focused', 'protected'] }
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([notepad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field] })
+    return '{"ok":true}'
+  })
+  const pending = () => readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')
+  const stopped = await main({ steps: [{ app: 'Notepad' }, { type: '{{password}}', focus: { role: 'textbox', name: 'PIN', secure: true } }], params: { password: 'hunter4' } })
+  assert.equal(stopped.escalate?.step, 1, JSON.stringify(stopped))
+  assert.ok(!pending().includes('hunter4'), pending())
+  const literal = await main({ steps: [{ app: 'Notepad' }, { type: 'hunter5\n', focus: { secure: true } }] })
+  assert.equal(literal.ok, true, JSON.stringify(literal))
+  assert.ok(!pending().includes('hunter5'), pending())
+  const saved = await main({ save: 'login3' })
+  assert.equal(saved.ok, true, JSON.stringify(saved))
+  const flow = readFileSync(`${process.env.SHUTTLE_FLOWS}/login3.json`, 'utf8')
+  assert.ok(!flow.includes('hunter5') && flow.includes('"type": "{{text}}\\n"'), flow)
+})
+
+test('a typed username and a typed password get distinct names whether the flow is saved from the plan or from the chain record', async (t) => {
+  const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: '', states: ['showing', 'focused', 'protected'] }
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([notepad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field] })
+    return '{"ok":true}'
+  })
+  const steps = [{ app: 'Notepad' }, { type: 'alice' }, { type: 'pw123', focus: { secure: true } }]
+  const ran = await main({ steps })
+  assert.equal(ran.ok, true, JSON.stringify(ran))
+  const later = await main({ save: 'login4' })
+  assert.equal(later.ok, true, JSON.stringify(later))
+  const direct = await main({ steps, save: 'login5' })
+  assert.equal(direct.ok, true, JSON.stringify(direct))
+  for (const name of ['login4', 'login5']) {
+    const f = flow(name)
+    assert.deepEqual(f.steps.map((s) => s.type), [undefined, '{{text}}', '{{text_2}}'], `${name} ${JSON.stringify(f)}`)
+    assert.deepEqual(f.params, { text: 'alice' }, name)
+  }
+})
+
+test('saving the steps of a plan that just typed a password stores them without typing again', async (t) => {
+  const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: '', states: ['showing', 'focused', 'protected'] }
+  const typed: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_type') typed.push(args.text)
+    if (tool === 'desk_windows') return JSON.stringify([notepad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field] })
+    return '{"ok":true}'
+  })
+  for (const [steps, params] of [
+    [[{ app: 'Notepad' }, { type: '{{password}}', focus: { secure: true } }], { password: 'hunter6' }],
+    [[{ app: 'Notepad' }, { type: 'hunter7', focus: { secure: true } }], {}],
+  ] as const) {
+    const ran = await main({ steps: [...steps], params })
+    assert.equal(ran.ok, true, JSON.stringify(ran))
+    typed.length = 0
+    const saved = await main({ steps: [...steps], params, save: 'login6' })
+    assert.equal(saved.ran, false, JSON.stringify(saved))
+    assert.deepEqual(typed, [])
+  }
+})
+
+test('saving a plan whose password step adds a Return runs it again', async (t) => {
+  const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: '', states: ['showing', 'focused', 'protected'] }
+  const typed: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_type') typed.push(args.text)
+    if (tool === 'desk_windows') return JSON.stringify([notepad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field] })
+    return '{"ok":true}'
+  })
+  const ran = await main({ steps: [{ app: 'Notepad' }, { type: 'hunter7', focus: { secure: true } }] })
+  assert.equal(ran.ok, true, JSON.stringify(ran))
+  typed.length = 0
+  const saved = await main({ steps: [{ app: 'Notepad' }, { type: 'hunter7\n', focus: { secure: true } }], save: 'login7' })
+  assert.notEqual(saved.ran, false, JSON.stringify(saved))
+  assert.deepEqual(typed, ['hunter7'])
+})

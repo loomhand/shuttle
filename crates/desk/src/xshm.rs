@@ -6,8 +6,6 @@ use std::sync::{Arc, Mutex};
 
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
-use x11rb::protocol::ErrorKind;
-use x11rb::protocol::Event;
 use x11rb::protocol::shape::{ConnectionExt as _, SK};
 use x11rb::protocol::shm::ConnectionExt as _;
 use x11rb::protocol::xinput::{ConnectionExt as _, DeviceType};
@@ -15,6 +13,7 @@ use x11rb::protocol::xproto::{
     Atom, AtomEnum, ChangeWindowAttributesAux, ConnectionExt as _, EventMask, GrabMode, GrabStatus,
     ImageFormat, ImageOrder, MapState, Window, WindowClass,
 };
+use x11rb::protocol::{ErrorKind, Event};
 use x11rb::rust_connection::RustConnection;
 
 use crate::model::Modal;
@@ -334,13 +333,21 @@ impl Grabber {
 
     pub fn dialog(&self, w: Window) -> bool {
         let (kind, dialog) = (self.net_wm_type, self.type_dialog);
-        let children = self.kids(w);
-        std::iter::once(w).chain(children).any(|c| {
-            self.transient_for(c).is_some()
-                || self
-                    .conn
-                    .get_property(false, c, kind, AtomEnum::ATOM, 0, 16)
-                    .ok()
+        let transient = u32::from(AtomEnum::WM_TRANSIENT_FOR);
+        let (window, atom) = (u32::from(AtomEnum::WINDOW), u32::from(AtomEnum::ATOM));
+        let asked: Vec<_> = std::iter::once(w)
+            .chain(self.kids(w))
+            .map(|c| {
+                let get = |p, t, len| self.conn.get_property(false, c, p, t, 0, len).ok();
+                (get(transient, window, 1), get(kind, atom, 16))
+            })
+            .collect();
+        asked.into_iter().any(|(owner, types)| {
+            owner
+                .and_then(|r| r.reply().ok())
+                .and_then(|r| r.value32().and_then(|mut v| v.next()))
+                .is_some_and(|o| o != 0)
+                || types
                     .and_then(|r| r.reply().ok())
                     .and_then(|r| r.value32().map(|mut v| v.any(|a| a == dialog)))
                     .unwrap_or(false)
@@ -391,24 +398,25 @@ impl Grabber {
 
     /// The WM_CLASS class of `w`, such as `Google-chrome`, or of the client inside it when `w` is a window manager frame.
     pub fn class(&self, w: Window) -> String {
-        let children = self.kids(w);
-        std::iter::once(w)
-            .chain(children)
-            .find_map(|c| {
-                let value = self
-                    .conn
+        let asked: Vec<_> = std::iter::once(w)
+            .chain(self.kids(w))
+            .map(|c| {
+                self.conn
                     .get_property(false, c, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 64)
-                    .ok()?
-                    .reply()
-                    .ok()?
-                    .value;
+                    .ok()
+            })
+            .collect();
+        asked
+            .into_iter()
+            .find_map(|asked| {
+                let value = asked?.reply().ok()?.value;
                 let class = value.split(|b| *b == 0).nth(1)?;
                 (!class.is_empty()).then(|| String::from_utf8_lossy(class).into_owned())
             })
             .unwrap_or_default()
     }
 
-    /// Whether keys sent to the focus reach `window` of `pid`: it is active and focused, no other client's popup shows, no grab but a popup of `pid` holds the keyboard, and the core keyboard is the only master, since Chrome drops core input while another exists.
+    /// Whether keys sent to the focus reach `window` of `pid`; a second master keyboard fails it, since Chrome then drops core input.
     pub fn keyboard(&self, window: Window, pid: u32) -> Result<bool, String> {
         if self.active() != Some(window) || self.masters() != Some(1) {
             return Ok(false);
@@ -440,7 +448,7 @@ impl Grabber {
         Ok(!popups.is_empty() || !self.grabbed(false)?)
     }
 
-    /// Whether another client holds an active grab of the keyboard, or of the pointer with `pointer`; a probe grab of this connection that succeeds is released at once.
+    /// Whether another client holds an active grab of the keyboard, or of the pointer with `pointer`.
     pub fn grabbed(&self, pointer: bool) -> Result<bool, String> {
         let (async_, now) = (GrabMode::ASYNC, x11rb::CURRENT_TIME);
         let status = if pointer {
@@ -482,7 +490,7 @@ impl Grabber {
         }))
     }
 
-    /// Whether the screen point `(x, y)` shows a window title rather than a window's content: a desktop panel, whose task buttons carry the titles, or the band of a window manager frame above its client.
+    /// Whether the screen point `(x, y)` shows a window title: a desktop panel or the band of a frame above its client.
     pub fn title_at(&self, x: i32, y: i32) -> Result<bool, String> {
         let Some(top) = self.top_at(x, y)? else {
             return Ok(false);
@@ -520,9 +528,9 @@ impl Grabber {
 
     /// The title and process of the topmost managed window at the screen point `(x, y)`, past the desktop shell's windows.
     pub fn client_at(&self, x: i32, y: i32) -> Result<Option<(String, Option<u32>)>, String> {
-        let shell = self.shell().windows.clone();
+        let shell = self.shell();
         for w in self.clients()?.into_iter().rev() {
-            if shell.contains(&w) {
+            if shell.windows.contains(&w) {
                 continue;
             }
             if self.on_root(w).is_some_and(|[left, top, width, height]| {
@@ -813,7 +821,10 @@ impl Grabber {
                     .map(|r| (r.value, r.bytes_after))
             })?;
             if !value.is_empty() {
-                return Some(String::from_utf8_lossy(&value).into_owned());
+                return Some(
+                    String::from_utf8(value)
+                        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
+                );
             }
         }
         Some(String::new())
@@ -859,12 +870,10 @@ impl Drop for Grabber {
 /// The desktop shell as one refresh read it.
 #[derive(Default)]
 struct Shell {
-    /// Which 16-pixel squares a dock covers, row-major.
     mask: Arc<[bool]>,
     pids: Vec<u32>,
     /// The dock windows and their window manager frames.
     docks: Vec<Window>,
-    /// The docks and the desktop windows, with their frames.
     windows: Vec<Window>,
 }
 
@@ -893,7 +902,7 @@ fn dock_mask(docks: &[[i32; 4]], (width, height): (usize, usize)) -> Vec<bool> {
     mask
 }
 
-/// How `mapped`, the drawn root children bottom to top, hide `frame` on a screen of `width` by `height`: centred off the screen, or under another managed window at its centre that is not a dialog `opened` says the frame's own window opened.
+/// How `mapped`, the drawn root children bottom to top, hide `frame`: off the screen, or under another window.
 fn cover(
     frame: Window,
     mapped: &[Placement],
@@ -958,12 +967,6 @@ mod tests {
 
     use super::*;
 
-    fn property(value: &[u8], offset: u32) -> Option<(Vec<u8>, u32)> {
-        let from = (offset as usize * 4).min(value.len());
-        let to = (from + 256).min(value.len());
-        Some((value[from..to].to_vec(), (value.len() - to) as u32))
-    }
-
     #[test]
     fn bgrx_pixels_become_rgb_and_a_trailing_partial_pixel_drops() {
         assert_eq!(bgrx_rgb(&[1, 2, 3, 0, 4, 5, 6, 9, 7]), [3, 2, 1, 6, 5, 4]);
@@ -1017,19 +1020,6 @@ mod tests {
             1,
             (1280, 800)
         ));
-    }
-
-    fn x11_error(error_kind: ErrorKind) -> ReplyError {
-        ReplyError::X11Error(X11Error {
-            error_kind,
-            error_code: 3,
-            sequence: 37,
-            bad_value: 25_165_899,
-            minor_opcode: 0,
-            major_opcode: 20,
-            extension_name: None,
-            request_name: Some("GetProperty"),
-        })
     }
 
     #[test]
@@ -1183,5 +1173,24 @@ mod tests {
             matches!(&other, Err(e) if e.starts_with("get WM_NAME: ")),
             "{other:?}"
         );
+    }
+
+    fn property(value: &[u8], offset: u32) -> Option<(Vec<u8>, u32)> {
+        let from = (offset as usize * 4).min(value.len());
+        let to = (from + 256).min(value.len());
+        Some((value[from..to].to_vec(), (value.len() - to) as u32))
+    }
+
+    fn x11_error(error_kind: ErrorKind) -> ReplyError {
+        ReplyError::X11Error(X11Error {
+            error_kind,
+            error_code: 3,
+            sequence: 37,
+            bad_value: 25_165_899,
+            minor_opcode: 0,
+            major_opcode: 20,
+            extension_name: None,
+            request_name: Some("GetProperty"),
+        })
     }
 }

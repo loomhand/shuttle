@@ -2,8 +2,9 @@
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, RandomState};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use desk_core::args::parse;
@@ -15,7 +16,7 @@ use shuttle_desk::desk::{ACTIONS, TURN_WAIT};
 use shuttle_desk::server::{Accepted, Handler};
 use shuttle_models::Models;
 use shuttle_models::config::Confirm;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use zeroize::Zeroizing;
 
 #[cfg(any(target_os = "macos", windows))]
@@ -83,7 +84,12 @@ pub trait Controls: Send + Sync {
         false
     }
     /// Starts or ends a recording of the user's input.
-    fn record(&self, _on: bool) {}
+    fn record(&self, _on: bool) -> Result<(), String> {
+        Ok(())
+    }
+    fn hotkey(&self, _code: u32) {
+        self.halt(true);
+    }
 }
 
 /// What the controls show and how to reach the daemon.
@@ -98,7 +104,7 @@ pub struct Ui {
     pub about: String,
 }
 
-/// Answers `model_*` calls with `models`, `gui_plan`, `script_run` and plugin tools with `runner`, splices service tools to their services, and answers the rest with `desk`; `safety_stop` halts every call until `safety_resume`.
+/// Routes each call by its tool; `safety_stop` halts every call until `safety_resume`.
 pub struct Daemon<H> {
     desk: H,
     models: Result<Models, String>,
@@ -106,9 +112,8 @@ pub struct Daemon<H> {
     guard: Guard,
     plugins: Vec<Plugin>,
     services: HashMap<String, String>,
-    halted: tokio::sync::watch::Sender<bool>,
-    stops: tokio::sync::watch::Sender<u64>,
-    actions: AtomicUsize,
+    halted: watch::Sender<bool>,
+    actions: Arc<AtomicUsize>,
     asking: AtomicBool,
     turn: tokio::sync::Mutex<()>,
     running: Mutex<Option<String>>,
@@ -119,7 +124,7 @@ pub struct Daemon<H> {
 }
 
 impl<H: Handler> Daemon<H> {
-    /// A daemon whose every call fails with the configuration's error when it does not load, since the safety controls are in it.
+    /// A daemon that fails every call but the stop while `models` holds the configuration's error.
     pub fn new(desk: H, models: Result<Models, String>, runner: Runner, guard: Guard) -> Self {
         Self {
             desk,
@@ -128,9 +133,8 @@ impl<H: Handler> Daemon<H> {
             guard,
             plugins: Vec::new(),
             services: HashMap::new(),
-            halted: tokio::sync::watch::Sender::new(false),
-            stops: tokio::sync::watch::Sender::new(0),
-            actions: AtomicUsize::new(0),
+            halted: watch::Sender::new(false),
+            actions: Arc::new(AtomicUsize::new(0)),
             asking: AtomicBool::new(false),
             turn: tokio::sync::Mutex::new(()),
             running: Mutex::new(None),
@@ -143,8 +147,8 @@ impl<H: Handler> Daemon<H> {
 
     /// Adds recordings of the user's input, saved in `dir`.
     #[must_use]
-    pub fn with_recordings(mut self, dir: std::path::PathBuf) -> Self {
-        self.recorder = Some(Recorder::new(dir));
+    pub fn with_recordings(mut self, dir: PathBuf) -> Self {
+        self.recorder = Some(Recorder::new(dir, Arc::clone(&self.actions)));
         self
     }
 
@@ -154,11 +158,31 @@ impl<H: Handler> Daemon<H> {
             return;
         };
         while let Some(s) = sessions.recv().await {
-            record::work(&self.desk, s, || self.acting()).await;
+            record::work(&self.desk, s).await;
         }
     }
 
-    async fn record(&self, tool: &str, mut args: Value) -> Result<String, String> {
+    pub async fn end_recording(&self) {
+        if let Some(r) = &self.recorder {
+            r.finish().await;
+        }
+    }
+
+    /// Adds the plugin tools, which run only while `script_run` is on.
+    #[must_use]
+    pub fn with_plugins(mut self, plugins: Vec<Plugin>) -> Self {
+        self.plugins = plugins;
+        self
+    }
+
+    /// Adds the service tools, by name, with the socket of their service.
+    #[must_use]
+    pub fn with_services(mut self, services: HashMap<String, String>) -> Self {
+        self.services = services;
+        self
+    }
+
+    async fn record_call(&self, tool: &str, mut args: Value) -> Result<String, String> {
         let r = self
             .recorder
             .as_ref()
@@ -201,20 +225,6 @@ impl<H: Handler> Daemon<H> {
         }
     }
 
-    /// Adds the plugin tools, which run only while `script_run` is on.
-    #[must_use]
-    pub fn with_plugins(mut self, plugins: Vec<Plugin>) -> Self {
-        self.plugins = plugins;
-        self
-    }
-
-    /// Adds the service tools, by name, with the socket of their service.
-    #[must_use]
-    pub fn with_services(mut self, services: HashMap<String, String>) -> Self {
-        self.services = services;
-        self
-    }
-
     fn plugin(&self, tool: &str) -> Option<&Plugin> {
         self.plugins.iter().find(|p| p.name == tool)
     }
@@ -228,13 +238,18 @@ impl<H: Handler> Daemon<H> {
         if tool == "gui_plan" && self.guard.background {
             return Err(PLAN_BACKGROUND.to_owned());
         }
-        let _turn = tokio::time::timeout(self.wait, self.turn.lock())
-            .await
-            .map_err(|_| BUSY.to_owned())?;
+        let mut halted = self.halted.subscribe();
+        let _turn = tokio::select! {
+            biased;
+            _ = halted.wait_for(|h| *h) => return Err(STOPPED.to_owned()),
+            turn = tokio::time::timeout(self.wait, self.turn.lock()) => turn.map_err(|_| BUSY.to_owned())?,
+        };
         let n = self.runs.fetch_add(1, Ordering::Relaxed);
         let agent = format!("run-{:x}-{n}", self.nonce);
         *self.running() = Some(agent.clone());
-        let _running = Running(&self.running, &agent);
+        let _running = RunningAgent(&self.running, &agent);
+        self.actions.fetch_add(1, Ordering::Relaxed);
+        let _acting = Acting(&self.actions);
         let _held = Held(&self.desk, &agent);
         let report = match plugin {
             Some(p) => self.runner.plugin(&p.bin, args, &agent).await,
@@ -249,10 +264,22 @@ impl<H: Handler> Daemon<H> {
     }
 
     async fn act(&self, call: Call) -> Output {
-        if self.asks(&call) {
-            let Some(ask) = &self.guard.asker else {
-                return Output::error(NO_ASK);
+        let asker = match (self.asks(&call), &self.guard.asker) {
+            (false, _) => None,
+            (true, Some(ask)) => Some(ask),
+            (true, None) => return Output::error(NO_ASK),
+        };
+        self.actions.fetch_add(1, Ordering::Relaxed);
+        let _acting = Acting(&self.actions);
+        let _turn = if self.running().as_deref() == Some(call.agent_id.as_str()) {
+            None
+        } else {
+            let Ok(turn) = tokio::time::timeout(self.wait, self.turn.lock()).await else {
+                return Output::error(BUSY);
             };
+            Some(turn)
+        };
+        if let Some(ask) = asker {
             if self.asking.swap(true, Ordering::AcqRel) {
                 return Output::error(CONFIRM_OPEN);
             }
@@ -263,9 +290,10 @@ impl<H: Handler> Daemon<H> {
                 return Output::error(DECLINED);
             }
         }
-        self.actions.fetch_add(1, Ordering::Relaxed);
-        let _acting = Acting(&self.actions);
-        self.locked(call).await
+        if *self.halted.borrow() {
+            return Output::error(STOPPED);
+        }
+        self.desk.answer(call).await
     }
 
     fn asks(&self, call: &Call) -> bool {
@@ -284,35 +312,16 @@ impl<H: Handler> Daemon<H> {
         }
     }
 
-    async fn locked(&self, call: Call) -> Output {
-        if self.running().as_deref() == Some(call.agent_id.as_str()) {
-            return self.desk.answer(call).await;
-        }
-        let Ok(_turn) = tokio::time::timeout(self.wait, self.turn.lock()).await else {
-            return Output::error(BUSY);
-        };
-        if *self.halted.borrow() {
-            return Output::error(STOPPED);
-        }
-        if self.asking.load(Ordering::Acquire) {
-            return Output::error(CONFIRM_OPEN);
-        }
-        self.desk.answer(call).await
-    }
-
     fn stop(&self, stopped: bool) -> Output {
         self.halt(stopped);
         Output::text(json!({"ok": true, "stopped": stopped}).to_string())
     }
 
-    fn running(&self) -> std::sync::MutexGuard<'_, Option<String>> {
-        self.running
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn running(&self) -> MutexGuard<'_, Option<String>> {
+        self.running.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    async fn model(&self, tool: &str, args: Value) -> Result<String, String> {
-        let models = self.models.as_ref().map_err(String::clone)?;
+    async fn model(models: &Models, tool: &str, args: Value) -> Result<String, String> {
         match tool {
             "model_decide" => encode(&models.decide(parse(args)?).await?),
             "model_ask" => encode(&models.ask(parse(args)?).await?),
@@ -336,16 +345,17 @@ impl<H: Handler> Handler for Daemon<H> {
         if *self.halted.borrow() {
             return Output::error(STOPPED);
         }
-        if let Err(e) = &self.models {
-            return Output::error(e);
-        }
+        let models = match &self.models {
+            Ok(m) => m,
+            Err(e) => return Output::error(e),
+        };
         if call.tool.starts_with("desk_") && self.asking.load(Ordering::Acquire) {
             return Output::error(CONFIRM_OPEN);
         }
         let tool = call.tool.as_str();
         if matches!(tool, "record_start" | "record_note" | "record_stop") {
             return self
-                .record(tool, call.args)
+                .record_call(tool, call.args)
                 .await
                 .map_or_else(Output::error, Output::text);
         }
@@ -358,8 +368,7 @@ impl<H: Handler> Handler for Daemon<H> {
         let mut halted = self.halted.subscribe();
         let out = async {
             match call.tool.as_str() {
-                t if t.starts_with("model_") => self
-                    .model(t, call.args)
+                t if t.starts_with("model_") => Self::model(models, t, call.args)
                     .await
                     .map_or_else(Output::error, Output::text),
                 t if ACTIONS.contains(&t) || t == COMPUTER_ACT => self.act(call).await,
@@ -385,14 +394,13 @@ impl<H: Handler> Handler for Daemon<H> {
         let Some(socket) = self.services.get(tool) else {
             return;
         };
-        let mut stops = self.stops.subscribe();
-        let seen = *stops.borrow_and_update();
+        let mut halted = self.halted.subscribe();
         let refused = if *self.halted.borrow() {
             Some(STOPPED.to_owned())
         } else {
             tokio::select! {
                 routed = services::route(socket, body, &mut stream) => routed.err(),
-                _ = stops.wait_for(|n| *n != seen) => None,
+                _ = halted.wait_for(|h| *h) => None,
             }
         };
         if let Some(e) = refused {
@@ -404,11 +412,8 @@ impl<H: Handler> Handler for Daemon<H> {
 impl<H: Handler> Controls for Daemon<H> {
     fn halt(&self, stopped: bool) {
         self.halted.send_replace(stopped);
-        if stopped {
-            self.stops.send_modify(|n| *n += 1);
-            if let Some(r) = &self.recorder {
-                r.end();
-            }
+        if stopped && let Some(r) = &self.recorder {
+            r.end();
         }
         self.runner.halt(stopped);
     }
@@ -417,20 +422,30 @@ impl<H: Handler> Controls for Daemon<H> {
         *self.halted.borrow()
     }
 
+    fn hotkey(&self, code: u32) {
+        if let Some(r) = &self.recorder {
+            r.hotkey(code);
+        }
+        self.halt(true);
+    }
+
     fn acting(&self) -> bool {
-        self.actions.load(Ordering::Relaxed) > 0 || self.running().is_some()
+        self.actions.load(Ordering::Relaxed) > 0
     }
 
     fn recording(&self) -> bool {
         self.recorder.as_ref().is_some_and(Recorder::recording)
     }
 
-    fn record(&self, on: bool) {
-        let Some(r) = &self.recorder else { return };
-        if !on {
+    fn record(&self, on: bool) -> Result<(), String> {
+        let Some(r) = &self.recorder else {
+            return Ok(());
+        };
+        if on {
+            r.start(Vec::new()).map(drop)
+        } else {
             r.end();
-        } else if let Err(e) = r.start(Vec::new()) {
-            crate::log(e);
+            Ok(())
         }
     }
 }
@@ -451,14 +466,11 @@ impl<H: Handler> Drop for Held<'_, H> {
     }
 }
 
-struct Running<'a>(&'a Mutex<Option<String>>, &'a str);
+struct RunningAgent<'a>(&'a Mutex<Option<String>>, &'a str);
 
-impl Drop for Running<'_> {
+impl Drop for RunningAgent<'_> {
     fn drop(&mut self) {
-        let mut running = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut running = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         if running.as_deref() == Some(self.1) {
             *running = None;
         }
@@ -511,7 +523,6 @@ fn points(a: &Value) -> bool {
         || (action == "type" && (a.get("element").is_some() || a.get("x").is_some()))
 }
 
-/// One computer action as the confirm question names it.
 fn step(a: &Value) -> String {
     let action = a["action"].as_str().unwrap_or("act");
     if let Some(element) = a.get("element") {
@@ -529,6 +540,8 @@ fn encode<T: Serialize>(v: &T) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use shuttle_models::config::Config;
 
     use super::*;
@@ -603,8 +616,8 @@ mod tests {
         )
     }
 
-    fn runner_at(endpoint: String, flows: std::path::PathBuf) -> Runner {
-        let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
+    fn runner_at(endpoint: String, flows: PathBuf) -> Runner {
+        let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
         Runner::new("node".into(), runtime, endpoint, flows, Vec::new())
     }
 
@@ -623,7 +636,7 @@ mod tests {
         (asker, pending)
     }
 
-    fn demo(bin: std::path::PathBuf) -> Plugin {
+    fn demo(bin: PathBuf) -> Plugin {
         Plugin {
             name: "demo_run".into(),
             description: "Run a demo script.".into(),
@@ -836,6 +849,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_run_waiting_for_the_turn_ends_at_a_stop_even_after_a_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let d = Arc::new(daemon(Echo, Guard::default()));
+        let held = d.turn.lock().await;
+        let run = tokio::spawn({
+            let d = Arc::clone(&d);
+            let code = format!(
+                "import {{ writeFileSync }} from 'node:fs'; export function main() {{ writeFileSync({:?}, '') }}",
+                marker.to_string_lossy()
+            );
+            async move { d.answer(call("script_run", json!({"code": code}))).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        d.answer(call("safety_stop", json!({}))).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        d.answer(call("safety_resume", json!({}))).await;
+        drop(held);
+        let out = run.await.unwrap();
+        assert_eq!((out.is_error, out.text.as_str()), (true, crate::STOPPED));
+        assert!(!marker.exists(), "the run went on after the stop");
+    }
+
+    #[tokio::test]
     async fn confirm_asks_before_the_actions_its_mode_names_and_a_no_declines() {
         let asked = Arc::new(Mutex::new(Vec::new()));
         let asker = |yes: bool, asked: Arc<Mutex<Vec<String>>>| -> Asker {
@@ -933,7 +970,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_action_queued_before_a_confirm_dialog_opens_is_refused_when_its_turn_comes() {
+    async fn a_confirm_dialog_opens_only_once_the_actions_queued_before_it_are_done() {
         let (asker, pending) = held();
         let d = daemon(
             Typing,
@@ -944,7 +981,7 @@ mod tests {
             },
         );
         let pause = |ms| tokio::time::sleep(Duration::from_millis(ms));
-        let (typed, queued, asked) = tokio::join!(
+        let (typed, queued, (asked, open_while_typing)) = tokio::join!(
             d.answer(call("desk_type", json!({"text": "a"}))),
             async {
                 pause(50).await;
@@ -954,15 +991,51 @@ mod tests {
                 pause(100).await;
                 let out = d.answer(call("desk_click", json!({"x": 1, "y": 2})));
                 let answer = async {
-                    pause(400).await;
-                    let _ = pending.lock().unwrap().take().unwrap().send(false);
+                    pause(100).await;
+                    let open = pending.lock().unwrap().is_some();
+                    loop {
+                        if let Some(tx) = pending.lock().unwrap().take() {
+                            let _ = tx.send(false);
+                            break;
+                        }
+                        pause(10).await;
+                    }
+                    open
                 };
-                tokio::join!(out, answer).0
+                tokio::join!(out, answer)
             }
         );
+        assert!(
+            !open_while_typing,
+            "the dialog opened while another action typed"
+        );
         assert_eq!(typed.text, "desk answered desk_type");
-        assert_eq!(queued.text, CONFIRM_OPEN);
+        assert_eq!(queued.text, "desk answered desk_key");
         assert_eq!(asked.text, DECLINED);
+    }
+
+    #[tokio::test]
+    async fn an_action_waiting_for_the_turn_never_opens_its_dialog() {
+        let (asker, pending) = held();
+        let mut d = daemon(
+            Echo,
+            Guard {
+                confirm: Confirm::Coordinate,
+                asker: Some(asker),
+                ..Guard::default()
+            },
+        );
+        d.wait = Duration::from_millis(100);
+        let held = d.turn.lock().await;
+        let out = tokio::time::timeout(
+            Duration::from_secs(2),
+            d.answer(call("desk_click", json!({"x": 1, "y": 2}))),
+        )
+        .await
+        .expect("the action waited on a dialog it opened before its turn");
+        drop(held);
+        assert_eq!((out.is_error, out.text.as_str()), (true, BUSY));
+        assert!(pending.lock().unwrap().is_none());
     }
 
     #[tokio::test]
@@ -1008,6 +1081,17 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_recording_the_menu_cannot_start_answers_why() {
+        let d = daemon(Echo, Guard::default()).with_recordings(std::env::temp_dir());
+        assert_eq!(
+            d.record(true),
+            Err("recording runs only on macOS".to_owned())
+        );
+        assert!(!d.recording());
+    }
+
     #[tokio::test]
     async fn script_run_turned_off_answers_how_to_turn_it_on() {
         let d = daemon(
@@ -1039,13 +1123,7 @@ mod tests {
                 .await
             }
         });
-        for _ in 0..200 {
-            if d.acting() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(d.acting());
+        assert!(crate::until(40, || d.acting()).await);
         run.abort();
         let _ = run.await;
         assert!(!d.acting());
@@ -1071,12 +1149,7 @@ mod tests {
                 .await
             }
         });
-        for _ in 0..200 {
-            if d.acting() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        crate::until(40, || d.acting()).await;
         run.abort();
         let _ = run.await;
         let holders = released.0.lock().unwrap().clone();
@@ -1177,7 +1250,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn started_child(pid_file: &std::path::Path) -> i32 {
+    async fn started_child(pid_file: &Path) -> i32 {
         for _ in 0..200 {
             if let Some(pid) = std::fs::read_to_string(pid_file)
                 .ok()

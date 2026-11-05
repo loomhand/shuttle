@@ -64,6 +64,33 @@ pub fn list(plugins: &Plugins) -> Value {
     listed
 }
 
+/// Answers a `tools/call` of `name` with `args`: an MCP tool result, or `None` for a tool that is neither built in nor one of `plugins`.
+pub async fn call(name: &str, args: Value, endpoint: &str, plugins: &Plugins) -> Option<Value> {
+    if name == "status" {
+        return Some(result(status().to_string(), false));
+    }
+    let routed = if plugins.runs.iter().any(|p| p.name == name) {
+        Some(Ok((name.to_owned(), absolute_script(args))))
+    } else if plugins.lists(name) {
+        Some(Ok((name.to_owned(), args)))
+    } else {
+        route(name, args)
+    };
+    let (tool, args) = match routed? {
+        Ok(routed) => routed,
+        Err(e) => return Some(result(e, true)),
+    };
+    let call = Call {
+        agent_id: NAME.to_owned(),
+        tool,
+        args,
+    };
+    Some(match proxy::call(endpoint, &call).await {
+        Ok(out) => output(out),
+        Err(e) => result(e, true),
+    })
+}
+
 fn builtins() -> Value {
     json!({"tools": [
         {
@@ -158,33 +185,6 @@ fn builtins() -> Value {
     ]})
 }
 
-/// Answers a `tools/call` of `name` with `args`: an MCP tool result, or `None` for a tool that is neither built in nor one of `plugins`.
-pub async fn call(name: &str, args: Value, endpoint: &str, plugins: &Plugins) -> Option<Value> {
-    if name == "status" {
-        return Some(result(status().to_string(), false));
-    }
-    let routed = if plugins.runs.iter().any(|p| p.name == name) {
-        Some(Ok((name.to_owned(), absolute_script(args))))
-    } else if plugins.lists(name) {
-        Some(Ok((name.to_owned(), args)))
-    } else {
-        route(name, args)
-    };
-    let (tool, args) = match routed? {
-        Ok(routed) => routed,
-        Err(e) => return Some(result(e, true)),
-    };
-    let call = Call {
-        agent_id: NAME.to_owned(),
-        tool,
-        args,
-    };
-    Some(match proxy::call(endpoint, &call).await {
-        Ok(out) => output(out),
-        Err(e) => result(e, true),
-    })
-}
-
 fn route(name: &str, mut args: Value) -> Option<Result<(String, Value), String>> {
     Some(Ok(match name {
         "desk" => match args["verb"].as_str().filter(|v| DESK_VERBS.contains(v)) {
@@ -251,12 +251,7 @@ mod tests {
     #[test]
     fn no_mcp_tool_reaches_the_safety_controls() {
         let tools = list(&Plugins::default());
-        let names: Vec<&str> = tools["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|t| t["name"].as_str())
-            .collect();
+        let names = names(&tools);
         let mut routed = Vec::new();
         for name in names.iter().chain(&["safety_stop", "safety_resume"]) {
             let verbs = DESK_VERBS
@@ -284,12 +279,7 @@ mod tests {
             services: Vec::new(),
         };
         let listed = list(&plugins);
-        let names: Vec<&str> = listed["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|t| t["name"].as_str())
-            .collect();
+        let names = names(&listed);
         assert_eq!(names[..NAMES.len()], NAMES);
         assert_eq!(names[NAMES.len()..], ["demo_run"]);
         assert_eq!(
@@ -345,5 +335,14 @@ mod tests {
                 "{verb}"
             );
         }
+    }
+
+    fn names(listed: &Value) -> Vec<&str> {
+        listed["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect()
     }
 }

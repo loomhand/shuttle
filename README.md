@@ -57,7 +57,7 @@ Cursor (`~/.cursor/mcp.json`):
 
 ### Over HTTP
 
-`shuttle mcp --http ADDR` serves the same tools over MCP Streamable HTTP at `http://ADDR/mcp`, for an agent that reaches shuttle across a container boundary or the LAN instead of starting it. It is off unless you run it. Each `POST` carries one JSON-RPC message and gets its reply as JSON; there are no sessions and no server-sent events, and a client that drops its connection cancels the call. A non-loopback address needs a token in `SHUTTLE_MCP_TOKEN`, and once set every request must send `Authorization: Bearer <token>`. A request whose browser `Origin` is not localhost gets 403. The traffic is plain HTTP, so put TLS in front of it to cross an untrusted network.
+`shuttle mcp --http ADDR` serves the same tools over MCP Streamable HTTP at `http://ADDR/mcp`, for an agent that reaches shuttle across a container boundary or the LAN instead of starting it. It is off unless you run it. Each `POST` carries one JSON-RPC message and gets its reply as JSON; there are no server-sent events. The `initialize` reply carries an `Mcp-Session-Id` that scopes cancellation only: a `notifications/cancelled` stops the call it names in that session, whose `POST` then gets 202 with no body, and a client that drops its connection cancels the call too. It needs a token in `SHUTTLE_MCP_TOKEN`, loopback included, since other users of the machine reach loopback too, and every request must send `Authorization: Bearer <token>`. A request whose browser `Origin` is not localhost gets 403. The traffic is plain HTTP, so put TLS in front of it to cross an untrusted network.
 
 ```sh
 docker run -p 8765:8765 -e SHUTTLE_MCP_TOKEN=... IMAGE shuttle mcp --http 0.0.0.0:8765
@@ -70,7 +70,7 @@ claude mcp add --transport http shuttle http://localhost:8765/mcp --header "Auth
 |---|---|
 | `gui_plan` | Runs a GUI plan in one call: each step (`app`, `menu`, `click`, `check`, `set`, `type`, `key`, `wait`, `expect`, `verify`, `close`) resolves on the accessibility tree, is checked, and the plan stops at the first surprise; a passing plan can be saved as a flow and replayed |
 | `script_run` | Runs one JavaScript or TypeScript module on the bundled Node runtime with the desk API |
-| `desk` | One desk call: windows, unanswered, wait, snapshot, find, read, press, act, at, key, type, click, scroll, drag, still, focus, close, launch, shot, screen |
+| `desk` | One desk call: windows, unanswered, wait, snapshot, find, read, press, act, at, key, type, click, scroll, drag, still, focus, close, launch, shot, screen, web |
 | `screenshot` | A PNG of the screen or a rectangle |
 | `status` | Name, version, OS and architecture |
 | `record_start`, `record_note`, `record_stop` | macOS: record what the user does, with notes, and answer a draft `gui_plan` that replays it with other values |

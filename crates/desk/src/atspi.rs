@@ -1,6 +1,7 @@
 //! AT-SPI over D-Bus: a window's tree from its app's `Cache.GetItems`, filled in by live calls where the cache lacks children or their order, plus live reads and actions on one node.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
@@ -24,37 +25,40 @@ const ACTION: &str = "org.a11y.atspi.Action";
 const COMPONENT: &str = "org.a11y.atspi.Component";
 const TEXT: &str = "org.a11y.atspi.Text";
 const COLLECTION: &str = "org.a11y.atspi.Collection";
-const MATCH_ALL: i32 = 1;
-const SORT_CANONICAL: u32 = 1;
 const VALUE: &str = "org.a11y.atspi.Value";
 const SELECTION: &str = "org.a11y.atspi.Selection";
 const APPLICATION: &str = "org.a11y.atspi.Application";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 const DBUS: &str = "org.freedesktop.DBus";
 const DBUS_PATH: &str = "/org/freedesktop/DBus";
+
+const MATCH_ALL: i32 = 1;
+const SORT_CANONICAL: u32 = 1;
+
 const CALL_TIMEOUT: Duration = Duration::from_millis(2500);
 const HUNG_FOR: Duration = Duration::from_secs(10);
 const WRITES: [&str; 3] = ["DoAction", "GrabFocus", "SelectChild"];
 const APP_FRAMES: Duration = Duration::from_millis(500);
 const MANAGED_KIDS: i32 = 200;
+
 const LIST_ROLES: [u32; 4] = [31, 55, 65, 66];
 const PASSWORD_TEXT: u32 = 40;
 const SCREEN: u32 = 0;
+
 const IF_ACTION: u8 = 1;
 const IF_COMPONENT: u8 = 2;
 const IF_TEXT: u8 = 4;
 const IF_VALUE: u8 = 8;
+
 const ACTIVE: u32 = 1;
-const CHECKED: u32 = 4;
 const ENABLED: u32 = 8;
 const SENSITIVE: u32 = 24;
 const INDETERMINATE: u32 = 32;
-/// The state of the node that holds the keyboard focus.
-pub const FOCUSED: u32 = 12;
-/// The state of a node drawn on the screen.
-pub const SHOWING: u32 = 25;
+const FOCUSED: u32 = 12;
+const SHOWING: u32 = 25;
 const MANAGES_DESCENDANTS: u32 = 31;
 const LABELLED_BY: u32 = 2;
+
 const STATE_NAMES: [(u32, &str); 16] = [
     (1, "active"),
     (4, "checked"),
@@ -73,6 +77,7 @@ const STATE_NAMES: [(u32, &str); 16] = [
     (41, "checkable"),
     (43, "read-only"),
 ];
+
 const ROLE_FILLER: u32 = 20;
 const ROLE_PANEL: u32 = 39;
 const ROLE_DOCUMENT_WEB: u32 = 95;
@@ -226,6 +231,8 @@ static WOKEN: LazyLock<std::sync::Mutex<HashSet<String>>> =
 static SCREEN_COORDS: LazyLock<std::sync::Mutex<HashMap<String, bool>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
+static BUS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 /// An accessible object: the bus name of its app and its object path.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Obj {
@@ -259,6 +266,13 @@ impl Obj {
         Ok(Self { bus, path })
     }
 
+    fn at(bus: &str, path: &str) -> Self {
+        Self {
+            bus: bus.to_owned(),
+            path: path.to_owned(),
+        }
+    }
+
     fn of((bus, path): (String, OwnedObjectPath)) -> Self {
         Self {
             bus,
@@ -270,7 +284,7 @@ impl Obj {
 /// One node of a snapshot, in preorder; `parent` indexes the nearest shown ancestor.
 #[derive(Clone, Debug, Default)]
 pub struct Node {
-    pub obj: Option<Obj>,
+    pub obj: Option<Rc<Obj>>,
     pub role: u32,
     pub name: String,
     pub description: String,
@@ -294,10 +308,6 @@ impl Node {
 
     pub fn has(&self, state: u32) -> bool {
         self.states & (1 << state) != 0
-    }
-
-    pub fn checked(&self) -> bool {
-        self.has(CHECKED)
     }
 
     /// Whether the node is greyed out: neither enabled nor sensitive, since GTK 4 marks a usable widget sensitive only.
@@ -357,53 +367,10 @@ pub struct Extras {
 
 /// The tree of one window with the time each phase took.
 pub struct Tree {
-    pub frame: Frame,
     pub nodes: Vec<Node>,
     pub truncated: bool,
     pub phases: Vec<(&'static str, u128)>,
 }
-
-struct Seen {
-    listed: Instant,
-    slow: Option<Instant>,
-    last: Vec<Frame>,
-}
-
-/// Raw data of one object, from the cache or from live calls.
-#[derive(Clone, Debug, Default)]
-struct Raw {
-    role: u32,
-    name: String,
-    description: String,
-    states: u64,
-    count: i32,
-    ifaces: u8,
-}
-
-type Item = (
-    (String, OwnedObjectPath),
-    (String, OwnedObjectPath),
-    (String, OwnedObjectPath),
-    i32,
-    i32,
-    Vec<String>,
-    String,
-    u32,
-    String,
-    Vec<u32>,
-);
-
-type OldItem = (
-    (String, OwnedObjectPath),
-    (String, OwnedObjectPath),
-    (String, OwnedObjectPath),
-    Vec<(String, OwnedObjectPath)>,
-    Vec<String>,
-    String,
-    u32,
-    String,
-    Vec<u32>,
-);
 
 /// A lazily opened connection to the accessibility bus, shared by all calls.
 pub struct Atspi {
@@ -425,12 +392,9 @@ impl Atspi {
         }
     }
 
-    /// The accessible top-level windows of every app, with their pids; an app that takes over [`APP_FRAMES`] keeps its last windows, marked stale, until it counts as hung and is skipped for a while.
+    /// The top-level windows of every app with their pids; a late app gives its last ones, marked stale.
     pub async fn frames(&self) -> Result<Vec<Frame>, String> {
-        let registry = Obj {
-            bus: REGISTRY.to_owned(),
-            path: ROOT.to_owned(),
-        };
+        let registry = Obj::at(REGISTRY, ROOT);
         let apps = self.children(&registry).await?;
         let mut answering = Vec::with_capacity(apps.len());
         for app in &apps {
@@ -438,41 +402,58 @@ impl Atspi {
                 answering.push(app);
             }
         }
+        let known: Vec<Option<u32>> = {
+            let seen = locked(&SEEN);
+            answering
+                .iter()
+                .map(|app| seen.get(&app.bus).and_then(|s| s.pid))
+                .collect()
+        };
         let asked = Instant::now();
-        let reads = join_all(answering.into_iter().map(|app| async move {
-            let read = tokio::time::timeout(APP_FRAMES, self.app_frames(app)).await;
-            (app.bus.as_str(), read.ok())
-        }))
+        let reads = join_all(
+            answering
+                .into_iter()
+                .zip(known)
+                .map(|(app, pid)| async move {
+                    let read = tokio::time::timeout(APP_FRAMES, self.app_frames(app, pid)).await;
+                    (app.bus.as_str(), read.ok())
+                }),
+        )
         .await;
-        let mut seen = SEEN
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut seen = locked(&SEEN);
         seen.retain(|bus, _| apps.iter().any(|app| app.bus == *bus));
         Ok(reads
             .into_iter()
-            .flat_map(|(bus, read)| settle(&mut seen, bus, read, asked))
+            .flat_map(|(bus, read)| {
+                let (pid, read) = read.unzip();
+                let frames = settle(&mut seen, bus, read, asked);
+                if let (Some(pid), Some(s)) = (pid.flatten(), seen.get_mut(bus)) {
+                    s.pid = Some(pid);
+                }
+                frames
+            })
             .collect())
     }
 
-    /// The tree under `frame`: shown nodes in preorder, with `extras` read live.
-    pub async fn tree(&self, frame: Frame, extras: Extras) -> Result<Tree, String> {
+    /// The tree under the window `window`: shown nodes in preorder, with `extras` read live.
+    pub async fn tree(&self, window: Obj, extras: Extras) -> Result<Tree, String> {
         let mut phases = Vec::new();
         let mut clock = Instant::now();
         let mut lap = |name: &'static str, phases: &mut Vec<(&'static str, u128)>| {
             phases.push((name, clock.elapsed().as_micros()));
             clock = Instant::now();
         };
-        self.wake(&frame.obj.bus).await;
-        let items = self.items(&frame.obj.bus).await.unwrap_or_default();
+        self.wake(&window.bus).await;
+        let items = self.items(&window.bus).await.unwrap_or_default();
         lap("items", &mut phases);
-        let mut raw: HashMap<Obj, Raw> = HashMap::with_capacity(items.len());
-        let mut cached: HashMap<Obj, Vec<(i32, Obj)>> = HashMap::new();
+        let mut raw: HashMap<Rc<Obj>, Raw> = HashMap::with_capacity(items.len());
+        let mut cached: HashMap<Obj, Vec<(i32, Rc<Obj>)>> = HashMap::new();
         for (object, _, parent, index, count, ifaces, name, role, description, states) in items {
-            let (object, parent) = (Obj::of(object), Obj::of(parent));
+            let object = Rc::new(Obj::of(object));
             cached
-                .entry(parent)
+                .entry(Obj::of(parent))
                 .or_default()
-                .push((index, object.clone()));
+                .push((index, Rc::clone(&object)));
             raw.insert(
                 object,
                 Raw {
@@ -486,23 +467,24 @@ impl Atspi {
             );
         }
         lap("parse", &mut phases);
-        if !raw.contains_key(&frame.obj) {
-            let r = self.raw(&frame.obj).await?;
-            raw.insert(frame.obj.clone(), r);
+        let root = Rc::new(window);
+        if !raw.contains_key(&root) {
+            let r = self.raw(&root).await?;
+            raw.insert(Rc::clone(&root), r);
         }
-        let mut kids: HashMap<Obj, Vec<Obj>> = HashMap::new();
-        let mut frontier = vec![frame.obj.clone()];
-        let mut seen: HashSet<Obj> = HashSet::from([frame.obj.clone()]);
+        let mut kids: HashMap<Rc<Obj>, Vec<Rc<Obj>>> = HashMap::new();
+        let mut frontier = vec![Rc::clone(&root)];
+        let mut seen: HashSet<Rc<Obj>> = HashSet::from([Rc::clone(&root)]);
         let mut truncated = false;
-        let mut by_index: HashSet<Obj> = HashSet::new();
+        let mut by_index: HashSet<Rc<Obj>> = HashSet::new();
         while !frontier.is_empty() {
-            let uncounted: Vec<&Obj> = frontier
+            let uncounted: Vec<&Rc<Obj>> = frontier
                 .iter()
                 .filter(|o| {
                     let r = &raw[*o];
                     LIST_ROLES.contains(&r.role)
                         && r.count <= 0
-                        && cached.get(*o).is_none_or(Vec::is_empty)
+                        && cached.get(&***o).is_none_or(Vec::is_empty)
                 })
                 .collect();
             let counts = join_all(
@@ -512,39 +494,41 @@ impl Atspi {
             )
             .await;
             for (o, count) in uncounted.into_iter().zip(counts) {
-                if let Some(count) = count.ok().filter(|c| (1..=MANAGED_KIDS).contains(c)) {
-                    if let Some(r) = raw.get_mut(o) {
-                        r.count = count;
-                    }
-                    by_index.insert(o.clone());
+                if let Some(r) = raw.get_mut(o)
+                    && walks_by_index(r, count)
+                {
+                    by_index.insert(Rc::clone(o));
                 }
             }
-            let live: Vec<&Obj> = frontier
+            let live: Vec<&Rc<Obj>> = frontier
                 .iter()
-                .filter(|o| needs_live(&raw[*o], cached.get(*o)))
+                .filter(|o| needs_live(&raw[*o], cached.get(&***o)))
                 .collect();
             let indexed = &by_index;
             let lists = join_all(live.iter().map(|o| {
                 let r = &raw[*o];
                 async move {
-                    if r.states & (1 << MANAGES_DESCENDANTS) == 0 && !indexed.contains(*o) {
-                        return self.children(o).await;
-                    }
-                    join_all((0..r.count).map(|i| self.child_at(o, i)))
-                        .await
-                        .into_iter()
-                        .collect()
+                    let list: Result<Vec<Obj>, String> =
+                        if r.states & (1 << MANAGES_DESCENDANTS) == 0 && !indexed.contains(*o) {
+                            self.children(o).await
+                        } else {
+                            join_all((0..r.count).map(|i| self.child_at(o, i)))
+                                .await
+                                .into_iter()
+                                .collect()
+                        };
+                    list.map(|l| l.into_iter().map(Rc::new).collect::<Vec<_>>())
                 }
             }))
             .await;
-            let mut listed: HashMap<Obj, Vec<Obj>> = HashMap::new();
+            let mut listed: HashMap<Rc<Obj>, Vec<Rc<Obj>>> = HashMap::new();
             for (o, list) in live.iter().zip(lists) {
                 if let Ok(list) = list {
-                    listed.insert((*o).clone(), list);
+                    listed.insert(Rc::clone(o), list);
                 }
             }
-            let mut queued: HashSet<&Obj> = HashSet::new();
-            let mut unknown: Vec<Obj> = live
+            let mut queued: HashSet<&Rc<Obj>> = HashSet::new();
+            let mut unknown: Vec<Rc<Obj>> = live
                 .iter()
                 .filter_map(|o| listed.get(*o))
                 .flatten()
@@ -564,19 +548,19 @@ impl Atspi {
             }
             let mut next = Vec::new();
             for o in frontier {
-                let mut sorted = cached.remove(&o).unwrap_or_default();
+                let mut sorted = cached.remove(&*o).unwrap_or_default();
                 sorted.sort_by_key(|(i, _)| *i);
                 let sorted = sorted.into_iter().map(|(_, c)| c);
-                let list: Vec<Obj> = match listed.remove(&o) {
+                let mut list: Vec<Rc<Obj>> = match listed.remove(&o) {
                     Some(mut list) => {
-                        let extra: Vec<Obj> = sorted.filter(|c| !list.contains(c)).collect();
+                        let extra: Vec<Rc<Obj>> = sorted.filter(|c| !list.contains(c)).collect();
                         list.extend(extra);
                         list
                     }
                     None => sorted.collect(),
                 };
-                let list: Vec<Obj> = list.into_iter().filter(|c| raw.contains_key(c)).collect();
-                next.extend(list.iter().filter(|c| seen.insert((*c).clone())).cloned());
+                list.retain(|c| raw.contains_key(c));
+                next.extend(list.iter().filter(|c| seen.insert(Rc::clone(c))).cloned());
                 kids.insert(o, list);
                 if seen.len() > MAX_NODES {
                     truncated = true;
@@ -587,10 +571,9 @@ impl Atspi {
         }
         lap("live", &mut phases);
         let mut nodes = Vec::new();
-        flatten(&frame.obj, &raw, &kids, None, &mut Vec::new(), &mut nodes);
+        flatten(&root, &raw, &kids, None, &mut Vec::new(), &mut nodes);
         truncated |= nodes.len() >= MAX_NODES;
         let mut tree = Tree {
-            frame,
             nodes,
             truncated,
             phases,
@@ -627,7 +610,7 @@ impl Atspi {
             }
         );
         Ok(Node {
-            obj: Some(obj.clone()),
+            obj: Some(Rc::new(obj.clone())),
             role: r.role,
             name: r.name.trim_end().to_owned(),
             description: r.description,
@@ -640,7 +623,7 @@ impl Atspi {
         })
     }
 
-    /// The first descendant of `obj` in the focused state, by one Collection match in its app; none when nothing matches or the app does not serve Collection.
+    /// The first descendant of `obj` in the focused state, by one Collection match; none when the app does not serve Collection.
     pub async fn focused_in(&self, obj: &Obj) -> Option<Obj> {
         let found: Vec<(String, OwnedObjectPath)> = self
             .call(obj, COLLECTION, "GetMatches", &focused_rule())
@@ -651,7 +634,7 @@ impl Atspi {
 
     /// The text of a text node, at most `max` characters, else the current value of a value node; none for a password field or a failed read.
     pub async fn value(&self, obj: &Obj, role: u32, ifaces: u8, max: usize) -> Option<String> {
-        if secret(role) {
+        if role == PASSWORD_TEXT {
             return None;
         }
         if ifaces & IF_TEXT != 0 {
@@ -710,17 +693,16 @@ impl Atspi {
             return Err(no_screen_coords(within));
         }
         let mut at: Option<Obj> = None;
-        let mut current = within.clone();
         for _ in 0..MAX_DEPTH {
+            let current = at.as_ref().unwrap_or(within);
             let hit: (String, OwnedObjectPath) = self
-                .call(&current, COMPONENT, "GetAccessibleAtPoint", &(x, y, SCREEN))
+                .call(current, COMPONENT, "GetAccessibleAtPoint", &(x, y, SCREEN))
                 .await?;
             let hit = Obj::of(hit);
             if hit.bus.is_empty() || hit.path.ends_with("/null") || at.as_ref() == Some(&hit) {
                 break;
             }
-            at = Some(hit.clone());
-            current = hit;
+            at = Some(hit);
         }
         Ok(at)
     }
@@ -737,13 +719,11 @@ impl Atspi {
     /// The objects above `obj`, from its top-level window down to its parent.
     pub async fn ancestors(&self, obj: &Obj) -> Result<Vec<Obj>, String> {
         let mut chain = Vec::new();
-        let mut current = obj.clone();
         while chain.len() < MAX_DEPTH {
-            let Some(parent) = self.parent(&current).await? else {
+            let Some(parent) = self.parent(chain.last().unwrap_or(obj)).await? else {
                 break;
             };
-            chain.push(parent.clone());
-            current = parent;
+            chain.push(parent);
         }
         chain.reverse();
         Ok(chain)
@@ -751,10 +731,7 @@ impl Atspi {
 
     /// The process id behind the accessibility bus name `bus`.
     pub async fn pid(&self, bus: &str) -> Result<u32, String> {
-        let dbus = Obj {
-            bus: DBUS.to_owned(),
-            path: DBUS_PATH.to_owned(),
-        };
+        let dbus = Obj::at(DBUS, DBUS_PATH);
         self.call(&dbus, DBUS, "GetConnectionUnixProcessID", &(bus,))
             .await
     }
@@ -764,13 +741,18 @@ impl Atspi {
         *self.conn.lock().await = None;
     }
 
-    async fn app_frames(&self, app: &Obj) -> Vec<Frame> {
-        let (kids, pid) = tokio::join!(self.children(app), self.pid(&app.bus));
-        let Ok(kids) = kids else {
-            return Vec::new();
+    async fn app_frames(&self, app: &Obj, known: Option<u32>) -> (Option<u32>, Vec<Frame>) {
+        let pid = async {
+            match known {
+                Some(pid) => Some(pid),
+                None => self.pid(&app.bus).await.ok(),
+            }
         };
-        let pid = pid.ok();
-        join_all(kids.into_iter().map(|obj| async move {
+        let (kids, pid) = tokio::join!(self.children(app), pid);
+        let Ok(kids) = kids else {
+            return (pid, Vec::new());
+        };
+        let frames = join_all(kids.into_iter().map(|obj| async move {
             let (role, name, states) =
                 tokio::join!(self.role(&obj), self.name(&obj), self.state(&obj));
             Some(Frame {
@@ -785,7 +767,8 @@ impl Atspi {
         .await
         .into_iter()
         .flatten()
-        .collect::<Vec<_>>()
+        .collect();
+        (pid, frames)
     }
 
     async fn extras(&self, nodes: &mut [Node], extras: Extras) {
@@ -833,7 +816,7 @@ impl Atspi {
                     .await
                     .ok()?;
                 let by = labelled_by(set)?;
-                match all.iter().find(|m| m.obj.as_ref() == Some(&by)) {
+                match all.iter().find(|m| m.obj.as_deref() == Some(&by)) {
                     Some(m) => Some(m.name.clone()),
                     None => self.name(&by).await.ok(),
                 }
@@ -875,27 +858,17 @@ impl Atspi {
     /// Asks the app on `bus` for its root's attributes once, as a screen reader does: Chromium builds its tree only after that.
     async fn wake(&self, bus: &str) {
         if first_wake(bus) {
-            let root = Obj {
-                bus: bus.to_owned(),
-                path: ROOT.to_owned(),
-            };
+            let root = Obj::at(bus, ROOT);
             let _ = self.reply(&root, ACCESSIBLE, "GetAttributes", &()).await;
         }
     }
 
     /// Whether the app on `bus` answers screen coordinates, read once from its toolkit name and version.
     async fn screen_coords(&self, bus: &str) -> bool {
-        if let Some(known) = SCREEN_COORDS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(bus)
-        {
+        if let Some(known) = locked(&SCREEN_COORDS).get(bus) {
             return *known;
         }
-        let root = Obj {
-            bus: bus.to_owned(),
-            path: ROOT.to_owned(),
-        };
+        let root = Obj::at(bus, ROOT);
         let (Ok(name), Ok(version)) = tokio::join!(
             self.prop::<String>(&root, APPLICATION, "ToolkitName"),
             self.prop::<String>(&root, APPLICATION, "Version")
@@ -903,19 +876,13 @@ impl Atspi {
             return true;
         };
         let known = answers_screen_coords(&name, &version);
-        SCREEN_COORDS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(bus.to_owned(), known);
+        locked(&SCREEN_COORDS).insert(bus.to_owned(), known);
         known
     }
 
-    /// The app's cached objects, from the cache of at-spi2-core 2.46 and later or from the older one, which lists the children of each object instead of its index and child count.
+    /// The app's cached objects, from the cache of at-spi2-core 2.46 and later or from the older one.
     async fn items(&self, bus: &str) -> Result<Vec<Item>, String> {
-        let cache = Obj {
-            bus: bus.to_owned(),
-            path: CACHE_PATH.to_owned(),
-        };
+        let cache = Obj::at(bus, CACHE_PATH);
         let reply = self.reply(&cache, CACHE, "GetItems", &()).await?;
         cache_items(&reply).map_err(|e| format!("{CACHE}.GetItems on {bus}: {e}"))
     }
@@ -1000,9 +967,7 @@ impl Atspi {
     }
 
     fn is_hung(&self, bus: &str) -> bool {
-        let mut hung = HUNG
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut hung = locked(&HUNG);
         hung.retain(|_, at| at.elapsed() < HUNG_FOR);
         hung.contains_key(bus)
     }
@@ -1043,10 +1008,56 @@ impl Atspi {
             .build()
             .await
             .map_err(|e| format!("connect the accessibility bus: {e}"))?;
+        if new_bus(&mut locked(&BUS), conn.server_guid().as_str()) {
+            forget_apps();
+        }
         *slot = Some(conn.clone());
         Ok(conn)
     }
 }
+
+struct Seen {
+    listed: Instant,
+    slow: Option<Instant>,
+    last: Vec<Frame>,
+    pid: Option<u32>,
+}
+
+/// Raw data of one object, from the cache or from live calls.
+#[derive(Clone, Debug, Default)]
+struct Raw {
+    role: u32,
+    name: String,
+    description: String,
+    states: u64,
+    count: i32,
+    ifaces: u8,
+}
+
+type Item = (
+    (String, OwnedObjectPath),
+    (String, OwnedObjectPath),
+    (String, OwnedObjectPath),
+    i32,
+    i32,
+    Vec<String>,
+    String,
+    u32,
+    String,
+    Vec<u32>,
+);
+
+type OldItem = (
+    (String, OwnedObjectPath),
+    (String, OwnedObjectPath),
+    (String, OwnedObjectPath),
+    Vec<(String, OwnedObjectPath)>,
+    Vec<String>,
+    String,
+    u32,
+    String,
+    Vec<u32>,
+);
 
 /// The ARIA role of AT-SPI role `role` after W3C Core-AAM, else its AT-SPI name; a nameless generic container has none.
 pub fn role_name(role: u32, named: bool) -> &'static str {
@@ -1066,11 +1077,13 @@ pub fn key_combos(binding: &str) -> (Option<String>, Option<String>) {
     (mnemonic, shortcut)
 }
 
+fn locked<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn first_wake(bus: &str) -> bool {
-    WOKEN
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(bus.to_owned())
+    let mut woken = locked(&WOKEN);
+    !woken.contains(bus) && woken.insert(bus.to_owned())
 }
 
 /// Whether a toolkit answers screen coordinates; GTK 4 answers every screen point and extent with the origin.
@@ -1078,10 +1091,23 @@ fn answers_screen_coords(toolkit: &str, version: &str) -> bool {
     !(toolkit == "GTK" && version.split('.').next() == Some("4"))
 }
 
+fn new_bus(last: &mut Option<String>, guid: &str) -> bool {
+    if last.as_deref() == Some(guid) {
+        return false;
+    }
+    *last = Some(guid.to_owned());
+    true
+}
+
+fn forget_apps() {
+    locked(&HUNG).clear();
+    locked(&SEEN).clear();
+    locked(&WOKEN).clear();
+    locked(&SCREEN_COORDS).clear();
+}
+
 fn mark_hung(bus: &str) {
-    HUNG.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(bus.to_owned(), Instant::now());
+    locked(&HUNG).insert(bus.to_owned(), Instant::now());
 }
 
 fn release_on_answer(
@@ -1089,24 +1115,15 @@ fn release_on_answer(
     bus: &str,
     answer: impl Future<Output = bool> + Send + 'static,
 ) {
-    if !probing
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(bus.to_owned())
-    {
+    if !locked(probing).insert(bus.to_owned()) {
         return;
     }
     let (probing, bus) = (Arc::clone(probing), bus.to_owned());
     tokio::spawn(async move {
         if answer.await {
-            HUNG.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&bus);
+            locked(&HUNG).remove(&bus);
         }
-        probing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&bus);
+        locked(&probing).remove(&bus);
     });
 }
 
@@ -1121,6 +1138,7 @@ fn settle(
         listed: asked,
         slow: None,
         last: Vec::new(),
+        pid: None,
     });
     if let Some(frames) = read {
         s.slow = None;
@@ -1243,19 +1261,29 @@ fn cache_items(reply: &zbus::Message) -> Result<Vec<Item>, zbus::Error> {
 
 /// Items of the older cache with each object's index among its parent's children, -1 when the parent does not list it, and its child count.
 fn indexed(old: Vec<OldItem>) -> Vec<Item> {
-    let mut index: HashMap<(Obj, Obj), i32> = HashMap::new();
+    fn key((bus, path): &(String, OwnedObjectPath)) -> (&str, &str) {
+        (bus.as_str(), path.as_str())
+    }
+    let mut index: HashMap<_, i32> = HashMap::new();
     for (object, _, _, children, ..) in &old {
-        let parent = Obj::of(object.clone());
         for (i, child) in (0..).zip(children) {
-            index.insert((parent.clone(), Obj::of(child.clone())), i);
+            index.insert((key(object), key(child)), i);
         }
     }
+    let at: Vec<i32> = old
+        .iter()
+        .map(|(object, _, parent, ..)| {
+            index
+                .get(&(key(parent), key(object)))
+                .copied()
+                .unwrap_or(-1)
+        })
+        .collect();
     old.into_iter()
+        .zip(at)
         .map(
-            |(object, app, parent, children, ifaces, name, role, description, states)| {
-                let at = (Obj::of(parent.clone()), Obj::of(object.clone()));
+            |((object, app, parent, children, ifaces, name, role, description, states), i)| {
                 let count = i32::try_from(children.len()).unwrap_or(i32::MAX);
-                let i = index.get(&at).copied().unwrap_or(-1);
                 (
                     object,
                     app,
@@ -1273,7 +1301,15 @@ fn indexed(old: Vec<OldItem>) -> Vec<Item> {
         .collect()
 }
 
-fn needs_live(r: &Raw, cached: Option<&Vec<(i32, Obj)>>) -> bool {
+fn walks_by_index(r: &mut Raw, live_count: Result<i32, String>) -> bool {
+    let Some(count) = live_count.ok().filter(|c| *c > 0) else {
+        return false;
+    };
+    r.count = count;
+    count <= MANAGED_KIDS
+}
+
+fn needs_live(r: &Raw, cached: Option<&Vec<(i32, Rc<Obj>)>>) -> bool {
     if r.states & (1 << MANAGES_DESCENDANTS) != 0 && !(1..=MANAGED_KIDS).contains(&r.count) {
         return false;
     }
@@ -1288,11 +1324,11 @@ fn needs_live(r: &Raw, cached: Option<&Vec<(i32, Obj)>>) -> bool {
 
 /// Appends `obj` and its subtree in preorder, an object shared by two parents under both; a nameless generic container gives its place to its children.
 fn flatten<'a>(
-    obj: &'a Obj,
-    raw: &HashMap<Obj, Raw>,
-    kids: &'a HashMap<Obj, Vec<Obj>>,
+    obj: &'a Rc<Obj>,
+    raw: &HashMap<Rc<Obj>, Raw>,
+    kids: &'a HashMap<Rc<Obj>, Vec<Rc<Obj>>>,
     parent: Option<usize>,
-    path: &mut Vec<&'a Obj>,
+    path: &mut Vec<&'a Rc<Obj>>,
     out: &mut Vec<Node>,
 ) {
     let Some(r) = raw.get(obj) else {
@@ -1301,22 +1337,22 @@ fn flatten<'a>(
     if out.len() >= MAX_NODES || path.contains(&obj) {
         return;
     }
-    let depth = parent.map_or(0, |p| out[p].depth + 1);
-    let node = Node {
-        obj: Some(obj.clone()),
-        role: r.role,
-        name: r.name.trim_end().to_owned(),
-        description: r.description.clone(),
-        states: r.states,
-        ifaces: r.ifaces,
-        parent,
-        depth,
-        ..Node::default()
-    };
-    let parent = if node.role() == "generic" && parent.is_some() {
+    let name = r.name.trim_end();
+    let named = !name.is_empty() || !r.description.is_empty();
+    let parent = if parent.is_some() && role_name(r.role, named) == "generic" {
         parent
     } else {
-        out.push(node);
+        out.push(Node {
+            obj: Some(Rc::clone(obj)),
+            role: r.role,
+            name: name.to_owned(),
+            description: r.description.clone(),
+            states: r.states,
+            ifaces: r.ifaces,
+            parent,
+            depth: parent.map_or(0, |p| out[p].depth + 1),
+            ..Node::default()
+        });
         Some(out.len() - 1)
     };
     path.push(obj);
@@ -1346,9 +1382,7 @@ fn iface_bits(names: &[String]) -> u8 {
     })
 }
 
-/// The Collection.GetMatches arguments for the first descendant in the focused state, in tree order: a rule on the state alone, canonical order, one match, descending.
-#[allow(clippy::type_complexity)]
-fn focused_rule() -> (
+type Rule = (
     (
         Vec<i32>,
         i32,
@@ -1363,7 +1397,10 @@ fn focused_rule() -> (
     u32,
     i32,
     bool,
-) {
+);
+
+/// The Collection.GetMatches arguments for the first focused descendant in tree order.
+fn focused_rule() -> Rule {
     let rule = (
         vec![1 << FOCUSED, 0],
         MATCH_ALL,
@@ -1393,10 +1430,6 @@ fn no_screen_coords(obj: &Obj) -> String {
         "{}: its GTK 4 app reports no screen position; press it by its action",
         obj.id()
     )
-}
-
-fn secret(role: u32) -> bool {
-    role == PASSWORD_TEXT
 }
 
 fn not_responding(bus: &str) -> String {
@@ -1489,17 +1522,21 @@ mod tests {
     }
 
     #[test]
-    fn only_a_password_field_keeps_its_value_unread() {
-        assert!(secret(PASSWORD_TEXT));
-        assert!(!secret(61));
-    }
-
-    #[test]
     fn each_app_is_woken_once_per_bus_name() {
         assert!(first_wake(":9.97"));
         assert!(!first_wake(":9.97"));
         assert!(first_wake(":9.96"));
         assert!(!first_wake(":9.96"));
+    }
+
+    #[test]
+    fn only_a_new_accessibility_bus_forgets_the_apps_of_the_last_one() {
+        let mut last = None;
+        assert!(new_bus(&mut last, "a1"));
+        assert!(!new_bus(&mut last, "a1"));
+        assert!(new_bus(&mut last, "b2"));
+        assert!(!new_bus(&mut last, "b2"));
+        assert_eq!(last.as_deref(), Some("b2"));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1516,26 +1553,7 @@ mod tests {
         use zbus::zvariant::Type as _;
 
         let args = focused_rule();
-        assert_eq!(
-            <(
-                (
-                    Vec<i32>,
-                    i32,
-                    HashMap<String, String>,
-                    i32,
-                    Vec<i32>,
-                    i32,
-                    Vec<String>,
-                    i32,
-                    bool
-                ),
-                u32,
-                i32,
-                bool
-            )>::SIGNATURE
-                .to_string(),
-            "((aiia{ss}iaiiasib)uib)"
-        );
+        assert_eq!(Rule::SIGNATURE.to_string(), "((aiia{ss}iaiiasib)uib)");
         assert_eq!(args.0.0, [1 << 12, 0]);
         assert_eq!((args.1, args.2, args.3), (1, 1, true));
     }
@@ -1607,9 +1625,11 @@ mod tests {
 
     #[test]
     fn a_nameless_generic_container_hands_its_place_to_its_children() {
-        let o = |p: &str| Obj {
-            bus: ":1.1".into(),
-            path: format!("{PATH_PREFIX}/{p}"),
+        let o = |p: &str| {
+            Rc::new(Obj {
+                bus: ":1.1".into(),
+                path: format!("{PATH_PREFIX}/{p}"),
+            })
         };
         let r = |role: u32, name: &str| Raw {
             role,
@@ -1645,9 +1665,11 @@ mod tests {
 
     #[test]
     fn a_child_shared_by_two_parents_shows_under_both_and_a_cycle_ends() {
-        let o = |p: &str| Obj {
-            bus: ":1.1".into(),
-            path: format!("{PATH_PREFIX}/{p}"),
+        let o = |p: &str| {
+            Rc::new(Obj {
+                bus: ":1.1".into(),
+                path: format!("{PATH_PREFIX}/{p}"),
+            })
         };
         let r = |role: u32, name: &str| Raw {
             role,
@@ -1681,9 +1703,11 @@ mod tests {
     #[test]
     fn the_cache_is_trusted_unless_children_are_missing_or_unordered_and_small_managed_lists_are_walked()
      {
-        let o = |p: &str| Obj {
-            bus: ":1.1".into(),
-            path: p.into(),
+        let o = |p: &str| {
+            Rc::new(Obj {
+                bus: ":1.1".into(),
+                path: p.into(),
+            })
         };
         let r = |count: i32, states: u64| Raw {
             count,
@@ -1707,6 +1731,29 @@ mod tests {
         ));
         assert!(!needs_live(&r(i32::MAX, 1 << MANAGES_DESCENDANTS), None));
         assert!(!needs_live(&r(0, 0), None));
+    }
+
+    #[test]
+    fn a_list_the_cache_leaves_empty_is_walked_by_index_up_to_the_cap_and_by_its_children_above() {
+        let list = |states: u64| Raw {
+            role: LIST_ROLES[0],
+            states,
+            ..Raw::default()
+        };
+        let mut small = list(0);
+        assert!(walks_by_index(&mut small, Ok(MANAGED_KIDS)));
+        assert!(needs_live(&small, None));
+        let mut big = list(0);
+        assert!(!walks_by_index(&mut big, Ok(MANAGED_KIDS + 1)));
+        assert!(needs_live(&big, None));
+        let mut sheet = list(1 << MANAGES_DESCENDANTS);
+        assert!(!walks_by_index(&mut sheet, Ok(i32::MAX)));
+        assert!(!needs_live(&sheet, None));
+        for count in [Ok(0), Ok(-1), Err("gone".to_owned())] {
+            let mut empty = list(0);
+            assert!(!walks_by_index(&mut empty, count));
+            assert!(!needs_live(&empty, None));
+        }
     }
 
     #[test]
@@ -1838,7 +1885,7 @@ mod tests {
     fn state_words_make_one_bit_set() {
         assert_eq!(state_bits(&[0x10, 0x80]), 0x80_0000_0010);
         let n = Node {
-            states: (1 << CHECKED) | (1 << SHOWING),
+            states: (1 << 4) | (1 << SHOWING),
             ..Node::default()
         };
         assert_eq!(n.state_names(), vec!["checked", "showing", "disabled"]);

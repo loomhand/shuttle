@@ -98,14 +98,7 @@ impl Access for Spi {
     }
 
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
-        let window = atspi::Frame {
-            obj: Obj::parse(&frame.id)?,
-            role: 0,
-            name: frame.title.clone(),
-            states: 0,
-            pid: frame.pid,
-            stale: false,
-        };
+        let window = Obj::parse(&frame.id)?;
         let t = self
             .rt
             .block_on(self.atspi.tree(window, spi_extras(extras)))?;
@@ -227,22 +220,15 @@ fn frame(f: atspi::Frame) -> Frame {
         pid: f.pid,
         active: f.active(),
         app: f.pid.and_then(app),
-        owner: None,
-        modal: None,
-        blocks: None,
-        shell: false,
-        space: None,
-        bounds: None,
         stale: f.stale,
         unlisted: !FRAME_ROLES.contains(&f.role),
         framed: f.role != WINDOW_ROLE,
-        hidden: false,
-        number: None,
         title: f.name,
+        ..Frame::default()
     }
 }
 
-/// Leaves active only the frame of the X active window, `_NET_ACTIVE_WINDOW`'s pid and title, since GTK keeps a window's AT-SPI active state after the keyboard focus moved to another X window; title twins of that pid leave none active, a title of no frame (or one that changed between the AT-SPI and X reads) keeps that pid's AT-SPI actives, and a pid of no frame keeps AT-SPI's state.
+/// Leaves active only the frame of the X active window, since GTK keeps a window's AT-SPI active state after the focus moves to another X window.
 fn settle_active(frames: &mut [Frame], pid: Option<u32>, title: &str, twin: Option<&str>) {
     let Some(pid) = pid.filter(|&p| p != 0 && frames.iter().any(|f| f.pid == Some(p))) else {
         return;
@@ -299,7 +285,7 @@ fn unlisted(mut pids: impl Iterator<Item = Option<u32>>, pid: u32) -> bool {
     pid != 0 && pids.all(|p| p != Some(pid))
 }
 
-/// Whether the X window `(title, pid)` is `frame`'s own: of its process, and that process's only X window or the one with that title, `titles` being the titles of the process's X windows.
+/// Whether the X window `(title, pid)` is `frame`'s own: its process's only X window, or the one with that title among `titles`.
 fn is_frame(frame: &Frame, (title, pid): &(String, Option<u32>), titles: &[String]) -> bool {
     *pid == frame.pid
         && (titles.len() == 1
@@ -309,7 +295,7 @@ fn is_frame(frame: &Frame, (title, pid): &(String, Option<u32>), titles: &[Strin
 fn node(n: atspi::Node) -> Node {
     let (mnemonic, shortcut) = n.keys.as_deref().map_or((None, None), atspi::key_combos);
     Node {
-        id: n.obj.as_ref().map(Obj::id).unwrap_or_default(),
+        id: n.obj.as_deref().map(Obj::id).unwrap_or_default(),
         parent: n.parent,
         depth: n.depth,
         role: n.role(),
@@ -325,7 +311,7 @@ fn node(n: atspi::Node) -> Node {
     }
 }
 
-/// Asks the window manager to close the managed window titled `want` of process `pid`, as its close button does; refuses a title two windows share and a window manager without `_NET_CLOSE_WINDOW`.
+/// Asks the window manager to close the managed window titled `want` of process `pid`; refuses a title two windows share.
 fn close(want: &str, pid: Option<u32>) -> Result<(), String> {
     let (conn, n) = x11rb::connect(None).map_err(|e| format!("connect X: {e}"))?;
     let root = conn.setup().roots[n].root;
@@ -433,16 +419,12 @@ fn spi_extras(e: Extras) -> atspi::Extras {
 }
 
 /// What `lookup` answers within `within` on `rt`; none once the time is up, which drops the lookup and frees the runtime.
-fn answered<T>(
-    rt: &tokio::runtime::Runtime,
-    within: Duration,
-    lookup: impl Future<Output = T>,
-) -> Option<T> {
+fn answered<T>(rt: &Runtime, within: Duration, lookup: impl Future<Output = T>) -> Option<T> {
     rt.block_on(async { tokio::time::timeout(within, lookup).await })
         .ok()
 }
 
-/// `read` on the grabber in `slot`, opened on first use and again after a screen change; a failed read opens it once more and retries, and a second failure leaves the slot empty.
+/// `read` on the grabber in `slot`, opened on first use, after a screen change and once after a failed read.
 fn reuse<G, T>(
     slot: &mut Option<G>,
     open: impl Fn() -> Result<G, String>,
@@ -472,23 +454,6 @@ fn reuse<G, T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn window(title: &str, pid: u32, active: bool) -> Frame {
-        Frame {
-            title: title.to_owned(),
-            pid: Some(pid),
-            active,
-            ..Frame::default()
-        }
-    }
-
-    fn actives(frames: &[Frame]) -> Vec<&str> {
-        frames
-            .iter()
-            .filter(|f| f.active)
-            .map(|f| f.title.as_str())
-            .collect()
-    }
 
     #[test]
     fn the_x_active_window_wins_over_a_stale_at_spi_active_state() {
@@ -638,11 +603,6 @@ mod tests {
         }
     }
 
-    struct Seg {
-        id: usize,
-        size: (u16, u16),
-    }
-
     #[test]
     fn a_resize_or_a_failed_read_opens_a_new_segment_and_a_current_one_is_kept() {
         let screen = std::cell::Cell::new((1280, 800));
@@ -672,14 +632,6 @@ mod tests {
         fail.set(true);
         assert_eq!(reuse(&mut slot, open, current, read), Some(3));
         assert_eq!(opened.get(), 3);
-    }
-
-    struct Logged(usize, std::rc::Rc<std::cell::RefCell<Vec<String>>>);
-
-    impl Drop for Logged {
-        fn drop(&mut self) {
-            self.1.borrow_mut().push(format!("drop {}", self.0));
-        }
     }
 
     #[test]
@@ -736,7 +688,7 @@ mod tests {
     #[test]
     fn a_node_keeps_the_atspi_states_role_and_raw_key_binding() {
         let n = atspi::Node {
-            obj: Some(Obj::parse("1.17/5").unwrap()),
+            obj: Some(std::rc::Rc::new(Obj::parse("1.17/5").unwrap())),
             role: 43,
             name: "Save".into(),
             states: (1 << 8) | (1 << 25) | (1 << 30),
@@ -812,5 +764,35 @@ mod tests {
         });
         assert!(!qt.unlisted && qt.framed);
         assert_eq!((qt.title.as_str(), qt.active), ("waits PyQt", true));
+    }
+
+    struct Seg {
+        id: usize,
+        size: (u16, u16),
+    }
+
+    struct Logged(usize, std::rc::Rc<std::cell::RefCell<Vec<String>>>);
+
+    impl Drop for Logged {
+        fn drop(&mut self) {
+            self.1.borrow_mut().push(format!("drop {}", self.0));
+        }
+    }
+
+    fn window(title: &str, pid: u32, active: bool) -> Frame {
+        Frame {
+            title: title.to_owned(),
+            pid: Some(pid),
+            active,
+            ..Frame::default()
+        }
+    }
+
+    fn actives(frames: &[Frame]) -> Vec<&str> {
+        frames
+            .iter()
+            .filter(|f| f.active)
+            .map(|f| f.title.as_str())
+            .collect()
     }
 }

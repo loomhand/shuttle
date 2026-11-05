@@ -13,6 +13,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: The tag names the workspace version
         run: |
@@ -21,6 +23,24 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME but Cargo.toml says $version: bump the version in a release commit before tagging"
             exit 1
           fi
+
+      - name: The tagged commit is on main
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::tag $GITHUB_REF_NAME is not on main: tag a release commit on main"
+            exit 1
+          fi
+
+      - name: The changelog has notes for the version
+        run: |
+          if ! awk -v v="${GITHUB_REF_NAME#v}" '/^## / { on = ($2 == v) } on && !/^## /' CHANGELOG.md | grep -q '[^[:space:]]'; then
+            echo "::error::CHANGELOG.md has no notes under a \"## ${GITHUB_REF_NAME#v}\" heading: add them in the release commit before tagging"
+            exit 1
+          fi
+
+  ci:
+    needs: version
+    uses: ./.github/workflows/ci.yml
 
   ui-jar:
     needs: version
@@ -50,7 +70,7 @@ jobs:
           path: shuttle-ui.jar
 
   build:
-    needs: ui-jar
+    needs: [ui-jar, ci]
     strategy:
       fail-fast: false
       matrix:
@@ -69,10 +89,12 @@ jobs:
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             container: debian:11
+            rustup-sha256: 5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4
           - platform: linux-arm64
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             container: debian:11
+            rustup-sha256: a9c168dbea81a84671c6b7a5c1795cb0eb699020110d107ddfca427bd797e697
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
     env:
@@ -89,7 +111,10 @@ jobs:
           apt-get -o Dir::Etc::sourceparts=- -o Acquire::Retries=5 update
           apt-get -o Dir::Etc::sourceparts=- -o Acquire::Retries=5 install -y --no-install-recommends \
             git ca-certificates curl build-essential xz-utils
-          curl -fsSL --retry 3 https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/rustup-init" "https://static.rust-lang.org/rustup/archive/1.29.2/${{ matrix.target }}/rustup-init"
+          echo "${{ matrix.rustup-sha256 }}  $RUNNER_TEMP/rustup-init" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/rustup-init"
+          "$RUNNER_TEMP/rustup-init" -y --profile minimal --default-toolchain none
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Checkout
@@ -162,7 +187,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           awk -v v="${GITHUB_REF_NAME#v}" '/^## / { on = ($2 == v) } on && !/^## /' CHANGELOG.md > notes.md
-          test -s notes.md
           gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --prerelease --title "shuttle $GITHUB_REF_NAME" --notes-file notes.md
 
   install:
@@ -207,10 +231,16 @@ jobs:
   promote:
     needs: install
     runs-on: ubuntu-24.04
+    concurrency:
+      group: release-promote
     permissions:
       contents: write
     steps:
-      - name: Mark the release as the latest
+      - name: Mark the release as the latest unless a newer one is out
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --prerelease=false --latest
+        run: |
+          newest=$({ echo "$GITHUB_REF_NAME"; gh release list -R "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName'; } | sort -V | tail -1)
+          latest=false
+          [ "$newest" != "$GITHUB_REF_NAME" ] || latest=true
+          gh release edit "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --prerelease=false --latest="$latest"

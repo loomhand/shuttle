@@ -5,19 +5,20 @@ import { setTimeout as sleep } from 'node:timers/promises'
 
 import { png } from '../lib/png.mts'
 
-export const BUILD = 'typesafe/jev-1.14-20261014'
-const FLOWS = `${mkdtempSync(`${tmpdir()}/flows-`)}/flows`
-
-process.env.SHUTTLE_FLOWS = FLOWS
-
-export const endpoint = (dir: string): string => process.platform === 'win32' ? `\\\\.\\pipe\\${dir.replace(/[\\/:]/g, '-')}` : `${dir}/daemon.sock`
-
 export type Call = { tool: string; args: Record<string, unknown> }
 export type Reply = string | { text: string; error?: boolean; image?: string }
+export type W = { id: string; title: string; role: string; pid: number; active: boolean; owner?: string }
+
+export const BUILD = 'typesafe/jev-1.14-20261014'
+export const endpoint = (dir: string): string => process.platform === 'win32' ? `\\\\.\\pipe\\${dir.replace(/[\\/:]/g, '-')}` : `${dir}/daemon.sock`
+export const user = (): W => ({ id: 'c', title: 'Calculator', role: 'window', pid: 9, active: true })
+export const notepad = (): W => ({ id: '1', title: 'Untitled - Notepad', role: 'window', pid: 4, active: false })
+export const root = (role: string, name: string) => ({ ref: 0, id: '1/1', parent: -1, depth: 0, role, name, states: ['showing'] })
 
 export async function daemon(t: { after(fn: () => void): void }, answer: (c: Call) => Reply): Promise<void> {
   const server = createServer((s) => {
     let buf = Buffer.alloc(0)
+    s.on('error', () => {})
     s.on('data', async (d: Buffer) => {
       buf = Buffer.concat([buf, d])
       if (buf.length < 4 || buf.length < 4 + buf.readUInt32BE(0)) return
@@ -45,3 +46,5 @@ async function wait(answer: (c: Call) => Reply, args: Record<string, unknown>): 
   const text = typeof r === 'string' ? r : r.text
   return JSON.stringify({ changed: text !== JSON.stringify(args.since), windows: JSON.parse(text) })
 }
+
+process.env.SHUTTLE_FLOWS = `${mkdtempSync(`${tmpdir()}/flows-`)}/flows`

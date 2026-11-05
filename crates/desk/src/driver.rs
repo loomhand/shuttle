@@ -18,6 +18,7 @@ pub(crate) const CLICK_SPACING: Duration = Duration::from_millis(500);
 pub(crate) const CONNECT_RETRY: Duration = Duration::from_millis(250);
 pub(crate) const ENDED: &str = "session has ended";
 
+const DEFAULT_PIPE: &str = r"\\.\pipe\cua-driver";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_WAIT: Duration = Duration::from_secs(10);
 const SESSION: &str = "desk";
@@ -40,6 +41,11 @@ const HID_SYSTEM_STATE: i32 = 1;
 #[cfg(all(target_os = "macos", not(test)))]
 const USER_EVENTS: [u32; 10] = [1, 3, 5, 6, 7, 10, 12, 22, 25, 27];
 
+#[cfg(test)]
+thread_local! {
+    static USER_SINCE: std::cell::Cell<f64> = const { std::cell::Cell::new(f64::INFINITY) };
+}
+
 /// The driver calls the desk makes: input, windows, launch and capture.
 pub trait Input {
     /// Calls driver tool `tool` and returns its result.
@@ -60,11 +66,7 @@ impl Driver {
     pub fn new(endpoint: String) -> Self {
         Self {
             endpoint,
-            started: [
-                AtomicBool::new(false),
-                AtomicBool::new(false),
-                AtomicBool::new(false),
-            ],
+            started: Default::default(),
             calls: AtomicU64::new(0),
             last_click: Mutex::new(None),
             last_input: std::sync::Mutex::new(None),
@@ -73,6 +75,12 @@ impl Driver {
 
     /// The daemon's endpoint: `CUA_DRIVER_SOCKET`, else the driver's default for this OS.
     pub fn default_endpoint() -> String {
+        if cfg!(windows) {
+            return std::env::var("CUA_DRIVER_SOCKET")
+                .ok()
+                .filter(|e| !e.is_empty())
+                .unwrap_or_else(|| DEFAULT_PIPE.to_owned());
+        }
         crate::server::cache_endpoint(
             "CUA_DRIVER_SOCKET",
             "cua-driver",
@@ -81,7 +89,7 @@ impl Driver {
         )
     }
 
-    /// Runs `click` at `(x, y)` once [`CLICK_SPACING`] has passed since a click within [`CLICK_DISTANCE`] of it, and records it before the next click may check, so two clicks never make a double click.
+    /// Runs `click` at `(x, y)` once [`CLICK_SPACING`] has passed since a click within [`CLICK_DISTANCE`] of it, so two clicks never make a double click.
     pub(crate) async fn spaced<T>(&self, (x, y): (f64, f64), click: impl Future<Output = T>) -> T {
         let mut last = self.last_click.lock().await;
         let wait = last
@@ -110,21 +118,6 @@ impl Driver {
         result(tool, &reply)
     }
 
-    async fn start(&self, kind: usize) -> Result<(), String> {
-        let (scope, session) = match kind {
-            1 => ("window", WINDOW_SESSION),
-            2 => ("desktop", CAPTURE_SESSION),
-            _ => ("desktop", SESSION),
-        };
-        self.send(
-            "start_session",
-            &json!({"capture_scope": scope, "session": session}),
-        )
-        .await?;
-        self.started[kind].store(true, Ordering::Relaxed);
-        Ok(())
-    }
-
     /// Connects to the daemon, waiting out a restart: the one each desktop session start triggers, or the supervisor's after the driver died.
     pub(crate) async fn connect(&self) -> Result<Conn, String> {
         let deadline = Instant::now() + CONNECT_WAIT;
@@ -140,21 +133,6 @@ impl Driver {
                 Err(e) => return Err(format!("connect cua-driver {}: {e}", self.endpoint)),
             }
         }
-    }
-
-    async fn exchange(&self, line: Vec<u8>) -> Result<String, String> {
-        let mut stream = BufReader::new(self.connect().await?);
-        stream
-            .get_mut()
-            .write_all(&line)
-            .await
-            .map_err(|e| format!("write cua-driver: {e}"))?;
-        let mut reply = String::new();
-        stream
-            .read_line(&mut reply)
-            .await
-            .map_err(|e| format!("read cua-driver: {e}"))?;
-        Ok(reply)
     }
 
     pub(crate) fn admit(&self, tool: &str, args: &Value) -> Result<bool, String> {
@@ -175,6 +153,36 @@ impl Driver {
             .last_input
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::time::Instant::now());
+    }
+
+    async fn start(&self, kind: usize) -> Result<(), String> {
+        let (scope, session) = match kind {
+            1 => ("window", WINDOW_SESSION),
+            2 => ("desktop", CAPTURE_SESSION),
+            _ => ("desktop", SESSION),
+        };
+        self.send(
+            "start_session",
+            &json!({"capture_scope": scope, "session": session}),
+        )
+        .await?;
+        self.started[kind].store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn exchange(&self, line: Vec<u8>) -> Result<String, String> {
+        let mut stream = BufReader::new(self.connect().await?);
+        stream
+            .get_mut()
+            .write_all(&line)
+            .await
+            .map_err(|e| format!("write cua-driver: {e}"))?;
+        let mut reply = String::new();
+        stream
+            .read_line(&mut reply)
+            .await
+            .map_err(|e| format!("read cua-driver: {e}"))?;
+        Ok(reply)
     }
 
     fn since_own_input(&self) -> Option<Duration> {
@@ -209,13 +217,13 @@ impl Driver {
 impl Input for Driver {
     async fn call(&self, tool: &str, mut args: Value) -> Result<Value, String> {
         if cfg!(target_os = "linux") {
-            // the Linux driver keeps a session's last capture scale and a master keyboard that Chrome's core-keyboard input loses to
-            let once = format!(
+            // a session keeps its capture scale and a master keyboard that Chrome's core input loses to
+            args["session"] = format!(
                 "desk-{}-{}",
                 std::process::id(),
                 self.calls.fetch_add(1, Ordering::Relaxed)
-            );
-            args["session"] = once.as_str().into();
+            )
+            .into();
             let point = (tool == "click")
                 .then(|| args["x"].as_f64().zip(args["y"].as_f64()))
                 .flatten();
@@ -223,7 +231,9 @@ impl Input for Driver {
                 Some(point) => self.spaced(point, self.send(tool, &args)).await,
                 None => self.send(tool, &args).await,
             };
-            let _ = self.send("end_session", &json!({"session": once})).await;
+            let _ = self
+                .send("end_session", &json!({"session": args["session"]}))
+                .await;
             return done;
         }
         let foreground = self.admit(tool, &args)?;
@@ -242,53 +252,10 @@ impl Input for std::sync::Arc<Driver> {
 }
 
 #[derive(Serialize)]
-struct Request<'a> {
-    method: &'static str,
-    name: &'a str,
-    args: &'a Value,
-}
-
-/// Whether HID input `since` seconds ago is the user's: it is within [`USER_IDLE`] and more than [`OWN_INPUT_LAG`] after the end of the driver's own last input, whose events reach the HID counter up to that late.
-fn user_busy(since: f64, own: Option<Duration>) -> bool {
-    since < USER_IDLE.as_secs_f64()
-        && own.is_none_or(|own| since < own.saturating_sub(OWN_INPUT_LAG).as_secs_f64())
-}
-
-#[cfg(all(target_os = "macos", not(test)))]
-fn since_user_input() -> f64 {
-    USER_EVENTS
-        .iter()
-        .map(|&kind| {
-            // SAFETY: CGEventSourceSecondsSinceLastEventType reads a counter and takes two plain integers.
-            unsafe { CGEventSourceSecondsSinceLastEventType(HID_SYSTEM_STATE, kind) }
-        })
-        .fold(f64::INFINITY, f64::min)
-}
-
-#[cfg(all(not(target_os = "macos"), not(test)))]
-fn since_user_input() -> f64 {
-    f64::INFINITY
-}
-
-#[cfg(test)]
-thread_local! {
-    static USER_SINCE: std::cell::Cell<f64> = const { std::cell::Cell::new(f64::INFINITY) };
-}
-
-#[cfg(test)]
-fn since_user_input() -> f64 {
-    USER_SINCE.with(std::cell::Cell::get)
-}
-
-#[cfg(all(test, unix))]
-pub(crate) fn user_input_since(seconds: f64) {
-    USER_SINCE.with(|s| s.set(seconds));
-}
-
-#[cfg(all(target_os = "macos", not(test)))]
-#[link(name = "CoreGraphics", kind = "framework")]
-unsafe extern "C" {
-    fn CGEventSourceSecondsSinceLastEventType(state: i32, kind: u32) -> f64;
+pub(crate) struct Request<'a> {
+    pub(crate) method: &'static str,
+    pub(crate) name: &'a str,
+    pub(crate) args: &'a Value,
 }
 
 /// `req` addressed to the screen, not to a window.
@@ -325,6 +292,11 @@ pub fn image_of(v: &Value) -> Option<&str> {
         .and_then(|c| c["data"].as_str())
 }
 
+#[cfg(all(test, unix))]
+pub(crate) fn user_input_since(seconds: f64) {
+    USER_SINCE.with(|s| s.set(seconds));
+}
+
 fn result(tool: &str, reply: &str) -> Result<Value, String> {
     let mut v: Value =
         serde_json::from_str(reply).map_err(|e| format!("decode cua-driver reply: {e}"))?;
@@ -342,6 +314,39 @@ fn result(tool: &str, reply: &str) -> Result<Value, String> {
         });
     }
     Ok(out)
+}
+
+/// Whether HID input `since` seconds ago is the user's: within [`USER_IDLE`], and over [`OWN_INPUT_LAG`] after the driver's own last input, whose events reach the HID counter that late.
+fn user_busy(since: f64, own: Option<Duration>) -> bool {
+    since < USER_IDLE.as_secs_f64()
+        && own.is_none_or(|own| since < own.saturating_sub(OWN_INPUT_LAG).as_secs_f64())
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn since_user_input() -> f64 {
+    USER_EVENTS
+        .iter()
+        .map(|&kind| {
+            // SAFETY: CGEventSourceSecondsSinceLastEventType reads a counter and takes two plain integers.
+            unsafe { CGEventSourceSecondsSinceLastEventType(HID_SYSTEM_STATE, kind) }
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+#[cfg(all(not(target_os = "macos"), not(test)))]
+fn since_user_input() -> f64 {
+    f64::INFINITY
+}
+
+#[cfg(test)]
+fn since_user_input() -> f64 {
+    USER_SINCE.with(std::cell::Cell::get)
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGEventSourceSecondsSinceLastEventType(state: i32, kind: u32) -> f64;
 }
 
 #[cfg(test)]
@@ -543,27 +548,6 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
-    fn answering(socket: &std::path::Path) -> tokio::task::JoinHandle<Vec<Value>> {
-        let listener = tokio::net::UnixListener::bind(socket).unwrap();
-        tokio::spawn(async move {
-            let mut lines = Vec::new();
-            while let Ok(Ok((s, _))) =
-                tokio::time::timeout(Duration::from_millis(500), listener.accept()).await
-            {
-                let mut s = BufReader::new(s);
-                let mut line = String::new();
-                s.read_line(&mut line).await.unwrap();
-                s.get_mut()
-                    .write_all(b"{\"ok\":true,\"result\":{}}\n")
-                    .await
-                    .unwrap();
-                lines.push(serde_json::from_str::<Value>(&line).unwrap());
-            }
-            lines
-        })
-    }
-
-    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn only_foreground_input_counts_as_the_drivers_own() {
         let dir = tempfile::tempdir().unwrap();
@@ -626,5 +610,26 @@ mod tests {
             d.spaced((104.0, 100.0), async {})
         );
         assert_eq!(started.elapsed(), Duration::from_millis(50) + CLICK_SPACING);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn answering(socket: &std::path::Path) -> tokio::task::JoinHandle<Vec<Value>> {
+        let listener = tokio::net::UnixListener::bind(socket).unwrap();
+        tokio::spawn(async move {
+            let mut lines = Vec::new();
+            while let Ok(Ok((s, _))) =
+                tokio::time::timeout(Duration::from_millis(500), listener.accept()).await
+            {
+                let mut s = BufReader::new(s);
+                let mut line = String::new();
+                s.read_line(&mut line).await.unwrap();
+                s.get_mut()
+                    .write_all(b"{\"ok\":true,\"result\":{}}\n")
+                    .await
+                    .unwrap();
+                lines.push(serde_json::from_str::<Value>(&line).unwrap());
+            }
+            lines
+        })
     }
 }

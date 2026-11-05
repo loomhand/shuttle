@@ -26,7 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GW_OWNER, GetForegroundWindow, GetWindow, GetWindowTextW,
     GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_CLOSE,
 };
-use windows::core::{BOOL, PWSTR};
+use windows::core::{BOOL, HRESULT, Interface, PWSTR};
 
 use crate::keys::uia_combo;
 use crate::model::{
@@ -35,6 +35,9 @@ use crate::model::{
 };
 use crate::uia_roles::{self, Facts, Kind};
 
+const ACT_TIMEOUT_MS: u32 = 2_000;
+const TIMED_OUT: HRESULT = HRESULT(UIA_E_TIMEOUT.cast_signed());
+const ACT_TIMED_OUT: &str = "the app did not answer the action within 2 s, as when the action opens a modal dialog; it may have taken effect: read the window before acting again";
 const CACHE_TRIES: u32 = 3;
 const CACHE_RETRY: Duration = Duration::from_millis(40);
 const TITLE_CHARS: usize = 512;
@@ -88,11 +91,11 @@ pub struct Uia {
 impl Uia {
     /// The backend on a COM multithreaded apartment, with per-monitor DPI awareness so bounds are pixels.
     pub fn open() -> Result<Self, String> {
-        // SAFETY: `CUIAutomation` is a static CLSID; a repeated COM or DPI setup returns S_FALSE or an ignored error.
+        // SAFETY: `CUIAutomation8` is a static CLSID; a repeated COM or DPI setup returns S_FALSE or an ignored error.
         let auto: IUIAutomation = unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+            CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)
         }
         .map_err(|e| format!("start UI Automation: {e}"))?;
         let subtree = request(&auto, TreeScope_Subtree, &PROPS)?;
@@ -174,6 +177,7 @@ impl Uia {
         let mapped = uia_roles::role(kind);
         let role = mapped.unwrap_or("generic");
         let [x, y, w, h] = r.bounds;
+        r.name.truncate(r.name.trim_end().len());
         let value = r
             .value
             .take()
@@ -186,8 +190,8 @@ impl Uia {
             native_role: mapped
                 .is_none()
                 .then(|| uia_roles::native(r.control_type).to_owned()),
-            name: r.name.trim_end().to_owned(),
-            description: std::mem::take(&mut r.help),
+            name: r.name,
+            description: r.help,
             states: uia_roles::states(role, r.facts),
             value,
             shortcut: uia_combo(&r.accel),
@@ -308,10 +312,16 @@ impl Access for Uia {
     }
 
     fn hint(&mut self) -> Option<u64> {
-        let mut h = DefaultHasher::new();
+        let (mut h, mut buf) = (DefaultHasher::new(), [0u16; TITLE_CHARS]);
         (foreground().0 as isize).hash(&mut h);
         for s in shown() {
-            (s.hwnd.0 as isize, s.owner, s.pid, title(s.hwnd)).hash(&mut h);
+            (
+                s.hwnd.0 as isize,
+                s.owner,
+                s.pid,
+                title_units(s.hwnd, &mut buf),
+            )
+                .hash(&mut h);
         }
         Some(h.finish())
     }
@@ -428,61 +438,69 @@ impl Access for Uia {
 
     fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
         let el = self.element(id)?;
+        let _bounded = Bounded::new(&self.auto);
         // SAFETY: `el` is a live UIA element of this thread; each pattern comes from it.
         let done = unsafe {
             let select = || {
-                el.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
-                    UIA_SelectionItemPatternId,
+                tried(
+                    el.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                        UIA_SelectionItemPatternId,
+                    )
+                    .and_then(|p| p.Select()),
                 )
-                .and_then(|p| p.Select())
-                .is_ok()
             };
             match act {
-                Act::Focus => el.SetFocus().is_ok(),
+                Act::Focus => tried(el.SetFocus()),
                 Act::Select => select(),
-                Act::Action => {
+                Act::Action => tried(
                     el.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
-                        .and_then(|p| p.Invoke())
-                        .is_ok()
-                        || el
-                            .GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
-                            .and_then(|p| p.Toggle())
-                            .is_ok()
-                        || el
-                            .GetCurrentPatternAs::<IUIAutomationExpandCollapsePattern>(
-                                UIA_ExpandCollapsePatternId,
-                            )
-                            .and_then(|p| {
-                                if p.CurrentExpandCollapseState()? == ExpandCollapseState_Collapsed
-                                {
-                                    p.Expand()
-                                } else {
-                                    p.Collapse()
-                                }
-                            })
-                            .is_ok()
-                        || select()
-                        || el
-                            .GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(
-                                UIA_LegacyIAccessiblePatternId,
-                            )
-                            .and_then(|p| p.DoDefaultAction())
-                            .is_ok()
-                }
+                        .and_then(|p| p.Invoke()),
+                )
+                .or_else(|| {
+                    tried(
+                        el.GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
+                            .and_then(|p| p.Toggle()),
+                    )
+                })
+                .or_else(|| {
+                    tried(
+                        el.GetCurrentPatternAs::<IUIAutomationExpandCollapsePattern>(
+                            UIA_ExpandCollapsePatternId,
+                        )
+                        .and_then(|p| {
+                            if p.CurrentExpandCollapseState()? == ExpandCollapseState_Collapsed {
+                                p.Expand()
+                            } else {
+                                p.Collapse()
+                            }
+                        }),
+                    )
+                })
+                .or_else(select)
+                .or_else(|| {
+                    tried(
+                        el.GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(
+                            UIA_LegacyIAccessiblePatternId,
+                        )
+                        .and_then(|p| p.DoDefaultAction()),
+                    )
+                }),
             }
         };
-        Ok(done)
+        done.unwrap_or(Ok(false))
     }
 
     fn close(&mut self, frame: &Frame) -> Result<(), String> {
         let el = self.element(&frame.id)?;
+        let bounded = Bounded::new(&self.auto);
         // SAFETY: `el` is a live UIA element of this thread.
         let closed = unsafe {
             el.GetCurrentPatternAs::<IUIAutomationWindowPattern>(UIA_WindowPatternId)
                 .and_then(|p| p.Close())
         };
-        if closed.is_ok() {
-            return Ok(());
+        drop(bounded);
+        if let Some(closed) = tried(closed) {
+            return closed.map(drop);
         }
         // SAFETY: `el` is a live UIA element; posting WM_CLOSE to a window handle has no memory effects.
         unsafe {
@@ -492,6 +510,31 @@ impl Access for Uia {
             PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0))
         }
         .map_err(|e| format!("close {:?}: {e}", frame.title))
+    }
+}
+
+struct Bounded(Option<(IUIAutomation2, u32)>);
+
+impl Bounded {
+    fn new(auto: &IUIAutomation) -> Self {
+        let Ok(auto) = auto.cast::<IUIAutomation2>() else {
+            return Self(None);
+        };
+        // SAFETY: `auto` is a live IUIAutomation2 of this thread; the timeout is a client-side property.
+        let was = unsafe {
+            auto.TransactionTimeout()
+                .and_then(|was| auto.SetTransactionTimeout(ACT_TIMEOUT_MS).map(|()| was))
+        };
+        Self(was.ok().map(|was| (auto, was)))
+    }
+}
+
+impl Drop for Bounded {
+    fn drop(&mut self) {
+        if let Some((auto, was)) = &self.0 {
+            // SAFETY: `auto` is a live IUIAutomation2 of this thread; the timeout is a client-side property.
+            let _ = unsafe { auto.SetTransactionTimeout(*was) };
+        }
     }
 }
 
@@ -530,6 +573,14 @@ enum Val {
     Real(f64),
     Text(String),
     Other,
+}
+
+fn tried(r: windows::core::Result<()>) -> Option<Result<bool, String>> {
+    match r {
+        Ok(()) => Some(Ok(true)),
+        Err(e) if e.code() == TIMED_OUT => Some(Err(ACT_TIMED_OUT.to_owned())),
+        Err(_) => None,
+    }
 }
 
 fn request(
@@ -697,10 +748,13 @@ fn link(shown: &[Shown], root: usize, top: &Frame, found: Vec<(usize, Frame)>) -
 }
 
 fn title(hwnd: HWND) -> String {
-    let mut buf = [0u16; TITLE_CHARS];
+    String::from_utf16_lossy(title_units(hwnd, &mut [0u16; TITLE_CHARS]))
+}
+
+fn title_units(hwnd: HWND, buf: &mut [u16; TITLE_CHARS]) -> &[u16] {
     // SAFETY: GetWindowTextW writes at most `buf.len()` UTF-16 units into `buf`.
-    let n = unsafe { GetWindowTextW(hwnd, &mut buf) };
-    String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0)])
+    let n = unsafe { GetWindowTextW(hwnd, buf) };
+    &buf[..usize::try_from(n).unwrap_or(0)]
 }
 
 fn foreground() -> HWND {
@@ -849,12 +903,13 @@ fn runtime_id(el: &IUIAutomationElement) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    fn window(hwnd: isize, owner: isize) -> Shown {
-        Shown {
-            hwnd: HWND(hwnd as *mut std::ffi::c_void),
-            owner,
-            pid: 1,
-        }
+    #[test]
+    fn the_backend_can_bound_an_action_by_a_transaction_timeout() {
+        let uia = Uia::open().expect("UI Automation starts");
+        assert!(
+            Bounded::new(&uia.auto).0.is_some(),
+            "the automation object lacks IUIAutomation2"
+        );
     }
 
     #[test]
@@ -895,5 +950,13 @@ mod tests {
                 ("dialog".to_owned(), Some("root".to_owned()))
             ]
         );
+    }
+
+    fn window(hwnd: isize, owner: isize) -> Shown {
+        Shown {
+            hwnd: HWND(hwnd as *mut std::ffi::c_void),
+            owner,
+            pid: 1,
+        }
     }
 }

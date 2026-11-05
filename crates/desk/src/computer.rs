@@ -1,8 +1,8 @@
-//! The computer verbs: `desk_computer_state`, `desk_computer_act`, `desk_computer_end` and `desk_look` for a vision agent, with the settle, the window report and the press guards, over cua-driver's line-delimited JSON in named driver sessions.
+//! The computer verbs for a vision agent, over cua-driver's line-delimited JSON in named driver sessions.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -20,8 +20,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use crate::desk::{Cancel, Turn, Typer, launch_name, runs_app, text_runs};
-use crate::driver::{CONNECT_RETRY, Driver, ENDED, image_of, text_of};
+use crate::desk::{Turn, Typer, launch_name, lock, runs_app, text_runs, xtest};
+use crate::driver::{CONNECT_RETRY, Driver, ENDED, Request, image_of, text_of};
 use crate::keys::{Os, key_names};
 use crate::model::Modal;
 #[cfg(target_os = "linux")]
@@ -30,7 +30,7 @@ use crate::press::libreoffice;
 #[cfg(target_os = "linux")]
 use crate::spi::Spi;
 use crate::still::{Block, VISIBLE_STEP};
-use crate::volatile::{Shown, Volatile};
+use crate::volatile::{Paused, Shown, Volatile};
 #[cfg(target_os = "linux")]
 use crate::worker::Worker;
 use crate::xshm::{self, Grabber, Placement, clip};
@@ -41,6 +41,7 @@ const TREE_CHARS: usize = 15_000;
 const MIN_WINDOW: i64 = 10;
 const CHROME_CLASS: &str = "Google-chrome";
 const COMMIT_KEYS: [&str; 6] = ["return", "enter", "kp_enter", "f5", "alt+left", "alt+right"];
+
 const SETTLE: Duration = Duration::from_millis(600);
 const NO_CHANGE: Duration = Duration::from_millis(300);
 const COMMIT_SETTLE: Duration = Duration::from_millis(3000);
@@ -53,9 +54,11 @@ const COMMIT_FIRST: Duration = Duration::from_millis(1500);
 const RETURN_GAP: Duration = Duration::from_millis(300);
 #[cfg(target_os = "linux")]
 const RETURN_POLL: Duration = Duration::from_millis(10);
+
 const STILL_EDGE: u32 = 160;
 const STILL_TOLERANCE: u8 = 48;
 const MOVED_PERCENT: usize = 5;
+
 const POPUP_ROWS: [&str; 6] = [
     "menu item",
     "menu",
@@ -77,24 +80,31 @@ const FIELDS: [&str; 5] = [
     "Edit",
     "ComboBox",
 ];
+
 const JPEG_QUALITY: u8 = 80;
 const DEFAULT_EDGE: u32 = 1024;
 const PIXELS_PER_TOKEN: u32 = 750;
+const HEAD_CHARS: usize = 4096;
 const PHOTO_COLORS: usize = 2500;
 const COLOR_STRIDE: usize = 7;
 const COLOR_BITS: u32 = 14;
 const COLOR_EMPTY: u32 = u32::MAX;
+
 const MAX_WAIT_SECS: f64 = 10.0;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_SESSION: &str = "computer";
 const SKIPPED: &str = "had no keycode";
+
 const WM_WAIT: Duration = Duration::from_secs(10);
 const WM_POLL: Duration = Duration::from_millis(100);
+
 const AX_UNSUPPORTED: &str = "returned -25206";
 const PRESSED_INSTEAD: &str = "the field got its press action instead, which may not move the keyboard focus to it: read the field before typing into it";
 const XTEST_TYPED: &str = "Typed text into the focused desktop application.";
+const SHOT_FAILED: &str = "the action ran, but the screenshot after it failed";
 const NO_TEXT_TARGET: &str =
     "no application window is on the screen to type into; open or focus one first";
+
 const RETRIED: [&str; 4] = [
     "list_windows",
     "get_window_state",
@@ -121,8 +131,6 @@ pub struct Computer {
     /// The screen blocks that change while no action runs, which the settle ignores; sampled from the first computer call.
     volatile: OnceLock<Volatile>,
     ids: AtomicU64,
-    /// How many default sessions were ended, which names every caller's next default.
-    defaults: AtomicU64,
     background: bool,
     #[cfg(target_os = "linux")]
     spi: OnceLock<Worker<Spi>>,
@@ -144,11 +152,15 @@ impl Computer {
             backing: std::sync::Mutex::new(1.0),
             volatile: OnceLock::new(),
             ids: AtomicU64::new(0),
-            defaults: AtomicU64::new(0),
             background: false,
             #[cfg(target_os = "linux")]
             spi: OnceLock::new(),
         }
+    }
+
+    pub fn turn(mut self, turn: Arc<Mutex<()>>) -> Self {
+        self.input = turn;
+        self
     }
 
     /// Whether input must reach its window without raising it or moving the pointer; the computer actions refuse then.
@@ -159,6 +171,9 @@ impl Computer {
 
     /// Answers the computer verb `tool` of caller `agent`, whose default session is its own.
     pub async fn run(&self, agent: &str, tool: &str, mut args: Value) -> Result<Output, String> {
+        if !args.is_object() && !args.is_null() {
+            return Err(format!("{tool}: args are not an object"));
+        }
         let default =
             !matches!(tool, "desk_look" | "desk_title_at") && !args["session"].is_string();
         if default {
@@ -168,13 +183,7 @@ impl Computer {
             "desk_computer_state" => self.state(args).await,
             "desk_computer_act" if self.background => Err(BACKGROUND_ACT.to_owned()),
             "desk_computer_act" => self.act(args).await,
-            "desk_computer_end" => {
-                let ended = self.end(args).await;
-                if default {
-                    self.defaults.fetch_add(1, Ordering::Relaxed);
-                }
-                ended.map(Output::text)
-            }
+            "desk_computer_end" => self.end(args).await.map(Output::text),
             "desk_look" => self.look(&args).await,
             "desk_computer_scale" => {
                 let scale = self.scale_of(&session_of(&args));
@@ -182,23 +191,20 @@ impl Computer {
             }
             "desk_title_at" => {
                 let a: PointArgs = parse(args)?;
-                Ok(Output::text(
-                    json!({"title": self.title_at(a.x, a.y)}).to_string(),
-                ))
+                let title = self
+                    .shm(|g| g.title_at(a.x.round() as i32, a.y.round() as i32))
+                    .unwrap_or(false);
+                Ok(Output::text(json!({"title": title}).to_string()))
             }
             other => Err(format!("unknown computer verb {other}")),
         }
     }
 
-    /// `computer_state`: window list, accessibility elements and a desktop screenshot.
     async fn state(&self, args: Value) -> Result<Output, String> {
         self.touch();
         let session = session_of(&args);
         let a: StateArgs = parse(args)?;
-        let windows = self
-            .request(&session, "list_windows", json!({"on_screen_only": true}))
-            .await?;
-        let listed = window_list(&windows);
+        let listed = self.listed(&session).await?;
         let mut text = String::new();
         let target = match a.pid {
             Some(pid) => Some((
@@ -227,7 +233,8 @@ impl Computer {
             }
             match self.request(&session, "get_window_state", req).await {
                 Ok(state) => {
-                    elements = Some((pid, window_id_of(&state).or(window_id), state));
+                    let id = state["structuredContent"]["window_id"].as_i64();
+                    elements = Some((pid, id.or(window_id), state));
                 }
                 Err(e) => {
                     let _ = writeln!(text, "\nElements of pid={pid} unavailable: {e}");
@@ -237,7 +244,6 @@ impl Computer {
         // the capture comes last: a later get_window_state replaces the session's pixel-click context
         let (image_b64, scale, screen) =
             self.capture(&session, a.max_edge, a.workspace_only).await?;
-        let k = scale;
         let mut head = String::from("Windows (frontmost first):\n");
         for w in &listed {
             let _ = writeln!(
@@ -247,13 +253,13 @@ impl Computer {
                 w.window_id,
                 w.app,
                 w.title,
-                w.x as f64 / k,
-                w.y as f64 / k,
-                w.w as f64 / k,
-                w.h as f64 / k
+                w.x as f64 / scale,
+                w.y as f64 / scale,
+                w.w as f64 / scale,
+                w.h as f64 / scale
             );
         }
-        for m in self.modals() {
+        for m in self.shm(Grabber::modals).unwrap_or_default() {
             head.push_str(&modal_line(&m));
         }
         text.insert_str(0, &head);
@@ -265,7 +271,7 @@ impl Computer {
             );
             text.push_str(&tree);
             self.last.lock().await.insert(
-                session.clone(),
+                session,
                 Snapshot {
                     pid,
                     window_id,
@@ -285,7 +291,6 @@ impl Computer {
         })
     }
 
-    /// `computer_act`: one input action, or a list of `actions`, followed by a fresh desktop screenshot.
     async fn act(&self, args: Value) -> Result<Output, String> {
         self.touch();
         let session = session_of(&args);
@@ -304,7 +309,7 @@ impl Computer {
         scale.unwrap_or_else(|| self.scale_of(session))
     }
 
-    /// Runs the actions in order, each settled, stops at the first failure and returns the last screenshot; every x,y maps by the screenshot returned before the list, the one the caller saw.
+    /// Runs the actions in order, each settled, and stops at the first failure; every x,y maps by the screenshot the caller saw.
     async fn act_list(&self, session: &str, list: ActList) -> Result<Output, String> {
         let total = list.actions.len();
         let mut lines = Vec::with_capacity(total);
@@ -313,6 +318,7 @@ impl Computer {
         for (i, mut a) in list.actions.into_iter().enumerate() {
             a.max_edge = list.max_edge;
             a.scale = Some(seen);
+            a.shot_discarded = i + 1 < total;
             let action = a.action.clone();
             let step = self.act_one(session, a).await.unwrap_or_else(Output::error);
             let failed = if step.is_error { " failed" } else { "" };
@@ -331,13 +337,15 @@ impl Computer {
             }
         }
         if out.image_b64.is_none() {
-            out.image_b64 = self.screenshot(session, list.max_edge).await?;
+            match self.screenshot(session, list.max_edge).await {
+                Ok(image) => out.image_b64 = image,
+                Err(e) => lines.push(format!("{SHOT_FAILED}: {e}")),
+            }
         }
         out.text = lines.join("\n");
         Ok(out)
     }
 
-    /// Runs one action: a launch, or an input action.
     async fn act_one(&self, session: &str, a: ActArgs) -> Result<Output, String> {
         if a.action == "launch_app" {
             return self.launch(session, &a).await;
@@ -360,16 +368,17 @@ impl Computer {
             return Ok(Output {
                 text: format!("waited {secs:.1}s"),
                 is_error: false,
-                image_b64: self.screenshot(session, a.max_edge).await?,
+                image_b64: self.step_shot(session, &a).await?,
                 ..Output::default()
             });
         }
+        let input: Turn = Arc::new(self.input.clone().lock_owned().await);
         if a.action == "type"
             && (a.text.as_deref().is_some_and(|t| !t.is_ascii())
                 || (a.element.is_none() && a.x.is_some() && a.y.is_some())
                 || self.web_pixel(session, &a).await)
         {
-            return self.type_mixed(session, &a).await;
+            return self.type_mixed(session, &a, input).await;
         }
         let (tool, mut req) = self.action_request(session, &a).await?;
         let line = req["text"]
@@ -383,7 +392,6 @@ impl Computer {
         if enter && let Some(line) = line {
             req["text"] = line.into();
         }
-        let input: Turn = Arc::new(self.input.clone().lock_owned().await);
         let before = self.before_input(Some(&a)).await;
         let once = self.once(&req);
         let target = once.as_ref().map_or(session, Owned::name);
@@ -429,16 +437,19 @@ impl Computer {
         self.end_once(once).await;
         let k = self.mapped(session, a.scale);
         let (changes, still) = self.settle(before, k).await;
-        let shot = self.settled(session, still, a.max_edge).await?;
+        let (shot, missed) = self.settled(session, still, &a).await;
         drop(input);
         let (text, is_error) = match result {
             Ok(v) => {
                 let pressed = refused
                     .map(|r| format!("\n{r}\n{PRESSED_INSTEAD}"))
                     .unwrap_or_default();
-                (shot_reply(&text_of(&v), k) + &pressed + &changes, false)
+                (
+                    shot_reply(&text_of(&v), k) + &pressed + &changes + &missed,
+                    false,
+                )
             }
-            Err(e) => (e, true),
+            Err(e) => (e + &missed, true),
         };
         Ok(Output {
             text,
@@ -477,14 +488,14 @@ impl Computer {
         })
     }
 
-    /// `region` {x, y, w, h} in the pixels of `session`'s last screenshot, at full resolution unless `max_edge` is smaller.
+    /// `region` {x, y, w, h} in the pixels of `session`'s last screenshot, else of any session's, at full resolution unless `max_edge` is smaller.
     async fn zoom(
         &self,
         session: Option<&str>,
         region: &Value,
         max_edge: Option<u32>,
     ) -> Result<Output, String> {
-        let k = session.map_or(1.0, |s| self.scale_of(s));
+        let k = session.map_or_else(|| *self.last_scale(), |s| self.scale_of(s));
         let [Some(x), Some(y), Some(w), Some(h)] = ["x", "y", "w", "h"].map(|f| region[f].as_f64())
         else {
             return Err("region needs x, y, w and h".to_owned());
@@ -498,10 +509,15 @@ impl Computer {
             per_unit: ps,
         } = match self.region_rgb(area) {
             Some(cut) => cut?,
-            None => {
-                self.captured_region(session.unwrap_or(DEFAULT_SESSION), area)
-                    .await?
-            }
+            None => match session {
+                Some(session) => self.captured_region(session, area).await?,
+                None => {
+                    let once = self.own("zoom");
+                    let cut = self.captured_region(once.name(), area).await;
+                    self.end_once(Some(once)).await;
+                    cut?
+                }
+            },
         };
         let (iw, ih, rgb) = match max_edge {
             Some(edge) if edge > 0 && edge < rw.max(rh) => fit(rw, rh, &rgb, edge),
@@ -521,11 +537,6 @@ impl Computer {
         })
     }
 
-    /// The modal dialogs that are open where the screen does not show them.
-    fn modals(&self) -> Vec<Modal> {
-        self.shm(Grabber::modals).unwrap_or_default()
-    }
-
     /// Base64 PNG of the whole desktop, scaled so its long edge is at most `max_edge`.
     async fn screenshot(
         &self,
@@ -536,23 +547,36 @@ impl Computer {
         Ok(self.capture(session, max_edge, false).await?.0)
     }
 
-    /// The screenshot after a settled input: the capture `still` the screen held still on, else a new one.
+    /// The screenshot after a settled input: the capture `still` held on, else a new one; a failed capture comes back as text.
     async fn settled(
         &self,
         session: &str,
         still: Option<Value>,
-        max_edge: Option<u32>,
-    ) -> Result<Option<String>, String> {
-        let Some(v) = still else {
-            return self.screenshot(session, max_edge).await;
+        a: &ActArgs,
+    ) -> (Option<String>, String) {
+        let shot = match still {
+            _ if a.shot_discarded => Ok(None),
+            Some(v) => {
+                self.touch();
+                Ok(self
+                    .adopt(session, &v, a.max_edge.unwrap_or(DEFAULT_EDGE), false)
+                    .0)
+            }
+            None => self.screenshot(session, a.max_edge).await,
         };
-        self.touch();
-        Ok(self
-            .adopt(session, &v, max_edge.unwrap_or(DEFAULT_EDGE), false)
-            .0)
+        match shot {
+            Ok(image) => (image, String::new()),
+            Err(e) => (None, format!("\n{SHOT_FAILED}: {e}")),
+        }
     }
 
-    /// Screenshot in a one-shot driver session that is ended right away.
+    async fn step_shot(&self, session: &str, a: &ActArgs) -> Result<Option<String>, String> {
+        if a.shot_discarded {
+            return Ok(None);
+        }
+        self.screenshot(session, a.max_edge).await
+    }
+
     async fn screenshot_once(&self, max_edge: Option<u32>) -> Result<Option<String>, String> {
         let session = self.own("shot");
         let shot = self.screenshot(session.name(), max_edge).await;
@@ -561,7 +585,6 @@ impl Computer {
         shot
     }
 
-    /// Ends a driver session, releasing its input devices.
     async fn end(&self, args: Value) -> Result<String, String> {
         let session = session_of(&args);
         self.request(&session, "end_session", json!({})).await?;
@@ -570,7 +593,7 @@ impl Computer {
         Ok(format!("ended session {session}"))
     }
 
-    /// Captures the desktop at full size and shrinks it to `max_edge` here, so the driver never rescales a later desktop click; a capture over MIT-SHM also returns the full-size pixels.
+    /// Captures the desktop at full size and shrinks it to `max_edge` here, so the driver never rescales a later desktop click.
     async fn capture(
         &self,
         session: &str,
@@ -614,10 +637,16 @@ impl Computer {
             .unwrap_or(1.0);
         self.keep_backing(state);
         let (image, ratio) = match image_of(v) {
-            Some(png) => fitted(png, edge).map_or_else(
-                || (Some(shrink(png).unwrap_or_else(|| png.to_owned())), 1.0),
-                |(image, ratio)| (Some(image), ratio),
-            ),
+            Some(png) => {
+                let data = B64.decode(png).ok();
+                data.as_deref().and_then(|d| fitted(d, edge)).map_or_else(
+                    || {
+                        let small = data.as_deref().and_then(shrink);
+                        (Some(small.unwrap_or_else(|| png.to_owned())), 1.0)
+                    },
+                    |(image, ratio)| (Some(image), ratio),
+                )
+            }
             None => (None, 1.0),
         };
         let scale = native * ratio;
@@ -626,9 +655,8 @@ impl Computer {
     }
 
     /// Types text with non-ASCII characters or at a point, which a click focuses first, in the calls [`text_runs`] cuts.
-    async fn type_mixed(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
+    async fn type_mixed(&self, session: &str, a: &ActArgs, input: Turn) -> Result<Output, String> {
         let full = a.text.as_deref().unwrap_or_default();
-        let input = self.input.lock().await;
         let before = self.before_input(Some(a)).await;
         let mut failure = None;
         if a.element.is_some() || (a.x.is_some() && a.y.is_some()) {
@@ -698,11 +726,12 @@ impl Computer {
         }
         self.end_once(once).await;
         let (changes, still) = self.settle(before, self.mapped(session, a.scale)).await;
-        let shot = self.settled(session, still, a.max_edge).await?;
+        let (shot, missed) = self.settled(session, still, a).await;
         drop(input);
         let total = full.chars().count();
-        let summary =
-            format!("typed {typed} of {total} characters; verify on the screenshot{changes}");
+        let summary = format!(
+            "typed {typed} of {total} characters; verify on the screenshot{changes}{missed}"
+        );
         Ok(Output {
             text: match &failure {
                 Some(e) => format!("{summary}; stopped: {e}"),
@@ -750,7 +779,6 @@ impl Computer {
         let text = match launched {
             Ok(text) => text,
             Err(e) => {
-                self.end_volatile();
                 if let Some(probe) = before.and_then(|b| b.probe) {
                     let _ = self.end_own(probe).await;
                 }
@@ -758,23 +786,23 @@ impl Computer {
                 return Ok(Output {
                     text: e,
                     is_error: true,
-                    image_b64: self.screenshot(session, a.max_edge).await?,
+                    image_b64: self.step_shot(session, a).await?,
                     ..Output::default()
                 });
             }
         };
         let (changes, still) = self.settle(before, self.mapped(session, a.scale)).await;
-        let shot = self.settled(session, still, a.max_edge).await?;
+        let (shot, missed) = self.settled(session, still, a).await;
         drop(input);
         Ok(Output {
-            text: text + &changes,
+            text: text + &changes + &missed,
             is_error: false,
             image_b64: shot,
             ..Output::default()
         })
     }
 
-    /// The screen before an input action: MIT-SHM pixels and block hashes with each block's past, else a thumbnail from a probe session that leaves the action session's capture context alone. A commit action `a` (see [`commits`]) in Chrome may load a page.
+    /// The screen before an input action: MIT-SHM block hashes, else a thumbnail from a probe session that leaves the action session's capture context alone.
     async fn before_input(&self, a: Option<&ActArgs>) -> Option<Before> {
         let commit = a.is_some_and(commits);
         if let Some((pixels, blocks, windows, active, page, wait)) = self.shm(|g| {
@@ -794,9 +822,10 @@ impl Computer {
             };
             Ok((pixels, blocks, g.mapped()?, active, page, wait))
         }) {
-            let volatile = self.volatile.get_or_init(Volatile::start).begin(&blocks);
+            let (volatile, paused) = self.volatile.get_or_init(Volatile::start).begin(&blocks);
             return Some(Before {
                 probe: None,
+                paused: Some(paused),
                 frame: Frame::Blocks(blocks),
                 pixels,
                 volatile,
@@ -810,6 +839,7 @@ impl Computer {
         match self.frame(probe.name()).await {
             Some((frame, _)) => Some(Before {
                 probe: Some(probe),
+                paused: None,
                 frame: Frame::Thumb(frame),
                 pixels: Vec::new(),
                 volatile: Vec::new(),
@@ -825,10 +855,11 @@ impl Computer {
         }
     }
 
-    /// Waits until the screen differs from `before` and holds still, within the wait [`Before`] carries; blocks that churn or toggle (see [`Block`], [`Shown`]) and changes under [`VISIBLE_STEP`] do not count. Returns lines naming the windows the action opened, closed or brought to the front, and the probe capture the screen held still on.
+    /// Waits until the screen differs from `before` and holds still; returns the window changes and the probe capture it held still on.
     async fn settle(&self, before: Option<Before>, scale: f64) -> (String, Option<Value>) {
         let Some(Before {
             probe,
+            paused,
             frame: first,
             pixels,
             mut volatile,
@@ -915,7 +946,7 @@ impl Computer {
                 if let (Frame::Blocks(first), Some(prev)) = (&first, prev.as_deref()) {
                     shown.learn(first, prev, blocks, &mut volatile);
                 }
-                prev = Some(blocks.clone());
+                prev.get_or_insert_default().clone_from(blocks);
             }
             if moved {
                 since = Instant::now();
@@ -928,7 +959,7 @@ impl Computer {
             };
             still = changed && since.elapsed() >= hold;
         }
-        self.end_volatile();
+        drop(paused);
         if let Some(probe) = probe {
             let _ = self.end_own(probe).await;
             return (String::new(), capture.filter(|_| still));
@@ -940,7 +971,7 @@ impl Computer {
         (report.unwrap_or_default(), None)
     }
 
-    /// The session of `agent` when its call names none; every default takes a new name once one is ended, since the driver refuses an ended name.
+    /// The session of `agent` when its call names none; once ended, it starts again on its next call (see [`Self::call`]).
     fn default_session(&self, agent: &str) -> String {
         let mut name = DEFAULT_SESSION.to_owned();
         if !agent.is_empty() {
@@ -951,10 +982,7 @@ impl Computer {
                     .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }),
             );
         }
-        match self.defaults.load(Ordering::Relaxed) {
-            0 => name,
-            n => format!("{name}-{n}"),
-        }
+        name
     }
 
     /// A driver session of its own for one step, named uniquely in this process.
@@ -976,12 +1004,6 @@ impl Computer {
 
     fn touch(&self) {
         self.volatile.get_or_init(Volatile::start).touch();
-    }
-
-    fn end_volatile(&self) {
-        if let Some(v) = self.volatile.get() {
-            v.end();
-        }
     }
 
     /// The windows that opened, closed or moved between `before` and `after`, and a new front window.
@@ -1078,7 +1100,11 @@ impl Computer {
     }
 
     fn keep_scale(&self, session: &str, scale: f64, shared: bool) {
-        self.scales().insert(session.to_owned(), scale);
+        if let Some(kept) = self.scales().get_mut(session) {
+            *kept = scale;
+        } else {
+            self.scales().insert(session.to_owned(), scale);
+        }
         if !shared {
             *self.last_scale() = scale;
         }
@@ -1090,13 +1116,14 @@ impl Computer {
         own.unwrap_or_else(|| *self.last_scale())
     }
 
-    /// Runs `read` on the MIT-SHM grabber, opening it when needed; `None` when it is unavailable or fails.
+    /// Runs `read` on the MIT-SHM grabber, opening it when needed or after the screen changed size; `None` when it is unavailable or fails.
     fn shm<T>(&self, read: impl FnOnce(&Grabber) -> Result<T, String>) -> Option<T> {
         if !cfg!(target_os = "linux") {
             return None;
         }
         let mut slot = lock(&self.grabber);
-        if slot.is_none() {
+        if !slot.as_ref().is_some_and(Grabber::current) {
+            *slot = None;
             match Grabber::open() {
                 Ok(g) => *slot = Some(g),
                 Err(e) => {
@@ -1117,23 +1144,22 @@ impl Computer {
 
     /// On-screen windows of `app`, frontmost first, matched on the app name case-insensitively.
     async fn app_windows(&self, session: &str, app: &str) -> Result<Vec<Window>, String> {
-        let windows = self
-            .request(session, "list_windows", json!({"on_screen_only": true}))
-            .await?;
-        Ok(window_list(&windows)
-            .into_iter()
-            .filter(|w| runs_app(&w.app, app))
-            .collect())
+        let mut windows = self.listed(session).await?;
+        windows.retain(|w| runs_app(&w.app, app));
+        Ok(windows)
     }
 
     /// The frontmost application window, skipping the desktop and panels.
     async fn app_window(&self, session: &str) -> Result<Option<(i64, i64)>, String> {
-        let windows = self
-            .request(session, "list_windows", json!({"on_screen_only": true}))
-            .await?;
-        Ok(self
-            .app_of(&window_list(&windows))
-            .map(|w| (w.pid, w.window_id)))
+        let windows = self.listed(session).await?;
+        Ok(self.app_of(&windows).map(|w| (w.pid, w.window_id)))
+    }
+
+    async fn listed(&self, session: &str) -> Result<Vec<Window>, String> {
+        let on_screen = json!({"on_screen_only": true});
+        Ok(window_list(
+            &self.request(session, "list_windows", on_screen).await?,
+        ))
     }
 
     /// The first of `listed` that is no dock or desktop window by its X window type.
@@ -1225,8 +1251,7 @@ impl Computer {
                 "press_key"
             }
             "hotkey" => {
-                let keys = a.keys.clone().ok_or("hotkey needs keys")?;
-                req["keys"] = keys.into();
+                req["keys"] = a.keys.as_deref().ok_or("hotkey needs keys")?.into();
                 "hotkey"
             }
             "scroll" => {
@@ -1308,26 +1333,16 @@ impl Computer {
         if tool == "type_text"
             && !enter
             && req["target"]["kind"] == "desktop"
-            && self
-                .xtest(req["text"].as_str().unwrap_or_default(), input.clone())
-                .await?
+            && xtest(
+                self.typer,
+                req["text"].as_str().unwrap_or_default(),
+                Some(input.clone()),
+            )
+            .await?
         {
             return Ok(json!({"content": [{"type": "text", "text": XTEST_TYPED}]}));
         }
         self.request(session, tool, req).await
-    }
-
-    /// Whether the typer typed `text`; it runs on a blocking thread that holds the input turn to its end and stops at its next key once this call is dropped.
-    async fn xtest(&self, text: &str, turn: Turn) -> Result<bool, String> {
-        let stop = Arc::new(AtomicBool::new(false));
-        let _cancel = Cancel(stop.clone());
-        let (text, typer) = (text.to_owned(), self.typer);
-        tokio::task::spawn_blocking(move || {
-            let _turn = turn;
-            typer(&text, &stop)
-        })
-        .await
-        .map_err(|e| format!("XTest: {e}"))?
     }
 
     /// One `verify_hit` click on the element `pressed` names, for a left click whose press failed with `e`; `e` and the refusal when the driver refuses.
@@ -1388,7 +1403,7 @@ impl Computer {
         tokio::time::sleep(RETURN_GAP).await;
     }
 
-    /// A one-call driver session for the pid-addressed input `req`, ended by [`Self::end_once`]: its virtual master keyboard would outlive the call, and while one exists Chrome drops core keyboard input from XTest and VNC.
+    /// A one-call driver session for the pid-addressed input `req`, ended by [`Self::end_once`]; a session left open keeps a virtual keyboard that makes Chrome drop core keyboard input.
     fn once(&self, req: &Value) -> Option<Owned> {
         req.get("pid").is_some().then(|| self.own("input"))
     }
@@ -1399,7 +1414,7 @@ impl Computer {
         }
     }
 
-    /// Whether keys for `window` of `pid` can go to the desktop, which skips the driver's 220 ms focus guard: on X11 the window is active and holds the input focus, and no popup of another app is open; off Linux always, since the key window is the frontmost and the driver's per-window keys miss XAML windows.
+    /// Whether keys for `window` of `pid` can go to the desktop, skipping the driver's 220 ms focus guard; off Linux always.
     fn keyboard(&self, pid: i64, window: i64) -> bool {
         let (Ok(pid), Ok(window)) = (u32::try_from(pid), u32::try_from(window)) else {
             return false;
@@ -1423,7 +1438,7 @@ impl Computer {
         web && self.element_pixel(session, index, false).await.is_some()
     }
 
-    /// The point where a pixel click reaches element `index` of `session`'s snapshot, skipping the driver's 270 ms click and an AT-SPI dispatch a modal dialog deadlocks; none unless it looks as in the snapshot (a `menu` to open need not) under its active window or an own popup, and none for LibreOffice outside menus and dialogs.
+    /// The point where a pixel click reaches element `index` of `session`'s snapshot, skipping the driver's 270 ms click; none unless the element still looks as in the snapshot.
     async fn element_pixel(&self, session: &str, index: i64, menu: bool) -> Option<(f64, f64)> {
         let last = self.last.lock().await;
         let snap = last.get(session)?;
@@ -1495,7 +1510,7 @@ impl Computer {
         self.poll_pixel(session, index, false).await
     }
 
-    /// The menu bar twin's point for an off-screen push button or menu item of a GTK app outside a web page, whose AT-SPI action can deadlock on a modal dialog; an error when none is found, `None` for any other element.
+    /// The menu bar twin's point for an off-screen button or menu item of a GTK app, whose AT-SPI action can deadlock on a modal dialog.
     async fn hidden_press(&self, session: &str, index: i64) -> Result<Option<(f64, f64)>, String> {
         let (pid, window_id, name, button, menus) = {
             let last = self.last.lock().await;
@@ -1544,7 +1559,7 @@ impl Computer {
         ))
     }
 
-    /// Opens the menu bar `menus` of `session`'s snapshot in turn and returns the point of the first shown menu item named `name` that a pixel click reaches; closes the menu when none is.
+    /// Opens the menu bar `menus` of `session`'s snapshot in turn and returns the point of the first shown menu item named `name`.
     async fn menu_twin(
         &self,
         session: &str,
@@ -1609,22 +1624,14 @@ impl Computer {
         None
     }
 
-    /// A left click at the screen point `(x, y)`.
     async fn pixel_click(&self, x: f64, y: f64) -> Result<Value, String> {
         self.desktop_input("click", json!({"x": x, "y": y})).await
     }
 
-    /// Escape to the focused window, which closes an open menu.
     async fn escape(&self) {
         let _ = self
             .desktop_input("press_key", json!({"key": "Escape"}))
             .await;
-    }
-
-    /// Whether the screen point `(x, y)` shows a window title: a desktop panel or a window manager's title bar.
-    fn title_at(&self, x: f64, y: f64) -> bool {
-        self.shm(|g| g.title_at(x.round() as i32, y.round() as i32))
-            .unwrap_or(false)
     }
 
     /// The screen rectangle `[x, y, w, h]` clipped to the screen, and its RGB rows over MIT-SHM; none without MIT-SHM.
@@ -1748,11 +1755,13 @@ impl Computer {
     }
 
     /// One driver call, sent once more after starting `session` again when the driver had ended it; a result the driver marks isError comes back as is.
-    async fn call(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
-        let mut v = self.reply(session, name, args.clone()).await?;
+    async fn call(&self, session: &str, name: &str, mut args: Value) -> Result<Value, String> {
+        args["session"] = session.into();
+        let mut v = self.reply(name, &args).await?;
         if name != "end_session" && v["error"].as_str().is_some_and(|e| e.contains(ENDED)) {
-            self.reply(session, "start_session", json!({})).await?;
-            v = self.reply(session, name, args).await?;
+            self.reply("start_session", &json!({"session": session}))
+                .await?;
+            v = self.reply(name, &args).await?;
         }
         if v["ok"] != true {
             return Err(format!(
@@ -1764,28 +1773,29 @@ impl Computer {
     }
 
     /// The driver's decoded reply to one call.
-    async fn reply(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
-        let foreground = self.driver.admit(name, &args)?;
-        let retry = RETRIED.contains(&name).then(|| args.clone());
-        let sent = self.exchange(session, name, args).await;
+    async fn reply(&self, name: &str, args: &Value) -> Result<Value, String> {
+        let foreground = self.driver.admit(name, args)?;
+        let sent = self.exchange(name, args).await;
         if foreground {
             self.driver.stamp();
         }
         let mut reply = sent?;
-        if let Some(args) = retry.filter(|_| reply.trim().is_empty()) {
+        if RETRIED.contains(&name) && reply.trim().is_empty() {
             tokio::time::sleep(CONNECT_RETRY).await;
-            reply = self.exchange(session, name, args).await?;
+            reply = self.exchange(name, args).await?;
         }
         serde_json::from_str::<Value>(&reply).map_err(|e| format!("decode cua-driver reply: {e}"))
     }
 
     /// Sends one call and returns the raw reply line, empty when the driver closed without one.
-    async fn exchange(&self, session: &str, name: &str, args: Value) -> Result<String, String> {
+    async fn exchange(&self, name: &str, args: &Value) -> Result<String, String> {
         let exchange = async {
             let mut stream = self.driver.connect().await?;
-            let mut line = json!({"method": "call", "name": name});
-            line["args"] = args;
-            line["args"]["session"] = session.into();
+            let line = Request {
+                method: "call",
+                name,
+                args,
+            };
             let mut bytes = serde_json::to_vec(&line).map_err(|e| format!("encode: {e}"))?;
             bytes.push(b'\n');
             stream
@@ -1807,8 +1817,8 @@ impl Computer {
 
 struct Before {
     probe: Option<Owned>,
+    paused: Option<Paused>,
     frame: Frame,
-    /// The BGRX pixels of a [`Frame::Blocks`].
     pixels: Vec<u8>,
     /// Per block of a [`Frame::Blocks`], what it did before the action.
     volatile: Vec<Block>,
@@ -1844,7 +1854,7 @@ impl Drop for Owned {
         let (driver, session) = (Arc::clone(&self.driver), std::mem::take(&mut self.name));
         rt.spawn(async move {
             let _ = driver
-                .send("end_session", &json!({"session": session}))
+                .send("end_session", &Value::from_iter([("session", session)]))
                 .await;
         });
     }
@@ -1954,6 +1964,8 @@ struct ActArgs {
     /// Screen pixels per pixel of the screenshot the caller saw, in place of the session's latest.
     #[serde(default)]
     scale: Option<f64>,
+    #[serde(skip)]
+    shot_discarded: bool,
 }
 
 #[derive(Deserialize)]
@@ -1999,10 +2011,6 @@ fn positive(scale: Option<f64>) -> Result<(), String> {
         }
         _ => Ok(()),
     }
-}
-
-fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn before_newline(text: &str) -> Option<&str> {
@@ -2113,7 +2121,6 @@ fn confirms(a: &ActArgs) -> bool {
     combo(a).is_some_and(|k| ["return", "enter", "kp_enter"].contains(&k.as_str()))
 }
 
-/// Whether process `pid` has GTK loaded.
 fn gtk(pid: i64) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/maps")).is_ok_and(|maps| {
         maps.contains("/libgtk-3.so")
@@ -2136,9 +2143,7 @@ fn clicks_left(a: &ActArgs) -> bool {
 fn commits(a: &ActArgs) -> bool {
     match a.action.as_str() {
         "type" => a.text.as_deref().is_some_and(|t| t.ends_with(['\n', '\r'])),
-        "click" | "double_click" | "triple_click" => {
-            a.button.as_deref().is_none_or(|b| b == "left")
-        }
+        _ if clicks_left(a) => true,
         _ => combo(a).is_some_and(|k| COMMIT_KEYS.contains(&k.as_str())),
     }
 }
@@ -2183,10 +2188,6 @@ fn window_list(result: &Value) -> Vec<Window> {
         .collect();
     out.sort_by_key(|w| std::cmp::Reverse(w.z));
     out
-}
-
-fn window_id_of(state: &Value) -> Option<i64> {
-    state["structuredContent"]["window_id"].as_i64()
 }
 
 /// `text` without U+FFFC, which accessibility text holds where an embedded object (an image, a widget) sits.
@@ -2371,10 +2372,9 @@ fn shot_points(text: &str, scale: f64) -> String {
     out
 }
 
-/// The opaque RGBA PNG `b64` re-encoded at the same size by [`encode`]; `None` when that is not smaller.
-fn shrink(b64: &str) -> Option<String> {
-    let data = B64.decode(b64).ok()?;
-    let (info, rgba) = decode_png(&data)?;
+/// The opaque RGBA PNG `data` re-encoded at the same size by [`encode`]; `None` when that is not smaller.
+fn shrink(data: &[u8]) -> Option<String> {
+    let (info, rgba) = decode_png(data)?;
     if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
         return None;
     }
@@ -2390,14 +2390,13 @@ fn rgb(rgba: &[u8]) -> Vec<u8> {
     rgb
 }
 
-/// The PNG `b64` shrunk by [`lanczos`] so its long edge is `edge` and made by [`encode`], with its pixels per image pixel; none when it is no larger.
-fn fitted(b64: &str, edge: u32) -> Option<(String, f64)> {
-    let data = B64.decode(b64).ok()?;
-    let (_, w, h) = image_size(&data)?;
+/// The PNG `data` shrunk by [`lanczos`] so its long edge is `edge` and made by [`encode`], with its pixels per image pixel; none when it is no larger.
+fn fitted(data: &[u8], edge: u32) -> Option<(String, f64)> {
+    let (_, w, h) = image_size(data)?;
     if edge == 0 || edge >= w.max(h) {
         return None;
     }
-    let (info, rgba) = decode_png(&data)?;
+    let (info, rgba) = decode_png(data)?;
     let (tw, th, small) = lanczos(&info, &rgba, edge)?;
     let image = encode(tw, th, &rgb(&small))?;
     Some((B64.encode(image), f64::from(w) / f64::from(tw)))
@@ -2425,9 +2424,13 @@ fn lanczos(info: &png::OutputInfo, rgba: &[u8], edge: u32) -> Option<(u32, u32, 
 
 /// The format, pixel size, bytes and estimated input tokens of the base64 image `b64`.
 fn weigh(b64: &str) -> String {
-    let data = B64.decode(b64).unwrap_or_default();
-    let kb = data.len().div_ceil(1024);
-    match image_size(&data) {
+    let b64 = b64.as_bytes();
+    let padding = b64.iter().rev().take_while(|&&c| c == b'=').count();
+    let kb = (b64.len() / 4 * 3).saturating_sub(padding).div_ceil(1024);
+    let head = B64
+        .decode(&b64[..b64.len().min(HEAD_CHARS)])
+        .unwrap_or_default();
+    match image_size(&head).or_else(|| image_size(&B64.decode(b64).ok()?)) {
         Some((format, w, h)) => format!(
             "{w}x{h} {format}, {kb} KB, about {} input tokens",
             (w * h).div_ceil(PIXELS_PER_TOKEN)
@@ -2631,6 +2634,21 @@ mod tests {
         }
     }
 
+    impl Fake {
+        async fn serve(self, mut answer: impl FnMut(&Value) -> Value) {
+            loop {
+                let (stream, ()) = self.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let mut out = serde_json::to_vec(&answer(&req)).unwrap();
+                out.push(b'\n');
+                reader.into_inner().write_all(&out).await.unwrap();
+            }
+        }
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn computer_input_takes_the_same_user_check_and_counts_as_the_drivers_own() {
@@ -2686,6 +2704,22 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("needs the foreground"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_computer_call_whose_args_are_not_an_object_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let cua = cua(&dir.path().join("none.sock"));
+        for tool in [
+            "desk_computer_state",
+            "desk_computer_act",
+            "desk_computer_end",
+        ] {
+            for args in [json!([1]), json!(7), json!("x"), json!(true)] {
+                let err = cua.run("a", tool, args).await.unwrap_err();
+                assert_eq!(err, format!("{tool}: args are not an object"));
+            }
+        }
     }
 
     #[tokio::test]
@@ -2877,13 +2911,7 @@ mod tests {
     ) -> tokio::task::JoinHandle<()> {
         let listener = Fake::bind(socket).unwrap();
         let log = std::sync::Arc::clone(calls);
-        tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
+        tokio::spawn(listener.serve(move |req| {
                 let text = req["args"]["text"].as_str().unwrap_or_default().to_owned();
                 let types = log
                     .lock()
@@ -2901,12 +2929,9 @@ mod tests {
                     }
                     _ => json!({"ok": true, "result": {"structuredContent": {}}}),
                 };
-                log.lock().unwrap().push(req);
-                let mut out = reply.to_string().into_bytes();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
-            }
-        })
+                log.lock().unwrap().push(req.clone());
+                reply
+        }))
     }
 
     #[tokio::test]
@@ -3042,6 +3067,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_computer_action_waits_while_a_desk_action_holds_the_shared_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        let desk = crate::desk::Desk::new(
+            || Ok(crate::desk::tests::notepad()),
+            Arc::new(Driver::new(socket.to_string_lossy().into_owned())),
+            Os::Linux,
+        );
+        let cua = cua(&socket).turn(desk.turn());
+        let held = desk.turn().lock_owned().await;
+        let act = json!({"action": "key", "key": "escape"});
+        let waited = tokio::time::timeout(Duration::from_millis(200), cua.act(act.clone())).await;
+        assert!(waited.is_err());
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "{:?}",
+            calls.lock().unwrap()
+        );
+        drop(held);
+        assert!(!cua.act(act).await.unwrap().is_error);
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn an_action_takes_the_input_turn_before_any_driver_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        let cua = cua(&socket);
+        let held = turn(&cua).await;
+        for act in [
+            json!({"action": "key", "key": "escape"}),
+            json!({"action": "type", "text": "héllo"}),
+        ] {
+            let waited = tokio::time::timeout(Duration::from_millis(200), cua.act(act)).await;
+            assert!(waited.is_err());
+        }
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "{:?}",
+            calls.lock().unwrap()
+        );
+        drop(held);
+        let out = cua
+            .act(json!({"action": "key", "key": "escape"}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        driver.abort();
+    }
+
+    #[tokio::test]
     async fn pid_addressed_input_a_dialog_line_and_cjk_never_reach_the_typer() {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
@@ -3058,11 +3138,14 @@ mod tests {
             .await
             .unwrap();
         let out = cua
-            .act(json!({"action": "type", "text": "中文测试"}))
+            .act(json!({"action": "type", "text": "\u{4e2d}\u{6587}\u{6d4b}\u{8bd5}"}))
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.text);
-        assert_eq!(types(&calls), ["abc", "name", "中文测试"]);
+        assert_eq!(
+            types(&calls),
+            ["abc", "name", "\u{4e2d}\u{6587}\u{6d4b}\u{8bd5}"]
+        );
         driver.abort();
     }
 
@@ -3072,7 +3155,7 @@ mod tests {
         let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
-        let text = "一二三四五六七八九十百千万亿甲乙丙丁戊己";
+        let text = "\u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}\u{516d}\u{4e03}\u{516b}\u{4e5d}\u{5341}\u{767e}\u{5343}\u{4e07}\u{4ebf}\u{7532}\u{4e59}\u{4e19}\u{4e01}\u{620a}\u{5df1}";
         calls.lock().unwrap().clear();
         let cua = cua(&socket);
         let out = cua
@@ -3111,13 +3194,7 @@ mod tests {
     ) -> tokio::task::JoinHandle<()> {
         let listener = Fake::bind(socket).unwrap();
         let log = std::sync::Arc::clone(calls);
-        tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
+        tokio::spawn(listener.serve(move |req| {
                 let reply = match req["name"].as_str().unwrap_or_default() {
                     "list_windows" if hit == "windowless" => {
                         json!({"ok": true, "result": {"structuredContent": {"windows": []}}})
@@ -3158,12 +3235,9 @@ mod tests {
                     }
                     _ => json!({"ok": true, "result": {"structuredContent": {}}}),
                 };
-                log.lock().unwrap().push(req);
-                let mut out = reply.to_string().into_bytes();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
-            }
-        })
+                log.lock().unwrap().push(req.clone());
+                reply
+        }))
     }
 
     #[tokio::test]
@@ -3389,24 +3463,14 @@ mod tests {
         let socket = endpoint(dir.path());
         let listener = Fake::bind(&socket).unwrap();
         let image = png_of(8, 4, &[200; 8 * 4 * 4]);
-        let driver = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
-                let reply = match req["name"].as_str().unwrap_or_default() {
+        let driver = tokio::spawn(listener.serve(move |req| {
+                match req["name"].as_str().unwrap_or_default() {
                     "get_desktop_state" => {
                         json!({"ok": true, "result": {"content": [{"type": "image", "data": image, "mimeType": "image/png"}], "structuredContent": {"screen_width": 4, "screen_height": 2}}})
                     }
                     _ => json!({"ok": true, "result": {"structuredContent": {}}}),
-                };
-                let mut out = reply.to_string().into_bytes();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
-            }
-        });
+                }
+        }));
         let cua = cua(&socket);
         let out = cua
             .look(&json!({"region": {"x": 1, "y": 0, "w": 2, "h": 1}, "max_edge": 0}))
@@ -3422,38 +3486,88 @@ mod tests {
         driver.abort();
     }
 
+    fn shot_driver(
+        socket: &Path,
+        calls: &std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    ) -> tokio::task::JoinHandle<()> {
+        let listener = Fake::bind(socket).unwrap();
+        let log = std::sync::Arc::clone(calls);
+        let full = full_shot(2048, 1280, 2048);
+        tokio::spawn(listener.serve(move |req| {
+            let name = req["name"].as_str().unwrap_or_default().to_owned();
+            let session = req["args"]["session"].as_str().unwrap_or_default();
+            log.lock().unwrap().push((name.clone(), session.to_owned()));
+            match name.as_str() {
+                "get_desktop_state" => full.clone(),
+                _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+            }
+        }))
+    }
+
+    #[tokio::test]
+    async fn a_region_without_a_session_maps_by_the_latest_screenshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = shot_driver(&socket, &calls);
+        let cua = cua(&socket);
+        cua.look(&json!({})).await.unwrap();
+        let region = json!({"region": {"x": 10, "y": 10, "w": 10, "h": 10}, "max_edge": 0});
+        let out = cua.look(&region).await.unwrap();
+        assert!(out.text.contains("20x20"), "{}", out.text);
+        assert!(
+            out.text.contains("x = 10 + px*0.50, y = 10 + py*0.50"),
+            "{}",
+            out.text
+        );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_region_without_a_session_captures_in_a_session_of_its_own_and_ends_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = shot_driver(&socket, &calls);
+        let cua = cua(&socket);
+        let region = json!({"region": {"x": 0, "y": 0, "w": 10, "h": 10}});
+        cua.look(&region).await.unwrap();
+        let calls = calls.lock().unwrap().clone();
+        let captured = calls
+            .iter()
+            .find(|(n, _)| n == "get_desktop_state")
+            .map(|(_, s)| s.clone())
+            .unwrap();
+        assert!(captured.starts_with("zoom-"), "{calls:?}");
+        assert!(
+            calls.contains(&("end_session".to_owned(), captured)),
+            "{calls:?}"
+        );
+        driver.abort();
+    }
+
     #[tokio::test]
     async fn a_driver_without_frame_scale_maps_by_its_screen_and_screenshot_widths() {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let listener = Fake::bind(&socket).unwrap();
-        let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(f64, f64)>::new()));
+        let clicks = Clicks::default();
         let log = std::sync::Arc::clone(&clicks);
         let full = full_shot(1280, 800, 640);
-        let driver = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
-                let args = &req["args"];
-                let reply = match req["name"].as_str().unwrap_or_default() {
-                    "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
-                    name => {
-                        if name == "click" {
-                            log.lock()
-                                .unwrap()
-                                .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
-                        }
-                        json!({"ok": true, "result": {"structuredContent": {}}})
+        let driver = tokio::spawn(listener.serve(move |req| {
+            let args = &req["args"];
+            match req["name"].as_str().unwrap_or_default() {
+                "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
+                name => {
+                    if name == "click" {
+                        log.lock()
+                            .unwrap()
+                            .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
                     }
-                };
-                let mut out = serde_json::to_vec(&reply).unwrap();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
+                    json!({"ok": true, "result": {"structuredContent": {}}})
+                }
             }
-        });
+        }));
         let cua = cua(&socket);
         cua.state(json!({})).await.unwrap();
         let out = cua
@@ -3470,33 +3584,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let listener = Fake::bind(&socket).unwrap();
-        let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(f64, f64)>::new()));
+        let clicks = Clicks::default();
         let log = std::sync::Arc::clone(&clicks);
         let full = full_shot(1280, 800, 1280);
-        let driver = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
-                let args = &req["args"];
-                let reply = match req["name"].as_str().unwrap_or_default() {
-                    "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
-                    name => {
-                        if name == "click" {
-                            log.lock()
-                                .unwrap()
-                                .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
-                        }
-                        json!({"ok": true, "result": {"structuredContent": {}}})
+        let driver = tokio::spawn(listener.serve(move |req| {
+            let args = &req["args"];
+            match req["name"].as_str().unwrap_or_default() {
+                "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
+                name => {
+                    if name == "click" {
+                        log.lock()
+                            .unwrap()
+                            .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
                     }
-                };
-                let mut out = serde_json::to_vec(&reply).unwrap();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
+                    json!({"ok": true, "result": {"structuredContent": {}}})
+                }
             }
-        });
+        }));
         let cua = cua(&socket);
         let click = |x: f64| json!({"action": "click", "x": x, "y": 30.0});
         cua.state(json!({"max_edge": 0})).await.unwrap();
@@ -3515,6 +3619,35 @@ mod tests {
                 (220.0, 60.0)
             ]
         );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn an_action_list_captures_the_screen_after_its_last_action_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let shots = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let log = std::sync::Arc::clone(&shots);
+        let full = full_shot(64, 40, 64);
+        let driver = tokio::spawn(listener.serve(move |req| {
+            let session = req["args"]["session"].as_str().unwrap_or_default();
+            match req["name"].as_str().unwrap_or_default() {
+                "get_desktop_state" => {
+                    if !session.starts_with("still-") {
+                        log.lock().unwrap().push(session.to_owned());
+                    }
+                    full.clone()
+                }
+                _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+            }
+        }));
+        let cua = cua(&socket);
+        let click = |x: f64| json!({"action": "click", "x": x, "y": 10.0, "session": "s"});
+        let list = json!({"actions": [click(1.0), click(2.0), click(3.0)], "session": "s"});
+        let out = cua.act(list).await.unwrap();
+        assert!(!out.is_error && out.image_b64.is_some(), "{}", out.text);
+        assert_eq!(*shots.lock().unwrap(), ["s"]);
         driver.abort();
     }
 
@@ -3620,20 +3753,14 @@ mod tests {
         let listener = Fake::bind(&socket).unwrap();
         let landed = Landed::default();
         let log = std::sync::Arc::clone(&landed);
-        let driver = tokio::spawn(async move {
-            let mut factors = HashMap::<String, f64>::new();
-            let (mut ended, mut idle_ends) = (HashSet::<String>::new(), idle_ends);
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
+        let mut factors = HashMap::<String, f64>::new();
+        let (mut ended, mut idle_ends) = (HashSet::<String>::new(), idle_ends);
+        let driver = tokio::spawn(listener.serve(move |req| {
                 let args = &req["args"];
                 let session = args["session"].as_str().unwrap_or_default().to_owned();
                 let windowless = args["pid"].is_null() && args["element_token"].is_null();
                 let refused = |text: &str| json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": text}]}});
-                let reply = match req["name"].as_str().unwrap_or_default() {
+                match req["name"].as_str().unwrap_or_default() {
                     name if ended.contains(&session) && name != "start_session" => {
                         json!({"ok": false, "error": format!("session has ended; tool call '{name}' was rejected")})
                     }
@@ -3699,12 +3826,8 @@ mod tests {
                         }
                         json!({"ok": true, "result": {"content": [{"type": "text", "text": text}]}})
                     }
-                };
-                let mut out = serde_json::to_vec(&reply).unwrap();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
-            }
-        });
+                }
+        }));
         (socket, landed, driver)
     }
 
@@ -3716,33 +3839,23 @@ mod tests {
         let full = full_shot(1280, 800, 1280);
         let captures = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, Value)>::new()));
         let log = std::sync::Arc::clone(&captures);
-        let driver = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
-                let args = &req["args"];
-                let reply = match req["name"].as_str().unwrap_or_default() {
-                    "get_desktop_state" => {
-                        let session = args["session"].as_str().unwrap_or_default().to_owned();
-                        log.lock()
-                            .unwrap()
-                            .push((session, args["max_image_dimension"].clone()));
-                        if args["max_image_dimension"] == 0 {
-                            full.clone()
-                        } else {
-                            json!({"ok": true, "result": {"structuredContent": {}}})
-                        }
+        let driver = tokio::spawn(listener.serve(move |req| {
+            let args = &req["args"];
+            match req["name"].as_str().unwrap_or_default() {
+                "get_desktop_state" => {
+                    let session = args["session"].as_str().unwrap_or_default().to_owned();
+                    log.lock()
+                        .unwrap()
+                        .push((session, args["max_image_dimension"].clone()));
+                    if args["max_image_dimension"] == 0 {
+                        full.clone()
+                    } else {
+                        json!({"ok": true, "result": {"structuredContent": {}}})
                     }
-                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
-                };
-                let mut out = serde_json::to_vec(&reply).unwrap();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
+                }
+                _ => json!({"ok": true, "result": {"structuredContent": {}}}),
             }
-        });
+        }));
         let cua = cua_on(&socket, Os::Windows);
         cua.state(json!({})).await.unwrap();
         let out = cua
@@ -3766,40 +3879,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let listener = Fake::bind(&socket).unwrap();
-        let light = full_shot(1280, 800, 1280);
+        let light = full_shot(1280, 16, 1280);
         let mut dark = light.clone();
-        dark["result"]["content"][0]["data"] = png_of(1280, 800, &vec![0; 1280 * 800 * 4]).into();
+        dark["result"]["content"][0]["data"] = png_of(1280, 16, &vec![0; 1280 * 16 * 4]).into();
         let captures = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let log = std::sync::Arc::clone(&captures);
-        let driver = tokio::spawn(async move {
-            let mut probes = 0;
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
-                let session = req["args"]["session"].as_str().unwrap_or_default();
-                let reply = match req["name"].as_str().unwrap_or_default() {
-                    "get_desktop_state" if session.starts_with("still-") => {
-                        probes += 1;
-                        if probes == 1 {
-                            light.clone()
-                        } else {
-                            dark.clone()
-                        }
-                    }
-                    "get_desktop_state" => {
-                        log.lock().unwrap().push(session.to_owned());
+        let mut probes = 0;
+        let driver = tokio::spawn(listener.serve(move |req| {
+            let session = req["args"]["session"].as_str().unwrap_or_default();
+            match req["name"].as_str().unwrap_or_default() {
+                "get_desktop_state" if session.starts_with("still-") => {
+                    probes += 1;
+                    if probes == 1 {
                         light.clone()
+                    } else {
+                        dark.clone()
                     }
-                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
-                };
-                let mut out = serde_json::to_vec(&reply).unwrap();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
+                }
+                "get_desktop_state" => {
+                    log.lock().unwrap().push(session.to_owned());
+                    light.clone()
+                }
+                _ => json!({"ok": true, "result": {"structuredContent": {}}}),
             }
-        });
+        }));
         let cua = cua_on(&socket, Os::Windows);
         cua.state(json!({})).await.unwrap();
         let out = cua
@@ -3809,7 +3912,7 @@ mod tests {
         assert!(!out.is_error, "{}", out.text);
         let image = B64.decode(out.image_b64.unwrap()).unwrap();
         let mut webp = image_webp::WebPDecoder::new(std::io::Cursor::new(&image)).unwrap();
-        assert_eq!(webp.dimensions(), (1024, 640));
+        assert_eq!(webp.dimensions(), (1024, 12));
         let mut rgb = vec![1; webp.output_buffer_size().unwrap()];
         webp.read_image(&mut rgb).unwrap();
         assert!(rgb.iter().all(|c| *c == 0));
@@ -3830,6 +3933,24 @@ mod tests {
             "{:?}",
             shot.map(|o| o.text)
         );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn an_action_whose_screenshot_fails_still_reports_that_it_ran() {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, landed, driver) = retina_driver(dir.path(), true, false);
+        let cua = cua_on(&socket, Os::Mac);
+        let click = json!({"action": "click", "x": 10.0, "y": 5.0});
+        let one = cua.act(click.clone()).await.unwrap();
+        assert!(!one.is_error && one.image_b64.is_none(), "{}", one.text);
+        assert!(one.text.contains("the display is asleep"), "{}", one.text);
+        let list = cua
+            .act(json!({"actions": [click.clone(), click]}))
+            .await
+            .unwrap();
+        assert!(!list.is_error, "{}", list.text);
+        assert_eq!(landed.lock().unwrap().len(), 3);
         driver.abort();
     }
 
@@ -3906,33 +4027,23 @@ mod tests {
     fn scaling_driver(dir: &Path) -> (PathBuf, Clicks, tokio::task::JoinHandle<()>) {
         let socket = endpoint(dir);
         let listener = Fake::bind(&socket).unwrap();
-        let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(f64, f64)>::new()));
+        let clicks = Clicks::default();
         let log = std::sync::Arc::clone(&clicks);
         let full = full_shot(1280, 800, 1280);
-        let driver = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
-                let args = &req["args"];
-                let reply = match req["name"].as_str().unwrap_or_default() {
-                    "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
-                    name => {
-                        if name == "click" {
-                            log.lock()
-                                .unwrap()
-                                .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
-                        }
-                        json!({"ok": true, "result": {"structuredContent": {}}})
+        let driver = tokio::spawn(listener.serve(move |req| {
+            let args = &req["args"];
+            match req["name"].as_str().unwrap_or_default() {
+                "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
+                name => {
+                    if name == "click" {
+                        log.lock()
+                            .unwrap()
+                            .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
                     }
-                };
-                let mut out = serde_json::to_vec(&reply).unwrap();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
+                    json!({"ok": true, "result": {"structuredContent": {}}})
+                }
             }
-        });
+        }));
         (socket, clicks, driver)
     }
 
@@ -3942,15 +4053,9 @@ mod tests {
         let socket = endpoint(dir.path());
         let listener = Fake::bind(&socket).unwrap();
         let full = full_shot(1280, 800, 1280);
-        let driver = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
+        let driver = tokio::spawn(listener.serve(move |req| {
                 let args = &req["args"];
-                let reply = match req["name"].as_str().unwrap_or_default() {
+                match req["name"].as_str().unwrap_or_default() {
                     "list_windows" => {
                         json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Mousepad", "title": "notes", "bounds": {"x": 100, "y": 50, "width": 640, "height": 480}, "z_index": 1}]}}})
                     }
@@ -3963,12 +4068,8 @@ mod tests {
                         json!({"ok": true, "result": {"content": [{"type": "text", "text": text}]}})
                     }
                     _ => json!({"ok": true, "result": {"structuredContent": {}}}),
-                };
-                let mut out = serde_json::to_vec(&reply).unwrap();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
-            }
-        });
+                }
+        }));
         let cua = cua(&socket);
         let state = cua.state(json!({})).await.unwrap();
         assert!(
@@ -4054,14 +4155,8 @@ mod tests {
         let listener = Fake::bind(&socket).unwrap();
         let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
         let log = std::sync::Arc::clone(&sent);
-        let driver = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
-                let reply = match req["name"].as_str().unwrap_or_default() {
+        let driver = tokio::spawn(listener.serve(move |req| {
+                match req["name"].as_str().unwrap_or_default() {
                     "list_windows" => {
                         json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Notepad.exe", "title": "notes", "bounds": {"x": 0, "y": 0, "width": 800, "height": 600}, "z_index": 1}]}}})
                     }
@@ -4070,12 +4165,8 @@ mod tests {
                         json!({"ok": true, "result": {}})
                     }
                     _ => json!({"ok": true, "result": {"structuredContent": {}}}),
-                };
-                let mut out = reply.to_string().into_bytes();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
-            }
-        });
+                }
+        }));
         let cua = cua_on(&socket, Os::Mac);
         cua.act(json!({"action": "key", "key": "escape"}))
             .await
@@ -4115,28 +4206,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn callers_without_a_session_get_their_own_and_an_ended_default_is_named_anew() {
+    async fn callers_without_a_session_get_their_own_and_an_ended_default_starts_again() {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let listener = Fake::bind(&socket).unwrap();
         let sessions = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
         let log = std::sync::Arc::clone(&sessions);
-        let driver = tokio::spawn(async move {
-            let mut ended = Vec::<String>::new();
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
+        let mut ended = Vec::<String>::new();
+        let driver = tokio::spawn(listener.serve(move |req| {
                 let name = req["name"].as_str().unwrap_or_default().to_owned();
                 let session = req["args"]["session"]
                     .as_str()
                     .unwrap_or_default()
                     .to_owned();
                 log.lock().unwrap().push((name.clone(), session.clone()));
-                let reply = if ended.contains(&session) {
-                    json!({"ok": false, "error": format!("session {session} ended")})
+                if name == "start_session" {
+                    ended.retain(|s| *s != session);
+                    json!({"ok": true, "result": {}})
+                } else if ended.contains(&session) {
+                    json!({"ok": false, "error": format!("session has ended; tool call '{name}' was rejected")})
                 } else if name == "end_session" {
                     ended.push(session);
                     json!({"ok": true, "result": {}})
@@ -4146,12 +4234,8 @@ mod tests {
                     json!({"ok": true, "result": {"structuredContent": {"elements": [{"element_index": 0, "element_token": "t0", "role": "push button", "label": "OK"}]}}})
                 } else {
                     json!({"ok": true, "result": {"structuredContent": {}}})
-                };
-                let mut out = reply.to_string().into_bytes();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
-            }
-        });
+                }
+        }));
         let cua = cua(&socket);
         let state = |agent: &'static str| cua.run(agent, "desk_computer_state", json!({}));
         state("a").await.unwrap();
@@ -4172,15 +4256,20 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(foreign, "no element list yet; call computer_state first");
-        let own = cua.run(
-            "a",
-            "desk_computer_act",
-            json!({"action": "click", "element": 0}),
-        );
-        assert!(!own.await.unwrap().is_error);
+        state("b:c").await.unwrap();
+        let click = |agent| {
+            cua.run(
+                agent,
+                "desk_computer_act",
+                json!({"action": "click", "element": 0}),
+            )
+        };
+        assert!(!click("a").await.unwrap().is_error);
         cua.run("a", "desk_computer_end", Value::Null)
             .await
             .unwrap();
+        let kept = click("b:c").await.unwrap();
+        assert!(!kept.is_error, "{}", kept.text);
         let again = state("a").await.unwrap();
         assert!(!again.is_error, "{}", again.text);
         let named: Vec<String> = sessions
@@ -4193,7 +4282,14 @@ mod tests {
             .collect();
         assert_eq!(
             named,
-            ["computer-a", "computer-b-c", "computer-a", "computer-a-1"]
+            [
+                "computer-a",
+                "computer-b-c",
+                "computer-b-c",
+                "computer-a",
+                "computer-a",
+                "computer-a"
+            ]
         );
         driver.abort();
     }
@@ -4333,7 +4429,7 @@ mod tests {
             })
             .collect();
         let driver = fast_png(w, h, &flat);
-        let small = B64.decode(shrink(&B64.encode(&driver)).unwrap()).unwrap();
+        let small = B64.decode(shrink(&driver).unwrap()).unwrap();
         assert!(small.len() < driver.len());
         let mut webp = image_webp::WebPDecoder::new(std::io::Cursor::new(&small)).unwrap();
         assert_eq!((webp.dimensions(), webp.has_alpha()), ((w, h), false));
@@ -4346,7 +4442,7 @@ mod tests {
             .flat_map(|p| [p[0], p[1], p[2]])
             .collect();
         assert_eq!(decoded, rgb);
-        assert!(shrink("iVBORw0KGgoAAAANSUhEUg==").is_none());
+        assert!(shrink(&B64.decode("iVBORw0KGgoAAAANSUhEUg==").unwrap()).is_none());
 
         let mut seed = 7u32;
         let noise: Vec<u8> = (0..w * h * 4)
@@ -4356,7 +4452,7 @@ mod tests {
             })
             .collect();
         let photo = B64
-            .decode(shrink(&B64.encode(fast_png(w, h, &noise))).unwrap())
+            .decode(shrink(&fast_png(w, h, &noise)).unwrap())
             .unwrap();
         assert!(photo.starts_with(&[0xff, 0xd8]), "{:?}", &photo[..4]);
     }
@@ -4444,7 +4540,9 @@ mod tests {
 
     #[test]
     fn fitted_shrinks_a_full_size_capture_to_the_long_edge_and_leaves_a_small_one() {
-        let png = png_of(64, 32, &[30, 120, 200, 255].repeat(64 * 32));
+        let png = B64
+            .decode(png_of(64, 32, &[30, 120, 200, 255].repeat(64 * 32)))
+            .unwrap();
         let (image, ratio) = fitted(&png, 16).unwrap();
         assert_eq!(ratio, 4.0);
         let data = B64.decode(image).unwrap();
@@ -4662,11 +4760,14 @@ mod tests {
 
     #[test]
     fn a_failed_type_counts_the_characters_that_landed() {
-        let mpx = json!({"isError": true, "content": [{"type": "text", "text": "Typed 5 character(s)"}], "structuredContent": {"skipped_characters": "三四"}});
-        assert_eq!(landed("一二三四五", &mpx), 3);
+        let mpx = json!({"isError": true, "content": [{"type": "text", "text": "Typed 5 character(s)"}], "structuredContent": {"skipped_characters": "\u{4e09}\u{56db}"}});
+        assert_eq!(landed("\u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}", &mpx), 3);
         let xtest = json!({"isError": true, "content": [{"type": "text", "text": "type_text failed: typed 2 of 5 characters: no spare keycode"}]});
-        assert_eq!(landed("一二三四五", &xtest), 2);
-        assert_eq!(landed("一二", &json!({"isError": true})), 0);
+        assert_eq!(
+            landed("\u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}", &xtest),
+            2
+        );
+        assert_eq!(landed("\u{4e00}\u{4e8c}", &json!({"isError": true})), 0);
     }
 
     #[test]

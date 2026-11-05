@@ -1,4 +1,4 @@
-//! Volatile screen blocks: the ones that change while no action runs, such as a clock, a caret, a spinner or a video, learned from a low-rate MIT-SHM sampler that runs while tools are in use.
+//! Volatile screen blocks, such as a clock, a caret or a spinner, learned from a low-rate MIT-SHM sampler.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -31,7 +31,7 @@ impl Shown {
             if n == f
                 && let Some(b) = blocks.get_mut(i)
             {
-                *b = merge(std::mem::take(b), &Block::Toggling(states.clone()));
+                *b = merge(std::mem::take(b), Block::Toggling(states.clone()));
             }
         }
     }
@@ -43,16 +43,17 @@ pub struct Volatile {
 }
 
 impl Volatile {
-    /// Starts the sampler thread, which samples only within [`IDLE`] of a [`Volatile::touch`].
+    /// Starts the sampler thread where MIT-SHM exists, which samples only within [`IDLE`] of a [`Volatile::touch`].
     pub fn start() -> Self {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             wake: Condvar::new(),
         });
         let sampler = Arc::clone(&shared);
-        if let Err(e) = std::thread::Builder::new()
-            .name("settle-sampler".to_owned())
-            .spawn(move || sampler.run())
+        if cfg!(target_os = "linux")
+            && let Err(e) = std::thread::Builder::new()
+                .name("settle-sampler".to_owned())
+                .spawn(move || sampler.run())
         {
             eprintln!("desk: settle sampler: {e}");
         }
@@ -65,8 +66,8 @@ impl Volatile {
         self.shared.wake.notify_one();
     }
 
-    /// Marks an action begun and returns what each block did in the last [`WINDOW`] of samples, in `now` (the hashes just before the action) and in the kept [`State::pauses`].
-    pub fn begin(&self, now: &[u64]) -> Vec<Block> {
+    /// Marks an action begun until the returned [`Paused`] drops; returns what each block did in the last [`WINDOW`] of samples.
+    pub fn begin(&self, now: &[u64]) -> (Vec<Block>, Paused) {
         let mut s = self.shared.lock();
         s.actions += 1;
         s.acting = true;
@@ -91,23 +92,27 @@ impl Volatile {
             })
             .count();
         s.pauses.truncate(kept);
-        (0..now.len())
+        let blocks = (0..now.len())
             .map(|i| {
                 s.pauses.iter().fold(Block::Quiet, |carried, p| {
-                    merge(Block::of(p.iter().map(|(_, h)| h[i])), &carried)
+                    merge(Block::of(p.iter().map(|(_, h)| h[i])), carried)
                 })
             })
-            .collect()
+            .collect();
+        (blocks, Paused(Arc::clone(&self.shared)))
     }
+}
 
-    /// Marks the action ended; the samples taken across it are dropped.
-    pub fn end(&self) {
-        let mut s = self.shared.lock();
+pub struct Paused(Arc<Shared>);
+
+impl Drop for Paused {
+    fn drop(&mut self) {
+        let mut s = self.0.lock();
         s.acting = false;
         s.samples.clear();
         s.touched = Some(Instant::now());
         drop(s);
-        self.shared.wake.notify_one();
+        self.0.wake.notify_one();
     }
 }
 
@@ -148,6 +153,9 @@ impl Shared {
                 }
                 s.actions
             };
+            if !grabber.as_ref().is_some_and(Grabber::current) {
+                grabber = None;
+            }
             if grabber.is_none() {
                 grabber = Grabber::open().ok();
             }
@@ -179,7 +187,7 @@ impl Shared {
 }
 
 /// What `block` did in one pause together with what it did in the later pauses, `carried`.
-fn merge(block: Block, carried: &Block) -> Block {
+fn merge(block: Block, carried: Block) -> Block {
     match (block, carried) {
         (Block::Churning, _) | (_, Block::Churning) => Block::Churning,
         (Block::Toggling(mut a), Block::Toggling(b)) => {
@@ -188,7 +196,7 @@ fn merge(block: Block, carried: &Block) -> Block {
             a.dedup();
             Block::Toggling(a)
         }
-        (Block::Quiet, c) => c.clone(),
+        (Block::Quiet, c) => c,
         (b, Block::Quiet) => b,
     }
 }
@@ -206,7 +214,7 @@ mod tests {
             (at, vec![1, 2, 5, 1]),
             (at, vec![1, 1, 6, 3]),
         ]);
-        let blocks = volatile.begin(&[1, 2, 7, 3]);
+        let (blocks, paused) = volatile.begin(&[1, 2, 7, 3]);
         assert_eq!(
             blocks,
             [
@@ -218,23 +226,31 @@ mod tests {
         );
         assert!(blocks[0].counts(1) && !blocks[1].counts(2) && blocks[1].counts(3));
         assert!(!blocks[2].counts(9));
-        volatile.end();
+        drop(paused);
         assert!(volatile.shared.lock().samples.is_empty());
-        assert_eq!(
-            volatile.begin(&[1, 3, 7, 1])[1],
-            Block::Toggling(vec![1, 2])
-        );
+        let (blocks, mut paused) = volatile.begin(&[1, 3, 7, 1]);
+        assert_eq!(blocks[1], Block::Toggling(vec![1, 2]));
         for kept in [true, false] {
-            volatile.end();
+            drop(paused);
             let t = Instant::now();
             volatile.shared.lock().samples.extend([
                 (t - WINDOW * 3 / 4, vec![1, 3, 7, 1]),
                 (t - WINDOW / 2, vec![1, 3, 7, 1]),
             ]);
-            let blocks = volatile.begin(&[1, 3, 7, 1]);
+            let blocks;
+            (blocks, paused) = volatile.begin(&[1, 3, 7, 1]);
             assert_eq!(blocks[2] == Block::Churning, kept);
             assert_eq!(blocks.iter().all(|b| *b == Block::Quiet), !kept);
         }
+    }
+
+    #[test]
+    fn an_action_dropped_before_its_settle_lets_the_sampler_run_again() {
+        let volatile = Volatile::start();
+        let (_, paused) = volatile.begin(&[1]);
+        assert!(volatile.shared.lock().acting);
+        drop(paused);
+        assert!(!volatile.shared.lock().acting);
     }
 
     #[test]

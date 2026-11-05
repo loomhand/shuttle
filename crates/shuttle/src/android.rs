@@ -31,7 +31,7 @@ impl<N: Handler> Handler for Desks<N> {
     }
 }
 
-/// The Android device of `settings`, with its UI server jar from [`ui_jar`].
+/// The Android device of `settings`.
 pub fn device(settings: AndroidSettings, exe: &Path) -> Result<Android, String> {
     Ok(Android::new(Device {
         ui_jar: ui_jar(settings.ui_jar, exe)?,
@@ -43,7 +43,7 @@ pub fn device(settings: AndroidSettings, exe: &Path) -> Result<Android, String> 
 }
 
 /// The UI server jar: the configured one, else the one the archive installs beside the program `exe`.
-pub fn ui_jar(configured: Option<PathBuf>, exe: &Path) -> Result<PathBuf, String> {
+fn ui_jar(configured: Option<PathBuf>, exe: &Path) -> Result<PathBuf, String> {
     if let Some(jar) = configured {
         return Ok(jar);
     }
@@ -56,11 +56,6 @@ pub fn ui_jar(configured: Option<PathBuf>, exe: &Path) -> Result<PathBuf, String
             bundled.display()
         ))
     }
-}
-
-/// Whether the daemon starts this desktop's own driver, indicator and stop hotkey: never for an Android device.
-pub fn local_controls(android: Option<&AndroidSettings>) -> bool {
-    android.is_none()
 }
 
 async fn answer(android: &Android, call: Call) -> Output {
@@ -77,19 +72,6 @@ async fn answer(android: &Android, call: Call) -> Output {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn an_android_device_takes_no_local_driver_indicator_or_hotkey() {
-        let settings = AndroidSettings {
-            adb: "adb".into(),
-            serial: Some("127.0.0.1:5555".to_owned()),
-            ui_jar: Some("/u.jar".into()),
-            scrcpy_jar: "/s.jar".into(),
-            su: None,
-        };
-        assert!(!local_controls(Some(&settings)));
-        assert!(local_controls(None));
-    }
 
     #[tokio::test]
     async fn a_computer_session_end_is_answered_on_the_device() {

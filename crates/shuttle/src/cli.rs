@@ -5,6 +5,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -61,9 +62,7 @@ pub fn run(args: &[String]) -> ExitCode {
                     ))
                 }
                 [flag, addr] if flag == "--http" => {
-                    let token = std::env::var(http::TOKEN_ENV)
-                        .ok()
-                        .filter(|t| !t.is_empty());
+                    let token = std::env::var(http::TOKEN_ENV).unwrap_or_default();
                     exit(block_on(
                         Builder::new_multi_thread(),
                         http::Server::new(endpoint, listed, token).serve(addr),
@@ -217,7 +216,7 @@ async fn serve(
     let path = default_path(home());
     let mut config = Config::load(&path);
     let android = config.as_mut().ok().and_then(|c| c.android.take());
-    let local = android::local_controls(android.as_ref());
+    let local = android.is_none();
     let mut safety = config
         .as_mut()
         .map(|c| std::mem::take(&mut c.safety))
@@ -333,17 +332,21 @@ async fn serve(
     tokio::spawn(async move { recorder.recordings().await });
     #[cfg(any(target_os = "macos", windows))]
     ready(daemon.clone(), safety, hotkey.filter(|_| local), input);
+    let ending = Arc::clone(&daemon);
+    let mut serving = Box::pin(server::serve(daemon, listener));
     let served = tokio::select! {
-        r = server::serve(daemon, listener) => r,
+        r = &mut serving => r,
         () = shutdown() => Ok(()),
     };
-    crate::ENDING.store(true, std::sync::atomic::Ordering::Relaxed);
+    ending.end_recording().await;
+    crate::ENDING.store(true, Ordering::Relaxed);
     #[cfg(unix)]
     crate::kill_graced();
     services.stop().await;
     if let Some(b) = bundled {
         b.stop().await;
     }
+    drop(serving);
     served
 }
 
@@ -390,7 +393,8 @@ fn exit(done: Result<(), String>) -> ExitCode {
 fn usage() -> ExitCode {
     let _ = writeln!(
         std::io::stderr(),
-        "usage: {NAME} mcp [--http ADDR] | {NAME} serve [ENDPOINT] | {NAME} stop | {NAME} resume | {NAME} desk VERB [key=value ...|JSON] | {NAME} --version; desk verbs: {}",
+        "usage: {NAME} mcp [--http ADDR, with {} set] | {NAME} serve [ENDPOINT] | {NAME} stop | {NAME} resume | {NAME} desk VERB [key=value ...|JSON] | {NAME} --version; desk verbs: {}",
+        http::TOKEN_ENV,
         DESK_VERBS.join(", ")
     );
     ExitCode::from(2)

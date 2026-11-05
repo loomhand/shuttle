@@ -130,11 +130,7 @@ mod tests {
         enc.write_header().unwrap().write_image_data(&rgba).unwrap();
         let (w, h, out) = crop_png(&src, [1.0, 1.0, 5.0, 5.0], 1.0, None).unwrap();
         assert_eq!((w, h), (2, 1));
-        let mut dec = png::Decoder::new(std::io::Cursor::new(out))
-            .read_info()
-            .unwrap();
-        let mut buf = vec![0; dec.output_buffer_size().unwrap()];
-        dec.next_frame(&mut buf).unwrap();
+        let buf = decode(&out);
         assert_eq!(&buf[..6], &[16, 17, 18, 20, 21, 22]);
     }
 
@@ -142,11 +138,7 @@ mod tests {
     fn a_screenshot_png_decodes_to_the_pixels_it_was_encoded_from() {
         let rgb: Vec<u8> = (0..64 * 48 * 3u32).map(|i| (i * i / 7) as u8).collect();
         let png = rgb_png(rgb.clone(), [0, 0, 64, 48], None).unwrap();
-        let mut dec = png::Decoder::new(std::io::Cursor::new(png))
-            .read_info()
-            .unwrap();
-        let mut buf = vec![0; dec.output_buffer_size().unwrap()];
-        dec.next_frame(&mut buf).unwrap();
+        let buf = decode(&png);
         assert_eq!(buf, rgb);
     }
 
@@ -155,12 +147,17 @@ mod tests {
         let rgb = vec![200; 4 * 2 * 3];
         let mask = [([0.0, 0.0, 4.0, 2.0], false), ([2.0, 0.0, 2.0, 2.0], true)];
         let png = rgb_png(rgb, [0, 0, 4, 2], Some(&mask)).unwrap();
+        let buf = decode(&png);
+        assert_eq!(&buf[..6], &[0; 6]);
+        assert_eq!(&buf[6..12], &[200; 6]);
+    }
+
+    fn decode(png: &[u8]) -> Vec<u8> {
         let mut dec = png::Decoder::new(std::io::Cursor::new(png))
             .read_info()
             .unwrap();
         let mut buf = vec![0; dec.output_buffer_size().unwrap()];
         dec.next_frame(&mut buf).unwrap();
-        assert_eq!(&buf[..6], &[0; 6]);
-        assert_eq!(&buf[6..12], &[200; 6]);
+        buf
     }
 }

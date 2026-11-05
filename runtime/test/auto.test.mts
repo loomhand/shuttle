@@ -1,23 +1,20 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { daemon } from './daemon.mts'
-import type { Call } from './daemon.mts'
+import { daemon, notepad, user } from './daemon.mts'
+import type { Call, W } from './daemon.mts'
 
 type Lib = typeof import('../lib/gui_plan.mts')
+type Plan = typeof auto
+
+const NOTE = 'unverifiable: Sent 2 char(s) via PostMessage (not verified).'
+const tools = (calls: Call[]) => calls.map((c) => `${c.tool} ${JSON.stringify(c.args)}`)
 const load = async (input: string): Promise<Lib['main']> => {
   process.env.SHUTTLE_INPUT = input
   return ((await import(`../lib/gui_plan.mts?${input}`)) as Lib).main
 }
 const background = await load('background')
 const auto = await load('auto')
-
-type W = { id: string; title: string; role: string; pid: number; active: boolean }
-type Plan = typeof auto
-
-const user = (): W => ({ id: 'c', title: 'Calculator', role: 'window', pid: 9, active: true })
-const notepad = (): W => ({ id: '1', title: 'Untitled - Notepad', role: 'window', pid: 4, active: false })
-const NOTE = 'unverifiable: Sent 2 char(s) via PostMessage (not verified).'
 
 function desktop(typed: (before: string, text: string) => string, note: boolean) {
   const ws = [user(), notepad()]
@@ -38,8 +35,6 @@ function desktop(typed: (before: string, text: string) => string, note: boolean)
   return { calls, reply, doc: () => doc }
 }
 
-const tools = (calls: Call[]) => calls.map((c) => `${c.tool} ${JSON.stringify(c.args)}`)
-
 async function run(t: { after(fn: () => void): void }, plan: Plan, typed: (before: string, text: string) => string, note: boolean) {
   const d = desktop(typed, note)
   await daemon(t, d.reply)
@@ -48,6 +43,7 @@ async function run(t: { after(fn: () => void): void }, plan: Plan, typed: (befor
 }
 
 test('an auto plan sends the same desk calls as a background plan when nothing falls back', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
   for (const [typed, note] of [[(b: string, s: string) => b + s, false], [(b: string, s: string) => b + s, true]] as const) {
     const bg = await run(t, background, typed, note)
     const au = await run(t, auto, typed, note)

@@ -54,13 +54,6 @@ pub const ACTIONS: [&str; 10] = [
     "desk_launch",
 ];
 
-const APP_INPUT: [&str; 5] = [
-    "desk_key",
-    "desk_type",
-    "desk_click",
-    "desk_scroll",
-    "desk_drag",
-];
 pub(crate) const BACKGROUND_TARGET: &str =
     "background input needs its target window: pass window or pid";
 pub(crate) const BACKGROUND_DESKTOP: &str = "background input: this window takes no pointer input without the foreground, and background input never brings a window to the front";
@@ -72,13 +65,24 @@ pub(crate) const BACKGROUND_UIA: &str = "background input: on Windows UI Automat
 pub(crate) const TYPER: Typer = crate::xtest::type_mapped;
 #[cfg(not(target_os = "linux"))]
 pub(crate) const TYPER: Typer = |_, _| Ok(false);
+
+const APP_INPUT: [&str; 5] = [
+    "desk_key",
+    "desk_type",
+    "desk_click",
+    "desk_scroll",
+    "desk_drag",
+];
+
 const CALL_LIMIT: Duration = Duration::from_secs(3);
 const TREE_LIMIT: Duration = Duration::from_secs(10);
 const READ_CHARS: usize = 64 << 10;
 const WAIT_MAX: Duration = Duration::from_secs(5);
 const WAIT_POLL: Duration = Duration::from_millis(10);
 const WAIT_CHECK: Duration = Duration::from_millis(100);
+
 const FRAME_BORDER: f64 = 16.0;
+
 const OTHER_DISPLAY: &str =
     "; name the window with `window` to capture a window on another display";
 const NO_WINDOW_UNDER: &str =
@@ -86,26 +90,35 @@ const NO_WINDOW_UNDER: &str =
 const NO_WINDOW_AT: &str = "no app window at the point; name one with window or pid";
 const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
 const WINDOW_NEVER_READ: &str = "window_never_read";
+
 const COVERED: &str = "covers the point, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
 const COVER_UNKNOWN: &str = "the point could not be checked for another app's window on top, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
 const ANOTHER_SPACE: &str = "accessibility does not reach it there, so a snapshot or an element action needs it on the current Space; background key, type, click, scroll and drag reach it by its title or pid";
 const UNSEEN_SENT: &str = "the app may not repaint a window nobody sees, so the input may have taken effect even if a screenshot looks unchanged: do not send it again, and confirm its effect by a read-back you can trust or by asking the user";
 const UNSEEN_TYPED: &str = "the app may not repaint a window nobody sees, so the text may be there even if a screenshot looks unchanged: do not type it again, and before you submit it with Return or Send, confirm that it is there by a read-back you can trust or by asking the user";
+
+const MASK_TRIES: usize = 3;
+const WINDOWS_MOVING: &str = "the windows kept changing while the screenshot was taken, so it could not be masked to the app allowlist; take it again";
+
 const SCROLL_POINT: &str = "scroll needs both x and y, or neither";
 const OK: &str = r#"{"ok":true}"#;
 const SCROLL_AMOUNT: u32 = 3;
+
 const STILL_TIMEOUT: Duration = Duration::from_millis(600);
 const STILL_MAX: Duration = Duration::from_secs(5);
 const STILL_HOLD: Duration = Duration::from_millis(40);
 const STILL_POLL: Duration = Duration::from_millis(10);
 const STILL_EDGE: u32 = 320;
+
 const RUN_CHARS: usize = 8;
 const TYPE_SETTLE: Duration = Duration::from_millis(100);
 const TYPE_POLL: Duration = Duration::from_millis(10);
 const TYPE_TAIL: usize = 16;
 const MAC_TYPE_DELAY_MS: u64 = 0;
+
 const FIELD_ROLES: [&str; 2] = ["textbox", "searchbox"];
 const FOCUS_UNREAD: &str = "type refused, nothing was typed: the keyboard focus cannot be read in this window, so the text could go into another field than the one clicked; confirm the focused field in a screenshot, then call type again with focus: \"unverified\"";
+
 const LOCKED_TOOLS: [&str; 2] = ["type_text", "press_key"];
 const LOCKED_INPUT_UNSUPPORTED: &str = "nothing was sent: [desk] locked_input is on, but this cua-driver does not take locked_input; update shuttle, whose bundled driver does";
 const FOCUS_UNKNOWN: &str = "focus unverified: accessibility shows no focused text field in the app, so which field took the text is unknown: confirm it in a screenshot before you press Return or Send";
@@ -113,10 +126,11 @@ const FOCUS_UNKNOWN: &str = "focus unverified: accessibility shows no focused te
 tokio::task_local! {
     static FOREGROUND: bool;
     static SENT: Cell<usize>;
+    static SCALE: Cell<Option<f64>>;
 }
 
 pub(crate) type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
-/// Types a line on the core keyboard: true when typed, false when it typed nothing and leaves the line to the driver; it stops once the flag is set.
+/// Types a line on the core keyboard; false leaves the line to the driver.
 pub(crate) type Typer = fn(&str, &AtomicBool) -> Result<bool, String>;
 
 /// The desk of one OS: `B` reads and acts on elements, `D` sends input.
@@ -166,12 +180,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
     }
 
-    #[cfg(test)]
-    fn with_typer(mut self, typer: Typer) -> Self {
-        self.typer = typer;
-        self
-    }
-
     /// Limits the desk calls to windows of `apps`, matched by app name or executable, case-insensitive; empty allows every app.
     pub fn allow(mut self, apps: &[String]) -> Self {
         self.allow = Allow(apps.iter().map(|a| app_key(a)).collect());
@@ -190,7 +198,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self
     }
 
-    /// Whether a background action refused before any input was sent runs once more in the foreground, its target window brought to the front.
+    pub fn turn(&self) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(&self.acting)
+    }
+
+    /// Whether a background action refused before any input runs once more in the foreground.
     pub fn auto(mut self, on: bool) -> Self {
         self.auto = on;
         self
@@ -211,23 +223,35 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let turn = tokio::time::timeout(self.turn_wait, self.acting.clone().lock_owned())
                 .await
                 .map_err(|_| "desk busy: a previous action is still running".to_owned())?;
+            self.check_mode(&args)?;
+            if tool != "desk_type" {
+                *lock(&self.clicked) = None;
+            }
             Some(Arc::new(turn))
         } else {
             None
         };
-        if ACTIONS.contains(&tool) {
-            self.check_mode(&args)?;
-            if tool != "desk_type" {
-                *self.clicks() = None;
-            }
-        }
         if !self.allow.is_open() {
             self.admit(tool, &args).await?;
         }
+        let scale = Cell::new(None);
         if self.auto && auto::VERBS.contains(&tool) {
-            return self.auto_run(tool, args, turn).await;
+            return SCALE.scope(scale, self.auto_run(tool, args, turn)).await;
         }
-        self.dispatch(tool, args, turn).await
+        SCALE.scope(scale, self.dispatch(tool, args, turn)).await
+    }
+
+    pub fn release(&self, holder: &str) {
+        let pids: Vec<u32> = lock(&self.webs).keys().copied().collect();
+        for pid in pids.into_iter().filter(|&p| self.release_one(p, holder)) {
+            self.access.post(move |b| drop(b.web(pid, false)));
+        }
+    }
+
+    #[cfg(test)]
+    fn with_typer(mut self, typer: Typer) -> Self {
+        self.typer = typer;
+        self
     }
 
     /// Turns an input call's `app` into the `pid` of that app's window, so its input goes to that app or nowhere.
@@ -260,7 +284,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
     }
 
-    /// Refuses a call whose `delivery_mode` is not the mode this desk sends input in.
     fn check_mode(&self, args: &Value) -> Result<(), String> {
         let input = if self.background {
             "background"
@@ -309,7 +332,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(out)
     }
 
-    /// Brings the window of an auto action to the front before the foreground runs it: the named window, or an element's own; false when the action names none.
+    /// Brings the window of an auto action to the front before the foreground runs it; false when the action names none.
     async fn front_target(&self, tool: &str, args: &Value) -> Result<bool, String> {
         let (window, pid) = if let Some(id) = args["id"]
             .as_str()
@@ -383,8 +406,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     }
                     req["additional_arguments"] = a.args.into();
                 }
-                let v = match self.call("launch_app", req.clone()).await {
-                    Err(e) if self.os == Os::Mac => {
+                let retry = (self.os == Os::Mac).then(|| req.clone());
+                let v = match (self.call("launch_app", req).await, retry) {
+                    (Err(e), Some(mut req)) => {
                         let app = a.app;
                         let named = self
                             .access
@@ -394,7 +418,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         req["name"] = named.into();
                         self.call("launch_app", req).await?
                     }
-                    v => v?,
+                    (v, _) => v?,
                 };
                 let mut out = json!({"ok": true, "launched": text_of(&v)});
                 if self.os == Os::Mac {
@@ -553,7 +577,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     #[cfg(test)]
     fn now(&self) -> Instant {
-        Instant::now() + Duration::from_millis(self.skew.load(std::sync::atomic::Ordering::Relaxed))
+        Instant::now() + Duration::from_millis(self.skew.load(Ordering::Relaxed))
     }
 
     async fn admit(&self, tool: &str, args: &Value) -> Result<(), String> {
@@ -701,7 +725,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn web(&self, a: WebArgs) -> Result<String, String> {
-        let held = self.webs().get(&a.pid).map(|h| h.was);
+        let held = lock(&self.webs).get(&a.pid).map(|h| h.was);
         let was = match (a.on, held) {
             (true, Some(was)) => was,
             (false, Some(was)) if !self.release_one(a.pid, &a.holder) => was,
@@ -718,7 +742,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
         };
         if a.on {
-            let mut webs = self.webs();
+            let mut webs = lock(&self.webs);
             let h = webs.entry(a.pid).or_insert_with(|| Held {
                 was,
                 holders: HashSet::new(),
@@ -728,15 +752,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(json!({"ok": true, "was": was}).to_string())
     }
 
-    pub fn release(&self, holder: &str) {
-        let pids: Vec<u32> = self.webs().keys().copied().collect();
-        for pid in pids.into_iter().filter(|&p| self.release_one(p, holder)) {
-            self.access.post(move |b| drop(b.web(pid, false)));
-        }
-    }
-
     fn release_one(&self, pid: u32, holder: &str) -> bool {
-        let mut webs = self.webs();
+        let mut webs = lock(&self.webs);
         let Some(h) = webs.get_mut(&pid) else {
             return false;
         };
@@ -746,12 +763,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             webs.remove(&pid);
         }
         last
-    }
-
-    fn webs(&self) -> std::sync::MutexGuard<'_, HashMap<u32, Held>> {
-        self.webs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     async fn press(&self, id: String, turn: Option<Turn>) -> Result<String, String> {
@@ -812,12 +823,16 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn at(&self, mut a: AtArgs) -> Result<String, String> {
         let under = a.window.is_none() && a.pid.is_none();
+        let mut number = None;
         if under {
             let scale = self.scale().await?;
             let point = (f64::from(a.x) / scale, f64::from(a.y) / scale);
             let top = self.top_at(point).await?.ok_or(NO_WINDOW_AT)?;
             a.window = Some(top["title"].as_str().unwrap_or_default().to_owned());
             a.pid = top["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
+            number = top["window_id"]
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok());
         }
         let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
         self.access
@@ -826,6 +841,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     check_process(b, &allow, a.pid)?;
                 }
                 let frames = frames(b, a.pid, &allow)?;
+                if let Some(f) = number.and_then(|n| frames.iter().find(|f| f.number == Some(n))) {
+                    a.window = Some(f.title.clone());
+                }
                 let kept = (!allow.is_open()).then(|| frames.clone());
                 let window = a.window.as_deref();
                 let held = under
@@ -849,7 +867,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     .into_iter()
                     .filter_map(|id| {
                         let n = b.node(&id, Extras::default(), 0).ok()?;
-                        Some(json!({"id": id, "role": n.role, "name": n.name}))
+                        Some(Value::from_iter([
+                            ("id", Value::from(id)),
+                            ("role", n.role.into()),
+                            ("name", n.name.into()),
+                        ]))
                     })
                     .collect();
                 let mut out = json!({});
@@ -857,7 +879,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 out["path"] = Value::Array(path);
                 out["pid"] = pid.into();
                 if let Some((title, pid)) = covered {
-                    out["covered"] = json!({"title": title, "pid": pid});
+                    out["covered"] =
+                        Value::from_iter([("title", Value::from(title)), ("pid", pid.into())]);
                 }
                 Ok(out.to_string())
             })
@@ -871,7 +894,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 let listed = frames(b, a.pid, &allow)?;
                 let frame = live(pick(b, &allow, background, listed, Some(&a.window), a.pid)?)?;
                 b.close(&frame)?;
-                Ok(json!({"ok": true, "title": frame.title}).to_string())
+                Ok(
+                    Value::from_iter([("ok", Value::from(true)), ("title", frame.title.into())])
+                        .to_string(),
+                )
             })
             .await
     }
@@ -906,7 +932,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
             let line = line.trim_end_matches('\r');
             if self.os == Os::Linux {
-                if line.is_empty() || (to.is_none() && self.xtest(line, turn.clone()).await?) {
+                if line.is_empty()
+                    || (to.is_none() && xtest(self.typer, line, turn.clone()).await?)
+                {
                     continue;
                 }
                 for run in text_runs(line) {
@@ -952,13 +980,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(out.to_string())
     }
 
-    /// The focused element of window `to`'s app as `{role, name}` and whether it is a text field; after a background click into `to`, refuses a field the click missed, and an unreadable focus unless `unverified`.
+    /// The focused element of window `to`'s app as `{role, name}` and whether it is a text field.
     async fn typing_focus(
         &self,
         to: (i64, i64),
         unverified: bool,
     ) -> Result<(Value, bool), String> {
-        let clicked = self.clicks().filter(|c| c.to == to).map(|c| c.at);
+        let clicked = lock(&self.clicked).filter(|c| c.to == to).map(|c| c.at);
         let n = self.keyboard_focus(to.0).await;
         let field = n.as_ref().is_some_and(|n| FIELD_ROLES.contains(&n.role));
         if !field && clicked.is_some() && !unverified {
@@ -978,7 +1006,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok((focused, field))
     }
 
-    /// The element with the keyboard focus in the app of process `pid`; none when it cannot be read.
     async fn keyboard_focus(&self, pid: i64) -> Option<Node> {
         let pid = u32::try_from(pid).ok()?;
         self.access
@@ -988,7 +1015,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .flatten()
     }
 
-    /// Sends `req` to window `to`, or in the foreground to the focused window, and keeps the first note of background input the driver could not confirm.
+    /// Sends `req` to window `to`, or in the foreground to the focused window.
     async fn send(
         &self,
         tool: &str,
@@ -1024,7 +1051,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let effect = c["effect"]
             .as_str()
             .filter(|e| self.bg() && *e != "confirmed")?;
-        if let Some(u) = to.and_then(|t| self.unseens().get(&t).copied()) {
+        if let Some(u) = to.and_then(|t| lock(&self.unseen).get(&t).copied()) {
             let then = if typed { UNSEEN_TYPED } else { UNSEEN_SENT };
             return Some(format!("{effect}; {}: {then}", u.why()));
         }
@@ -1040,20 +1067,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         )
     }
 
-    /// Whether the typer typed `line` on the core keyboard; it runs on a blocking thread that holds the action's turn to its end and stops at its next key once this call is dropped.
-    async fn xtest(&self, line: &str, turn: Option<Turn>) -> Result<bool, String> {
-        let stop = Arc::new(AtomicBool::new(false));
-        let _cancel = Cancel(stop.clone());
-        let (line, typer) = (line.to_owned(), self.typer);
-        tokio::task::spawn_blocking(move || {
-            let _turn = turn;
-            typer(&line, &stop)
-        })
-        .await
-        .map_err(|e| format!("XTest: {e}"))?
-    }
-
-    /// Waits at most [`TYPE_SETTLE`] until the focused element of the focused window holds the end of the last line typed, since an app reads typed keys after the input call returns.
+    /// Waits at most [`TYPE_SETTLE`] until the focused element holds the end of the typed text.
     async fn typed(&self, text: &str) {
         let Some(tail) = typed_tail(text) else {
             return;
@@ -1124,7 +1138,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if let Some(note) = note {
             out["unverified"] = note.into();
         }
-        let clicked = *self.clicks();
+        let clicked = *lock(&self.clicked);
         if let Some(c) = clicked.filter(|_| self.os == Os::Mac)
             && let Some(n) = self.keyboard_focus(c.to.0).await
         {
@@ -1289,7 +1303,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.check_point(x, y, under.as_ref()).await
     }
 
-    /// Wheel notches at a screen point; without one, scroll keys to the front app window on macOS (the driver's topmost, or the one an allowlist picks and checks), and elsewhere wheel notches at its center, the window of the focused app on Linux.
+    /// Wheel notches at a screen point, else a scroll of the front app window.
     async fn scroll(&self, a: ScrollArgs) -> Result<String, String> {
         if a.x.is_some() != a.y.is_some() {
             return Err(SCROLL_POINT.to_owned());
@@ -1323,10 +1337,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 None => (x, y),
             },
             (None, None) => {
-                let target = self.front_window().await?;
+                let mut target = self.front_window().await?;
                 if self.os == Os::Mac {
-                    req["pid"] = target["pid"].clone();
-                    req["window_id"] = target["window_id"].clone();
+                    req["pid"] = target["pid"].take();
+                    req["window_id"] = target["window_id"].take();
                     req["session"] = WINDOW_SESSION.into();
                     self.call("scroll", req).await?;
                     return Ok(OK.to_owned());
@@ -1411,7 +1425,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(OK.to_owned())
     }
 
-    /// Waits until no block of the screen changes in a way that counts (see [`Watch`]) for `hold_ms`, at most `timeout_ms`; says whether one changed meanwhile.
+    /// Waits until no block of the screen changes in a way that counts (see [`Watch`]) for `hold_ms`, at most `timeout_ms`.
     async fn still(&self, a: StillArgs) -> Result<String, String> {
         let limit = a
             .timeout_ms
@@ -1455,12 +1469,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let _session = self.session.lock().await;
         let mut cover = None;
         if !self.bg() {
-            let front = json!({"pid": w.pid, "window_id": w.id});
-            self.call("bring_to_front", front).await?;
+            self.raise(Some((w.pid, w.id))).await?;
             cover = self.cover(&req, w.pid).await?;
         }
-        let cached = self
-            .reads()
+        let cached = lock(&self.read)
             .filter(|r| (r.pid, r.id, r.bounds) == (w.pid, w.id, w.bounds))
             .map(|r| r.k);
         let k = match cached {
@@ -1506,7 +1518,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if self.bg()
             && let Some(at) = req["x"].as_f64().zip(req["y"].as_f64())
         {
-            *self.clicks() = Some(Clicked {
+            *lock(&self.clicked) = Some(Clicked {
                 to: (w.pid, w.id),
                 at,
             });
@@ -1514,7 +1526,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(self.unverified(&out, Some((w.pid, w.id)), false))
     }
 
-    /// Why the point of `req` takes no foreground click into process `pid`: another app's window on top there, on any window level, or a hit test that failed.
+    /// Why the point of `req` takes no foreground click into process `pid`: another app's window is on top there.
     async fn cover(&self, req: &Value, pid: i64) -> Result<Option<String>, String> {
         let Some((x, y)) = req["x"].as_f64().zip(req["y"].as_f64()) else {
             return Ok(None);
@@ -1545,7 +1557,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(Some(format!("{app} {COVERED}")))
     }
 
-    /// A click at a screen point, for a window that takes no window click; background input refuses it.
     async fn desktop_click(&self, req: Value) -> Result<(), String> {
         if self.bg() {
             return Err(BACKGROUND_DESKTOP.to_owned());
@@ -1554,7 +1565,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(())
     }
 
-    /// The window background input goes to, as `(pid, window_id)`; none in the foreground, where input goes to the focused window.
     async fn target(
         &self,
         window: Option<&str>,
@@ -1571,7 +1581,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         window: Option<&str>,
         pid: Option<u32>,
     ) -> Result<Option<(i64, i64)>, String> {
-        if self.bg() || self.os != Os::Mac || (window.is_none() && pid.is_none()) {
+        let named = if self.os == Os::Mac {
+            window.is_some() || pid.is_some()
+        } else {
+            window.is_none() && pid.is_some()
+        };
+        if self.bg() || !named {
             return Ok(None);
         }
         let (_, w) = self.pick_window(window, pid, true).await?;
@@ -1606,7 +1621,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok((to, w))
     }
 
-    /// The window input with `window` goes to, its points pixels of that window's shot; a title that matches two listed windows equally is refused, since the shot may show the other one.
+    /// The window input with `window` goes to; a title that matches two listed windows equally is refused.
     async fn shot_window(
         &self,
         window: &str,
@@ -1635,8 +1650,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             bounds: bounds(w),
             point: (x / scale, y / scale),
         };
-        let cached = self
-            .reads()
+        let cached = lock(&self.read)
             .filter(|r| (r.pid, r.id, r.bounds) == (pid, id, under.bounds))
             .map(|r| r.k);
         let (kx, ky) = match cached {
@@ -1653,10 +1667,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if self.os == Os::Windows {
             return Ok(1.0);
         }
+        if let Ok(Some(k)) = SCALE.try_with(Cell::get) {
+            return Ok(k);
+        }
         let v = self.call("get_screen_size", json!({})).await?;
-        Ok(v["structuredContent"]["scale_factor"]
+        let k = v["structuredContent"]["scale_factor"]
             .as_f64()
-            .unwrap_or(1.0))
+            .unwrap_or(1.0);
+        let _ = SCALE.try_with(|s| s.set(Some(k)));
+        Ok(k)
     }
 
     async fn window_at(&self, x: f64, y: f64) -> Result<Option<Under>, String> {
@@ -1718,12 +1737,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         v: &Value,
         full: bool,
     ) -> Result<Option<(f64, f64)>, String> {
-        *self.reads() = None;
+        *lock(&self.read) = None;
         if refuses_pointer(v) {
             return Ok(None);
         }
         let k = image_scale(v, id)?;
-        *self.reads() = Some(Read {
+        *lock(&self.read) = Some(Read {
             pid,
             id,
             bounds,
@@ -1736,8 +1755,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     /// The desk point of pixel `(x, y)` in the `shot` image of driver window `w`.
     async fn desk_point(&self, w: &Value, (x, y): (f64, f64)) -> Result<(f64, f64), String> {
         let key = window_key(w)?;
-        let cached = self
-            .reads()
+        let cached = lock(&self.read)
             .filter(|r| r.full && (r.pid, r.id, r.bounds) == key)
             .map(|r| r.k);
         let (kx, ky) = match cached {
@@ -1756,33 +1774,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(((key.2[0] + x / kx) * scale, (key.2[1] + y / ky) * scale))
     }
 
-    fn reads(&self) -> std::sync::MutexGuard<'_, Option<Read>> {
-        self.read
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     /// Keeps why nobody sees driver window `w`, which the note on unconfirmed input to it gives.
     fn classify(&self, w: &Value) {
         if let Some(to) = w["pid"].as_i64().zip(w["window_id"].as_i64()) {
-            let mut unseen = self.unseens();
+            let mut unseen = lock(&self.unseen);
             match unseen_of(w, self.os == Os::Mac) {
                 Some(u) => unseen.insert(to, u),
                 None => unseen.remove(&to),
             };
         }
-    }
-
-    fn unseens(&self) -> std::sync::MutexGuard<'_, HashMap<(i64, i64), Unseen>> {
-        self.unseen
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    fn clicks(&self) -> std::sync::MutexGuard<'_, Option<Clicked>> {
-        self.clicked
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     async fn focus(&self, a: WindowArgs) -> Result<String, String> {
@@ -1796,7 +1796,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 json!({"pid": w.pid, "window_id": window_id}),
             )
             .await?;
-        let mut out = json!({"ok": true, "title": w.title, "pid": w.pid});
+        let mut out = Value::from_iter([
+            ("ok", Value::from(true)),
+            ("title", w.title.into()),
+            ("pid", w.pid.into()),
+        ]);
         let done = &mut v["structuredContent"];
         if let Some(path) = done.get_mut("path") {
             out["path"] = path.take();
@@ -1805,7 +1809,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(out.to_string())
     }
 
-    /// The driver window titled like `window` or of `pid`, as a frame and as the driver lists it, titled as accessibility names it where the driver lists an elided title; the allowlist picks among them, and a title alone does not pick between twins on two Spaces.
+    /// The driver window titled like `window` or of `pid`, as a frame and as the driver lists it.
     async fn pick_window(
         &self,
         window: Option<&str>,
@@ -1926,13 +1930,40 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if let Some(window) = a.window.as_deref() {
             return self.window_shot(window, a.pid, rect, a.path).await;
         }
+        let (grab, shown) = if self.allow.is_open() {
+            (self.grab(rect).await?, None)
+        } else {
+            let (grab, shown) = self.steady_grab(rect).await?;
+            (grab, Some(shown))
+        };
+        match grab {
+            Grab::Read(c) => {
+                let mask = self.mask(shown, 1.0).await?;
+                let png = rgb_png(c.rgb, c.rect, mask.as_deref())?;
+                delivered(png, c.rect[2], c.rect[3], a.path).await
+            }
+            Grab::Driver(png, factor) => {
+                let mask = self.mask(shown, factor).await?;
+                let (w, h, png) = crop_png(&png, rect, factor, mask.as_deref()).map_err(|e| {
+                    if e == OFF_SCREEN {
+                        format!("{e}{OTHER_DISPLAY}")
+                    } else {
+                        e
+                    }
+                })?;
+                self.shot_out(png, w, h, a.path).await
+            }
+        }
+    }
+
+    async fn grab(&self, rect: [f64; 4]) -> Result<Grab, String> {
         let overlay = self.overlay;
         if let Some(c) = self
             .access
             .run(CALL_LIMIT, (), move |b| b.capture(rect, overlay))
             .await?
         {
-            return self.captured(c, a.path).await;
+            return Ok(Grab::Read(c));
         }
         let v = self
             .call("get_desktop_state", json!({"session": CAPTURE_SESSION}))
@@ -1945,19 +1976,19 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let shot_w = s["screenshot_width"].as_f64().unwrap_or(0.0);
         let full_w = s["screenshot_original_width"].as_f64().unwrap_or(shot_w);
         let factor = if full_w > 0.0 { shot_w / full_w } else { 1.0 };
-        let mask = if self.allow.is_open() {
-            None
-        } else {
-            Some(self.mask(factor).await?)
-        };
-        let (w, h, png) = crop_png(&png, rect, factor, mask.as_deref()).map_err(|e| {
-            if e == OFF_SCREEN {
-                format!("{e}{OTHER_DISPLAY}")
-            } else {
-                e
+        Ok(Grab::Driver(png, factor))
+    }
+
+    async fn steady_grab(&self, rect: [f64; 4]) -> Result<(Grab, Vec<([f64; 4], bool)>), String> {
+        for _ in 0..MASK_TRIES {
+            let before = self.shown().await?;
+            let grab = self.grab(rect).await?;
+            let after = self.shown().await?;
+            if after == before {
+                return Ok((grab, after));
             }
-        })?;
-        self.shot_out(png, w, h, a.path).await
+        }
+        Err(WINDOWS_MOVING.to_owned())
     }
 
     async fn shot_out(
@@ -1987,8 +2018,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     ) -> Result<Output, String> {
         let (_, w) = self.pick_window(Some(window), pid, true).await?;
         let key = window_key(&w)?;
-        let stale = self
-            .unseens()
+        let stale = lock(&self.unseen)
             .get(&(key.0, key.1))
             .filter(|_| self.os == Os::Mac)
             .map(|u| {
@@ -2028,20 +2058,22 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(out)
     }
 
-    /// A capture the backend read itself, as a PNG image, also written to `path` when one is given.
-    async fn captured(&self, c: Capture, path: Option<String>) -> Result<Output, String> {
-        let rect = c.rect;
-        let mask = if self.allow.is_open() {
-            None
-        } else {
-            Some(self.mask(1.0).await?)
+    async fn mask(
+        &self,
+        shown: Option<Vec<([f64; 4], bool)>>,
+        factor: f64,
+    ) -> Result<Option<Vec<([f64; 4], bool)>>, String> {
+        let Some(mut mask) = shown else {
+            return Ok(None);
         };
-        let png = rgb_png(c.rgb, rect, mask.as_deref())?;
-        delivered(png, rect[2], rect[3], path).await
+        let k = self.scale().await? * factor;
+        for (rect, _) in &mut mask {
+            *rect = rect.map(|v| v * k);
+        }
+        Ok(Some(mask))
     }
 
-    async fn mask(&self, factor: f64) -> Result<Vec<([f64; 4], bool)>, String> {
-        let k = self.scale().await? * factor;
+    async fn shown(&self) -> Result<Vec<([f64; 4], bool)>, String> {
         let mut windows = self.on_screen().await?;
         let frames = self.access.run(CALL_LIMIT, (), |b| b.frames()).await?;
         windows.sort_by_key(|w| w["z_index"].as_i64().unwrap_or(i64::MIN));
@@ -2049,10 +2081,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .into_iter()
             .map(|w| {
                 let pid = w["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
-                (
-                    bounds(&w).map(|v| v * k),
-                    self.allow.admits(app_of(&frames, pid)),
-                )
+                (bounds(&w), self.allow.admits(app_of(&frames, pid)))
             })
             .collect())
     }
@@ -2065,6 +2094,11 @@ impl Drop for Cancel {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Relaxed);
     }
+}
+
+enum Grab {
+    Read(Capture),
+    Driver(Vec<u8>, f64),
 }
 
 struct Under {
@@ -2111,7 +2145,7 @@ impl Unseen {
     }
 }
 
-/// Moves a Linux launch into a systemd scope of its own on a task that finishes when the call is dropped; false when the launch stays in the daemon's cgroup.
+/// Moves a Linux launch into a systemd scope of its own; false when it stays in the daemon's cgroup.
 #[cfg(target_os = "linux")]
 pub(crate) async fn adopt(launched: Value) -> bool {
     tokio::spawn(async move {
@@ -2144,28 +2178,7 @@ pub(crate) fn runs_app(window_app: &str, app: &str) -> bool {
     names_app(window_app, app) || names_app(window_app, &launch_name(app))
 }
 
-fn names_app(window_app: &str, wanted: &str) -> bool {
-    let (have, want) = (words(window_app), words(wanted));
-    !have.is_empty()
-        && !want.is_empty()
-        && (want.iter().all(|w| have.iter().any(|h| part_of_word(h, w)))
-            || have.iter().all(|h| want.contains(h)))
-}
-
-fn part_of_word(word: &str, part: &str) -> bool {
-    word == part
-        || (part.len() >= 3 && word.starts_with(part))
-        || (part.len() >= 4 && word.ends_with(part))
-}
-
-fn words(name: &str) -> Vec<String> {
-    name.split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .map(str::to_lowercase)
-        .collect()
-}
-
-/// Runs of `text` with at most [`RUN_CHARS`] distinct non-ASCII characters; the Linux driver binds a spare keycode to each for the call and has fewer than 20 to lend.
+/// Runs of `text` with at most [`RUN_CHARS`] distinct non-ASCII characters, one spare keycode each.
 pub(crate) fn text_runs(text: &str) -> Vec<&str> {
     let (mut runs, mut start, mut seen) = (Vec::new(), 0, Vec::new());
     for (i, c) in text.char_indices() {
@@ -2182,6 +2195,47 @@ pub(crate) fn text_runs(text: &str) -> Vec<&str> {
         runs.push(&text[start..]);
     }
     runs
+}
+
+/// Whether the typer typed `text`; a drop of this call stops it at its next key.
+pub(crate) async fn xtest(typer: Typer, text: &str, turn: Option<Turn>) -> Result<bool, String> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let _cancel = Cancel(stop.clone());
+    let text = text.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let _turn = turn;
+        typer(&text, &stop)
+    })
+    .await
+    .map_err(|e| format!("XTest: {e}"))?
+}
+
+pub(crate) fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn names_app(window_app: &str, wanted: &str) -> bool {
+    let (have, want) = (words(window_app), words(wanted));
+    !have.is_empty()
+        && !want.is_empty()
+        && (want.iter().all(|w| have.iter().any(|h| part_of_word(h, w)))
+            || have.iter().all(|h| want.contains(h)))
+}
+
+fn part_of_word(word: &str, part: &str) -> bool {
+    word == part
+        || (part.len() >= 3
+            && word
+                .strip_prefix(part)
+                .is_some_and(|rest| rest.starts_with(char::is_alphanumeric)))
+        || (part.len() >= 4 && word.ends_with(part))
+}
+
+fn words(name: &str) -> Vec<String> {
+    name.split(|c: char| !c.is_alphanumeric() && c != '+')
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
 }
 
 /// The windows a call picks from: the app of `pid` alone, unless the allowlist needs every window to judge the call.
@@ -2276,7 +2330,6 @@ fn live(frame: Frame) -> Result<Frame, String> {
     Ok(frame)
 }
 
-/// A Linux shot's answer: the PNG as the image, also written to `path` when one is given.
 async fn delivered(png: Vec<u8>, w: u32, h: u32, path: Option<String>) -> Result<Output, String> {
     let mut out = json!({"ok": true, "width": w, "height": h});
     if let Some(path) = path {
@@ -2360,7 +2413,7 @@ fn layer(w: &Value) -> i64 {
     w["layer"].as_i64().unwrap_or(0)
 }
 
-/// Whether a title or pid may pick macOS driver window `w` of `all`: one on screen, or one off screen in a known Space with no on-screen window of its process and title.
+/// Whether a title or pid may pick macOS driver window `w` of `all`: one on screen, or one off screen in a known Space.
 fn pickable(w: &Value, all: &[Value]) -> bool {
     let shown = |o: &Value| o["is_on_screen"] != false;
     shown(w)
@@ -2382,21 +2435,20 @@ fn unseen_of(w: &Value, mac: bool) -> Option<Unseen> {
     (mac && w["is_on_screen"] == false).then_some(Unseen::Hidden)
 }
 
-/// Whether node `n` covers desk point `at`; none when it has no bounds.
 fn holds(n: &Node, (x, y): (f64, f64)) -> Option<bool> {
     let [l, t, w, h] = n.bounds?.map(f64::from);
     Some(x >= l && x < l + w && y >= t && y < t + h)
 }
 
-/// `{"ok":true}`, with the driver's note when it could not confirm background input.
 fn ok_with(unverified: Option<String>) -> String {
     match unverified {
-        Some(note) => json!({"ok": true, "unverified": note}).to_string(),
+        Some(note) => {
+            Value::from_iter([("ok", Value::from(true)), ("unverified", note.into())]).to_string()
+        }
         None => OK.to_owned(),
     }
 }
 
-/// `req` to the focused window, or in the background to window `to`.
 fn deliver(req: Value, to: Option<(i64, i64)>) -> Value {
     match to {
         Some(to) => background(req, to),
@@ -2438,7 +2490,6 @@ fn outline(nodes: &[Node], max_chars: usize) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::collections::HashMap;
     use std::sync::Mutex;
 
     use super::*;
@@ -2451,7 +2502,12 @@ pub(crate) mod tests {
         ("desk_close", r#"{"window": "Notepad", "pid": 4}"#),
     ];
 
+    const LONG_TITLE: &str = "Example Competitive Analysis: Pricing and GTM (October 2026) - Example Docs - Google Chrome \u{2013} Work (example.com)";
+
     static ACTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static PAGE_LIT: AtomicBool = AtomicBool::new(false);
+    static LAUNCHED: AtomicBool = AtomicBool::new(false);
+    static STOPPED: AtomicBool = AtomicBool::new(false);
 
     #[test]
     fn an_outline_shows_a_linux_raw_key_binding_in_place_of_the_shortcut() {
@@ -2764,8 +2820,7 @@ pub(crate) mod tests {
     impl Opens {
         fn frames(&mut self) -> Vec<Frame> {
             self.lists += 1;
-            self.skew
-                .fetch_add(self.list_ms, std::sync::atomic::Ordering::Relaxed);
+            self.skew.fetch_add(self.list_ms, Ordering::Relaxed);
             if !self.hinted {
                 self.t += 1;
             }
@@ -3201,8 +3256,8 @@ pub(crate) mod tests {
             Ok(match tool {
                 "list_windows" => json!({"structuredContent": {"windows": [
                     {"pid": 4, "window_id": 1, "layer": 0, "title": "Untitled - Notepad", "app_name": "Notepad", "is_on_screen": true, "on_current_space": true, "space_ids": [8]},
-                    {"pid": 9, "window_id": 84080, "layer": 0, "title": "微信", "app_name": "WeChat", "is_on_screen": false, "on_current_space": false, "space_ids": [18]},
-                    {"pid": 9, "window_id": 727, "layer": 0, "title": "微信", "app_name": "WeChat", "is_on_screen": false, "on_current_space": null, "space_ids": null},
+                    {"pid": 9, "window_id": 84080, "layer": 0, "title": "\u{5fae}\u{4fe1}", "app_name": "WeChat", "is_on_screen": false, "on_current_space": false, "space_ids": [18]},
+                    {"pid": 9, "window_id": 727, "layer": 0, "title": "\u{5fae}\u{4fe1}", "app_name": "WeChat", "is_on_screen": false, "on_current_space": null, "space_ids": null},
                     {"pid": 9, "window_id": 37333, "layer": 3, "title": "", "app_name": "WeChat", "is_on_screen": false, "on_current_space": false, "space_ids": [18]},
                     {"pid": 5, "window_id": 2, "layer": 0, "title": "Untitled", "app_name": "TextEdit", "is_on_screen": true, "on_current_space": true, "space_ids": [8]},
                     {"pid": 5, "window_id": 3, "layer": 0, "title": "Untitled", "app_name": "TextEdit", "is_on_screen": false, "on_current_space": false, "space_ids": [18]}
@@ -3225,7 +3280,7 @@ pub(crate) mod tests {
                 "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
                 "list_windows" => json!({"structuredContent": {"windows": [
                     {"pid": 4, "window_id": 1, "layer": 0, "z_index": 2, "title": "Untitled - Notepad", "app_name": "Notepad", "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}},
-                    {"pid": 9, "window_id": 100, "layer": 0, "z_index": 1, "title": "微信", "app_name": "WeChat", "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": -1416.0, "y": 0.0, "width": 846.0, "height": 774.0}}
+                    {"pid": 9, "window_id": 100, "layer": 0, "z_index": 1, "title": "\u{5fae}\u{4fe1}", "app_name": "WeChat", "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": -1416.0, "y": 0.0, "width": 846.0, "height": 774.0}}
                 ]}}),
                 "get_window_state" => {
                     let mut v = json!({"structuredContent": {"screenshot_width": 846, "screenshot_height": 774}});
@@ -3266,7 +3321,7 @@ pub(crate) mod tests {
             )
         };
         let whole = desk
-            .run("desk_shot", json!({"window": "微信"}))
+            .run("desk_shot", json!({"window": "\u{5fae}\u{4fe1}"}))
             .await
             .unwrap();
         assert_eq!(size(whole), (json!(846), json!(774), true));
@@ -3283,7 +3338,7 @@ pub(crate) mod tests {
         let part = desk
             .run(
                 "desk_shot",
-                json!({"window": "微信", "x": 10, "y": 20, "w": 100, "h": 50}),
+                json!({"window": "\u{5fae}\u{4fe1}", "x": 10, "y": 20, "w": 100, "h": 50}),
             )
             .await
             .unwrap();
@@ -3304,12 +3359,12 @@ pub(crate) mod tests {
         )
         .allow(&["notepad".into()]);
         let refused = gated
-            .run("desk_shot", json!({"window": "微信"}))
+            .run("desk_shot", json!({"window": "\u{5fae}\u{4fe1}"}))
             .await
             .unwrap_err();
         assert_eq!(
             refused,
-            "no window \"微信\"; windows: [\"Untitled - Notepad\"]"
+            "no window \"\u{5fae}\u{4fe1}\"; windows: [\"Untitled - Notepad\"]"
         );
         assert!(sent(&gated_calls, "get_window_state").is_empty());
     }
@@ -3344,13 +3399,7 @@ pub(crate) mod tests {
         }
 
         fn sent(&self, tool: &str) -> Vec<Value> {
-            self.calls
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(t, _)| t == tool)
-                .map(|(_, a)| a.clone())
-                .collect()
+            sent(&self.calls, tool)
         }
 
         fn landed(&self) -> Vec<(f64, f64)> {
@@ -3592,9 +3641,13 @@ pub(crate) mod tests {
             let out = desk.run("desk_shot", args).await.unwrap();
             serde_json::from_str::<Value>(&out.text).unwrap()["origin"].clone()
         };
-        assert_eq!(origin(json!({"window": "微信"})).await, json!([0, 0]));
         assert_eq!(
-            origin(json!({"window": "微信", "x": 10.5, "y": 20, "w": 100, "h": 50})).await,
+            origin(json!({"window": "\u{5fae}\u{4fe1}"})).await,
+            json!([0, 0])
+        );
+        assert_eq!(
+            origin(json!({"window": "\u{5fae}\u{4fe1}", "x": 10.5, "y": 20, "w": 100, "h": 50}))
+                .await,
             json!([10, 20])
         );
     }
@@ -3699,10 +3752,6 @@ pub(crate) mod tests {
                 Os::Mac,
             )
             .background(true);
-            let note = |out: Output| {
-                let v: Value = serde_json::from_str(&out.text).unwrap();
-                v["unverified"].as_str().unwrap_or_default().to_owned()
-            };
             let clicked = desk
                 .run("desk_click", json!({"x": 10.0, "y": 10.0, "window": "Doc"}))
                 .await
@@ -3777,8 +3826,8 @@ pub(crate) mod tests {
             Ok(match tool {
                 "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
                 "list_windows" => json!({"structuredContent": {"windows": [
-                    {"pid": 9, "window_id": 100, "layer": 0, "z_index": 2, "title": "微信", "app_name": "WeChat", "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": -1416.0, "y": 0.0, "width": 846.0, "height": 774.0}},
-                    {"pid": 9, "window_id": 200, "layer": 0, "z_index": 1, "title": "微信", "app_name": "WeChat", "is_on_screen": false, "on_current_space": true, "space_ids": [8], "bounds": {"x": 0.0, "y": 0.0, "width": 280.0, "height": 380.0}},
+                    {"pid": 9, "window_id": 100, "layer": 0, "z_index": 2, "title": "\u{5fae}\u{4fe1}", "app_name": "WeChat", "is_on_screen": true, "on_current_space": true, "space_ids": [8], "bounds": {"x": -1416.0, "y": 0.0, "width": 846.0, "height": 774.0}},
+                    {"pid": 9, "window_id": 200, "layer": 0, "z_index": 1, "title": "\u{5fae}\u{4fe1}", "app_name": "WeChat", "is_on_screen": false, "on_current_space": true, "space_ids": [8], "bounds": {"x": 0.0, "y": 0.0, "width": 280.0, "height": 380.0}},
                     {"pid": 5, "window_id": 300, "layer": 0, "z_index": 0, "title": "Doc", "app_name": "TextEdit", "is_on_screen": false, "on_current_space": true, "space_ids": [8], "bounds": {"x": 0.0, "y": 0.0, "width": 500.0, "height": 400.0}}
                 ]}}),
                 "get_window_state" if window == Some(200) => json!({"structuredContent": {
@@ -3801,7 +3850,7 @@ pub(crate) mod tests {
         let desk = Desk::new(|| Ok(Apps), HiddenTwin(Arc::clone(&calls)), Os::Mac).background(true);
         desk.run(
             "desk_click",
-            json!({"x": -1000.0, "y": 300.0, "window": "微信"}),
+            json!({"x": -1000.0, "y": 300.0, "window": "\u{5fae}\u{4fe1}"}),
         )
         .await
         .unwrap();
@@ -3831,7 +3880,12 @@ pub(crate) mod tests {
                 &other[0]["pid"],
                 &other[0]["active"]
             ),
-            (&json!("84080"), &json!("微信"), &json!(9), &json!(false))
+            (
+                &json!("84080"),
+                &json!("\u{5fae}\u{4fe1}"),
+                &json!(9),
+                &json!(false)
+            )
         );
         let fore = Desk::new(|| Ok(Apps), Spaces(Arc::clone(&calls)), Os::Mac);
         let listed = fore.run("desk_windows", json!({})).await.unwrap().text;
@@ -3846,7 +3900,10 @@ pub(crate) mod tests {
                 .background(background)
                 .auto(auto);
             let background = background && !auto;
-            for args in [json!({"window": "微信"}), json!({"id": "84080"})] {
+            for args in [
+                json!({"window": "\u{5fae}\u{4fe1}"}),
+                json!({"id": "84080"}),
+            ] {
                 let err = desk.run("desk_snapshot", args.clone()).await.unwrap_err();
                 assert_eq!(
                     err.contains("is on another Space"),
@@ -3855,7 +3912,10 @@ pub(crate) mod tests {
                 );
             }
             let err = desk
-                .run("desk_find", json!({"name": "x", "window": "微信"}))
+                .run(
+                    "desk_find",
+                    json!({"name": "x", "window": "\u{5fae}\u{4fe1}"}),
+                )
                 .await
                 .unwrap_err();
             assert_eq!(
@@ -3876,12 +3936,11 @@ pub(crate) mod tests {
      {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(Apps), Spaces(Arc::clone(&calls)), Os::Mac).background(true);
-        let note = |out: Output| {
-            let v: Value = serde_json::from_str(&out.text).unwrap();
-            v["unverified"].as_str().unwrap_or_default().to_owned()
-        };
         let typed = desk
-            .run("desk_type", json!({"text": "x", "window": "微信"}))
+            .run(
+                "desk_type",
+                json!({"text": "x", "window": "\u{5fae}\u{4fe1}"}),
+            )
             .await
             .unwrap();
         let sent_text = sent(&calls, "type_text");
@@ -3894,7 +3953,10 @@ pub(crate) mod tests {
             "{typed}"
         );
         let key = desk
-            .run("desk_key", json!({"keys": "return", "window": "微信"}))
+            .run(
+                "desk_key",
+                json!({"keys": "return", "window": "\u{5fae}\u{4fe1}"}),
+            )
             .await
             .unwrap();
         let key = note(key);
@@ -3916,7 +3978,7 @@ pub(crate) mod tests {
         assert!(sent(&calls, "type_text").is_empty());
     }
 
-    fn sent(calls: &Arc<Mutex<Vec<(String, Value)>>>, tool: &str) -> Vec<Value> {
+    fn sent(calls: &Mutex<Vec<(String, Value)>>, tool: &str) -> Vec<Value> {
         calls
             .lock()
             .unwrap()
@@ -3924,6 +3986,16 @@ pub(crate) mod tests {
             .filter(|(t, _)| t == tool)
             .map(|(_, a)| a.clone())
             .collect()
+    }
+
+    fn refused(r: Result<Output, String>) -> bool {
+        r.err()
+            .is_some_and(|e| e.contains("not in the app allowlist"))
+    }
+
+    fn note(out: Output) -> String {
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        v["unverified"].as_str().unwrap_or_default().to_owned()
     }
 
     #[tokio::test]
@@ -4237,6 +4309,7 @@ pub(crate) mod tests {
             ("mousepad", "mouse"),
             ("mspaint.exe", "Paint"),
             ("msedge.exe", "Edge"),
+            ("notepad++.exe", "Notepad++"),
         ] {
             assert!(names_app(app, name), "{app} {name}");
         }
@@ -4248,6 +4321,8 @@ pub(crate) mod tests {
             ("xfce4-terminal", ""),
             ("xfce4-terminal", "  "),
             ("Notepad.exe", "No"),
+            ("notepad++.exe", "notepad"),
+            ("Notepad.exe", "notepad++"),
         ] {
             assert!(!names_app(app, name), "{app} {name:?}");
         }
@@ -4832,6 +4907,25 @@ pub(crate) mod tests {
         }
     }
 
+    struct Sized(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for Sized {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 2.0}}),
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 4, "window_id": 40, "title": "Untitled - Notepad", "app_name": "Notepad", "bounds": {"x": 100.0, "y": 50.0, "width": 300.0, "height": 200.0}}
+                ]}}),
+                "get_window_state" => json!({"structuredContent": {
+                    "screenshot_width": 600, "screenshot_height": 400,
+                    "window_bounds": {"x": 100.0, "y": 50.0, "width": 300.0, "height": 200.0}
+                }}),
+                _ => json!({}),
+            })
+        }
+    }
+
     #[derive(Default)]
     struct Reads {
         reads: Mutex<usize>,
@@ -4922,10 +5016,6 @@ pub(crate) mod tests {
         }
     }
 
-    static PAGE_LIT: AtomicBool = AtomicBool::new(false);
-
-    struct Page;
-
     struct Launches(Arc<Mutex<Vec<Value>>>);
 
     impl Input for Launches {
@@ -4941,6 +5031,8 @@ pub(crate) mod tests {
             Ok(json!({"content": [{"type": "text", "text": "Launched"}]}))
         }
     }
+
+    struct Page;
 
     impl Access for Page {
         fn frames(&mut self) -> Result<Vec<Frame>, String> {
@@ -5007,7 +5099,7 @@ pub(crate) mod tests {
         fn off_space(&mut self) -> Vec<Frame> {
             vec![Frame {
                 space: Some("other"),
-                ..frame("84080", "微信", 9, false, Some("WeChat"))
+                ..frame("84080", "\u{5fae}\u{4fe1}", 9, false, Some("WeChat"))
             }]
         }
 
@@ -5066,8 +5158,6 @@ pub(crate) mod tests {
             Ok(())
         }
     }
-
-    const LONG_TITLE: &str = "Example Competitive Analysis: Pricing and GTM (October 2026) - Example Docs - Google Chrome \u{2013} Work (example.com)";
 
     struct Long;
 
@@ -5293,8 +5383,6 @@ pub(crate) mod tests {
             assert_eq!(v["launched"], "Launched TextEdit (pid 7) in background.");
         }
     }
-
-    static LAUNCHED: AtomicBool = AtomicBool::new(false);
 
     struct Launched;
 
@@ -5717,6 +5805,98 @@ pub(crate) mod tests {
         assert!(desk.run("desk_snapshot", json!({})).await.is_err());
     }
 
+    struct Shifting(std::sync::atomic::AtomicUsize);
+
+    impl Input for Shifting {
+        async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
+            let captures = self.0.load(Ordering::Relaxed);
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
+                "list_windows" => {
+                    let pid = if captures == 0 { 8 } else { 4 };
+                    json!({"structuredContent": {"windows": [
+                        {"pid": pid, "window_id": pid, "layer": 0, "z_index": 1, "bounds": {"x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0}}
+                    ]}})
+                }
+                "get_desktop_state" => {
+                    self.0.fetch_add(1, Ordering::Relaxed);
+                    let shade = if captures == 0 { 255 } else { 128 };
+                    let mut png = Vec::new();
+                    let mut enc = png::Encoder::new(&mut png, 10, 10);
+                    enc.set_color(png::ColorType::Rgb);
+                    enc.write_header()
+                        .unwrap()
+                        .write_image_data(&[shade; 300])
+                        .unwrap();
+                    let mut v = json!({"structuredContent": {"screenshot_width": 10}});
+                    v["content"] = json!([{"type": "image", "data": B64.encode(&png)}]);
+                    v
+                }
+                _ => json!({}),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_masked_shot_never_shows_a_window_that_left_while_it_was_taken() {
+        let desk = Desk::new(|| Ok(Apps), Shifting(Default::default()), Os::Windows)
+            .allow(&["notepad".into()]);
+        let shot = pixels(&desk.run("desk_shot", json!({})).await.unwrap());
+        assert!(shot.iter().all(|p| *p != [255; 3]), "{shot:?}");
+    }
+
+    #[tokio::test]
+    async fn at_a_point_reads_the_window_the_driver_lists_there_by_its_number_not_its_elided_title()
+    {
+        let desk = Desk::new(|| Ok(Long), Elided(Arc::default()), Os::Mac);
+        let out = desk
+            .run("desk_at", json!({"x": 10, "y": 10}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(v["window"]["title"], LONG_TITLE, "{v}");
+    }
+
+    #[tokio::test]
+    async fn foreground_keys_naming_an_app_bring_its_window_to_the_front_first() {
+        for os in [Os::Windows, Os::Linux] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(notepad()), Behind(Arc::clone(&calls)), os);
+            desk.run("desk_key", json!({"keys": "a", "app": "Notepad"}))
+                .await
+                .unwrap();
+            let calls = calls.lock().unwrap();
+            let at = |tool: &str| calls.iter().position(|(t, _)| t == tool);
+            let raised = at("bring_to_front");
+            assert!(
+                raised.is_some() && raised < at("press_key"),
+                "{os:?}: {calls:?}"
+            );
+            assert_eq!(
+                calls[raised.unwrap()].1,
+                json!({"pid": 4, "window_id": 1}),
+                "{os:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn background_input_naming_only_the_pid_of_an_app_behind_reaches_its_window() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk =
+            Desk::new(|| Ok(notepad()), Behind(Arc::clone(&calls)), Os::Windows).background(true);
+        desk.run("desk_key", json!({"keys": "a", "pid": 8}))
+            .await
+            .unwrap();
+        let calls = calls.lock().unwrap();
+        let (_, pressed) = calls.iter().find(|(t, _)| t == "press_key").unwrap();
+        assert_eq!(
+            pressed["target"],
+            json!({"kind": "window", "pid": 8, "window_id": 2}),
+            "{calls:?}"
+        );
+    }
+
     #[tokio::test]
     async fn with_an_allowlist_a_call_that_names_a_process_still_reads_every_window() {
         let desk =
@@ -5843,7 +6023,7 @@ pub(crate) mod tests {
         desk.run("desk_key", json!({"keys": "Super_L+ctrl++"}))
             .await
             .unwrap();
-        desk.run("desk_type", json!({"text": "一二三四五六七八九十\nok"}))
+        desk.run("desk_type", json!({"text": "\u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}\u{516d}\u{4e03}\u{516b}\u{4e5d}\u{5341}\nok"}))
             .await
             .unwrap();
         let got = calls.lock().unwrap().clone();
@@ -5856,11 +6036,11 @@ pub(crate) mod tests {
                 ),
                 (
                     "type_text".to_owned(),
-                    json!({"text": "一二三四五六七八", "scope": "desktop"})
+                    json!({"text": "\u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}\u{516d}\u{4e03}\u{516b}", "scope": "desktop"})
                 ),
                 (
                     "type_text".to_owned(),
-                    json!({"text": "九十", "scope": "desktop"})
+                    json!({"text": "\u{4e5d}\u{5341}", "scope": "desktop"})
                 ),
                 (
                     "press_key".to_owned(),
@@ -5873,8 +6053,6 @@ pub(crate) mod tests {
             ]
         );
     }
-
-    static STOPPED: AtomicBool = AtomicBool::new(false);
 
     #[tokio::test]
     async fn a_linux_line_xtest_types_skips_the_driver_and_a_stop_ends_xtest_at_its_next_key() {
@@ -5916,12 +6094,21 @@ pub(crate) mod tests {
         assert_eq!(text_runs("éé abc é"), ["éé abc é"]);
         assert_eq!(text_runs(""), Vec::<&str>::new());
         assert_eq!(
-            text_runs("MCP — 你好 café 🙂! 一二三四五六七八九十"),
-            ["MCP — 你好 café 🙂! 一二三", "四五六七八九十"]
+            text_runs(
+                "MCP — \u{4f60}\u{597d} café 🙂! \u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}\u{516d}\u{4e03}\u{516b}\u{4e5d}\u{5341}"
+            ),
+            [
+                "MCP — \u{4f60}\u{597d} café 🙂! \u{4e00}\u{4e8c}\u{4e09}",
+                "\u{56db}\u{4e94}\u{516d}\u{4e03}\u{516b}\u{4e5d}\u{5341}"
+            ]
         );
         assert_eq!(
-            text_runs("你你你你你你你你你你好"),
-            ["你你你你你你你你你你好"]
+            text_runs(
+                "\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{597d}"
+            ),
+            [
+                "\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{4f60}\u{597d}"
+            ]
         );
         assert_eq!(text_runs("plain"), ["plain"]);
         assert_eq!(typed_tail("x\r\nhello").as_deref(), Some("hello"));
@@ -6085,10 +6272,6 @@ pub(crate) mod tests {
     async fn an_app_allowlist_hides_and_refuses_the_windows_of_other_apps() {
         let desk =
             Desk::new(|| Ok(Apps), Screen(Arc::default()), Os::Mac).allow(&["NOTEPAD.EXE".into()]);
-        let refused = |r: Result<Output, String>| {
-            r.err()
-                .is_some_and(|e| e.contains("not in the app allowlist"))
-        };
         let listed = desk.run("desk_windows", json!({})).await.unwrap().text;
         assert!(
             listed.contains("Notepad") && !listed.contains("Inbox"),
@@ -6130,10 +6313,6 @@ pub(crate) mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk =
             Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Mac).allow(&["notepad".into()]);
-        let refused = |r: Result<Output, String>| {
-            r.err()
-                .is_some_and(|e| e.contains("not in the app allowlist"))
-        };
         assert!(refused(desk.run("desk_at", json!({"x": 5, "y": 5})).await));
         assert!(refused(
             desk.run("desk_act", json!({"id": "4/5", "action": "click"}))
@@ -6230,6 +6409,18 @@ pub(crate) mod tests {
             B64.encode(std::fs::read(&path).unwrap()),
             shot.image_b64.unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn a_drag_in_a_window_reads_the_screen_scale_once() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(notepad()), Sized(calls.clone()), Os::Mac);
+        let drag = json!({"window": "Untitled - Notepad", "x": 10.0, "y": 10.0, "to_x": 50.0, "to_y": 20.0});
+        desk.run("desk_drag", drag).await.unwrap();
+        let calls = calls.lock().unwrap();
+        let sizes = calls.iter().filter(|(t, _)| t == "get_screen_size").count();
+        assert_eq!(sizes, 1, "{calls:?}");
+        assert!(calls.iter().any(|(t, _)| t == "drag"), "{calls:?}");
     }
 
     #[tokio::test]
@@ -6762,10 +6953,6 @@ pub(crate) mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk =
             Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Windows).allow(&["notepad".into()]);
-        let refused = |r: Result<Output, String>| {
-            r.err()
-                .is_some_and(|e| e.contains("not in the app allowlist"))
-        };
         let drag = |to: (f64, f64)| json!({"x": 100.0, "y": 800.0, "to_x": to.0, "to_y": to.1});
         assert!(refused(desk.run("desk_drag", drag((50.0, 950.0))).await));
         assert!(refused(desk.run("desk_drag", drag((50.0, 600.0))).await));
