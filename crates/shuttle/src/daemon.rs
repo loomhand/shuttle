@@ -190,14 +190,8 @@ impl<H: Handler> Daemon<H> {
         match tool {
             "record_start" => {
                 let apps = match args["apps"].take() {
-                    Value::Array(a) => a
-                        .into_iter()
-                        .filter_map(|v| match v {
-                            Value::String(s) => Some(s),
-                            _ => None,
-                        })
-                        .collect(),
-                    _ => Vec::new(),
+                    Value::Null => Vec::new(),
+                    v => parse(v)?,
                 };
                 r.start(apps)
                     .map(|id| json!({"ok": true, "id": id}).to_string())
@@ -1089,6 +1083,20 @@ mod tests {
             d.record(true),
             Err("recording runs only on macOS".to_owned())
         );
+        assert!(!d.recording());
+    }
+
+    #[tokio::test]
+    async fn record_start_refuses_apps_that_are_not_a_list_of_names() {
+        let d = daemon(Echo, Guard::default()).with_recordings(std::env::temp_dir());
+        for apps in [json!("Notes"), json!(["Notes", 5])] {
+            let out = d.answer(call("record_start", json!({"apps": apps}))).await;
+            assert!(
+                out.is_error && out.text.starts_with("invalid arguments"),
+                "{}",
+                out.text
+            );
+        }
         assert!(!d.recording());
     }
 
