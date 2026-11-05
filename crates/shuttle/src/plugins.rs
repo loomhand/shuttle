@@ -168,7 +168,7 @@ fn is_name(name: &str) -> bool {
     name.len() > SUFFIX.len() && name.ends_with(SUFFIX) && is_word(name)
 }
 
-/// Reads the `*.json` plugins in `dir` in file-name order: a file with a `service` key is a service, any other a script tool. A missing directory has none, and a file that breaks a rule, names a built-in tool or repeats a name is skipped whole with one log line.
+/// Reads the `*.json` plugins in `dir` in file-name order, so the first of two files with one name wins.
 fn load(dir: &Path, builtins: &[&str]) -> Plugins {
     let mut plugins = Plugins::default();
     let Ok(entries) = std::fs::read_dir(dir) else {

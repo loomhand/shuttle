@@ -19,7 +19,7 @@ const INSTRUCTIONS: &str = "These tools act on the user's own desktop. GUI work 
 pub(crate) type Message = Result<Map<String, Value>, String>;
 type Answer<'a> = Pin<Box<dyn Future<Output = Option<Value>> + Send + 'a>>;
 
-/// Answers MCP requests from `input` on `output` in order, one JSON line each way; desk and plugin tools go to the daemon at `endpoint`; a `notifications/cancelled` drops the request it names without a reply, and a running one closes its daemon connection.
+/// Answers the MCP requests on `input` in order, one JSON line each way.
 pub async fn serve<R, W>(
     input: R,
     mut output: W,

@@ -305,7 +305,7 @@ fn bare(url: &reqwest::Url) -> reqwest::Url {
     u
 }
 
-// a reqwest error prints only its kind; its sources name the cause, and without_url keeps any key in a query out
+// without_url keeps a key in the query string out of the message
 fn failed(model: &str, e: reqwest::Error) -> String {
     let e = e.without_url();
     let mut out = format!("{model}: {e}");
