@@ -314,6 +314,8 @@ function stolen(ws: Win[], step: number) { const r = taken(ws); if (r) throw new
 
 function terms(s: string) { return norm(s).split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !FILLER.has(w)).map((w) => w.length > 3 ? w.replace(/s$/, '') : w) }
 function norm(s: string) { return s.toLowerCase().replace(/[_…]|\.\.\.|:$/g, '').replace(/\s+/g, ' ').trim() }
+function worded(text: string, part: string) { const p = words(part); return !!p && ` ${words(text)} `.includes(` ${p} `) }
+function words(s: string) { return norm(s).split(/[^\p{L}\p{N}]+/u).filter(Boolean).join(' ') }
 function slug(s: string) { return norm(s).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) }
 function tick(k: string, t0: number) { T[k] = (T[k] ?? 0) + Date.now() - t0 }
 function* up<N extends { parent: number }>(nodes: N[], from: number): Generator<[number, N]> {
@@ -1092,11 +1094,13 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const entries = word ? entryNames(s.app) : []
     const app = norm(s.app)
     const pkg = !s.title && ANDROID_PACKAGE.test(s.app)
-    const titled = (w: Win) => pkg ? w.title === s.app || w.title.endsWith(` - ${s.app}`) : norm(w.title).includes(name)
-    const own = (w: Win) => titled(w) || (!s.title && !!w.app && norm(w.app).includes(app)) || (word && ((!pkg && norm(w.title).includes(name.replace(/-/g, ' '))) || ownedBy(w.pid, name) || entries.some((e) => norm(w.title).includes(e))))
+    const titled = (w: Win) => pkg ? w.title === s.app || w.title.endsWith(` - ${s.app}`) : worded(w.title, name)
+    const named = (w: Win) => !s.title && !!w.app && worded(w.app, app)
+    const own = (w: Win) => titled(w) || (word && (ownedBy(w.pid, name) || entries.some((e) => worded(w.title, e))))
+    const mine = (ws: Win[]) => [...ws.filter(named), ...ws.filter(own)]
     let started: Awaited<ReturnType<typeof desk.launch>> | undefined
-    const has = async () => { const ws = await desk.windows(); return ws.find(own) ?? (started?.running ? ws.find((w) => w.title === started?.title && w.pid === started?.pid) : launched ? ws.find((w) => w.title && !before.has(w.title)) : undefined) }
-    let w = (BG ? ws.find((x) => own(x) && !!x.title.trim()) : undefined) ?? ws.find(own)
+    const has = async () => { const ws = await desk.windows(); return mine(ws)[0] ?? (started?.running ? ws.find((w) => w.title === started?.title && w.pid === started?.pid) : launched ? ws.find((w) => w.title && !before.has(w.title)) : undefined) }
+    const owned = mine(ws); let w = (BG ? owned.find((x) => !!x.title.trim()) : undefined) ?? owned[0]
     const listed = !w && word && !BG ? await desk.focus(s.app).catch(() => null) : null
     if (listed) { known.add(listed.title); rec.window = lastSeen = listed.title; return }
     if (!w) {
