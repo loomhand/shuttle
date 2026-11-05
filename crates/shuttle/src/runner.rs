@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+use tokio::task::JoinSet;
 
 const DEFAULT_TIMEOUT_S: u64 = 90;
 const MAX_TIMEOUT_S: u64 = 110;
@@ -192,10 +193,9 @@ impl Runner {
             return Err("the script's pipes are missing".to_owned());
         };
         let (logs, stderr) = (Captured::default(), Captured::default());
-        let mut pipes = [
-            tokio::spawn(capture(out, Arc::clone(&logs))),
-            tokio::spawn(capture(err, Arc::clone(&stderr))),
-        ];
+        let mut pipes = JoinSet::new();
+        pipes.spawn(capture(out, Arc::clone(&logs)));
+        pipes.spawn(capture(err, Arc::clone(&stderr)));
         let mut stopped = self.stop.subscribe();
         let status = tokio::select! {
             s = tokio::time::timeout(timeout, child.wait()) => s.map_err(|_| Ended::Timeout),
@@ -218,15 +218,9 @@ impl Runner {
         {
             group.pid = None;
         }
-        let drained = async {
-            for p in &mut pipes {
-                let _ = p.await;
-            }
-        };
+        let drained = async { while pipes.join_next().await.is_some() {} };
         let _ = tokio::time::timeout(PIPE_GRACE, drained).await;
-        for p in &pipes {
-            p.abort();
-        }
+        drop(pipes);
         let mut report = json!({
             "duration_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         });
@@ -617,6 +611,41 @@ mod tests {
                 .status();
         }
         assert!(gone, "{pid} outlived the run dropped during its grace");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_dropped_run_lets_go_of_its_pipes_that_a_detached_child_still_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = runner(dir.path());
+        let (ready, closed) = (dir.path().join("ready"), dir.path().join("closed"));
+        let code = "import { spawn } from 'node:child_process'\nimport { writeFileSync } from 'node:fs'\nexport async function main({ ready, closed }) { spawn('sh', ['-c', `trap '' PIPE; while echo x; do sleep 0.05; done; : > ${closed}`], { stdio: 'inherit', detached: true }); writeFileSync(ready, ''); await new Promise((r) => setTimeout(r, 30000)) }";
+        let args =
+            json!({"code": code, "params": {"ready": ready, "closed": closed}, "timeout_s": 30});
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                report = r.script(args, "run-test") => panic!("the run ended: {report:?}"),
+                () = async {
+                    while !ready.exists() {
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                } => {}
+            }
+        })
+        .await
+        .expect("the script never got ready");
+        let mut gone = false;
+        for _ in 0..60 {
+            gone = closed.exists();
+            if gone {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            gone,
+            "the dropped run still reads the pipe of its detached child"
+        );
     }
 
     #[cfg(unix)]
