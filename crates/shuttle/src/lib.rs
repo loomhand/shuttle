@@ -204,7 +204,20 @@ pub(crate) async fn end_group(group: u32, grace: Duration) {
     if signal_group(group, libc::SIGTERM) == 0 {
         return;
     }
-    kill_after(group, grace).await;
+    kill_after(grace, |sig| signal_group(group, sig)).await;
+}
+
+#[cfg(unix)]
+pub(crate) async fn end_process(pid: u32, grace: Duration) -> bool {
+    if signal_group(pid, libc::SIGTERM) > 0 {
+        kill_after(grace, |sig| signal_group(pid, sig)).await;
+        return true;
+    }
+    if signal_pid(pid, libc::SIGTERM) == 0 {
+        return false;
+    }
+    kill_after(grace, |sig| signal_pid(pid, sig)).await;
+    true
 }
 
 #[cfg(unix)]
@@ -219,7 +232,7 @@ pub(crate) fn kill_later(rt: &tokio::runtime::Handle, group: u32, grace: Duratio
         graced.push(group);
     }
     rt.spawn(async move {
-        kill_after(group, grace).await;
+        kill_after(grace, move |sig| signal_group(group, sig)).await;
         GRACED
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -236,24 +249,25 @@ pub(crate) fn kill_graced() {
 }
 
 #[cfg(unix)]
-pub(crate) fn term(pid: u32) {
-    if let Ok(pid) = libc::pid_t::try_from(pid) {
-        // SAFETY: kill takes no pointers; `pid` names the child this daemon started.
-        unsafe { libc::kill(pid, libc::SIGTERM) };
-    }
+pub(crate) fn signal_pid(pid: u32, sig: libc::c_int) -> usize {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return 0;
+    };
+    // SAFETY: kill takes no pointers; `pid` names one process.
+    usize::from(unsafe { libc::kill(pid, sig) } == 0)
 }
 
-/// KILLs whatever is left of the group `group` leads once `grace` has passed, or nothing once the group is gone.
+/// KILLs whatever `signal` still reaches once `grace` has passed, or nothing once it reaches no process.
 #[cfg(unix)]
-async fn kill_after(group: u32, grace: Duration) {
+async fn kill_after(grace: Duration, signal: impl Fn(libc::c_int) -> usize) {
     let deadline = tokio::time::Instant::now() + grace;
     while tokio::time::Instant::now() < deadline {
         tokio::time::sleep(GROUP_POLL).await;
-        if signal_group(group, 0) == 0 {
+        if signal(0) == 0 {
             return;
         }
     }
-    signal_group(group, libc::SIGKILL);
+    signal(libc::SIGKILL);
 }
 
 #[cfg(test)]
