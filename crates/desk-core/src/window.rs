@@ -22,7 +22,7 @@ pub trait Window: Clone {
     }
 }
 
-/// The window named `want` (by [`title_matches`] tiers), else the focused one; among equals the active one, else the newest shown one, else the newest.
+/// The window named `want` (by [`title_matches`] tiers), else the focused one, or with `pid` that process's window, focused or not; among equals the active one, else the newest shown one, else the newest.
 pub fn pick<W: Window>(
     mut windows: Vec<W>,
     want: Option<&str>,
@@ -30,11 +30,11 @@ pub fn pick<W: Window>(
 ) -> Result<W, String> {
     windows.retain(|w| w.listed() && pid.is_none_or(|p| w.pid() == Some(p)));
     let Some(want) = want else {
-        let active: Vec<&W> = windows
+        let focused: Vec<&W> = windows
             .iter()
-            .filter(|w| w.active() && w.focusable())
+            .filter(|w| w.focusable() && (pid.is_some() || w.active()))
             .collect();
-        return best(&active).ok_or_else(|| "no focused window".to_owned());
+        return best(&focused).ok_or_else(|| "no focused window".to_owned());
     };
     for tier in 0..TITLE_TIERS {
         let hits: Vec<&W> = windows
@@ -206,6 +206,23 @@ mod tests {
         );
         assert!(title(Some("Mousepad"), Some(9)).is_err());
         assert!(title(Some("xfce4-panel"), None).is_err());
+    }
+
+    #[test]
+    fn a_pid_alone_picks_its_window_while_another_app_has_the_focus() {
+        let windows = vec![
+            w("Settings", false, 9),
+            hidden("Untitled 1 - Mousepad", 7),
+            w("Mousepad Preferences", false, 7),
+            w("Terminal", true, 4),
+            w("", false, 5),
+        ];
+        let title = |pid| pick(windows.clone(), None, pid).map(|w| w.title);
+        assert_eq!(title(Some(7)).unwrap(), "Mousepad Preferences");
+        assert_eq!(title(Some(9)).unwrap(), "Settings");
+        assert_eq!(title(Some(4)).unwrap(), "Terminal");
+        assert_eq!(title(None).unwrap(), "Terminal");
+        assert!(title(Some(5)).is_err());
     }
 
     #[test]

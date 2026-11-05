@@ -5722,6 +5722,23 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn background_input_naming_only_the_pid_of_an_app_behind_reaches_its_window() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk =
+            Desk::new(|| Ok(notepad()), Behind(Arc::clone(&calls)), Os::Windows).background(true);
+        desk.run("desk_key", json!({"keys": "a", "pid": 8}))
+            .await
+            .unwrap();
+        let calls = calls.lock().unwrap();
+        let (_, pressed) = calls.iter().find(|(t, _)| t == "press_key").unwrap();
+        assert_eq!(
+            pressed["target"],
+            json!({"kind": "window", "pid": 8, "window_id": 2}),
+            "{calls:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn with_an_allowlist_a_call_that_names_a_process_still_reads_every_window() {
         let desk =
             Desk::new(|| Ok(one_app()), Slow(Arc::default()), Os::Mac).allow(&["Notepad".into()]);
