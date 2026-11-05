@@ -958,12 +958,6 @@ mod tests {
 
     use super::*;
 
-    fn property(value: &[u8], offset: u32) -> Option<(Vec<u8>, u32)> {
-        let from = (offset as usize * 4).min(value.len());
-        let to = (from + 256).min(value.len());
-        Some((value[from..to].to_vec(), (value.len() - to) as u32))
-    }
-
     #[test]
     fn bgrx_pixels_become_rgb_and_a_trailing_partial_pixel_drops() {
         assert_eq!(bgrx_rgb(&[1, 2, 3, 0, 4, 5, 6, 9, 7]), [3, 2, 1, 6, 5, 4]);
@@ -1017,19 +1011,6 @@ mod tests {
             1,
             (1280, 800)
         ));
-    }
-
-    fn x11_error(error_kind: ErrorKind) -> ReplyError {
-        ReplyError::X11Error(X11Error {
-            error_kind,
-            error_code: 3,
-            sequence: 37,
-            bad_value: 25_165_899,
-            minor_opcode: 0,
-            major_opcode: 20,
-            extension_name: None,
-            request_name: Some("GetProperty"),
-        })
     }
 
     #[test]
@@ -1183,5 +1164,24 @@ mod tests {
             matches!(&other, Err(e) if e.starts_with("get WM_NAME: ")),
             "{other:?}"
         );
+    }
+
+    fn property(value: &[u8], offset: u32) -> Option<(Vec<u8>, u32)> {
+        let from = (offset as usize * 4).min(value.len());
+        let to = (from + 256).min(value.len());
+        Some((value[from..to].to_vec(), (value.len() - to) as u32))
+    }
+
+    fn x11_error(error_kind: ErrorKind) -> ReplyError {
+        ReplyError::X11Error(X11Error {
+            error_kind,
+            error_code: 3,
+            sequence: 37,
+            bad_value: 25_165_899,
+            minor_opcode: 0,
+            major_opcode: 20,
+            extension_name: None,
+            request_name: Some("GetProperty"),
+        })
     }
 }

@@ -365,48 +365,6 @@ pub struct Tree {
     pub phases: Vec<(&'static str, u128)>,
 }
 
-struct Seen {
-    listed: Instant,
-    slow: Option<Instant>,
-    last: Vec<Frame>,
-}
-
-/// Raw data of one object, from the cache or from live calls.
-#[derive(Clone, Debug, Default)]
-struct Raw {
-    role: u32,
-    name: String,
-    description: String,
-    states: u64,
-    count: i32,
-    ifaces: u8,
-}
-
-type Item = (
-    (String, OwnedObjectPath),
-    (String, OwnedObjectPath),
-    (String, OwnedObjectPath),
-    i32,
-    i32,
-    Vec<String>,
-    String,
-    u32,
-    String,
-    Vec<u32>,
-);
-
-type OldItem = (
-    (String, OwnedObjectPath),
-    (String, OwnedObjectPath),
-    (String, OwnedObjectPath),
-    Vec<(String, OwnedObjectPath)>,
-    Vec<String>,
-    String,
-    u32,
-    String,
-    Vec<u32>,
-);
-
 /// A lazily opened connection to the accessibility bus, shared by all calls.
 pub struct Atspi {
     conn: Mutex<Option<Connection>>,
@@ -1056,6 +1014,48 @@ impl Atspi {
         Ok(conn)
     }
 }
+
+struct Seen {
+    listed: Instant,
+    slow: Option<Instant>,
+    last: Vec<Frame>,
+}
+
+/// Raw data of one object, from the cache or from live calls.
+#[derive(Clone, Debug, Default)]
+struct Raw {
+    role: u32,
+    name: String,
+    description: String,
+    states: u64,
+    count: i32,
+    ifaces: u8,
+}
+
+type Item = (
+    (String, OwnedObjectPath),
+    (String, OwnedObjectPath),
+    (String, OwnedObjectPath),
+    i32,
+    i32,
+    Vec<String>,
+    String,
+    u32,
+    String,
+    Vec<u32>,
+);
+
+type OldItem = (
+    (String, OwnedObjectPath),
+    (String, OwnedObjectPath),
+    (String, OwnedObjectPath),
+    Vec<(String, OwnedObjectPath)>,
+    Vec<String>,
+    String,
+    u32,
+    String,
+    Vec<u32>,
+);
 
 /// The ARIA role of AT-SPI role `role` after W3C Core-AAM, else its AT-SPI name; a nameless generic container has none.
 pub fn role_name(role: u32, named: bool) -> &'static str {

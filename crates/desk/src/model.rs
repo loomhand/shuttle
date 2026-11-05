@@ -443,58 +443,6 @@ pub fn focused_by_tree<B: Access + ?Sized>(
 mod tests {
     use super::*;
 
-    struct Focus {
-        matched: Option<String>,
-        trees: usize,
-    }
-
-    impl Access for Focus {
-        fn frames(&mut self) -> Result<Vec<Frame>, String> {
-            Ok(Vec::new())
-        }
-
-        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
-            self.trees += 1;
-            let node = |id: &str, states: Vec<&'static str>| Node {
-                id: id.into(),
-                states,
-                ..Node::default()
-            };
-            Ok(Tree {
-                frame: frame.clone(),
-                nodes: vec![node("w", vec!["active"]), node("field", vec!["focused"])],
-                ..Tree::default()
-            })
-        }
-
-        fn node(&mut self, _: &str, _: Extras, _: usize) -> Result<Node, String> {
-            Err("unused".into())
-        }
-
-        fn focused(&mut self, frame: &Frame, _: Duration) -> Result<Option<String>, String> {
-            match self.matched.clone() {
-                Some(id) => Ok(Some(id)),
-                None => focused_by_tree(self, frame),
-            }
-        }
-
-        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
-            Err("unused".into())
-        }
-
-        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
-            Err("unused".into())
-        }
-
-        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
-            Err("unused".into())
-        }
-
-        fn close(&mut self, _: &Frame) -> Result<(), String> {
-            Err("unused".into())
-        }
-    }
-
     #[test]
     fn a_match_names_the_focused_element_without_a_tree_read_and_no_match_falls_back_to_one() {
         let frame = Frame::default();
@@ -552,5 +500,57 @@ mod tests {
         assert_eq!(format_number(3.0), "3");
         assert_eq!(format_number(-2.0), "-2");
         assert_eq!(format_number(2.5), "2.5");
+    }
+
+    struct Focus {
+        matched: Option<String>,
+        trees: usize,
+    }
+
+    impl Access for Focus {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            Ok(Vec::new())
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            self.trees += 1;
+            let node = |id: &str, states: Vec<&'static str>| Node {
+                id: id.into(),
+                states,
+                ..Node::default()
+            };
+            Ok(Tree {
+                frame: frame.clone(),
+                nodes: vec![node("w", vec!["active"]), node("field", vec!["focused"])],
+                ..Tree::default()
+            })
+        }
+
+        fn node(&mut self, _: &str, _: Extras, _: usize) -> Result<Node, String> {
+            Err("unused".into())
+        }
+
+        fn focused(&mut self, frame: &Frame, _: Duration) -> Result<Option<String>, String> {
+            match self.matched.clone() {
+                Some(id) => Ok(Some(id)),
+                None => focused_by_tree(self, frame),
+            }
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Err("unused".into())
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Err("unused".into())
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Err("unused".into())
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Err("unused".into())
+        }
     }
 }

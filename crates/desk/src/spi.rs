@@ -473,23 +473,6 @@ fn reuse<G, T>(
 mod tests {
     use super::*;
 
-    fn window(title: &str, pid: u32, active: bool) -> Frame {
-        Frame {
-            title: title.to_owned(),
-            pid: Some(pid),
-            active,
-            ..Frame::default()
-        }
-    }
-
-    fn actives(frames: &[Frame]) -> Vec<&str> {
-        frames
-            .iter()
-            .filter(|f| f.active)
-            .map(|f| f.title.as_str())
-            .collect()
-    }
-
     #[test]
     fn the_x_active_window_wins_over_a_stale_at_spi_active_state() {
         let mut frames = vec![
@@ -638,11 +621,6 @@ mod tests {
         }
     }
 
-    struct Seg {
-        id: usize,
-        size: (u16, u16),
-    }
-
     #[test]
     fn a_resize_or_a_failed_read_opens_a_new_segment_and_a_current_one_is_kept() {
         let screen = std::cell::Cell::new((1280, 800));
@@ -672,14 +650,6 @@ mod tests {
         fail.set(true);
         assert_eq!(reuse(&mut slot, open, current, read), Some(3));
         assert_eq!(opened.get(), 3);
-    }
-
-    struct Logged(usize, std::rc::Rc<std::cell::RefCell<Vec<String>>>);
-
-    impl Drop for Logged {
-        fn drop(&mut self) {
-            self.1.borrow_mut().push(format!("drop {}", self.0));
-        }
     }
 
     #[test]
@@ -812,5 +782,35 @@ mod tests {
         });
         assert!(!qt.unlisted && qt.framed);
         assert_eq!((qt.title.as_str(), qt.active), ("waits PyQt", true));
+    }
+
+    struct Seg {
+        id: usize,
+        size: (u16, u16),
+    }
+
+    struct Logged(usize, std::rc::Rc<std::cell::RefCell<Vec<String>>>);
+
+    impl Drop for Logged {
+        fn drop(&mut self) {
+            self.1.borrow_mut().push(format!("drop {}", self.0));
+        }
+    }
+
+    fn window(title: &str, pid: u32, active: bool) -> Frame {
+        Frame {
+            title: title.to_owned(),
+            pid: Some(pid),
+            active,
+            ..Frame::default()
+        }
+    }
+
+    fn actives(frames: &[Frame]) -> Vec<&str> {
+        frames
+            .iter()
+            .filter(|f| f.active)
+            .map(|f| f.title.as_str())
+            .collect()
     }
 }

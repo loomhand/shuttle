@@ -893,14 +893,6 @@ fn runtime_id(el: &IUIAutomationElement) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    fn window(hwnd: isize, owner: isize) -> Shown {
-        Shown {
-            hwnd: HWND(hwnd as *mut std::ffi::c_void),
-            owner,
-            pid: 1,
-        }
-    }
-
     #[test]
     fn only_a_dialog_with_a_listed_window_of_its_own_leaves_the_tree() {
         let shown = [window(7, 0), window(9, 7)];
@@ -939,5 +931,13 @@ mod tests {
                 ("dialog".to_owned(), Some("root".to_owned()))
             ]
         );
+    }
+
+    fn window(hwnd: isize, owner: isize) -> Shown {
+        Shown {
+            hwnd: HWND(hwnd as *mut std::ffi::c_void),
+            owner,
+            pid: 1,
+        }
     }
 }

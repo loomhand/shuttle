@@ -111,14 +111,6 @@ mod tests {
 
     const CALC: &str = "[Desktop Entry]\nVersion=1.0\nType=Application\nName=LibreOffice Calc\nName[de]=LibreOffice Tabellen\nExec=libreoffice --calc %U\n\n[Desktop Action New]\nName=New Spreadsheet\n";
 
-    fn id_in(name: &str, dirs: &[PathBuf]) -> Option<String> {
-        Entries {
-            dirs: Vec::new(),
-            apps: Vec::new(),
-        }
-        .id_in(name, dirs.to_vec())
-    }
-
     #[test]
     fn an_entry_is_named_by_its_desktop_entry_name_when_a_shown_application() {
         assert_eq!(shown_name(CALC), Some("LibreOffice Calc"));
@@ -196,5 +188,13 @@ mod tests {
             Some("evince")
         );
         assert_eq!(entries.id_in("libreoffice calc", dirs), None);
+    }
+
+    fn id_in(name: &str, dirs: &[PathBuf]) -> Option<String> {
+        Entries {
+            dirs: Vec::new(),
+            apps: Vec::new(),
+        }
+        .id_in(name, dirs.to_vec())
     }
 }

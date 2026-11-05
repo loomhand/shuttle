@@ -613,6 +613,36 @@ impl Access for Ax {
     }
 }
 
+/// An element a hit test found: its role and name as a snapshot names them, its help, its process, and the role and name of each ancestor up to its window, innermost first.
+pub struct Seen {
+    pub role: &'static str,
+    pub name: String,
+    pub description: String,
+    pub pid: Option<u32>,
+    pub path: Vec<(&'static str, String)>,
+    /// A secure text field: a password, whose keys no listener sees.
+    pub secret: bool,
+    /// The address of the web page the element is in, and its DOM id.
+    pub page: Option<Page>,
+}
+
+/// Where a web element is: the address of its page and the element's DOM id, when it has one.
+#[derive(Debug, Default)]
+pub struct Page {
+    pub url: String,
+    pub dom_id: Option<String>,
+}
+
+/// The focused element as a snapshot names it, the role of its window or sheet, the title of its window, whether it is a password field, and its web page.
+pub struct Focused {
+    pub role: &'static str,
+    pub name: String,
+    pub frame: &'static str,
+    pub window: String,
+    pub secure: bool,
+    pub page: Option<Page>,
+}
+
 struct Walk {
     extras: Extras,
     scale: f64,
@@ -692,6 +722,14 @@ impl Cgs {
     }
 }
 
+/// An on-screen window as the window server lists it: process, level, alpha and bounds in points.
+struct Listed {
+    pid: u32,
+    layer: i64,
+    alpha: f64,
+    bounds: [f64; 4],
+}
+
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     fn AXIsProcessTrustedWithOptions(options: CFTypeRef) -> bool;
@@ -734,6 +772,176 @@ unsafe extern "C" {
     fn CGDisplayModeGetPixelWidth(mode: *mut c_void) -> usize;
     fn CGDisplayModeGetWidth(mode: *mut c_void) -> usize;
     fn CGDisplayModeRelease(mode: *mut c_void);
+}
+
+/// What the hit test finds at desk point `(x, y)` now, read in one call per element so a click can be read before its app handles it.
+pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
+    let names = names(ATTRS);
+    let mut el = hit(&system_wide(), x, y, display_scale())?;
+    let mut a = attrs(&names, &el);
+    // the text of a link or button answers the hit test, and the control is what a click means
+    if a.role == "AXStaticText"
+        && let Some(p) = attr(&el, "AXParent")
+    {
+        let pa = attrs(&names, &p);
+        if matches!(pa.role.as_str(), "AXLink" | "AXButton") {
+            (el, a) = (p, pa);
+        }
+    }
+    let mut path = Vec::new();
+    let mut url = None;
+    let mut up = attr(&el, "AXParent");
+    for _ in 0..MAX_DEPTH {
+        let Some(p) = up.take() else { break };
+        let pa = attrs(&names, &p);
+        if path.len() < PATH_MAX_DEPTH {
+            path.push((
+                ax_roles::role(kind_of(&pa)).unwrap_or("generic"),
+                name_of(&pa, NAME_CHARS),
+            ));
+        }
+        if pa.role == "AXWebArea" {
+            url = attr(&p, "AXURL").and_then(url_text).or(url);
+        }
+        if pa.role == "AXWindow" {
+            break;
+        }
+        up = attr(&p, "AXParent");
+    }
+    Some(Seen {
+        role: ax_roles::role(kind_of(&a)).unwrap_or("generic"),
+        name: name_of(&a, NAME_CHARS),
+        description: a.help,
+        pid: pid(&el).and_then(|p| u32::try_from(p).ok()),
+        path,
+        secret: [&a.role, &a.subrole]
+            .iter()
+            .any(|r| *r == "AXSecureTextField"),
+        page: url.map(|url| page(&el, url)),
+    })
+}
+
+/// Whether the session's secure input is on: a password field has the keyboard focus.
+pub fn secure_input() -> bool {
+    // SAFETY: the call only reads the session's secure input state.
+    unsafe { IsSecureEventInputEnabled() }
+}
+
+/// Where typing goes now: the process of the focused element, and whether it is a password field, as a secure text field or under the session's secure input.
+pub fn typing() -> (Option<u32>, bool) {
+    typing_at(attr(&system_wide(), "AXFocusedUIElement"))
+}
+
+pub fn focused() -> Option<Focused> {
+    let names = names(ATTRS);
+    let el = attr(&system_wide(), "AXFocusedUIElement")?;
+    let a = attrs(&names, &el);
+    let mut frame = None;
+    let mut window = String::new();
+    let mut url = None;
+    let mut up = attr(&el, "AXParent");
+    for _ in 0..MAX_DEPTH {
+        let Some(p) = up.take() else { break };
+        let role = string(attr(&p, "AXRole"));
+        if role == "AXSheet" {
+            frame.get_or_insert("dialog");
+        }
+        if role == "AXWebArea" {
+            url = attr(&p, "AXURL").and_then(url_text).or(url);
+        }
+        if role == "AXWindow" {
+            let subrole = string(attr(&p, "AXSubrole"));
+            frame.get_or_insert(
+                ax_roles::role(Kind {
+                    role: &role,
+                    subrole: &subrole,
+                    ..Kind::default()
+                })
+                .unwrap_or("window"),
+            );
+            window = string(attr(&p, "AXTitle"));
+            break;
+        }
+        up = attr(&p, "AXParent");
+    }
+    Some(Focused {
+        role: ax_roles::role(kind_of(&a)).unwrap_or("generic"),
+        name: name_of(&a, NAME_CHARS),
+        frame: frame.unwrap_or("window"),
+        window,
+        secure: [&a.role, &a.subrole]
+            .iter()
+            .any(|r| *r == "AXSecureTextField"),
+        page: url.map(|url| page(&el, url)),
+    })
+}
+
+/// Whether process `pid` is a Chromium or Electron app, whose bundle holds a framework with helper apps.
+pub fn chromium(pid: u32) -> bool {
+    let Some(exe) = i32::try_from(pid).ok().and_then(exe_path) else {
+        return false;
+    };
+    let Some(contents) = exe.ancestors().find(|a| a.ends_with("Contents")) else {
+        return false;
+    };
+    std::fs::read_dir(contents.join("Frameworks")).is_ok_and(|dir| {
+        dir.flatten().any(|f| {
+            let p = f.path();
+            p.extension().is_some_and(|e| e == "framework") && p.join("Helpers").is_dir()
+        })
+    })
+}
+
+/// Turns the web accessibility tree of Chromium app `pid` on or off and answers whether it was on before.
+pub fn web(pid: u32, on: bool) -> Result<bool, String> {
+    if !chromium(pid) {
+        return Err(format!("process {pid} is no Chromium app"));
+    }
+    let app = application(i32::try_from(pid).map_err(|_| format!("no process {pid}"))?);
+    let read: Vec<(&str, bool)> = WEB_SWITCHES
+        .into_iter()
+        .filter_map(|s| Some((s, boolean(attr(&app, s))?)))
+        .collect();
+    if read.is_empty() {
+        return Err(format!("process {pid} takes no web accessibility switch"));
+    }
+    let was = read.iter().any(|(_, now)| *now);
+    if !on {
+        for (switch, _) in read.iter().filter(|(_, now)| *now) {
+            set_bool(&app, switch, false);
+        }
+        return Ok(was);
+    }
+    if was {
+        return Ok(true);
+    }
+    for (switch, _) in &read {
+        // chrome answers the set with kAXErrorNotImplemented and applies it, so the read back decides
+        set_bool(&app, switch, true);
+        if boolean(attr(&app, switch)) == Some(true) {
+            return Ok(false);
+        }
+    }
+    Err(format!(
+        "process {pid} kept its web accessibility switches off"
+    ))
+}
+
+/// The main display's backing scale: desk coordinates per point.
+pub fn display_scale() -> f64 {
+    // SAFETY: the main display id is always valid; the mode is released below when non-null.
+    unsafe {
+        let mode = CGDisplayCopyDisplayMode(CGMainDisplayID());
+        if mode.is_null() {
+            return 1.0;
+        }
+        let (px, pt) = (
+            CGDisplayModeGetPixelWidth(mode),
+            CGDisplayModeGetWidth(mode),
+        );
+        CGDisplayModeRelease(mode);
+        if pt == 0 { 1.0 } else { px as f64 / pt as f64 }
+    }
 }
 
 fn attrs(names: &CFArray<CFString>, el: &CFType) -> Attrs {
@@ -959,73 +1167,6 @@ fn application(p: i32) -> CFType {
     app
 }
 
-/// An element a hit test found: its role and name as a snapshot names them, its help, its process, and the role and name of each ancestor up to its window, innermost first.
-pub struct Seen {
-    pub role: &'static str,
-    pub name: String,
-    pub description: String,
-    pub pid: Option<u32>,
-    pub path: Vec<(&'static str, String)>,
-    /// A secure text field: a password, whose keys no listener sees.
-    pub secret: bool,
-    /// The address of the web page the element is in, and its DOM id.
-    pub page: Option<Page>,
-}
-
-/// Where a web element is: the address of its page and the element's DOM id, when it has one.
-#[derive(Debug, Default)]
-pub struct Page {
-    pub url: String,
-    pub dom_id: Option<String>,
-}
-
-/// What the hit test finds at desk point `(x, y)` now, read in one call per element so a click can be read before its app handles it.
-pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
-    let names = names(ATTRS);
-    let mut el = hit(&system_wide(), x, y, display_scale())?;
-    let mut a = attrs(&names, &el);
-    // the text of a link or button answers the hit test, and the control is what a click means
-    if a.role == "AXStaticText"
-        && let Some(p) = attr(&el, "AXParent")
-    {
-        let pa = attrs(&names, &p);
-        if matches!(pa.role.as_str(), "AXLink" | "AXButton") {
-            (el, a) = (p, pa);
-        }
-    }
-    let mut path = Vec::new();
-    let mut url = None;
-    let mut up = attr(&el, "AXParent");
-    for _ in 0..MAX_DEPTH {
-        let Some(p) = up.take() else { break };
-        let pa = attrs(&names, &p);
-        if path.len() < PATH_MAX_DEPTH {
-            path.push((
-                ax_roles::role(kind_of(&pa)).unwrap_or("generic"),
-                name_of(&pa, NAME_CHARS),
-            ));
-        }
-        if pa.role == "AXWebArea" {
-            url = attr(&p, "AXURL").and_then(url_text).or(url);
-        }
-        if pa.role == "AXWindow" {
-            break;
-        }
-        up = attr(&p, "AXParent");
-    }
-    Some(Seen {
-        role: ax_roles::role(kind_of(&a)).unwrap_or("generic"),
-        name: name_of(&a, NAME_CHARS),
-        description: a.help,
-        pid: pid(&el).and_then(|p| u32::try_from(p).ok()),
-        path,
-        secret: [&a.role, &a.subrole]
-            .iter()
-            .any(|r| *r == "AXSecureTextField"),
-        page: url.map(|url| page(&el, url)),
-    })
-}
-
 fn page(el: &CFType, url: String) -> Page {
     Page {
         url,
@@ -1054,122 +1195,6 @@ fn name_of(a: &Attrs, chars: usize) -> String {
         .map_or("", |n| n.as_str())
         .trim_end()
         .to_owned()
-}
-
-/// Whether the session's secure input is on: a password field has the keyboard focus.
-pub fn secure_input() -> bool {
-    // SAFETY: the call only reads the session's secure input state.
-    unsafe { IsSecureEventInputEnabled() }
-}
-
-/// Where typing goes now: the process of the focused element, and whether it is a password field, as a secure text field or under the session's secure input.
-pub fn typing() -> (Option<u32>, bool) {
-    typing_at(attr(&system_wide(), "AXFocusedUIElement"))
-}
-
-/// The focused element as a snapshot names it, the role of its window or sheet, the title of its window, whether it is a password field, and its web page.
-pub struct Focused {
-    pub role: &'static str,
-    pub name: String,
-    pub frame: &'static str,
-    pub window: String,
-    pub secure: bool,
-    pub page: Option<Page>,
-}
-
-pub fn focused() -> Option<Focused> {
-    let names = names(ATTRS);
-    let el = attr(&system_wide(), "AXFocusedUIElement")?;
-    let a = attrs(&names, &el);
-    let mut frame = None;
-    let mut window = String::new();
-    let mut url = None;
-    let mut up = attr(&el, "AXParent");
-    for _ in 0..MAX_DEPTH {
-        let Some(p) = up.take() else { break };
-        let role = string(attr(&p, "AXRole"));
-        if role == "AXSheet" {
-            frame.get_or_insert("dialog");
-        }
-        if role == "AXWebArea" {
-            url = attr(&p, "AXURL").and_then(url_text).or(url);
-        }
-        if role == "AXWindow" {
-            let subrole = string(attr(&p, "AXSubrole"));
-            frame.get_or_insert(
-                ax_roles::role(Kind {
-                    role: &role,
-                    subrole: &subrole,
-                    ..Kind::default()
-                })
-                .unwrap_or("window"),
-            );
-            window = string(attr(&p, "AXTitle"));
-            break;
-        }
-        up = attr(&p, "AXParent");
-    }
-    Some(Focused {
-        role: ax_roles::role(kind_of(&a)).unwrap_or("generic"),
-        name: name_of(&a, NAME_CHARS),
-        frame: frame.unwrap_or("window"),
-        window,
-        secure: [&a.role, &a.subrole]
-            .iter()
-            .any(|r| *r == "AXSecureTextField"),
-        page: url.map(|url| page(&el, url)),
-    })
-}
-
-/// Whether process `pid` is a Chromium or Electron app, whose bundle holds a framework with helper apps.
-pub fn chromium(pid: u32) -> bool {
-    let Some(exe) = i32::try_from(pid).ok().and_then(exe_path) else {
-        return false;
-    };
-    let Some(contents) = exe.ancestors().find(|a| a.ends_with("Contents")) else {
-        return false;
-    };
-    std::fs::read_dir(contents.join("Frameworks")).is_ok_and(|dir| {
-        dir.flatten().any(|f| {
-            let p = f.path();
-            p.extension().is_some_and(|e| e == "framework") && p.join("Helpers").is_dir()
-        })
-    })
-}
-
-/// Turns the web accessibility tree of Chromium app `pid` on or off and answers whether it was on before.
-pub fn web(pid: u32, on: bool) -> Result<bool, String> {
-    if !chromium(pid) {
-        return Err(format!("process {pid} is no Chromium app"));
-    }
-    let app = application(i32::try_from(pid).map_err(|_| format!("no process {pid}"))?);
-    let read: Vec<(&str, bool)> = WEB_SWITCHES
-        .into_iter()
-        .filter_map(|s| Some((s, boolean(attr(&app, s))?)))
-        .collect();
-    if read.is_empty() {
-        return Err(format!("process {pid} takes no web accessibility switch"));
-    }
-    let was = read.iter().any(|(_, now)| *now);
-    if !on {
-        for (switch, _) in read.iter().filter(|(_, now)| *now) {
-            set_bool(&app, switch, false);
-        }
-        return Ok(was);
-    }
-    if was {
-        return Ok(true);
-    }
-    for (switch, _) in &read {
-        // chrome answers the set with kAXErrorNotImplemented and applies it, so the read back decides
-        set_bool(&app, switch, true);
-        if boolean(attr(&app, switch)) == Some(true) {
-            return Ok(false);
-        }
-    }
-    Err(format!(
-        "process {pid} kept its web accessibility switches off"
-    ))
 }
 
 fn typing_at(focused: Option<CFType>) -> (Option<u32>, bool) {
@@ -1250,14 +1275,6 @@ fn shows(bounds: &[[f64; 4]], frame: Option<[f64; 4]>) -> bool {
             .iter()
             .any(|b| b.iter().zip(f).all(|(a, f)| (a - f).abs() <= 1.0))
     })
-}
-
-/// An on-screen window as the window server lists it: process, level, alpha and bounds in points.
-struct Listed {
-    pid: u32,
-    layer: i64,
-    alpha: f64,
-    bounds: [f64; 4],
 }
 
 /// The windows on screen on every level, front to back.
@@ -1429,23 +1446,6 @@ fn float(d: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<f64> {
         .and_then(|n| n.to_f64())
 }
 
-/// The main display's backing scale: desk coordinates per point.
-pub fn display_scale() -> f64 {
-    // SAFETY: the main display id is always valid; the mode is released below when non-null.
-    unsafe {
-        let mode = CGDisplayCopyDisplayMode(CGMainDisplayID());
-        if mode.is_null() {
-            return 1.0;
-        }
-        let (px, pt) = (
-            CGDisplayModeGetPixelWidth(mode),
-            CGDisplayModeGetWidth(mode),
-        );
-        CGDisplayModeRelease(mode);
-        if pt == 0 { 1.0 } else { px as f64 / pt as f64 }
-    }
-}
-
 fn text(v: &CFType, chars: usize) -> String {
     if let Some(s) = v.downcast::<CFString>() {
         return clip(s.to_string(), chars);
@@ -1467,15 +1467,6 @@ mod tests {
         assert!(!shows(&[main], Some([0.0, 0.0, 280.0, 380.0])));
         assert!(!shows(&[], Some(main)));
         assert!(shows(&[], None));
-    }
-
-    fn listed(pid: u32, layer: i64, alpha: f64, bounds: [f64; 4]) -> Listed {
-        Listed {
-            pid,
-            layer,
-            alpha,
-            bounds,
-        }
     }
 
     #[test]
@@ -1515,5 +1506,14 @@ mod tests {
     fn the_space_calls_resolve_at_run_time_and_a_missing_symbol_is_none() {
         assert!(Cgs::get().is_some());
         assert!(symbol(c"CGSNoSuchCallForShuttle").is_none());
+    }
+
+    fn listed(pid: u32, layer: i64, alpha: f64, bounds: [f64; 4]) -> Listed {
+        Listed {
+            pid,
+            layer,
+            alpha,
+            bounds,
+        }
     }
 }
