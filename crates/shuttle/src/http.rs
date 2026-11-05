@@ -256,51 +256,6 @@ mod tests {
     const TOKEN: &str = "s3cret";
     const BEARER: (&str, &str) = ("authorization", "Bearer s3cret");
 
-    async fn start() -> SocketAddr {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = Server::new("unused".to_owned(), Plugins::default(), TOKEN.to_owned());
-        tokio::spawn(server.run(listener));
-        addr
-    }
-
-    fn request(method: &str, path: &str, headers: &[(&str, &str)], body: &str) -> String {
-        let extra: String = headers
-            .iter()
-            .map(|(k, v)| format!("{k}: {v}\r\n"))
-            .collect();
-        format!(
-            "{method} {path} HTTP/1.1\r\nhost: localhost\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n{extra}\r\n{body}",
-            body.len()
-        )
-    }
-
-    async fn send(addr: SocketAddr, raw: &[u8]) -> (u16, String, String) {
-        let mut conn = TcpStream::connect(addr).await.unwrap();
-        conn.write_all(raw).await.unwrap();
-        let mut out = Vec::new();
-        conn.read_to_end(&mut out).await.unwrap();
-        let out = String::from_utf8_lossy(&out).into_owned();
-        let (head, body) = out.split_once("\r\n\r\n").unwrap_or((&out, ""));
-        let code = head
-            .split(' ')
-            .nth(1)
-            .and_then(|c| c.parse().ok())
-            .unwrap_or(0);
-        (code, head.to_ascii_lowercase(), body.to_owned())
-    }
-
-    async fn call(
-        addr: SocketAddr,
-        method: &str,
-        path: &str,
-        headers: &[(&str, &str)],
-        body: &str,
-    ) -> (u16, String, String) {
-        let headers = [&[BEARER], headers].concat();
-        send(addr, request(method, path, &headers, body).as_bytes()).await
-    }
-
     #[tokio::test]
     async fn a_request_gets_its_json_reply_and_a_notification_gets_202() {
         let addr = start().await;
@@ -433,40 +388,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    struct Held {
-        started: tokio::sync::mpsc::UnboundedSender<String>,
-        dropped: Arc<std::sync::Mutex<Vec<String>>>,
-        release: Arc<tokio::sync::Notify>,
-    }
-
-    #[cfg(unix)]
-    impl shuttle_desk::server::Handler for Held {
-        async fn answer(&self, call: desk_core::wire::Call) -> desk_core::wire::Output {
-            let tag = call.args["tag"].as_str().unwrap_or_default().to_owned();
-            let mut gone = Gone(Some(tag.clone()), Arc::clone(&self.dropped));
-            let _ = self.started.send(tag.clone());
-            if tag == "a" {
-                std::future::pending::<()>().await;
-            }
-            self.release.notified().await;
-            gone.0 = None;
-            desk_core::wire::Output::text(tag)
-        }
-    }
-
-    #[cfg(unix)]
-    struct Gone(Option<String>, Arc<std::sync::Mutex<Vec<String>>>);
-
-    #[cfg(unix)]
-    impl Drop for Gone {
-        fn drop(&mut self) {
-            if let Some(tag) = self.0.take() {
-                self.1.lock().unwrap().push(tag);
-            }
-        }
-    }
-
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_cancel_stops_the_call_of_its_own_session_and_spares_the_same_id_of_another() {
         use shuttle_desk::server;
@@ -574,5 +495,84 @@ mod tests {
             .await
             .expect("the dropped client's daemon connection stayed open")
             .unwrap();
+    }
+
+    async fn start() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = Server::new("unused".to_owned(), Plugins::default(), TOKEN.to_owned());
+        tokio::spawn(server.run(listener));
+        addr
+    }
+
+    fn request(method: &str, path: &str, headers: &[(&str, &str)], body: &str) -> String {
+        let extra: String = headers
+            .iter()
+            .map(|(k, v)| format!("{k}: {v}\r\n"))
+            .collect();
+        format!(
+            "{method} {path} HTTP/1.1\r\nhost: localhost\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n{extra}\r\n{body}",
+            body.len()
+        )
+    }
+
+    async fn send(addr: SocketAddr, raw: &[u8]) -> (u16, String, String) {
+        let mut conn = TcpStream::connect(addr).await.unwrap();
+        conn.write_all(raw).await.unwrap();
+        let mut out = Vec::new();
+        conn.read_to_end(&mut out).await.unwrap();
+        let out = String::from_utf8_lossy(&out).into_owned();
+        let (head, body) = out.split_once("\r\n\r\n").unwrap_or((&out, ""));
+        let code = head
+            .split(' ')
+            .nth(1)
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0);
+        (code, head.to_ascii_lowercase(), body.to_owned())
+    }
+
+    async fn call(
+        addr: SocketAddr,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> (u16, String, String) {
+        let headers = [&[BEARER], headers].concat();
+        send(addr, request(method, path, &headers, body).as_bytes()).await
+    }
+
+    #[cfg(unix)]
+    struct Held {
+        started: tokio::sync::mpsc::UnboundedSender<String>,
+        dropped: Arc<std::sync::Mutex<Vec<String>>>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[cfg(unix)]
+    impl shuttle_desk::server::Handler for Held {
+        async fn answer(&self, call: desk_core::wire::Call) -> desk_core::wire::Output {
+            let tag = call.args["tag"].as_str().unwrap_or_default().to_owned();
+            let mut gone = Gone(Some(tag.clone()), Arc::clone(&self.dropped));
+            let _ = self.started.send(tag.clone());
+            if tag == "a" {
+                std::future::pending::<()>().await;
+            }
+            self.release.notified().await;
+            gone.0 = None;
+            desk_core::wire::Output::text(tag)
+        }
+    }
+
+    #[cfg(unix)]
+    struct Gone(Option<String>, Arc<std::sync::Mutex<Vec<String>>>);
+
+    #[cfg(unix)]
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            if let Some(tag) = self.0.take() {
+                self.1.lock().unwrap().push(tag);
+            }
+        }
     }
 }

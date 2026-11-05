@@ -204,49 +204,6 @@ mod tests {
 
     use super::*;
 
-    async fn session(lines: &[Value], endpoint: &str) -> Vec<Value> {
-        session_with(lines, endpoint, &Plugins::default()).await
-    }
-
-    async fn session_with(lines: &[Value], endpoint: &str, plugins: &Plugins) -> Vec<Value> {
-        exchange(
-            &lines.iter().map(|l| format!("{l}\n")).collect::<String>(),
-            endpoint,
-            plugins,
-        )
-        .await
-    }
-
-    async fn exchange(input: &str, endpoint: &str, plugins: &Plugins) -> Vec<Value> {
-        let mut output = Vec::new();
-        serve(input.as_bytes(), &mut output, endpoint, plugins)
-            .await
-            .unwrap();
-        output
-            .split(|b| *b == b'\n')
-            .filter(|l| !l.is_empty())
-            .map(|l| serde_json::from_slice(l).unwrap())
-            .collect()
-    }
-
-    #[cfg(unix)]
-    async fn daemon<H: Handler>(
-        handler: H,
-        endpoint: &str,
-    ) -> tokio::task::JoinHandle<Result<(), String>> {
-        let daemon = tokio::spawn({
-            let endpoint = endpoint.to_owned();
-            async move { server::serve(Arc::new(handler), server::bind(&endpoint).await?).await }
-        });
-        for _ in 0..50 {
-            if server::connect(endpoint).await.is_ok() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        daemon
-    }
-
     #[tokio::test]
     async fn initialize_lists_the_built_in_tools_and_status_runs() {
         let out = session(
@@ -361,17 +318,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    struct Slow;
-
-    #[cfg(unix)]
-    impl Handler for Slow {
-        async fn answer(&self, _: Call) -> Output {
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            Output::text("[]")
-        }
-    }
-
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_cancel_drops_a_queued_request_and_replies_keep_their_order() {
         let dir = tempfile::tempdir().unwrap();
@@ -391,25 +337,6 @@ mod tests {
         daemon.abort();
         let ids: Vec<&Value> = out.iter().map(|r| &r["id"]).collect();
         assert_eq!(ids, [&json!(1), &json!("3")], "{out:?}");
-    }
-
-    #[cfg(unix)]
-    struct Fake;
-
-    #[cfg(unix)]
-    impl Handler for Fake {
-        async fn answer(&self, call: Call) -> Output {
-            match call.tool.as_str() {
-                "desk_shot" => Output {
-                    text: r#"{"ok":true,"width":2,"height":1}"#.into(),
-                    image_b64: Some("UE5H".into()),
-                    ..Output::default()
-                },
-                "desk_windows" => Output::text("[]"),
-                "demo_run" => Output::text(format!("demo ran {}", call.args["code"])),
-                other => Output::error(format!("{other} failed")),
-            }
-        }
     }
 
     #[cfg(unix)]
@@ -499,5 +426,78 @@ mod tests {
             crate::tools::NAMES.len()
         );
         assert_eq!(without[2]["error"]["message"], "unknown tool demo_run");
+    }
+
+    async fn session(lines: &[Value], endpoint: &str) -> Vec<Value> {
+        session_with(lines, endpoint, &Plugins::default()).await
+    }
+
+    async fn session_with(lines: &[Value], endpoint: &str, plugins: &Plugins) -> Vec<Value> {
+        exchange(
+            &lines.iter().map(|l| format!("{l}\n")).collect::<String>(),
+            endpoint,
+            plugins,
+        )
+        .await
+    }
+
+    async fn exchange(input: &str, endpoint: &str, plugins: &Plugins) -> Vec<Value> {
+        let mut output = Vec::new();
+        serve(input.as_bytes(), &mut output, endpoint, plugins)
+            .await
+            .unwrap();
+        output
+            .split(|b| *b == b'\n')
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_slice(l).unwrap())
+            .collect()
+    }
+
+    #[cfg(unix)]
+    async fn daemon<H: Handler>(
+        handler: H,
+        endpoint: &str,
+    ) -> tokio::task::JoinHandle<Result<(), String>> {
+        let daemon = tokio::spawn({
+            let endpoint = endpoint.to_owned();
+            async move { server::serve(Arc::new(handler), server::bind(&endpoint).await?).await }
+        });
+        for _ in 0..50 {
+            if server::connect(endpoint).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        daemon
+    }
+
+    #[cfg(unix)]
+    struct Slow;
+
+    #[cfg(unix)]
+    impl Handler for Slow {
+        async fn answer(&self, _: Call) -> Output {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            Output::text("[]")
+        }
+    }
+
+    #[cfg(unix)]
+    struct Fake;
+
+    #[cfg(unix)]
+    impl Handler for Fake {
+        async fn answer(&self, call: Call) -> Output {
+            match call.tool.as_str() {
+                "desk_shot" => Output {
+                    text: r#"{"ok":true,"width":2,"height":1}"#.into(),
+                    image_b64: Some("UE5H".into()),
+                    ..Output::default()
+                },
+                "desk_windows" => Output::text("[]"),
+                "demo_run" => Output::text(format!("demo ran {}", call.args["code"])),
+                other => Output::error(format!("{other} failed")),
+            }
+        }
     }
 }

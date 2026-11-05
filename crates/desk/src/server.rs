@@ -123,6 +123,9 @@ pub trait Handler: Send + Sync + 'static {
 
     fn release(&self, _holder: &str) {}
 
+    /// Counts the user's answer to a confirm question as this desk's own input.
+    fn allowed(&self) {}
+
     /// Whether some tool takes its whole connection through [`Handler::splice`], which costs every call a read of its tool.
     fn splicing(&self) -> bool {
         false
@@ -224,6 +227,7 @@ struct Entry {
 struct Native<B> {
     desk: Desk<B, Arc<Driver>>,
     computer: Computer,
+    driver: Arc<Driver>,
     open: bool,
 }
 
@@ -245,6 +249,10 @@ impl<B: Access + 'static> Handler for Native<B> {
     fn release(&self, holder: &str) {
         self.desk.release(holder);
     }
+
+    fn allowed(&self) {
+        self.driver.stamp();
+    }
 }
 
 /// Takes the unix socket `endpoint`, readable by its user only, once no other daemon holds its lock.
@@ -259,7 +267,6 @@ pub async fn bind_for(endpoint: &str, group: &str) -> Result<Listener, String> {
     bind_at(endpoint, Some(gid(group)?))
 }
 
-/// Serves `handler` at `listener`.
 #[cfg(unix)]
 pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<(), String> {
     loop {
@@ -287,7 +294,6 @@ pub async fn bind_for(endpoint: &str, group: &str) -> Result<Listener, String> {
     bind_at(endpoint, Some(group))
 }
 
-/// Serves `handler` at `listener`.
 #[cfg(windows)]
 pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<(), String> {
     let Listener {
@@ -357,7 +363,6 @@ pub fn cache_endpoint(var: &str, pipe: &str, dir: &str, file: &str) -> String {
     format!("{home}/Library/Caches/{dir}/{file}")
 }
 
-/// Connects to the endpoint.
 #[cfg(unix)]
 pub async fn connect(endpoint: &str) -> std::io::Result<Conn> {
     tokio::net::UnixStream::connect(endpoint).await
@@ -408,10 +413,11 @@ pub fn native(
         .auto(auto)
         .locked_input(locked_input);
     Native {
-        computer: Computer::new(driver, HOST)
+        computer: Computer::new(Arc::clone(&driver), HOST)
             .turn(desk.turn())
             .background(background),
         desk,
+        driver,
         open: apps.is_empty(),
     }
 }
@@ -1127,20 +1133,6 @@ mod tests {
 mod pipe_tests {
     use super::*;
 
-    #[cfg(windows)]
-    struct Guarded;
-
-    #[cfg(windows)]
-    impl Handler for Guarded {
-        async fn answer(&self, call: Call) -> Output {
-            Output::text(format!("{} answered", call.tool))
-        }
-
-        fn owner_only(&self, tool: &str) -> bool {
-            tool == "halt"
-        }
-    }
-
     #[test]
     fn the_pipe_admits_system_and_its_user_and_a_group_reads_and_writes_without_making_instances() {
         assert_eq!(
@@ -1261,5 +1253,19 @@ mod pipe_tests {
         .unwrap();
         assert_eq!((out.is_error, out.text.as_str()), (false, "halt answered"));
         server.abort();
+    }
+
+    #[cfg(windows)]
+    struct Guarded;
+
+    #[cfg(windows)]
+    impl Handler for Guarded {
+        async fn answer(&self, call: Call) -> Output {
+            Output::text(format!("{} answered", call.tool))
+        }
+
+        fn owner_only(&self, tool: &str) -> bool {
+            tool == "halt"
+        }
     }
 }

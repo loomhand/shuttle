@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 
 import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 const win = { id: '1', title: 'Rows', role: 'window', pid: process.pid, active: true }
 
-async function rows(t: { after(fn: () => void): void }, n: number) {
+async function rows(t: TestContext, n: number) {
   const pressed: string[] = []
   const nodes = [{ ref: 0, id: '1/0', parent: -1, depth: 0, role: 'window', name: 'Rows', states: ['showing'] }, ...Array.from({ length: n }, (_, k) => ({ ref: k + 1, id: `1/${k + 1}`, parent: 0, depth: 1, role: 'button', name: 'Delete', states: ['showing'], bounds: [10, 10 + 30 * k, 60, 20] }))]
   await daemon(t, ({ tool, args }) => {

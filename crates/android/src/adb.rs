@@ -101,22 +101,17 @@ pub struct Android {
     points: Mutex<HashMap<String, Saved>>,
     ui: Mutex<Option<UiServer>>,
     server_input: AtomicBool,
-    server_shot: AtomicBool,
-    server_show: AtomicBool,
     control: Mutex<Option<Control>>,
     natural: OnceCell<(i32, i32)>,
 }
 
 impl Android {
-    /// Drives the Android device `device`.
     pub fn new(device: Device) -> Self {
         Self {
             device,
             points: Mutex::new(HashMap::new()),
             ui: Mutex::new(None),
             server_input: AtomicBool::new(true),
-            server_shot: AtomicBool::new(true),
-            server_show: AtomicBool::new(true),
             control: Mutex::new(None),
             natural: OnceCell::new(),
         }
@@ -135,14 +130,10 @@ impl Android {
 
     /// The screen as PNG from the UI server, else from `screencap` when the server has no screenshot to give.
     pub(crate) async fn screenshot(&self) -> Result<Vec<u8>, String> {
-        if self.server_shot.load(Ordering::Relaxed) {
-            match self.served_png().await {
-                Ok(Some(png)) => return Ok(png),
-                Ok(None) => self.server_shot.store(false, Ordering::Relaxed),
-                Err(_) => {}
-            }
+        match self.served_png().await {
+            Ok(png) => Ok(png),
+            Err(_) => self.adb(&["exec-out", "screencap", "-p"]).await,
         }
-        self.adb(&["exec-out", "screencap", "-p"]).await
     }
 
     /// The UI elements of the screen, [index] for computer_act, and a screenshot.
@@ -394,22 +385,8 @@ impl Android {
 
     /// Whether the element at `path` of window `window` took the UI server's request to scroll itself into view.
     pub(crate) async fn show(&self, window: &str, path: &str) -> bool {
-        if !self.server_show.load(Ordering::Relaxed) {
-            return false;
-        }
-        match self
-            .served(&format!("show {window} {path}"))
-            .await
-            .as_deref()
-            .map(str::trim)
-        {
-            Ok("true") => true,
-            Ok("false") | Err(_) => false,
-            Ok(_) => {
-                self.server_show.store(false, Ordering::Relaxed);
-                false
-            }
-        }
+        let answer = self.served(&format!("show {window} {path}")).await;
+        answer.is_ok_and(|a| a.trim() == "true")
     }
 
     /// The interactive windows as the UI server lists them, as JSON.
@@ -589,11 +566,10 @@ impl Android {
         };
         let (window, point) = {
             let saved = self.points.lock().await;
-            let saved = saved.get(&args.session);
-            let point = saved.and_then(|s| s.points.get(i)).copied();
-            let point =
-                point.ok_or_else(|| format!("no element [{i}] in the latest computer_state"))?;
-            (saved.map(|s| s.window.clone()).unwrap_or_default(), point)
+            saved
+                .get(&args.session)
+                .and_then(|s| Some((s.window.clone(), *s.points.get(i)?)))
+                .ok_or_else(|| format!("no element [{i}] in the latest computer_state"))?
         };
         let front = desk::front(self).await?;
         if window.is_empty() || front.window().is_empty() {
@@ -626,15 +602,15 @@ impl Android {
         }
     }
 
-    /// The server's PNG frame; none from a server that predates the `shot` request.
-    async fn served_png(&self) -> Result<Option<Vec<u8>>, String> {
+    /// The server's PNG frame; a server that answers with an error stays up.
+    async fn served_png(&self) -> Result<Vec<u8>, String> {
         let mut slot = self.ui.lock().await;
         let mut server = self.ui_server(&mut slot).await?;
         let png = tokio::time::timeout(UI_TIMEOUT, server.ask_png())
             .await
             .map_err(|_| "UI server: timed out".to_owned())??;
         *slot = Some(server);
-        Ok(png)
+        png
     }
 
     async fn ui_server(&self, slot: &mut Option<UiServer>) -> Result<UiServer, String> {
@@ -790,8 +766,8 @@ struct UiServer {
 }
 
 impl UiServer {
-    /// The answer to `shot`: `png N`, N bytes and the end line; none from a server that predates `shot`.
-    async fn ask_png(&mut self) -> Result<Option<Vec<u8>>, String> {
+    /// The answer to `shot`: `png N`, N bytes and the end line; the inner error is the server's answer, read to its end.
+    async fn ask_png(&mut self) -> Result<Result<Vec<u8>, String>, String> {
         self.stdin
             .write_all(b"shot\n")
             .await
@@ -818,10 +794,10 @@ impl UiServer {
                     return Err("UI server exited".to_owned());
                 }
             }
-            return match head.trim().strip_prefix("<error>") {
-                Some(e) => Err(format!("UI server: {}", e.trim_end_matches("</error>"))),
-                None => Ok(None),
-            };
+            return Ok(Err(match head.trim().strip_prefix("<error>") {
+                Some(e) => format!("UI server: {}", e.trim_end_matches("</error>")),
+                None => format!("UI server: unexpected answer to shot: {}", head.trim()),
+            }));
         };
         let mut png = vec![0; len];
         self.stdout
@@ -836,7 +812,7 @@ impl UiServer {
         if end.trim_end() != UI_END {
             return Err("UI server: the PNG frame has no end".to_owned());
         }
-        Ok(Some(png))
+        Ok(Ok(png))
     }
 
     async fn ask(&mut self, cmd: &str) -> Result<String, String> {
@@ -1385,16 +1361,6 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_server_without_shot_is_asked_once_and_screencap_serves() {
-        let fake = Fake::new();
-        assert_eq!(fake.android.screenshot().await.unwrap(), b"png");
-        assert_eq!(fake.android.screenshot().await.unwrap(), b"png");
-        let requests = std::fs::read_to_string(fake.dir.path().join("requests")).unwrap();
-        assert_eq!(requests.matches("shot").count(), 1, "{requests}");
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
     async fn a_server_that_fails_to_shoot_falls_back_for_that_call_only() {
         let fake = Fake::new();
         fake.put(
@@ -1405,6 +1371,7 @@ mod tests {
         assert_eq!(fake.android.screenshot().await.unwrap(), b"png");
         let requests = std::fs::read_to_string(fake.dir.path().join("requests")).unwrap();
         assert_eq!(requests.matches("shot").count(), 2, "{requests}");
+        assert_eq!(log(&fake, "starts").lines().count(), 1);
     }
 
     #[cfg(unix)]
@@ -1530,20 +1497,6 @@ mod tests {
         list(&fake, "after-swipe.xml", "[0,600][720,700]");
         assert_eq!(press_target(&fake).await["y"].as_i64(), Some(650));
         assert!(log(&fake, "adbinput").starts_with("shell input swipe "));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_server_that_predates_show_is_asked_once() {
-        let fake = Fake::new();
-        fake.windows("");
-        list(&fake, "dump.xml", "[0,1300][720,1400]");
-        list(&fake, "after-swipe.xml", "[0,600][720,700]");
-        assert_eq!(press_target(&fake).await["y"].as_i64(), Some(650));
-        list(&fake, "dump.xml", "[0,1300][720,1400]");
-        assert_eq!(press_target(&fake).await["y"].as_i64(), Some(650));
-        assert_eq!(log(&fake, "requests").matches("show ").count(), 1);
-        assert_eq!(log(&fake, "adbinput").matches("swipe").count(), 2);
     }
 
     #[cfg(unix)]
@@ -2273,7 +2226,7 @@ mod tests {
             let adb = dir.path().join("adb");
             script(
                 &adb,
-                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi;;\n*screencap*) if [ -f \"$DIR/screencap.fail\" ]; then exit 1; fi; cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) a=$(head -n 1 \"$DIR/inject.answer\" 2>/dev/null); if [ -f \"$DIR/inject.answer\" ] && [ \"$(wc -l < \"$DIR/inject.answer\")\" -ge 1 ]; then tail -n +2 \"$DIR/inject.answer\" > \"$DIR/inject.next\"; mv \"$DIR/inject.next\" \"$DIR/inject.answer\"; fi; if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
+                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi;;\n*screencap*) if [ -f \"$DIR/screencap.fail\" ]; then exit 1; fi; cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo start >> \"$DIR/starts\"\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) a=$(head -n 1 \"$DIR/inject.answer\" 2>/dev/null); if [ -f \"$DIR/inject.answer\" ] && [ \"$(wc -l < \"$DIR/inject.answer\")\" -ge 1 ]; then tail -n +2 \"$DIR/inject.answer\" > \"$DIR/inject.next\"; mv \"$DIR/inject.next\" \"$DIR/inject.answer\"; fi; if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
             );
             let android = android_at(adb);
             Self { dir, android }

@@ -79,7 +79,7 @@ pub fn title_matches(tier: usize, title: &str, want: &str) -> bool {
 }
 
 /// The only, else the active, window titled with the app part of `want` (` - Thunar` of `inbox - Thunar`); else an error naming them.
-pub fn app_window<W: Window>(windows: &[W], want: &str) -> Result<W, String> {
+fn app_window<W: Window>(windows: &[W], want: &str) -> Result<W, String> {
     let hits: Vec<&W> = windows.iter().filter(|w| of_app(w.title(), want)).collect();
     let active: Vec<&W> = hits.iter().copied().filter(|w| w.active()).collect();
     match (hits.as_slice(), active.as_slice()) {
@@ -117,53 +117,6 @@ fn best<W: Window>(candidates: &[&W]) -> Option<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[derive(Clone, Debug)]
-    struct W {
-        title: &'static str,
-        active: bool,
-        pid: u32,
-        listed: bool,
-        shown: bool,
-    }
-
-    impl Window for W {
-        fn title(&self) -> &str {
-            self.title
-        }
-        fn active(&self) -> bool {
-            self.active
-        }
-        fn pid(&self) -> Option<u32> {
-            Some(self.pid)
-        }
-        fn listed(&self) -> bool {
-            self.listed
-        }
-        fn focusable(&self) -> bool {
-            !self.title.is_empty()
-        }
-        fn shown(&self) -> bool {
-            self.shown
-        }
-    }
-
-    fn w(title: &'static str, active: bool, pid: u32) -> W {
-        W {
-            title,
-            active,
-            pid,
-            listed: true,
-            shown: true,
-        }
-    }
-
-    fn hidden(title: &'static str, pid: u32) -> W {
-        W {
-            shown: false,
-            ..w(title, false, pid)
-        }
-    }
 
     #[test]
     fn among_equal_titles_none_active_the_newest_shown_window_wins_and_a_lone_hidden_one_still_counts()
@@ -254,5 +207,52 @@ mod tests {
             app_window(&[w("a", false, 1)], "report - Writer").unwrap_err(),
             "no window \"report - Writer\"; windows: [\"a\"]"
         );
+    }
+
+    #[derive(Clone, Debug)]
+    struct W {
+        title: &'static str,
+        active: bool,
+        pid: u32,
+        listed: bool,
+        shown: bool,
+    }
+
+    impl Window for W {
+        fn title(&self) -> &str {
+            self.title
+        }
+        fn active(&self) -> bool {
+            self.active
+        }
+        fn pid(&self) -> Option<u32> {
+            Some(self.pid)
+        }
+        fn listed(&self) -> bool {
+            self.listed
+        }
+        fn focusable(&self) -> bool {
+            !self.title.is_empty()
+        }
+        fn shown(&self) -> bool {
+            self.shown
+        }
+    }
+
+    fn w(title: &'static str, active: bool, pid: u32) -> W {
+        W {
+            title,
+            active,
+            pid,
+            listed: true,
+            shown: true,
+        }
+    }
+
+    fn hidden(title: &'static str, pid: u32) -> W {
+        W {
+            shown: false,
+            ..w(title, false, pid)
+        }
     }
 }

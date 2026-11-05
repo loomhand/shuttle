@@ -255,11 +255,6 @@ mod tests {
 
     const BUILTINS: [&str; 2] = ["script_run", "gui_plan"];
 
-    fn write(dir: &Path, file: &str, body: &str) {
-        let root = if cfg!(windows) { "\"C:\\\\" } else { "\"/" };
-        std::fs::write(dir.join(file), body.replace("\"/", root)).unwrap();
-    }
-
     #[test]
     fn loads_valid_plugins_in_file_name_order_and_skips_every_broken_file_whole() {
         let dir = tempfile::tempdir().unwrap();
@@ -479,5 +474,10 @@ mod tests {
         ] {
             assert!(!is_name(bad), "{bad}");
         }
+    }
+
+    fn write(dir: &Path, file: &str, body: &str) {
+        let root = if cfg!(windows) { "\"C:\\\\" } else { "\"/" };
+        std::fs::write(dir.join(file), body.replace("\"/", root)).unwrap();
     }
 }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 
 import { daemon } from './daemon.mts'
 import type { Call } from './daemon.mts'
@@ -7,7 +7,7 @@ import { main } from '../lib/gui_plan.mts'
 
 type El = { id: string; role: string; name: string; url?: string; dom_id?: string; states?: string[] }
 
-function browser(t: { after(fn: () => void): void }, o: { url: () => string; els: El[]; tree?: () => boolean; on?: boolean; focused?: string }) {
+function browser(t: TestContext, o: { url: () => string; els: El[]; tree?: () => boolean; on?: boolean; focused?: string }) {
   const calls: Call[] = []
   const win = { id: '7/1', title: 'Form - Browser', role: 'window', pid: 7, active: true, app: 'Browser' }
   let on = o.on ?? true

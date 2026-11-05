@@ -8,26 +8,6 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    #[derive(Debug)]
-    struct Seen {
-        path: String,
-        headers: Vec<(String, String)>,
-        body: String,
-    }
-
-    impl Seen {
-        fn header(&self, name: &str) -> Option<&str> {
-            self.headers
-                .iter()
-                .find(|(k, _)| k == name)
-                .map(|(_, v)| v.as_str())
-        }
-
-        fn json(&self) -> Value {
-            serde_json::from_str(&self.body).unwrap()
-        }
-    }
-
     #[tokio::test]
     async fn request_bodies_match_what_desk_mts_sends() {
         let reply = json!({
@@ -292,6 +272,26 @@ mod tests {
         };
         let err = Models::new(gateway(&base)).decide(args).await.unwrap_err();
         assert!(err.starts_with("typesafe/jev-1.14: invalid type"), "{err}");
+    }
+
+    #[derive(Debug)]
+    struct Seen {
+        path: String,
+        headers: Vec<(String, String)>,
+        body: String,
+    }
+
+    impl Seen {
+        fn header(&self, name: &str) -> Option<&str> {
+            self.headers
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.as_str())
+        }
+
+        fn json(&self) -> Value {
+            serde_json::from_str(&self.body).unwrap()
+        }
     }
 
     async fn fake(reply: Value) -> (String, Arc<Mutex<Vec<Seen>>>) {

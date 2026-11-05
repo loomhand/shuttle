@@ -148,16 +148,6 @@ fn answers(
 mod tests {
     use super::*;
 
-    fn object(v: Value) -> Map<String, Value> {
-        serde_json::from_value(v).unwrap()
-    }
-
-    fn questions() -> Map<String, Value> {
-        object(
-            json!({"on": {"type": "noul", "instructions": "Is it on?"}, "pick": {"type": "choice", "instructions": "Which?", "criteria": {"r1": "a", "none": "b"}}}),
-        )
-    }
-
     #[test]
     fn a_chat_reply_becomes_one_answer_per_question() {
         let text = "Sure.\n{\"on\": {\"noul\": 1.4}, \"pick\": {\"choice\": \"r1\", \"probabilities\": {\"r1\": 0.8, \"none\": 0.2}}}";
@@ -192,5 +182,15 @@ mod tests {
                 .unwrap_err()
                 .starts_with("m: no JSON object")
         );
+    }
+
+    fn object(v: Value) -> Map<String, Value> {
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn questions() -> Map<String, Value> {
+        object(
+            json!({"on": {"type": "noul", "instructions": "Is it on?"}, "pick": {"type": "choice", "instructions": "Which?", "criteria": {"r1": "a", "none": "b"}}}),
+        )
     }
 }

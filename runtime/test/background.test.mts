@@ -235,7 +235,7 @@ test('when the plan window is gone a window of the app with the same title never
 test('a background click with a button, count or modifiers goes into the plan window in its image pixels, not to the covering window', async (t) => {
   const report = { id: '1', title: 'Report', role: 'window', pid: 4, active: false, bounds: [100, 50, 600, 400] }
   const file = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'report.txt', states: ['showing'], bounds: [300, 250, 40, 20] }
-  const d = desktop([user(), report as W], ({ tool }) => {
+  const d = desktop([user(), report], ({ tool }) => {
     if (tool === 'desk_snapshot') return JSON.stringify({ window: report, truncated: false, nodes: [{ ref: 0, id: '1', parent: -1, depth: 0, role: 'window', name: 'Report', states: ['showing'] }, file] })
     if (tool === 'desk_read') return JSON.stringify(file)
     if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(1200, 800).toString('base64') }
@@ -252,7 +252,7 @@ test('a background click with a count takes the image scale from the window of i
   const finder = { id: '1', title: 'Downloads', role: 'window', pid: 4, active: false, app: 'Finder', bounds: [100, 50, 600, 400] }
   const browser = { id: '2', title: 'Downloads', role: 'window', pid: 8, active: false, app: 'Browser', bounds: [0, 0, 300, 200] }
   const file = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'report.txt', states: ['showing'], bounds: [300, 250, 40, 20] }
-  const d = desktop([user(), browser as W, finder as W], ({ tool, args }) => {
+  const d = desktop([user(), browser, finder], ({ tool, args }) => {
     if (tool === 'desk_snapshot') return JSON.stringify({ window: finder, truncated: false, nodes: [{ ref: 0, id: '1', parent: -1, depth: 0, role: 'window', name: 'Downloads', states: ['showing'] }, file] })
     if (tool === 'desk_read') return JSON.stringify(file)
     if (tool === 'desk_shot') return { text: '{"ok":true}', image: (args.pid === 4 ? gray(1200, 800) : gray(300, 200)).toString('base64') }

@@ -10,6 +10,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
+use crate::desk::lock;
 use crate::server::Conn;
 
 pub const WINDOW_SESSION: &str = "desk-window";
@@ -48,7 +49,6 @@ thread_local! {
 
 /// The driver calls the desk makes: input, windows, launch and capture.
 pub trait Input {
-    /// Calls driver tool `tool` and returns its result.
     fn call(&self, tool: &str, args: Value) -> impl Future<Output = Result<Value, String>> + Send;
 }
 
@@ -149,10 +149,7 @@ impl Driver {
     }
 
     pub(crate) fn stamp(&self) {
-        *self
-            .last_input
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::time::Instant::now());
+        *lock(&self.last_input) = Some(std::time::Instant::now());
     }
 
     async fn start(&self, kind: usize) -> Result<(), String> {
@@ -186,10 +183,7 @@ impl Driver {
     }
 
     fn since_own_input(&self) -> Option<Duration> {
-        self.last_input
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .map(|at| at.elapsed())
+        lock(&self.last_input).map(|at| at.elapsed())
     }
 
     async fn call_session(&self, tool: &str, mut args: Value) -> Result<Value, String> {

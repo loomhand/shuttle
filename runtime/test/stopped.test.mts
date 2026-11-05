@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 
 import { BUILD, daemon, gray } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 type El = { id: string; role: string; name: string; states?: string[] }
 
-function desktop(t: { after(fn: () => void): void }, els: El[], url = 'https://shop.test/form') {
+function desktop(t: TestContext, els: El[], url = 'https://shop.test/form') {
   const win = { id: '7/1', title: 'Form - Browser', role: 'window', pid: 7, active: true, app: 'Browser', bounds: [0, 0, 800, 600] }
   return daemon(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])

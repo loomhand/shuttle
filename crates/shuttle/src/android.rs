@@ -29,9 +29,14 @@ impl<N: Handler> Handler for Desks<N> {
             native.release(holder);
         }
     }
+
+    fn allowed(&self) {
+        if let Self::Native(native) = self {
+            native.allowed();
+        }
+    }
 }
 
-/// The Android device of `settings`.
 pub fn device(settings: AndroidSettings, exe: &Path) -> Result<Android, String> {
     Ok(Android::new(Device {
         ui_jar: ui_jar(settings.ui_jar, exe)?,

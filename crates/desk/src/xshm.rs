@@ -16,6 +16,7 @@ use x11rb::protocol::xproto::{
 use x11rb::protocol::{ErrorKind, Event};
 use x11rb::rust_connection::RustConnection;
 
+use crate::desk::lock;
 use crate::model::Modal;
 use crate::screen::BLOCK;
 pub use crate::screen::{Placement, block_hashes, clip, visible};
@@ -707,9 +708,7 @@ impl Grabber {
     /// The desktop shell as the last refresh read it, after the pending events.
     fn shell(&self) -> std::sync::MutexGuard<'_, Shell> {
         self.drain();
-        self.shell
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock(&self.shell)
     }
 
     /// Drains the pending events without a round trip; a dock or client list change reads the shell again.
@@ -776,10 +775,7 @@ impl Grabber {
             &rects,
             (usize::from(self.width), usize::from(self.height)),
         ));
-        *self
-            .shell
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
+        *lock(&self.shell) = next;
     }
 
     /// The screen rectangle `[x, y, w, h]` of window `w` while it is mapped.

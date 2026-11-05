@@ -19,7 +19,6 @@ use tokio::time::Instant;
 use crate::tap::{self, Tap};
 
 const SETTLE: Duration = Duration::from_millis(700);
-const IDLE: Duration = Duration::from_secs(3600);
 const CROP_PT: [f64; 2] = [200.0, 100.0];
 const ROOT_ROLES: [&str; 5] = ["window", "frame", "application", "dialog", "document"];
 const BLOCKED: [&str; 10] = [
@@ -174,7 +173,7 @@ impl Recorder {
     pub fn note(&self, text: String) -> Result<(), String> {
         lock(&self.live)
             .as_ref()
-            .ok_or_else(|| NOTHING.to_owned())?
+            .ok_or("no recording is running")?
             .notes
             .send(Input::Note(text))
             .map_err(|_| GONE.to_owned())
@@ -279,7 +278,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
     let mut events = Vec::new();
     let mut hotkey = None;
     loop {
-        let wake = settle.unwrap_or_else(|| Instant::now() + IDLE);
+        let wake = settle.unwrap_or(t0);
         tokio::select! {
             input = inputs.recv() => {
                 let Some(input) = input else { break };
@@ -643,151 +642,6 @@ mod tests {
     use desk_core::wire::Output;
 
     use super::*;
-
-    struct Desk {
-        front: Mutex<&'static str>,
-        hit: Value,
-        shots: Mutex<Vec<Value>>,
-        webs: Mutex<Vec<Value>>,
-        released: Mutex<Vec<String>>,
-    }
-
-    impl Desk {
-        fn new(hit: Value) -> Self {
-            Self {
-                front: Mutex::new("Untitled"),
-                hit,
-                shots: Mutex::default(),
-                webs: Mutex::default(),
-                released: Mutex::default(),
-            }
-        }
-    }
-
-    impl Handler for Desk {
-        async fn answer(&self, call: Call) -> Output {
-            let front = *lock(&self.front);
-            match call.tool.as_str() {
-                "desk_windows" => Output::text(
-                    json!([
-                        {"id": "7/1", "title": front, "role": "window", "pid": 7, "active": true, "app": "TextEdit", "bounds": [10, 20, 300, 200]},
-                        {"id": "9/1", "title": "Vault", "role": "window", "pid": 9, "active": false, "app": "1Password"},
-                    ])
-                    .to_string(),
-                ),
-                "desk_at" if call.args["x"].is_i64() && call.args["y"].is_i64() => {
-                    Output::text(self.hit.to_string())
-                }
-                "desk_web" if call.args["pid"] == 7 => {
-                    lock(&self.webs).push(call.args);
-                    Output::text(json!({"ok": true, "was": false}).to_string())
-                }
-                "desk_shot" => {
-                    lock(&self.shots).push(call.args);
-                    Output {
-                        text: r#"{"ok":true}"#.into(),
-                        image_b64: Some(B64.encode(gray([300, 200]))),
-                        ..Output::default()
-                    }
-                }
-                other => Output::error(format!("{other} is no desk call here")),
-            }
-        }
-
-        fn release(&self, holder: &str) {
-            lock(&self.released).push(holder.to_owned());
-        }
-    }
-
-    fn gray([w, h]: [u32; 2]) -> Vec<u8> {
-        let mut out = Vec::new();
-        let mut enc = png::Encoder::new(&mut out, w, h);
-        enc.set_color(png::ColorType::Rgb);
-        enc.set_depth(png::BitDepth::Eight);
-        let mut png = enc.write_header().unwrap();
-        png.write_image_data(&vec![128; (w * h * 3) as usize])
-            .unwrap();
-        drop(png);
-        out
-    }
-
-    fn session(
-        path: PathBuf,
-        apps: &[&str],
-    ) -> (UnboundedSender<Input>, oneshot::Receiver<Value>, Session) {
-        let (tx, rx) = unbounded_channel();
-        let (done, made) = oneshot::channel();
-        let s = Session {
-            id: "r".into(),
-            apps: apps.iter().map(|a| (*a).to_owned()).collect(),
-            per_point: 1.0,
-            path,
-            inputs: rx,
-            done,
-        };
-        (tx, made, s)
-    }
-
-    fn each<'a>(r: &'a Value, key: &str) -> Vec<&'a Value> {
-        r["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|e| &e[key])
-            .collect()
-    }
-
-    async fn run(desk: &Desk, apps: &[&str], inputs: Vec<Input>) -> Value {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rec/r.json");
-        let (tx, made, s) = session(path.clone(), apps);
-        for i in inputs {
-            tx.send(i).unwrap();
-        }
-        drop(tx);
-        work(desk, s).await;
-        let r = made.await.unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-            assert_eq!(
-                std::fs::metadata(path.parent().unwrap())
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o700
-            );
-        }
-        r
-    }
-
-    fn click(x: f64, y: f64) -> Input {
-        Input::Click {
-            x,
-            y,
-            right: false,
-            count: 1,
-            mods: Vec::new(),
-            found: None,
-        }
-    }
-
-    fn key(text: &str, secret: bool) -> Input {
-        Input::Key {
-            code: 0,
-            text: text.into(),
-            mods: Vec::new(),
-            secret,
-            pid: None,
-            focus: None,
-            read: false,
-        }
-    }
 
     #[tokio::test]
     async fn a_click_keeps_the_element_under_it_its_window_and_a_crop_around_it() {
@@ -1229,5 +1083,150 @@ mod tests {
             "{r}"
         );
         assert_eq!(r["events"][2]["window"], "report.rtf");
+    }
+
+    struct Desk {
+        front: Mutex<&'static str>,
+        hit: Value,
+        shots: Mutex<Vec<Value>>,
+        webs: Mutex<Vec<Value>>,
+        released: Mutex<Vec<String>>,
+    }
+
+    impl Desk {
+        fn new(hit: Value) -> Self {
+            Self {
+                front: Mutex::new("Untitled"),
+                hit,
+                shots: Mutex::default(),
+                webs: Mutex::default(),
+                released: Mutex::default(),
+            }
+        }
+    }
+
+    impl Handler for Desk {
+        async fn answer(&self, call: Call) -> Output {
+            let front = *lock(&self.front);
+            match call.tool.as_str() {
+                "desk_windows" => Output::text(
+                    json!([
+                        {"id": "7/1", "title": front, "role": "window", "pid": 7, "active": true, "app": "TextEdit", "bounds": [10, 20, 300, 200]},
+                        {"id": "9/1", "title": "Vault", "role": "window", "pid": 9, "active": false, "app": "1Password"},
+                    ])
+                    .to_string(),
+                ),
+                "desk_at" if call.args["x"].is_i64() && call.args["y"].is_i64() => {
+                    Output::text(self.hit.to_string())
+                }
+                "desk_web" if call.args["pid"] == 7 => {
+                    lock(&self.webs).push(call.args);
+                    Output::text(json!({"ok": true, "was": false}).to_string())
+                }
+                "desk_shot" => {
+                    lock(&self.shots).push(call.args);
+                    Output {
+                        text: r#"{"ok":true}"#.into(),
+                        image_b64: Some(B64.encode(gray([300, 200]))),
+                        ..Output::default()
+                    }
+                }
+                other => Output::error(format!("{other} is no desk call here")),
+            }
+        }
+
+        fn release(&self, holder: &str) {
+            lock(&self.released).push(holder.to_owned());
+        }
+    }
+
+    fn gray([w, h]: [u32; 2]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut enc = png::Encoder::new(&mut out, w, h);
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut png = enc.write_header().unwrap();
+        png.write_image_data(&vec![128; (w * h * 3) as usize])
+            .unwrap();
+        drop(png);
+        out
+    }
+
+    fn session(
+        path: PathBuf,
+        apps: &[&str],
+    ) -> (UnboundedSender<Input>, oneshot::Receiver<Value>, Session) {
+        let (tx, rx) = unbounded_channel();
+        let (done, made) = oneshot::channel();
+        let s = Session {
+            id: "r".into(),
+            apps: apps.iter().map(|a| (*a).to_owned()).collect(),
+            per_point: 1.0,
+            path,
+            inputs: rx,
+            done,
+        };
+        (tx, made, s)
+    }
+
+    fn each<'a>(r: &'a Value, key: &str) -> Vec<&'a Value> {
+        r["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| &e[key])
+            .collect()
+    }
+
+    async fn run(desk: &Desk, apps: &[&str], inputs: Vec<Input>) -> Value {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rec/r.json");
+        let (tx, made, s) = session(path.clone(), apps);
+        for i in inputs {
+            tx.send(i).unwrap();
+        }
+        drop(tx);
+        work(desk, s).await;
+        let r = made.await.unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(path.parent().unwrap())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
+        r
+    }
+
+    fn click(x: f64, y: f64) -> Input {
+        Input::Click {
+            x,
+            y,
+            right: false,
+            count: 1,
+            mods: Vec::new(),
+            found: None,
+        }
+    }
+
+    fn key(text: &str, secret: bool) -> Input {
+        Input::Key {
+            code: 0,
+            text: text.into(),
+            mods: Vec::new(),
+            secret,
+            pid: None,
+            focus: None,
+            read: false,
+        }
     }
 }

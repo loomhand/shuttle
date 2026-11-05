@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 
 import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 type Field = { role: string; name: string; states?: string[] } | null
 
-async function page(t: { after(fn: () => void): void }, front: { title: string; role: string }, focused: Field) {
+async function page(t: TestContext, front: { title: string; role: string }, focused: Field) {
   const typed: string[] = []
   const win = { id: '1/1', title: front.title, role: front.role, pid: process.pid, active: true, app: 'Browser' }
   await daemon(t, ({ tool, args }) => {

@@ -40,7 +40,8 @@ type Rec = {
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
 type Text = { value?: string; field: boolean }
-type Escalation = Seen & { reason: string; step?: number; plan_step?: Step }
+type Bare = Omit<Step, 'recorded' | 'fp' | 'blank'>
+type Escalation = Seen & { reason: string; step?: number; plan_step?: Bare }
 type Grounding = { what: string; ok: boolean; check: string; p?: number; p_zoom?: number | null; p_full?: number | null; why?: string; cover?: string }
 type Ground = Omit<Grounding, 'what' | 'ok' | 'why' | 'cover'> & { hit: string }
 type Trace = { i: number; op?: string; how?: string; input?: 'foreground'; ms?: number; was?: 'on' | 'off' | 'mixed'; now?: 'on' | 'off'; noop?: boolean; ground?: Ground }
@@ -48,6 +49,7 @@ type Trace = { i: number; op?: string; how?: string; input?: 'foreground'; ms?: 
 const OS = process.platform
 const BEHIND = process.env.SHUTTLE_INPUT === 'background' || process.env.SHUTTLE_INPUT === 'auto'
 const AUTO = process.env.SHUTTLE_INPUT === 'auto'
+const FG: desk.Target = AUTO ? { delivery_mode: 'foreground' } : {}
 const NO_PIXELS = 'background gui_plan does not read the screen, which shows whatever covers the plan\'s window'
 const NO_FRONT = 'no focused window'
 const SPENT = 'model credits are used up'
@@ -152,11 +154,11 @@ async function perform(p: Params): Promise<Result> {
   }
   const trace: Trace[] = []; const log: Record<string, unknown>[] = []
   const bad = plan.findIndex((s) => OPS.filter((k) => k in s).length !== 1)
-  if (bad >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: bad, plan_step: plan[bad], reason: `step ${bad} needs exactly one op of ${OPS.join(', ')}; nothing ran` } }
+  if (bad >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: bad, plan_step: plan[bad] && unrecorded(plan[bad]), reason: `step ${bad} needs exactly one op of ${OPS.join(', ')}; nothing ran` } }
   const unfilled = (s: Step) => Object.values(s).flatMap((v) => typeof v === 'string' ? [...v.matchAll(/\{\{(\w+)(?::base)?\}\}/g)].map((x) => x[1] ?? '') : []).find((n) => params[n] === undefined)
   const gap = plan.findIndex((s, i) => i >= (p.start ?? 0) && unfilled(s))
   const gapStep = plan[gap]
-  if (gapStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: gapStep, reason: `no value for {{${unfilled(gapStep)}}}: pass it in params; nothing ran` } }
+  if (gapStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: unrecorded(gapStep), reason: `no value for {{${unfilled(gapStep)}}}: pass it in params; nothing ran` } }
   BG = BEHIND
   const held = pending()
   const ws0 = await desk.windows(); for (const w of ws0) known.add(w.title)
@@ -170,7 +172,7 @@ async function perform(p: Params): Promise<Result> {
   if (held && !held.dirty) putPending({ ...held, dirty: true })
   const left = () => {
     const at = (p.start ?? 0) + trace.length
-    try { if (RUN) writeFileSync(`${RUN}/result.json`, JSON.stringify({ ok: false, done: at, trace, escalate: { step: at, plan_step: plan[at], reason: `the run ended during step ${at}: the steps before it ran, and step ${at} may have acted in part` } })) } catch {}
+    try { if (RUN) writeFileSync(`${RUN}/result.json`, JSON.stringify({ ok: false, done: at, trace, escalate: { step: at, plan_step: plan[at] && unrecorded(plan[at]), reason: `the run ended during step ${at}: the steps before it ran, and step ${at} may have acted in part` } })) } catch {}
   }
   left()
   for (const [i, planned] of plan.entries()) {
@@ -215,7 +217,7 @@ async function perform(p: Params): Promise<Result> {
       const note = step === i ? recs[i - 1]?.unverified : undefined
       const theft = BG && !(e instanceof Stolen) ? taken(await desk.windows()) : null
       const reason = `${sp.reason}${note ? ` (the step before was sent but not confirmed: ${note})` : ''}${theft ? `; meanwhile ${theft}` : ''}`
-      escalate = { step, plan_step: plan[step] ?? planned, reason, ...sp.seen }; done = step
+      escalate = { step, plan_step: unrecorded(plan[step] ?? planned), reason, ...sp.seen }; done = step
       diverged = e instanceof Diverged
     }
     stepWs = null
@@ -297,9 +299,11 @@ async function perform(p: Params): Promise<Result> {
   return out
 }
 
+function unrecorded({ recorded: _, fp: __, blank: ___, ...s }: Step): Bare { return s }
+
 function stopped(plan: Step[], e: Escalation) {
   const step = e.step ?? 0
-  const remaining = plan.slice(step).map(({ recorded: _, fp: __, blank: ___, ...s }) => s)
+  const remaining = plan.slice(step).map(unrecorded)
   return { step, intent: plan[step]?.intent ?? null, reason: e.reason, remaining }
 }
 
@@ -407,7 +411,8 @@ function follow(w: Win, ws: Win[]) { target = w; doubt = null; targetSince = new
 function rejoin(c: Chain | null, ws: Win[]) { const was = c && Date.now() - c.at < CHAIN_AGE ? ws.find((w) => w.title === c.window && w.pid === c.pid) : undefined; if (was) follow(was, ws) }
 // a macOS sheet has no window of its own, so its input goes to the window it hangs on
 function at(w: Win | null): desk.Target {
-  if (!BG || !w) return {}
+  if (!BG) return FG
+  if (!w) return {}
   if (doubt) throw new Surprise(doubt)
   let x = w
   for (let o = OS === 'darwin' ? x.owner : undefined; o; o = x.owner) { const up = listed.find((y) => y.id === o); if (!up) break; x = up }
@@ -769,11 +774,11 @@ function pointer(s: Step) {
 }
 
 async function inWindow(w: Win, x: number, y: number): Promise<[number, number, desk.Target]> {
-  if (!BG) return [x, y, {}]
+  if (!BG) return [x, y, FG]
   const t = at(w); const to = listed.find((v) => v.title === t.window && v.pid === t.pid)
   if (!to?.bounds) {
     if (!AUTO) throw new Surprise(`"${w.title}" has no screen bounds, and a background click with a button, count or modifiers needs them to reach its window`, await seen())
-    await front(w); return [x, y, {}]
+    await front(w); return [x, y, FG]
   }
   const k = (await desk.shot({ window: t.window, pid: t.pid ?? undefined })).readUInt32BE(16) / to.bounds[2]
   return [(x - to.bounds[0]) * k, (y - to.bounds[1]) * k, t]
@@ -1152,7 +1157,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       const now = await texts(w)
       if (AUTO && !shows(was, now, s.type) && unchanged(was, now) && !taken(await desk.windows())) {
         await desk.focus(w.title, w.pid)
-        for (const [i, part] of s.type.split(/\r?\n/).entries()) { if (i) await desk.key('Return'); if (part) await desk.typeText(part) }
+        for (const [i, part] of s.type.split(/\r?\n/).entries()) { if (i) await desk.key('Return', FG); if (part) await desk.typeText(part, FG) }
         rec.how = 'foreground'; rec.unverified = undefined; fronted = true; BG = false
       } else if (!shows(was, now, s.type)) throw new Surprise(`"${s.type}" did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
       rec.confirmed = true
@@ -1321,7 +1326,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (BG && !AUTO) throw new Surprise(`no element of "${w.title}" matches "${target}", and finding it on the screen is out: ${NO_PIXELS}`, {}, true)
     if (BG) await front(w)
     const [x, y] = await spot(s.recorded, target, w, rec)
-    t0 = Date.now(); await desk.click(x, y, pointer(s)); tick('act', t0)
+    t0 = Date.now(); await desk.click(x, y, { ...pointer(s), ...at(w) }); tick('act', t0)
     if (!s.recorded) rec.unsaved = true
     await settle(w.title); return
   }

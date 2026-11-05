@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 
 import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 const win = { id: '1', title: 'Big - Editor', role: 'window', pid: process.pid, active: true }
 
-function escalation(t: { after(fn: () => void): void }, truncated: boolean, buttons: number) {
+function escalation(t: TestContext, truncated: boolean, buttons: number) {
   const nodes = [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: win.title, states: ['showing', 'active'] }]
   for (let i = 1; i <= buttons; i++) nodes.push({ ref: i, id: `1/${i + 1}`, parent: 0, depth: 1, role: 'button', name: `Toolbar action number ${i}`, states: ['showing'] })
   return daemon(t, ({ tool }) => {

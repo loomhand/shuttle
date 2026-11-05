@@ -20,6 +20,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
+#[cfg(target_os = "linux")]
+use crate::desk::CALL_LIMIT;
 use crate::desk::{Turn, Typer, launch_name, lock, runs_app, text_runs, xtest};
 use crate::driver::{CONNECT_RETRY, Driver, ENDED, Request, image_of, text_of};
 use crate::keys::{Os, key_names};
@@ -40,7 +42,7 @@ const BACKGROUND_ACT: &str = "background input: computer actions send desktop in
 const TREE_CHARS: usize = 15_000;
 const MIN_WINDOW: i64 = 10;
 const CHROME_CLASS: &str = "Google-chrome";
-const COMMIT_KEYS: [&str; 6] = ["return", "enter", "kp_enter", "f5", "alt+left", "alt+right"];
+const COMMIT_KEYS: [&str; 3] = ["f5", "alt+left", "alt+right"];
 
 const SETTLE: Duration = Duration::from_millis(600);
 const NO_CHANGE: Duration = Duration::from_millis(300);
@@ -365,10 +367,11 @@ impl Computer {
         if a.action == "wait" {
             let secs = a.seconds.unwrap_or(1.0).clamp(0.1, MAX_WAIT_SECS);
             tokio::time::sleep(Duration::from_secs_f64(secs)).await;
+            let (shot, missed) = self.settled(session, None, &a).await;
             return Ok(Output {
-                text: format!("waited {secs:.1}s"),
+                text: format!("waited {secs:.1}s{missed}"),
                 is_error: false,
-                image_b64: self.step_shot(session, &a).await?,
+                image_b64: shot,
                 ..Output::default()
             });
         }
@@ -537,7 +540,7 @@ impl Computer {
         })
     }
 
-    /// Base64 PNG of the whole desktop, scaled so its long edge is at most `max_edge`.
+    /// A base64 image of the whole desktop, scaled so its long edge is at most `max_edge`.
     async fn screenshot(
         &self,
         session: &str,
@@ -570,18 +573,11 @@ impl Computer {
         }
     }
 
-    async fn step_shot(&self, session: &str, a: &ActArgs) -> Result<Option<String>, String> {
-        if a.shot_discarded {
-            return Ok(None);
-        }
-        self.screenshot(session, a.max_edge).await
-    }
-
     async fn screenshot_once(&self, max_edge: Option<u32>) -> Result<Option<String>, String> {
         let session = self.own("shot");
         let shot = self.screenshot(session.name(), max_edge).await;
         self.scales().remove(session.name());
-        self.end_own(session).await?;
+        self.end_once(Some(session)).await;
         shot
     }
 
@@ -783,10 +779,11 @@ impl Computer {
                     let _ = self.end_own(probe).await;
                 }
                 drop(input);
+                let (shot, missed) = self.settled(session, None, a).await;
                 return Ok(Output {
-                    text: e,
+                    text: e + &missed,
                     is_error: true,
-                    image_b64: self.step_shot(session, a).await?,
+                    image_b64: shot,
                     ..Output::default()
                 });
             }
@@ -943,8 +940,13 @@ impl Computer {
             changed = differs;
             let moved = last.as_ref().is_none_or(|l| l.changes(&frame, &volatile));
             if let Frame::Blocks(blocks) = &frame {
-                if let (Frame::Blocks(first), Some(prev)) = (&first, prev.as_deref()) {
-                    shown.learn(first, prev, blocks, &mut volatile);
+                if let Frame::Blocks(first) = &first {
+                    shown.learn(
+                        first,
+                        prev.as_deref().unwrap_or(first),
+                        blocks,
+                        &mut volatile,
+                    );
                 }
                 prev.get_or_insert_default().clone_from(blocks);
             }
@@ -1390,10 +1392,11 @@ impl Computer {
         let spi = self.spi.get_or_init(|| Worker::new(Spi::open));
         let end = Instant::now() + RETURN_GAP;
         while Instant::now() < end {
-            match spi.run(end - Instant::now(), (), default_enabled).await {
-                Ok(true) => return,
-                Ok(false) => tokio::time::sleep(RETURN_POLL).await,
-                Err(_) => return tokio::time::sleep_until(end).await,
+            let poll = spi.run(CALL_LIMIT, (), default_enabled);
+            match tokio::time::timeout(end - Instant::now(), poll).await {
+                Ok(Ok(true)) => return,
+                Ok(Ok(false)) => tokio::time::sleep(RETURN_POLL).await,
+                _ => return tokio::time::sleep_until(end).await,
             }
         }
     }
@@ -1634,20 +1637,24 @@ impl Computer {
             .await;
     }
 
-    /// The screen rectangle `[x, y, w, h]` clipped to the screen, and its RGB rows over MIT-SHM; none without MIT-SHM.
+    /// The screen rectangle `[x, y, w, h]` clipped to the screen, and its RGB rows over MIT-SHM; none without MIT-SHM or while the driver's overlay shows.
     fn region_rgb(&self, area: [f64; 4]) -> Option<Result<Cut, String>> {
         self.shm(|g| {
-            let Some(rect) = clip(area, g.size()) else {
+            if g.overlay_shown()? {
                 return Ok(None);
+            }
+            let Some(rect) = clip(area, g.size()) else {
+                return Ok(Some(None));
             };
-            Ok(Some(Cut {
+            Ok(Some(Some(Cut {
                 rect,
                 width: rect[2].unsigned_abs(),
                 height: rect[3].unsigned_abs(),
                 rgb: g.region(rect)?,
                 per_unit: 1.0,
-            }))
+            })))
         })
+        .flatten()
         .map(|cut| cut.ok_or_else(|| OFF_SCREEN.to_owned()))
     }
 
@@ -2118,7 +2125,7 @@ fn confirms(a: &ActArgs) -> bool {
     if a.action == "type" {
         return a.text.as_deref().is_some_and(|t| t.ends_with(['\n', '\r']));
     }
-    combo(a).is_some_and(|k| ["return", "enter", "kp_enter"].contains(&k.as_str()))
+    combo(a).is_some_and(|k| k == "return")
 }
 
 fn gtk(pid: i64) -> bool {
@@ -2141,11 +2148,7 @@ fn clicks_left(a: &ActArgs) -> bool {
 
 /// Whether `a` may commit a page load: a left click, Return or a navigation key, or text ending in a newline.
 fn commits(a: &ActArgs) -> bool {
-    match a.action.as_str() {
-        "type" => a.text.as_deref().is_some_and(|t| t.ends_with(['\n', '\r'])),
-        _ if clicks_left(a) => true,
-        _ => combo(a).is_some_and(|k| COMMIT_KEYS.contains(&k.as_str())),
-    }
+    confirms(a) || clicks_left(a) || combo(a).is_some_and(|k| COMMIT_KEYS.contains(&k.as_str()))
 }
 
 /// The lowercase combination a `key` or `hotkey` action presses.
@@ -2567,88 +2570,6 @@ mod tests {
     type Clicks = std::sync::Arc<std::sync::Mutex<Vec<(f64, f64)>>>;
     type Landed = std::sync::Arc<std::sync::Mutex<Vec<Vec<f64>>>>;
 
-    fn cua(socket: &Path) -> Computer {
-        cua_on(socket, Os::Linux)
-    }
-
-    fn cua_on(socket: &Path, os: Os) -> Computer {
-        Computer::new(
-            Arc::new(Driver::new(socket.to_string_lossy().into_owned())),
-            os,
-        )
-    }
-
-    #[cfg(unix)]
-    fn endpoint(dir: &Path) -> PathBuf {
-        dir.join("cua.sock")
-    }
-
-    #[cfg(windows)]
-    fn endpoint(_: &Path) -> PathBuf {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        PathBuf::from(format!(
-            r"\\.\pipe\shuttle-test-cua-{}-{n}",
-            std::process::id()
-        ))
-    }
-
-    #[cfg(unix)]
-    struct Fake(tokio::net::UnixListener);
-
-    #[cfg(unix)]
-    impl Fake {
-        fn bind(socket: impl AsRef<Path>) -> std::io::Result<Self> {
-            tokio::net::UnixListener::bind(socket).map(Self)
-        }
-
-        async fn accept(&self) -> std::io::Result<(crate::server::Accepted, ())> {
-            self.0.accept().await.map(|(stream, _)| (stream, ()))
-        }
-    }
-
-    #[cfg(windows)]
-    struct Fake {
-        name: String,
-        next: std::sync::Mutex<tokio::net::windows::named_pipe::NamedPipeServer>,
-    }
-
-    #[cfg(windows)]
-    impl Fake {
-        fn bind(socket: impl AsRef<Path>) -> std::io::Result<Self> {
-            let name = socket.as_ref().to_string_lossy().into_owned();
-            let first = tokio::net::windows::named_pipe::ServerOptions::new()
-                .first_pipe_instance(true)
-                .create(&name)?;
-            Ok(Self {
-                name,
-                next: std::sync::Mutex::new(first),
-            })
-        }
-
-        async fn accept(&self) -> std::io::Result<(crate::server::Accepted, ())> {
-            let fresh = tokio::net::windows::named_pipe::ServerOptions::new().create(&self.name)?;
-            let server = std::mem::replace(&mut *self.next.lock().unwrap(), fresh);
-            server.connect().await?;
-            Ok((server, ()))
-        }
-    }
-
-    impl Fake {
-        async fn serve(self, mut answer: impl FnMut(&Value) -> Value) {
-            loop {
-                let (stream, ()) = self.accept().await.unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let req: Value = serde_json::from_str(&line).unwrap();
-                let mut out = serde_json::to_vec(&answer(&req)).unwrap();
-                out.push(b'\n');
-                reader.into_inner().write_all(&out).await.unwrap();
-            }
-        }
-    }
-
     #[cfg(unix)]
     #[tokio::test]
     async fn computer_input_takes_the_same_user_check_and_counts_as_the_drivers_own() {
@@ -2794,27 +2715,6 @@ mod tests {
         driver.abort();
     }
 
-    async fn closing_then_answering_driver(socket: PathBuf) -> Vec<String> {
-        let listener = Fake::bind(&socket).unwrap();
-        let mut names = Vec::new();
-        for answer in [false, true] {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut reader = BufReader::new(stream);
-            let mut line = String::new();
-            reader.read_line(&mut line).await.unwrap();
-            let req: Value = serde_json::from_str(&line).unwrap();
-            names.push(req["name"].as_str().unwrap().to_owned());
-            if answer {
-                reader
-                    .into_inner()
-                    .write_all(b"{\"ok\":true,\"result\":{\"structuredContent\":{}}}\n")
-                    .await
-                    .unwrap();
-            }
-        }
-        names
-    }
-
     #[tokio::test]
     async fn a_read_is_retried_once_after_an_empty_reply() {
         let dir = tempfile::tempdir().unwrap();
@@ -2904,36 +2804,6 @@ mod tests {
         driver.abort();
     }
 
-    fn window_driver(
-        socket: &Path,
-        calls: &std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
-        typed: usize,
-    ) -> tokio::task::JoinHandle<()> {
-        let listener = Fake::bind(socket).unwrap();
-        let log = std::sync::Arc::clone(calls);
-        tokio::spawn(listener.serve(move |req| {
-                let text = req["args"]["text"].as_str().unwrap_or_default().to_owned();
-                let types = log
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .filter(|c| c["name"] == "type_text")
-                    .count();
-                let reply = match req["name"].as_str().unwrap_or_default() {
-                    "type_text" if types < typed => {
-                        json!({"ok": true, "result": {"content": [{"type": "text", "text": format!("Typed {text}")}]}})
-                    }
-                    "type_text" => json!({"ok": false, "error": format!("cannot type {text}")}),
-                    "list_windows" => {
-                        json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Google-chrome", "title": "checkout", "bounds": {"x": 0, "y": 0, "width": 800, "height": 600}, "z_index": 1}]}}})
-                    }
-                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
-                };
-                log.lock().unwrap().push(req.clone());
-                reply
-        }))
-    }
-
     #[tokio::test]
     async fn a_type_at_a_point_clicks_it_then_types_into_the_focus() {
         let dir = tempfile::tempdir().unwrap();
@@ -2964,20 +2834,6 @@ mod tests {
         assert_eq!(input[1]["args"]["text"], "hello");
         assert!(input[1]["args"].get("x").is_none(), "{}", input[1]);
         driver.abort();
-    }
-
-    async fn turn(cua: &Computer) -> Turn {
-        Arc::new(cua.input.clone().lock_owned().await)
-    }
-
-    fn types(calls: &std::sync::Mutex<Vec<Value>>) -> Vec<String> {
-        calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|c| c["name"] == "type_text")
-            .map(|c| c["args"]["text"].as_str().unwrap_or_default().to_owned())
-            .collect()
     }
 
     #[tokio::test]
@@ -3185,61 +3041,6 @@ mod tests {
         assert_eq!(got, [(7, 180, 97, 920, 436), (8, 57, 52, 950, 538)]);
     }
 
-    fn press_driver(
-        socket: &Path,
-        calls: &std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
-        refusal: &'static str,
-        role: &'static str,
-        hit: &'static str,
-    ) -> tokio::task::JoinHandle<()> {
-        let listener = Fake::bind(socket).unwrap();
-        let log = std::sync::Arc::clone(calls);
-        tokio::spawn(listener.serve(move |req| {
-                let reply = match req["name"].as_str().unwrap_or_default() {
-                    "list_windows" if hit == "windowless" => {
-                        json!({"ok": true, "result": {"structuredContent": {"windows": []}}})
-                    }
-                    "list_windows" => {
-                        json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "TextEdit", "title": "t", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 2}]}}})
-                    }
-                    "get_window_state" => {
-                        let window = if hit == "windowless" {
-                            Value::Null
-                        } else {
-                            json!(9)
-                        };
-                        json!({"ok": true, "result": {"structuredContent": {"window_id": window, "elements": [{"element_index": 0, "element_token": "t0", "role": role, "label": "", "frame": {"x": 100.0, "y": 100.0, "w": 200.0, "h": 40.0}}]}}})
-                    }
-                    "click" if req["args"]["verify_hit"] == true => match hit {
-                        "" => {
-                            json!({"ok": true, "result": {"content": [{"type": "text", "text": "hit"}]}})
-                        }
-                        "unknown" => {
-                            json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "click: unknown argument verify_hit; accepted: pid"}], "structuredContent": {"code": "invalid_arguments"}}})
-                        }
-                        "posted" => {
-                            json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "click.verify_hit: the click failed: mouse up"}]}})
-                        }
-                        code => {
-                            json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "click.verify_hit: nothing was sent."}], "structuredContent": {"status": "refused", "code": code, "effect": "refused", "refusal": {"code": code}}}})
-                        }
-                    },
-                    "click" | "double_click" | "right_click"
-                        if req["args"]["element_token"].is_string() =>
-                    {
-                        if refusal.is_empty() {
-                            json!({"ok": true, "result": {"content": [{"type": "text", "text": "pressed"}]}})
-                        } else {
-                            json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": refusal}]}})
-                        }
-                    }
-                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
-                };
-                log.lock().unwrap().push(req.clone());
-                reply
-        }))
-    }
-
     #[tokio::test]
     async fn an_element_without_the_press_action_gets_one_hit_checked_click() {
         let (out, clicks) = field("AXList", "click", UNSUPPORTED, "").await;
@@ -3287,34 +3088,6 @@ mod tests {
         let (out, clicks) = field("AXList", "right_click", UNSUPPORTED, "").await;
         assert!(out.is_error && out.text.contains("-25206"), "{}", out.text);
         assert_eq!(clicks.len(), 1, "{clicks:?}");
-    }
-
-    async fn field(
-        role: &'static str,
-        action: &str,
-        refusal: &'static str,
-        hit: &'static str,
-    ) -> (Output, Vec<Value>) {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = endpoint(dir.path());
-        let calls = std::sync::Arc::default();
-        let driver = press_driver(&socket, &calls, refusal, role, hit);
-        let cua = cua_on(&socket, Os::Mac);
-        cua.state(json!({"pid": 7})).await.unwrap();
-        calls.lock().unwrap().clear();
-        let out = cua
-            .act(json!({"action": action, "element": 0}))
-            .await
-            .unwrap();
-        driver.abort();
-        let sent = calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|c| !RETRIED.iter().any(|r| c["name"] == *r))
-            .map(|c| c["args"].clone())
-            .collect();
-        (out, sent)
     }
 
     #[tokio::test]
@@ -3428,24 +3201,6 @@ mod tests {
         assert_eq!(clicks.len(), 1, "{clicks:?}");
     }
 
-    fn full_shot(width: u32, height: u32, screen_width: u32) -> Value {
-        let image = png_of(width, height, &vec![255; (width * height * 4) as usize]);
-        json!({"ok": true, "result": {"content": [{"type": "image", "data": image, "mimeType": "image/png"}], "structuredContent": {"screen_width": screen_width, "screenshot_width": width}}})
-    }
-
-    fn png_of(width: u32, height: u32, rgba: &[u8]) -> String {
-        let mut out = Vec::new();
-        let mut encoder = png::Encoder::new(&mut out, width, height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder
-            .write_header()
-            .unwrap()
-            .write_image_data(rgba)
-            .unwrap();
-        B64.encode(out)
-    }
-
     #[test]
     fn a_crop_keeps_the_rgb_of_its_rectangle_and_stops_at_the_image_edge() {
         let rgba: Vec<u8> = (0..4u8 * 2 * 4).collect();
@@ -3484,24 +3239,6 @@ mod tests {
             out.text
         );
         driver.abort();
-    }
-
-    fn shot_driver(
-        socket: &Path,
-        calls: &std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
-    ) -> tokio::task::JoinHandle<()> {
-        let listener = Fake::bind(socket).unwrap();
-        let log = std::sync::Arc::clone(calls);
-        let full = full_shot(2048, 1280, 2048);
-        tokio::spawn(listener.serve(move |req| {
-            let name = req["name"].as_str().unwrap_or_default().to_owned();
-            let session = req["args"]["session"].as_str().unwrap_or_default();
-            log.lock().unwrap().push((name.clone(), session.to_owned()));
-            match name.as_str() {
-                "get_desktop_state" => full.clone(),
-                _ => json!({"ok": true, "result": {"structuredContent": {}}}),
-            }
-        }))
     }
 
     #[tokio::test]
@@ -3744,93 +3481,6 @@ mod tests {
         driver.abort();
     }
 
-    fn retina_driver(
-        dir: &Path,
-        fails: bool,
-        idle_ends: bool,
-    ) -> (PathBuf, Landed, tokio::task::JoinHandle<()>) {
-        let socket = endpoint(dir);
-        let listener = Fake::bind(&socket).unwrap();
-        let landed = Landed::default();
-        let log = std::sync::Arc::clone(&landed);
-        let mut factors = HashMap::<String, f64>::new();
-        let (mut ended, mut idle_ends) = (HashSet::<String>::new(), idle_ends);
-        let driver = tokio::spawn(listener.serve(move |req| {
-                let args = &req["args"];
-                let session = args["session"].as_str().unwrap_or_default().to_owned();
-                let windowless = args["pid"].is_null() && args["element_token"].is_null();
-                let refused = |text: &str| json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": text}]}});
-                match req["name"].as_str().unwrap_or_default() {
-                    name if ended.contains(&session) && name != "start_session" => {
-                        json!({"ok": false, "error": format!("session has ended; tool call '{name}' was rejected")})
-                    }
-                    "start_session" => {
-                        ended.remove(&session);
-                        json!({"ok": true, "result": {}})
-                    }
-                    "get_desktop_state" if fails => {
-                        refused("Desktop screenshot failed: the display is asleep")
-                    }
-                    "get_desktop_state" => {
-                        let width = match args["max_image_dimension"].as_u64() {
-                            None => 120,
-                            Some(0) => 200,
-                            Some(edge) => edge.min(200),
-                        };
-                        let mut state = json!({"screenshot_width": width, "screenshot_height": width / 2, "screen_width": 100, "screen_height": 50, "scale_factor": 2.0});
-                        if width < 200 {
-                            state["screenshot_original_width"] = 200.into();
-                            state["screenshot_original_height"] = 100.into();
-                            factors.insert(session, 200.0 / width as f64);
-                        } else {
-                            factors.remove(&session);
-                            if idle_ends && session == DEFAULT_SESSION {
-                                idle_ends = false;
-                                ended.insert(session);
-                            }
-                        }
-                        let (w, h) = (width as u32, width as u32 / 2);
-                        let image = png_of(w, h, &vec![9; (w * h * 4) as usize]);
-                        json!({"ok": true, "result": {"content": [{"type": "image", "data": image, "mimeType": "image/png"}], "structuredContent": state}})
-                    }
-                    "end_session" => {
-                        factors.remove(&session);
-                        json!({"ok": true, "result": {}})
-                    }
-                    "list_windows" => {
-                        json!({"ok": true, "result": {"structuredContent": {"windows": []}}})
-                    }
-                    _ if args.get("target").is_some() => refused("target is read on Linux only"),
-                    _ if windowless && args["scope"] != "desktop" => {
-                        refused("desktop_scope_disabled: pass scope=\"desktop\"")
-                    }
-                    "click" | "drag" if windowless && args["delivery_mode"] != "foreground" => {
-                        refused(
-                            "a desktop click moves the user's real pointer: pass delivery_mode=\"foreground\"",
-                        )
-                    }
-                    name => {
-                        let mut text = String::new();
-                        if matches!(name, "click" | "drag") {
-                            let factor = factors.get(&session).copied().unwrap_or(1.0);
-                            let points: Vec<f64> = ["x", "y", "from_x", "from_y", "to_x", "to_y"]
-                                .iter()
-                                .filter_map(|k| args[k].as_f64())
-                                .map(|v| v * factor / 2.0)
-                                .collect();
-                            text = format!(
-                                "Sent {name} to screen-point ({},{})",
-                                points[0], points[1]
-                            );
-                            log.lock().unwrap().push(points);
-                        }
-                        json!({"ok": true, "result": {"content": [{"type": "text", "text": text}]}})
-                    }
-                }
-        }));
-        (socket, landed, driver)
-    }
-
     #[tokio::test]
     async fn a_screenshot_is_one_full_size_capture_in_the_callers_session() {
         let dir = tempfile::tempdir().unwrap();
@@ -3951,6 +3601,16 @@ mod tests {
             .unwrap();
         assert!(!list.is_error, "{}", list.text);
         assert_eq!(landed.lock().unwrap().len(), 3);
+        let wait = cua
+            .act(json!({"action": "wait", "seconds": 0.1}))
+            .await
+            .unwrap();
+        assert!(
+            !wait.is_error && wait.text.starts_with("waited 0.1s"),
+            "{}",
+            wait.text
+        );
+        assert!(wait.text.contains(SHOT_FAILED), "{}", wait.text);
         driver.abort();
     }
 
@@ -4022,29 +3682,6 @@ mod tests {
             ]
         );
         driver.abort();
-    }
-
-    fn scaling_driver(dir: &Path) -> (PathBuf, Clicks, tokio::task::JoinHandle<()>) {
-        let socket = endpoint(dir);
-        let listener = Fake::bind(&socket).unwrap();
-        let clicks = Clicks::default();
-        let log = std::sync::Arc::clone(&clicks);
-        let full = full_shot(1280, 800, 1280);
-        let driver = tokio::spawn(listener.serve(move |req| {
-            let args = &req["args"];
-            match req["name"].as_str().unwrap_or_default() {
-                "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
-                name => {
-                    if name == "click" {
-                        log.lock()
-                            .unwrap()
-                            .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
-                    }
-                    json!({"ok": true, "result": {"structuredContent": {}}})
-                }
-            }
-        }));
-        (socket, clicks, driver)
     }
 
     #[tokio::test]
@@ -4355,17 +3992,6 @@ mod tests {
             "at (325,296) (a, b) ("
         );
         assert_eq!(shot_points("(a, b) (8,4", 2.0), "(a, b) (8,4");
-    }
-
-    fn fast_png(w: u32, h: u32, pixels: &[u8]) -> Vec<u8> {
-        let mut out = Vec::new();
-        let mut encoder = png::Encoder::new(&mut out, w, h);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_compression(png::Compression::Fast);
-        let mut writer = encoder.write_header().unwrap();
-        writer.write_image_data(pixels).unwrap();
-        writer.finish().unwrap();
-        out
     }
 
     #[test]
@@ -4724,7 +4350,6 @@ mod tests {
         assert!(!commits(&act("click", None, None, Some("right"))));
         assert!(!commits(&act("right_click", None, None, None)));
         assert!(commits(&act("key", Some("Return"), None, None)));
-        assert!(commits(&act("key", Some("KP_Enter"), None, None)));
         assert!(!commits(&act("key", Some("Tab"), None, None)));
         assert!(commits(&act("hotkey", None, Some(&["alt", "Left"]), None)));
         assert!(!commits(&act("hotkey", None, Some(&["ctrl", "l"]), None)));
@@ -4739,7 +4364,7 @@ mod tests {
     }
 
     #[test]
-    fn return_enter_and_a_typed_line_confirm_and_only_left_clicks_click_left() {
+    fn return_and_a_typed_line_confirm_and_only_left_clicks_click_left() {
         let act =
             |action: &str, key: Option<&str>, text: Option<&str>, button: Option<&str>| ActArgs {
                 action: action.to_owned(),
@@ -4749,7 +4374,6 @@ mod tests {
                 ..ActArgs::default()
             };
         assert!(confirms(&act("key", Some("Return"), None, None)));
-        assert!(confirms(&act("key", Some("KP_Enter"), None, None)));
         assert!(!confirms(&act("key", Some("F5"), None, None)));
         assert!(confirms(&act("type", None, Some("name.txt\n"), None)));
         assert!(!confirms(&act("type", None, Some("name.txt"), None)));
@@ -4803,5 +4427,392 @@ mod tests {
         assert!(!default_disabled(&[off(), on()]));
         assert!(!default_disabled(&[on(), button(vec!["disabled"])]));
         assert!(!default_disabled(&[]));
+    }
+
+    fn cua(socket: &Path) -> Computer {
+        cua_on(socket, Os::Linux)
+    }
+
+    fn cua_on(socket: &Path, os: Os) -> Computer {
+        Computer::new(
+            Arc::new(Driver::new(socket.to_string_lossy().into_owned())),
+            os,
+        )
+    }
+
+    #[cfg(unix)]
+    fn endpoint(dir: &Path) -> PathBuf {
+        dir.join("cua.sock")
+    }
+
+    #[cfg(windows)]
+    fn endpoint(_: &Path) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        PathBuf::from(format!(
+            r"\\.\pipe\shuttle-test-cua-{}-{n}",
+            std::process::id()
+        ))
+    }
+
+    #[cfg(unix)]
+    struct Fake(tokio::net::UnixListener);
+
+    #[cfg(unix)]
+    impl Fake {
+        fn bind(socket: impl AsRef<Path>) -> std::io::Result<Self> {
+            tokio::net::UnixListener::bind(socket).map(Self)
+        }
+
+        async fn accept(&self) -> std::io::Result<(crate::server::Accepted, ())> {
+            self.0.accept().await.map(|(stream, _)| (stream, ()))
+        }
+    }
+
+    #[cfg(windows)]
+    struct Fake {
+        name: String,
+        next: std::sync::Mutex<tokio::net::windows::named_pipe::NamedPipeServer>,
+    }
+
+    #[cfg(windows)]
+    impl Fake {
+        fn bind(socket: impl AsRef<Path>) -> std::io::Result<Self> {
+            let name = socket.as_ref().to_string_lossy().into_owned();
+            let first = tokio::net::windows::named_pipe::ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(&name)?;
+            Ok(Self {
+                name,
+                next: std::sync::Mutex::new(first),
+            })
+        }
+
+        async fn accept(&self) -> std::io::Result<(crate::server::Accepted, ())> {
+            let fresh = tokio::net::windows::named_pipe::ServerOptions::new().create(&self.name)?;
+            let server = std::mem::replace(&mut *self.next.lock().unwrap(), fresh);
+            server.connect().await?;
+            Ok((server, ()))
+        }
+    }
+
+    impl Fake {
+        async fn serve(self, mut answer: impl FnMut(&Value) -> Value) {
+            loop {
+                let (stream, ()) = self.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let mut out = serde_json::to_vec(&answer(&req)).unwrap();
+                out.push(b'\n');
+                reader.into_inner().write_all(&out).await.unwrap();
+            }
+        }
+    }
+
+    async fn closing_then_answering_driver(socket: PathBuf) -> Vec<String> {
+        let listener = Fake::bind(&socket).unwrap();
+        let mut names = Vec::new();
+        for answer in [false, true] {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let req: Value = serde_json::from_str(&line).unwrap();
+            names.push(req["name"].as_str().unwrap().to_owned());
+            if answer {
+                reader
+                    .into_inner()
+                    .write_all(b"{\"ok\":true,\"result\":{\"structuredContent\":{}}}\n")
+                    .await
+                    .unwrap();
+            }
+        }
+        names
+    }
+
+    fn window_driver(
+        socket: &Path,
+        calls: &std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+        typed: usize,
+    ) -> tokio::task::JoinHandle<()> {
+        let listener = Fake::bind(socket).unwrap();
+        let log = std::sync::Arc::clone(calls);
+        tokio::spawn(listener.serve(move |req| {
+                let text = req["args"]["text"].as_str().unwrap_or_default().to_owned();
+                let types = log
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|c| c["name"] == "type_text")
+                    .count();
+                let reply = match req["name"].as_str().unwrap_or_default() {
+                    "type_text" if types < typed => {
+                        json!({"ok": true, "result": {"content": [{"type": "text", "text": format!("Typed {text}")}]}})
+                    }
+                    "type_text" => json!({"ok": false, "error": format!("cannot type {text}")}),
+                    "list_windows" => {
+                        json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Google-chrome", "title": "checkout", "bounds": {"x": 0, "y": 0, "width": 800, "height": 600}, "z_index": 1}]}}})
+                    }
+                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+                };
+                log.lock().unwrap().push(req.clone());
+                reply
+        }))
+    }
+
+    async fn turn(cua: &Computer) -> Turn {
+        Arc::new(cua.input.clone().lock_owned().await)
+    }
+
+    fn types(calls: &std::sync::Mutex<Vec<Value>>) -> Vec<String> {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c["name"] == "type_text")
+            .map(|c| c["args"]["text"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    fn press_driver(
+        socket: &Path,
+        calls: &std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+        refusal: &'static str,
+        role: &'static str,
+        hit: &'static str,
+    ) -> tokio::task::JoinHandle<()> {
+        let listener = Fake::bind(socket).unwrap();
+        let log = std::sync::Arc::clone(calls);
+        tokio::spawn(listener.serve(move |req| {
+                let reply = match req["name"].as_str().unwrap_or_default() {
+                    "list_windows" if hit == "windowless" => {
+                        json!({"ok": true, "result": {"structuredContent": {"windows": []}}})
+                    }
+                    "list_windows" => {
+                        json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "TextEdit", "title": "t", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 2}]}}})
+                    }
+                    "get_window_state" => {
+                        let window = if hit == "windowless" {
+                            Value::Null
+                        } else {
+                            json!(9)
+                        };
+                        json!({"ok": true, "result": {"structuredContent": {"window_id": window, "elements": [{"element_index": 0, "element_token": "t0", "role": role, "label": "", "frame": {"x": 100.0, "y": 100.0, "w": 200.0, "h": 40.0}}]}}})
+                    }
+                    "click" if req["args"]["verify_hit"] == true => match hit {
+                        "" => {
+                            json!({"ok": true, "result": {"content": [{"type": "text", "text": "hit"}]}})
+                        }
+                        "unknown" => {
+                            json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "click: unknown argument verify_hit; accepted: pid"}], "structuredContent": {"code": "invalid_arguments"}}})
+                        }
+                        "posted" => {
+                            json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "click.verify_hit: the click failed: mouse up"}]}})
+                        }
+                        code => {
+                            json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "click.verify_hit: nothing was sent."}], "structuredContent": {"status": "refused", "code": code, "effect": "refused", "refusal": {"code": code}}}})
+                        }
+                    },
+                    "click" | "double_click" | "right_click"
+                        if req["args"]["element_token"].is_string() =>
+                    {
+                        if refusal.is_empty() {
+                            json!({"ok": true, "result": {"content": [{"type": "text", "text": "pressed"}]}})
+                        } else {
+                            json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": refusal}]}})
+                        }
+                    }
+                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+                };
+                log.lock().unwrap().push(req.clone());
+                reply
+        }))
+    }
+
+    async fn field(
+        role: &'static str,
+        action: &str,
+        refusal: &'static str,
+        hit: &'static str,
+    ) -> (Output, Vec<Value>) {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = press_driver(&socket, &calls, refusal, role, hit);
+        let cua = cua_on(&socket, Os::Mac);
+        cua.state(json!({"pid": 7})).await.unwrap();
+        calls.lock().unwrap().clear();
+        let out = cua
+            .act(json!({"action": action, "element": 0}))
+            .await
+            .unwrap();
+        driver.abort();
+        let sent = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| !RETRIED.iter().any(|r| c["name"] == *r))
+            .map(|c| c["args"].clone())
+            .collect();
+        (out, sent)
+    }
+
+    fn full_shot(width: u32, height: u32, screen_width: u32) -> Value {
+        let image = png_of(width, height, &vec![255; (width * height * 4) as usize]);
+        json!({"ok": true, "result": {"content": [{"type": "image", "data": image, "mimeType": "image/png"}], "structuredContent": {"screen_width": screen_width, "screenshot_width": width}}})
+    }
+
+    fn png_of(width: u32, height: u32, rgba: &[u8]) -> String {
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(rgba)
+            .unwrap();
+        B64.encode(out)
+    }
+
+    fn shot_driver(
+        socket: &Path,
+        calls: &std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    ) -> tokio::task::JoinHandle<()> {
+        let listener = Fake::bind(socket).unwrap();
+        let log = std::sync::Arc::clone(calls);
+        let full = full_shot(2048, 1280, 2048);
+        tokio::spawn(listener.serve(move |req| {
+            let name = req["name"].as_str().unwrap_or_default().to_owned();
+            let session = req["args"]["session"].as_str().unwrap_or_default();
+            log.lock().unwrap().push((name.clone(), session.to_owned()));
+            match name.as_str() {
+                "get_desktop_state" => full.clone(),
+                _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+            }
+        }))
+    }
+
+    fn retina_driver(
+        dir: &Path,
+        fails: bool,
+        idle_ends: bool,
+    ) -> (PathBuf, Landed, tokio::task::JoinHandle<()>) {
+        let socket = endpoint(dir);
+        let listener = Fake::bind(&socket).unwrap();
+        let landed = Landed::default();
+        let log = std::sync::Arc::clone(&landed);
+        let mut factors = HashMap::<String, f64>::new();
+        let (mut ended, mut idle_ends) = (HashSet::<String>::new(), idle_ends);
+        let driver = tokio::spawn(listener.serve(move |req| {
+                let args = &req["args"];
+                let session = args["session"].as_str().unwrap_or_default().to_owned();
+                let windowless = args["pid"].is_null() && args["element_token"].is_null();
+                let refused = |text: &str| json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": text}]}});
+                match req["name"].as_str().unwrap_or_default() {
+                    name if ended.contains(&session) && name != "start_session" => {
+                        json!({"ok": false, "error": format!("session has ended; tool call '{name}' was rejected")})
+                    }
+                    "start_session" => {
+                        ended.remove(&session);
+                        json!({"ok": true, "result": {}})
+                    }
+                    "get_desktop_state" if fails => {
+                        refused("Desktop screenshot failed: the display is asleep")
+                    }
+                    "get_desktop_state" => {
+                        let width = match args["max_image_dimension"].as_u64() {
+                            None => 120,
+                            Some(0) => 200,
+                            Some(edge) => edge.min(200),
+                        };
+                        let mut state = json!({"screenshot_width": width, "screenshot_height": width / 2, "screen_width": 100, "screen_height": 50, "scale_factor": 2.0});
+                        if width < 200 {
+                            state["screenshot_original_width"] = 200.into();
+                            state["screenshot_original_height"] = 100.into();
+                            factors.insert(session, 200.0 / width as f64);
+                        } else {
+                            factors.remove(&session);
+                            if idle_ends && session == DEFAULT_SESSION {
+                                idle_ends = false;
+                                ended.insert(session);
+                            }
+                        }
+                        let (w, h) = (width as u32, width as u32 / 2);
+                        let image = png_of(w, h, &vec![9; (w * h * 4) as usize]);
+                        json!({"ok": true, "result": {"content": [{"type": "image", "data": image, "mimeType": "image/png"}], "structuredContent": state}})
+                    }
+                    "end_session" => {
+                        factors.remove(&session);
+                        json!({"ok": true, "result": {}})
+                    }
+                    "list_windows" => {
+                        json!({"ok": true, "result": {"structuredContent": {"windows": []}}})
+                    }
+                    _ if args.get("target").is_some() => refused("target is read on Linux only"),
+                    _ if windowless && args["scope"] != "desktop" => {
+                        refused("desktop_scope_disabled: pass scope=\"desktop\"")
+                    }
+                    "click" | "drag" if windowless && args["delivery_mode"] != "foreground" => {
+                        refused(
+                            "a desktop click moves the user's real pointer: pass delivery_mode=\"foreground\"",
+                        )
+                    }
+                    name => {
+                        let mut text = String::new();
+                        if matches!(name, "click" | "drag") {
+                            let factor = factors.get(&session).copied().unwrap_or(1.0);
+                            let points: Vec<f64> = ["x", "y", "from_x", "from_y", "to_x", "to_y"]
+                                .iter()
+                                .filter_map(|k| args[k].as_f64())
+                                .map(|v| v * factor / 2.0)
+                                .collect();
+                            text = format!(
+                                "Sent {name} to screen-point ({},{})",
+                                points[0], points[1]
+                            );
+                            log.lock().unwrap().push(points);
+                        }
+                        json!({"ok": true, "result": {"content": [{"type": "text", "text": text}]}})
+                    }
+                }
+        }));
+        (socket, landed, driver)
+    }
+
+    fn scaling_driver(dir: &Path) -> (PathBuf, Clicks, tokio::task::JoinHandle<()>) {
+        let socket = endpoint(dir);
+        let listener = Fake::bind(&socket).unwrap();
+        let clicks = Clicks::default();
+        let log = std::sync::Arc::clone(&clicks);
+        let full = full_shot(1280, 800, 1280);
+        let driver = tokio::spawn(listener.serve(move |req| {
+            let args = &req["args"];
+            match req["name"].as_str().unwrap_or_default() {
+                "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
+                name => {
+                    if name == "click" {
+                        log.lock()
+                            .unwrap()
+                            .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
+                    }
+                    json!({"ok": true, "result": {"structuredContent": {}}})
+                }
+            }
+        }));
+        (socket, clicks, driver)
+    }
+
+    fn fast_png(w: u32, h: u32, pixels: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, w, h);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_compression(png::Compression::Fast);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(pixels).unwrap();
+        writer.finish().unwrap();
+        out
     }
 }

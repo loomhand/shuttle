@@ -280,38 +280,6 @@ while True:
     s.accept()[0].close()
 "#;
 
-    fn fake(dir: &Path, script: &str) -> std::io::Result<PathBuf> {
-        crate::script(&dir.join("cua-driver"), script)?;
-        Ok(dir.join(NAME))
-    }
-
-    fn pid(endpoint: &str) -> Option<i32> {
-        std::fs::read_to_string(format!("{endpoint}.fake-pid"))
-            .ok()?
-            .parse()
-            .ok()
-    }
-
-    fn alive(pid: i32) -> bool {
-        // SAFETY: signal 0 only checks that the process exists.
-        unsafe { libc::kill(pid, 0) == 0 }
-    }
-
-    async fn gone(pid: i32) -> bool {
-        crate::until(100, || !alive(pid)).await
-    }
-
-    async fn started(script: &str, overlay: bool) -> (tempfile::TempDir, String, Bundled) {
-        let dir = tempfile::tempdir().unwrap();
-        let exe = fake(dir.path(), script).unwrap();
-        let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, overlay, false, false)
-            .await
-            .unwrap()
-            .unwrap();
-        (dir, endpoint, driver)
-    }
-
     #[tokio::test]
     async fn no_bundled_driver_starts_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -534,5 +502,37 @@ while True:
         assert!(!Path::new(&missing).exists());
         assert!(Path::new(&file).exists());
         assert!(std::fs::symlink_metadata(&link).is_ok());
+    }
+
+    fn fake(dir: &Path, script: &str) -> std::io::Result<PathBuf> {
+        crate::script(&dir.join("cua-driver"), script)?;
+        Ok(dir.join(NAME))
+    }
+
+    fn pid(endpoint: &str) -> Option<i32> {
+        std::fs::read_to_string(format!("{endpoint}.fake-pid"))
+            .ok()?
+            .parse()
+            .ok()
+    }
+
+    fn alive(pid: i32) -> bool {
+        // SAFETY: signal 0 only checks that the process exists.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    async fn gone(pid: i32) -> bool {
+        crate::until(100, || !alive(pid)).await
+    }
+
+    async fn started(script: &str, overlay: bool) -> (tempfile::TempDir, String, Bundled) {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake(dir.path(), script).unwrap();
+        let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
+        let driver = Bundled::start(&exe, &endpoint, overlay, false, false)
+            .await
+            .unwrap()
+            .unwrap();
+        (dir, endpoint, driver)
     }
 }

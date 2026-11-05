@@ -270,7 +270,6 @@ struct Rect {
     bottom: i32,
 }
 
-/// Runs desk call `verb` on Android.
 pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, String> {
     let text = match verb {
         "desk_windows" => {
@@ -588,11 +587,9 @@ fn unescape(value: &str) -> Cow<'_, str> {
             "lt" => Some('<'),
             "gt" => Some('>'),
             "quot" => Some('"'),
-            "apos" => Some('\''),
             _ => entity
-                .strip_prefix("#x")
-                .and_then(|h| u32::from_str_radix(h, 16).ok())
-                .or_else(|| entity.strip_prefix('#').and_then(|d| d.parse().ok()))
+                .strip_prefix('#')
+                .and_then(|d| d.parse().ok())
                 .and_then(char::from_u32),
         };
         match ch {
@@ -1465,8 +1462,8 @@ mod tests {
         );
         assert_eq!(bounds("[1,2]"), None);
         assert_eq!(
-            unescape("a&lt;b&gt;&quot;&apos;&#20320;&#x597D;&bogus"),
-            "a<b>\"'\u{4f60}\u{597d}&bogus"
+            unescape("a&lt;b&gt;&quot;&#10;&#20320;&bogus"),
+            "a<b>\"\n\u{4f60}&bogus"
         );
     }
 

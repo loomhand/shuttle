@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
+use crate::desk::lock;
+
 static ENTRIES: Mutex<Entries> = Mutex::new(Entries {
     dirs: Vec::new(),
     apps: Vec::new(),
@@ -40,10 +42,7 @@ pub fn id_for(name: &str) -> Option<String> {
     if !name.contains(char::is_whitespace) {
         return None;
     }
-    ENTRIES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .id_in(name, dirs())
+    lock(&ENTRIES).id_in(name, dirs())
 }
 
 fn apps_in<'a>(dirs: impl Iterator<Item = &'a PathBuf>) -> Vec<(String, String)> {

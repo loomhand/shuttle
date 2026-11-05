@@ -152,24 +152,8 @@ impl Watch {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
-
-    pub(crate) fn frame(width: usize, height: usize, lit: &[(usize, u8)]) -> Frame {
-        let columns = width.div_ceil(BLOCK);
-        let mut rgb = vec![0; width * height * 3];
-        for (y, row) in rgb.chunks_mut(width * 3).enumerate() {
-            for (x, px) in row.chunks_mut(3).enumerate() {
-                if let Some((_, tone)) = lit
-                    .iter()
-                    .find(|(b, _)| *b == y / BLOCK * columns + x / BLOCK)
-                {
-                    px.fill(*tone);
-                }
-            }
-        }
-        Frame::of_rgb(width, height, rgb)
-    }
 
     #[test]
     fn two_contents_toggle_more_churn_and_one_change_stays_quiet() {
@@ -206,5 +190,21 @@ pub(crate) mod tests {
         let mut faint = Watch::default();
         assert!(!faint.counts(&frame(32, 16, &[(2, 100)]), &frame(32, 16, &[(2, 110)])));
         assert!(Watch::default().counts(&frame(32, 16, &[]), &frame(16, 16, &[])));
+    }
+
+    fn frame(width: usize, height: usize, lit: &[(usize, u8)]) -> Frame {
+        let columns = width.div_ceil(BLOCK);
+        let mut rgb = vec![0; width * height * 3];
+        for (y, row) in rgb.chunks_mut(width * 3).enumerate() {
+            for (x, px) in row.chunks_mut(3).enumerate() {
+                if let Some((_, tone)) = lit
+                    .iter()
+                    .find(|(b, _)| *b == y / BLOCK * columns + x / BLOCK)
+                {
+                    px.fill(*tone);
+                }
+            }
+        }
+        Frame::of_rgb(width, height, rgb)
     }
 }

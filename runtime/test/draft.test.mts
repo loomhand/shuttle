@@ -15,7 +15,7 @@ test('a recording becomes gui_plan steps with menus merged, typed values and win
     return '{"ok":true}'
   })
   const events: Event[] = [
-    { t: 0, kind: 'click', x: 963, y: 766, app: null, element: { role: 'generic', name: 'TextEdit' }, root: false, crop },
+    { t: 0, kind: 'skipped' },
     { t: 1, kind: 'after', window: 'rbc.txt', role: 'window', app: 'TextEdit' },
     { t: 2, kind: 'click', x: 135, y: 14, app: 'TextEdit', element: { role: 'menu', name: 'File' }, root: false, crop },
     { t: 3, kind: 'click', x: 163, y: 48, app: 'TextEdit', element: { role: 'menuitem', name: 'New' }, root: false, crop },
@@ -55,7 +55,7 @@ test('a recording becomes gui_plan steps with menus merged, typed values and win
   assert.deepEqual(d.steps[5]?.recorded, { text: 'Save', crop, scale: 2, at: [730, 478], size: [600, 400] })
   assert.deepEqual(d.steps[8]?.recorded, { text: 'the Green button', crop, scale: 1, root: true, at: [334, 200], size: [1240, 697] })
   assert.deepEqual(d.params, { body: { example: 'b4 body' }, name: { example: 'rr-b4' }, color: { example: 'Green' }, password: { secret: true } })
-  assert.deepEqual([d.notes, d.gaps], [[{ step: 2, text: 'the body and the name change each time' }], [11]])
+  assert.deepEqual([d.notes, d.gaps], [[{ step: 2, text: 'the body and the name change each time' }], [1, 11]])
   assert.equal(asked.length, 1)
 })
 

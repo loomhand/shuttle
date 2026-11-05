@@ -834,7 +834,7 @@ pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
     for _ in 0..MAX_DEPTH {
         let Some(p) = up.take() else { break };
         let mut pa = attrs(&names, &p);
-        if path.len() < PATH_MAX_DEPTH {
+        if path.len() < PATH_MAX_DEPTH || pa.role == "AXWindow" {
             path.push((
                 ax_roles::role(kind_of(&pa)).unwrap_or("generic"),
                 name_of(&mut pa, NAME_CHARS),

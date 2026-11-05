@@ -20,6 +20,7 @@ const KEYS: Record<number, string> = { 36: 'return', 76: 'enter', 48: 'tab', 53:
 const NAMED_ROLES = new Set(['button', 'checkbox', 'radio', 'tab', 'link', 'switch', 'togglebutton', 'menuitem'])
 const CAPTION = 'The image is a crop of a screen; a red ring with four ticks marks the point a user clicked. Name the control under the ring as a short noun phrase a person would use to find it on screen, such as: the Save button. At most 8 words; answer with the phrase only.'
 const RING_PT = 14
+const CAPTIONS_AT_ONCE = 4
 
 /** Turns a recording into a draft gui_plan, with `params` for the typed values the caller names. */
 export async function main(p: Params): Promise<Draft> {
@@ -28,6 +29,8 @@ export async function main(p: Params): Promise<Draft> {
   const templ = (s: string) => examples.reduce((out, [k, v]) => out.split(v).join(`{{${k}}}`), s)
   const draft: Draft = { id: p.recording.id, apps: p.recording.apps ?? [], params, steps: [], notes: [], gaps: [] }
   const events = p.recording.events
+  const slot = pool(CAPTIONS_AT_ONCE)
+  const captions = new Map(events.flatMap((e) => e.kind === 'click' && e.crop && !own(e) ? [[e, slot(() => caption(e.crop ?? '', e.crop_scale ?? 1, e.crop_offset ?? [0, 0], e.element?.role))] as const] : []))
   const seen = new Set<string>()
   let typed = ''; let secrets = 0; let secret = false; let filled = false
   let into: Field | null | undefined
@@ -50,10 +53,9 @@ export async function main(p: Params): Promise<Draft> {
     typed = ''; secret = false; into = undefined
   }
   const first = events.find((e) => e.kind === 'click' || e.kind === 'key')
-  const dock = first?.kind === 'click' && !first.app && first.element?.name ? first.element.name : undefined
-  const app = dock ?? events.find((e) => (e.kind === 'click' || e.kind === 'key') && e.app)?.app
-  const opened = first && !dock ? windowOf(first) : undefined
-  if (app) draft.steps.push(at(app, first && !dock ? pageOf(first) : undefined, opened, 'open'))
+  const app = events.find((e) => (e.kind === 'click' || e.kind === 'key') && e.app)?.app
+  const opened = first ? windowOf(first) : undefined
+  if (app) draft.steps.push(at(app, first ? pageOf(first) : undefined, opened, 'open'))
   let here = { app, window: opened }
   const move = (e: Event) => {
     const w = windowOf(e)
@@ -69,7 +71,7 @@ export async function main(p: Params): Promise<Draft> {
     return { app, ...(title ? { title: templ(title) } : {}), intent: `${verb} ${app}${title ? ` at "${title}"` : ''}` }
   }
   for (const [i, e] of events.entries()) {
-    if (e.kind === 'key' || (e.kind === 'click' && !(e === first && dock))) move(e)
+    if (e.kind === 'key' || e.kind === 'click') move(e)
     if (e.kind === 'key') {
       const mods = e.mods ?? []
       if (e.secret) { if (typed) flush(); if (!secret && e.focus) into = e.focus; secret = true; continue }
@@ -96,7 +98,6 @@ export async function main(p: Params): Promise<Draft> {
       if (w) seen.add(w)
       if (w && e.app && e.role === 'window') here = { app: e.app, window: w }
     } else if (e.kind === 'click') {
-      if (e === first && dock) continue
       const el = e.element ?? {}
       const next = events.find((n, j) => j > i && n.kind === 'click')
       if (el.role === 'menu' && next?.element?.role === 'menuitem') continue
@@ -108,7 +109,7 @@ export async function main(p: Params): Promise<Draft> {
       }
       const again = (e.count ?? 1) > 1 && clicked && draft.steps.at(-1) === clicked.step && Math.hypot((e.x ?? 0) - (clicked.e.x ?? 0), (e.y ?? 0) - (clicked.e.y ?? 0)) <= 4
       if (again) draft.steps.pop()
-      clicked = { e, step: await click(e, templ) }
+      clicked = { e, step: await click(e, templ, await captions.get(e)) }
       draft.steps.push(clicked.step)
       filled = !!e.secret
       if (filled) password()
@@ -126,10 +127,24 @@ function windowOf(e: Event) {
   return (typeof e.window === 'object' ? e.window.title : e.focus?.window) || undefined
 }
 
-async function click(e: Event, templ: (s: string) => string): Promise<Step> {
+function pool(size: number) {
+  let free = size
+  const waiting: (() => void)[] = []
+  return async <T,>(job: () => Promise<T>): Promise<T> => {
+    while (!free) await new Promise<void>((go) => waiting.push(go))
+    free -= 1
+    try { return await job() } finally { free += 1; waiting.shift()?.() }
+  }
+}
+
+function own(e: Event) {
+  return !e.root && e.element?.name ? e.element.name : ''
+}
+
+async function click(e: Event, templ: (s: string) => string, captioned = ''): Promise<Step> {
   const el = e.element ?? {}
-  const own = !e.root && el.name ? el.name : ''
-  const said = own || (e.crop ? await caption(e.crop, e.crop_scale ?? 1, e.crop_offset ?? [0, 0], el.role) : '') || `the ${el.role || 'point'} at ${Math.round(e.x ?? 0)}, ${Math.round(e.y ?? 0)}`
+  const named = own(e)
+  const said = named || captioned || `the ${el.role || 'point'} at ${Math.round(e.x ?? 0)}, ${Math.round(e.y ?? 0)}`
   const target = templ(said)
   const win = typeof e.window === 'object' ? e.window : undefined
   const b = win?.bounds
@@ -141,10 +156,10 @@ async function click(e: Event, templ: (s: string) => string): Promise<Step> {
     ...(e.button && e.button !== 'left' ? { button: e.button } : {}),
     ...((e.count ?? 1) > 1 ? { count: e.count } : {}),
     ...(e.mods?.length ? { mods: e.mods } : {}),
-    ...(own && el.role && NAMED_ROLES.has(el.role) ? { role: el.role } : {}),
+    ...(named && el.role && NAMED_ROLES.has(el.role) ? { role: el.role } : {}),
     ...(e.web ? { web: { url: templ(e.web.url), ...(e.web.id ? { id: e.web.id } : {}) } } : {}),
     recorded,
-    intent: `click ${own ? `the ${el.role} "${own}"` : said}${win?.title ? ` in "${win.title}"` : ''}`,
+    intent: `click ${named ? `the ${el.role} "${named}"` : said}${win?.title ? ` in "${win.title}"` : ''}`,
   }
 }
 

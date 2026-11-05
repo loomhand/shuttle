@@ -204,7 +204,6 @@ pub struct Grounded {
     pub usage: Usage,
 }
 
-/// The tokens one call used.
 #[derive(Debug, Serialize)]
 pub struct Usage {
     pub model: String,

@@ -1,5 +1,6 @@
 //! The way from the MCP server to the daemon: one call per connection, starting the daemon when nothing listens.
 
+use std::io::ErrorKind;
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
@@ -22,6 +23,9 @@ pub async fn call(endpoint: &str, call: &Call) -> Result<Output, String> {
 async fn reach(endpoint: &str, call: &Call, embedded: bool) -> Result<Output, String> {
     let (conn, child) = match server::connect(endpoint).await {
         Ok(conn) => (conn, None),
+        Err(e) if !matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
+            return Err(format!("connect {endpoint}: {e}"));
+        }
         Err(_) if embedded => {
             return Err(format!(
                 "no {NAME} daemon answers at {endpoint}; with {EMBEDDED}=1 the app that embeds {NAME} starts `{NAME} serve` itself",

@@ -232,14 +232,9 @@ public final class Ui {
     private static boolean paste() throws ReflectiveOperationException {
         connectInput();
         long now = SystemClock.uptimeMillis();
-        boolean down = inject(pasteKey(now, KeyEvent.ACTION_DOWN), INJECT_WAIT_FOR_FINISH);
-        inject(pasteKey(now, KeyEvent.ACTION_UP), INJECT_ASYNC);
+        boolean down = inject(keyEvent(now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_PASTE), INJECT_WAIT_FOR_FINISH);
+        inject(keyEvent(now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_PASTE), INJECT_ASYNC);
         return down;
-    }
-
-    private static KeyEvent pasteKey(long now, int action) {
-        return new KeyEvent(now, now, action, KeyEvent.KEYCODE_PASTE, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0,
-            InputDevice.SOURCE_KEYBOARD);
     }
 
     private static boolean inject(InputEvent event, int mode) throws ReflectiveOperationException {
