@@ -406,10 +406,10 @@ impl<H: Handler> Handler for Daemon<H> {
 impl<H: Handler> Controls for Daemon<H> {
     fn halt(&self, stopped: bool) {
         self.halted.send_replace(stopped);
+        self.runner.halt(stopped);
         if stopped && let Some(r) = &self.recorder {
             r.end();
         }
-        self.runner.halt(stopped);
     }
 
     fn halted(&self) -> bool {
