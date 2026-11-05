@@ -725,9 +725,11 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec): 
   const roots = !!r?.root
   const area = await desk.screen()
   const missed: string[] = []
+  let shot: Buffer | undefined
   if (same && r.crop) {
     let t0 = Date.now()
-    const screen = unpng(await desk.shot()), k = screen.w / area.width
+    shot = await desk.shot()
+    const screen = unpng(shot), k = screen.w / area.width
     const m = match(screen, unpng(Buffer.from(r.crop, 'base64')), k, r.scale ?? 1)
     const [x, y] = [(area.left ?? 0) + m.x / k + (r.offset?.[0] ?? 0), (area.top ?? 0) + m.y / k + (r.offset?.[1] ?? 0)]
     tick('crop', t0); rec.p = +m.score.toFixed(2)
@@ -737,7 +739,7 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec): 
   }
   try {
     const t0 = Date.now()
-    const [x, y] = await desk.ground(await desk.shot(), `${target} in the "${w.title}" window`, area)
+    const [x, y] = await desk.ground(shot ?? await desk.shot(), `${target} in the "${w.title}" window`, area)
     tick('ground', t0)
     const g = await grounded(x, y, target, w, area, roots)
     rec.ground_hit = g.what.slice(0, 80); rec.checked = g.check; rec.p = g.p; rec.p_zoom = g.p_zoom; rec.p_full = g.p_full
