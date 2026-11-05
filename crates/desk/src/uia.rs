@@ -24,7 +24,7 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GW_OWNER, GetForegroundWindow, GetWindow, GetWindowTextW,
-    GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_CLOSE,
+    GetWindowThreadProcessId, IsHungAppWindow, IsWindowVisible, PostMessageW, WM_CLOSE,
 };
 use windows::core::{BOOL, HRESULT, Interface, PWSTR};
 
@@ -697,6 +697,7 @@ fn shown() -> Vec<Shown> {
             // SAFETY: the window calls take a handle and write at most the 4 bytes of `cloaked`.
             unsafe {
                 IsWindowVisible(hwnd).as_bool()
+                    && !IsHungAppWindow(hwnd).as_bool()
                     && (DwmGetWindowAttribute(
                         hwnd,
                         DWMWA_CLOAKED,
