@@ -46,12 +46,11 @@ const IF_COMPONENT: u8 = 2;
 const IF_TEXT: u8 = 4;
 const IF_VALUE: u8 = 8;
 const ACTIVE: u32 = 1;
-const CHECKED: u32 = 4;
 const ENABLED: u32 = 8;
 const SENSITIVE: u32 = 24;
 const INDETERMINATE: u32 = 32;
-pub const FOCUSED: u32 = 12;
-pub const SHOWING: u32 = 25;
+const FOCUSED: u32 = 12;
+const SHOWING: u32 = 25;
 const MANAGES_DESCENDANTS: u32 = 31;
 const LABELLED_BY: u32 = 2;
 const STATE_NAMES: [(u32, &str); 16] = [
@@ -260,6 +259,13 @@ impl Obj {
         Ok(Self { bus, path })
     }
 
+    fn at(bus: &str, path: &str) -> Self {
+        Self {
+            bus: bus.to_owned(),
+            path: path.to_owned(),
+        }
+    }
+
     fn of((bus, path): (String, OwnedObjectPath)) -> Self {
         Self {
             bus,
@@ -295,10 +301,6 @@ impl Node {
 
     pub fn has(&self, state: u32) -> bool {
         self.states & (1 << state) != 0
-    }
-
-    pub fn checked(&self) -> bool {
-        self.has(CHECKED)
     }
 
     /// Whether the node is greyed out: neither enabled nor sensitive, since GTK 4 marks a usable widget sensitive only.
@@ -386,10 +388,7 @@ impl Atspi {
 
     /// The top-level windows of every app with their pids; a late app gives its last ones, marked stale.
     pub async fn frames(&self) -> Result<Vec<Frame>, String> {
-        let registry = Obj {
-            bus: REGISTRY.to_owned(),
-            path: ROOT.to_owned(),
-        };
+        let registry = Obj::at(REGISTRY, ROOT);
         let apps = self.children(&registry).await?;
         let mut answering = Vec::with_capacity(apps.len());
         for app in &apps {
@@ -403,9 +402,7 @@ impl Atspi {
             (app.bus.as_str(), read.ok())
         }))
         .await;
-        let mut seen = SEEN
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut seen = locked(&SEEN);
         seen.retain(|bus, _| apps.iter().any(|app| app.bus == *bus));
         Ok(reads
             .into_iter()
@@ -613,7 +610,7 @@ impl Atspi {
 
     /// The text of a text node, at most `max` characters, else the current value of a value node; none for a password field or a failed read.
     pub async fn value(&self, obj: &Obj, role: u32, ifaces: u8, max: usize) -> Option<String> {
-        if secret(role) {
+        if role == PASSWORD_TEXT {
             return None;
         }
         if ifaces & IF_TEXT != 0 {
@@ -710,10 +707,7 @@ impl Atspi {
 
     /// The process id behind the accessibility bus name `bus`.
     pub async fn pid(&self, bus: &str) -> Result<u32, String> {
-        let dbus = Obj {
-            bus: DBUS.to_owned(),
-            path: DBUS_PATH.to_owned(),
-        };
+        let dbus = Obj::at(DBUS, DBUS_PATH);
         self.call(&dbus, DBUS, "GetConnectionUnixProcessID", &(bus,))
             .await
     }
@@ -834,27 +828,17 @@ impl Atspi {
     /// Asks the app on `bus` for its root's attributes once, as a screen reader does: Chromium builds its tree only after that.
     async fn wake(&self, bus: &str) {
         if first_wake(bus) {
-            let root = Obj {
-                bus: bus.to_owned(),
-                path: ROOT.to_owned(),
-            };
+            let root = Obj::at(bus, ROOT);
             let _ = self.reply(&root, ACCESSIBLE, "GetAttributes", &()).await;
         }
     }
 
     /// Whether the app on `bus` answers screen coordinates, read once from its toolkit name and version.
     async fn screen_coords(&self, bus: &str) -> bool {
-        if let Some(known) = SCREEN_COORDS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(bus)
-        {
+        if let Some(known) = locked(&SCREEN_COORDS).get(bus) {
             return *known;
         }
-        let root = Obj {
-            bus: bus.to_owned(),
-            path: ROOT.to_owned(),
-        };
+        let root = Obj::at(bus, ROOT);
         let (Ok(name), Ok(version)) = tokio::join!(
             self.prop::<String>(&root, APPLICATION, "ToolkitName"),
             self.prop::<String>(&root, APPLICATION, "Version")
@@ -862,19 +846,13 @@ impl Atspi {
             return true;
         };
         let known = answers_screen_coords(&name, &version);
-        SCREEN_COORDS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(bus.to_owned(), known);
+        locked(&SCREEN_COORDS).insert(bus.to_owned(), known);
         known
     }
 
     /// The app's cached objects, from the cache of at-spi2-core 2.46 and later or from the older one.
     async fn items(&self, bus: &str) -> Result<Vec<Item>, String> {
-        let cache = Obj {
-            bus: bus.to_owned(),
-            path: CACHE_PATH.to_owned(),
-        };
+        let cache = Obj::at(bus, CACHE_PATH);
         let reply = self.reply(&cache, CACHE, "GetItems", &()).await?;
         cache_items(&reply).map_err(|e| format!("{CACHE}.GetItems on {bus}: {e}"))
     }
@@ -959,9 +937,7 @@ impl Atspi {
     }
 
     fn is_hung(&self, bus: &str) -> bool {
-        let mut hung = HUNG
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut hung = locked(&HUNG);
         hung.retain(|_, at| at.elapsed() < HUNG_FOR);
         hung.contains_key(bus)
     }
@@ -1002,12 +978,7 @@ impl Atspi {
             .build()
             .await
             .map_err(|e| format!("connect the accessibility bus: {e}"))?;
-        if new_bus(
-            &mut BUS
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-            conn.server_guid().as_str(),
-        ) {
+        if new_bus(&mut locked(&BUS), conn.server_guid().as_str()) {
             forget_apps();
         }
         *slot = Some(conn.clone());
@@ -1075,10 +1046,12 @@ pub fn key_combos(binding: &str) -> (Option<String>, Option<String>) {
     (mnemonic, shortcut)
 }
 
+fn locked<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn first_wake(bus: &str) -> bool {
-    let mut woken = WOKEN
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut woken = locked(&WOKEN);
     !woken.contains(bus) && woken.insert(bus.to_owned())
 }
 
@@ -1096,26 +1069,14 @@ fn new_bus(last: &mut Option<String>, guid: &str) -> bool {
 }
 
 fn forget_apps() {
-    HUNG.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
-    SEEN.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
-    WOKEN
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
-    SCREEN_COORDS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
+    locked(&HUNG).clear();
+    locked(&SEEN).clear();
+    locked(&WOKEN).clear();
+    locked(&SCREEN_COORDS).clear();
 }
 
 fn mark_hung(bus: &str) {
-    HUNG.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(bus.to_owned(), Instant::now());
+    locked(&HUNG).insert(bus.to_owned(), Instant::now());
 }
 
 fn release_on_answer(
@@ -1123,24 +1084,15 @@ fn release_on_answer(
     bus: &str,
     answer: impl Future<Output = bool> + Send + 'static,
 ) {
-    if !probing
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(bus.to_owned())
-    {
+    if !locked(probing).insert(bus.to_owned()) {
         return;
     }
     let (probing, bus) = (Arc::clone(probing), bus.to_owned());
     tokio::spawn(async move {
         if answer.await {
-            HUNG.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&bus);
+            locked(&HUNG).remove(&bus);
         }
-        probing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&bus);
+        locked(&probing).remove(&bus);
     });
 }
 
@@ -1447,10 +1399,6 @@ fn no_screen_coords(obj: &Obj) -> String {
     )
 }
 
-fn secret(role: u32) -> bool {
-    role == PASSWORD_TEXT
-}
-
 fn not_responding(bus: &str) -> String {
     format!("AT-SPI peer {bus} is not responding")
 }
@@ -1538,12 +1486,6 @@ mod tests {
             assert!(timed_out(":1.0", write).contains("may still take effect"));
         }
         assert_eq!(timed_out(":1.0", "GetText"), not_responding(":1.0"));
-    }
-
-    #[test]
-    fn only_a_password_field_keeps_its_value_unread() {
-        assert!(secret(PASSWORD_TEXT));
-        assert!(!secret(61));
     }
 
     #[test]
@@ -1929,7 +1871,7 @@ mod tests {
     fn state_words_make_one_bit_set() {
         assert_eq!(state_bits(&[0x10, 0x80]), 0x80_0000_0010);
         let n = Node {
-            states: (1 << CHECKED) | (1 << SHOWING),
+            states: (1 << 4) | (1 << SHOWING),
             ..Node::default()
         };
         assert_eq!(n.state_names(), vec!["checked", "showing", "disabled"]);
