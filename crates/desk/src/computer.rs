@@ -1629,20 +1629,24 @@ impl Computer {
             .await;
     }
 
-    /// The screen rectangle `[x, y, w, h]` clipped to the screen, and its RGB rows over MIT-SHM; none without MIT-SHM.
+    /// The screen rectangle `[x, y, w, h]` clipped to the screen, and its RGB rows over MIT-SHM; none without MIT-SHM or while the driver's overlay shows.
     fn region_rgb(&self, area: [f64; 4]) -> Option<Result<Cut, String>> {
         self.shm(|g| {
-            let Some(rect) = clip(area, g.size()) else {
+            if g.overlay_shown()? {
                 return Ok(None);
+            }
+            let Some(rect) = clip(area, g.size()) else {
+                return Ok(Some(None));
             };
-            Ok(Some(Cut {
+            Ok(Some(Some(Cut {
                 rect,
                 width: rect[2].unsigned_abs(),
                 height: rect[3].unsigned_abs(),
                 rgb: g.region(rect)?,
                 per_unit: 1.0,
-            }))
+            })))
         })
+        .flatten()
         .map(|cut| cut.ok_or_else(|| OFF_SCREEN.to_owned()))
     }
 
