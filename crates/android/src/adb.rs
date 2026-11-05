@@ -567,11 +567,10 @@ impl Android {
         };
         let (window, point) = {
             let saved = self.points.lock().await;
-            let saved = saved.get(&args.session);
-            let point = saved.and_then(|s| s.points.get(i)).copied();
-            let point =
-                point.ok_or_else(|| format!("no element [{i}] in the latest computer_state"))?;
-            (saved.map(|s| s.window.clone()).unwrap_or_default(), point)
+            saved
+                .get(&args.session)
+                .and_then(|s| Some((s.window.clone(), *s.points.get(i)?)))
+                .ok_or_else(|| format!("no element [{i}] in the latest computer_state"))?
         };
         let front = desk::front(self).await?;
         if window.is_empty() || front.window().is_empty() {
