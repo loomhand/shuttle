@@ -31,6 +31,13 @@ jobs:
             exit 1
           fi
 
+      - name: The changelog has notes for the version
+        run: |
+          if ! awk -v v="${GITHUB_REF_NAME#v}" '/^## / { on = ($2 == v) } on && !/^## /' CHANGELOG.md | grep -q '[^[:space:]]'; then
+            echo "::error::CHANGELOG.md has no notes under a \"## ${GITHUB_REF_NAME#v}\" heading: add them in the release commit before tagging"
+            exit 1
+          fi
+
   ci:
     needs: version
     uses: ./.github/workflows/ci.yml
@@ -180,7 +187,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           awk -v v="${GITHUB_REF_NAME#v}" '/^## / { on = ($2 == v) } on && !/^## /' CHANGELOG.md > notes.md
-          test -s notes.md
           gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --prerelease --title "shuttle $GITHUB_REF_NAME" --notes-file notes.md
 
   install:
