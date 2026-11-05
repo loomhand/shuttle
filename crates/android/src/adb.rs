@@ -961,7 +961,6 @@ impl Focus {
 struct StateArgs {
     #[serde(default)]
     session: String,
-    #[serde(default)]
     query: Option<String>,
 }
 
@@ -970,27 +969,16 @@ struct ActArgs {
     #[serde(default)]
     session: String,
     action: String,
-    #[serde(default)]
     element: Option<usize>,
-    #[serde(default)]
     x: Option<f64>,
-    #[serde(default)]
     y: Option<f64>,
-    #[serde(default)]
     to_x: Option<f64>,
-    #[serde(default)]
     to_y: Option<f64>,
-    #[serde(default)]
     text: Option<String>,
-    #[serde(default)]
     key: Option<String>,
-    #[serde(default)]
     direction: Option<String>,
-    #[serde(default)]
     amount: Option<u32>,
-    #[serde(default)]
     app: Option<String>,
-    #[serde(default)]
     seconds: Option<f64>,
 }
 
