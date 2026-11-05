@@ -331,8 +331,9 @@ async fn serve(
     tokio::spawn(async move { recorder.recordings().await });
     #[cfg(any(target_os = "macos", windows))]
     ready(daemon.clone(), safety, hotkey.filter(|_| local), input);
+    let mut serving = Box::pin(server::serve(daemon, listener));
     let served = tokio::select! {
-        r = server::serve(daemon, listener) => r,
+        r = &mut serving => r,
         () = shutdown() => Ok(()),
     };
     crate::ENDING.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -342,6 +343,7 @@ async fn serve(
     if let Some(b) = bundled {
         b.stop().await;
     }
+    drop(serving);
     served
 }
 
