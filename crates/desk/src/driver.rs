@@ -49,7 +49,6 @@ thread_local! {
 
 /// The driver calls the desk makes: input, windows, launch and capture.
 pub trait Input {
-    /// Calls driver tool `tool` and returns its result.
     fn call(&self, tool: &str, args: Value) -> impl Future<Output = Result<Value, String>> + Send;
 }
 

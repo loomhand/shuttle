@@ -270,7 +270,6 @@ struct Rect {
     bottom: i32,
 }
 
-/// Runs desk call `verb` on Android.
 pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, String> {
     let text = match verb {
         "desk_windows" => {

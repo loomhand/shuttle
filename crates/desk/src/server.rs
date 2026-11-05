@@ -267,7 +267,6 @@ pub async fn bind_for(endpoint: &str, group: &str) -> Result<Listener, String> {
     bind_at(endpoint, Some(gid(group)?))
 }
 
-/// Serves `handler` at `listener`.
 #[cfg(unix)]
 pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<(), String> {
     loop {
@@ -295,7 +294,6 @@ pub async fn bind_for(endpoint: &str, group: &str) -> Result<Listener, String> {
     bind_at(endpoint, Some(group))
 }
 
-/// Serves `handler` at `listener`.
 #[cfg(windows)]
 pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<(), String> {
     let Listener {
@@ -365,7 +363,6 @@ pub fn cache_endpoint(var: &str, pipe: &str, dir: &str, file: &str) -> String {
     format!("{home}/Library/Caches/{dir}/{file}")
 }
 
-/// Connects to the endpoint.
 #[cfg(unix)]
 pub async fn connect(endpoint: &str) -> std::io::Result<Conn> {
     tokio::net::UnixStream::connect(endpoint).await

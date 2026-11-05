@@ -106,7 +106,6 @@ pub struct Android {
 }
 
 impl Android {
-    /// Drives the Android device `device`.
     pub fn new(device: Device) -> Self {
         Self {
             device,

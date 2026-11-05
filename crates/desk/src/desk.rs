@@ -1033,7 +1033,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         to: Option<(i64, i64)>,
         note: &mut Option<String>,
     ) -> Result<(), String> {
-        let mut req = deliver(req, to);
+        let mut req = match to {
+            Some(to) => background(req, to),
+            None => desktop(req),
+        };
         let locked = self.locked_input
             && self.os == Os::Mac
             && to.is_some()
@@ -1175,12 +1178,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     ) -> Result<Option<String>, String> {
         self.classify(w);
         let scale = self.scale().await?;
-        let under = Under {
-            pid: w["pid"].as_i64().ok_or(BACKGROUND_TARGET)?,
-            id: w["window_id"].as_i64().ok_or(BACKGROUND_TARGET)?,
-            bounds: bounds(w),
-            point: (x / scale, y / scale),
-        };
+        let under = Under::of(w, (x / scale, y / scale)).ok_or(BACKGROUND_TARGET)?;
         self.click_window(req, &under).await
     }
 
@@ -1346,7 +1344,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 }
                 None => (x, y),
             },
-            (None, None) => {
+            _ => {
                 let mut target = self.front_window().await?;
                 if self.os == Os::Mac {
                     req["pid"] = target["pid"].take();
@@ -1366,7 +1364,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 }
                 (x, y)
             }
-            _ => return Err(SCROLL_POINT.to_owned()),
         };
         self.admit_point(x, y).await?;
         req["x"] = x.into();
@@ -1650,18 +1647,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     /// The desk point `(x, y)` in the screenshot pixels of driver window `w`, which the driver reads first as for a click.
     async fn local(&self, w: &Value, (x, y): (f64, f64)) -> Result<(f64, f64), String> {
         let scale = self.scale().await?;
-        let (pid, id) = w["pid"]
-            .as_i64()
-            .zip(w["window_id"].as_i64())
-            .ok_or(BACKGROUND_TARGET)?;
-        let under = Under {
-            pid,
-            id,
-            bounds: bounds(w),
-            point: (x / scale, y / scale),
-        };
+        let under = Under::of(w, (x / scale, y / scale)).ok_or(BACKGROUND_TARGET)?;
         let cached = lock(&self.read)
-            .filter(|r| (r.pid, r.id, r.bounds) == (pid, id, under.bounds))
+            .filter(|r| (r.pid, r.id, r.bounds) == (under.pid, under.id, under.bounds))
             .map(|r| r.k);
         let (kx, ky) = match cached {
             Some(k) => k,
@@ -1691,14 +1679,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn window_at(&self, x: f64, y: f64) -> Result<Option<Under>, String> {
         let scale = self.scale().await?;
         let point = (x / scale, y / scale);
-        Ok(self.top_at(point).await?.and_then(|w| {
-            Some(Under {
-                pid: w["pid"].as_i64()?,
-                id: w["window_id"].as_i64()?,
-                bounds: bounds(&w),
-                point,
-            })
-        }))
+        Ok(self.top_at(point).await?.and_then(|w| Under::of(&w, point)))
     }
 
     /// The topmost app window the driver lists at `point`, in points.
@@ -2102,7 +2083,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 }
 
 /// Sets its flag when dropped, as when a stop drops the call that holds it.
-pub(crate) struct Cancel(pub(crate) Arc<AtomicBool>);
+struct Cancel(Arc<AtomicBool>);
 
 impl Drop for Cancel {
     fn drop(&mut self) {
@@ -2120,6 +2101,17 @@ struct Under {
     id: i64,
     bounds: [f64; 4],
     point: (f64, f64),
+}
+
+impl Under {
+    fn of(w: &Value, point: (f64, f64)) -> Option<Self> {
+        Some(Self {
+            pid: w["pid"].as_i64()?,
+            id: w["window_id"].as_i64()?,
+            bounds: bounds(w),
+            point,
+        })
+    }
 }
 
 /// The window of the last background click and its desk point, which typing into that window checks the focus against.
@@ -2468,13 +2460,6 @@ fn ok_with(unverified: Option<String>) -> String {
             Value::from_iter([("ok", Value::from(true)), ("unverified", note.into())]).to_string()
         }
         None => OK.to_owned(),
-    }
-}
-
-fn deliver(req: Value, to: Option<(i64, i64)>) -> Value {
-    match to {
-        Some(to) => background(req, to),
-        None => desktop(req),
     }
 }
 
