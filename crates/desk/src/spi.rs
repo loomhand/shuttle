@@ -309,7 +309,7 @@ fn is_frame(frame: &Frame, (title, pid): &(String, Option<u32>), titles: &[Strin
 fn node(n: atspi::Node) -> Node {
     let (mnemonic, shortcut) = n.keys.as_deref().map_or((None, None), atspi::key_combos);
     Node {
-        id: n.obj.as_ref().map(Obj::id).unwrap_or_default(),
+        id: n.obj.as_deref().map(Obj::id).unwrap_or_default(),
         parent: n.parent,
         depth: n.depth,
         role: n.role(),
@@ -706,7 +706,7 @@ mod tests {
     #[test]
     fn a_node_keeps_the_atspi_states_role_and_raw_key_binding() {
         let n = atspi::Node {
-            obj: Some(Obj::parse("1.17/5").unwrap()),
+            obj: Some(std::rc::Rc::new(Obj::parse("1.17/5").unwrap())),
             role: 43,
             name: "Save".into(),
             states: (1 << 8) | (1 << 25) | (1 << 30),

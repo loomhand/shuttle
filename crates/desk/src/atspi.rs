@@ -1,6 +1,7 @@
 //! AT-SPI over D-Bus: a window's tree from its app's `Cache.GetItems`, filled in by live calls where the cache lacks children or their order, plus live reads and actions on one node.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
@@ -270,7 +271,7 @@ impl Obj {
 /// One node of a snapshot, in preorder; `parent` indexes the nearest shown ancestor.
 #[derive(Clone, Debug, Default)]
 pub struct Node {
-    pub obj: Option<Obj>,
+    pub obj: Option<Rc<Obj>>,
     pub role: u32,
     pub name: String,
     pub description: String,
@@ -423,14 +424,14 @@ impl Atspi {
         self.wake(&frame.obj.bus).await;
         let items = self.items(&frame.obj.bus).await.unwrap_or_default();
         lap("items", &mut phases);
-        let mut raw: HashMap<Obj, Raw> = HashMap::with_capacity(items.len());
-        let mut cached: HashMap<Obj, Vec<(i32, Obj)>> = HashMap::new();
+        let mut raw: HashMap<Rc<Obj>, Raw> = HashMap::with_capacity(items.len());
+        let mut cached: HashMap<Obj, Vec<(i32, Rc<Obj>)>> = HashMap::new();
         for (object, _, parent, index, count, ifaces, name, role, description, states) in items {
-            let (object, parent) = (Obj::of(object), Obj::of(parent));
+            let object = Rc::new(Obj::of(object));
             cached
-                .entry(parent)
+                .entry(Obj::of(parent))
                 .or_default()
-                .push((index, object.clone()));
+                .push((index, Rc::clone(&object)));
             raw.insert(
                 object,
                 Raw {
@@ -444,23 +445,24 @@ impl Atspi {
             );
         }
         lap("parse", &mut phases);
-        if !raw.contains_key(&frame.obj) {
-            let r = self.raw(&frame.obj).await?;
-            raw.insert(frame.obj.clone(), r);
+        let root = Rc::new(frame.obj.clone());
+        if !raw.contains_key(&root) {
+            let r = self.raw(&root).await?;
+            raw.insert(Rc::clone(&root), r);
         }
-        let mut kids: HashMap<Obj, Vec<Obj>> = HashMap::new();
-        let mut frontier = vec![frame.obj.clone()];
-        let mut seen: HashSet<Obj> = HashSet::from([frame.obj.clone()]);
+        let mut kids: HashMap<Rc<Obj>, Vec<Rc<Obj>>> = HashMap::new();
+        let mut frontier = vec![Rc::clone(&root)];
+        let mut seen: HashSet<Rc<Obj>> = HashSet::from([Rc::clone(&root)]);
         let mut truncated = false;
-        let mut by_index: HashSet<Obj> = HashSet::new();
+        let mut by_index: HashSet<Rc<Obj>> = HashSet::new();
         while !frontier.is_empty() {
-            let uncounted: Vec<&Obj> = frontier
+            let uncounted: Vec<&Rc<Obj>> = frontier
                 .iter()
                 .filter(|o| {
                     let r = &raw[*o];
                     LIST_ROLES.contains(&r.role)
                         && r.count <= 0
-                        && cached.get(*o).is_none_or(Vec::is_empty)
+                        && cached.get(&***o).is_none_or(Vec::is_empty)
                 })
                 .collect();
             let counts = join_all(
@@ -473,35 +475,38 @@ impl Atspi {
                 if let Some(r) = raw.get_mut(o)
                     && walks_by_index(r, count)
                 {
-                    by_index.insert(o.clone());
+                    by_index.insert(Rc::clone(o));
                 }
             }
-            let live: Vec<&Obj> = frontier
+            let live: Vec<&Rc<Obj>> = frontier
                 .iter()
-                .filter(|o| needs_live(&raw[*o], cached.get(*o)))
+                .filter(|o| needs_live(&raw[*o], cached.get(&***o)))
                 .collect();
             let indexed = &by_index;
             let lists = join_all(live.iter().map(|o| {
                 let r = &raw[*o];
                 async move {
-                    if r.states & (1 << MANAGES_DESCENDANTS) == 0 && !indexed.contains(*o) {
-                        return self.children(o).await;
-                    }
-                    join_all((0..r.count).map(|i| self.child_at(o, i)))
-                        .await
-                        .into_iter()
-                        .collect()
+                    let list: Result<Vec<Obj>, String> =
+                        if r.states & (1 << MANAGES_DESCENDANTS) == 0 && !indexed.contains(*o) {
+                            self.children(o).await
+                        } else {
+                            join_all((0..r.count).map(|i| self.child_at(o, i)))
+                                .await
+                                .into_iter()
+                                .collect()
+                        };
+                    list.map(|l| l.into_iter().map(Rc::new).collect::<Vec<_>>())
                 }
             }))
             .await;
-            let mut listed: HashMap<Obj, Vec<Obj>> = HashMap::new();
+            let mut listed: HashMap<Rc<Obj>, Vec<Rc<Obj>>> = HashMap::new();
             for (o, list) in live.iter().zip(lists) {
                 if let Ok(list) = list {
-                    listed.insert((*o).clone(), list);
+                    listed.insert(Rc::clone(o), list);
                 }
             }
-            let mut queued: HashSet<&Obj> = HashSet::new();
-            let mut unknown: Vec<Obj> = live
+            let mut queued: HashSet<&Rc<Obj>> = HashSet::new();
+            let mut unknown: Vec<Rc<Obj>> = live
                 .iter()
                 .filter_map(|o| listed.get(*o))
                 .flatten()
@@ -521,19 +526,19 @@ impl Atspi {
             }
             let mut next = Vec::new();
             for o in frontier {
-                let mut sorted = cached.remove(&o).unwrap_or_default();
+                let mut sorted = cached.remove(&*o).unwrap_or_default();
                 sorted.sort_by_key(|(i, _)| *i);
                 let sorted = sorted.into_iter().map(|(_, c)| c);
-                let list: Vec<Obj> = match listed.remove(&o) {
+                let mut list: Vec<Rc<Obj>> = match listed.remove(&o) {
                     Some(mut list) => {
-                        let extra: Vec<Obj> = sorted.filter(|c| !list.contains(c)).collect();
+                        let extra: Vec<Rc<Obj>> = sorted.filter(|c| !list.contains(c)).collect();
                         list.extend(extra);
                         list
                     }
                     None => sorted.collect(),
                 };
-                let list: Vec<Obj> = list.into_iter().filter(|c| raw.contains_key(c)).collect();
-                next.extend(list.iter().filter(|c| seen.insert((*c).clone())).cloned());
+                list.retain(|c| raw.contains_key(c));
+                next.extend(list.iter().filter(|c| seen.insert(Rc::clone(c))).cloned());
                 kids.insert(o, list);
                 if seen.len() > MAX_NODES {
                     truncated = true;
@@ -544,7 +549,7 @@ impl Atspi {
         }
         lap("live", &mut phases);
         let mut nodes = Vec::new();
-        flatten(&frame.obj, &raw, &kids, None, &mut Vec::new(), &mut nodes);
+        flatten(&root, &raw, &kids, None, &mut Vec::new(), &mut nodes);
         truncated |= nodes.len() >= MAX_NODES;
         let mut tree = Tree {
             frame,
@@ -584,7 +589,7 @@ impl Atspi {
             }
         );
         Ok(Node {
-            obj: Some(obj.clone()),
+            obj: Some(Rc::new(obj.clone())),
             role: r.role,
             name: r.name.trim_end().to_owned(),
             description: r.description,
@@ -667,17 +672,16 @@ impl Atspi {
             return Err(no_screen_coords(within));
         }
         let mut at: Option<Obj> = None;
-        let mut current = within.clone();
         for _ in 0..MAX_DEPTH {
+            let current = at.as_ref().unwrap_or(within);
             let hit: (String, OwnedObjectPath) = self
-                .call(&current, COMPONENT, "GetAccessibleAtPoint", &(x, y, SCREEN))
+                .call(current, COMPONENT, "GetAccessibleAtPoint", &(x, y, SCREEN))
                 .await?;
             let hit = Obj::of(hit);
             if hit.bus.is_empty() || hit.path.ends_with("/null") || at.as_ref() == Some(&hit) {
                 break;
             }
-            at = Some(hit.clone());
-            current = hit;
+            at = Some(hit);
         }
         Ok(at)
     }
@@ -694,13 +698,11 @@ impl Atspi {
     /// The objects above `obj`, from its top-level window down to its parent.
     pub async fn ancestors(&self, obj: &Obj) -> Result<Vec<Obj>, String> {
         let mut chain = Vec::new();
-        let mut current = obj.clone();
         while chain.len() < MAX_DEPTH {
-            let Some(parent) = self.parent(&current).await? else {
+            let Some(parent) = self.parent(chain.last().unwrap_or(obj)).await? else {
                 break;
             };
-            chain.push(parent.clone());
-            current = parent;
+            chain.push(parent);
         }
         chain.reverse();
         Ok(chain)
@@ -790,7 +792,7 @@ impl Atspi {
                     .await
                     .ok()?;
                 let by = labelled_by(set)?;
-                match all.iter().find(|m| m.obj.as_ref() == Some(&by)) {
+                match all.iter().find(|m| m.obj.as_deref() == Some(&by)) {
                     Some(m) => Some(m.name.clone()),
                     None => self.name(&by).await.ok(),
                 }
@@ -1074,10 +1076,10 @@ pub fn key_combos(binding: &str) -> (Option<String>, Option<String>) {
 }
 
 fn first_wake(bus: &str) -> bool {
-    WOKEN
+    let mut woken = WOKEN
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(bus.to_owned())
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    !woken.contains(bus) && woken.insert(bus.to_owned())
 }
 
 /// Whether a toolkit answers screen coordinates; GTK 4 answers every screen point and extent with the origin.
@@ -1275,19 +1277,29 @@ fn cache_items(reply: &zbus::Message) -> Result<Vec<Item>, zbus::Error> {
 
 /// Items of the older cache with each object's index among its parent's children, -1 when the parent does not list it, and its child count.
 fn indexed(old: Vec<OldItem>) -> Vec<Item> {
-    let mut index: HashMap<(Obj, Obj), i32> = HashMap::new();
+    fn key((bus, path): &(String, OwnedObjectPath)) -> (&str, &str) {
+        (bus.as_str(), path.as_str())
+    }
+    let mut index: HashMap<_, i32> = HashMap::new();
     for (object, _, _, children, ..) in &old {
-        let parent = Obj::of(object.clone());
         for (i, child) in (0..).zip(children) {
-            index.insert((parent.clone(), Obj::of(child.clone())), i);
+            index.insert((key(object), key(child)), i);
         }
     }
+    let at: Vec<i32> = old
+        .iter()
+        .map(|(object, _, parent, ..)| {
+            index
+                .get(&(key(parent), key(object)))
+                .copied()
+                .unwrap_or(-1)
+        })
+        .collect();
     old.into_iter()
+        .zip(at)
         .map(
-            |(object, app, parent, children, ifaces, name, role, description, states)| {
-                let at = (Obj::of(parent.clone()), Obj::of(object.clone()));
+            |((object, app, parent, children, ifaces, name, role, description, states), i)| {
                 let count = i32::try_from(children.len()).unwrap_or(i32::MAX);
-                let i = index.get(&at).copied().unwrap_or(-1);
                 (
                     object,
                     app,
@@ -1313,7 +1325,7 @@ fn walks_by_index(r: &mut Raw, live_count: Result<i32, String>) -> bool {
     count <= MANAGED_KIDS
 }
 
-fn needs_live(r: &Raw, cached: Option<&Vec<(i32, Obj)>>) -> bool {
+fn needs_live(r: &Raw, cached: Option<&Vec<(i32, Rc<Obj>)>>) -> bool {
     if r.states & (1 << MANAGES_DESCENDANTS) != 0 && !(1..=MANAGED_KIDS).contains(&r.count) {
         return false;
     }
@@ -1328,11 +1340,11 @@ fn needs_live(r: &Raw, cached: Option<&Vec<(i32, Obj)>>) -> bool {
 
 /// Appends `obj` and its subtree in preorder, an object shared by two parents under both; a nameless generic container gives its place to its children.
 fn flatten<'a>(
-    obj: &'a Obj,
-    raw: &HashMap<Obj, Raw>,
-    kids: &'a HashMap<Obj, Vec<Obj>>,
+    obj: &'a Rc<Obj>,
+    raw: &HashMap<Rc<Obj>, Raw>,
+    kids: &'a HashMap<Rc<Obj>, Vec<Rc<Obj>>>,
     parent: Option<usize>,
-    path: &mut Vec<&'a Obj>,
+    path: &mut Vec<&'a Rc<Obj>>,
     out: &mut Vec<Node>,
 ) {
     let Some(r) = raw.get(obj) else {
@@ -1341,22 +1353,22 @@ fn flatten<'a>(
     if out.len() >= MAX_NODES || path.contains(&obj) {
         return;
     }
-    let depth = parent.map_or(0, |p| out[p].depth + 1);
-    let node = Node {
-        obj: Some(obj.clone()),
-        role: r.role,
-        name: r.name.trim_end().to_owned(),
-        description: r.description.clone(),
-        states: r.states,
-        ifaces: r.ifaces,
-        parent,
-        depth,
-        ..Node::default()
-    };
-    let parent = if node.role() == "generic" && parent.is_some() {
+    let name = r.name.trim_end();
+    let named = !name.is_empty() || !r.description.is_empty();
+    let parent = if parent.is_some() && role_name(r.role, named) == "generic" {
         parent
     } else {
-        out.push(node);
+        out.push(Node {
+            obj: Some(Rc::clone(obj)),
+            role: r.role,
+            name: name.to_owned(),
+            description: r.description.clone(),
+            states: r.states,
+            ifaces: r.ifaces,
+            parent,
+            depth: parent.map_or(0, |p| out[p].depth + 1),
+            ..Node::default()
+        });
         Some(out.len() - 1)
     };
     path.push(obj);
@@ -1657,9 +1669,11 @@ mod tests {
 
     #[test]
     fn a_nameless_generic_container_hands_its_place_to_its_children() {
-        let o = |p: &str| Obj {
-            bus: ":1.1".into(),
-            path: format!("{PATH_PREFIX}/{p}"),
+        let o = |p: &str| {
+            Rc::new(Obj {
+                bus: ":1.1".into(),
+                path: format!("{PATH_PREFIX}/{p}"),
+            })
         };
         let r = |role: u32, name: &str| Raw {
             role,
@@ -1695,9 +1709,11 @@ mod tests {
 
     #[test]
     fn a_child_shared_by_two_parents_shows_under_both_and_a_cycle_ends() {
-        let o = |p: &str| Obj {
-            bus: ":1.1".into(),
-            path: format!("{PATH_PREFIX}/{p}"),
+        let o = |p: &str| {
+            Rc::new(Obj {
+                bus: ":1.1".into(),
+                path: format!("{PATH_PREFIX}/{p}"),
+            })
         };
         let r = |role: u32, name: &str| Raw {
             role,
@@ -1731,9 +1747,11 @@ mod tests {
     #[test]
     fn the_cache_is_trusted_unless_children_are_missing_or_unordered_and_small_managed_lists_are_walked()
      {
-        let o = |p: &str| Obj {
-            bus: ":1.1".into(),
-            path: p.into(),
+        let o = |p: &str| {
+            Rc::new(Obj {
+                bus: ":1.1".into(),
+                path: p.into(),
+            })
         };
         let r = |count: i32, states: u64| Raw {
             count,
