@@ -401,7 +401,7 @@ mod tests {
         assert!(err.contains(TOKEN_ENV), "{err}");
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn a_client_that_never_finishes_its_header_is_closed() {
         let addr = start().await;
         let mut conn = TcpStream::connect(addr).await.unwrap();
