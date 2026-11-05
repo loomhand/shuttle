@@ -182,7 +182,7 @@ impl<H: Handler> Daemon<H> {
         self
     }
 
-    async fn record(&self, tool: &str, mut args: Value) -> Result<String, String> {
+    async fn record_call(&self, tool: &str, mut args: Value) -> Result<String, String> {
         let r = self
             .recorder
             .as_ref()
@@ -247,7 +247,7 @@ impl<H: Handler> Daemon<H> {
         let n = self.runs.fetch_add(1, Ordering::Relaxed);
         let agent = format!("run-{:x}-{n}", self.nonce);
         *self.running() = Some(agent.clone());
-        let _running = Running(&self.running, &agent);
+        let _running = RunningAgent(&self.running, &agent);
         self.actions.fetch_add(1, Ordering::Relaxed);
         let _acting = Acting(&self.actions);
         let _held = Held(&self.desk, &agent);
@@ -355,7 +355,7 @@ impl<H: Handler> Handler for Daemon<H> {
         let tool = call.tool.as_str();
         if matches!(tool, "record_start" | "record_note" | "record_stop") {
             return self
-                .record(tool, call.args)
+                .record_call(tool, call.args)
                 .await
                 .map_or_else(Output::error, Output::text);
         }
@@ -466,9 +466,9 @@ impl<H: Handler> Drop for Held<'_, H> {
     }
 }
 
-struct Running<'a>(&'a Mutex<Option<String>>, &'a str);
+struct RunningAgent<'a>(&'a Mutex<Option<String>>, &'a str);
 
-impl Drop for Running<'_> {
+impl Drop for RunningAgent<'_> {
     fn drop(&mut self) {
         let mut running = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         if running.as_deref() == Some(self.1) {
@@ -1086,7 +1086,7 @@ mod tests {
     fn a_recording_the_menu_cannot_start_answers_why() {
         let d = daemon(Echo, Guard::default()).with_recordings(std::env::temp_dir());
         assert_eq!(
-            Controls::record(&d, true),
+            d.record(true),
             Err("recording runs only on macOS".to_owned())
         );
         assert!(!d.recording());
