@@ -1189,7 +1189,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (!w) { rec.noop = true; tick('act', t0); return }
     const [title, pid] = [w.title, w.pid]; rec.seen = title; if (!w.active && !BG) await desk.focus(title, pid); await desk.key('Escape', at(w))
     if (titledIn(await settle(w.title), title, pid)) { unique(w); await desk.close(title, pid) }
-    tick('act', t0); await closed(title, pid); return
+    tick('act', t0); if (!await closed(title, pid)) throw new Surprise(`"${title}" is still open after Escape and a close`, await seen())
+    return
   }
   const w = await windowFor(s.window, 3000, s.seen)
   rec.seen = w.title; if (w.title.trim()) lastSeen = w.title
