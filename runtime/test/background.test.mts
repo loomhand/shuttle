@@ -161,6 +161,24 @@ test('a press the driver could not confirm and no later step reads back fails th
   assert.deepEqual(r.unverified, [{ step: 1, note: 'unverifiable: posted a click' }])
 })
 
+test('a later step confirms an unconfirmed press only when it reads something the press could change', async (t) => {
+  const nodes = [
+    { ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: 'Untitled - Notepad', states: [] },
+    { ref: 1, id: 'b', parent: 0, depth: 1, role: 'button', name: 'Bold', states: ['showing'], bounds: [10, 10, 20, 20] },
+  ]
+  const d = desktop([user(), notepad()], ({ tool }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes, truncated: false })
+    if (tool === 'desk_press') return JSON.stringify({ ok: true, how: 'click', unverified: 'unverifiable: posted a click' })
+    if (tool === 'model_decide') return JSON.stringify({ answers: { ok: { probability: 0.9 } }, usage: { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 }, served: { model: 'm', build: null, id: null } })
+    return undefined
+  })
+  await daemon(t, d.reply)
+  for (const [check, ok] of [[{ wait: 'Notepad' }, false], [{ verify: 'Bold' }, false], [{ verify: 'Bold', enabled: true }, true], [{ expect: 'the text is bold' }, true]] as const) {
+    const r = await main({ steps: [{ app: 'Notepad' }, { click: 'Bold' }, check] })
+    assert.equal(r.ok, ok, `${JSON.stringify(check)} ${JSON.stringify(r)}`)
+  }
+})
+
 test('typing the driver could not confirm passes only when a field holds the text more often than before it', async (t) => {
   for (const [after, ok] of [['hi there', false], ['hihi there', true]] as const) {
     let typed = false

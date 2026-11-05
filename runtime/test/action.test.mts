@@ -21,7 +21,7 @@ test('a Linux step that only ran an accessibility action carries a caveat that n
   assert.equal(blind.ok, true, JSON.stringify(blind))
   assert.equal(blind.escalate, undefined)
   assert.deepEqual((blind.caveats as { step: number }[]).map((c) => c.step), [0], JSON.stringify(blind))
-  const read = await plan({ steps: [{ click: 'Save' }, { verify: 'Save' }] })
+  const read = await plan({ steps: [{ click: 'Save' }, { verify: 'Save', enabled: true }] })
   assert.equal(read.ok, true, JSON.stringify(read))
   assert.equal(read.caveats, undefined, JSON.stringify(read))
   how = 'select'

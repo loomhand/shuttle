@@ -160,7 +160,7 @@ async function perform(p: Params): Promise<Result> {
   const startTitles = new Set(known)
   const start = frontOf(ws0); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
   const startAlert = !start?.title.trim() && isAlert(await outline(start))
-  const recs: Rec[] = []
+  const recs: Rec[] = []; const tops: (string | undefined)[] = []
   let escalate: Escalation | null = null; let done = plan.length; let diverged = false
   for (const [i, planned] of plan.entries()) {
     if (i < (p.start ?? 0)) continue
@@ -168,7 +168,7 @@ async function perform(p: Params): Promise<Result> {
     const ts = Date.now(); const calls = desk.served.length
     try {
       const ws = i === (p.start ?? 0) ? ws0 : await desk.windows(); const f = BG ? frontOf(ws) : desk.front(ws)
-      stepWs = { ws, at: Date.now() }
+      stepWs = { ws, at: Date.now() }; tops[i] = f?.title
       if (BG && doubt && !s.app && !s.wait) throw new Surprise(doubt, await seen())
       if (BG && i > (p.start ?? 0)) stolen(ws, i - 1)
       const m = s.close ? null : await hiddenModal(ws, f)
@@ -195,7 +195,7 @@ async function perform(p: Params): Promise<Result> {
       if (actioned && !s.after) rec.caveat = ACTION_ONLY
       if (desk.foreground.runs + foreground.steps > runs) { rec.fg = true; fronted = true; BG = false }
       const before = recs[i - 1]
-      if (before && (s.wait || s.verify || s.expect)) before.confirmed = true
+      if (before && (s.expect || (s.verify && (s.value ?? s.on ?? s.enabled) !== undefined) || (s.wait && rec.seen !== tops[i - 1]))) before.confirmed = true
     } catch (e: unknown) {
       const sp = e instanceof Surprise ? e : new Surprise(e instanceof Error ? e.message : String(e), await seen())
       if (sp.late && sp.seen.outline === undefined && sp.reason !== NO_FRONT) sp.seen = await seen()
