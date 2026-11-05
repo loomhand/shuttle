@@ -146,7 +146,7 @@ impl Frame {
         &self.id
     }
 
-    /// Whether a system window covers screen point `(x, y)`.
+    /// Whether a window above this one covers screen point `(x, y)`.
     pub(crate) fn covered(&self, (x, y): (i32, i32)) -> bool {
         self.covers
             .iter()
@@ -425,17 +425,13 @@ fn turned((w, h): (i32, i32), list: &[WindowInfo]) -> (i32, i32) {
 }
 
 fn frames_of(list: Vec<WindowInfo>, screen: (i32, i32)) -> Vec<Frame> {
-    let system: Vec<(i64, [i32; 4])> = list
-        .iter()
-        .filter(|w| w.kind != APPLICATION)
-        .map(|w| (w.layer, w.bounds))
-        .collect();
+    let layers: Vec<(i64, [i32; 4])> = list.iter().map(|w| (w.layer, w.bounds)).collect();
     let shown = listed(list);
     let alone = shown.len() == 1;
     shown
         .into_iter()
         .map(|w| {
-            let covers = system
+            let covers = layers
                 .iter()
                 .filter(|(layer, _)| *layer > w.layer)
                 .map(|&(_, [l, t, r, b])| [l, t, r - l, b - t])
@@ -928,7 +924,12 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
         })?;
         node = nodes.swap_remove(i);
     }
-    Err(format!("element {id} is off the screen"))
+    let why = if node.visible && node.shown(frame.screen).is_some() {
+        "is covered by another window"
+    } else {
+        "is off the screen"
+    };
+    Err(format!("element {id} {why}"))
 }
 
 /// The innermost element at a screen point, with its ancestors.
@@ -1242,6 +1243,30 @@ mod tests {
         assert!(typing[0].covered((360, 1200)));
         assert!(!typing[0].covered((360, 699)));
         assert!(!typing[0].covered((720, 760)));
+    }
+
+    #[test]
+    fn another_app_window_above_covers_the_front_window() {
+        let pip = WindowInfo {
+            id: 8,
+            title: "Video".into(),
+            package: "com.example.video".into(),
+            active: false,
+            focused: false,
+            layer: 5,
+            ..window([400, 900, 700, 1180])
+        };
+        let frames = frames_of(vec![pip, window([0, 0, 720, 1280])], REDROID);
+        let front = frames.iter().find(|f| f.active).unwrap();
+        assert!(front.covered((500, 1000)));
+        assert!(!front.covered((100, 1000)));
+        assert!(
+            !frames
+                .iter()
+                .find(|f| !f.active)
+                .unwrap()
+                .covered((500, 1000))
+        );
     }
 
     #[test]
