@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 
 import { daemon, notepad, user } from './daemon.mts'
 import type { Call, W } from './daemon.mts'
@@ -35,7 +35,7 @@ function desktop(typed: (before: string, text: string) => string, note: boolean)
   return { calls, reply, doc: () => doc }
 }
 
-async function run(t: { after(fn: () => void): void }, plan: Plan, typed: (before: string, text: string) => string, note: boolean) {
+async function run(t: TestContext, plan: Plan, typed: (before: string, text: string) => string, note: boolean) {
   const d = desktop(typed, note)
   await daemon(t, d.reply)
   const r = await plan({ steps: [{ app: 'Notepad' }, { type: 'hi' }] })

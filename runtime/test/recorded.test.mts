@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 
 import { BUILD, daemon, gray } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
@@ -20,7 +20,7 @@ function screen(w: number, h: number, at: [number, number]): Buffer {
 
 type Seen = { clicks: string[]; grounds: number; shots: number }
 
-async function canvas(t: { after(fn: () => void): void }, o: { shown: Buffer; look?: number; title?: (s: Seen) => string; bounds?: [number, number, number, number] }): Promise<Seen> {
+async function canvas(t: TestContext, o: { shown: Buffer; look?: number; title?: (s: Seen) => string; bounds?: [number, number, number, number] }): Promise<Seen> {
   const seen: Seen = { clicks: [], grounds: 0, shots: 0 }
   const win = () => ({ id: '1/1', title: o.title?.(seen) ?? 'Canvas', role: 'window', pid: process.pid, active: true, app: 'Browser', bounds: o.bounds ?? [0, 0, 800, 600] })
   await daemon(t, ({ tool, args }) => {

@@ -7,7 +7,7 @@ import { png } from '../lib/png.mts'
 
 export type Call = { tool: string; args: Record<string, unknown> }
 export type Reply = string | { text: string; error?: boolean; image?: string }
-export type W = { id: string; title: string; role: string; pid: number; active: boolean; owner?: string }
+export type W = { id: string; title: string; role: string; pid: number; active: boolean; owner?: string; app?: string; bounds?: number[] }
 
 export const BUILD = 'typesafe/jev-1.14-20261014'
 export const endpoint = (dir: string): string => process.platform === 'win32' ? `\\\\.\\pipe\\${dir.replace(/[\\/:]/g, '-')}` : `${dir}/daemon.sock`

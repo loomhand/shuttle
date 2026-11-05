@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 
 import { daemon, gray } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
@@ -7,7 +7,7 @@ import { main } from '../lib/gui_plan.mts'
 const win = { id: '1', title: 'Untitled - Editor', role: 'window', pid: process.pid, active: true }
 const usage = { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 }
 
-async function editor(t: { after(fn: () => void): void }, role: string, flips: boolean) {
+async function editor(t: TestContext, role: string, flips: boolean) {
   const state = { on: false }
   const item = () => ({ ref: 3, id: '1/4', parent: 2, depth: 3, role, name: 'Status Bar', states: state.on ? ['checked'] : [], bounds: [100, 20, 80, 20] })
   const nodes = () => [

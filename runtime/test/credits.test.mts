@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 
 import { BUILD, gray, daemon, type Call } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
@@ -10,7 +10,7 @@ const frame = { ref: 0, id: '1.1/1', parent: -1, depth: 0, role: 'frame', name: 
 const button = { ref: 1, id: '1.1/2', parent: 0, depth: 1, role: 'button', name: 'Starry thing', states: ['showing'], bounds: [100, 100, 40, 20] }
 const usage = { model: 'decider', input_tokens: 1, output_tokens: 1, cached_tokens: 0 }
 
-async function plan(t: { after(fn: () => void): void }, nodes: unknown[], model: (c: Call) => string | null) {
+async function plan(t: TestContext, nodes: unknown[], model: (c: Call) => string | null) {
   const calls: string[] = []
   const clicked: unknown[] = []
   await daemon(t, (c) => {
