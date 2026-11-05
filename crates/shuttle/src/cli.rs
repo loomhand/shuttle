@@ -61,9 +61,7 @@ pub fn run(args: &[String]) -> ExitCode {
                     ))
                 }
                 [flag, addr] if flag == "--http" => {
-                    let token = std::env::var(http::TOKEN_ENV)
-                        .ok()
-                        .filter(|t| !t.is_empty());
+                    let token = std::env::var(http::TOKEN_ENV).unwrap_or_default();
                     exit(block_on(
                         Builder::new_multi_thread(),
                         http::Server::new(endpoint, listed, token).serve(addr),
@@ -390,7 +388,8 @@ fn exit(done: Result<(), String>) -> ExitCode {
 fn usage() -> ExitCode {
     let _ = writeln!(
         std::io::stderr(),
-        "usage: {NAME} mcp [--http ADDR] | {NAME} serve [ENDPOINT] | {NAME} stop | {NAME} resume | {NAME} desk VERB [key=value ...|JSON] | {NAME} --version; desk verbs: {}",
+        "usage: {NAME} mcp [--http ADDR, with {} set] | {NAME} serve [ENDPOINT] | {NAME} stop | {NAME} resume | {NAME} desk VERB [key=value ...|JSON] | {NAME} --version; desk verbs: {}",
+        http::TOKEN_ENV,
         DESK_VERBS.join(", ")
     );
     ExitCode::from(2)

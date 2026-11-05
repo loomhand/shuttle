@@ -30,12 +30,12 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 pub struct Server {
     endpoint: String,
     plugins: Plugins,
-    token: Option<String>,
+    token: String,
 }
 
 impl Server {
-    /// A server whose tools go to the daemon at `endpoint`; with `token`, a request without `Authorization: Bearer <token>` gets 401.
-    pub fn new(endpoint: String, plugins: Plugins, token: Option<String>) -> Self {
+    /// A server whose tools go to the daemon at `endpoint`; a request without `Authorization: Bearer <token>` gets 401.
+    pub fn new(endpoint: String, plugins: Plugins, token: String) -> Self {
         Self {
             endpoint,
             plugins,
@@ -43,19 +43,19 @@ impl Server {
         }
     }
 
-    /// Binds `addr` and serves until the process ends; a non-loopback address without a token is refused.
+    /// Binds `addr` and serves until the process ends; an empty token is refused.
     pub async fn serve(self, addr: &str) -> Result<(), String> {
+        if self.token.is_empty() {
+            return Err(format!(
+                "set {TOKEN_ENV}: every request must carry it as a bearer token"
+            ));
+        }
         let listener = TcpListener::bind(addr)
             .await
             .map_err(|e| format!("bind {addr}: {e}"))?;
         let local = listener
             .local_addr()
             .map_err(|e| format!("bind {addr}: {e}"))?;
-        if self.token.is_none() && !local.ip().is_loopback() {
-            return Err(format!(
-                "{local} is reachable from other hosts: set {TOKEN_ENV}"
-            ));
-        }
         log(format!("MCP over HTTP at http://{local}{PATH}"));
         self.run(listener).await
     }
@@ -130,12 +130,9 @@ impl Server {
     }
 
     fn authorized(&self, header: Option<&HeaderValue>) -> bool {
-        let Some(token) = &self.token else {
-            return true;
-        };
         header
             .and_then(|h| h.as_bytes().strip_prefix(b"Bearer "))
-            .is_some_and(|got| same(got, token.as_bytes()))
+            .is_some_and(|got| same(got, self.token.as_bytes()))
     }
 }
 
@@ -182,14 +179,13 @@ mod tests {
 
     use super::*;
 
-    async fn start(token: Option<&str>) -> SocketAddr {
+    const TOKEN: &str = "s3cret";
+    const BEARER: (&str, &str) = ("authorization", "Bearer s3cret");
+
+    async fn start() -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let server = Server::new(
-            "unused".to_owned(),
-            Plugins::default(),
-            token.map(str::to_owned),
-        );
+        let server = Server::new("unused".to_owned(), Plugins::default(), TOKEN.to_owned());
         tokio::spawn(server.run(listener));
         addr
     }
@@ -227,12 +223,13 @@ mod tests {
         headers: &[(&str, &str)],
         body: &str,
     ) -> (u16, String, String) {
-        send(addr, request(method, path, headers, body).as_bytes()).await
+        let headers = [&[BEARER], headers].concat();
+        send(addr, request(method, path, &headers, body).as_bytes()).await
     }
 
     #[tokio::test]
     async fn a_request_gets_its_json_reply_and_a_notification_gets_202() {
-        let addr = start(None).await;
+        let addr = start().await;
         let (code, head, body) = call(addr, "POST", PATH, &[], &json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}}).to_string()).await;
         assert_eq!(code, 200, "{head}");
         assert!(head.contains("content-type: application/json"), "{head}");
@@ -258,7 +255,7 @@ mod tests {
 
     #[tokio::test]
     async fn path_method_origin_and_body_are_checked() {
-        let addr = start(None).await;
+        let addr = start().await;
         let ping = json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}).to_string();
         assert_eq!(call(addr, "POST", "/other", &[], &ping).await.0, 404);
         let (code, head, _) = call(addr, "GET", PATH, &[], "").await;
@@ -302,45 +299,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_set_token_is_required_on_every_request() {
-        let addr = start(Some("s3cret")).await;
+    async fn the_token_is_required_on_every_request() {
+        let addr = start().await;
         let ping = json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}).to_string();
-        let (code, head, _) = call(addr, "POST", PATH, &[], &ping).await;
+        let unsent = |method: &str, headers: &[(&str, &str)], body: &str| {
+            let raw = request(method, PATH, headers, body);
+            async move { send(addr, raw.as_bytes()).await }
+        };
+        let (code, head, _) = unsent("POST", &[], &ping).await;
         assert_eq!(code, 401);
         assert!(head.contains("www-authenticate: bearer"), "{head}");
-        assert_eq!(
-            call(
-                addr,
-                "POST",
-                PATH,
-                &[("authorization", "Bearer wrong")],
-                &ping
-            )
-            .await
-            .0,
-            401
-        );
-        assert_eq!(call(addr, "GET", PATH, &[], "").await.0, 401);
-        assert_eq!(
-            call(
-                addr,
-                "POST",
-                PATH,
-                &[("authorization", "Bearer s3cret")],
-                &ping
-            )
-            .await
-            .0,
-            200
-        );
+        let wrong = [("authorization", "Bearer wrong")];
+        assert_eq!(unsent("POST", &wrong, &ping).await.0, 401);
+        assert_eq!(unsent("GET", &[], "").await.0, 401);
+        assert_eq!(call(addr, "POST", PATH, &[], &ping).await.0, 200);
     }
 
     #[tokio::test]
-    async fn a_non_loopback_address_without_a_token_is_refused() {
-        let err = Server::new("unused".to_owned(), Plugins::default(), None)
-            .serve("0.0.0.0:0")
-            .await
-            .unwrap_err();
+    async fn a_bind_without_a_token_is_refused_even_on_loopback() {
+        let served = tokio::time::timeout(
+            Duration::from_secs(1),
+            Server::new("unused".to_owned(), Plugins::default(), String::new())
+                .serve("127.0.0.1:0"),
+        )
+        .await;
+        let err = served.expect("a bind without a token served").unwrap_err();
         assert!(err.contains(TOKEN_ENV), "{err}");
     }
 
@@ -362,10 +345,10 @@ mod tests {
         });
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(Server::new(endpoint, Plugins::default(), None).run(listener));
+        tokio::spawn(Server::new(endpoint, Plugins::default(), TOKEN.to_owned()).run(listener));
         let mut conn = TcpStream::connect(addr).await.unwrap();
         let body = json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "desk", "arguments": {"verb": "windows"}}}).to_string();
-        conn.write_all(request("POST", PATH, &[], &body).as_bytes())
+        conn.write_all(request("POST", PATH, &[BEARER], &body).as_bytes())
             .await
             .unwrap();
         assert_eq!(got_call.await.unwrap(), "desk_windows");
