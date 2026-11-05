@@ -64,3 +64,20 @@ test('a plan marks the chain record dirty before it acts and clears the mark whe
   assert.equal(pend().dirty, false)
   assert.equal(pend().steps.length, 3)
 })
+
+test('a value typed into a password field is never written to a saved flow or the chain record', async (t) => {
+  const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: '', states: ['showing', 'focused', 'protected'] }
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([notepad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field] })
+    return '{"ok":true}'
+  })
+  const pending = () => readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')
+  const param = await main({ steps: [{ app: 'Notepad' }, { type: '{{password}}', focus: { secure: true } }], params: { password: 'hunter2' }, save: 'login' })
+  assert.equal(param.ok, true, JSON.stringify(param))
+  assert.ok(!readFileSync(`${process.env.SHUTTLE_FLOWS}/login.json`, 'utf8').includes('hunter2'))
+  assert.ok(!pending().includes('hunter2'), pending())
+  const literal = await main({ steps: [{ app: 'Notepad' }, { type: 'hunter3', focus: { secure: true } }], save: 'login2' })
+  assert.equal(literal.ok, true, JSON.stringify(literal))
+  assert.ok(!readFileSync(`${process.env.SHUTTLE_FLOWS}/login2.json`, 'utf8').includes('hunter3'))
+})

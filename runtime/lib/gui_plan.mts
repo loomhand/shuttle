@@ -1427,7 +1427,13 @@ function templated(steps: Step[], params: Record<string, string>) {
     }
     t[k] = v
   }
-  return { steps: out, params: p }
+  return { steps: out, params: unsecret(out, p) }
+}
+
+function unsecret(steps: Step[], params: Record<string, string>) {
+  const out = { ...params }
+  for (const s of steps) if (typeof s.focus === 'object' && s.focus.secure && s.type) for (const [, n] of s.type.matchAll(/\{\{(\w+)/g)) if (n) delete out[n]
+  return out
 }
 
 function flowsDir() {
@@ -1506,7 +1512,7 @@ function pending(): Chain | null {
 }
 
 function putPending(c: Chain | null) {
-  try { writeFileSync(PENDING, JSON.stringify(c), PRIVATE) } catch {}
+  try { writeFileSync(PENDING, JSON.stringify(c && { ...c, params: unsecret(c.steps, c.params) }), PRIVATE) } catch {}
 }
 
 function loadFlow(name: string): Flow {
