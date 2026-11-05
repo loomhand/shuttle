@@ -1213,7 +1213,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   }
   if (s.verify) {
     const hit = await resolve(nodes, s.verify, targetRole(s), undefined, 0.7, s.fp)
-    if (!hit) { if (s.on === false || s.enabled === false) return; throw new Surprise(`verify: no element matches "${s.verify}"`, await seen()) }
+    if (!hit) throw new Surprise(`verify: no element matches "${s.verify}"`, await seen())
     rec.how = hit.how; rec.fp = fingerprint(nodes, hit)
     const bad: string[] = []
     if (s.value !== undefined) { let v = ''; try { v = (await desk.read(hit.n.id)).value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); v = hit.n.value }; if (!norm(v).includes(norm(s.value))) bad.push(`reads "${v}"`) }
