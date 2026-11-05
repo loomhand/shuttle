@@ -35,6 +35,7 @@ let under: { id?: string; role: string; name: string; bounds?: number[] } | null
 let path: { id: string; role: string; name: string }[] = []
 let atFails = false
 let covered: { title: string; pid: number | null } | null = null
+let coverLater: { title: string; pid: number | null } | null = null
 let hitPid: number | null = process.pid
 let yes = 0
 
@@ -65,6 +66,7 @@ function answer({ tool, args }: Call): Reply {
 function decide({ state, questions, image }: Decide): Reply {
   asked.push({ image })
   if (image && !build) return { text: 'the verify model failed', error: true }
+  if (image && coverLater) { covered = coverLater; coverLater = null }
   if (image) looks.push((state as Part[]).flatMap((p) => typeof p === 'object' && p.image_url ? [size(Buffer.from(p.image_url.url.split(',')[1] ?? '', 'base64'))] : []).join(' '))
   if (image) for (const p of state as Part[]) {
     if (typeof p === 'string') prompts.push(p)
@@ -116,7 +118,7 @@ function screen(tree: Spec[], probabilities: Record<string, number>) {
 
 await daemon({ after }, answer)
 beforeEach(() => {
-  build = null; on = 0; looked = {}; pick = {}; under = { role: 'image', name: '' }; path = []; atFails = false; covered = null; hitPid = process.pid; yes = 0; tones = []; scale = 1
+  build = null; on = 0; looked = {}; pick = {}; under = { role: 'image', name: '' }; path = []; atFails = false; covered = null; coverLater = null; hitPid = process.pid; yes = 0; tones = []; scale = 1
 })
 
 test('a click whose jev pick has a close runner-up escalates as ambiguous instead of pressing the pick', async () => {
@@ -439,6 +441,18 @@ test('a grounded point that another window covers is refused before any check an
   assert.equal(out.ok, false, JSON.stringify(out))
   assert.match(out.escalate?.reason ?? '', /grounding pointed at push button "Pay", under the window "tmp - Thunar"/)
   assert.deepEqual([clicked, looks, out.trace?.[0]?.ground?.check], [[], [], 'covered-hit'])
+})
+
+test('a grounded point is placed again right before the click, so a window that covers it during the check takes no click', async () => {
+  const tree = [{ id: '1.1/1', parent: -1, role: 'frame', name: 'Portal' }]
+  build = BUILD
+  on = 0.99
+  under = { role: 'push button', name: 'Pay' }
+  coverLater = { title: 'tmp - Thunar', pid: 4242 }
+  const out = await plan('the pay button', tree, {})
+  assert.equal(out.ok, false, JSON.stringify(out))
+  assert.match(out.escalate?.reason ?? '', /push button "Pay", under the window "tmp - Thunar"/)
+  assert.deepEqual(clicked, [])
 })
 
 test('a failed read of the element under a grounded point is refused with its reason, not as no element', async () => {

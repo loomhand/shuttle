@@ -736,8 +736,9 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec): 
     tick('ground', t0)
     const g = await grounded(x, y, target, w, area, roots)
     rec.ground_hit = g.what.slice(0, 80); rec.checked = g.check; rec.p = g.p; rec.p_zoom = g.p_zoom; rec.p_full = g.p_full
-    if (g.ok) { rec.how = 'ground'; return [x, y] }
-    missed.push(`grounding pointed at ${told(g)}`)
+    const c = g.ok ? await placed(x, y, w, roots) : g
+    if (c.ok) { rec.how = 'ground'; return [x, y] }
+    missed.push(`grounding pointed at ${told(c)}`)
   } catch (e: unknown) {
     if (!r || spent(e)) throw e
     missed.push(`grounding failed: ${e instanceof Error ? e.message : String(e)}`)
