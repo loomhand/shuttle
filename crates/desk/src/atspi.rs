@@ -514,10 +514,9 @@ impl Atspi {
             )
             .await;
             for (o, count) in uncounted.into_iter().zip(counts) {
-                if let Some(count) = count.ok().filter(|c| (1..=MANAGED_KIDS).contains(c)) {
-                    if let Some(r) = raw.get_mut(o) {
-                        r.count = count;
-                    }
+                if let Some(r) = raw.get_mut(o)
+                    && walks_by_index(r, count)
+                {
                     by_index.insert(o.clone());
                 }
             }
@@ -1308,6 +1307,14 @@ fn indexed(old: Vec<OldItem>) -> Vec<Item> {
         .collect()
 }
 
+fn walks_by_index(r: &mut Raw, live_count: Result<i32, String>) -> bool {
+    let Some(count) = live_count.ok().filter(|c| *c > 0) else {
+        return false;
+    };
+    r.count = count;
+    count <= MANAGED_KIDS
+}
+
 fn needs_live(r: &Raw, cached: Option<&Vec<(i32, Obj)>>) -> bool {
     if r.states & (1 << MANAGES_DESCENDANTS) != 0 && !(1..=MANAGED_KIDS).contains(&r.count) {
         return false;
@@ -1752,6 +1759,29 @@ mod tests {
         ));
         assert!(!needs_live(&r(i32::MAX, 1 << MANAGES_DESCENDANTS), None));
         assert!(!needs_live(&r(0, 0), None));
+    }
+
+    #[test]
+    fn a_list_the_cache_leaves_empty_is_walked_by_index_up_to_the_cap_and_by_its_children_above() {
+        let list = |states: u64| Raw {
+            role: LIST_ROLES[0],
+            states,
+            ..Raw::default()
+        };
+        let mut small = list(0);
+        assert!(walks_by_index(&mut small, Ok(MANAGED_KIDS)));
+        assert!(needs_live(&small, None));
+        let mut big = list(0);
+        assert!(!walks_by_index(&mut big, Ok(MANAGED_KIDS + 1)));
+        assert!(needs_live(&big, None));
+        let mut sheet = list(1 << MANAGES_DESCENDANTS);
+        assert!(!walks_by_index(&mut sheet, Ok(i32::MAX)));
+        assert!(!needs_live(&sheet, None));
+        for count in [Ok(0), Ok(-1), Err("gone".to_owned())] {
+            let mut empty = list(0);
+            assert!(!walks_by_index(&mut empty, count));
+            assert!(!needs_live(&empty, None));
+        }
     }
 
     #[test]
