@@ -247,10 +247,11 @@ async fn serve(
         asker,
         background: input == InputMode::Background,
     };
-    let auto = !cfg!(target_os = "linux")
+    let auto = local
+        && !cfg!(target_os = "linux")
         && config
             .as_ref()
-            .is_ok_and(|c| c.desk.input == InputMode::Auto && c.android.is_none());
+            .is_ok_and(|c| c.desk.input == InputMode::Auto);
     let overlay = !config.as_ref().is_ok_and(|c| !c.driver.overlay);
     let locked_input = config.as_ref().is_ok_and(|c| c.desk.locked_input);
     let group = config
