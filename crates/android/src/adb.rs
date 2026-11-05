@@ -1950,12 +1950,12 @@ mod tests {
 
     #[test]
     fn clipboard_message_is_scrcpy_set_clipboard_without_its_paste_key() {
-        let msg = clipboard_message("你好", 7);
+        let msg = clipboard_message("\u{4f60}\u{597d}", 7);
         assert_eq!(msg[0], 9);
         assert_eq!(&msg[1..9], &7u64.to_be_bytes());
         assert_eq!(msg[9], 0);
         assert_eq!(&msg[10..14], &6u32.to_be_bytes());
-        assert_eq!(&msg[14..], "你好".as_bytes());
+        assert_eq!(&msg[14..], "\u{4f60}\u{597d}".as_bytes());
     }
 
     #[tokio::test]
@@ -2113,16 +2113,16 @@ mod tests {
     #[test]
     fn the_ui_servers_focus_answer_decodes_and_null_is_no_focus() {
         let f: Option<Focus> = serde_json::from_str(
-            r#"{"editable":true,"password":false,"window":true,"len":6,"hash":-1,"tail":"ab 你好","bounds":[100,80,620,180]}"#,
+            r#"{"editable":true,"password":false,"window":true,"len":6,"hash":-1,"tail":"ab \u4f60\u597d","bounds":[100,80,620,180]}"#,
         )
         .unwrap();
         let f = f.unwrap();
         assert!(f.editable && f.window && !f.password && f.holds((360, 136)));
         assert!(
             !f.holds((360, 180))
-                && f.ends_with("你好")
-                && f.ends_with("b 你好")
-                && !f.ends_with("x ab 你好")
+                && f.ends_with("\u{4f60}\u{597d}")
+                && f.ends_with("b \u{4f60}\u{597d}")
+                && !f.ends_with("x ab \u{4f60}\u{597d}")
         );
         let none: Option<Focus> = serde_json::from_str("null").unwrap();
         assert!(none.is_none());
@@ -2130,7 +2130,10 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_type_that_shows_is_pasted_once_and_verified() {
-        assert_eq!(typed("你好", None, "", &["你好"]).await, (Some(true), 1));
+        assert_eq!(
+            typed("\u{4f60}\u{597d}", None, "", &["\u{4f60}\u{597d}"]).await,
+            (Some(true), 1)
+        );
         assert_eq!(typed("abc", None, "x ", &["x abc"]).await, (Some(true), 1));
     }
 

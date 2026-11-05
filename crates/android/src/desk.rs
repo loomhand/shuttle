@@ -1463,7 +1463,7 @@ mod tests {
         assert_eq!(bounds("[1,2]"), None);
         assert_eq!(
             unescape("a&lt;b&gt;&quot;&apos;&#20320;&#x597D;&bogus"),
-            "a<b>\"'你好&bogus"
+            "a<b>\"'\u{4f60}\u{597d}&bogus"
         );
     }
 
