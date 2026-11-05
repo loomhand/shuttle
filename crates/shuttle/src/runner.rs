@@ -650,6 +650,40 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_run_whose_parent_is_gone_ends_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = runner(dir.path());
+        let bin = dir.path().join("orphaning");
+        crate::script(
+            &bin,
+            "#!/bin/sh\nnode \"$@\" &\necho $!\nwhile [ ! -e \"$SHUTTLE_RUN/ready\" ]; do sleep 0.05; done\n",
+        )
+        .unwrap();
+        let code = "import { writeFileSync } from 'node:fs'\nexport async function main() { writeFileSync(`${process.env.SHUTTLE_RUN}/ready`, ''); await new Promise((r) => setTimeout(r, 30000)) }";
+        let report = r
+            .plugin(&bin, json!({"code": code}), "run-test")
+            .await
+            .unwrap();
+        let pid = report["logs"].as_str().unwrap().trim().to_owned();
+        assert!(!pid.is_empty(), "{report}");
+        let mut gone = false;
+        for _ in 0..60 {
+            gone = !alive(&pid);
+            if gone {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if !gone {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid])
+                .status();
+        }
+        assert!(gone, "{pid} outlived its parent");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_run_whose_client_goes_away_gets_term_first() {
         let dir = tempfile::tempdir().unwrap();
         let r = runner(dir.path());
