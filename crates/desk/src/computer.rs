@@ -503,10 +503,15 @@ impl Computer {
             per_unit: ps,
         } = match self.region_rgb(area) {
             Some(cut) => cut?,
-            None => {
-                self.captured_region(session.unwrap_or(DEFAULT_SESSION), area)
-                    .await?
-            }
+            None => match session {
+                Some(session) => self.captured_region(session, area).await?,
+                None => {
+                    let once = self.own("zoom");
+                    let cut = self.captured_region(once.name(), area).await;
+                    self.end_once(Some(once)).await;
+                    cut?
+                }
+            },
         };
         let (iw, ih, rgb) = match max_edge {
             Some(edge) if edge > 0 && edge < rw.max(rh) => fit(rw, rh, &rgb, edge),
@@ -3524,6 +3529,29 @@ mod tests {
             out.text.contains("x = 10 + px*0.50, y = 10 + py*0.50"),
             "{}",
             out.text
+        );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_region_without_a_session_captures_in_a_session_of_its_own_and_ends_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = shot_driver(&socket, &calls);
+        let cua = cua(&socket);
+        let region = json!({"region": {"x": 0, "y": 0, "w": 10, "h": 10}});
+        cua.look(&region).await.unwrap();
+        let calls = calls.lock().unwrap().clone();
+        let captured = calls
+            .iter()
+            .find(|(n, _)| n == "get_desktop_state")
+            .map(|(_, s)| s.clone())
+            .unwrap();
+        assert!(captured.starts_with("zoom-"), "{calls:?}");
+        assert!(
+            calls.contains(&("end_session".to_owned(), captured)),
+            "{calls:?}"
         );
         driver.abort();
     }
