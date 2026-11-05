@@ -1041,6 +1041,12 @@ async function replaced(nodes: Node[], read: () => Promise<string>, before: stri
   if (now === before && needle && now.includes(needle)) throw new Surprise(`Replace All replaced nothing: "${needle}" is still in the document`, await seen())
 }
 
+function holds(role: string, got: string, want: string) {
+  if (norm(got) === norm(want)) return true
+  const n = /^\s*(-?\d+(?:[.,]\d+)?)\s*[^\d.,]*$/.exec(got)?.[1]
+  return (role === 'spinbutton' || role === 'slider') && !!n && !!want.trim() && Number(n.replace(',', '.')) === Number(want.trim().replace(',', '.'))
+}
+
 async function setState(s: Step, hit: Hit, rec: Rec) {
   const on = s.on ?? true
   let was = await checked(hit.n)
@@ -1216,7 +1222,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (!hit) throw new Surprise(`verify: no element matches "${s.verify}"`, await seen())
     rec.how = hit.how; rec.fp = fingerprint(nodes, hit)
     const bad: string[] = []
-    if (s.value !== undefined) { let v = ''; try { v = (await desk.read(hit.n.id)).value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); v = hit.n.value }; if (!norm(v).includes(norm(s.value))) bad.push(`reads "${v}"`) }
+    if (s.value !== undefined) { let v = ''; try { v = (await desk.read(hit.n.id)).value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); v = hit.n.value }; if (!holds(hit.n.role, v, s.value)) bad.push(`reads "${v}"`) }
     if (s.enabled !== undefined && hit.n.disabled === s.enabled) bad.push(hit.n.disabled ? 'is disabled' : 'is enabled')
     if (s.on !== undefined) { const c = (w.pid === null ? null : gtkToggle(w.pid, hit.n.name)) ?? (await checked(hit.n)) ?? await cropState(hit.n); rec.was = c; if (c !== s.on) bad.push(c === 'mixed' ? 'is mixed' : c ? 'is on' : 'is off') }
     if (bad.length) throw new Surprise(`verify: "${hit.n.name || s.verify}" ${bad.join(', ')}`, await seen())
