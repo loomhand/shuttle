@@ -130,8 +130,8 @@ fn send(call: &Call, what: impl Display) -> ExitCode {
     ) {
         Ok(out) if !out.is_error => {
             let _ = writeln!(std::io::stdout(), "{}", out.text);
-            if let Some(png) = &out.image_b64 {
-                match save_image(png) {
+            if let Some(image) = &out.image_b64 {
+                match save_image(image) {
                     Ok(path) => {
                         let _ = writeln!(std::io::stdout(), "image: {}", path.display());
                     }
