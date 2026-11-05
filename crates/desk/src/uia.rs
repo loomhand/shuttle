@@ -177,6 +177,7 @@ impl Uia {
         let mapped = uia_roles::role(kind);
         let role = mapped.unwrap_or("generic");
         let [x, y, w, h] = r.bounds;
+        r.name.truncate(r.name.trim_end().len());
         let value = r
             .value
             .take()
@@ -189,8 +190,8 @@ impl Uia {
             native_role: mapped
                 .is_none()
                 .then(|| uia_roles::native(r.control_type).to_owned()),
-            name: r.name.trim_end().to_owned(),
-            description: std::mem::take(&mut r.help),
+            name: r.name,
+            description: r.help,
             states: uia_roles::states(role, r.facts),
             value,
             shortcut: uia_combo(&r.accel),
