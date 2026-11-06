@@ -1311,8 +1311,19 @@ fn kept(last: &HashMap<i32, Vec<Frame>>, p: i32) -> Vec<Frame> {
 
 fn stale_front(frames: &mut [Frame], front: Option<u32>) {
     let answered = frames.iter().any(|f| f.active && !f.stale);
-    for f in frames.iter_mut().filter(|f| f.stale) {
-        f.active &= !answered && f.pid.is_some() && f.pid == front;
+    let of_front = |f: &Frame| f.stale && f.pid.is_some() && f.pid == front;
+    let held = (!answered)
+        .then(|| {
+            frames
+                .iter()
+                .position(|f| of_front(f) && f.active)
+                .or_else(|| frames.iter().position(of_front))
+        })
+        .flatten();
+    for (i, f) in frames.iter_mut().enumerate() {
+        if f.stale {
+            f.active = held == Some(i);
+        }
     }
 }
 
@@ -1590,6 +1601,38 @@ mod tests {
         stale_front(&mut frames, front);
         assert!(frames.iter().all(|f| !f.active));
         assert_eq!(front_pid(Some(9), || Some(50)), Some(9));
+    }
+
+    #[test]
+    fn a_stale_window_follows_its_app_into_and_out_of_the_front() {
+        let doc = |title: &str, active: bool| Frame {
+            title: title.into(),
+            pid: Some(7),
+            active,
+            stale: true,
+            ..Frame::default()
+        };
+        let actives = |mut frames: Vec<Frame>, front: Option<u32>| {
+            stale_front(&mut frames, front);
+            frames
+                .into_iter()
+                .filter(|f| f.active)
+                .map(|f| f.title)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            actives(vec![doc("Notes.rtf", false)], Some(7)),
+            ["Notes.rtf"]
+        );
+        assert!(actives(vec![doc("Notes.rtf", true)], Some(9)).is_empty());
+        assert_eq!(
+            actives(vec![doc("a.rtf", false), doc("b.rtf", true)], Some(7)),
+            ["b.rtf"]
+        );
+        assert_eq!(
+            actives(vec![doc("a.rtf", false), doc("b.rtf", false)], Some(7)),
+            ["a.rtf"]
+        );
     }
 
     #[test]
