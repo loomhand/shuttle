@@ -184,8 +184,9 @@ async function perform(p: Params): Promise<Result> {
       let ws = i === (p.start ?? 0) ? ws0 : await desk.windows(); let f = BG ? frontOf(ws) : desk.front(ws)
       if (f?.stale && !s.app) {
         const was = f
-        for (const end = Date.now() + STALE_WAIT; (!f || f.stale) && Date.now() < end; await sleep(50)) { ws = await desk.windows(); f = BG ? frontOf(ws) : desk.front(ws) }
-        if (!f || f.stale) throw new Surprise(frozen(f ?? was, i, plan[i - 1]), { window: (f ?? was).title, windows: titles(ws) })
+        const heir = (x: Win | null) => !!x && !x.stale && (x.id === was.id || (x.pid !== null && x.pid === was.pid) || (!!was.app && x.app === was.app) || (!!s.window && norm(x.title).includes(norm(s.window))))
+        for (const end = Date.now() + STALE_WAIT; !heir(f) && Date.now() < end; await sleep(50)) { ws = await desk.windows(); f = BG ? frontOf(ws) : desk.front(ws) }
+        if (!heir(f)) throw new Surprise(frozen(was, i, plan[i - 1]), { window: was.title, windows: titles(ws) })
       }
       stepWs = { ws, at: Date.now() }; tops[i] = f?.title
       if (BG && doubt && !s.app && !s.wait) throw new Surprise(doubt, await seen())

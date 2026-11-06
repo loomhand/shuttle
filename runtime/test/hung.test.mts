@@ -52,3 +52,20 @@ test('a plan goes on when the stale front window closes and the window that come
   assert.ok(Date.now() - t0 < 1500, `${Date.now() - t0} ms`)
   assert.deepEqual(keys, ['ctrl+shift+e', 'ctrl+Home'])
 })
+
+test('a plan whose stale front app exits while another app comes to the front escalates and sends that app nothing', async (t) => {
+  const calc = { id: '1.62/3', title: 'sales.ods — LibreOffice Calc', role: 'window', pid: 7076, active: true, app: 'soffice.bin' }
+  const term = { id: '1.9/1', title: 'Terminal - user@box: ~', role: 'frame', pid: 5120, active: false, app: 'xfce4-terminal' }
+  let lists = 0
+  const keys: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') { lists += 1; return JSON.stringify(!keys.length ? [calc, term] : lists < 3 ? [{ ...calc, stale: true }, term] : [{ ...term, active: true }]) }
+    if (tool === 'desk_key') { keys.push(args.keys); lists = 0; return '{"ok":true}' }
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ key: 'ctrl+shift+F5' }, { key: 'ctrl+shift+4' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.step, 1)
+  assert.match(r.escalate?.reason ?? '', /^"sales\.ods — LibreOffice Calc" stopped answering accessibility after step 0/)
+  assert.deepEqual(keys, ['ctrl+shift+F5'])
+})
