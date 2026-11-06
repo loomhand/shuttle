@@ -1,0 +1,246 @@
+1.73/3		window	sales.ods — LibreOffice Calc
+1.73/1818	1.73/3	button	
+1.73/1819	1.73/3	group	
+1.73/1820	1.73/1819	group	
+1.73/1823	1.73/1820	menubar	
+1.73/562	1.73/1823	menu	File
+1.73/574	1.73/1823	menu	Edit
+1.73/442	1.73/1823	menu	View
+1.73/423	1.73/1823	menu	Insert
+1.73/452	1.73/1823	menu	Format
+1.73/479	1.73/1823	menu	Styles
+1.73/1824	1.73/1823	menu	Sheet
+1.73/493	1.73/1823	menu	Data
+1.73/483	1.73/1823	menu	Tools
+1.73/557	1.73/1823	menu	Window
+1.73/1825	1.73/1823	menu	Help
+1.73/1821	1.73/1819	scrollbar	
+1.73/1822	1.73/1819	scrollbar	
+1.73/4	1.73/3	group	sales.ods — LibreOffice Calc
+1.73/687	1.73/4	menubar	
+1.73/839	1.73/687	menu	File
+1.73/840	1.73/687	menu	Edit
+1.73/841	1.73/687	menu	View
+1.73/842	1.73/687	menu	Insert
+1.73/843	1.73/687	menu	Format
+1.73/844	1.73/687	menu	Styles
+1.73/845	1.73/687	menu	Sheet
+1.73/846	1.73/687	menu	Data
+1.73/847	1.73/687	menu	Tools
+1.73/848	1.73/687	menu	Window
+1.73/849	1.73/687	menu	Help
+1.73/802	1.73/4	scrollbar	
+1.73/796	1.73/4	scrollbar	
+1.73/797	1.73/4	scrollbar	
+1.73/803	1.73/4	scrollbar	
+1.73/31	1.73/4	document spreadsheet	file:///home/user/gp/sales.ods - LibreOffice Spreadsheets
+1.73/790	1.73/31	table	Sheet sales
+1.73/34	1.73/4	group	
+1.73/35	1.73/4	group	
+1.73/12	1.73/4	button	Move To Home
+1.73/13	1.73/4	button	Move Left
+1.73/14	1.73/4	button	Move Right
+1.73/15	1.73/4	button	Move To End
+1.73/16	1.73/4	button	Add
+1.73/1277	1.73/4	tablist	
+1.73/1647	1.73/1277	tab	sales
+1.73/693	1.73/4	group	
+1.73/694	1.73/693	group	Properties
+1.73/812	1.73/694	button	Menu
+1.73/819	1.73/812	menuitemcheckbox	Properties
+1.73/821	1.73/812	menuitemcheckbox	Styles
+1.73/822	1.73/812	menuitemcheckbox	Gallery
+1.73/823	1.73/812	menuitemcheckbox	Navigator
+1.73/824	1.73/812	menuitemcheckbox	Functions
+1.73/825	1.73/812	separator	
+1.73/826	1.73/812	menuitem	Dock
+1.73/827	1.73/812	menuitem	Undock
+1.73/828	1.73/812	menuitem	Close Sidebar
+1.73/829	1.73/812	menu	Customization
+1.73/831	1.73/829	menuitemcheckbox	Properties
+1.73/832	1.73/829	menuitemcheckbox	Styles
+1.73/833	1.73/829	menuitemcheckbox	Gallery
+1.73/834	1.73/829	menuitemcheckbox	Navigator
+1.73/835	1.73/829	menuitemcheckbox	Functions
+1.73/836	1.73/829	separator	
+1.73/837	1.73/829	menuitem	Restore Default
+1.73/813	1.73/694	toolbar	
+1.73/838	1.73/813	button	
+1.73/785	1.73/694	toolbar	Properties
+1.73/807	1.73/785	group	
+1.73/814	1.73/807	button	
+1.73/786	1.73/694	toolbar	Styles
+1.73/808	1.73/786	group	
+1.73/815	1.73/808	button	
+1.73/787	1.73/694	toolbar	Gallery
+1.73/809	1.73/787	group	
+1.73/816	1.73/809	button	
+1.73/788	1.73/694	toolbar	Navigator
+1.73/810	1.73/788	group	
+1.73/817	1.73/810	button	
+1.73/789	1.73/694	toolbar	Functions
+1.73/811	1.73/789	group	
+1.73/818	1.73/811	button	
+1.73/805	1.73/694	img	
+1.73/689	1.73/4	toolbar	Formula Tool Bar
+1.73/690	1.73/689	group	
+1.73/861	1.73/689	separator	
+1.73/703	1.73/689	button	Function Wizard
+1.73/704	1.73/689	button	Select Function
+1.73/705	1.73/689	button	Formula
+1.73/862	1.73/689	button	Cancel
+1.73/863	1.73/689	button	Accept
+1.73/691	1.73/689	group	
+1.73/699	1.73/4	toolbar	Standard
+1.73/864	1.73/699	button	Load URL
+1.73/865	1.73/699	button	New
+1.73/866	1.73/699	button	Templates
+1.73/867	1.73/699	button	Open
+1.73/868	1.73/699	button	Open Remote
+1.73/869	1.73/699	button	Save
+1.73/870	1.73/699	button	Save As...
+1.73/871	1.73/699	button	Email
+1.73/872	1.73/699	separator	
+1.73/873	1.73/699	button	Edit Mode
+1.73/874	1.73/699	separator	
+1.73/875	1.73/699	button	Export Directly as PDF
+1.73/876	1.73/699	button	Print Directly (Generic Printer)
+1.73/877	1.73/699	button	Print
+1.73/878	1.73/699	button	Print Preview
+1.73/879	1.73/699	separator	
+1.73/880	1.73/699	button	Cut
+1.73/881	1.73/699	button	Copy
+1.73/882	1.73/699	button	Paste
+1.73/883	1.73/699	separator	
+1.73/884	1.73/699	button	Clone
+1.73/885	1.73/699	button	Clear
+1.73/886	1.73/699	separator	
+1.73/887	1.73/699	button	Undo
+1.73/888	1.73/699	button	Redo
+1.73/889	1.73/699	separator	
+1.73/890	1.73/699	button	Find and Replace
+1.73/891	1.73/699	button	Spelling
+1.73/892	1.73/699	button	Auto Spellcheck
+1.73/893	1.73/699	button	Navigator
+1.73/894	1.73/699	separator	
+1.73/895	1.73/699	button	Row
+1.73/896	1.73/699	button	Insert Rows Above
+1.73/897	1.73/699	button	Insert Rows Below
+1.73/898	1.73/699	button	Delete Rows
+1.73/899	1.73/699	button	Column
+1.73/900	1.73/699	button	Insert Columns Before
+1.73/901	1.73/699	button	Insert Columns After
+1.73/902	1.73/699	button	Delete Columns
+1.73/903	1.73/699	separator	
+1.73/904	1.73/699	button	Sort
+1.73/905	1.73/699	button	Sort Ascending
+1.73/906	1.73/699	button	Sort Descending
+1.73/907	1.73/699	button	AutoFilter
+1.73/908	1.73/699	button	Standard Filter
+1.73/909	1.73/699	button	Advanced Filter
+1.73/910	1.73/699	button	Goal Seek
+1.73/911	1.73/699	separator	
+1.73/912	1.73/699	button	Image
+1.73/913	1.73/699	button	Gallery
+1.73/914	1.73/699	button	Chart
+1.73/915	1.73/699	button	Formula Object
+1.73/916	1.73/699	button	Pivot Table
+1.73/917	1.73/699	button	Insert Row Break
+1.73/918	1.73/699	separator	
+1.73/919	1.73/699	button	Symbol
+1.73/920	1.73/699	button	Hyperlink
+1.73/921	1.73/699	button	Comment
+1.73/922	1.73/699	button	Text Box
+1.73/923	1.73/699	button	Headers and Footers
+1.73/924	1.73/699	separator	
+1.73/925	1.73/699	button	Print Area
+1.73/926	1.73/699	button	Edit
+1.73/927	1.73/699	button	Clear
+1.73/928	1.73/699	button	Freeze Panes
+1.73/929	1.73/699	button	Split Window
+1.73/930	1.73/699	separator	
+1.73/931	1.73/699	button	Line
+1.73/932	1.73/699	button	Basic Shapes
+1.73/933	1.73/699	button	Draw Functions
+1.73/934	1.73/699	separator	
+1.73/935	1.73/699	button	Data Sources
+1.73/936	1.73/699	button	Zoom
+1.73/937	1.73/699	separator	
+1.73/938	1.73/699	button	LibreOffice Help
+1.73/939	1.73/699	button	What's This?
+1.73/700	1.73/4	toolbar	Formatting
+1.73/940	1.73/700	button	Styles
+1.73/941	1.73/700	group	Apply Style
+1.73/942	1.73/700	separator	
+1.73/701	1.73/700	group	Font Name
+1.73/943	1.73/700	separator	
+1.73/702	1.73/700	group	Font Size
+1.73/944	1.73/700	button	Increase
+1.73/945	1.73/700	button	Decrease
+1.73/946	1.73/700	separator	
+1.73/947	1.73/700	button	Bold
+1.73/948	1.73/700	button	Italic
+1.73/949	1.73/700	button	Underline
+1.73/950	1.73/700	button	Double Underline
+1.73/951	1.73/700	button	Strikethrough
+1.73/952	1.73/700	button	Superscript
+1.73/953	1.73/700	button	Subscript
+1.73/954	1.73/700	button	Overline
+1.73/955	1.73/700	button	Outline Font Effect
+1.73/956	1.73/700	separator	
+1.73/957	1.73/700	button	Font Color
+1.73/958	1.73/700	button	Background Color
+1.73/959	1.73/700	separator	
+1.73/960	1.73/700	button	Align Left
+1.73/961	1.73/700	button	Align Center
+1.73/962	1.73/700	button	Align Right
+1.73/963	1.73/700	button	Justified
+1.73/964	1.73/700	separator	
+1.73/965	1.73/700	button	Align Top
+1.73/966	1.73/700	button	Center Vertically
+1.73/967	1.73/700	button	Align Bottom
+1.73/968	1.73/700	separator	
+1.73/969	1.73/700	button	Wrap Text
+1.73/970	1.73/700	separator	
+1.73/971	1.73/700	button	Merge and Center Cells
+1.73/972	1.73/700	button	Merge Cells
+1.73/973	1.73/700	button	Unmerge Cells
+1.73/974	1.73/700	separator	
+1.73/975	1.73/700	button	General
+1.73/976	1.73/700	button	Currency
+1.73/977	1.73/700	button	Percent
+1.73/978	1.73/700	button	Number
+1.73/979	1.73/700	button	Date
+1.73/980	1.73/700	button	Scientific
+1.73/981	1.73/700	separator	
+1.73/982	1.73/700	button	Add Decimal Place
+1.73/983	1.73/700	button	Delete Decimal Place
+1.73/984	1.73/700	separator	
+1.73/985	1.73/700	button	Increase
+1.73/986	1.73/700	button	Decrease
+1.73/987	1.73/700	separator	
+1.73/988	1.73/700	button	Borders (Shift to overwrite)
+1.73/989	1.73/700	button	Border Style
+1.73/990	1.73/700	button	Border Color
+1.73/991	1.73/700	separator	
+1.73/992	1.73/700	button	Conditional
+1.73/993	1.73/700	button	View Grid Lines
+1.73/994	1.73/700	separator	
+1.73/995	1.73/700	button	Left-To-Right
+1.73/996	1.73/700	button	Right-To-Left
+1.73/997	1.73/700	separator	
+1.73/998	1.73/700	button	Text direction from left to right
+1.73/999	1.73/700	button	Text direction from top to bottom
+1.73/688	1.73/4	status	
+1.73/850	1.73/688	text	
+1.73/851	1.73/688	text	
+1.73/852	1.73/688	text	
+1.73/853	1.73/688	text	
+1.73/854	1.73/688	text	
+1.73/855	1.73/688	text	
+1.73/856	1.73/688	text	
+1.73/857	1.73/688	text	
+1.73/858	1.73/688	text	
+1.73/859	1.73/688	text	
+1.73/860	1.73/688	text	
+1.73/4	1.73/3	group	sales.ods — LibreOffice Calc

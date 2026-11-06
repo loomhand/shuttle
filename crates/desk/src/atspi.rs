@@ -82,6 +82,7 @@ const STATE_NAMES: [(u32, &str); 16] = [
 ];
 
 const ROLE_FILLER: u32 = 20;
+const ROLE_MENU_BAR: u32 = 34;
 const ROLE_PANEL: u32 = 39;
 const ROLE_DOCUMENT_WEB: u32 = 95;
 const GENERIC: [u32; 7] = [ROLE_FILLER, 24, 25, 30, ROLE_PANEL, 46, 85];
@@ -553,7 +554,15 @@ impl Atspi {
         }
         lap("live", &mut phases);
         let mut nodes = Vec::new();
-        flatten(&root, &raw, &kids, None, &mut Vec::new(), &mut nodes);
+        flatten(
+            &root,
+            &raw,
+            &kids,
+            None,
+            &mut Vec::new(),
+            &mut HashSet::new(),
+            &mut nodes,
+        );
         truncated |= nodes.len() >= MAX_NODES;
         let mut tree = Tree {
             nodes,
@@ -1316,13 +1325,14 @@ fn needs_live(r: &Raw, cached: Option<&Vec<(i32, Rc<Obj>)>>) -> bool {
         || cached.is_some_and(|c| c.iter().any(|(i, _)| *i < 0))
 }
 
-/// Appends `obj` and its subtree in preorder, an object shared by two parents under both; a nameless generic container gives its place to its children.
+/// Appends `obj` and its subtree in preorder, once per parent: an object shared by two parents under both, but a menu bar that repeats an earlier one's menus under neither; a nameless generic container gives its place to its children.
 fn flatten<'a>(
     obj: &'a Rc<Obj>,
-    raw: &HashMap<Rc<Obj>, Raw>,
+    raw: &'a HashMap<Rc<Obj>, Raw>,
     kids: &'a HashMap<Rc<Obj>, Vec<Rc<Obj>>>,
     parent: Option<usize>,
     path: &mut Vec<&'a Rc<Obj>>,
+    bars: &mut HashSet<Vec<&'a str>>,
     out: &mut Vec<Node>,
 ) {
     let Some(r) = raw.get(obj) else {
@@ -1330,6 +1340,17 @@ fn flatten<'a>(
     };
     if out.len() >= MAX_NODES || path.contains(&obj) {
         return;
+    }
+    if r.role == ROLE_MENU_BAR {
+        let menus: Vec<&str> = kids
+            .get(obj)
+            .into_iter()
+            .flatten()
+            .filter_map(|c| raw.get(c).map(|m| m.name.as_str()))
+            .collect();
+        if !menus.is_empty() && !bars.insert(menus) {
+            return;
+        }
     }
     let name = r.name.trim_end();
     let named = !name.is_empty() || !r.description.is_empty();
@@ -1352,8 +1373,11 @@ fn flatten<'a>(
         Some(out.len() - 1)
     };
     path.push(obj);
+    let mut once = HashSet::new();
     for c in kids.get(obj).into_iter().flatten() {
-        flatten(c, raw, kids, parent, path, out);
+        if once.insert(c) {
+            flatten(c, raw, kids, parent, path, bars, out);
+        }
     }
     path.pop();
 }
@@ -1429,6 +1453,52 @@ fn timed_out(bus: &str, method: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_calc_window_holds_one_menu_bar_and_each_child_once() {
+        let mut raw: HashMap<Rc<Obj>, Raw> = HashMap::new();
+        let mut kids: HashMap<Rc<Obj>, Vec<Rc<Obj>>> = HashMap::new();
+        for line in include_str!("../testdata/calc-tree.tsv").lines() {
+            let [id, parent, role, name] = line.splitn(4, '\t').collect::<Vec<_>>()[..] else {
+                panic!("bad row {line:?}");
+            };
+            let obj = Rc::new(Obj::parse(id).unwrap());
+            let role = match role {
+                "window" => 23,
+                "menubar" => ROLE_MENU_BAR,
+                "menu" => 33,
+                _ => 43,
+            };
+            raw.entry(Rc::clone(&obj)).or_insert(Raw {
+                role,
+                name: name.to_owned(),
+                ..Raw::default()
+            });
+            if !parent.is_empty() {
+                kids.entry(Rc::new(Obj::parse(parent).unwrap()))
+                    .or_default()
+                    .push(obj);
+            }
+        }
+        let root = Rc::new(Obj::parse("1.73/3").unwrap());
+        let mut out = Vec::new();
+        flatten(
+            &root,
+            &raw,
+            &kids,
+            None,
+            &mut Vec::new(),
+            &mut HashSet::new(),
+            &mut out,
+        );
+        let bars: Vec<String> = out
+            .iter()
+            .filter(|n| n.role == ROLE_MENU_BAR)
+            .map(|n| n.obj.id())
+            .collect();
+        assert_eq!(bars, ["1.73/1823"]);
+        assert_eq!(out.len(), 233);
+    }
 
     #[test]
     fn a_late_app_keeps_its_last_frames_stale_until_it_has_missed_for_two_seconds() {
@@ -1628,7 +1698,15 @@ mod tests {
             (o("g"), vec![o("c")]),
         ]);
         let mut out = Vec::new();
-        flatten(&o("f"), &raw, &kids, None, &mut Vec::new(), &mut out);
+        flatten(
+            &o("f"),
+            &raw,
+            &kids,
+            None,
+            &mut Vec::new(),
+            &mut HashSet::new(),
+            &mut out,
+        );
         let shown: Vec<(&str, Option<usize>, usize)> =
             out.iter().map(|n| (n.role(), n.parent, n.depth)).collect();
         assert_eq!(
@@ -1665,7 +1743,15 @@ mod tests {
             (o("b"), vec![o("p"), o("d")]),
         ]);
         let mut out = Vec::new();
-        flatten(&o("d"), &raw, &kids, None, &mut Vec::new(), &mut out);
+        flatten(
+            &o("d"),
+            &raw,
+            &kids,
+            None,
+            &mut Vec::new(),
+            &mut HashSet::new(),
+            &mut out,
+        );
         let shown: Vec<(&str, Option<usize>)> =
             out.iter().map(|n| (n.name.as_str(), n.parent)).collect();
         assert_eq!(
