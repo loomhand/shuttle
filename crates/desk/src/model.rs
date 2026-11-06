@@ -141,26 +141,27 @@ impl Node {
     }
 
     /// The node as desk JSON, `i` its ref.
-    pub fn json(&self, i: usize) -> Value {
+    pub fn into_json(self, i: usize) -> Value {
         let mut v = json!({
             "ref": i,
-            "id": self.id,
+            "id": null,
             "parent": self.parent.map_or(-1, |p| p as i64),
             "depth": self.depth,
             "role": self.role,
-            "name": self.name,
-            "states": self.states,
         });
+        v["id"] = self.id.into();
+        v["name"] = self.name.into();
+        v["states"] = self.states.into();
         let optional = [
-            ("native_role", self.native_role.as_deref()),
+            ("native_role", self.native_role),
             (
                 "description",
-                Some(self.description.as_str()).filter(|d| !d.is_empty()),
+                Some(self.description).filter(|d| !d.is_empty()),
             ),
-            ("value", self.value.as_deref()),
-            ("shortcut", self.shortcut.as_deref()),
-            ("mnemonic", self.mnemonic.as_deref()),
-            ("keys", self.keys.as_deref()),
+            ("value", self.value),
+            ("shortcut", self.shortcut),
+            ("mnemonic", self.mnemonic),
+            ("keys", self.keys),
         ];
         for (key, field) in optional {
             if let Some(field) = field {
@@ -478,7 +479,7 @@ mod tests {
             ..Node::default()
         };
         assert_eq!(
-            n.json(3),
+            n.into_json(3),
             json!({"ref": 3, "id": "1/2", "parent": 0, "depth": 1, "role": "checkbox", "name": "Wrap",
                 "states": ["checked", "showing"], "shortcut": "ctrl+w"})
         );

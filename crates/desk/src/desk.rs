@@ -23,9 +23,10 @@ use serde_json::{Map, Value, json};
 use crate::allow::{Allow, app_key, app_of};
 use crate::auto;
 use crate::driver::{
-    CAPTURE_SESSION, Input, WINDOW_SESSION, background, desktop, image_of, text_of,
+    CAPTURE_SESSION, INPUT_TOOLS, Input, WINDOW_SESSION, background, desktop, image_of, text_of,
 };
 use crate::keys::{Os, key_names, keystroke};
+use crate::lock;
 use crate::model::{Access, Act, Capture, Extras, Frame, Node};
 use crate::press::{Press, plan_press};
 use crate::still::{Frame as StillFrame, Watch};
@@ -62,6 +63,7 @@ pub(crate) const BACKGROUND_ELEMENT: &str = "background input: the element's own
 pub(crate) const BACKGROUND_TWINS: &str = "background input: the element's own window is ambiguous (same or no title, and no single frame match), and background input never guesses which window to click";
 pub(crate) const BACKGROUND_UIA: &str = "background input: on Windows UI Automation focuses, selects or runs an element only by bringing its window to the front; click it in its window, or use input = \"foreground\"";
 pub(crate) const CALL_LIMIT: Duration = Duration::from_secs(3);
+pub(crate) const BUSY: &str = "desk busy: a previous action is still running";
 #[cfg(target_os = "linux")]
 pub(crate) const TYPER: Typer = crate::xtest::type_mapped;
 #[cfg(not(target_os = "linux"))]
@@ -233,7 +235,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let turn = if ACTIONS.contains(&tool) {
             let turn = tokio::time::timeout(self.turn_wait, self.acting.clone().lock_owned())
                 .await
-                .map_err(|_| "desk busy: a previous action is still running".to_owned())?;
+                .map_err(|_| BUSY.to_owned())?;
             self.check_mode(&args)?;
             if tool != "desk_type" {
                 *lock(&self.clicked) = None;
@@ -393,18 +395,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_snapshot" => self.snapshot(parse(args)?).await?,
             "desk_find" => self.find(parse(args)?).await?,
             "desk_read" => self.read(parse(args)?).await?,
-            "desk_press" => self.press(parse::<IdArgs>(args)?.id, turn.clone()).await?,
-            "desk_act" => self.act(parse(args)?, turn.clone()).await?,
+            "desk_press" => self.press(parse::<IdArgs>(args)?.id, turn).await?,
+            "desk_act" => self.act(parse(args)?, turn).await?,
             "desk_at" => self.at(parse(args)?).await?,
             "desk_key" => self.key(parse(args)?).await?,
-            "desk_type" => self.type_text(parse(args)?, turn.clone()).await?,
+            "desk_type" => self.type_text(parse(args)?, turn).await?,
             "desk_click" => self.click(parse(args)?).await?,
             "desk_scroll" => self.scroll(parse(args)?).await?,
             "desk_drag" => self.drag(parse(args)?).await?,
             "desk_still" => self.still(parse(args)?).await?,
             "desk_focus" => self.focus(parse(args)?).await?,
             "desk_unanswered" => self.unanswered().await?,
-            "desk_close" => self.close(parse(args)?, turn.clone()).await?,
+            "desk_close" => self.close(parse(args)?, turn).await?,
             "desk_web" => self.web(parse(args)?).await?,
             "desk_launch" => {
                 let a = parse::<LaunchArgs>(args)?;
@@ -477,7 +479,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
         let out = self.driver.call(tool, args).await?;
-        if auto::INPUT_TOOLS.contains(&tool) {
+        if INPUT_TOOLS.contains(&tool) {
             let _ = SENT.try_with(|n| n.set(n.get() + 1));
         }
         Ok(out)
@@ -675,9 +677,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         } else {
             out["nodes"] = tree
                 .nodes
-                .iter()
+                .into_iter()
                 .enumerate()
-                .map(|(i, n)| n.json(i))
+                .map(|(i, n)| n.into_json(i))
                 .collect();
         }
         Ok(out.to_string())
@@ -693,7 +695,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         };
         let (window, pid) = (a.window, a.pid);
         let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
-        let tree = self
+        let mut tree = self
             .access
             .run(TREE_LIMIT, (), move |b| {
                 let listed = frames(b, pid, &allow)?;
@@ -704,7 +706,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let found: Vec<Value> = matches(&tree.nodes, &a.name, a.role.as_deref())
             .into_iter()
             .take(MAX_FOUND)
-            .map(|i| tree.nodes[i].json(i))
+            .map(|i| std::mem::take(&mut tree.nodes[i]).into_json(i))
             .collect();
         let mut out = json!({"window": tree.frame});
         out["found"] = Value::Array(found);
@@ -732,7 +734,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 Ok((node, web))
             })
             .await?;
-        let mut out = node.json(0);
+        let mut out = node.into_json(0);
         if let Some(url) = url {
             out["url"] = url.into();
         }
@@ -761,10 +763,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         };
         if a.on {
             let mut webs = lock(&self.webs);
-            let h = webs.entry(a.pid).or_insert_with(|| Held {
-                was,
-                holders: HashSet::new(),
-            });
+            let h = webs
+                .entry(a.pid)
+                .and_modify(|h| h.was &= was)
+                .or_insert_with(|| Held {
+                    was,
+                    holders: HashSet::new(),
+                });
             h.holders.insert(a.holder);
         }
         Ok(json!({"ok": true, "was": was}).to_string())
@@ -893,7 +898,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     })
                     .collect();
                 let mut out = json!({});
-                out["found"] = node.json(0);
+                out["found"] = node.into_json(0);
                 out["path"] = Value::Array(path);
                 out["pid"] = pid.into();
                 if let Some((title, pid)) = covered {
@@ -1053,7 +1058,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .flatten()
     }
 
-    /// Sends `req` to window `to`, or in the foreground to the focused window.
     async fn send(
         &self,
         tool: &str,
@@ -1229,7 +1233,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 Ok((pid, title.ok_or(BACKGROUND_ELEMENT)?.title, frame))
             })
             .await?;
-        let (_, picked) = self.pick_window(Some(&title), Some(pid), false).await?;
+        let (_, picked, _) = self.pick_window(Some(&title), Some(pid), false).await?;
         let scale = self.scale().await?;
         let mut listed = self.call("list_windows", json!({})).await?;
         let Value::Array(windows) = listed["structuredContent"]["windows"].take() else {
@@ -1620,7 +1624,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if self.bg() || !named {
             return Ok(None);
         }
-        let (_, w) = self.pick_window(window, pid, true).await?;
+        let (_, w, _) = self.pick_window(window, pid, true).await?;
         let (pid, id, _) = window_key(&w)?;
         Ok(Some((pid, id)))
     }
@@ -1665,7 +1669,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if window.is_none() && pid.is_none() {
             return Err(BACKGROUND_TARGET.to_owned());
         }
-        let (_, w) = self.pick_window(window, pid, true).await?;
+        let (_, w, _) = self.pick_window(window, pid, true).await?;
         let to = w["pid"]
             .as_i64()
             .zip(w["window_id"].as_i64())
@@ -1679,7 +1683,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         window: &str,
         pid: Option<u32>,
     ) -> Result<((i64, i64), Value), String> {
-        let (_, w, rivals) = self.pick_listed(Some(window), pid, true).await?;
+        let (_, w, rivals) = self.pick_window(Some(window), pid, true).await?;
         if rivals > 1 {
             return Err(format!(
                 "{rivals} windows match the title {window:?}, so the pixels of a shot by that title may be another window's: pass a longer title that only one window matches, give the window a title of its own, or pass desk coordinates without window"
@@ -1822,7 +1826,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn focus(&self, a: WindowArgs) -> Result<String, String> {
-        let (w, _) = self.pick_window(Some(&a.window), a.pid, true).await?;
+        let (w, _, _) = self.pick_window(Some(&a.window), a.pid, true).await?;
         let window_id: i64 =
             w.id.parse()
                 .map_err(|_| format!("window id {:?} is not a number", w.id))?;
@@ -1845,19 +1849,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(out.to_string())
     }
 
-    /// The driver window titled like `window` or of `pid`, as a frame and as the driver lists it.
+    /// The driver window titled like `window` or of `pid`, as a frame and as the driver lists it, with how many listed windows its title picks among.
     async fn pick_window(
-        &self,
-        window: Option<&str>,
-        pid: Option<u32>,
-        by_title: bool,
-    ) -> Result<(Frame, Value), String> {
-        let (frame, w, _) = self.pick_listed(window, pid, by_title).await?;
-        Ok((frame, w))
-    }
-
-    /// Like [`Self::pick_window`], with how many listed windows its title picks among.
-    async fn pick_listed(
         &self,
         window: Option<&str>,
         pid: Option<u32>,
@@ -1916,10 +1909,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
         }
         let rivals = window.map_or(1, |want| {
-            let open = self.allow.is_open();
             let admitted = windows
                 .iter()
-                .filter(|w| open || self.allow.admits(w.app.as_deref()));
+                .filter(|w| self.allow.admits(w.app.as_deref()));
             window::rivals(admitted, want, pid)
         });
         let w = self.allow.pick(windows, window, pid)?;
@@ -1980,7 +1972,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             Grab::Read(c) => {
                 let mask = self.mask(shown, 1.0).await?;
                 let png = rgb_png(c.rgb, c.rect, mask.as_deref())?;
-                delivered(png, c.rect[2], c.rect[3], a.path).await
+                delivered(png, sized(c.rect[2], c.rect[3]), a.path).await
             }
             Grab::Driver(png, factor) => {
                 let mask = self.mask(shown, factor).await?;
@@ -1991,7 +1983,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         e
                     }
                 })?;
-                self.shot_out(png, w, h, a.path).await
+                self.shot_out(png, sized(w, h), a.path).await
             }
         }
     }
@@ -2021,9 +2013,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn steady_grab(&self, rect: [f64; 4]) -> Result<(Grab, Vec<([f64; 4], bool)>), String> {
         for _ in 0..MASK_TRIES {
-            let before = self.shown().await?;
+            let before = self.mask_rects().await?;
             let grab = self.grab(rect).await?;
-            let after = self.shown().await?;
+            let after = self.mask_rects().await?;
             if after == before {
                 return Ok((grab, after));
             }
@@ -2034,15 +2026,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn shot_out(
         &self,
         png: Vec<u8>,
-        w: u32,
-        h: u32,
+        out: Value,
         path: Option<String>,
     ) -> Result<Output, String> {
         if self.os == Os::Linux {
-            return delivered(png, w, h, path).await;
+            return delivered(png, out, path).await;
         }
         Ok(Output {
-            text: json!({"ok": true, "width": w, "height": h}).to_string(),
+            text: out.to_string(),
             image_b64: Some(B64.encode(&png)),
             ..Output::default()
         })
@@ -2056,7 +2047,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         rect: [f64; 4],
         path: Option<String>,
     ) -> Result<Output, String> {
-        let (_, w) = self.pick_window(Some(window), pid, true).await?;
+        let (_, w, _) = self.pick_window(Some(window), pid, true).await?;
         let key = window_key(&w)?;
         let stale = lock(&self.unseen)
             .get(&(key.0, key.1))
@@ -2086,16 +2077,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 e
             }
         })?;
-        let mut out = self.shot_out(png, w, h, path).await?;
-        if let Ok(mut v) = serde_json::from_str::<Value>(&out.text) {
-            v["origin"] = json!([rect[0].max(0.0) as u32, rect[1].max(0.0) as u32]);
-            if let Some(note) = stale {
-                v["stale"] = true.into();
-                v["note"] = note.into();
-            }
-            out.text = v.to_string();
+        let mut out = sized(w, h);
+        out["origin"] = json!([rect[0].max(0.0) as u32, rect[1].max(0.0) as u32]);
+        if let Some(note) = stale {
+            out["stale"] = true.into();
+            out["note"] = note.into();
         }
-        Ok(out)
+        self.shot_out(png, out, path).await
     }
 
     async fn mask(
@@ -2113,7 +2101,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(Some(mask))
     }
 
-    async fn shown(&self) -> Result<Vec<([f64; 4], bool)>, String> {
+    async fn mask_rects(&self) -> Result<Vec<([f64; 4], bool)>, String> {
         let mut windows = self.on_screen().await?;
         let frames = self.access.run(CALL_LIMIT, (), |b| b.frames()).await?;
         windows.sort_by_key(|w| w["z_index"].as_i64().unwrap_or(i64::MIN));
@@ -2258,17 +2246,6 @@ pub(crate) fn without_protocol_tail(text: &str) -> &str {
     }
 }
 
-fn opens(prelude: &str, name: &str) -> bool {
-    let prelude = prelude.to_ascii_lowercase();
-    let tag = format!("<{}", name.to_ascii_lowercase());
-    prelude.match_indices(&tag).any(|(i, _)| {
-        prelude[i + tag.len()..]
-            .chars()
-            .next()
-            .is_none_or(|c| c == '>' || c.is_whitespace())
-    })
-}
-
 /// Runs of `text` with at most [`RUN_CHARS`] distinct non-ASCII characters, one spare keycode each.
 pub(crate) fn text_runs(text: &str) -> Vec<&str> {
     let (mut runs, mut start, mut seen) = (Vec::new(), 0, Vec::new());
@@ -2278,7 +2255,8 @@ pub(crate) fn text_runs(text: &str) -> Vec<&str> {
         }
         if seen.len() == RUN_CHARS {
             runs.push(&text[start..i]);
-            (start, seen) = (i, Vec::new());
+            start = i;
+            seen.clear();
         }
         seen.push(c);
     }
@@ -2301,8 +2279,15 @@ pub(crate) async fn xtest(typer: Typer, text: &str, turn: Option<Turn>) -> Resul
     .map_err(|e| format!("XTest: {e}"))?
 }
 
-pub(crate) fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+fn opens(prelude: &str, name: &str) -> bool {
+    let prelude = prelude.to_ascii_lowercase();
+    let tag = format!("<{}", name.to_ascii_lowercase());
+    prelude.match_indices(&tag).any(|(i, _)| {
+        prelude[i + tag.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| c == '>' || c.is_whitespace())
+    })
 }
 
 fn names_app(window_app: &str, wanted: &str) -> bool {
@@ -2429,8 +2414,7 @@ fn live(frame: Frame) -> Result<Frame, String> {
     Ok(frame)
 }
 
-async fn delivered(png: Vec<u8>, w: u32, h: u32, path: Option<String>) -> Result<Output, String> {
-    let mut out = json!({"ok": true, "width": w, "height": h});
+async fn delivered(png: Vec<u8>, mut out: Value, path: Option<String>) -> Result<Output, String> {
     if let Some(path) = path {
         tokio::fs::write(&path, &png)
             .await
@@ -2442,6 +2426,10 @@ async fn delivered(png: Vec<u8>, w: u32, h: u32, path: Option<String>) -> Result
         image_b64: Some(B64.encode(&png)),
         ..Output::default()
     })
+}
+
+fn sized(w: u32, h: u32) -> Value {
+    json!({"ok": true, "width": w, "height": h})
 }
 
 /// The last characters of the last line of `text`, which a field holds once it has read the typing.
@@ -2471,7 +2459,6 @@ fn window_key(w: &Value) -> Result<(i64, i64, [f64; 4]), String> {
         .ok_or_else(|| "the driver lists the window without its pid or window id".to_owned())
 }
 
-/// A read of window `id` of `pid` at the size `shot` gives, without its tree.
 fn full_read(pid: i64, id: i64) -> Value {
     json!({
         "session": WINDOW_SESSION,

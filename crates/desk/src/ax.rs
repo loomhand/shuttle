@@ -237,7 +237,7 @@ impl Ax {
             self.last.insert(p, frames[from..].to_vec());
         }
         if frames.iter().any(|f| f.stale) {
-            stale_front(&mut frames, front_pid(answered, focused_app));
+            stale_front(&mut frames, answered.or_else(focused_app));
         }
         frames
     }
@@ -351,13 +351,7 @@ impl Ax {
         let node = self.node_of(el, &mut a, w.extras, VALUE_CHARS, w.scale);
         let (parent, depth) = place(&mut w.nodes, node, parent, depth);
         w.path.push(el.clone());
-        let mut truncated = false;
-        for child in &a.children {
-            truncated |= self.walk(w, child, parent, depth);
-            if truncated {
-                break;
-            }
-        }
+        let truncated = a.children.iter().any(|c| self.walk(w, c, parent, depth));
         w.path.pop();
         truncated
     }
@@ -677,7 +671,6 @@ pub struct Seen {
 }
 
 /// Where a web element is: the address of its page and the element's DOM id, when it has one.
-#[derive(Debug, Default)]
 pub struct Page {
     pub url: String,
     pub dom_id: Option<String>,
@@ -1285,17 +1278,13 @@ fn late(waited: Duration) -> bool {
 }
 
 fn unread<T>(read: &[Option<T>; 5], waited: Duration) -> bool {
-    late(waited) && (read.iter().all(Option::is_none) || read[4].is_none())
+    late(waited) && read[4].is_none()
 }
 
 fn focused_app() -> Option<u32> {
     attr(&system_wide(), "AXFocusedApplication")
         .and_then(|a| pid(&a))
         .and_then(|p| u32::try_from(p).ok())
-}
-
-fn front_pid(answered: Option<u32>, focused: impl FnOnce() -> Option<u32>) -> Option<u32> {
-    answered.or_else(focused)
 }
 
 fn kept(last: &HashMap<i32, Vec<Frame>>, p: i32) -> Vec<Frame> {
@@ -1596,11 +1585,8 @@ mod tests {
                 ..Frame::default()
             },
         ];
-        let front = front_pid(None, || Some(50));
-        assert_eq!(front, Some(50));
-        stale_front(&mut frames, front);
+        stale_front(&mut frames, Some(50));
         assert!(frames.iter().all(|f| !f.active));
-        assert_eq!(front_pid(Some(9), || Some(50)), Some(9));
     }
 
     #[test]

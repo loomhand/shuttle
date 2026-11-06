@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-use crate::desk::lock;
+use crate::lock;
 
 static ENTRIES: Mutex<Entries> = Mutex::new(Entries {
     dirs: Vec::new(),

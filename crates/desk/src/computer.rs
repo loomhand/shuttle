@@ -1,5 +1,6 @@
 //! The computer verbs for a vision agent, over cua-driver's line-delimited JSON in named driver sessions.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,17 +16,17 @@ use desk_core::wire::Output;
 use fast_image_resize as fr;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 #[cfg(target_os = "linux")]
 use crate::desk::CALL_LIMIT;
 use crate::desk::{
-    Turn, Typer, launch_name, lock, runs_app, text_runs, without_protocol_tail, xtest,
+    BUSY, TURN_WAIT, Turn, Typer, launch_name, runs_app, text_runs, without_protocol_tail, xtest,
 };
-use crate::driver::{CONNECT_RETRY, Driver, ENDED, Request, image_of, text_of};
+use crate::driver::{CONNECT_RETRY, Driver, ENDED, image_of, text_of};
 use crate::keys::{Os, key_names};
+use crate::lock;
 use crate::model::Modal;
 #[cfg(target_os = "linux")]
 use crate::model::{Access, Extras, Node};
@@ -373,7 +374,11 @@ impl Computer {
                 ..Output::default()
             });
         }
-        let input: Turn = Arc::new(self.input.clone().lock_owned().await);
+        let input: Turn = Arc::new(
+            tokio::time::timeout(TURN_WAIT, self.input.clone().lock_owned())
+                .await
+                .map_err(|_| BUSY.to_owned())?,
+        );
         if a.action == "type"
             && (a.text.as_deref().is_some_and(|t| !t.is_ascii())
                 || (a.element.is_none() && a.x.is_some() && a.y.is_some())
@@ -407,17 +412,17 @@ impl Computer {
                 match self.call(target, tool, req).await {
                     Ok(v) if v["isError"] == true => {
                         let text = format!("{tool}: {}", text_of(&v));
-                        match hit_refusal(&v) {
-                            Some(true) => match self.request(target, "click", pressed).await {
+                        if is_hit_refusal(&v) {
+                            match self.request(target, "click", pressed).await {
                                 Err(e) if e.contains(AX_UNSUPPORTED) => Err(text),
                                 Err(e) => Err(format!("{text}\n{e}")),
                                 Ok(v) => {
                                     refused = Some(text);
                                     Ok(v)
                                 }
-                            },
-                            Some(false) => self.request(target, "click", pressed).await,
-                            None => Err(text),
+                            }
+                        } else {
+                            Err(text)
                         }
                     }
                     done => done,
@@ -513,7 +518,7 @@ impl Computer {
                 None => {
                     let once = self.own("zoom");
                     let cut = self.captured_region(once.name(), area).await;
-                    self.end_once(Some(once)).await;
+                    self.end_own(once).await;
                     cut?
                 }
             },
@@ -572,7 +577,7 @@ impl Computer {
         let session = self.own("shot");
         let shot = self.screenshot(session.name(), max_edge).await;
         self.scales().remove(session.name());
-        self.end_once(Some(session)).await;
+        self.end_own(session).await;
         shot
     }
 
@@ -737,7 +742,9 @@ impl Computer {
     /// Launches an app, or brings its existing window to the front when it already runs.
     async fn launch(&self, session: &str, a: &ActArgs) -> Result<Output, String> {
         let app = required(&a.app, "app")?;
-        let input = self.input.lock().await;
+        let input = tokio::time::timeout(TURN_WAIT, self.input.lock())
+            .await
+            .map_err(|_| BUSY.to_owned())?;
         let before = self.before_input(None).await;
         let launched = match self.app_windows(session, app).await?.first() {
             Some(w) => {
@@ -757,7 +764,11 @@ impl Computer {
                 .request(session, "launch_app", json!({"name": launch_name(app)}))
                 .await
             {
-                Ok(v) => Ok(text_of(&v)),
+                Ok(v) => {
+                    let text = text_of(&v);
+                    crate::desk::adopt(v).await;
+                    Ok(text)
+                }
                 Err(e) => match self.app_windows(session, app).await?.first() {
                     Some(w) => Ok(format!(
                         "{app} is running as window {} \"{}\" (pid {}); the launcher reported: {e}",
@@ -771,7 +782,7 @@ impl Computer {
             Ok(text) => text,
             Err(e) => {
                 if let Some(probe) = before.and_then(|b| b.probe) {
-                    let _ = self.end_own(probe).await;
+                    self.end_own(probe).await;
                 }
                 drop(input);
                 let (shot, missed) = self.settled(session, None, a).await;
@@ -839,7 +850,7 @@ impl Computer {
                 wait: SETTLE,
             }),
             None => {
-                let _ = self.end_own(probe).await;
+                self.end_own(probe).await;
                 None
             }
         }
@@ -956,7 +967,7 @@ impl Computer {
         }
         drop(paused);
         if let Some(probe) = probe {
-            let _ = self.end_own(probe).await;
+            self.end_own(probe).await;
             return (String::new(), capture.filter(|_| still));
         }
         if seen == windows && focus == active {
@@ -991,10 +1002,9 @@ impl Computer {
     }
 
     /// Ends the driver session `session`, releasing its input devices.
-    async fn end_own(&self, mut session: Owned) -> Result<Value, String> {
-        let done = self.request(&session.name, "end_session", json!({})).await;
+    async fn end_own(&self, mut session: Owned) {
+        let _ = self.request(&session.name, "end_session", json!({})).await;
         session.open = false;
-        done
     }
 
     fn touch(&self) {
@@ -1238,7 +1248,7 @@ impl Computer {
                 tool
             }
             "type" => {
-                req["text"] = required(&a.text, "text")?.into();
+                req["text"] = without_protocol_tail(required(&a.text, "text")?).into();
                 "type_text"
             }
             "key" => {
@@ -1399,14 +1409,14 @@ impl Computer {
         tokio::time::sleep(RETURN_GAP).await;
     }
 
-    /// A one-call driver session for the pid-addressed input `req`, ended by [`Self::end_once`]; a session left open keeps a virtual keyboard that makes Chrome drop core keyboard input.
+    /// A driver session for one pid-addressed input; an open session's virtual keyboard makes Chrome drop core keys.
     fn once(&self, req: &Value) -> Option<Owned> {
         req.get("pid").is_some().then(|| self.own("input"))
     }
 
     async fn end_once(&self, once: Option<Owned>) {
         if let Some(session) = once {
-            let _ = self.end_own(session).await;
+            self.end_own(session).await;
         }
     }
 
@@ -1583,7 +1593,7 @@ impl Computer {
             let state = self
                 .request(probe.name(), "get_window_state", req.clone())
                 .await;
-            let _ = self.end_own(probe).await;
+            self.end_own(probe).await;
             let Ok(state) = state else {
                 continue;
             };
@@ -1692,7 +1702,7 @@ impl Computer {
         self.on_desktop(&mut req);
         let once = self.own("input");
         let done = self.request(once.name(), tool, req).await;
-        self.end_once(Some(once)).await;
+        self.end_own(once).await;
         done
     }
 
@@ -1748,9 +1758,6 @@ impl Computer {
         if result["isError"] == true {
             return Err(format!("{name}: {}", text_of(&result)));
         }
-        if name == "launch_app" {
-            crate::desk::adopt(result.clone()).await;
-        }
         Ok(result)
     }
 
@@ -1772,46 +1779,18 @@ impl Computer {
         Ok(v["result"].take())
     }
 
-    /// The driver's decoded reply to one call.
     async fn reply(&self, name: &str, args: &Value) -> Result<Value, String> {
         let foreground = self.driver.admit(name, args)?;
-        let sent = self.exchange(name, args).await;
+        let sent = self.driver.line(name, args, REQUEST_TIMEOUT).await;
         if foreground {
             self.driver.stamp();
         }
         let mut reply = sent?;
         if RETRIED.contains(&name) && reply.trim().is_empty() {
             tokio::time::sleep(CONNECT_RETRY).await;
-            reply = self.exchange(name, args).await?;
+            reply = self.driver.line(name, args, REQUEST_TIMEOUT).await?;
         }
         serde_json::from_str::<Value>(&reply).map_err(|e| format!("decode cua-driver reply: {e}"))
-    }
-
-    /// Sends one call and returns the raw reply line, empty when the driver closed without one.
-    async fn exchange(&self, name: &str, args: &Value) -> Result<String, String> {
-        let exchange = async {
-            let mut stream = self.driver.connect().await?;
-            let line = Request {
-                method: "call",
-                name,
-                args,
-            };
-            let mut bytes = serde_json::to_vec(&line).map_err(|e| format!("encode: {e}"))?;
-            bytes.push(b'\n');
-            stream
-                .write_all(&bytes)
-                .await
-                .map_err(|e| format!("write cua-driver: {e}"))?;
-            let mut reply = String::new();
-            BufReader::new(stream)
-                .read_line(&mut reply)
-                .await
-                .map_err(|e| format!("read cua-driver: {e}"))?;
-            Ok(reply)
-        };
-        tokio::time::timeout(REQUEST_TIMEOUT, exchange)
-            .await
-            .map_err(|_| format!("cua-driver {name} timed out"))?
     }
 }
 
@@ -1916,53 +1895,34 @@ impl Screen {
 
 #[derive(Deserialize)]
 struct StateArgs {
-    #[serde(default)]
     pid: Option<i64>,
     #[serde(default)]
     workspace_only: bool,
-    #[serde(default)]
     window_id: Option<i64>,
-    #[serde(default)]
     query: Option<String>,
-    #[serde(default)]
     max_edge: Option<u32>,
 }
 
 #[derive(Default, Deserialize)]
 struct ActArgs {
     action: String,
-    #[serde(default)]
     element: Option<i64>,
-    #[serde(default)]
     x: Option<f64>,
-    #[serde(default)]
     y: Option<f64>,
-    #[serde(default)]
     to_x: Option<f64>,
-    #[serde(default)]
     to_y: Option<f64>,
-    #[serde(default)]
     text: Option<String>,
-    #[serde(default)]
     key: Option<String>,
-    #[serde(default)]
     keys: Option<Vec<String>>,
-    #[serde(default)]
     direction: Option<String>,
-    #[serde(default)]
     amount: Option<u32>,
-    #[serde(default)]
     app: Option<String>,
-    #[serde(default)]
     button: Option<String>,
-    #[serde(default)]
     seconds: Option<f64>,
     #[serde(default)]
     foreground: bool,
-    #[serde(default)]
     max_edge: Option<u32>,
     /// Screen pixels per pixel of the screenshot the caller saw, in place of the session's latest.
-    #[serde(default)]
     scale: Option<f64>,
     #[serde(skip)]
     shot_discarded: bool,
@@ -1977,9 +1937,7 @@ struct PointArgs {
 #[derive(Deserialize)]
 struct ActList {
     actions: Vec<ActArgs>,
-    #[serde(default)]
     max_edge: Option<u32>,
-    #[serde(default)]
     scale: Option<f64>,
 }
 
@@ -2187,8 +2145,12 @@ fn window_list(result: &Value) -> Vec<Window> {
 }
 
 /// `text` without U+FFFC, which accessibility text holds where an embedded object (an image, a widget) sits.
-fn readable(text: &str) -> String {
-    text.replace('\u{fffc}', "")
+fn readable(text: &str) -> Cow<'_, str> {
+    if text.contains('\u{fffc}') {
+        text.replace('\u{fffc}', "").into()
+    } else {
+        text.into()
+    }
 }
 
 fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
@@ -2229,7 +2191,7 @@ fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
             indent = depth * 2
         );
         if let Some(v) = e["value"].as_str().filter(|v| !v.is_empty()) {
-            let v = desk_core::text::clip(readable(v), 60);
+            let v = desk_core::text::clip(readable(v).into_owned(), 60);
             let _ = write!(tree, " value=\"{v}\"");
         }
         if let Some([x, y, w, h]) = frame {
@@ -2254,14 +2216,11 @@ fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
     (tree, by_index)
 }
 
-/// For a `verify_hit` click that sent nothing, whether the driver refused it before sending (`true`) or does not know `verify_hit` (`false`); none for any other failure.
-fn hit_refusal(result: &Value) -> Option<bool> {
+/// Whether the driver refused a `verify_hit` click before sending it.
+fn is_hit_refusal(result: &Value) -> bool {
     let s = &result["structuredContent"];
     let code = s["refusal"]["code"].as_str().or(s["code"].as_str());
-    if s["effect"] == "refused" && code.is_some_and(|c| HIT_REFUSALS.contains(&c)) {
-        return Some(true);
-    }
-    (code == Some("invalid_arguments") && text_of(result).contains("verify_hit")).then_some(false)
+    s["effect"] == "refused" && code.is_some_and(|c| HIT_REFUSALS.contains(&c))
 }
 
 /// Whether more than [`MOVED_PERCENT`] of the pixels of `rect` in `screen` differ by more than [`STILL_TOLERANCE`] from `now`, the same rectangle's RGB rows.
@@ -2552,6 +2511,8 @@ fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
 mod tests {
     use std::collections::HashSet;
     use std::path::{Path, PathBuf};
+
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     use super::*;
     use crate::driver::CLICK_SPACING;
@@ -3098,20 +3059,20 @@ mod tests {
 
     #[tokio::test]
     async fn off_linux_a_hit_refusal_falls_back_to_the_press_and_other_elements_are_pressed() {
-        for code in HIT_REFUSALS.into_iter().chain(["unknown"]) {
+        for code in HIT_REFUSALS {
             let (out, sent) = field("AXTextField", "click", "", code).await;
             assert_eq!(sent.len(), 2, "{code}: {sent:?}");
             assert_eq!(sent[0]["verify_hit"], true, "{code}: {sent:?}");
             assert!(sent[1].get("verify_hit").is_none(), "{code}: {sent:?}");
             assert_eq!(sent[1]["element_token"], "t0", "{code}: {sent:?}");
-            assert!(!out.is_error, "{code}: {}", out.text);
-            assert_eq!(
-                out.text.contains(PRESSED_INSTEAD),
-                code != "unknown",
+            assert!(
+                !out.is_error && out.text.contains(PRESSED_INSTEAD),
                 "{code}: {}",
                 out.text
             );
         }
+        let (unknown, sent) = field("AXTextField", "click", "", "unknown").await;
+        assert!(unknown.is_error && sent.len() == 1, "{sent:?}");
         let (_, windowless) = field("AXTextField", "click", "", "windowless").await;
         assert_eq!(windowless.len(), 1, "{windowless:?}");
         assert!(windowless[0].get("verify_hit").is_none(), "{windowless:?}");
@@ -3135,9 +3096,6 @@ mod tests {
         );
         assert_eq!(sent.len(), 2, "{sent:?}");
         assert!(sent.iter().all(|c| c["x"].is_null()), "{sent:?}");
-        let (_, old) = field("AXTextField", "click", UNSUPPORTED, "unknown").await;
-        assert_eq!(old.len(), 2, "{old:?}");
-        assert!(old.iter().all(|c| c["x"].is_null()), "{old:?}");
         let (both, sent) = field(
             "AXTextField",
             "click",

@@ -18,17 +18,6 @@ pub(crate) const VERBS: [&str; 7] = [
     "desk_press",
     "desk_act",
 ];
-/// The driver tools that deliver input; a refusal after one of them succeeded is no pre-send refusal.
-pub(crate) const INPUT_TOOLS: [&str; 8] = [
-    "click",
-    "double_click",
-    "right_click",
-    "scroll",
-    "drag",
-    "press_key",
-    "hotkey",
-    "type_text",
-];
 
 const SHUTTLE: [&str; 6] = [
     BACKGROUND_TARGET,

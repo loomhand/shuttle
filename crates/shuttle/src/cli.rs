@@ -10,6 +10,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use desk_core::wire::Call;
 use serde_json::{Map, Value};
+use shuttle_desk::desk::COMPUTER_VERBS;
 use shuttle_desk::driver::Driver;
 use shuttle_desk::server;
 use shuttle_models::Models;
@@ -409,9 +410,12 @@ fn exit(done: Result<(), String>) -> ExitCode {
 fn usage() -> ExitCode {
     let _ = writeln!(
         std::io::stderr(),
-        "usage: {NAME} mcp [--http ADDR, with {} set] | {NAME} serve [ENDPOINT] | {NAME} stop | {NAME} resume | {NAME} desk VERB [key=value ...|JSON] | {NAME} --version; desk verbs: {}",
+        "usage: {NAME} mcp [--http ADDR, with {} set] | {NAME} serve [ENDPOINT] | {NAME} stop | {NAME} resume | {NAME} desk VERB [key=value ...|JSON] | {NAME} --version; desk verbs: {}, {}",
         http::TOKEN_ENV,
-        DESK_VERBS.join(", ")
+        DESK_VERBS.join(", "),
+        COMPUTER_VERBS
+            .map(|v| v.trim_start_matches("desk_"))
+            .join(", ")
     );
     ExitCode::from(2)
 }

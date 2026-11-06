@@ -92,7 +92,7 @@ fn cgroup(pid: u32) -> Option<String> {
 }
 
 fn unit_name(app: &str, pid: u32) -> String {
-    let base = app.rsplit('/').next().unwrap_or(app);
+    let base = app.rsplit_once('/').map_or(app, |(_, b)| b);
     let app: String = base
         .chars()
         .map(|c| {
