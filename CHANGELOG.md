@@ -3,7 +3,7 @@
 ## Unreleased
 
 - **macOS: an app step with `url` opens the page in Safari.** `{app: "Safari", url}` in `gui_plan`, and `desk launch` with `args` that hold no option, now hand the URLs to the app as `open -a` does, so a running app opens them and no second instance starts. Before, the URL was a command-line argument of a new instance: Safari showed "Safari Can't Open the Page" and the step failed with "Safari shows no window at <url>". `args` with an option, such as a Chrome profile, still start a new instance.
-- **Known issue:** on macOS with foreground input, `{app, url}` that starts the app fails within about 5 s with a `bring_to_front` error while the page opens: cua-driver keeps an app it launched with URLs or arguments out of the front for 8 s. Background input is not affected. A fix in loomhand/cua follows with the next driver pin.
+- **Bundled:** cua-driver v0.39.0-loomhand.1 (was v0.38.0-loomhand.12), the fork's patches rebased onto upstream cua-driver 0.39.0. On macOS it no longer keeps an app it launched with URLs or arguments out of the front after the driver brings that app forward itself, so `{app, url}` with foreground input works cold and warm, including a running Safari that is not in front; before, it failed within about 5 s with a `bring_to_front` error. From upstream: Windows `type_text` posts UTF-16 units in order and repairs a dropped tail, and typed secrets stay out of recordings.
 
 ## 0.1.40 - 2026-11-05
 
