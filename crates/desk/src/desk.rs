@@ -1617,8 +1617,20 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             )
             .await
         {
-            let front = self.front_window().await.ok();
-            return Err(match front.as_ref().and_then(|w| w["title"].as_str()) {
+            let front = match e
+                .rsplit_once(crate::driver::ACTUAL_FRONT)
+                .and_then(|(_, id)| id.trim().parse::<u64>().ok())
+            {
+                Some(id) => self
+                    .on_screen()
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|w| w["window_id"].as_u64() == Some(id))
+                    .and_then(|w| w["title"].as_str().map(str::to_owned)),
+                None => None,
+            };
+            return Err(match front {
                 Some(title) => format!("{e}; the front window is {title:?}"),
                 None => e,
             });
@@ -4617,7 +4629,7 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.starts_with("bring_to_front: foreground_unavailable; the front window is "),
+            err.ends_with("; the front window is \"Untitled - Notepad\""),
             "{err}"
         );
         assert!(sent(&calls, "type_text").is_empty());
@@ -6504,7 +6516,10 @@ pub(crate) mod tests {
     impl Input for NoFront {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
             if tool == "bring_to_front" {
-                return Err("bring_to_front: foreground_unavailable".to_owned());
+                return Err(format!(
+                    "bring_to_front: foreground_unavailable{}1",
+                    crate::driver::ACTUAL_FRONT
+                ));
             }
             self.0.call(tool, args).await
         }
