@@ -159,5 +159,5 @@ test('saving a plan whose password step adds a Return runs it again', async (t) 
   typed.length = 0
   const saved = await main({ steps: [{ app: 'Notepad' }, { type: 'hunter7\n', focus: { secure: true } }], save: 'login7' })
   assert.notEqual(saved.ran, false, JSON.stringify(saved))
-  assert.deepEqual(typed, ['hunter7'])
+  assert.deepEqual(typed, ['hunter7\n'])
 })
