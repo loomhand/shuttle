@@ -405,10 +405,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 }
                 let mut req = json!({"name": launch_name(&a.app)});
                 if !a.args.is_empty() {
-                    if self.os == Os::Mac {
+                    if self.os != Os::Mac {
+                        req["additional_arguments"] = a.args.into();
+                    } else if a.args.iter().any(|s| s.starts_with('-')) {
                         req["creates_new_application_instance"] = true.into();
+                        req["additional_arguments"] = a.args.into();
+                    } else {
+                        req["urls"] = a.args.into();
                     }
-                    req["additional_arguments"] = a.args.into();
                 }
                 let retry = (self.os == Os::Mac).then(|| req.clone());
                 let v = match (self.call("launch_app", req).await, retry) {
@@ -3698,6 +3702,30 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_launch_with_only_urls_hands_them_to_the_running_app_on_macos() {
+        for os in [Os::Mac, Os::Linux, Os::Windows] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), os);
+            let urls = json!(["https://example.com/", "/tmp/page.html"]);
+            desk.run("desk_launch", json!({"app": "Safari", "args": urls}))
+                .await
+                .unwrap();
+            let sent = sent(&calls, "launch_app");
+            let (opened, argv) = if os == Os::Mac {
+                (&urls, &Value::Null)
+            } else {
+                (&Value::Null, &urls)
+            };
+            assert_eq!(&sent[0]["urls"], opened, "{os:?} {sent:?}");
+            assert_eq!(&sent[0]["additional_arguments"], argv, "{os:?} {sent:?}");
+            assert!(
+                sent[0].get("creates_new_application_instance").is_none(),
+                "{os:?} {sent:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn input_names_a_window_by_its_whole_accessibility_title_where_the_driver_lists_it_elided()
      {
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -5247,7 +5275,7 @@ pub(crate) mod tests {
             [json!("Chrome"), json!("Google Chrome"), json!("TextEdit")]
         );
         assert_eq!(
-            sent.lock().unwrap()[1]["additional_arguments"],
+            sent.lock().unwrap()[1]["urls"],
             json!(["https://shop.test/form"])
         );
     }

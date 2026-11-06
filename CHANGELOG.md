@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **macOS: an app step with `url` opens the page in Safari.** `{app: "Safari", url}` in `gui_plan`, and `desk launch` with `args` that hold no option, now hand the URLs to the app as `open -a` does, so a running app opens them and no second instance starts. Before, the URL was a command-line argument of a new instance: Safari showed "Safari Can't Open the Page" and the step failed with "Safari shows no window at <url>". `args` with an option, such as a Chrome profile, still start a new instance.
+- **Known issue:** on macOS with foreground input, `{app, url}` that starts the app fails within about 5 s with a `bring_to_front` error while the page opens: cua-driver keeps an app it launched with URLs or arguments out of the front for 8 s. Background input is not affected. A fix in loomhand/cua follows with the next driver pin.
+
 ## 0.1.40 - 2026-11-05
 
 - **`shuttle mcp --http ADDR` serves the tools over MCP Streamable HTTP**, for an agent that reaches shuttle across a container boundary or the LAN. It needs a token in `SHUTTLE_MCP_TOKEN` on every bind, loopback included, refuses a browser `Origin` that is not localhost, and a `notifications/cancelled` stops the call it names in its `Mcp-Session-Id`. A connection that sends no request headers for 10 s is closed, so idle clients cannot hold its 64 connection slots ([README](README.md#over-http)).
