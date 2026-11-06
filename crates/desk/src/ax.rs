@@ -146,46 +146,40 @@ impl Ax {
 
     fn app_frames(&mut self, apps: impl IntoIterator<Item = (i32, Vec<[f64; 4]>)>) -> Vec<Frame> {
         let mut frames = Vec::new();
+        let mut answered = None;
         let scale = display_scale();
         for (p, bounds) in apps {
             if self.hung.contains_key(&p) {
+                frames.extend(kept(&self.last, p));
                 continue;
             }
             let app = application(p);
             let asked = Instant::now();
             let read = values(&self.app_names, &app);
-            if read.iter().all(Option::is_none) && asked.elapsed() >= MESSAGING_TIMEOUT * 9 / 10 {
-                let slow = self.slow.entry(p).or_insert(asked).elapsed();
-                let listed = self
-                    .listed_at
-                    .get(&p)
-                    .map_or(LAUNCH_GRACE, Instant::elapsed);
-                if hung(slow, listed) {
-                    self.slow.remove(&p);
-                    self.last.remove(&p);
-                    self.hung.insert(p, Instant::now());
-                } else {
-                    let kept = self.last.get(&p).into_iter().flatten();
-                    frames.extend(kept.map(|f| Frame {
-                        stale: true,
-                        ..f.clone()
-                    }));
-                }
+            if unread(&read, asked.elapsed()) {
+                self.missed(p, asked, &mut frames);
                 continue;
             }
-            self.slow.remove(&p);
             let from = frames.len();
             let [name, front, focused, main, windows] = read;
             let name = name
                 .and_then(|v| v.downcast::<CFString>())
                 .map(|s| s.to_string());
             let front = boolean(front).unwrap_or(false);
+            if front {
+                answered.get_or_insert(p as u32);
+            }
             let focused = focused.or(main);
             let Some(windows) = windows.map(|w| items(&w)) else {
                 continue;
             };
+            let mut cut = false;
             for w in windows.iter() {
                 let [role, subrole, title, children, pos, size] = values(&self.frame_names, w);
+                if role.is_none() && late(asked.elapsed()) {
+                    cut = true;
+                    break;
+                }
                 let sheets = sheets(children.map(|c| items(&c)).unwrap_or_default());
                 let mine = focused
                     .as_ref()
@@ -234,9 +228,31 @@ impl Ax {
                     ..Frame::default()
                 });
             }
+            if cut {
+                frames.truncate(from);
+                self.missed(p, asked, &mut frames);
+                continue;
+            }
+            self.slow.remove(&p);
             self.last.insert(p, frames[from..].to_vec());
         }
+        if frames.iter().any(|f| f.stale) {
+            stale_front(&mut frames, front_pid(answered, focused_app));
+        }
         frames
+    }
+
+    fn missed(&mut self, p: i32, asked: Instant, frames: &mut Vec<Frame>) {
+        let slow = self.slow.entry(p).or_insert(asked).elapsed();
+        let listed = self
+            .listed_at
+            .get(&p)
+            .map_or(LAUNCH_GRACE, Instant::elapsed);
+        if hung(slow, listed) {
+            self.slow.remove(&p);
+            self.hung.insert(p, Instant::now());
+        }
+        frames.extend(kept(&self.last, p));
     }
 
     fn id_of(&mut self, el: &CFType) -> String {
@@ -1264,6 +1280,53 @@ fn shown_windows() -> Vec<(i32, Vec<[f64; 4]>)> {
     apps
 }
 
+fn late(waited: Duration) -> bool {
+    waited >= MESSAGING_TIMEOUT * 9 / 10
+}
+
+fn unread<T>(read: &[Option<T>; 5], waited: Duration) -> bool {
+    late(waited) && (read.iter().all(Option::is_none) || read[4].is_none())
+}
+
+fn focused_app() -> Option<u32> {
+    attr(&system_wide(), "AXFocusedApplication")
+        .and_then(|a| pid(&a))
+        .and_then(|p| u32::try_from(p).ok())
+}
+
+fn front_pid(answered: Option<u32>, focused: impl FnOnce() -> Option<u32>) -> Option<u32> {
+    answered.or_else(focused)
+}
+
+fn kept(last: &HashMap<i32, Vec<Frame>>, p: i32) -> Vec<Frame> {
+    last.get(&p)
+        .into_iter()
+        .flatten()
+        .map(|f| Frame {
+            stale: true,
+            ..f.clone()
+        })
+        .collect()
+}
+
+fn stale_front(frames: &mut [Frame], front: Option<u32>) {
+    let answered = frames.iter().any(|f| f.active && !f.stale);
+    let of_front = |f: &Frame| f.stale && f.pid.is_some() && f.pid == front;
+    let held = (!answered)
+        .then(|| {
+            frames
+                .iter()
+                .position(|f| of_front(f) && f.active)
+                .or_else(|| frames.iter().position(of_front))
+        })
+        .flatten();
+    for (i, f) in frames.iter_mut().enumerate() {
+        if f.stale {
+            f.active = held == Some(i);
+        }
+    }
+}
+
 /// Whether AX window frame `frame` is one of `bounds`, the on-screen windows of its process; an unread frame counts as shown.
 fn shows(bounds: &[[f64; 4]], frame: Option<[f64; 4]>) -> bool {
     frame.is_none_or(|f| {
@@ -1502,6 +1565,123 @@ mod tests {
     fn the_space_calls_resolve_at_run_time_and_a_missing_symbol_is_none() {
         assert!(Cgs::get().is_some());
         assert!(symbol(c"CGSNoSuchCallForShuttle").is_none());
+    }
+
+    #[test]
+    fn an_app_read_that_ran_into_the_timeout_without_its_windows_is_a_miss() {
+        let half = MESSAGING_TIMEOUT / 2;
+        assert!(unread(&[None::<u8>; 5], MESSAGING_TIMEOUT));
+        assert!(unread(
+            &[Some(1), Some(1), None, None, None],
+            MESSAGING_TIMEOUT
+        ));
+        assert!(!unread(&[Some(1); 5], MESSAGING_TIMEOUT));
+        assert!(!unread(&[Some(1), Some(1), None, None, None], half));
+        assert!(late(MESSAGING_TIMEOUT) && !late(half));
+    }
+
+    #[test]
+    fn a_stale_window_behind_a_windowless_front_app_is_not_active() {
+        let mut frames = vec![
+            Frame {
+                title: "Notes.rtf".into(),
+                pid: Some(7),
+                active: true,
+                stale: true,
+                ..Frame::default()
+            },
+            Frame {
+                title: "Terminal".into(),
+                pid: Some(9),
+                ..Frame::default()
+            },
+        ];
+        let front = front_pid(None, || Some(50));
+        assert_eq!(front, Some(50));
+        stale_front(&mut frames, front);
+        assert!(frames.iter().all(|f| !f.active));
+        assert_eq!(front_pid(Some(9), || Some(50)), Some(9));
+    }
+
+    #[test]
+    fn a_stale_window_follows_its_app_into_and_out_of_the_front() {
+        let doc = |title: &str, active: bool| Frame {
+            title: title.into(),
+            pid: Some(7),
+            active,
+            stale: true,
+            ..Frame::default()
+        };
+        let actives = |mut frames: Vec<Frame>, front: Option<u32>| {
+            stale_front(&mut frames, front);
+            frames
+                .into_iter()
+                .filter(|f| f.active)
+                .map(|f| f.title)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            actives(vec![doc("Notes.rtf", false)], Some(7)),
+            ["Notes.rtf"]
+        );
+        assert!(actives(vec![doc("Notes.rtf", true)], Some(9)).is_empty());
+        assert_eq!(
+            actives(vec![doc("a.rtf", false), doc("b.rtf", true)], Some(7)),
+            ["b.rtf"]
+        );
+        assert_eq!(
+            actives(vec![doc("a.rtf", false), doc("b.rtf", false)], Some(7)),
+            ["a.rtf"]
+        );
+    }
+
+    #[test]
+    fn a_hung_app_keeps_its_last_frames_stale() {
+        let doc = Frame {
+            title: "Notes.rtf".into(),
+            pid: Some(7),
+            active: true,
+            ..Frame::default()
+        };
+        let last = HashMap::from([(7, vec![doc])]);
+        let listed = kept(&last, 7);
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].stale && listed[0].active && listed[0].title == "Notes.rtf");
+        assert!(kept(&last, 8).is_empty());
+    }
+
+    #[test]
+    fn a_stale_frame_stays_active_only_while_its_app_is_in_front_and_no_answering_app_is() {
+        let frames = || {
+            vec![
+                Frame {
+                    title: "Notes.rtf".into(),
+                    pid: Some(7),
+                    active: true,
+                    stale: true,
+                    ..Frame::default()
+                },
+                Frame {
+                    title: "Terminal".into(),
+                    pid: Some(9),
+                    ..Frame::default()
+                },
+            ]
+        };
+        let actives = |front: Option<u32>, terminal: bool| {
+            let mut f = frames();
+            f[1].active = terminal;
+            stale_front(&mut f, front);
+            f.iter()
+                .filter(|x| x.active)
+                .map(|x| x.title.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(actives(Some(7), false), ["Notes.rtf"]);
+        assert!(actives(Some(42), false).is_empty());
+        assert_eq!(actives(Some(9), true), ["Terminal"]);
+        assert_eq!(actives(Some(7), true), ["Terminal"]);
+        assert!(actives(None, false).is_empty());
     }
 
     fn listed(pid: u32, layer: i64, alpha: f64, bounds: [f64; 4]) -> Listed {
