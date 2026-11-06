@@ -181,10 +181,11 @@ async function perform(p: Params): Promise<Result> {
     const s = fill(planned, params); T = {}; const rec: Rec = { i, op: OPS.find((k) => k in s) }
     const ts = Date.now(); const calls = desk.served.length
     try {
-      let ws = i === (p.start ?? 0) ? ws0 : await desk.windows(); const f = BG ? frontOf(ws) : desk.front(ws)
+      let ws = i === (p.start ?? 0) ? ws0 : await desk.windows(); let f = BG ? frontOf(ws) : desk.front(ws)
       if (f?.stale && !s.app) {
-        for (const end = Date.now() + STALE_WAIT; Date.now() < end && !ws.some((x) => x.id === f.id && !x.stale); await sleep(50)) ws = await desk.windows()
-        if (!ws.some((x) => x.id === f.id && !x.stale)) throw new Surprise(frozen(f, i, plan[i - 1]), { window: f.title, windows: titles(ws) })
+        const was = f
+        for (const end = Date.now() + STALE_WAIT; (!f || f.stale) && Date.now() < end; await sleep(50)) { ws = await desk.windows(); f = BG ? frontOf(ws) : desk.front(ws) }
+        if (!f || f.stale) throw new Surprise(frozen(f ?? was, i, plan[i - 1]), { window: (f ?? was).title, windows: titles(ws) })
       }
       stepWs = { ws, at: Date.now() }; tops[i] = f?.title
       if (BG && doubt && !s.app && !s.wait) throw new Surprise(doubt, await seen())
