@@ -1,6 +1,6 @@
 [package]
 name = "shuttle-desk-core"
-description = "The desk wire, call arguments, window matching and screenshot crops shared by every desk host"
+description = "The desk wire, call arguments, window matching and screenshot crops shared by the desktop and Android desks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

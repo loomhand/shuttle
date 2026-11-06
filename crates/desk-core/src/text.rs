@@ -1,6 +1,6 @@
-//! Desk text: label comparison, quoting, timings and the `desk` CLI's arguments.
+//! Desk text: label comparison, quoting and timings.
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 /// The characters of a name or value a snapshot shows.
 pub const NAME_CHARS: usize = 80;
@@ -42,8 +42,13 @@ pub fn norm(s: &str) -> String {
     if s.contains("...") {
         s = s.replace("...", "");
     }
+    one_line(s.trim().trim_end_matches(':'))
+}
+
+/// The words of `s` joined by single spaces.
+pub fn one_line(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    for word in s.trim().trim_end_matches(':').split_whitespace() {
+    for word in s.split_whitespace() {
         if !out.is_empty() {
             out.push(' ');
         }
@@ -77,24 +82,6 @@ pub fn clip(mut s: String, max: usize) -> String {
 /// Microseconds as milliseconds with one decimal.
 pub fn ms(us: u128) -> Value {
     json!((us as f64 / 100.0).round() / 10.0)
-}
-
-/// One JSON object, or `key=value` pairs whose values parse as JSON when they can.
-pub fn cli_args(rest: &[String]) -> Result<Value, String> {
-    if let [one] = rest
-        && one.trim_start().starts_with('{')
-    {
-        return serde_json::from_str(one).map_err(|e| format!("arguments: {e}"));
-    }
-    let mut args = Map::new();
-    for pair in rest {
-        let (k, v) = pair
-            .split_once('=')
-            .ok_or_else(|| format!("{pair:?} is not key=value"))?;
-        let v = serde_json::from_str(v).unwrap_or_else(|_| Value::String(v.to_owned()));
-        args.insert(k.to_owned(), v);
-    }
-    Ok(Value::Object(args))
 }
 
 #[cfg(test)]
@@ -132,18 +119,6 @@ mod tests {
         assert_eq!(clip("héllo".into(), 2), "hé");
         assert_eq!(clip("hé".into(), 5), "hé");
         assert_eq!(ms(1_234_567), json!(1234.6));
-    }
-
-    #[test]
-    fn cli_arguments_are_json_or_pairs_with_json_values() {
-        let pairs =
-            cli_args(&["window=Save As".into(), "text=true".into(), "pid=7".into()]).unwrap();
-        assert_eq!(pairs, json!({"window": "Save As", "text": true, "pid": 7}));
-        assert_eq!(
-            cli_args(&[r#"{"id": "1/2"}"#.into()]).unwrap(),
-            json!({"id": "1/2"})
-        );
-        assert!(cli_args(&["nope".into()]).is_err());
     }
 
     struct N(&'static str, &'static str);

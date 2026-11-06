@@ -9,8 +9,7 @@ use std::time::Duration;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use desk_core::args::parse;
-use desk_core::press::{MENU_POLL, MENU_POLLS};
-use desk_core::shot::OFF_SCREEN;
+use desk_core::shot::{OFF_SCREEN, png_size};
 use desk_core::text::norm;
 use desk_core::wire::Output;
 use fast_image_resize as fr;
@@ -30,7 +29,7 @@ use crate::keys::{Os, key_names};
 use crate::model::Modal;
 #[cfg(target_os = "linux")]
 use crate::model::{Access, Extras, Node};
-use crate::press::libreoffice;
+use crate::press::{MENU_POLL, MENU_POLLS, libreoffice};
 #[cfg(target_os = "linux")]
 use crate::spi::Spi;
 use crate::still::{Block, VISIBLE_STEP};
@@ -289,7 +288,6 @@ impl Computer {
         }
         Ok(Output {
             text,
-            is_error: false,
             image_b64,
             ..Output::default()
         })
@@ -328,7 +326,6 @@ impl Computer {
             let failed = if step.is_error { " failed" } else { "" };
             lines.push(format!("{}. {action}{failed}: {}", i + 1, step.text));
             out.image_b64 = step.image_b64;
-            out.secrets.extend(step.secrets);
             if step.is_error {
                 out.is_error = true;
                 if i + 1 < total {
@@ -372,7 +369,6 @@ impl Computer {
             let (shot, missed) = self.settled(session, None, &a).await;
             return Ok(Output {
                 text: format!("waited {secs:.1}s{missed}"),
-                is_error: false,
                 image_b64: shot,
                 ..Output::default()
             });
@@ -460,7 +456,6 @@ impl Computer {
             text,
             is_error,
             image_b64: shot,
-            ..Output::default()
         })
     }
 
@@ -487,7 +482,6 @@ impl Computer {
         };
         Ok(Output {
             text,
-            is_error: false,
             image_b64,
             ..Output::default()
         })
@@ -536,7 +530,6 @@ impl Computer {
                 "region of the screen: {}; its pixel px,py is x = {ox:.0} + px*{f:.2}, y = {oy:.0} + py*{f:.2} for computer_act",
                 weigh(&image)
             ),
-            is_error: false,
             image_b64: Some(image),
             ..Output::default()
         })
@@ -738,7 +731,6 @@ impl Computer {
             },
             is_error: failure.is_some(),
             image_b64: shot,
-            ..Output::default()
         })
     }
 
@@ -787,7 +779,6 @@ impl Computer {
                     text: e + &missed,
                     is_error: true,
                     image_b64: shot,
-                    ..Output::default()
                 });
             }
         };
@@ -796,7 +787,6 @@ impl Computer {
         drop(input);
         Ok(Output {
             text: text + &changes + &missed,
-            is_error: false,
             image_b64: shot,
             ..Output::default()
         })
@@ -2453,9 +2443,7 @@ fn image_size(data: &[u8]) -> Option<(&'static str, u32, u32)> {
             *data.get(i + 1)?,
         ])))
     };
-    if data.starts_with(b"\x89PNG") {
-        let w = u32::from_be_bytes(data.get(16..20)?.try_into().ok()?);
-        let h = u32::from_be_bytes(data.get(20..24)?.try_into().ok()?);
+    if let Some((w, h)) = png_size(data) {
         return Some(("png", w, h));
     }
     if data.get(8..16) == Some(b"WEBPVP8L") {

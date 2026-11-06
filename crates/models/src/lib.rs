@@ -39,7 +39,7 @@ impl Models {
         }
     }
 
-    /// `model_decide`: the questions about a state, from the `verify` model when the state holds an image, else `decide`.
+    /// `model_decide`: the questions about a state, from the `verify` model when `image` is set, else `decide`.
     pub async fn decide(&self, args: DecideArgs) -> Result<Decided, String> {
         let roles = &self.config.models;
         let model = match &roles.verify {

@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
-use desk_core::text::cli_args;
 use desk_core::wire::Call;
+use serde_json::{Map, Value};
 use shuttle_desk::driver::Driver;
 use shuttle_desk::server;
 use shuttle_models::Models;
@@ -120,6 +120,24 @@ fn call_desk(rest: &[String]) -> ExitCode {
         }
     };
     send(&call, format_args!("desk {verb}"))
+}
+
+/// One JSON object, or `key=value` pairs whose values parse as JSON when they can.
+fn cli_args(rest: &[String]) -> Result<Value, String> {
+    if let [one] = rest
+        && one.trim_start().starts_with('{')
+    {
+        return serde_json::from_str(one).map_err(|e| format!("arguments: {e}"));
+    }
+    let mut args = Map::new();
+    for pair in rest {
+        let (k, v) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("{pair:?} is not key=value"))?;
+        let v = serde_json::from_str(v).unwrap_or_else(|_| Value::String(v.to_owned()));
+        args.insert(k.to_owned(), v);
+    }
+    Ok(Value::Object(args))
 }
 
 fn send(call: &Call, what: impl Display) -> ExitCode {
@@ -406,6 +424,21 @@ fn fail(e: impl Display) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_arguments_are_json_or_pairs_with_json_values() {
+        let pairs =
+            cli_args(&["window=Save As".into(), "text=true".into(), "pid=7".into()]).unwrap();
+        assert_eq!(
+            pairs,
+            serde_json::json!({"window": "Save As", "text": true, "pid": 7})
+        );
+        assert_eq!(
+            cli_args(&[r#"{"id": "1/2"}"#.into()]).unwrap(),
+            serde_json::json!({"id": "1/2"})
+        );
+        assert!(cli_args(&["nope".into()]).is_err());
+    }
 
     #[test]
     fn a_screenshot_lands_in_a_file_named_by_its_format() {

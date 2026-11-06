@@ -67,7 +67,7 @@ pub struct AtArgs {
 #[derive(Deserialize)]
 pub struct KeyArgs {
     pub keys: String,
-    /// The window that background input goes to, by title; foreground input on macOS brings it to the front first.
+    /// The window that background input goes to, by title; foreground input brings it to the front first, except by title alone on Linux.
     pub window: Option<String>,
     pub pid: Option<u32>,
 }
@@ -75,7 +75,7 @@ pub struct KeyArgs {
 #[derive(Deserialize)]
 pub struct TypeArgs {
     pub text: String,
-    /// The window that background input goes to, by title; foreground input on macOS brings it to the front first.
+    /// The window that background input goes to, by title; foreground input brings it to the front first, except by title alone on Linux.
     pub window: Option<String>,
     pub pid: Option<u32>,
     /// `unverified` types after a background click into a window whose keyboard focus cannot be read.

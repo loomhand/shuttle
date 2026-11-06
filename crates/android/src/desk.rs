@@ -11,10 +11,10 @@ use desk_core::args::{
     ActArgs, AtArgs, ClickArgs, FindArgs, IdArgs, KeyArgs, LaunchArgs, ReadArgs, ShotArgs,
     SnapArgs, TypeArgs, WaitArgs, WindowArgs, parse,
 };
-use desk_core::shot::crop_png;
-use desk_core::text::{MAX_FOUND, NAME_CHARS, Named, matches, ms, quote};
+use desk_core::shot::{crop_png, png_size};
+use desk_core::text::{MAX_FOUND, NAME_CHARS, Named, matches, ms, one_line, quote};
 use desk_core::window::{self, Window};
-use desk_core::wire::Output;
+use desk_core::wire::{OK, Output};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -235,9 +235,7 @@ struct WindowInfo {
     title: String,
     package: String,
     active: bool,
-    #[serde(default)]
     focused: bool,
-    #[serde(default)]
     layer: i64,
     bounds: [i32; 4],
 }
@@ -271,6 +269,11 @@ struct Rect {
 }
 
 pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, String> {
+    if matches!(verb, "desk_key" | "desk_type" | "desk_click") && args.get("app").is_some() {
+        return Err(format!(
+            "{verb}: a device names its window by window or pid, not app"
+        ));
+    }
     let text = match verb {
         "desk_windows" => {
             Value::Array(frames(android).await?.iter().map(Frame::json).collect()).to_string()
@@ -305,12 +308,13 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
             let a: KeyArgs = parse(args)?;
             in_front(android, a.window.as_deref(), a.pid).await?;
             android.keys(&a.keys).await?;
-            json!({"ok": true}).to_string()
+            OK.to_owned()
         }
         "desk_type" => {
             let a: TypeArgs = parse(args)?;
             in_front(android, a.window.as_deref(), a.pid).await?;
-            type_text(android, &a.text).await?
+            let typed = android.type_text(&a.text, None).await?;
+            json!({"ok": true, "chars": a.text.chars().count(), "typed": typed}).to_string()
         }
         "desk_click" => click(android, parse(args)?).await?,
         "desk_focus" => focus(android, parse(args)?).await?,
@@ -329,9 +333,12 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
             out.to_string()
         }
         "desk_launch" => {
-            let app = parse::<LaunchArgs>(args)?.app;
+            let a = parse::<LaunchArgs>(args)?;
+            if !a.args.is_empty() {
+                return Err("a device launch takes no args".to_owned());
+            }
             let mut out = json!({"ok": true});
-            out["launched"] = android.launch(&app).await?.into();
+            out["launched"] = android.launch(&a.app).await?.into();
             out.to_string()
         }
         "desk_screen" => {
@@ -383,13 +390,6 @@ pub(crate) async fn screen(android: &Android) -> Result<(i32, i32), String> {
         android.natural().await?,
         &window_list(android).await?,
     ))
-}
-
-/// The width and height a PNG's header gives.
-pub(crate) fn png_size(png: &[u8]) -> Option<(u32, u32)> {
-    let size = |at: usize| Some(u32::from_be_bytes(png.get(at..at + 4)?.try_into().ok()?));
-    png.starts_with(b"\x89PNG\r\n\x1a\n").then_some(())?;
-    Some((size(16)?, size(20)?))
 }
 
 /// The listed windows, the front one active; an activity switch lists none for a moment, which this waits out.
@@ -753,17 +753,6 @@ fn under(path: &str, ancestor: &str) -> bool {
         .is_some_and(|rest| rest.starts_with('.'))
 }
 
-fn one_line(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for word in s.split_whitespace() {
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        out.push_str(word);
-    }
-    out
-}
-
 fn xywh(r: Rect) -> [i32; 4] {
     [r.left, r.top, r.right - r.left, r.bottom - r.top]
 }
@@ -969,12 +958,6 @@ async fn at(android: &Android, a: AtArgs) -> Result<String, String> {
     Ok(out.to_string())
 }
 
-/// Types text into the focused field: each line pasted, Return between lines.
-async fn type_text(android: &Android, text: &str) -> Result<String, String> {
-    let typed = android.type_text(text, None).await?;
-    Ok(json!({"ok": true, "chars": text.chars().count(), "typed": typed}).to_string())
-}
-
 async fn click(android: &Android, a: ClickArgs) -> Result<String, String> {
     if let Some(button) = a.button.as_deref().filter(|b| *b != "left") {
         return Err(format!("a tap on a device has no {button} button"));
@@ -986,7 +969,7 @@ async fn click(android: &Android, a: ClickArgs) -> Result<String, String> {
     android
         .taps((a.x as i32, a.y as i32), a.count.unwrap_or(1))
         .await?;
-    Ok(json!({"ok": true}).to_string())
+    Ok(OK.to_owned())
 }
 
 async fn in_front(android: &Android, window: Option<&str>, pid: Option<u32>) -> Result<(), String> {
