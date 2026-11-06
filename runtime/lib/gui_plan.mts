@@ -82,6 +82,7 @@ const FULL_BAR = 0.95
 const RING = 14
 const PICK_MARGIN = 0.6
 const SETTLE = 150
+const STALE_WAIT = 2000
 const OPENING = 1000
 const LIST_REUSE = 25
 const WEB_TREE_MS = 4000
@@ -180,7 +181,13 @@ async function perform(p: Params): Promise<Result> {
     const s = fill(planned, params); T = {}; const rec: Rec = { i, op: OPS.find((k) => k in s) }
     const ts = Date.now(); const calls = desk.served.length
     try {
-      const ws = i === (p.start ?? 0) ? ws0 : await desk.windows(); const f = BG ? frontOf(ws) : desk.front(ws)
+      let ws = i === (p.start ?? 0) ? ws0 : await desk.windows(); let f = BG ? frontOf(ws) : desk.front(ws)
+      if (f?.stale && !s.app) {
+        const was = f
+        const heir = (x: Win | null) => !!x && !x.stale && (x.id === was.id || (x.pid !== null && x.pid === was.pid) || (!!was.app && x.app === was.app) || (!!s.window && norm(x.title).includes(norm(s.window))))
+        for (const end = Date.now() + STALE_WAIT; !heir(f) && Date.now() < end; await sleep(50)) { ws = await desk.windows(); f = BG ? frontOf(ws) : desk.front(ws) }
+        if (!heir(f)) throw new Surprise(frozen(was, i, plan[i - 1]), { window: was.title, windows: titles(ws) })
+      }
       stepWs = { ws, at: Date.now() }; tops[i] = f?.title
       if (BG && doubt && !s.app && !s.wait) throw new Surprise(doubt, await seen())
       if (BG && i > (p.start ?? 0)) stolen(ws, i - 1)
@@ -501,6 +508,9 @@ function modalBlocks(m: Win) { return `modal dialog "${m.title}" is open but ${m
 function blocked(o: string) { return /AT-SPI peer \S+ is not responding|no accessibility answer within/.test(o) }
 function isChooser(o: string) { return isDialog(o) && CHOOSER.test(o) }
 async function selectLine(w: Win | null) { if (OS === 'darwin') await desk.key(SELECT_ALL, at(w)); else { await desk.key('home', at(w)); await desk.key('shift+end', at(w)) } }
+function frozen(w: Win, i: number, prev: Step | undefined) { return `"${w.title}" stopped answering accessibility${prev ? ` after step ${i - 1} ${JSON.stringify(unrecorded(prev))}` : ''}: its app is busy or hung; wait and continue from step ${i}, or close it` }
+function titles(ws: Win[]) { return ws.filter((x) => x.title && !isShell(x)).map((x) => x.title) }
+function unresponsive(app: string, w: Win) { return `app "${app}" is not answering accessibility: "${w.title}" (pid ${w.pid ?? 'unknown'}) is busy or hung; wait and retry, or close it; a launch would open a second instance` }
 function unanswered(title: string) { return `"${title}" answers no accessibility calls (a dialog opened by an accessibility action blocks its app, and a key would deadlock it): close it with {close: true}, then reopen it by its keyboard shortcut` }
 function isAlert(o: string) { return /^- alert/.test(o) }
 function isDialog(o: string) { return /^- (alert|dialog|file chooser)/.test(o) }
@@ -1106,7 +1116,6 @@ async function cropState(n: Node, unsent = true) {
 }
 
 async function run(s: Step, rec: Rec, kept?: Kept) {
-  if (s.app && s.url) { await openPage(s.app, s.url, rec); return }
   if (s.app) {
     const ws = await listNow(); const before = new Set(ws.map((w) => w.id)); const pids = new Set(ws.map((w) => w.pid))
     let launched = false; let background = false
@@ -1120,7 +1129,10 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const mine = (ws: Win[]) => [...ws.filter(named), ...ws.filter(own)]
     let started: Awaited<ReturnType<typeof desk.launch>> | undefined
     const has = async () => { const ws = await desk.windows(); return mine(ws)[0] ?? (started?.running ? ws.find((w) => w.title === started?.title && w.pid === started?.pid) : launched ? ws.find((w) => w.title && !before.has(w.id) && (!pids.has(w.pid) || (!!w.app && terms(w.app).some((x) => terms(app).includes(x))))) : undefined) }
-    const owned = mine(ws); let w = (BG ? owned.find((x) => !!x.title.trim()) : undefined) ?? owned[0]
+    const owned = mine(ws); let w = (BG ? owned.find((x) => !!x.title.trim()) : undefined) ?? owned[0] ?? (s.url ? ws.find((x) => x.stale && !!x.app && ` ${words(app)}`.endsWith(` ${words(x.app)}`)) : undefined)
+    const hung = w ? (w.stale ? w : null) : await desk.unanswered().catch(() => null)
+    if (hung && (hung === w || own(hung) || named(hung))) throw new Surprise(unresponsive(s.app, hung), { window: hung.title, windows: titles(ws) })
+    if (s.url) { await openPage(s.app, s.url, rec); return }
     let listed: Awaited<ReturnType<typeof desk.focus>> | null = null
     if (!w && word && !BG) for (const pid of running(name)) if ((listed = await desk.focus(s.app, pid).catch(() => null))) break
     if (listed) { known.add(listed.title); rec.window = lastSeen = listed.title; return }

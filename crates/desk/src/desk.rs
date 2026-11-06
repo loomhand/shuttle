@@ -2335,7 +2335,7 @@ fn away<B: Access>(b: &mut B, background: bool, named: impl Fn(&Frame) -> bool) 
 fn live(frame: Frame) -> Result<Frame, String> {
     if frame.stale {
         return Err(format!(
-            "window list is stale: {:?} did not answer; take a new snapshot",
+            "window list is stale: {:?} did not answer in time, so its app is busy or hung; wait and retry, or close the app",
             frame.title
         ));
     }
@@ -4351,14 +4351,18 @@ pub(crate) mod tests {
         };
         let desk = Desk::new(busy, Slow(Arc::default()), Os::Mac);
         let listed = desk.run("desk_windows", json!({})).await.unwrap();
-        assert!(listed.text.contains("Draft"), "{}", listed.text);
+        assert!(
+            listed.text.contains(r#""title":"Draft""#) && listed.text.contains(r#""stale":true"#),
+            "{}",
+            listed.text
+        );
         for (tool, args) in [
             ("desk_close", json!({"window": "Draft"})),
             ("desk_snapshot", json!({"window": "Draft"})),
             ("desk_find", json!({"name": "Save", "window": "Draft"})),
         ] {
             let err = desk.run(tool, args).await.unwrap_err();
-            assert!(err.contains("stale"), "{tool}: {err}");
+            assert!(err.contains("busy or hung"), "{tool}: {err}");
         }
         assert!(closed(&desk).await.is_empty());
     }

@@ -191,3 +191,97 @@ test('an app step after a launch takes a new window of the launched app, never a
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(r.window, 'Inbox')
 })
+
+test('an app step escalates at once on a listed window whose app stopped answering, and never launches another instance', async (t) => {
+  const calc = { id: '1.62/3', title: 'sales.ods — LibreOffice Calc', role: 'window', pid: 7076, active: true, app: 'soffice.bin', stale: true }
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify([calc])
+    if (tool === 'desk_launch') return JSON.stringify({ ok: true, launched: 'libreoffice-calc' })
+    return { text: 'window list is stale: "sales.ods — LibreOffice Calc" did not answer in time', error: true }
+  })
+  const r = await main({ steps: [{ app: 'libreoffice calc' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /is not answering accessibility: "sales\.ods — LibreOffice Calc" \(pid 7076\)/)
+  assert.deepEqual(r.escalate?.windows, [calc.title])
+  assert.ok(!calls.includes('desk_launch'), calls.join(' '))
+})
+
+test('an app step escalates instead of launching when the front window of the app answers no window list', async (t) => {
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify([{ id: '1.7/1', title: 'Desktop', role: 'window', pid: 781, active: false, app: 'xfdesktop', shell: true }])
+    if (tool === 'desk_unanswered') return JSON.stringify({ id: '', title: 'sales.ods — LibreOffice Calc', role: 'window', pid: 6204, active: false, app: 'soffice.bin' })
+    if (tool === 'desk_launch') return JSON.stringify({ ok: true, launched: 'libreoffice-calc' })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'LibreOffice Calc' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /is not answering accessibility: "sales\.ods — LibreOffice Calc" \(pid 6204\)/)
+  assert.ok(!calls.includes('desk_launch'), calls.join(' '))
+})
+
+test('an app step with a url escalates on a stale window of the app instead of launching it', async (t) => {
+  const chrome = { id: '1.4/2', title: 'Docs - Google Chrome', role: 'frame', pid: 812, active: true, app: 'Google Chrome', stale: true }
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify([chrome])
+    if (tool === 'desk_launch') return JSON.stringify({ ok: true, launched: 'Google Chrome' })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'Google Chrome', url: 'https://example.com/' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /is not answering accessibility: "Docs - Google Chrome" \(pid 812\)/)
+  assert.ok(!calls.includes('desk_launch'), calls.join(' '))
+})
+
+test('an app step by a command name escalates when the front window that answers no list belongs to its process', { skip: process.platform !== 'linux' }, async (t) => {
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return '[]'
+    if (tool === 'desk_unanswered') return JSON.stringify({ id: '', title: 'sales.ods — LibreOffice Calc', role: 'window', pid: process.pid, active: false, app: 'soffice.bin' })
+    if (tool === 'desk_launch') return JSON.stringify({ ok: true, launched: 'node' })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'node' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /is not answering accessibility/)
+  assert.ok(!calls.includes('desk_launch'), calls.join(' '))
+})
+
+test('an app step with a url escalates on a stale window whose app the page launch knows by a shorter name', async (t) => {
+  const chrome = { id: '1.4/2', title: 'Docs - Chrome', role: 'window', pid: 812, active: true, app: 'Chrome', stale: true }
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify([chrome])
+    if (tool === 'desk_launch') return JSON.stringify({ ok: true, launched: 'Google Chrome' })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'Google Chrome', url: 'https://example.com/' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /is not answering accessibility: "Docs - Chrome" \(pid 812\)/)
+  assert.ok(!calls.includes('desk_launch'), calls.join(' '))
+})
+
+test('an app step with a url launches an app whose name only begins with the name of a stale browser', async (t) => {
+  const safari = { id: '1.4/2', title: 'News - Safari', role: 'window', pid: 812, active: false, app: 'Safari', stale: true }
+  const preview = { id: '1.5/1', title: 'Example Domain', role: 'window', pid: 913, active: true, app: 'Safari Technology Preview' }
+  let launched = false
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify(launched ? [safari, preview] : [{ ...safari, active: true }])
+    if (tool === 'desk_launch') { launched = true; return JSON.stringify({ ok: true, launched: 'Safari Technology Preview' }) }
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: preview, nodes: [{ ref: 0, id: '1.5/1', parent: -1, depth: 0, role: 'window', name: preview.title, states: ['showing'] }, { ref: 1, id: '1.5/7', parent: 0, depth: 1, role: 'document', name: '', states: ['showing'] }], truncated: false })
+    if (tool === 'desk_read') return JSON.stringify({ ref: 1, id: '1.5/7', parent: 0, depth: 1, role: 'document', name: '', states: ['showing'], url: 'https://example.com/' })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'Safari Technology Preview', url: 'https://example.com/' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(calls.filter((c) => c === 'desk_launch').length, 1, calls.join(' '))
+})
