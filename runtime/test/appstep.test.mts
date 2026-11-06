@@ -267,3 +267,21 @@ test('an app step with a url escalates on a stale window whose app the page laun
   assert.match(r.escalate?.reason ?? '', /is not answering accessibility: "Docs - Chrome" \(pid 812\)/)
   assert.ok(!calls.includes('desk_launch'), calls.join(' '))
 })
+
+test('an app step with a url launches an app whose name only begins with the name of a stale browser', async (t) => {
+  const safari = { id: '1.4/2', title: 'News - Safari', role: 'window', pid: 812, active: false, app: 'Safari', stale: true }
+  const preview = { id: '1.5/1', title: 'Example Domain', role: 'window', pid: 913, active: true, app: 'Safari Technology Preview' }
+  let launched = false
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify(launched ? [safari, preview] : [{ ...safari, active: true }])
+    if (tool === 'desk_launch') { launched = true; return JSON.stringify({ ok: true, launched: 'Safari Technology Preview' }) }
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: preview, nodes: [{ ref: 0, id: '1.5/1', parent: -1, depth: 0, role: 'window', name: preview.title, states: ['showing'] }, { ref: 1, id: '1.5/7', parent: 0, depth: 1, role: 'document', name: '', states: ['showing'] }], truncated: false })
+    if (tool === 'desk_read') return JSON.stringify({ ref: 1, id: '1.5/7', parent: 0, depth: 1, role: 'document', name: '', states: ['showing'], url: 'https://example.com/' })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'Safari Technology Preview', url: 'https://example.com/' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(calls.filter((c) => c === 'desk_launch').length, 1, calls.join(' '))
+})

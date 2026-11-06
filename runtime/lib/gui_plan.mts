@@ -810,13 +810,12 @@ async function typingInto(want: Focus, w: Win | null) {
   if (want.id && (await desk.read(f.id, { web: true })).dom_id !== want.id) throw new Diverged(`the recording typed into the element with DOM id "${want.id}", and the focused ${f.role} "${f.name}" in "${w.title}" has another`, await seen())
 }
 
-function browses(w: Win, name: string) { return !!w.app && (norm(w.app).includes(name) || name.includes(norm(w.app))) }
 async function openPage(app: string, url: string, rec: Rec) {
   const t0 = Date.now(); const name = norm(app)
   await desk.launch(app, [url])
   for (const end = Date.now() + PAGE_MS; ; await sleep(250)) {
     const ws = await desk.windows()
-    for (const w of ws.filter((x) => browses(x, name)).sort((a, b) => +b.active - +a.active)) {
+    for (const w of ws.filter((x) => !!x.app && (norm(x.app).includes(name) || name.includes(norm(x.app)))).sort((a, b) => +b.active - +a.active)) {
       let at = ''; try { at = (await page(w)).url } catch {}
       if (!samePage(at, url)) continue
       tick('launch', t0); known.add(w.title); rec.window = lastSeen = w.title
@@ -1130,7 +1129,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const mine = (ws: Win[]) => [...ws.filter(named), ...ws.filter(own)]
     let started: Awaited<ReturnType<typeof desk.launch>> | undefined
     const has = async () => { const ws = await desk.windows(); return mine(ws)[0] ?? (started?.running ? ws.find((w) => w.title === started?.title && w.pid === started?.pid) : launched ? ws.find((w) => w.title && !before.has(w.id) && (!pids.has(w.pid) || (!!w.app && terms(w.app).some((x) => terms(app).includes(x))))) : undefined) }
-    const owned = mine(ws); let w = (BG ? owned.find((x) => !!x.title.trim()) : undefined) ?? owned[0] ?? (s.url ? ws.find((x) => x.stale && browses(x, app)) : undefined)
+    const owned = mine(ws); let w = (BG ? owned.find((x) => !!x.title.trim()) : undefined) ?? owned[0] ?? (s.url ? ws.find((x) => x.stale && !!x.app && ` ${words(app)}`.endsWith(` ${words(x.app)}`)) : undefined)
     const hung = w ? (w.stale ? w : null) : await desk.unanswered().catch(() => null)
     if (hung && (hung === w || own(hung) || named(hung))) throw new Surprise(unresponsive(s.app, hung), { window: hung.title, windows: titles(ws) })
     if (s.url) { await openPage(s.app, s.url, rec); return }
