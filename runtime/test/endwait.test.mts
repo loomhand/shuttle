@@ -15,7 +15,7 @@ function editor(opens: Record<string, Shown> = {}, start: Shown = { title: 'a.tx
     calls.push(args.waiting ? 'wait' : tool === 'desk_key' ? `key ${String(args.keys)} on ${front?.title}` : tool)
     if (tool === 'desk_windows') return JSON.stringify(wins.map((w) => ({ ...w, active: w === front })))
     if (tool === 'desk_snapshot') return JSON.stringify({ window: front, truncated: false, nodes: [{ ref: 0, id: `${front?.id}/1`, parent: -1, depth: 0, role: front?.role, name: front?.title, states: ['showing'] }, { ref: 1, id: `${front?.id}/2`, parent: 0, depth: 1, role: 'button', name: 'Cancel', states: ['showing'] }] })
-    const opened = tool === 'desk_key' ? opens[String(args.keys)] : undefined
+    const opened = tool === 'desk_key' ? opens[String(args.keys)] : tool === 'desk_type' && String(args.text).includes('\n') ? opens.Return : undefined
     if (opened) setTimeout(() => { wins.push({ id: String(wins.length + 1), ...opened, pid: process.pid, active: true }) }, 200)
     return '{"ok":true}'
   }

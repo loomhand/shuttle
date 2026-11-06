@@ -18,6 +18,7 @@ pub const CAPTURE_SESSION: &str = "desk-capture";
 pub(crate) const CLICK_SPACING: Duration = Duration::from_millis(500);
 pub(crate) const CONNECT_RETRY: Duration = Duration::from_millis(250);
 pub(crate) const ENDED: &str = "session has ended";
+pub(crate) const ACTUAL_FRONT: &str = "; actual foreground window ";
 
 const DEFAULT_PIPE: &str = r"\\.\pipe\cua-driver";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -302,10 +303,14 @@ fn result(tool: &str, reply: &str) -> Result<Value, String> {
     }
     let out = v["result"].take();
     if out["isError"] == true {
-        return Err(match out["structuredContent"]["reason"].as_str() {
+        let mut e = match out["structuredContent"]["reason"].as_str() {
             Some(reason) => format!("{tool}: {reason}: {}", text_of(&out)),
             None => format!("{tool}: {}", text_of(&out)),
-        });
+        };
+        if let Some(id) = out["structuredContent"]["actual_foreground_window_id"].as_u64() {
+            e.push_str(&format!("{ACTUAL_FRONT}{id}"));
+        }
+        return Err(e);
     }
     Ok(out)
 }
@@ -385,6 +390,14 @@ mod tests {
         assert_eq!(
             unread.unwrap_err(),
             "click: window_never_read: No screenshot of window 491"
+        );
+        let refused_front = result(
+            "bring_to_front",
+            r#"{"ok":true,"result":{"isError":true,"content":[{"type":"text","text":"foreground activation failed"}],"structuredContent":{"code":"foreground_unavailable","actual_foreground_window_id":7}}}"#,
+        );
+        assert_eq!(
+            refused_front.unwrap_err(),
+            format!("bring_to_front: foreground activation failed{ACTUAL_FRONT}7")
         );
         assert!(result("click", "").is_err());
     }

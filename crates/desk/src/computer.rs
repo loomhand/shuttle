@@ -22,7 +22,9 @@ use tokio::time::Instant;
 
 #[cfg(target_os = "linux")]
 use crate::desk::CALL_LIMIT;
-use crate::desk::{Turn, Typer, launch_name, lock, runs_app, text_runs, xtest};
+use crate::desk::{
+    Turn, Typer, launch_name, lock, runs_app, text_runs, without_protocol_tail, xtest,
+};
 use crate::driver::{CONNECT_RETRY, Driver, ENDED, Request, image_of, text_of};
 use crate::keys::{Os, key_names};
 use crate::model::Modal;
@@ -652,7 +654,7 @@ impl Computer {
 
     /// Types text with non-ASCII characters or at a point, which a click focuses first, in the calls [`text_runs`] cuts.
     async fn type_mixed(&self, session: &str, a: &ActArgs, input: Turn) -> Result<Output, String> {
-        let full = a.text.as_deref().unwrap_or_default();
+        let full = without_protocol_tail(a.text.as_deref().unwrap_or_default());
         let before = self.before_input(Some(a)).await;
         let mut failure = None;
         if a.element.is_some() || (a.x.is_some() && a.y.is_some()) {
@@ -699,6 +701,7 @@ impl Computer {
             }
             let mut req = base.clone();
             req["text"] = (*run).into();
+            req["literal"] = true.into();
             match self
                 .call(once.as_ref().map_or(session, Owned::name), "type_text", req)
                 .await

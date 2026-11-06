@@ -115,6 +115,18 @@ const TYPE_SETTLE: Duration = Duration::from_millis(100);
 const TYPE_POLL: Duration = Duration::from_millis(10);
 const TYPE_TAIL: usize = 16;
 const MAC_TYPE_DELAY_MS: u64 = 0;
+const PROTOCOL_TAGS: [&str; 10] = [
+    "text",
+    "parameter",
+    "invoke",
+    "function_calls",
+    "function_call",
+    "tool_use",
+    "tool_call",
+    "antml:parameter",
+    "antml:invoke",
+    "antml:function_calls",
+];
 
 const FIELD_ROLES: [&str; 2] = ["textbox", "searchbox"];
 const FOCUS_UNREAD: &str = "type refused, nothing was typed: the keyboard focus cannot be read in this window, so the text could go into another field than the one clicked; confirm the focused field in a screenshot, then call type again with focus: \"unverified\"";
@@ -920,7 +932,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn type_text(&self, a: TypeArgs, turn: Option<Turn>) -> Result<String, String> {
-        let text = a.text.as_str();
+        let text = without_protocol_tail(&a.text);
         let to = self.target(a.window.as_deref(), a.pid).await?;
         let focus = match to {
             Some(to) if self.os == Os::Mac => Some(
@@ -947,15 +959,23 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         return Ok(());
                     }
                     for run in text_runs(line) {
-                        self.send("type_text", json!({"text": run}), to, &mut note)
-                            .await?;
+                        self.send(
+                            "type_text",
+                            json!({"text": run, "literal": true}),
+                            to,
+                            &mut note,
+                        )
+                        .await?;
                     }
                     return Ok(());
                 }
-                if self.os == Os::Mac {
+                if self.os == Os::Mac || to.is_none() {
                     if !line.is_empty() {
-                        let mut req = json!({"text": line});
-                        if !self.bg() && line.chars().all(|c| c.len_utf16() == 1) {
+                        let mut req = json!({"text": line, "literal": true});
+                        if self.os == Os::Mac
+                            && !self.bg()
+                            && line.chars().all(|c| c.len_utf16() == 1)
+                        {
                             req["delay_ms"] = MAC_TYPE_DELAY_MS.into();
                         }
                         self.send("type_text", req, to, &mut note).await?;
@@ -965,7 +985,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 for (at, c) in line.char_indices() {
                     let (tool, req) = match keystroke(c) {
                         Some(keys) => key_request(keys),
-                        None => ("type_text", json!({"text": &line[at..at + c.len_utf8()]})),
+                        None => (
+                            "type_text",
+                            json!({"text": &line[at..at + c.len_utf8()], "literal": true}),
+                        ),
                     };
                     self.send(tool, req, to, &mut note).await?;
                 }
@@ -1594,7 +1617,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         window: Option<&str>,
         pid: Option<u32>,
     ) -> Result<Option<(i64, i64)>, String> {
-        let named = pid.is_some() || (self.os == Os::Mac && window.is_some());
+        let named = pid.is_some() || (self.os != Os::Linux && window.is_some());
         if self.bg() || !named {
             return Ok(None);
         }
@@ -1604,12 +1627,33 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn raise(&self, window: Option<(i64, i64)>) -> Result<(), String> {
-        if let Some((pid, window_id)) = window {
-            self.call(
+        let Some((pid, window_id)) = window else {
+            return Ok(());
+        };
+        if let Err(e) = self
+            .call(
                 "bring_to_front",
                 json!({"pid": pid, "window_id": window_id}),
             )
-            .await?;
+            .await
+        {
+            let front = match e
+                .rsplit_once(crate::driver::ACTUAL_FRONT)
+                .and_then(|(_, id)| id.trim().parse::<u64>().ok())
+            {
+                Some(id) => self
+                    .on_screen()
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|w| w["window_id"].as_u64() == Some(id))
+                    .and_then(|w| w["title"].as_str().map(str::to_owned)),
+                None => None,
+            };
+            return Err(match front {
+                Some(title) => format!("{e}; the front window is {title:?}"),
+                None => e,
+            });
         }
         Ok(())
     }
@@ -2186,6 +2230,46 @@ pub(crate) fn runs_app(window_app: &str, app: &str) -> bool {
     names_app(window_app, app) || names_app(window_app, &launch_name(app))
 }
 
+pub(crate) fn without_protocol_tail(text: &str) -> &str {
+    let mut end = text.trim_end().len();
+    let mut stripped = false;
+    loop {
+        let head = text[..end].trim_end();
+        let Some(rest) = head.strip_suffix('>') else {
+            break;
+        };
+        let Some(open) = rest.rfind("</") else {
+            break;
+        };
+        let name = &rest[open + 2..];
+        if name.is_empty()
+            || name.contains(char::is_whitespace)
+            || !PROTOCOL_TAGS.iter().any(|t| name.eq_ignore_ascii_case(t))
+            || opens(&head[..open], name)
+        {
+            break;
+        }
+        end = open;
+        stripped = true;
+    }
+    if stripped {
+        text[..end].trim_end()
+    } else {
+        text
+    }
+}
+
+fn opens(prelude: &str, name: &str) -> bool {
+    let prelude = prelude.to_ascii_lowercase();
+    let tag = format!("<{}", name.to_ascii_lowercase());
+    prelude.match_indices(&tag).any(|(i, _)| {
+        prelude[i + tag.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| c == '>' || c.is_whitespace())
+    })
+}
+
 /// Runs of `text` with at most [`RUN_CHARS`] distinct non-ASCII characters, one spare keycode each.
 pub(crate) fn text_runs(text: &str) -> Vec<&str> {
     let (mut runs, mut start, mut seen) = (Vec::new(), 0, Vec::new());
@@ -2625,7 +2709,12 @@ pub(crate) mod tests {
         assert_eq!(v["input"], "foreground", "{v}");
         assert_eq!(
             order(&calls),
-            ["hotkey background", "bring_to_front -", "hotkey desktop"]
+            [
+                "hotkey background",
+                "bring_to_front -",
+                "bring_to_front -",
+                "hotkey desktop"
+            ]
         );
         assert_eq!(sent(&calls, "bring_to_front")[0]["window_id"], 1);
     }
@@ -4124,8 +4213,8 @@ pub(crate) mod tests {
                     json!({"pid": 8, "window_id": 2})
                 ),
                 (
-                    "press_key".to_owned(),
-                    json!({"key": "a", "scope": "desktop"})
+                    "type_text".to_owned(),
+                    json!({"literal": true, "text": "a", "scope": "desktop"})
                 ),
                 (
                     "click".to_owned(),
@@ -4554,6 +4643,141 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn windows_foreground_typing_sends_each_line_as_one_text() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Windows);
+        desk.run("desk_type", json!({"text": "Ab!\nC é"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            order(&calls),
+            [
+                "type_text desktop",
+                "press_key desktop",
+                "type_text desktop"
+            ]
+        );
+        assert_eq!(
+            sent(&calls, "type_text"),
+            [
+                json!({"text": "Ab!", "literal": true, "scope": "desktop"}),
+                json!({"text": "C é", "literal": true, "scope": "desktop"})
+            ]
+        );
+    }
+
+    fn closing(name: &str) -> String {
+        format!("{}/{name}>", '<')
+    }
+
+    #[tokio::test]
+    async fn typed_lines_keep_a_closing_tag_the_text_opens_and_drop_one_it_does_not() {
+        let svg = format!("<text x=\"1\">\nhello\n{}", closing("text"));
+        let dangling = format!("hello\n{}", closing("text"));
+        let mixed = format!("café\n{}", closing("invoke"));
+        for (os, text, lines) in [
+            (
+                Os::Windows,
+                svg.clone(),
+                vec![
+                    "<text x=\"1\">".to_owned(),
+                    "hello".to_owned(),
+                    closing("text"),
+                ],
+            ),
+            (Os::Mac, dangling, vec!["hello".to_owned()]),
+            (Os::Linux, mixed, vec!["café".to_owned()]),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), os);
+            desk.run("desk_type", json!({"text": text})).await.unwrap();
+            let typed = sent(&calls, "type_text");
+            assert!(
+                typed.iter().all(|r| r["literal"] == true),
+                "{os:?} {typed:?}"
+            );
+            let got: Vec<String> = typed
+                .iter()
+                .map(|r| r["text"].as_str().unwrap().to_owned())
+                .collect();
+            assert_eq!(got, lines, "{os:?}");
+        }
+    }
+
+    #[test]
+    fn a_trailing_protocol_tail_goes_only_when_the_text_does_not_open_it() {
+        let c = closing;
+        let cases = [
+            (
+                format!("End of document.\n{}\n{}", c("text"), c("invoke")),
+                "End of document.".to_owned(),
+            ),
+            (
+                format!("Done.\n{}\n{}", c("antml:parameter"), c("antml:invoke")),
+                "Done.".to_owned(),
+            ),
+            (
+                format!("<text>foo{}", c("text")),
+                format!("<text>foo{}", c("text")),
+            ),
+            (
+                format!("<parameter name=\"foo\">body{}", c("parameter")),
+                format!("<parameter name=\"foo\">body{}", c("parameter")),
+            ),
+            (
+                format!("Hello world {}", c("div")),
+                format!("Hello world {}", c("div")),
+            ),
+            (
+                "Lorem ipsum dolor sit amet.".to_owned(),
+                "Lorem ipsum dolor sit amet.".to_owned(),
+            ),
+            (
+                format!("Hello <b>world{}\n{}", c("b"), c("text")),
+                format!("Hello <b>world{}", c("b")),
+            ),
+            (String::new(), String::new()),
+            (
+                format!("<text>\nhello\n{}", c("text")),
+                format!("<text>\nhello\n{}", c("text")),
+            ),
+            (format!("hello\n{}", c("text")), "hello".to_owned()),
+        ];
+        for (text, kept) in cases {
+            assert_eq!(without_protocol_tail(&text), kept, "{text:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn windows_foreground_typing_into_a_named_window_raises_it_first() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Windows);
+        desk.run("desk_type", json!({"text": "a", "window": "Inbox"}))
+            .await
+            .unwrap();
+        assert_eq!(order(&calls), ["bring_to_front -", "type_text desktop"]);
+        assert_eq!(
+            sent(&calls, "bring_to_front"),
+            [json!({"pid": 8, "window_id": 2})]
+        );
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(Apps),
+            NoFront(Behind(Arc::clone(&calls))),
+            Os::Windows,
+        );
+        let err = desk
+            .run("desk_type", json!({"text": "a", "window": "Inbox"}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.ends_with("; the front window is \"Untitled - Notepad\""),
+            "{err}"
+        );
+        assert!(sent(&calls, "type_text").is_empty());
+    }
+
+    #[tokio::test]
     async fn two_typing_calls_at_once_type_one_after_the_other() {
         let keys = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(notepad()), Slow(keys.clone()), Os::Windows);
@@ -4605,7 +4829,7 @@ pub(crate) mod tests {
                 ),
                 (
                     "type_text".to_owned(),
-                    json!({"text": "a", "scope": "desktop", "delay_ms": MAC_TYPE_DELAY_MS})
+                    json!({"literal": true, "text": "a", "scope": "desktop", "delay_ms": MAC_TYPE_DELAY_MS})
                 ),
                 (
                     "press_key".to_owned(),
@@ -4613,7 +4837,7 @@ pub(crate) mod tests {
                 ),
                 (
                     "type_text".to_owned(),
-                    json!({"text": "b", "scope": "desktop", "delay_ms": MAC_TYPE_DELAY_MS})
+                    json!({"literal": true, "text": "b", "scope": "desktop", "delay_ms": MAC_TYPE_DELAY_MS})
                 ),
             ]
         );
@@ -4679,11 +4903,11 @@ pub(crate) mod tests {
                 ),
                 (
                     "type_text".to_owned(),
-                    json!({"text": "\u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}\u{516d}\u{4e03}\u{516b}", "scope": "desktop"})
+                    json!({"literal": true, "text": "\u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}\u{516d}\u{4e03}\u{516b}", "scope": "desktop"})
                 ),
                 (
                     "type_text".to_owned(),
-                    json!({"text": "\u{4e5d}\u{5341}", "scope": "desktop"})
+                    json!({"literal": true, "text": "\u{4e5d}\u{5341}", "scope": "desktop"})
                 ),
                 (
                     "press_key".to_owned(),
@@ -4691,7 +4915,7 @@ pub(crate) mod tests {
                 ),
                 (
                     "type_text".to_owned(),
-                    json!({"text": "ok", "scope": "desktop"})
+                    json!({"literal": true, "text": "ok", "scope": "desktop"})
                 ),
             ]
         );
@@ -6418,12 +6642,28 @@ pub(crate) mod tests {
 
     impl Input for Slow {
         async fn call(&self, _: &str, args: Value) -> Result<Value, String> {
-            self.0
-                .lock()
-                .unwrap()
-                .push(args["key"].as_str().unwrap_or_default().to_owned());
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            let typed = args["key"]
+                .as_str()
+                .or(args["text"].as_str())
+                .unwrap_or_default();
+            let n = typed.chars().count().max(1) as u64;
+            self.0.lock().unwrap().push(typed.to_owned());
+            tokio::time::sleep(Duration::from_millis(5 * n)).await;
             Ok(json!({}))
+        }
+    }
+
+    struct NoFront(Behind);
+
+    impl Input for NoFront {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            if tool == "bring_to_front" {
+                return Err(format!(
+                    "bring_to_front: foreground_unavailable{}1",
+                    crate::driver::ACTUAL_FRONT
+                ));
+            }
+            self.0.call(tool, args).await
         }
     }
 
