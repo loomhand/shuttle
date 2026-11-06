@@ -115,6 +115,18 @@ const TYPE_SETTLE: Duration = Duration::from_millis(100);
 const TYPE_POLL: Duration = Duration::from_millis(10);
 const TYPE_TAIL: usize = 16;
 const MAC_TYPE_DELAY_MS: u64 = 0;
+const PROTOCOL_TAGS: [&str; 10] = [
+    "text",
+    "parameter",
+    "invoke",
+    "function_calls",
+    "function_call",
+    "tool_use",
+    "tool_call",
+    "antml:parameter",
+    "antml:invoke",
+    "antml:function_calls",
+];
 
 const FIELD_ROLES: [&str; 2] = ["textbox", "searchbox"];
 const FOCUS_UNREAD: &str = "type refused, nothing was typed: the keyboard focus cannot be read in this window, so the text could go into another field than the one clicked; confirm the focused field in a screenshot, then call type again with focus: \"unverified\"";
@@ -920,7 +932,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn type_text(&self, a: TypeArgs, turn: Option<Turn>) -> Result<String, String> {
-        let text = a.text.as_str();
+        let text = without_protocol_tail(&a.text);
         let to = self.target(a.window.as_deref(), a.pid).await?;
         let focus = match to {
             Some(to) if self.os == Os::Mac => Some(
@@ -947,14 +959,19 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         return Ok(());
                     }
                     for run in text_runs(line) {
-                        self.send("type_text", json!({"text": run}), to, &mut note)
-                            .await?;
+                        self.send(
+                            "type_text",
+                            json!({"text": run, "literal": true}),
+                            to,
+                            &mut note,
+                        )
+                        .await?;
                     }
                     return Ok(());
                 }
                 if self.os == Os::Mac || to.is_none() {
                     if !line.is_empty() {
-                        let mut req = json!({"text": line});
+                        let mut req = json!({"text": line, "literal": true});
                         if self.os == Os::Mac
                             && !self.bg()
                             && line.chars().all(|c| c.len_utf16() == 1)
@@ -968,7 +985,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 for (at, c) in line.char_indices() {
                     let (tool, req) = match keystroke(c) {
                         Some(keys) => key_request(keys),
-                        None => ("type_text", json!({"text": &line[at..at + c.len_utf8()]})),
+                        None => (
+                            "type_text",
+                            json!({"text": &line[at..at + c.len_utf8()], "literal": true}),
+                        ),
                     };
                     self.send(tool, req, to, &mut note).await?;
                 }
@@ -2208,6 +2228,46 @@ pub(crate) fn launch_name(app: &str) -> Cow<'_, str> {
 
 pub(crate) fn runs_app(window_app: &str, app: &str) -> bool {
     names_app(window_app, app) || names_app(window_app, &launch_name(app))
+}
+
+pub(crate) fn without_protocol_tail(text: &str) -> &str {
+    let mut end = text.trim_end().len();
+    let mut stripped = false;
+    loop {
+        let head = text[..end].trim_end();
+        let Some(rest) = head.strip_suffix('>') else {
+            break;
+        };
+        let Some(open) = rest.rfind("</") else {
+            break;
+        };
+        let name = &rest[open + 2..];
+        if name.is_empty()
+            || name.contains(char::is_whitespace)
+            || !PROTOCOL_TAGS.iter().any(|t| name.eq_ignore_ascii_case(t))
+            || opens(&head[..open], name)
+        {
+            break;
+        }
+        end = open;
+        stripped = true;
+    }
+    if stripped {
+        text[..end].trim_end()
+    } else {
+        text
+    }
+}
+
+fn opens(prelude: &str, name: &str) -> bool {
+    let prelude = prelude.to_ascii_lowercase();
+    let tag = format!("<{}", name.to_ascii_lowercase());
+    prelude.match_indices(&tag).any(|(i, _)| {
+        prelude[i + tag.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| c == '>' || c.is_whitespace())
+    })
 }
 
 /// Runs of `text` with at most [`RUN_CHARS`] distinct non-ASCII characters, one spare keycode each.
@@ -4154,7 +4214,7 @@ pub(crate) mod tests {
                 ),
                 (
                     "type_text".to_owned(),
-                    json!({"text": "a", "scope": "desktop"})
+                    json!({"literal": true, "text": "a", "scope": "desktop"})
                 ),
                 (
                     "click".to_owned(),
@@ -4600,10 +4660,92 @@ pub(crate) mod tests {
         assert_eq!(
             sent(&calls, "type_text"),
             [
-                json!({"text": "Ab!", "scope": "desktop"}),
-                json!({"text": "C é", "scope": "desktop"})
+                json!({"text": "Ab!", "literal": true, "scope": "desktop"}),
+                json!({"text": "C é", "literal": true, "scope": "desktop"})
             ]
         );
+    }
+
+    fn closing(name: &str) -> String {
+        format!("{}/{name}>", '<')
+    }
+
+    #[tokio::test]
+    async fn typed_lines_keep_a_closing_tag_the_text_opens_and_drop_one_it_does_not() {
+        let svg = format!("<text x=\"1\">\nhello\n{}", closing("text"));
+        let dangling = format!("hello\n{}", closing("text"));
+        let mixed = format!("café\n{}", closing("invoke"));
+        for (os, text, lines) in [
+            (
+                Os::Windows,
+                svg.clone(),
+                vec![
+                    "<text x=\"1\">".to_owned(),
+                    "hello".to_owned(),
+                    closing("text"),
+                ],
+            ),
+            (Os::Mac, dangling, vec!["hello".to_owned()]),
+            (Os::Linux, mixed, vec!["café".to_owned()]),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), os);
+            desk.run("desk_type", json!({"text": text})).await.unwrap();
+            let typed = sent(&calls, "type_text");
+            assert!(
+                typed.iter().all(|r| r["literal"] == true),
+                "{os:?} {typed:?}"
+            );
+            let got: Vec<String> = typed
+                .iter()
+                .map(|r| r["text"].as_str().unwrap().to_owned())
+                .collect();
+            assert_eq!(got, lines, "{os:?}");
+        }
+    }
+
+    #[test]
+    fn a_trailing_protocol_tail_goes_only_when_the_text_does_not_open_it() {
+        let c = closing;
+        let cases = [
+            (
+                format!("End of document.\n{}\n{}", c("text"), c("invoke")),
+                "End of document.".to_owned(),
+            ),
+            (
+                format!("Done.\n{}\n{}", c("antml:parameter"), c("antml:invoke")),
+                "Done.".to_owned(),
+            ),
+            (
+                format!("<text>foo{}", c("text")),
+                format!("<text>foo{}", c("text")),
+            ),
+            (
+                format!("<parameter name=\"foo\">body{}", c("parameter")),
+                format!("<parameter name=\"foo\">body{}", c("parameter")),
+            ),
+            (
+                format!("Hello world {}", c("div")),
+                format!("Hello world {}", c("div")),
+            ),
+            (
+                "Lorem ipsum dolor sit amet.".to_owned(),
+                "Lorem ipsum dolor sit amet.".to_owned(),
+            ),
+            (
+                format!("Hello <b>world{}\n{}", c("b"), c("text")),
+                format!("Hello <b>world{}", c("b")),
+            ),
+            (String::new(), String::new()),
+            (
+                format!("<text>\nhello\n{}", c("text")),
+                format!("<text>\nhello\n{}", c("text")),
+            ),
+            (format!("hello\n{}", c("text")), "hello".to_owned()),
+        ];
+        for (text, kept) in cases {
+            assert_eq!(without_protocol_tail(&text), kept, "{text:?}");
+        }
     }
 
     #[tokio::test]
@@ -4687,7 +4829,7 @@ pub(crate) mod tests {
                 ),
                 (
                     "type_text".to_owned(),
-                    json!({"text": "a", "scope": "desktop", "delay_ms": MAC_TYPE_DELAY_MS})
+                    json!({"literal": true, "text": "a", "scope": "desktop", "delay_ms": MAC_TYPE_DELAY_MS})
                 ),
                 (
                     "press_key".to_owned(),
@@ -4695,7 +4837,7 @@ pub(crate) mod tests {
                 ),
                 (
                     "type_text".to_owned(),
-                    json!({"text": "b", "scope": "desktop", "delay_ms": MAC_TYPE_DELAY_MS})
+                    json!({"literal": true, "text": "b", "scope": "desktop", "delay_ms": MAC_TYPE_DELAY_MS})
                 ),
             ]
         );
@@ -4761,11 +4903,11 @@ pub(crate) mod tests {
                 ),
                 (
                     "type_text".to_owned(),
-                    json!({"text": "\u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}\u{516d}\u{4e03}\u{516b}", "scope": "desktop"})
+                    json!({"literal": true, "text": "\u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}\u{516d}\u{4e03}\u{516b}", "scope": "desktop"})
                 ),
                 (
                     "type_text".to_owned(),
-                    json!({"text": "\u{4e5d}\u{5341}", "scope": "desktop"})
+                    json!({"literal": true, "text": "\u{4e5d}\u{5341}", "scope": "desktop"})
                 ),
                 (
                     "press_key".to_owned(),
@@ -4773,7 +4915,7 @@ pub(crate) mod tests {
                 ),
                 (
                     "type_text".to_owned(),
-                    json!({"text": "ok", "scope": "desktop"})
+                    json!({"literal": true, "text": "ok", "scope": "desktop"})
                 ),
             ]
         );
