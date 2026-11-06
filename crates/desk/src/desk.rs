@@ -1597,7 +1597,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         window: Option<&str>,
         pid: Option<u32>,
     ) -> Result<Option<(i64, i64)>, String> {
-        let named = pid.is_some() || (self.os == Os::Mac && window.is_some());
+        let named = pid.is_some() || (self.os != Os::Linux && window.is_some());
         if self.bg() || !named {
             return Ok(None);
         }
@@ -1607,12 +1607,21 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn raise(&self, window: Option<(i64, i64)>) -> Result<(), String> {
-        if let Some((pid, window_id)) = window {
-            self.call(
+        let Some((pid, window_id)) = window else {
+            return Ok(());
+        };
+        if let Err(e) = self
+            .call(
                 "bring_to_front",
                 json!({"pid": pid, "window_id": window_id}),
             )
-            .await?;
+            .await
+        {
+            let front = self.front_window().await.ok();
+            return Err(match front.as_ref().and_then(|w| w["title"].as_str()) {
+                Some(title) => format!("{e}; the front window is {title:?}"),
+                None => e,
+            });
         }
         Ok(())
     }
@@ -2628,7 +2637,12 @@ pub(crate) mod tests {
         assert_eq!(v["input"], "foreground", "{v}");
         assert_eq!(
             order(&calls),
-            ["hotkey background", "bring_to_front -", "hotkey desktop"]
+            [
+                "hotkey background",
+                "bring_to_front -",
+                "bring_to_front -",
+                "hotkey desktop"
+            ]
         );
         assert_eq!(sent(&calls, "bring_to_front")[0]["window_id"], 1);
     }
@@ -4581,6 +4595,35 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn windows_foreground_typing_into_a_named_window_raises_it_first() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Windows);
+        desk.run("desk_type", json!({"text": "a", "window": "Inbox"}))
+            .await
+            .unwrap();
+        assert_eq!(order(&calls), ["bring_to_front -", "type_text desktop"]);
+        assert_eq!(
+            sent(&calls, "bring_to_front"),
+            [json!({"pid": 8, "window_id": 2})]
+        );
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(Apps),
+            NoFront(Behind(Arc::clone(&calls))),
+            Os::Windows,
+        );
+        let err = desk
+            .run("desk_type", json!({"text": "a", "window": "Inbox"}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.starts_with("bring_to_front: foreground_unavailable; the front window is "),
+            "{err}"
+        );
+        assert!(sent(&calls, "type_text").is_empty());
+    }
+
+    #[tokio::test]
     async fn two_typing_calls_at_once_type_one_after_the_other() {
         let keys = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(notepad()), Slow(keys.clone()), Os::Windows);
@@ -6453,6 +6496,17 @@ pub(crate) mod tests {
             self.0.lock().unwrap().push(typed.to_owned());
             tokio::time::sleep(Duration::from_millis(5 * n)).await;
             Ok(json!({}))
+        }
+    }
+
+    struct NoFront(Behind);
+
+    impl Input for NoFront {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            if tool == "bring_to_front" {
+                return Err("bring_to_front: foreground_unavailable".to_owned());
+            }
+            self.0.call(tool, args).await
         }
     }
 
