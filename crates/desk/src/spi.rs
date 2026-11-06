@@ -226,9 +226,15 @@ fn frame(f: atspi::Frame) -> Frame {
 
 /// Leaves active only the frame of the X active window, since GTK keeps a window's AT-SPI active state after the focus moves to another X window.
 fn settle_active(frames: &mut [Frame], pid: Option<u32>, title: &str, twin: Option<&str>) {
-    let Some(pid) = pid.filter(|&p| p != 0 && frames.iter().any(|f| f.pid == Some(p))) else {
+    let Some(pid) = pid.filter(|&p| p != 0) else {
         return;
     };
+    if !frames.iter().any(|f| f.pid == Some(pid)) {
+        for f in frames.iter_mut().filter(|f| f.stale) {
+            f.active = false;
+        }
+        return;
+    }
     let named = if title.is_empty() {
         0
     } else {
@@ -237,12 +243,23 @@ fn settle_active(frames: &mut [Frame], pid: Option<u32>, title: &str, twin: Opti
             .filter(|f| f.pid == Some(pid) && f.title == title)
             .count()
     };
-    for f in frames.iter_mut() {
+    let twins = || {
+        frames
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.pid == Some(pid) && f.title == title && f.stale)
+    };
+    let held = twin
+        .is_none()
+        .then(|| twins().find(|(_, f)| f.active).or_else(|| twins().next()))
+        .flatten()
+        .map(|(i, _)| i);
+    for (i, f) in frames.iter_mut().enumerate() {
         let own = f.pid == Some(pid);
         f.active = match named {
             0 => f.active && own,
             1 => own && f.title == title,
-            _ => own && f.title == title && twin == Some(f.id.as_str()),
+            _ => own && f.title == title && (twin == Some(f.id.as_str()) || held == Some(i)),
         };
     }
 }
@@ -587,6 +604,39 @@ mod tests {
             ];
             settle_active(&mut frames, Some(pid), "Terminal", None);
             assert_eq!(actives(&frames), ["a.txt - Mousepad", "Terminal"]);
+        }
+    }
+
+    #[test]
+    fn a_hung_window_loses_its_active_state_once_an_app_without_frames_has_the_x_focus() {
+        let mut frames = vec![
+            window("Untitled 1 \u{2014} LibreOffice Calc", 7, true),
+            window("Terminal", 9, true),
+        ];
+        frames[0].stale = true;
+        settle_active(&mut frames, Some(42), "xterm", None);
+        assert_eq!(actives(&frames), ["Terminal"]);
+    }
+
+    #[test]
+    fn hung_title_twins_of_the_x_active_window_keep_one_frame_active() {
+        for marked in [[false, false], [false, true]] {
+            let mut frames = vec![
+                window("Untitled", 7, marked[0]),
+                window("Untitled", 7, marked[1]),
+                window("Terminal", 9, true),
+            ];
+            frames[0].id = "a".into();
+            frames[1].id = "b".into();
+            frames[0].stale = true;
+            frames[1].stale = true;
+            settle_active(&mut frames, Some(7), "Untitled", None);
+            let active: Vec<&str> = frames
+                .iter()
+                .filter(|f| f.active)
+                .map(|f| f.id.as_str())
+                .collect();
+            assert_eq!(active, [if marked[1] { "b" } else { "a" }], "{marked:?}");
         }
     }
 
