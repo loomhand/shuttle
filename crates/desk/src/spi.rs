@@ -226,9 +226,15 @@ fn frame(f: atspi::Frame) -> Frame {
 
 /// Leaves active only the frame of the X active window, since GTK keeps a window's AT-SPI active state after the focus moves to another X window.
 fn settle_active(frames: &mut [Frame], pid: Option<u32>, title: &str, twin: Option<&str>) {
-    let Some(pid) = pid.filter(|&p| p != 0 && frames.iter().any(|f| f.pid == Some(p))) else {
+    let Some(pid) = pid.filter(|&p| p != 0) else {
         return;
     };
+    if !frames.iter().any(|f| f.pid == Some(pid)) {
+        for f in frames.iter_mut().filter(|f| f.stale) {
+            f.active = false;
+        }
+        return;
+    }
     let named = if title.is_empty() {
         0
     } else {
@@ -588,6 +594,17 @@ mod tests {
             settle_active(&mut frames, Some(pid), "Terminal", None);
             assert_eq!(actives(&frames), ["a.txt - Mousepad", "Terminal"]);
         }
+    }
+
+    #[test]
+    fn a_hung_window_loses_its_active_state_once_an_app_without_frames_has_the_x_focus() {
+        let mut frames = vec![
+            window("Untitled 1 \u{2014} LibreOffice Calc", 7, true),
+            window("Terminal", 9, true),
+        ];
+        frames[0].stale = true;
+        settle_active(&mut frames, Some(42), "xterm", None);
+        assert_eq!(actives(&frames), ["Terminal"]);
     }
 
     #[test]
