@@ -237,3 +237,18 @@ test('an app step with a url escalates on a stale window of the app instead of l
   assert.match(r.escalate?.reason ?? '', /is not answering accessibility: "Docs - Google Chrome" \(pid 812\)/)
   assert.ok(!calls.includes('desk_launch'), calls.join(' '))
 })
+
+test('an app step by a command name escalates when the front window that answers no list belongs to its process', { skip: process.platform !== 'linux' }, async (t) => {
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return '[]'
+    if (tool === 'desk_unanswered') return JSON.stringify({ id: '', title: 'sales.ods — LibreOffice Calc', role: 'window', pid: process.pid, active: false, app: 'soffice.bin' })
+    if (tool === 'desk_launch') return JSON.stringify({ ok: true, launched: 'node' })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'node' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /is not answering accessibility/)
+  assert.ok(!calls.includes('desk_launch'), calls.join(' '))
+})

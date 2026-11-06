@@ -1129,7 +1129,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const has = async () => { const ws = await desk.windows(); return mine(ws)[0] ?? (started?.running ? ws.find((w) => w.title === started?.title && w.pid === started?.pid) : launched ? ws.find((w) => w.title && !before.has(w.id) && (!pids.has(w.pid) || (!!w.app && terms(w.app).some((x) => terms(app).includes(x))))) : undefined) }
     const owned = mine(ws); let w = (BG ? owned.find((x) => !!x.title.trim()) : undefined) ?? owned[0]
     const hung = w ? (w.stale ? w : null) : await desk.unanswered().catch(() => null)
-    if (hung && (titled(hung) || named(hung) || hung === w)) throw new Surprise(unresponsive(s.app, hung), { window: hung.title, windows: titles(ws) })
+    if (hung && (hung === w || own(hung) || named(hung))) throw new Surprise(unresponsive(s.app, hung), { window: hung.title, windows: titles(ws) })
     if (s.url) { await openPage(s.app, s.url, rec); return }
     let listed: Awaited<ReturnType<typeof desk.focus>> | null = null
     if (!w && word && !BG) for (const pid of running(name)) if ((listed = await desk.focus(s.app, pid).catch(() => null))) break
