@@ -5,7 +5,6 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -145,7 +144,6 @@ fn send(call: &Call, what: impl Display) -> ExitCode {
     }
 }
 
-/// Writes a call's screenshot to a new file in the temporary directory; its path.
 fn save_image(b64: &str) -> Result<PathBuf, String> {
     let image = B64
         .decode(b64)
@@ -252,12 +250,8 @@ async fn serve(
         asker,
         background: input == InputMode::Background,
     };
-    let auto = local
-        && !cfg!(target_os = "linux")
-        && config
-            .as_ref()
-            .is_ok_and(|c| c.desk.input == InputMode::Auto);
-    let overlay = !config.as_ref().is_ok_and(|c| !c.driver.overlay);
+    let auto = local && !cfg!(target_os = "linux") && input == InputMode::Auto;
+    let overlay = config.as_ref().ok().is_none_or(|c| c.driver.overlay);
     let locked_input = config.as_ref().is_ok_and(|c| c.desk.locked_input);
     let group = config
         .as_mut()
@@ -325,7 +319,7 @@ async fn serve(
     let recordings = server::cache_endpoint(
         "SHUTTLE_RECORDINGS",
         "",
-        &format!("{VENDOR}/{NAME}"),
+        &home().to_string_lossy(),
         "recordings",
     );
     let daemon = Arc::new(
@@ -345,14 +339,12 @@ async fn serve(
         () = shutdown() => Ok(()),
     };
     ending.end_recording().await;
-    crate::ENDING.store(true, Ordering::Relaxed);
     #[cfg(unix)]
     crate::kill_graced();
     services.stop().await;
     if let Some(b) = bundled {
         b.stop().await;
     }
-    drop(serving);
     served
 }
 

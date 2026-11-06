@@ -210,8 +210,10 @@ impl Runner {
                 let _ = tokio::join!(crate::end_group(pid, END_GRACE), child.wait());
             }
             #[cfg(windows)]
-            job.kill();
-            let _ = child.kill().await;
+            {
+                job.kill();
+                let _ = child.kill().await;
+            }
         } else {
             #[cfg(windows)]
             job.release();

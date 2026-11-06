@@ -62,18 +62,6 @@ pub struct Guard {
     pub background: bool,
 }
 
-#[cfg(test)]
-impl Default for Guard {
-    fn default() -> Self {
-        Self {
-            script_run: true,
-            confirm: Confirm::Off,
-            asker: None,
-            background: false,
-        }
-    }
-}
-
 /// What the menu-bar controls read and drive.
 pub trait Controls: Send + Sync {
     /// Stops every call, or lets them run again.
@@ -115,12 +103,13 @@ pub struct Daemon<H> {
     nonce: u64,
     runs: AtomicU64,
     wait: Duration,
-    recorder: Option<Recorder>,
+    recorder: Recorder,
 }
 
 impl<H: Handler> Daemon<H> {
     /// A daemon that fails every call but the stop while `models` holds the configuration's error.
     pub fn new(desk: H, models: Result<Models, String>, runner: Runner, guard: Guard) -> Self {
+        let actions = Arc::new(AtomicUsize::new(0));
         Self {
             desk,
             models,
@@ -129,27 +118,27 @@ impl<H: Handler> Daemon<H> {
             plugins: Vec::new(),
             services: HashMap::new(),
             halted: watch::Sender::new(false),
-            actions: Arc::new(AtomicUsize::new(0)),
+            recorder: Recorder::new(PathBuf::new(), Arc::clone(&actions)),
+            actions,
             asking: AtomicBool::new(false),
             turn: tokio::sync::Mutex::new(()),
             running: Mutex::new(None),
             nonce: RandomState::new().hash_one(std::process::id()),
             runs: AtomicU64::new(1),
             wait: TURN_WAIT,
-            recorder: None,
         }
     }
 
     /// Adds recordings of the user's input, saved in `dir`.
     #[must_use]
     pub fn with_recordings(mut self, dir: PathBuf) -> Self {
-        self.recorder = Some(Recorder::new(dir, Arc::clone(&self.actions)));
+        self.recorder = Recorder::new(dir, Arc::clone(&self.actions));
         self
     }
 
     /// Runs the recordings one after the other until the daemon ends.
     pub async fn recordings(&self) {
-        let Some(mut sessions) = self.recorder.as_ref().and_then(Recorder::sessions) else {
+        let Some(mut sessions) = self.recorder.sessions() else {
             return;
         };
         while let Some(s) = sessions.recv().await {
@@ -158,9 +147,7 @@ impl<H: Handler> Daemon<H> {
     }
 
     pub async fn end_recording(&self) {
-        if let Some(r) = &self.recorder {
-            r.finish().await;
-        }
+        self.recorder.finish().await;
     }
 
     /// Adds the plugin tools, which run only while `script_run` is on.
@@ -177,10 +164,7 @@ impl<H: Handler> Daemon<H> {
     }
 
     async fn record_call(&self, tool: &str, mut args: Value) -> Result<String, String> {
-        let r = self
-            .recorder
-            .as_ref()
-            .ok_or("this daemon makes no recordings")?;
+        let r = &self.recorder;
         match tool {
             "record_start" => {
                 let apps = match args["apps"].take() {
@@ -235,7 +219,7 @@ impl<H: Handler> Daemon<H> {
         let n = self.runs.fetch_add(1, Ordering::Relaxed);
         let agent = format!("run-{:x}-{n}", self.nonce);
         *self.running() = Some(agent.clone());
-        let _running = RunningAgent(&self.running, &agent);
+        let _running = RunningAgent(&self.running);
         self.actions.fetch_add(1, Ordering::Relaxed);
         let _acting = Acting(&self.actions);
         let _held = Held(&self.desk, &agent);
@@ -402,8 +386,8 @@ impl<H: Handler> Controls for Daemon<H> {
     fn halt(&self, stopped: bool) {
         self.halted.send_replace(stopped);
         self.runner.halt(stopped);
-        if stopped && let Some(r) = &self.recorder {
-            r.end();
+        if stopped {
+            self.recorder.end();
         }
     }
 
@@ -412,9 +396,7 @@ impl<H: Handler> Controls for Daemon<H> {
     }
 
     fn hotkey(&self, code: u32) {
-        if let Some(r) = &self.recorder {
-            r.hotkey(code);
-        }
+        self.recorder.hotkey(code);
         self.halt(true);
     }
 
@@ -423,19 +405,16 @@ impl<H: Handler> Controls for Daemon<H> {
     }
 
     fn recording(&self) -> bool {
-        self.recorder.as_ref().is_some_and(Recorder::recording)
+        self.recorder.recording()
     }
 
     fn record(&self, on: bool) -> Result<(), String> {
-        let Some(r) = &self.recorder else {
-            return Ok(());
-        };
         if on && self.halted() {
-            Err(crate::STOPPED.to_owned())
+            Err(STOPPED.to_owned())
         } else if on {
-            r.start(Vec::new()).map(drop)
+            self.recorder.start(Vec::new()).map(drop)
         } else {
-            r.end();
+            self.recorder.end();
             Ok(())
         }
     }
@@ -457,14 +436,11 @@ impl<H: Handler> Drop for Held<'_, H> {
     }
 }
 
-struct RunningAgent<'a>(&'a Mutex<Option<String>>, &'a str);
+struct RunningAgent<'a>(&'a Mutex<Option<String>>);
 
 impl Drop for RunningAgent<'_> {
     fn drop(&mut self) {
-        let mut running = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if running.as_deref() == Some(self.1) {
-            *running = None;
-        }
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 }
 
@@ -964,7 +940,7 @@ mod tests {
     fn the_menu_starts_no_recording_while_stopped() {
         let d = daemon(Echo, Guard::default()).with_recordings(std::env::temp_dir());
         d.halt(true);
-        assert_eq!(d.record(true), Err(crate::STOPPED.to_owned()));
+        assert_eq!(d.record(true), Err(STOPPED.to_owned()));
         assert!(!d.recording());
     }
 
@@ -1342,6 +1318,17 @@ mod tests {
                 self.0.lock().unwrap().push(k.to_owned());
             }
             Output::text("{}")
+        }
+    }
+
+    impl Default for Guard {
+        fn default() -> Self {
+            Self {
+                script_run: true,
+                confirm: Confirm::Off,
+                asker: None,
+                background: false,
+            }
         }
     }
 

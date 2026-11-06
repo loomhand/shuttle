@@ -26,9 +26,8 @@ pub mod win;
 use std::fmt::Display;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 #[cfg(unix)]
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(unix)]
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
@@ -50,7 +49,8 @@ const MAX_DELAY: Duration = Duration::from_secs(30);
 #[cfg(unix)]
 const GROUP_POLL: Duration = Duration::from_millis(20);
 
-pub(crate) static ENDING: AtomicBool = AtomicBool::new(false);
+#[cfg(unix)]
+static ENDING: AtomicBool = AtomicBool::new(false);
 #[cfg(unix)]
 static GRACED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
@@ -60,35 +60,21 @@ pub(crate) struct Running {
     #[cfg(unix)]
     group: Option<u32>,
     #[cfg(windows)]
-    pub(crate) job: Option<crate::job::Job>,
+    pub(crate) job: crate::job::Job,
 }
 
 impl Running {
-    pub(crate) fn new(child: Child) -> Self {
-        Self {
+    /// On Windows the child goes into a job that ends its whole tree with it, or with `alone` the child but not the apps it starts.
+    pub(crate) fn new(child: Child, alone: bool) -> Result<Self, String> {
+        #[cfg(not(windows))]
+        let _ = alone;
+        Ok(Self {
             #[cfg(unix)]
             group: child.id(),
             #[cfg(windows)]
-            job: None,
+            job: crate::job::Job::hold(child.raw_handle(), alone)?,
             child,
-        }
-    }
-
-    /// Like [`Running::new`]; on Windows the child also goes into a job that ends its whole tree with it, or with `alone` the child but not the apps it starts.
-    pub(crate) fn jobbed(child: Child, alone: bool) -> Result<Self, String> {
-        #[cfg(windows)]
-        {
-            let job = crate::job::Job::hold(child.raw_handle(), alone)?;
-            Ok(Self {
-                job: Some(job),
-                ..Self::new(child)
-            })
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = alone;
-            Ok(Self::new(child))
-        }
+        })
     }
 }
 
@@ -242,6 +228,7 @@ pub(crate) fn kill_later(rt: &tokio::runtime::Handle, group: u32, grace: Duratio
 
 #[cfg(unix)]
 pub(crate) fn kill_graced() {
+    ENDING.store(true, Ordering::Relaxed);
     let graced = std::mem::take(&mut *GRACED.lock().unwrap_or_else(PoisonError::into_inner));
     for group in graced {
         signal_group(group, libc::SIGKILL);

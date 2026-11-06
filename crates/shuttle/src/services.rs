@@ -122,7 +122,7 @@ impl Proc {
         let running = cmd
             .spawn()
             .map_err(|e| format!("start {}: {e}", self.bin.display()))
-            .and_then(|c| Running::jobbed(c, false))?;
+            .and_then(|c| Running::new(c, false))?;
         Ok(running)
     }
 
@@ -215,12 +215,7 @@ async fn terminate(running: &mut Running) {
         crate::signal_pid(pid, libc::SIGTERM);
     }
     #[cfg(windows)]
-    match &running.job {
-        Some(job) => job.kill(),
-        None => {
-            let _ = running.child.start_kill();
-        }
-    }
+    running.job.kill();
     if tokio::time::timeout(STOP_WAIT, running.child.wait())
         .await
         .is_err()
