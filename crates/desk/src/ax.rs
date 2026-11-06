@@ -159,20 +159,10 @@ impl Ax {
             let app = application(p);
             let asked = Instant::now();
             let read = values(&self.app_names, &app);
-            if read.iter().all(Option::is_none) && asked.elapsed() >= MESSAGING_TIMEOUT * 9 / 10 {
-                let slow = self.slow.entry(p).or_insert(asked).elapsed();
-                let listed = self
-                    .listed_at
-                    .get(&p)
-                    .map_or(LAUNCH_GRACE, Instant::elapsed);
-                if hung(slow, listed) {
-                    self.slow.remove(&p);
-                    self.hung.insert(p, Instant::now());
-                }
-                frames.extend(kept(&self.last, p));
+            if unread(&read, asked.elapsed()) {
+                self.missed(p, asked, &mut frames);
                 continue;
             }
-            self.slow.remove(&p);
             let from = frames.len();
             let [name, front, focused, main, windows] = read;
             let name = name
@@ -183,8 +173,13 @@ impl Ax {
             let Some(windows) = windows.map(|w| items(&w)) else {
                 continue;
             };
+            let mut cut = false;
             for w in windows.iter() {
                 let [role, subrole, title, children, pos, size] = values(&self.frame_names, w);
+                if role.is_none() && late(asked.elapsed()) {
+                    cut = true;
+                    break;
+                }
                 let sheets = sheets(children.map(|c| items(&c)).unwrap_or_default());
                 let mine = focused
                     .as_ref()
@@ -233,10 +228,29 @@ impl Ax {
                     ..Frame::default()
                 });
             }
+            if cut {
+                frames.truncate(from);
+                self.missed(p, asked, &mut frames);
+                continue;
+            }
+            self.slow.remove(&p);
             self.last.insert(p, frames[from..].to_vec());
         }
         stale_front(&mut frames, front);
         frames
+    }
+
+    fn missed(&mut self, p: i32, asked: Instant, frames: &mut Vec<Frame>) {
+        let slow = self.slow.entry(p).or_insert(asked).elapsed();
+        let listed = self
+            .listed_at
+            .get(&p)
+            .map_or(LAUNCH_GRACE, Instant::elapsed);
+        if hung(slow, listed) {
+            self.slow.remove(&p);
+            self.hung.insert(p, Instant::now());
+        }
+        frames.extend(kept(&self.last, p));
     }
 
     fn id_of(&mut self, el: &CFType) -> String {
@@ -1267,6 +1281,14 @@ fn shown_windows() -> Vec<(i32, Vec<[f64; 4]>)> {
     apps
 }
 
+fn late(waited: Duration) -> bool {
+    waited >= MESSAGING_TIMEOUT * 9 / 10
+}
+
+fn unread<T>(read: &[Option<T>; 5], waited: Duration) -> bool {
+    late(waited) && (read.iter().all(Option::is_none) || read[4].is_none())
+}
+
 fn front_of(apps: &[(i32, Vec<[f64; 4]>)]) -> Option<u32> {
     apps.first().and_then(|(p, _)| u32::try_from(*p).ok())
 }
@@ -1527,6 +1549,19 @@ mod tests {
     fn the_space_calls_resolve_at_run_time_and_a_missing_symbol_is_none() {
         assert!(Cgs::get().is_some());
         assert!(symbol(c"CGSNoSuchCallForShuttle").is_none());
+    }
+
+    #[test]
+    fn an_app_read_that_ran_into_the_timeout_without_its_windows_is_a_miss() {
+        let half = MESSAGING_TIMEOUT / 2;
+        assert!(unread(&[None::<u8>; 5], MESSAGING_TIMEOUT));
+        assert!(unread(
+            &[Some(1), Some(1), None, None, None],
+            MESSAGING_TIMEOUT
+        ));
+        assert!(!unread(&[Some(1); 5], MESSAGING_TIMEOUT));
+        assert!(!unread(&[Some(1), Some(1), None, None, None], half));
+        assert!(late(MESSAGING_TIMEOUT) && !late(half));
     }
 
     #[test]
