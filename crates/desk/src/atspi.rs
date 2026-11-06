@@ -380,13 +380,16 @@ pub struct Atspi {
 }
 
 impl Atspi {
-    /// The top-level windows of every app with their pids; a late app gives its last ones, marked stale.
+    /// The top-level windows of every app with their pids; a late or hung app gives its last ones, marked stale.
     pub async fn frames(&self) -> Result<Vec<Frame>, String> {
         let registry = Obj::at(REGISTRY, ROOT);
         let apps = self.children(&registry).await?;
         let mut answering = Vec::with_capacity(apps.len());
+        let mut skipped = Vec::new();
         for app in &apps {
-            if !self.skips(&app.bus).await {
+            if self.skips(&app.bus).await {
+                skipped.push(app.bus.as_str());
+            } else {
                 answering.push(app);
             }
         }
@@ -410,7 +413,7 @@ impl Atspi {
         .await;
         let mut seen = lock(&SEEN);
         seen.retain(|bus, _| apps.iter().any(|app| app.bus == *bus));
-        Ok(reads
+        let mut frames: Vec<Frame> = reads
             .into_iter()
             .flat_map(|(bus, read)| {
                 let (pid, read) = read.unzip();
@@ -420,7 +423,9 @@ impl Atspi {
                 }
                 frames
             })
-            .collect())
+            .collect();
+        frames.extend(skipped.into_iter().flat_map(|bus| kept(&seen, bus)));
+        Ok(frames)
     }
 
     /// The tree under the window `window`: shown nodes in preorder, with `extras` read live.
@@ -1135,7 +1140,7 @@ fn release_on_answer(
     });
 }
 
-/// The frames of the app on `bus` from a read asked at `asked`: what it answered, else its last frames marked stale, and none once it counts as hung.
+/// The frames of the app on `bus` from a read asked at `asked`: what it answered, else its last frames marked stale, marking the app hung once it has missed long enough.
 fn settle(
     seen: &mut HashMap<String, Seen>,
     bus: &str,
@@ -1155,11 +1160,17 @@ fn settle(
     }
     let slow = s.slow.get_or_insert(asked).elapsed();
     if hung(slow, s.listed.elapsed()) {
-        s.last.clear();
         mark_hung(bus);
-        return Vec::new();
     }
-    s.last
+    stale(&s.last)
+}
+
+fn kept(seen: &HashMap<String, Seen>, bus: &str) -> Vec<Frame> {
+    seen.get(bus).map_or_else(Vec::new, |s| stale(&s.last))
+}
+
+fn stale(frames: &[Frame]) -> Vec<Frame> {
+    frames
         .iter()
         .map(|f| Frame {
             stale: true,
@@ -1593,7 +1604,7 @@ mod tests {
     }
 
     #[test]
-    fn a_late_app_keeps_its_last_frames_stale_until_it_has_missed_for_two_seconds() {
+    fn a_late_app_keeps_its_last_frames_stale_also_once_it_counts_as_hung() {
         let window = |bus: &str| Frame {
             obj: Obj {
                 bus: bus.into(),
@@ -1615,9 +1626,39 @@ mod tests {
         assert!(late[0].stale && late[0].name == "Doc");
         assert!(!Atspi::default().is_hung(":9.94"));
         seen.get_mut(":9.94").unwrap().slow = Some(ago(2));
-        assert!(settle(&mut seen, ":9.94", None, now).is_empty());
+        let hung = settle(&mut seen, ":9.94", None, now);
         assert!(Atspi::default().is_hung(":9.94"));
-        assert!(seen[":9.94"].last.is_empty());
+        assert_eq!(hung.len(), 1);
+        assert!(hung[0].stale && hung[0].name == "Doc");
+        let skipped = kept(&seen, ":9.94");
+        assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].stale && skipped[0].name == "Doc" && skipped[0].pid == Some(7));
+        assert!(kept(&seen, ":9.95").is_empty());
+    }
+
+    #[test]
+    fn an_app_a_call_timed_out_on_keeps_its_last_frames_stale_while_the_list_skips_it() {
+        let calc = Frame {
+            obj: Obj {
+                bus: ":9.91".into(),
+                path: format!("{PATH_PREFIX}/3"),
+            },
+            role: 23,
+            name: "Untitled 1 \u{2014} LibreOffice Calc".into(),
+            states: 1 << ACTIVE,
+            pid: Some(4242),
+            stale: false,
+        };
+        let mut seen = HashMap::new();
+        let now = Instant::now();
+        let ago = |s: u64| now.checked_sub(Duration::from_secs(s)).unwrap();
+        settle(&mut seen, ":9.91", Some(vec![calc]), ago(30));
+        mark_hung(":9.91");
+        assert!(Atspi::default().is_hung(":9.91"));
+        let listed = kept(&seen, ":9.91");
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].stale && listed[0].active() && listed[0].pid == Some(4242));
+        assert_eq!(listed[0].name, "Untitled 1 \u{2014} LibreOffice Calc");
     }
 
     #[test]
