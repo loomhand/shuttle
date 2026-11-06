@@ -89,6 +89,7 @@ const ROLE_FILLER: u32 = 20;
 const ROLE_MENU_BAR: u32 = 34;
 const ROLE_PANEL: u32 = 39;
 const ROLE_DOCUMENT_WEB: u32 = 95;
+const DOCUMENTS: [u32; 6] = [82, 92, 93, 94, ROLE_DOCUMENT_WEB, 96];
 const GENERIC: [u32; 7] = [ROLE_FILLER, 24, 25, 30, ROLE_PANEL, 46, 85];
 // AT-SPI role numbers, in the order of AtspiRole
 const ROLE_NAMES: [&str; 130] = [
@@ -1329,7 +1330,7 @@ fn needs_live(r: &Raw, cached: Option<&Vec<(i32, Rc<Obj>)>>) -> bool {
         || cached.is_some_and(|c| c.iter().any(|(i, _)| *i < 0))
 }
 
-/// Appends `obj` and its subtree in preorder, once per parent: an object shared by two parents under both, but a menu bar that repeats an earlier one's menus under neither; a nameless generic container gives its place to its children.
+/// Appends `obj` and its subtree in preorder, once per parent: an object shared by two parents under both, but a menu bar outside any document that repeats an earlier one's menus under neither; a nameless generic container gives its place to its children.
 fn flatten<'a>(
     obj: &'a Rc<Obj>,
     raw: &'a HashMap<Rc<Obj>, Raw>,
@@ -1345,7 +1346,11 @@ fn flatten<'a>(
     if out.len() >= MAX_NODES || path.contains(&obj) {
         return;
     }
-    if r.role == ROLE_MENU_BAR {
+    if r.role == ROLE_MENU_BAR
+        && !path
+            .iter()
+            .any(|a| raw.get(*a).is_some_and(|d| DOCUMENTS.contains(&d.role)))
+    {
         let menus: Vec<&str> = kids
             .get(obj)
             .into_iter()
@@ -1512,6 +1517,49 @@ mod tests {
             .collect();
         assert_eq!(bars, ["1.73/1823"]);
         assert_eq!(out.len(), 233);
+    }
+
+    #[test]
+    fn two_menu_bars_with_the_same_menus_inside_a_page_are_both_kept() {
+        let o = |p: &str| Rc::new(Obj::at(":1.9", &format!("{PATH_PREFIX}/{p}")));
+        let r = |role: u32, name: &str| Raw {
+            role,
+            name: name.to_owned(),
+            ..Raw::default()
+        };
+        let raw: HashMap<Rc<Obj>, Raw> = HashMap::from([
+            (o("w"), r(23, "Editors - Browser")),
+            (o("d"), r(ROLE_DOCUMENT_WEB, "Editors")),
+            (o("b1"), r(ROLE_MENU_BAR, "")),
+            (o("b2"), r(ROLE_MENU_BAR, "")),
+            (o("e1"), r(33, "Edit")),
+            (o("f1"), r(33, "Format")),
+            (o("e2"), r(33, "Edit")),
+            (o("f2"), r(33, "Format")),
+        ]);
+        let kids: HashMap<Rc<Obj>, Vec<Rc<Obj>>> = HashMap::from([
+            (o("w"), vec![o("d")]),
+            (o("d"), vec![o("b1"), o("b2")]),
+            (o("b1"), vec![o("e1"), o("f1")]),
+            (o("b2"), vec![o("e2"), o("f2")]),
+        ]);
+        let mut out = Vec::new();
+        flatten(
+            &o("w"),
+            &raw,
+            &kids,
+            None,
+            &mut Vec::new(),
+            &mut HashSet::new(),
+            &mut out,
+        );
+        let bars: Vec<String> = out
+            .iter()
+            .filter(|n| n.role == ROLE_MENU_BAR)
+            .map(|n| n.obj.id())
+            .collect();
+        assert_eq!(bars, ["1.9/b1", "1.9/b2"]);
+        assert_eq!(out.len(), 8);
     }
 
     #[test]
