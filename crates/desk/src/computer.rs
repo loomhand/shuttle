@@ -288,7 +288,6 @@ impl Computer {
         }
         Ok(Output {
             text,
-            is_error: false,
             image_b64,
             ..Output::default()
         })
@@ -370,7 +369,6 @@ impl Computer {
             let (shot, missed) = self.settled(session, None, &a).await;
             return Ok(Output {
                 text: format!("waited {secs:.1}s{missed}"),
-                is_error: false,
                 image_b64: shot,
                 ..Output::default()
             });
@@ -458,7 +456,6 @@ impl Computer {
             text,
             is_error,
             image_b64: shot,
-            ..Output::default()
         })
     }
 
@@ -485,7 +482,6 @@ impl Computer {
         };
         Ok(Output {
             text,
-            is_error: false,
             image_b64,
             ..Output::default()
         })
@@ -534,7 +530,6 @@ impl Computer {
                 "region of the screen: {}; its pixel px,py is x = {ox:.0} + px*{f:.2}, y = {oy:.0} + py*{f:.2} for computer_act",
                 weigh(&image)
             ),
-            is_error: false,
             image_b64: Some(image),
             ..Output::default()
         })
@@ -736,7 +731,6 @@ impl Computer {
             },
             is_error: failure.is_some(),
             image_b64: shot,
-            ..Output::default()
         })
     }
 
@@ -785,7 +779,6 @@ impl Computer {
                     text: e + &missed,
                     is_error: true,
                     image_b64: shot,
-                    ..Output::default()
                 });
             }
         };
@@ -794,7 +787,6 @@ impl Computer {
         drop(input);
         Ok(Output {
             text: text + &changes + &missed,
-            is_error: false,
             image_b64: shot,
             ..Output::default()
         })
