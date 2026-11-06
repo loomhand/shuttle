@@ -12,7 +12,7 @@ shuttle mcp ───────── one per agent session on stdio, one per 
 shuttle serve ─────── one per user; owns the desktop, the model keys and the safety controls
   ├── desk verbs ─────────── AX (macOS), UI Automation (Windows), AT-SPI (Linux)
   ├── cua-driver ─────────── the bundled driver, a child on the daemon's own socket or pipe: input, window focus, launch, capture
-  ├── node ───────────────── child process per gui_plan / script_run, running the runtime;
+  ├── node ───────────────── child process per gui_plan, script_run or recording draft, running the runtime;
   │                          desk.mts (desk.mjs in the archives) calls back over the same desk wire
   └── service plugins ────── long-lived children from the plugin directory, none by default; the daemon
                              splices each call of a service tool to the service's own socket
@@ -23,7 +23,7 @@ shuttle serve ─────── one per user; owns the desktop, the model ke
 - **macOS** attributes Accessibility and Screen Recording grants to an app bundle, not to a bare binary, so the daemon runs from `Shuttle.app` (`open -n -g -a ~/Applications/Loomhand/Shuttle.app --args serve`, by path, since another app may also be named Shuttle) and node runs as its child inside the same responsibility chain. A daemon started by a terminal would borrow the terminal's grants instead. The bundled cua-driver lives in the same bundle, so macOS attributes it to Shuttle too: one set of grants covers the daemon and the driver.
 - **Node** is the official Node.js 24 binary, shipped unmodified and checked by sha256 at build time. A single-file compile (bun `--compile`, Node SEA) does not fit: `script_run` loads arbitrary scripts at run time, and the runtime must match what its tests run on.
 - **Service plugins** ([wire.md](wire.md#service-plugins)) are programs the plugin directory names. The daemon starts each with itself and starts it again when it exits. For a call of one of its tools, the daemon reads the first frame and copies the connection both ways to the service's socket, with no desk turn, so a service's calls run alongside plans and desk actions. A desktop install ships none.
-- **Model calls** (`decide`, `ground`, `ask`, `verify`) go through the daemon as `model_*` desk-wire calls, so provider keys live in the daemon and stay out of a script's environment; see [config.md](config.md#keys).
+- **Model calls** (`decide`, `look`, `ground`, `ask`) go through the daemon as `model_*` desk-wire calls, so provider keys live in the daemon and stay out of a script's environment; see [config.md](config.md#keys).
 
 ## What shuttle never does
 

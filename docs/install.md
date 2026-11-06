@@ -10,7 +10,7 @@ curl -fsSL https://github.com/loomhand/shuttle/releases/latest/download/install.
 
 | Variable | Default | |
 |---|---|---|
-| `SHUTTLE_VERSION` | the latest release | a tag such as `v0.1.40` |
+| `SHUTTLE_VERSION` | the latest release | a tag such as `vX.Y.Z` |
 | `SHUTTLE_PREFIX` | `~/.local` | `shuttle` goes in `$SHUTTLE_PREFIX/bin`, the Linux files in `$SHUTTLE_PREFIX/lib/loomhand/shuttle` |
 | `SHUTTLE_APP_DIR` | `~/Applications/Loomhand` | where `Shuttle.app` goes on macOS |
 
@@ -36,7 +36,7 @@ Both installers download the archive and the release's `SHA256SUMS`, refuse an a
    ```
 
    On Windows the file is `%APPDATA%\loomhand\shuttle\config.toml`. The file must be readable by you only (mode 0600 on macOS and Linux). Any other OpenAI-compatible endpoint works too: set `base_url` (and `decide_api = "chat"` without a decisions endpoint), as [config.md](config.md#models-bring-your-own-key) describes.
-4. **Safety settings for a first try.** Add these to the same file: they turn off the one tool that runs the agent's own code and limit the desk to one app, here TextEdit (Windows: `"notepad.exe"`). The kill hotkey is on by default: ⌃⌥⌘⎋ on macOS, Ctrl+Alt+Shift+Esc on Windows; `shuttle stop` does the same from a terminal.
+4. **Safety settings for a first try.** Add these to the same file: they turn off the one tool that runs the agent's own code and limit the desk to one app, here TextEdit (Windows: `"notepad.exe"`). The kill hotkey is on by default: ⌃⌥⌘⎋ on macOS, Ctrl+Alt+Shift+Esc on Windows, none yet on Linux; `shuttle stop` does the same from a terminal.
 
    ```toml
    [tools]
@@ -75,8 +75,8 @@ Both use the default endpoint unless `SHUTTLE_SOCKET` names another one ([wire.m
 Download an archive and `SHA256SUMS` from the [releases](https://github.com/loomhand/shuttle/releases), then:
 
 ```sh
-shasum -a 256 -c SHA256SUMS --ignore-missing     # macOS; sha256sum -c on Linux
-gh attestation verify shuttle-v0.1.40-linux-x64.tar.gz -R loomhand/shuttle
+shasum -a 256 -c SHA256SUMS --ignore-missing     # Linux: sha256sum -c SHA256SUMS --ignore-missing
+gh attestation verify shuttle-vX.Y.Z-linux-x64.tar.gz -R loomhand/shuttle
 ```
 
 The attestation shows that the archive was built by this repository's release workflow from the tagged commit. It is build provenance, not a code signature, and macOS and Windows do not read it.
@@ -87,4 +87,4 @@ The attestation shows that the archive was built by this repository's release wo
 - Linux: `rm -rf ~/.local/lib/loomhand/shuttle ~/.local/bin/shuttle`
 - Windows: `Remove-Item -Recurse "$env:LOCALAPPDATA\Programs\loomhand\shuttle"`, then remove that directory from your user `PATH`.
 
-Quit a running daemon first (`pkill -f 'shuttle serve'`; Windows: end `shuttle.exe` in Task Manager; its cua-driver ends with it). Remove `~/.config/loomhand/shuttle` (Windows: `%APPDATA%\loomhand\shuttle`) to drop the configuration and the saved flows too, and `~/Library/Caches/loomhand/shuttle` on macOS or `$XDG_CACHE_HOME/loomhand/shuttle` (else `~/.cache/loomhand/shuttle`) on Linux (the daemon's sockets) or `%LOCALAPPDATA%\loomhand\shuttle` on Windows (the driver's pid file).
+Quit a running daemon first (`pkill -f 'shuttle serve'`; Windows: end `shuttle.exe` in Task Manager; its cua-driver ends with it). Remove `~/.config/loomhand/shuttle` (Windows: `%APPDATA%\loomhand\shuttle`) to drop the configuration and the saved flows too, and `~/Library/Caches/loomhand/shuttle` on macOS (the daemon's sockets and the recordings) or `$XDG_CACHE_HOME/loomhand/shuttle` (else `~/.cache/loomhand/shuttle`) on Linux (the daemon's sockets) or `%LOCALAPPDATA%\loomhand\shuttle` on Windows (the driver's pid file).

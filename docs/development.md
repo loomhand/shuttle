@@ -10,6 +10,8 @@ cargo test --locked
 
 The toolchain is pinned in `rust-toolchain.toml`; the runner and daemon tests also run `node` from `PATH`, which must strip types as the archives' Node.js 24 does; CI's Rust jobs take the runner image's Node, and only the runtime job the pinned one. The unit tests drive fake accessibility backends, a fake cua-driver and in-memory MCP sessions: none reads a real accessibility tree or sends input, so they are safe on the machine you work on. Anything that drives a real desktop runs in a virtual machine or a CI runner, never on a developer's own session.
 
+`bash android/ui/build.sh OUT.jar` builds the Android UI server jar (it needs a JDK and curl); `packaging/package.sh` takes it as `UI_JAR` for the Linux archive, and CI builds it twice to check the build is reproducible.
+
 The Windows code builds only for Windows; from another host, `cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings` checks it.
 
 The runtime is TypeScript; the archives carry the `.mts` sources and, next to them, `.mjs` files with the types stripped by `packaging/runtime.mjs`. The runner takes the `.mjs` when the runtime has `entry.mjs`, so a `gui_plan` run does not load Node's type stripper. `script_run` always writes `code` as a `.mts` file, so `code` loads it; a JavaScript file given as `script` skips it only when its own imports are `.mjs` or `.js` too. Scripts may still import the `.mts` sources. `npm ci && npm run typecheck` in `runtime/` checks it and its tests with `strict` and `noUncheckedIndexedAccess`. The runtime tests run on Linux, macOS and Windows with the Node.js release the archives bundle; each test points `HOME` and `SHUTTLE_FLOWS` at its own temporary directory:
@@ -26,7 +28,7 @@ CI runs the Rust gates on Linux (x64), macOS (arm64, x64) and Windows (x64), the
 2. Set `version` in the workspace `Cargo.toml`, run `cargo check` so `Cargo.lock` follows (CI and the release build with `--locked`), and commit both.
 3. Tag that commit on `main` as `vX.Y.Z` and push the tag.
 
-The release workflow fails a tag that is not on `main` or that differs from the `Cargo.toml` version, runs CI, and only then builds the five archives, fails when an executable in the Windows archive imports the Visual C++ runtime, writes `SHA256SUMS`, attests their provenance and publishes them with the installers as a prerelease. It then installs that release with `install.sh` and `install.ps1` on fresh runners, asks each installed binary for `status` over MCP, and only then takes it out of prerelease, marking it the latest unless a newer release is already out. A failed install job leaves it a prerelease: fix the cause and tag the next patch version; a published tag is never moved.
+The release workflow fails a tag that is not on `main`, that differs from the `Cargo.toml` version or whose version has no notes in `CHANGELOG.md`, runs CI, and only then builds the five archives, fails when an executable in the Windows archive imports the Visual C++ runtime, writes `SHA256SUMS`, attests their provenance and publishes them with the installers as a prerelease. It then installs that release with `install.sh` and `install.ps1` on fresh runners, asks each installed binary for `status` over MCP, and only then takes it out of prerelease, marking it the latest unless a newer release is already out. A failed install job leaves it a prerelease: fix the cause and tag the next patch version; a published tag is never moved.
 
 ## Third-party pins
 
