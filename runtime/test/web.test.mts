@@ -64,7 +64,8 @@ test('a browser with its page tree off gets it on for the plan, which leaves tur
 
 test('a browser whose page tree was already on keeps it on', async (t) => {
   const calls = await browser(t, { url: () => 'https://shop.test/form', els: [{ id: '7/3', role: 'button', name: 'Submit' }] })
-  await main({ steps: [{ click: 'Submit', role: 'button', web: { url: 'https://shop.test/form' } }] })
+  const r = await main({ steps: [{ click: 'Submit', role: 'button', web: { url: 'https://shop.test/form' } }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(calls.filter((c) => c.tool === 'desk_web'), [])
 })
 

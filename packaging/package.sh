@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Builds one release archive from the shuttle binary in a cargo release directory, the runtime, and cua-driver and Node from packaging/pins;
-# a linux archive also carries the Android UI server jar that UI_JAR names (android/ui/build.sh builds it).
+# Builds one release archive for PLATFORM from a cargo release directory, the runtime, the pinned cua-driver and Node, and on Linux the UI_JAR.
 set -euo pipefail
 
 NAME=shuttle
@@ -52,7 +51,7 @@ macos-*)
 		"$ROOT/packaging/macos/Info.plist" >"$app/Contents/Info.plist"
 	runtime "$node/bin/node" "$app/Contents/Resources/runtime"
 	licenses "$app/Contents/Resources/licenses" "$node" "$cua"
-	# node keeps its own signature; the unsigned x86_64 cua-driver binaries need one inside a signed bundle.
+	# cua-driver's binaries need a signature inside a signed bundle
 	codesign --force --sign - "$app/Contents/MacOS/cua-driver" "$app/Contents/MacOS/cua-cursor-theme"
 	codesign --force --sign - "$app"
 	codesign --verify --strict --verbose=2 "$app"

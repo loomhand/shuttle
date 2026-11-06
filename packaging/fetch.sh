@@ -11,7 +11,7 @@ dir="$3/$2"
 file="$3/$(basename "$url")"
 mkdir -p "$dir"
 curl -fsSL --retry 3 --retry-connrefused -o "$file" "$url"
-if command -v sha256sum >/dev/null; then got=$(sha256sum "$file" | cut -d' ' -f1); else got=$(shasum -a 256 "$file" | cut -d' ' -f1); fi
+if command -v sha256sum >/dev/null; then got=$(sha256sum <"$file" | cut -d' ' -f1); else got=$(shasum -a 256 <"$file" | cut -d' ' -f1); fi
 [ "$got" = "$sum" ] || { echo "sha256 mismatch: $url" >&2; exit 1; }
 case "$file" in
 *.zip) unzip -q "$file" -d "$dir" ;;

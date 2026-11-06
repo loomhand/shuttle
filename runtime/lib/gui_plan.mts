@@ -141,7 +141,7 @@ async function perform(p: Params): Promise<Result> {
   let flow: Flow | null = null
   try { if (p.flow) flow = loadFlow(p.flow) } catch (e: unknown) { return { ok: false, done: 0, ms: 0, escalate: { reason: e instanceof Error ? e.message : String(e) } } }
   const params = { ...(flow?.params ?? {}), ...(p.params ?? {}) }
-  const plan: Step[] = (flow ? flow.steps : p.steps ?? []).filter((s) => !Object.keys(s).every((k) => ['screenshot', 'timeout_s', 'max_edge'].includes(k)))
+  const plan: Step[] = flow ? flow.steps : p.steps ?? []
   if (!plan.length) return { ok: false, error: 'pass steps, flow or find' }
   recording = !flow && !!plan[0]?.app && !p.start
   lastSeen = ''
@@ -425,7 +425,7 @@ function at(w: Win | null): desk.Target {
   for (let o = OS === 'darwin' ? x.owner : undefined; o; o = x.owner) { const up = listed.find((y) => y.id === o); if (!up) break; x = up }
   const to = x
   unique(to)
-  targetSince = new Set([...targetSince, ...listed.map((y) => y.id)])
+  for (const y of listed) targetSince.add(y.id)
   return { window: to.title, pid: to.pid }
 }
 function unique(w: Win) {
@@ -939,7 +939,6 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
   } finally { tick('check', t0) }
 }
 
-// a shown control takes a pointer click, since an AT-SPI action runs its handler inside the a11y bridge, where a modal dialog blocks the app
 async function act(n: Node) {
   const t0 = Date.now()
   try {
@@ -1170,7 +1169,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
         await desk.focus(w.title, w.pid)
         await desk.typeText(s.type, FG)
         rec.how = 'foreground'; rec.unverified = undefined; fronted = true; BG = false
-      } else if (!shows(was, now, s.type)) throw new Surprise(`"${s.type}" did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
+      } else if (!shows(was, now, s.type)) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
       rec.confirmed = true
     }
     const blank = recording && first && !chooser && w ? await typedInto(w, s.type) : null
@@ -1179,7 +1178,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const vo = v && v.title !== w?.title ? await outline(v, {}, blank?.kept) : o
     if (v && w && v.id === w.id && !isDialog(vo)) known.add(v.title)
     if (sub && w) { rec.submit = true; await submit(w, true) } else if (v && isDialog(vo) && await closed(v.title, v.pid)) rec.submit = true
-    if (dialog && w) {
+    if (dialog && w && !secure(s)) {
       const want = s.type.slice(0, 30).replace(/\\/g, '\\\\').replace(/"/g, '\\"'); let after = ''
       for (let k = 0; k < 5; k++) { after = await outline(w); if (!isDialog(after) || after.split('\n').some((l) => /^\s*- (textbox|searchbox|combobox|spinbutton)\b.*: ".*/.test(l) && l.includes(want))) return; await sleep(40) }
       throw new Surprise(`"${s.type}" reached no text field of "${w.title}" (Tab can land on a button): fill the field with {set: label, value}`, await seen())
@@ -1323,8 +1322,9 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       if (now.on !== s.on) throw new Surprise(`menu toggle "${hit.n.name}" is still ${now.on ? 'on' : 'off'}`, await seen())
       rec.confirmed = true; return
     }
+    if (BG) throw new Surprise(`the state of "${hit.n.name}" needs a look at the screen: ${NO_PIXELS}`, await seen())
     for (const q of chain) { await act(q); await sleep(120) }
-    const on = await cropState(hit.n, false); rec.was = on; rec.state = 'vision'
+    const on = await cropState(hit.n); rec.was = on; rec.state = 'vision'
     if (on === s.on) { for (const _ of chain) await desk.key('Escape', at(w)); rec.noop = true; return }
     await act(hit.n); await settle(w.title); rec.caveat = TOGGLE_UNREAD; return
   }
@@ -1457,6 +1457,8 @@ function unsecret(steps: Step[], params: Record<string, string>) {
 }
 
 function secure(s: Step) { return typeof s.focus === 'object' && !!s.focus.secure }
+
+function typedText(s: Step) { return secure(s) ? 'the password' : `"${s.type}"` }
 
 function sealed(c: Chain, plan: Step[]): Chain {
   const named = templated(c.steps, c.params).steps

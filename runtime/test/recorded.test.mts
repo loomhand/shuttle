@@ -42,7 +42,7 @@ async function canvas(t: TestContext, o: { shown: Buffer; look?: number; title?:
   return seen
 }
 
-const crop = (): string => cut(unpng(screen(800, 600, [100, 100])), 60, 80, 200, 100, 1).toString('base64')
+const crop = (k = 1): string => cut(unpng(screen(800, 600, [100, 100])), 60, 80, 200, 100, k).toString('base64')
 
 test('a recorded click with no element under it finds its recorded crop where the layout moved it, with no model call', async (t) => {
   const seen = await canvas(t, { shown: screen(800, 600, [300, 250]) })
@@ -53,16 +53,14 @@ test('a recorded click with no element under it finds its recorded crop where th
 
 test('a recorded crop taken at twice the desk scale matches a screen at desk scale', async (t) => {
   const seen = await canvas(t, { shown: screen(800, 600, [300, 250]) })
-  const big = cut(unpng(screen(800, 600, [100, 100])), 60, 80, 200, 100, 2).toString('base64')
-  const r = await main({ steps: [{ click: 'the Green button', recorded: { text: 'the Green button', crop: big, scale: 2, root: true } }] })
+  const r = await main({ steps: [{ click: 'the Green button', recorded: { text: 'the Green button', crop: crop(2), scale: 2, root: true } }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual([seen.clicks, r.trace?.[0]?.how], [['360,280'], 'crop'])
 })
 
 test('a recorded crop cut at the screen edge clicks its point, not its centre', async (t) => {
   const seen = await canvas(t, { shown: screen(800, 600, [300, 250]) })
-  const edge = cut(unpng(screen(800, 600, [100, 100])), 60, 80, 200, 100, 1).toString('base64')
-  const r = await main({ steps: [{ click: 'the Green button', recorded: { text: 'the Green button', crop: edge, offset: [-40, 5], root: true } }] })
+  const r = await main({ steps: [{ click: 'the Green button', recorded: { text: 'the Green button', crop: crop(), offset: [-40, 5], root: true } }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual([seen.clicks, r.trace?.[0]?.how], [['320,285'], 'crop'])
 })

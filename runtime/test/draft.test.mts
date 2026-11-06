@@ -238,7 +238,7 @@ test('a recording in a web page opens its address and keeps the page and DOM id 
   assert.deepEqual(d.steps.map(({ intent: _, recorded: __, ...s }) => s), [
     { app: 'Browser', url: 'https://shop.test/order?ref={{ref}}' },
     { click: 'Customer name:', web: { ...web, id: 'cust' } },
-    { type: '{{who}}', focus: { role: 'textbox', name: 'Customer name:', frame: 'window', window: 'Order - Browser', id: 'cust' }, web },
+    { type: '{{who}}', focus: { role: 'textbox', name: 'Customer name:', frame: 'window', id: 'cust' }, web },
     { type: '{{password}}', focus: { role: 'textbox', name: 'PIN', frame: 'window', secure: true }, web },
     { click: 'Pay', role: 'button', web, after: 'Paid - Browser' },
   ])

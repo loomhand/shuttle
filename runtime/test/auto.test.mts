@@ -139,7 +139,7 @@ test('a field auto cannot read is never typed into again in the foreground', asy
   assert.equal(calls.filter((c) => c.tool === 'desk_type').length, 1)
 })
 
-test('a menu state read from pixels after the menus opened in the background stays refused under auto', { skip: process.platform === 'darwin' }, async (t) => {
+test('a menu state that needs pixels is refused in the background under auto before any menu opens', { skip: process.platform === 'darwin' }, async (t) => {
   const nodes = [
     { ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: 'Untitled - Notepad', states: [] },
     { ref: 1, id: 'mb', parent: 0, depth: 1, role: 'menubar', name: '', states: ['showing'] },
@@ -157,7 +157,7 @@ test('a menu state read from pixels after the menus opened in the background sta
   const r = await auto({ steps: [{ app: 'Notepad' }, { menu: 'View > Status bar', on: true }] })
   assert.equal(r.ok, false)
   assert.match(String(r.escalate?.reason), /does not read the screen/)
-  assert.deepEqual(calls.filter((c) => c.tool === 'desk_press').map((c) => c.args), [{ id: 'm' }])
+  assert.deepEqual(calls.filter((c) => c.tool === 'desk_press'), [])
   assert.ok(!calls.some((c) => c.tool === 'desk_focus' || c.tool === 'desk_shot'))
 })
 
