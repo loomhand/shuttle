@@ -8,7 +8,7 @@ shuttle is part of [loomhand](https://github.com/loomhand). Its input, capture a
 
 ## Status
 
-**v0.1.40 is the current release.** On macOS and Windows the daemon drives the desktop through the bundled cua-driver (`desk`, `screenshot`, `gui_plan`, `script_run`), calls models with your own key, and has its safety controls: kill switch and hotkey, indicator, confirm mode and app allowlist. On Linux (X11) the daemon drives the desktop over AT-SPI, with input through the bundled cua-driver, the stop, the `script_run` switch and the app allowlist; its hotkey, indicator and confirm dialog are not built yet. On Linux and macOS the daemon can drive an Android device over adb instead of the desktop ([Android over adb](docs/platforms.md#android-over-adb)). v0.1.0's Windows build needs the Visual C++ Redistributable; later releases do not.
+**v0.1.40 is the current release.** On macOS and Windows the daemon drives the desktop through the bundled cua-driver (`desk`, `screenshot`, `gui_plan`, `script_run`), calls models with your own key, and has its safety controls: kill switch and hotkey, indicator, confirm mode and app allowlist. On Linux (X11) the daemon drives the desktop over AT-SPI, with input through the bundled cua-driver, the stop, the `script_run` switch and the app allowlist; its hotkey, indicator and confirm dialog are not built yet. On Linux and macOS the daemon can drive an Android device over adb instead of the desktop ([Android over adb](docs/platforms.md#android-over-adb)).
 
 | Phase | What | State |
 |---|---|---|
@@ -64,6 +64,10 @@ docker run -p 8765:8765 -e SHUTTLE_MCP_TOKEN=... IMAGE shuttle mcp --http 0.0.0.
 claude mcp add --transport http shuttle http://localhost:8765/mcp --header "Authorization: Bearer ..."
 ```
 
+## Command line
+
+`shuttle mcp [--http ADDR]` serves MCP, `shuttle serve [ENDPOINT]` runs the daemon, and `shuttle stop` and `shuttle resume` stop and resume it. `shuttle desk VERB [key=value ... | JSON]` makes one desk call ([docs/wire.md](docs/wire.md)), where a value is parsed as JSON when it can be; an image in the answer goes to a temporary file whose path follows `image:`.
+
 ## Tools
 
 | Tool | What it does |
@@ -71,7 +75,7 @@ claude mcp add --transport http shuttle http://localhost:8765/mcp --header "Auth
 | `gui_plan` | Runs a GUI plan in one call: each step (`app`, `menu`, `click`, `check`, `set`, `type`, `key`, `wait`, `expect`, `verify`, `close`) resolves on the accessibility tree, is checked, and the plan stops at the first surprise; a passing plan can be saved as a flow and replayed |
 | `script_run` | Runs one JavaScript or TypeScript module on the bundled Node runtime with the desk API |
 | `desk` | One desk call: windows, unanswered, wait, snapshot, find, read, press, act, at, key, type, click, scroll, drag, still, focus, close, launch, shot, screen, web |
-| `screenshot` | A PNG of the screen or a rectangle |
+| `screenshot` | A PNG of the screen, a rectangle or one window |
 | `status` | Name, version, OS and architecture |
 | `record_start`, `record_note`, `record_stop` | macOS: record what the user does, with notes, and answer a draft `gui_plan` that replays it with other values |
 
@@ -82,7 +86,7 @@ shuttle drives your real machine. On macOS and Windows it has `shuttle stop`, a 
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md): processes and components
-- [docs/config.md](docs/config.md): the model configuration (bring your own key) and the safety settings
+- [docs/config.md](docs/config.md): models and keys, safety, desk input, saved flows, the daemon endpoint and Android
 - [docs/safety.md](docs/safety.md): kill switch, indicator, confirm mode, allowlist, input per OS
 - [docs/platforms.md](docs/platforms.md): what exists per OS and the permissions each needs
 - [docs/install.md](docs/install.md): installers, verification, manual install, uninstall
