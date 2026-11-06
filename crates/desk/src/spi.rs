@@ -119,7 +119,7 @@ impl Access for Spi {
 
     fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String> {
         let obj = Obj::parse(id)?;
-        let n = self.rt.block_on(self.atspi.node(&obj, extras, chars))?;
+        let n = self.rt.block_on(self.atspi.node(obj, extras, chars))?;
         Ok(node(n))
     }
 

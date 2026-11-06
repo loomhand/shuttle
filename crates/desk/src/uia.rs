@@ -131,9 +131,7 @@ impl Uia {
         if self.ids.len() >= MAX_IDS {
             self.ids.clear();
         }
-        if !self.ids.contains_key(&id) {
-            self.ids.insert(id.clone(), el.clone());
-        }
+        self.ids.entry(id.clone()).or_insert_with(|| el.clone());
         Ok(id)
     }
 

@@ -16,7 +16,7 @@ use x11rb::protocol::xproto::{
 use x11rb::protocol::{ErrorKind, Event};
 use x11rb::rust_connection::RustConnection;
 
-use crate::desk::lock;
+use crate::lock;
 use crate::model::Modal;
 use crate::screen::BLOCK;
 pub use crate::screen::{Placement, block_hashes, clip, visible};
@@ -272,7 +272,6 @@ impl Grabber {
         self.shell().windows.clone()
     }
 
-    /// The root window's width and height.
     pub fn size(&self) -> (usize, usize) {
         (usize::from(self.width), usize::from(self.height))
     }
@@ -950,9 +949,14 @@ fn resized(event: &Event, root: Window, size: (u16, u16)) -> bool {
 }
 
 fn bgrx_rgb(px: &[u8]) -> Vec<u8> {
-    let mut rgb = Vec::with_capacity(px.len() / 4 * 3);
-    for p in px.as_chunks::<4>().0 {
-        rgb.extend_from_slice(&[p[2], p[1], p[0]]);
+    let mut rgb = vec![0; px.len() / 4 * 3];
+    for (d, s) in rgb
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .zip(px.as_chunks::<4>().0)
+    {
+        *d = [s[2], s[1], s[0]];
     }
     rgb
 }

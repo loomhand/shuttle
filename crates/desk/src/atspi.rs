@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use zbus::Connection;
 use zbus::zvariant::{DynamicType, OwnedObjectPath, OwnedValue};
 
-use crate::desk::lock;
+use crate::lock;
 use crate::model::{
     Extras, MAX_DEPTH, MAX_NODES, VALUE_CHARS, format_number, hung, is_active, is_field,
 };
@@ -585,33 +585,33 @@ impl Atspi {
     }
 
     /// The node's live role, name and states, with the reads `extras` asks for; a value has at most `chars` characters.
-    pub async fn node(&self, obj: &Obj, extras: Extras, chars: usize) -> Result<Node, String> {
-        let r = self.raw(obj).await?;
+    pub async fn node(&self, obj: Obj, extras: Extras, chars: usize) -> Result<Node, String> {
+        let r = self.raw(&obj).await?;
         let (value, bounds, keys) = tokio::join!(
             async {
                 if extras.values {
-                    self.value(obj, r.role, r.ifaces, chars).await
+                    self.value(&obj, r.role, r.ifaces, chars).await
                 } else {
                     None
                 }
             },
             async {
                 if extras.bounds && r.ifaces & IF_COMPONENT != 0 {
-                    self.extents(obj).await.ok()
+                    self.extents(&obj).await.ok()
                 } else {
                     None
                 }
             },
             async {
                 if extras.keys && r.ifaces & IF_ACTION != 0 {
-                    self.key_binding(obj).await.ok()
+                    self.key_binding(&obj).await.ok()
                 } else {
                     None
                 }
             }
         );
         Ok(Node {
-            obj: Rc::new(obj.clone()),
+            obj: Rc::new(obj),
             role: r.role,
             name: r.name.trim_end().to_owned(),
             description: r.description,
@@ -673,7 +673,6 @@ impl Atspi {
         self.call(obj, ACTION, "DoAction", &(0i32,)).await
     }
 
-    /// Gives the object the keyboard focus.
     pub async fn grab_focus(&self, obj: &Obj) -> Result<bool, String> {
         self.call(obj, COMPONENT, "GrabFocus", &()).await
     }
@@ -817,10 +816,9 @@ impl Atspi {
                     .ok()?;
                 let by = labelled_by(set)?;
                 match all.iter().find(|m| *m.obj == by) {
-                    Some(m) => Some(m.name.clone()),
-                    None => self.name(&by).await.ok(),
+                    Some(m) => Some(m.name.trim().to_owned()),
+                    None => self.name(&by).await.ok().map(|s| s.trim().to_owned()),
                 }
-                .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty())
             };
             tokio::join!(value, bounds, keys, label)

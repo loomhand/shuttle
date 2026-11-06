@@ -22,7 +22,7 @@ pub fn type_mapped(text: &str, stop: &AtomicBool) -> Result<bool, String> {
     let (min, max) = (setup.min_keycode, setup.max_keycode);
     let _ = conn.prefetch_extension_information(xtest::X11_EXTENSION_NAME);
     let map = conn.get_keyboard_mapping(min, max - min + 1);
-    if !plain(&conn).unwrap_or(false) {
+    if !plain(&conn) {
         return Ok(false);
     }
     let Some(map) = map.ok().and_then(|c| c.reply().ok()) else {
@@ -92,18 +92,17 @@ pub fn type_mapped(text: &str, stop: &AtomicBool) -> Result<bool, String> {
 }
 
 /// Whether the core keyboard is on its first group with no lock modifier, so a keycode types its map's first or shifted keysym.
-fn plain(conn: &RustConnection) -> Result<bool, String> {
-    let ext = conn
-        .xkb_use_extension(1, 0)
-        .map_err(|e| format!("XKB: {e}"))?;
-    let state = conn
-        .xkb_get_state(ID::USE_CORE_KBD.into())
-        .map_err(|e| format!("XKB: {e}"))?;
-    if !ext.reply().map_err(|e| format!("XKB: {e}"))?.supported {
-        return Ok(false);
-    }
-    let state = state.reply().map_err(|e| format!("XKB: {e}"))?;
-    Ok(u8::from(state.group) == 0 && !state.locked_mods.intersects(ModMask::LOCK | ModMask::SHIFT))
+fn plain(conn: &RustConnection) -> bool {
+    let (Ok(ext), Ok(state)) = (
+        conn.xkb_use_extension(1, 0),
+        conn.xkb_get_state(ID::USE_CORE_KBD.into()),
+    ) else {
+        return false;
+    };
+    ext.reply().is_ok_and(|e| e.supported)
+        && state.reply().is_ok_and(|s| {
+            u8::from(s.group) == 0 && !s.locked_mods.intersects(ModMask::LOCK | ModMask::SHIFT)
+        })
 }
 
 /// The keysym of a printable ASCII character or a tab, whose Latin-1 keysyms equal their code points.

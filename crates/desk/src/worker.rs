@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use tokio::sync::oneshot;
 
-use crate::desk::lock;
+use crate::lock;
 
 type Job<B> = Box<dyn FnOnce(Result<&mut B, &str>) + Send>;
 

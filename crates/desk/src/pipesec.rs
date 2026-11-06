@@ -2,7 +2,7 @@
 
 use std::ffi::c_void;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Mutex, OnceLock};
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
 use windows::Win32::Security::Authorization::{
@@ -19,6 +19,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::core::{HSTRING, PWSTR};
 
+use crate::lock;
 use crate::server::pipe_sddl;
 
 static SERVER: Mutex<Option<(u32, String, OwnedHandle)>> = Mutex::new(None);
@@ -107,7 +108,7 @@ pub fn check_server(pipe: HANDLE, owner: Option<&str>) -> Result<(), String> {
     // SAFETY: `pipe` is a live client handle of a connected pipe; `pid` receives the server's id.
     unsafe { GetNamedPipeServerProcessId(pipe, &raw mut pid) }
         .map_err(|e| format!("read the pipe's server process: {e}"))?;
-    let mut last = SERVER.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut last = lock(&SERVER);
     let server = match last.take() {
         Some(known) if known.0 == pid => known,
         _ => server_of(pid)?,

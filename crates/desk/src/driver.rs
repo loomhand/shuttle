@@ -1,5 +1,6 @@
 //! cua-driver client: one line of JSON each way over its daemon socket, a named pipe on Windows.
 
+use std::fmt::Write as _;
 use std::io::ErrorKind;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -10,7 +11,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use crate::desk::lock;
+use crate::lock;
 use crate::server::Conn;
 
 pub const WINDOW_SESSION: &str = "desk-window";
@@ -19,13 +20,7 @@ pub(crate) const CLICK_SPACING: Duration = Duration::from_millis(500);
 pub(crate) const CONNECT_RETRY: Duration = Duration::from_millis(250);
 pub(crate) const ENDED: &str = "session has ended";
 pub(crate) const ACTUAL_FRONT: &str = "; actual foreground window ";
-
-const DEFAULT_PIPE: &str = r"\\.\pipe\cua-driver";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-const CONNECT_WAIT: Duration = Duration::from_secs(10);
-const SESSION: &str = "desk";
-const CLICK_DISTANCE: f64 = 16.0;
-const INPUT_TOOLS: [&str; 9] = [
+pub(crate) const INPUT_TOOLS: [&str; 9] = [
     "click",
     "double_click",
     "right_click",
@@ -36,6 +31,12 @@ const INPUT_TOOLS: [&str; 9] = [
     "press_key",
     "hotkey",
 ];
+
+const DEFAULT_PIPE: &str = r"\\.\pipe\cua-driver";
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_WAIT: Duration = Duration::from_secs(10);
+const SESSION: &str = "desk";
+const CLICK_DISTANCE: f64 = 16.0;
 const USER_IDLE: Duration = Duration::from_secs(1);
 const OWN_INPUT_LAG: Duration = Duration::from_millis(600);
 #[cfg(all(target_os = "macos", not(test)))]
@@ -105,6 +106,17 @@ impl Driver {
     }
 
     pub(crate) async fn send(&self, tool: &str, args: &Value) -> Result<Value, String> {
+        let reply = self.line(tool, args, REQUEST_TIMEOUT).await?;
+        result(tool, &reply)
+    }
+
+    /// The raw reply line to one call within `limit`, empty when the driver closed without one.
+    pub(crate) async fn line(
+        &self,
+        tool: &str,
+        args: &Value,
+        limit: Duration,
+    ) -> Result<String, String> {
         let request = Request {
             method: "call",
             name: tool,
@@ -113,10 +125,9 @@ impl Driver {
         let mut line =
             serde_json::to_vec(&request).map_err(|e| format!("encode cua-driver {tool}: {e}"))?;
         line.push(b'\n');
-        let reply = tokio::time::timeout(REQUEST_TIMEOUT, self.exchange(line))
+        tokio::time::timeout(limit, self.exchange(line))
             .await
-            .map_err(|_| format!("cua-driver {tool} timed out"))??;
-        result(tool, &reply)
+            .map_err(|_| format!("cua-driver {tool} timed out"))?
     }
 
     /// Connects to the daemon, waiting out a restart: the one each desktop session start triggers, or the supervisor's after the driver died.
@@ -247,10 +258,10 @@ impl Input for std::sync::Arc<Driver> {
 }
 
 #[derive(Serialize)]
-pub(crate) struct Request<'a> {
-    pub(crate) method: &'static str,
-    pub(crate) name: &'a str,
-    pub(crate) args: &'a Value,
+struct Request<'a> {
+    method: &'static str,
+    name: &'a str,
+    args: &'a Value,
 }
 
 /// `req` addressed to the screen, not to a window.
@@ -308,7 +319,7 @@ fn result(tool: &str, reply: &str) -> Result<Value, String> {
             None => format!("{tool}: {}", text_of(&out)),
         };
         if let Some(id) = out["structuredContent"]["actual_foreground_window_id"].as_u64() {
-            e.push_str(&format!("{ACTUAL_FRONT}{id}"));
+            let _ = write!(e, "{ACTUAL_FRONT}{id}");
         }
         return Err(e);
     }
