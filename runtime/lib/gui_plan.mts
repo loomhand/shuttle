@@ -1114,7 +1114,6 @@ async function cropState(n: Node, unsent = true) {
 }
 
 async function run(s: Step, rec: Rec, kept?: Kept) {
-  if (s.app && s.url) { await openPage(s.app, s.url, rec); return }
   if (s.app) {
     const ws = await listNow(); const before = new Set(ws.map((w) => w.id)); const pids = new Set(ws.map((w) => w.pid))
     let launched = false; let background = false
@@ -1131,6 +1130,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const owned = mine(ws); let w = (BG ? owned.find((x) => !!x.title.trim()) : undefined) ?? owned[0]
     const hung = w ? (w.stale ? w : null) : await desk.unanswered().catch(() => null)
     if (hung && (titled(hung) || named(hung) || hung === w)) throw new Surprise(unresponsive(s.app, hung), { window: hung.title, windows: titles(ws) })
+    if (s.url) { await openPage(s.app, s.url, rec); return }
     let listed: Awaited<ReturnType<typeof desk.focus>> | null = null
     if (!w && word && !BG) for (const pid of running(name)) if ((listed = await desk.focus(s.app, pid).catch(() => null))) break
     if (listed) { known.add(listed.title); rec.window = lastSeen = listed.title; return }

@@ -222,3 +222,18 @@ test('an app step escalates instead of launching when the front window of the ap
   assert.match(r.escalate?.reason ?? '', /is not answering accessibility: "sales\.ods — LibreOffice Calc" \(pid 6204\)/)
   assert.ok(!calls.includes('desk_launch'), calls.join(' '))
 })
+
+test('an app step with a url escalates on a stale window of the app instead of launching it', async (t) => {
+  const chrome = { id: '1.4/2', title: 'Docs - Google Chrome', role: 'frame', pid: 812, active: true, app: 'Google Chrome', stale: true }
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify([chrome])
+    if (tool === 'desk_launch') return JSON.stringify({ ok: true, launched: 'Google Chrome' })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'Google Chrome', url: 'https://example.com/' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /is not answering accessibility: "Docs - Google Chrome" \(pid 812\)/)
+  assert.ok(!calls.includes('desk_launch'), calls.join(' '))
+})
