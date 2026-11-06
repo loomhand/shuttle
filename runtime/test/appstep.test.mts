@@ -191,3 +191,34 @@ test('an app step after a launch takes a new window of the launched app, never a
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(r.window, 'Inbox')
 })
+
+test('an app step escalates at once on a listed window whose app stopped answering, and never launches another instance', async (t) => {
+  const calc = { id: '1.62/3', title: 'sales.ods — LibreOffice Calc', role: 'window', pid: 7076, active: true, app: 'soffice.bin', stale: true }
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify([calc])
+    if (tool === 'desk_launch') return JSON.stringify({ ok: true, launched: 'libreoffice-calc' })
+    return { text: 'window list is stale: "sales.ods — LibreOffice Calc" did not answer in time', error: true }
+  })
+  const r = await main({ steps: [{ app: 'libreoffice calc' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /is not answering accessibility: "sales\.ods — LibreOffice Calc" \(pid 7076\)/)
+  assert.deepEqual(r.escalate?.windows, [calc.title])
+  assert.ok(!calls.includes('desk_launch'), calls.join(' '))
+})
+
+test('an app step escalates instead of launching when the front window of the app answers no window list', async (t) => {
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify([{ id: '1.7/1', title: 'Desktop', role: 'window', pid: 781, active: false, app: 'xfdesktop', shell: true }])
+    if (tool === 'desk_unanswered') return JSON.stringify({ id: '', title: 'sales.ods — LibreOffice Calc', role: 'window', pid: 6204, active: false, app: 'soffice.bin' })
+    if (tool === 'desk_launch') return JSON.stringify({ ok: true, launched: 'libreoffice-calc' })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'LibreOffice Calc' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /is not answering accessibility: "sales\.ods — LibreOffice Calc" \(pid 6204\)/)
+  assert.ok(!calls.includes('desk_launch'), calls.join(' '))
+})

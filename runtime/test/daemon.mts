@@ -23,7 +23,7 @@ export async function daemon(t: { after(fn: () => void): void }, answer: (c: Cal
       buf = Buffer.concat([buf, d])
       if (buf.length < 4 || buf.length < 4 + buf.readUInt32BE(0)) return
       const c = JSON.parse(buf.subarray(4).toString()) as Call
-      const r = c.tool === 'desk_wait' ? await wait(answer, c.args) : answer(c)
+      const r = c.tool === 'desk_wait' ? await wait(answer, c.args) : c.tool === 'desk_unanswered' ? unanswered(answer(c)) : answer(c)
       const body = Buffer.from(JSON.stringify(typeof r === 'string' ? { text: r, is_error: false } : { text: r.text, is_error: r.error ?? false, image_b64: r.image }))
       const head = Buffer.alloc(4)
       head.writeUInt32BE(body.length)
@@ -38,6 +38,10 @@ export async function daemon(t: { after(fn: () => void): void }, answer: (c: Cal
 
 export function gray(w: number, h: number, tone = 128): Buffer {
   return png(w, h, 6, 4, Buffer.alloc(w * h * 4, tone))
+}
+
+function unanswered(r: Reply): Reply {
+  return r === '{"ok":true}' ? 'null' : r
 }
 
 async function wait(answer: (c: Call) => Reply, args: Record<string, unknown>): Promise<Reply> {

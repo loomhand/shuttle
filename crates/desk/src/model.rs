@@ -74,7 +74,7 @@ pub struct Frame {
     /// The window's rectangle in desk coordinates, where the backend reads it (macOS).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bounds: Option<[i32; 4]>,
-    #[serde(skip)]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub stale: bool,
     /// A Linux top-level object that is no frame, dialog or alert, which no call picks.
     #[serde(skip)]
