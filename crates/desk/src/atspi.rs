@@ -34,6 +34,10 @@ const APPLICATION: &str = "org.a11y.atspi.Application";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 const DBUS: &str = "org.freedesktop.DBus";
 const DBUS_PATH: &str = "/org/freedesktop/DBus";
+const GONE: [&str; 2] = [
+    "org.freedesktop.DBus.Error.ServiceUnknown",
+    "org.freedesktop.DBus.Error.NameHasNoOwner",
+];
 
 const MATCH_ALL: i32 = 1;
 const SORT_CANONICAL: u32 = 1;
@@ -948,7 +952,7 @@ impl Atspi {
         );
         match tokio::time::timeout(CALL_TIMEOUT, call).await {
             Ok(Ok(reply)) => Ok(reply),
-            Ok(Err(e)) => Err(format!("{iface}.{method} on {}: {e}", obj.id())),
+            Ok(Err(e)) => Err(failed(obj, iface, method, &e)),
             Err(_) => {
                 mark_hung(&obj.bus);
                 Err(timed_out(&obj.bus, method))
@@ -1435,6 +1439,16 @@ fn no_screen_coords(obj: &Obj) -> String {
     )
 }
 
+fn failed(obj: &Obj, iface: &str, method: &str, e: &zbus::Error) -> String {
+    match e {
+        zbus::Error::MethodError(name, ..) if GONE.contains(&name.as_str()) => format!(
+            "{iface}.{method} on {}: its app exited or crashed; list the windows again",
+            obj.id()
+        ),
+        _ => format!("{iface}.{method} on {}: {e}", obj.id()),
+    }
+}
+
 fn not_responding(bus: &str) -> String {
     format!("AT-SPI peer {bus} is not responding")
 }
@@ -1498,6 +1512,36 @@ mod tests {
             .collect();
         assert_eq!(bars, ["1.73/1823"]);
         assert_eq!(out.len(), 233);
+    }
+
+    #[test]
+    fn a_call_on_an_app_that_left_the_bus_says_the_app_exited_or_crashed() {
+        let obj = Obj::parse("1.62/947").unwrap();
+        let call = zbus::Message::method_call(ROOT, "GetRole")
+            .unwrap()
+            .build(&())
+            .unwrap();
+        let reply = |name: &str| {
+            zbus::Error::from(
+                zbus::Message::error(&call.header(), name)
+                    .unwrap()
+                    .build(&("The name :1.62 was not provided by any .service files",))
+                    .unwrap(),
+            )
+        };
+        for name in GONE {
+            assert_eq!(
+                failed(&obj, ACCESSIBLE, "GetRole", &reply(name)),
+                "org.a11y.atspi.Accessible.GetRole on 1.62/947: its app exited or crashed; list the windows again"
+            );
+        }
+        let other = failed(
+            &obj,
+            ACCESSIBLE,
+            "GetRole",
+            &reply("org.freedesktop.DBus.Error.UnknownMethod"),
+        );
+        assert!(other.contains("UnknownMethod"), "{other}");
     }
 
     #[test]
