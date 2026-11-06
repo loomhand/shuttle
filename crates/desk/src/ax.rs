@@ -144,11 +144,16 @@ impl Ax {
             .collect()
     }
 
-    fn app_frames(&mut self, apps: impl IntoIterator<Item = (i32, Vec<[f64; 4]>)>) -> Vec<Frame> {
+    fn app_frames(
+        &mut self,
+        apps: impl IntoIterator<Item = (i32, Vec<[f64; 4]>)>,
+        front: Option<u32>,
+    ) -> Vec<Frame> {
         let mut frames = Vec::new();
         let scale = display_scale();
         for (p, bounds) in apps {
             if self.hung.contains_key(&p) {
+                frames.extend(kept(&self.last, p));
                 continue;
             }
             let app = application(p);
@@ -162,15 +167,9 @@ impl Ax {
                     .map_or(LAUNCH_GRACE, Instant::elapsed);
                 if hung(slow, listed) {
                     self.slow.remove(&p);
-                    self.last.remove(&p);
                     self.hung.insert(p, Instant::now());
-                } else {
-                    let kept = self.last.get(&p).into_iter().flatten();
-                    frames.extend(kept.map(|f| Frame {
-                        stale: true,
-                        ..f.clone()
-                    }));
                 }
+                frames.extend(kept(&self.last, p));
                 continue;
             }
             self.slow.remove(&p);
@@ -236,6 +235,7 @@ impl Ax {
             }
             self.last.insert(p, frames[from..].to_vec());
         }
+        stale_front(&mut frames, front);
         frames
     }
 
@@ -350,12 +350,15 @@ impl Ax {
 impl Access for Ax {
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
         let apps = self.listed();
-        Ok(self.app_frames(apps))
+        let front = front_of(&apps);
+        Ok(self.app_frames(apps, front))
     }
 
     fn frames_of(&mut self, pid: u32) -> Result<Vec<Frame>, String> {
-        let apps = self.listed().into_iter().filter(|(p, _)| *p as u32 == pid);
-        Ok(self.app_frames(apps))
+        let apps = self.listed();
+        let front = front_of(&apps);
+        let apps = apps.into_iter().filter(|(p, _)| *p as u32 == pid);
+        Ok(self.app_frames(apps, front))
     }
 
     fn off_space(&mut self) -> Vec<Frame> {
@@ -1264,6 +1267,28 @@ fn shown_windows() -> Vec<(i32, Vec<[f64; 4]>)> {
     apps
 }
 
+fn front_of(apps: &[(i32, Vec<[f64; 4]>)]) -> Option<u32> {
+    apps.first().and_then(|(p, _)| u32::try_from(*p).ok())
+}
+
+fn kept(last: &HashMap<i32, Vec<Frame>>, p: i32) -> Vec<Frame> {
+    last.get(&p)
+        .into_iter()
+        .flatten()
+        .map(|f| Frame {
+            stale: true,
+            ..f.clone()
+        })
+        .collect()
+}
+
+fn stale_front(frames: &mut [Frame], front: Option<u32>) {
+    let answered = frames.iter().any(|f| f.active && !f.stale);
+    for f in frames.iter_mut().filter(|f| f.stale) {
+        f.active &= !answered && f.pid.is_some() && f.pid == front;
+    }
+}
+
 /// Whether AX window frame `frame` is one of `bounds`, the on-screen windows of its process; an unread frame counts as shown.
 fn shows(bounds: &[[f64; 4]], frame: Option<[f64; 4]>) -> bool {
     frame.is_none_or(|f| {
@@ -1502,6 +1527,55 @@ mod tests {
     fn the_space_calls_resolve_at_run_time_and_a_missing_symbol_is_none() {
         assert!(Cgs::get().is_some());
         assert!(symbol(c"CGSNoSuchCallForShuttle").is_none());
+    }
+
+    #[test]
+    fn a_hung_app_keeps_its_last_frames_stale() {
+        let doc = Frame {
+            title: "Notes.rtf".into(),
+            pid: Some(7),
+            active: true,
+            ..Frame::default()
+        };
+        let last = HashMap::from([(7, vec![doc])]);
+        let listed = kept(&last, 7);
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].stale && listed[0].active && listed[0].title == "Notes.rtf");
+        assert!(kept(&last, 8).is_empty());
+    }
+
+    #[test]
+    fn a_stale_frame_stays_active_only_while_its_app_is_in_front_and_no_answering_app_is() {
+        let frames = || {
+            vec![
+                Frame {
+                    title: "Notes.rtf".into(),
+                    pid: Some(7),
+                    active: true,
+                    stale: true,
+                    ..Frame::default()
+                },
+                Frame {
+                    title: "Terminal".into(),
+                    pid: Some(9),
+                    ..Frame::default()
+                },
+            ]
+        };
+        let actives = |front: Option<u32>, terminal: bool| {
+            let mut f = frames();
+            f[1].active = terminal;
+            stale_front(&mut f, front);
+            f.iter()
+                .filter(|x| x.active)
+                .map(|x| x.title.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(actives(Some(7), false), ["Notes.rtf"]);
+        assert!(actives(Some(42), false).is_empty());
+        assert_eq!(actives(Some(9), true), ["Terminal"]);
+        assert_eq!(actives(Some(7), true), ["Terminal"]);
+        assert!(actives(None, false).is_empty());
     }
 
     fn listed(pid: u32, layer: i64, alpha: f64, bounds: [f64; 4]) -> Listed {
