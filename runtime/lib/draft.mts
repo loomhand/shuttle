@@ -37,7 +37,7 @@ export async function main(p: Params): Promise<Draft> {
   let clicked: { e: Event; step: Step } | undefined
   // a recording that read no focus checks none on replay
   const focus = (f: Field | null | undefined) => f === null ? { focus: 'unverified' } : f ? onPage(f, f) : {}
-  const onPage = (f: Partial<Field>, to: Partial<Field>) => { const { url, ...field } = to; return { focus: field, ...(f.url ? { web: { url: templ(f.url) } } : {}) } }
+  const onPage = (f: Partial<Field>, to: Partial<Field>) => { const { url: _url, window: _window, ...field } = to; return { focus: field, ...(f.url ? { web: { url: templ(f.url) } } : {}) } }
   const password = (f?: Field | null) => {
     const name = `password${secrets ? `_${secrets + 1}` : ''}`; secrets += 1
     params[name] = { secret: true }
@@ -109,7 +109,7 @@ export async function main(p: Params): Promise<Draft> {
       }
       const again = (e.count ?? 1) > 1 && clicked && draft.steps.at(-1) === clicked.step && Math.hypot((e.x ?? 0) - (clicked.e.x ?? 0), (e.y ?? 0) - (clicked.e.y ?? 0)) <= 4
       if (again) draft.steps.pop()
-      clicked = { e, step: await click(e, templ, await captions.get(e)) }
+      clicked = { e, step: click(e, templ, await captions.get(e)) }
       draft.steps.push(clicked.step)
       filled = !!e.secret
       if (filled) password()
@@ -141,7 +141,7 @@ function own(e: Event) {
   return !e.root && e.element?.name ? e.element.name : ''
 }
 
-async function click(e: Event, templ: (s: string) => string, captioned = ''): Promise<Step> {
+function click(e: Event, templ: (s: string) => string, captioned = ''): Step {
   const el = e.element ?? {}
   const named = own(e)
   const said = named || captioned || `the ${el.role || 'point'} at ${Math.round(e.x ?? 0)}, ${Math.round(e.y ?? 0)}`

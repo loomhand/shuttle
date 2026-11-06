@@ -105,9 +105,12 @@ jobs:
           shellcheck packaging/package.sh packaging/fetch.sh
 
       - name: Node from packaging/pins
-        run: echo "$(packaging/fetch.sh ${{ matrix.platform }} node "$RUNNER_TEMP")/${{ matrix.bin }}" >> "$GITHUB_PATH"
+        run: |
+          dir=$(packaging/fetch.sh ${{ matrix.platform }} node "$RUNNER_TEMP")
+          echo "$dir/${{ matrix.bin }}" >> "$GITHUB_PATH"
 
       - name: Typecheck
+        if: matrix.runner == 'ubuntu-24.04'
         working-directory: runtime
         run: npm ci --no-audit --no-fund && npm run typecheck
 

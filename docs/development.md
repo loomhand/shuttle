@@ -20,7 +20,7 @@ The runtime is TypeScript; the archives carry the `.mts` sources and, next to th
 node --test runtime/test/*.test.mts
 ```
 
-CI runs the Rust gates on Linux (x64), macOS (arm64, x64) and Windows (x64), the runtime typecheck and tests on Linux (x64), macOS (arm64) and Windows (x64), and shellcheck on Linux; on Windows it also builds the release binary and fails when it imports the Visual C++ runtime (`packaging/crt.ps1`); Linux arm64 is covered by the release build and install jobs on tags.
+CI runs the Rust gates on Linux (x64), macOS (arm64, x64) and Windows (x64), the runtime tests on Linux (x64), macOS (arm64) and Windows (x64) and its typecheck on Linux, and shellcheck on Linux; on Windows it also builds the release binary and fails when it imports the Visual C++ runtime (`packaging/crt.ps1`); Linux arm64 is covered by the release build and install jobs on tags.
 
 ## Release
 
