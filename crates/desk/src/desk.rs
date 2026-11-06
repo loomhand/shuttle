@@ -952,10 +952,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     }
                     return Ok(());
                 }
-                if self.os == Os::Mac {
+                if self.os == Os::Mac || to.is_none() {
                     if !line.is_empty() {
                         let mut req = json!({"text": line});
-                        if !self.bg() && line.chars().all(|c| c.len_utf16() == 1) {
+                        if self.os == Os::Mac
+                            && !self.bg()
+                            && line.chars().all(|c| c.len_utf16() == 1)
+                        {
                             req["delay_ms"] = MAC_TYPE_DELAY_MS.into();
                         }
                         self.send("type_text", req, to, &mut note).await?;
@@ -4124,8 +4127,8 @@ pub(crate) mod tests {
                     json!({"pid": 8, "window_id": 2})
                 ),
                 (
-                    "press_key".to_owned(),
-                    json!({"key": "a", "scope": "desktop"})
+                    "type_text".to_owned(),
+                    json!({"text": "a", "scope": "desktop"})
                 ),
                 (
                     "click".to_owned(),
@@ -4551,6 +4554,30 @@ pub(crate) mod tests {
                 .unwrap_err();
             assert_eq!(err, "every app was read", "{tool}");
         }
+    }
+
+    #[tokio::test]
+    async fn windows_foreground_typing_sends_each_line_as_one_text() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Windows);
+        desk.run("desk_type", json!({"text": "Ab!\nC é"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            order(&calls),
+            [
+                "type_text desktop",
+                "press_key desktop",
+                "type_text desktop"
+            ]
+        );
+        assert_eq!(
+            sent(&calls, "type_text"),
+            [
+                json!({"text": "Ab!", "scope": "desktop"}),
+                json!({"text": "C é", "scope": "desktop"})
+            ]
+        );
     }
 
     #[tokio::test]
@@ -6418,11 +6445,13 @@ pub(crate) mod tests {
 
     impl Input for Slow {
         async fn call(&self, _: &str, args: Value) -> Result<Value, String> {
-            self.0
-                .lock()
-                .unwrap()
-                .push(args["key"].as_str().unwrap_or_default().to_owned());
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            let typed = args["key"]
+                .as_str()
+                .or(args["text"].as_str())
+                .unwrap_or_default();
+            let n = typed.chars().count().max(1) as u64;
+            self.0.lock().unwrap().push(typed.to_owned());
+            tokio::time::sleep(Duration::from_millis(5 * n)).await;
             Ok(json!({}))
         }
     }
