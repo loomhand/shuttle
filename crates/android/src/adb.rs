@@ -9,6 +9,7 @@ use std::time::Duration;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use desk_core::args::parse;
+use desk_core::shot::png_size;
 use desk_core::wire::Output;
 use serde::Deserialize;
 use serde_json::Value;
@@ -121,7 +122,7 @@ impl Android {
     pub async fn look(&self) -> Result<Output, String> {
         let png = self.screenshot().await?;
         Ok(Output {
-            text: desk::png_size(&png)
+            text: png_size(&png)
                 .map_or_else(|| "screen".to_owned(), |(w, h)| format!("{w}x{h} screen")),
             image_b64: Some(B64.encode(png)),
             ..Output::default()
@@ -523,16 +524,13 @@ impl Android {
         match answer.trim() {
             "true" => Injection::Done,
             "false" => Injection::Unconfirmed("the injection was not confirmed".to_owned()),
-            other if other.starts_with("<error>") => Injection::Unconfirmed(
-                other
-                    .trim_start_matches("<error>")
-                    .trim_end_matches("</error>")
-                    .to_owned(),
-            ),
-            _ => {
-                self.server_input.store(false, Ordering::Relaxed);
-                Injection::NotSent
-            }
+            other => match server_error(other) {
+                Some(e) => Injection::Unconfirmed(e.to_owned()),
+                None => {
+                    self.server_input.store(false, Ordering::Relaxed);
+                    Injection::NotSent
+                }
+            },
         }
     }
 
@@ -596,10 +594,10 @@ impl Android {
             .await
             .map_err(|_| "UI server: timed out".to_owned())??;
         *slot = Some(server);
-        match answer.trim().strip_prefix("<error>") {
-            Some(e) => Err(format!("UI server: {}", e.trim_end_matches("</error>"))),
-            None => Ok(answer),
+        if let Some(e) = server_error(&answer) {
+            return Err(format!("UI server: {e}"));
         }
+        Ok(answer)
     }
 
     /// The server's PNG frame; a server that answers with an error stays up.
@@ -768,10 +766,7 @@ struct UiServer {
 impl UiServer {
     /// The answer to `shot`: `png N`, N bytes and the end line; the inner error is the server's answer, read to its end.
     async fn ask_png(&mut self) -> Result<Result<Vec<u8>, String>, String> {
-        self.stdin
-            .write_all(b"shot\n")
-            .await
-            .map_err(|e| format!("ask UI server: {e}"))?;
+        self.send("shot").await?;
         let mut head = String::new();
         self.stdout
             .read_line(&mut head)
@@ -794,8 +789,8 @@ impl UiServer {
                     return Err("UI server exited".to_owned());
                 }
             }
-            return Ok(Err(match head.trim().strip_prefix("<error>") {
-                Some(e) => format!("UI server: {}", e.trim_end_matches("</error>")),
+            return Ok(Err(match server_error(&head) {
+                Some(e) => format!("UI server: {e}"),
                 None => format!("UI server: unexpected answer to shot: {}", head.trim()),
             }));
         };
@@ -829,21 +824,20 @@ impl UiServer {
 
     async fn read_answer(&mut self) -> Result<String, String> {
         let mut answer = String::new();
-        let mut line = String::new();
         loop {
-            line.clear();
+            let start = answer.len();
             let n = self
                 .stdout
-                .read_line(&mut line)
+                .read_line(&mut answer)
                 .await
                 .map_err(|e| format!("read UI server: {e}"))?;
             if n == 0 {
                 return Err("UI server exited".to_owned());
             }
-            if line.trim_end() == UI_END {
+            if answer[start..].trim_end() == UI_END {
+                answer.truncate(start);
                 return Ok(answer);
             }
-            answer.push_str(&line);
         }
     }
 }
@@ -879,7 +873,7 @@ impl Control {
 
 struct Forward {
     port: String,
-    remove: Option<Command>,
+    remove: Command,
 }
 
 impl Forward {
@@ -890,18 +884,13 @@ impl Forward {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        Self {
-            port,
-            remove: Some(remove),
-        }
+        Self { port, remove }
     }
 }
 
 impl Drop for Forward {
     fn drop(&mut self) {
-        if let Some(mut remove) = self.remove.take() {
-            let _ = remove.spawn();
-        }
+        let _ = self.remove.spawn();
     }
 }
 
@@ -964,11 +953,18 @@ struct ActArgs {
 
 /// Whether `s` is an Android package name, such as `com.android.settings`, which a device shell takes as it is.
 pub(crate) fn is_package(s: &str) -> bool {
-    s.split('.').count() >= 2
+    s.contains('.')
         && s.split('.').all(|part| {
             part.starts_with(|c: char| c.is_ascii_alphabetic())
                 && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         })
+}
+
+fn server_error(answer: &str) -> Option<&str> {
+    answer
+        .trim()
+        .strip_prefix("<error>")
+        .map(|e| e.trim_end_matches("</error>"))
 }
 
 fn abort_cause(log: &str) -> Option<String> {
@@ -1120,7 +1116,11 @@ where
             return Ok(Some(true));
         }
         if !now.is_some_and(|f| f.same_text(&before)) {
-            return Ok(None);
+            return if delivered {
+                Ok(None)
+            } else {
+                Err(NOT_INJECTED.to_owned())
+            };
         }
         if start.elapsed() >= TYPE_DEADLINE {
             return if delivered {
@@ -1997,6 +1997,24 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_refused_paste_after_the_focus_moved_fails_as_not_injected() {
+        let reads = std::cell::Cell::new(0);
+        let err = type_with(
+            "abc",
+            None,
+            |_| {
+                reads.set(reads.get() + 1);
+                let text = if reads.get() > 2 { "other" } else { "" };
+                async move { Ok(Some(field(text))) }
+            },
+            || async { Ok(false) },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, NOT_INJECTED);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_paste_that_fails_is_not_pasted_again() {
         let pastes = std::cell::Cell::new(0);
         let err = type_with(
@@ -2369,7 +2387,7 @@ mod tests {
                 .unwrap(),
             _forward: Forward {
                 port: String::new(),
-                remove: None,
+                remove: Command::new("true"),
             },
         });
         (android, peer)

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds the UI server's dex jar to <out>: javac against the stubs of the Android classes it calls, then r8's D8; needs a JDK and curl.
+# Builds the UI server's dex jar to <out>: javac against the stubs of the Android classes it calls, then r8's D8; needs a JDK, curl and GNU coreutils.
 # usage: android/ui/build.sh <out.jar>
 set -euo pipefail
 OUT=${1:?usage: build.sh <out.jar>}

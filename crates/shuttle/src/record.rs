@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
+use desk_core::shot::png_size;
 use desk_core::wire::Call;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -571,8 +572,7 @@ async fn framed<H: Handler>(
         ))
         .await;
     let png = B64.decode(out.image_b64?).ok()?;
-    let width = u32::from_be_bytes(png.get(16..20)?.try_into().ok()?);
-    let height = u32::from_be_bytes(png.get(20..24)?.try_into().ok()?);
+    let (width, height) = png_size(&png)?;
     let factor = f64::from(width) / bounds[2].max(1.0);
     if (f64::from(height) / factor - bounds[3]).abs() > 2.0 {
         return None;

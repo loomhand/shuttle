@@ -6,10 +6,13 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
+pub use zeroize::Zeroizing;
 
-/// The largest frame either side reads.
-pub const MAX_FRAME: usize = 64 << 20;
+/// The text of a call that succeeds with nothing to report.
+pub const OK: &str = r#"{"ok":true}"#;
+
+const MAX_FRAME: usize = 64 << 20;
 
 /// A tool invocation.
 #[derive(Debug, Deserialize, Serialize)]
@@ -21,7 +24,7 @@ pub struct Call {
     pub args: Value,
 }
 
-/// A tool result; `image_b64` is a screenshot, `secrets` the (field, value) pairs a host must scrub from what it relays.
+/// A tool result; `image_b64` is a screenshot.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Output {
     pub text: String,
@@ -29,8 +32,6 @@ pub struct Output {
     pub is_error: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_b64: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub secrets: Vec<(String, String)>,
 }
 
 impl Output {
@@ -65,15 +66,17 @@ where
     T: Serialize,
 {
     let mut body = serde_json::to_vec(msg).map_err(|e| format!("encode frame: {e}"))?;
-    let len = u32::try_from(body.len()).map_err(|_| "frame too large".to_owned())?;
-    let written = async {
-        w.write_all(&len.to_be_bytes()).await?;
-        w.write_all(&body).await?;
-        w.flush().await
-    }
-    .await;
+    let written = write_body(w, &body).await;
     body.zeroize();
     written.map_err(|e| format!("write frame: {e}"))
+}
+
+/// Writes `body` as one frame: its big-endian u32 length, then the bytes.
+pub async fn write_body<W: AsyncWrite + Unpin>(w: &mut W, body: &[u8]) -> std::io::Result<()> {
+    let len = u32::try_from(body.len()).map_err(|_| std::io::Error::other("frame too large"))?;
+    w.write_all(&len.to_be_bytes()).await?;
+    w.write_all(body).await?;
+    w.flush().await
 }
 
 /// Reads one frame written by [`write_frame`].
@@ -157,6 +160,6 @@ mod tests {
             ("", Some(true))
         );
         let out: Output = serde_json::from_value(json!({"text": "x"})).unwrap();
-        assert!(!out.is_error && out.image_b64.is_none() && out.secrets.is_empty());
+        assert!(!out.is_error && out.image_b64.is_none());
     }
 }

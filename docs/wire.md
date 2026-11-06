@@ -18,7 +18,7 @@ One wire connects `shuttle mcp` to the daemon, the runtime (`desk.mts`) to the d
 - **MCP requests.** `shuttle mcp` on stdio reads its client while a request runs and answers requests in order, one at a time. A `notifications/cancelled` drops the request it names, running or queued: the request gets no reply, and a running one closes its connection to the daemon, which cancels the call as above. An MCP cancel of a [service plugin](#service-plugins)'s tool reaches the service on macOS and Linux as a half-close of its connection, and the service ends the call itself when it reads EOF; on Windows, where a pipe has no half-close, it closes both connections. Over HTTP ([README](https://github.com/loomhand/shuttle#over-http)) each connection runs on its own, each `POST` gets its own reply, and a cancel names a request of its own `Mcp-Session-Id`.
 - **Frame:** a big-endian u32 length, then that many bytes of JSON. A frame over 64 MiB is refused.
 - **Request:** `{"agent_id": string, "tool": string, "args": object}`; `agent_id` defaults to `""` and `args` to `null`.
-- **Response:** `{"text": string, "is_error": bool, "image_b64"?: string, "secrets"?: [[field, value]]}`. `text` holds the result, JSON for the desk verbs; `image_b64` is a PNG when the call took one; `secrets` carries (field, value) pairs that a host embedding the wire must scrub from what it relays; shuttle never sends it. A failure is `is_error: true` with the reason in `text`, never a closed connection.
+- **Response:** `{"text": string, "is_error": bool, "image_b64"?: string}`. `text` holds the result, JSON for the desk verbs; `image_b64` is a PNG when the call took one. A failure is `is_error: true` with the reason in `text`, never a closed connection.
 
 ## Desk calls
 

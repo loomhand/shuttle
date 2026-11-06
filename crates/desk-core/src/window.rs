@@ -6,7 +6,7 @@ pub const TITLE_TIERS: usize = 3;
 const TITLE_SEPARATORS: [&str; 2] = [" - ", " — "];
 
 /// A top-level window as the desk matches it.
-pub trait Window: Clone {
+pub trait Window {
     fn title(&self) -> &str;
     fn active(&self) -> bool;
     fn pid(&self) -> Option<u32>;
@@ -29,23 +29,17 @@ pub fn pick<W: Window>(
     pid: Option<u32>,
 ) -> Result<W, String> {
     windows.retain(|w| w.listed() && pid.is_none_or(|p| w.pid() == Some(p)));
-    let Some(want) = want else {
-        let focused: Vec<&W> = windows
-            .iter()
-            .filter(|w| w.focusable() && (pid.is_some() || w.active()))
-            .collect();
-        return best(&focused).ok_or_else(|| "no focused window".to_owned());
+    let i = match want {
+        None => best(&windows, |w| w.focusable() && (pid.is_some() || w.active()))
+            .ok_or_else(|| "no focused window".to_owned())?,
+        Some(want) => match (0..TITLE_TIERS)
+            .find_map(|tier| best(&windows, |w| title_matches(tier, w.title(), want)))
+        {
+            Some(i) => i,
+            None => app_window(&windows, want)?,
+        },
     };
-    for tier in 0..TITLE_TIERS {
-        let hits: Vec<&W> = windows
-            .iter()
-            .filter(|w| title_matches(tier, w.title(), want))
-            .collect();
-        if let Some(w) = best(&hits) {
-            return Ok(w);
-        }
-    }
-    app_window(&windows, want)
+    Ok(windows.swap_remove(i))
 }
 
 /// How many of `windows` [`pick`] weighs as equals for `want`: those at the first tier any matches, else those its app part names.
@@ -79,17 +73,23 @@ pub fn title_matches(tier: usize, title: &str, want: &str) -> bool {
 }
 
 /// The only, else the active, window titled with the app part of `want` (` - Thunar` of `inbox - Thunar`); else an error naming them.
-fn app_window<W: Window>(windows: &[W], want: &str) -> Result<W, String> {
-    let hits: Vec<&W> = windows.iter().filter(|w| of_app(w.title(), want)).collect();
-    let active: Vec<&W> = hits.iter().copied().filter(|w| w.active()).collect();
+fn app_window<W: Window>(windows: &[W], want: &str) -> Result<usize, String> {
+    let hits: Vec<usize> = (0..windows.len())
+        .filter(|&i| of_app(windows[i].title(), want))
+        .collect();
+    let active: Vec<usize> = hits
+        .iter()
+        .copied()
+        .filter(|&i| windows[i].active())
+        .collect();
     match (hits.as_slice(), active.as_slice()) {
-        ([one], _) | (_, [one]) => Ok(W::clone(one)),
+        ([one], _) | (_, [one]) => Ok(*one),
         ([], _) => {
             let titles: Vec<&str> = windows.iter().map(Window::title).collect();
             Err(format!("no window {want:?}; windows: {titles:?}"))
         }
         _ => {
-            let titles: Vec<&str> = hits.iter().map(|w| w.title()).collect();
+            let titles: Vec<&str> = hits.iter().map(|&i| windows[i].title()).collect();
             Err(format!(
                 "no window {want:?}; windows of its app: {titles:?}"
             ))
@@ -106,12 +106,15 @@ fn of_app(title: &str, want: &str) -> bool {
         .is_some_and(|i| title.trim_end().to_lowercase().ends_with(&lower[i..]))
 }
 
-fn best<W: Window>(candidates: &[&W]) -> Option<W> {
-    let newest = |keep: fn(&W) -> bool| candidates.iter().rev().find(|w| keep(w));
+fn best<W: Window>(windows: &[W], keep: impl Fn(&W) -> bool) -> Option<usize> {
+    let newest = |also: fn(&W) -> bool| {
+        (0..windows.len())
+            .rev()
+            .find(|&i| keep(&windows[i]) && also(&windows[i]))
+    };
     newest(W::active)
         .or_else(|| newest(W::shown))
-        .or_else(|| candidates.last())
-        .map(|w| W::clone(w))
+        .or_else(|| newest(|_| true))
 }
 
 #[cfg(test)]

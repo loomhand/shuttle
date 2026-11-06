@@ -4,6 +4,13 @@ pub const OFF_SCREEN: &str = "the rectangle is off the screen";
 
 const DEFLATE_LEVEL: u8 = 2;
 
+/// The width and height a PNG's header gives.
+pub fn png_size(png: &[u8]) -> Option<(u32, u32)> {
+    let size = |at: usize| Some(u32::from_be_bytes(png.get(at..at + 4)?.try_into().ok()?));
+    png.starts_with(b"\x89PNG\r\n\x1a\n").then_some(())?;
+    Some((size(16)?, size(20)?))
+}
+
 /// A crop of the screen rectangle `[x, y, w, h]` from a screenshot scaled by `factor`, as `(width, height, PNG)`.
 pub fn crop_png(
     png: &[u8],

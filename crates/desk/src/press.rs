@@ -1,13 +1,16 @@
 //! Press planning: whether a press selects, clicks a point or runs the element's action.
 
-use desk_core::press::{MENU_POLL, MENU_POLLS, SELECTED_ROLES};
+use std::time::Duration;
 
 use crate::keys::Os;
 use crate::model::{Access, Act, Extras, Node};
 
+pub(crate) const MENU_POLL: Duration = Duration::from_millis(30);
+pub(crate) const MENU_POLLS: u32 = 10;
 pub(crate) const BACKGROUND_NO_POINT: &str = "background input: the element shows no point to click in its window, and on Windows its UI Automation action would bring the window to the front";
 
 const PRESSABLE_ROLES: [&str; 4] = ["button", "checkbox", "switch", "link"];
+const SELECTED_ROLES: [&str; 5] = ["tab", "option", "radio", "listitem", "treeitem"];
 
 /// What a press comes to after the backend's part of it.
 #[derive(Debug, PartialEq)]

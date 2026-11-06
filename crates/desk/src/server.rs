@@ -3,9 +3,8 @@
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use desk_core::wire::{Call, Output, read_body, read_frame, tool_of, write_frame};
+use desk_core::wire::{Call, Output, Zeroizing, read_body, read_frame, tool_of, write_frame};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use zeroize::Zeroizing;
 
 #[cfg(target_os = "macos")]
 use crate::ax::Ax as Backend;

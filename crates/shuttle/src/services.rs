@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+use desk_core::wire::write_body;
 use shuttle_desk::server;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::Command;
@@ -196,12 +197,8 @@ where
     C: AsyncRead + AsyncWrite + Unpin,
 {
     let mut service = listening(socket).await?;
-    let len = u32::try_from(body.len()).map_err(|_| "frame too large".to_owned())?;
-    let sent = async {
-        service.write_all(&len.to_be_bytes()).await?;
-        service.write_all(&body).await
-    };
-    sent.await
+    write_body(&mut service, &body)
+        .await
         .map_err(|e| format!("write to the service at {socket}: {e}"))?;
     drop(body);
     splice(client, service).await;

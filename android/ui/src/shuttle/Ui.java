@@ -26,18 +26,7 @@ import java.io.PrintStream;
 import java.lang.reflect.Method;
 import java.util.List;
 
-/**
- * Serves the accessibility tree from a resident app_process, one answer per stdin line, each ended by a line
- * "<<end>>": "windows" lists the interactive windows as JSON; "focus" the node with input focus as JSON (or null):
- * editable, password, whether its window has focus, and its text's length, hash and last 32 code points; "focus live"
- * the same, refreshed from the app rather than the accessibility cache; "paste" presses the paste key and answers once
- * the focused window has handled its down event (true) or its injection failed (false), sending the up event either
- * way; "shot" the screen as a PNG frame, a line "png N" and then N bytes before the end line; "show ID PATH" asks the
- * element at child-index path PATH of window ID to scroll itself into view and answers whether the element took the
- * action; "tap X Y" and "key CODE" inject a touch and a key press, each as `adb shell input` does, and answer true when
- * both events were accepted, false when either was not (the press may still have happened), and unavailable when no
- * input could be injected at all; "dump" the active window and "dump ID" window ID as uiautomator-style nodes with their child-index path.
- */
+/** Answers the daemon's requests on stdin, one per line, each answer ended by a line "<<end>>". */
 public final class Ui {
     private static final int MAX_DEPTH = 64;
     private static final long IDLE_MS = 100;
@@ -203,9 +192,7 @@ public final class Ui {
         float x = Float.parseFloat(xy[0]);
         float y = Float.parseFloat(xy[1]);
         long now = SystemClock.uptimeMillis();
-        boolean down = inject(touch(now, MotionEvent.ACTION_DOWN, x, y, 1.0f), INJECT_WAIT_FOR_FINISH);
-        boolean up = inject(touch(now, MotionEvent.ACTION_UP, x, y, 0.0f), INJECT_WAIT_FOR_FINISH);
-        return String.valueOf(down && up);
+        return press(touch(now, MotionEvent.ACTION_DOWN, x, y, 1.0f), touch(now, MotionEvent.ACTION_UP, x, y, 0.0f));
     }
 
     private static MotionEvent touch(long now, int action, float x, float y, float pressure) {
@@ -219,9 +206,12 @@ public final class Ui {
             return "unavailable";
         }
         long now = SystemClock.uptimeMillis();
-        boolean down = inject(keyEvent(now, KeyEvent.ACTION_DOWN, code), INJECT_WAIT_FOR_FINISH);
-        boolean up = inject(keyEvent(now, KeyEvent.ACTION_UP, code), INJECT_WAIT_FOR_FINISH);
-        return String.valueOf(down && up);
+        return press(keyEvent(now, KeyEvent.ACTION_DOWN, code), keyEvent(now, KeyEvent.ACTION_UP, code));
+    }
+
+    private static String press(InputEvent down, InputEvent up) throws ReflectiveOperationException {
+        boolean pressed = inject(down, INJECT_WAIT_FOR_FINISH);
+        return String.valueOf(inject(up, INJECT_WAIT_FOR_FINISH) && pressed);
     }
 
     private static KeyEvent keyEvent(long now, int action, int code) {
@@ -255,13 +245,12 @@ public final class Ui {
     }
 
     private static AccessibilityNodeInfo root(UiAutomation ui, String id) {
-        AccessibilityNodeInfo root = null;
         for (AccessibilityWindowInfo w : ui.getWindows()) {
             if (String.valueOf(w.getId()).equals(id)) {
-                root = w.getRoot();
+                return w.getRoot();
             }
         }
-        return root;
+        return null;
     }
 
     private static void node(AccessibilityNodeInfo n, StringBuilder sb, int depth, String path) {

@@ -1,4 +1,4 @@
-//! The model configuration: one OpenAI-compatible endpoint, one key, and a model name per role.
+//! The configuration file: one OpenAI-compatible endpoint, one key and a model per role, with the safety, tools, driver, desk, daemon and Android settings.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -20,7 +20,7 @@ const DEFAULT_DECIDE: &str = "typesafe/jev-1.14";
 const DEFAULT_GROUND: &str = "qwen/qwen3-vl-235b-a22b-instruct";
 const DEFAULT_ASK: &str = "anthropic/claude-sonnet-5";
 
-/// The model configuration; the default is OpenRouter with the key in `OPENROUTER_API_KEY`.
+/// The configuration; the default endpoint is OpenRouter with the key in `OPENROUTER_API_KEY`.
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {

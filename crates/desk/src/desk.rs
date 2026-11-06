@@ -17,7 +17,7 @@ use desk_core::args::{
 use desk_core::shot::{OFF_SCREEN, crop_png, rgb_png};
 use desk_core::text::{MAX_FOUND, NAME_CHARS, matches, ms, quote};
 use desk_core::window::{self, TITLE_TIERS, title_matches};
-use desk_core::wire::Output;
+use desk_core::wire::{OK, Output};
 use serde_json::{Map, Value, json};
 
 use crate::allow::{Allow, app_key, app_of};
@@ -101,7 +101,6 @@ const MASK_TRIES: usize = 3;
 const WINDOWS_MOVING: &str = "the windows kept changing while the screenshot was taken, so it could not be masked to the app allowlist; take it again";
 
 const SCROLL_POINT: &str = "scroll needs both x and y, or neither";
-const OK: &str = r#"{"ok":true}"#;
 const SCROLL_AMOUNT: u32 = 3;
 
 const STILL_TIMEOUT: Duration = Duration::from_millis(600);
