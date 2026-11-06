@@ -565,7 +565,10 @@ async fn framed<H: Handler>(
     }
     let bounds = <[f64; 4]>::deserialize(&w["bounds"]).ok()?;
     let out = desk
-        .answer(asked("desk_shot", json!({"window": w["title"]})))
+        .answer(asked(
+            "desk_shot",
+            json!({"window": w["title"], "pid": w["pid"]}),
+        ))
         .await;
     let png = B64.decode(out.image_b64?).ok()?;
     let width = u32::from_be_bytes(png.get(16..20)?.try_into().ok()?);
@@ -607,22 +610,13 @@ fn save(path: &Path, recording: &Value) -> Result<(), String> {
     write_private(path, &body).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
-#[cfg(unix)]
 fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?
-        .write_all(body)
-}
-
-#[cfg(not(unix))]
-fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, body)
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+    open.open(path)?.write_all(body)
 }
 
 fn now_ms() -> u128 {
@@ -676,7 +670,7 @@ mod tests {
         assert!(
             lock(&desk.shots)
                 .iter()
-                .all(|a| *a == json!({"window": "Untitled"})),
+                .all(|a| *a == json!({"window": "Untitled", "pid": 7})),
             "{:?}",
             lock(&desk.shots)
         );

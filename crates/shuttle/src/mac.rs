@@ -349,7 +349,7 @@ unsafe extern "C" {
     fn InstallEventHandler(
         target: *mut c_void,
         handler: Handler,
-        count: u32,
+        count: usize,
         types: *const EventTypeSpec,
         user: *mut c_void,
         out: *mut *mut c_void,

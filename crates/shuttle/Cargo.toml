@@ -41,7 +41,7 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gd
 
 [dev-dependencies]
 png = "0.18"
-tokio = { version = "1", features = ["net", "test-util"] }
+tokio = { version = "1", features = ["test-util"] }
 
 [lints]
 workspace = true
