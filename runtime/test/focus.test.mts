@@ -80,3 +80,19 @@ test('a password step whose recording read no field stops where the focused fiel
   assert.match(String(r.error), /recording typed into a password field, and the focused textbox "User Name" in "pw" is none/)
   assert.deepEqual(typed, [])
 })
+
+test('a password typed into a dialog is not read back and never shows in the result', async (t) => {
+  const doc = { id: '1/1', title: 'Mail', role: 'window', pid: process.pid, active: false }
+  const dialog = { id: '2/1', title: 'Sign in', role: 'dialog', pid: process.pid, active: true }
+  const typed: string[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([doc, dialog])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: dialog, truncated: false, nodes: [{ ref: 0, id: '2/1', parent: -1, depth: 0, role: 'dialog', name: 'Sign in', states: ['showing'] }, { ref: 1, id: '2/2', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'focused', 'protected'], value: '' }] })
+    if (tool === 'desk_type') typed.push(String(args.text))
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ type: '{{password}}', focus: { secure: true } }], params: { password: 'hunter2' } })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(typed, ['hunter2'])
+  assert.ok(!JSON.stringify(r).includes('hunter2'), JSON.stringify(r))
+})

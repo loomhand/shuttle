@@ -65,6 +65,20 @@ test('typing the driver could not confirm and that the window does not show esca
   assert.match(String(r.escalate?.reason), /did not show .*PostMessage/)
 })
 
+test('a password the window does not show after typing escalates without the password', async (t) => {
+  const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'focused', 'protected'], value: '' }
+  const d = desktop([user(), notepad()], ({ tool, args }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad().title, states: ['showing'] }, field] })
+    if (tool === 'desk_type') return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: 'unverifiable: posted' })
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { type: '{{password}}', focus: { secure: true } }], params: { password: 'hunter2' } })
+  assert.equal(r.ok, false)
+  assert.match(String(r.escalate?.reason), /^the password did not show in "Untitled - Notepad" after typing: unverifiable: posted$/)
+  assert.ok(!JSON.stringify(r).includes('hunter2'), JSON.stringify(r))
+})
+
 test('an element that is not in the tree is not looked for on the screen in the background', async (t) => {
   const d = desktop([user(), notepad()])
   await daemon(t, d.reply)
