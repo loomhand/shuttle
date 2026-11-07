@@ -33,6 +33,7 @@ pub(crate) const INPUT_TOOLS: [&str; 9] = [
 ];
 
 const DEFAULT_PIPE: &str = r"\\.\pipe\cua-driver";
+const CONNECT_FAILED: &str = "connect cua-driver";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_WAIT: Duration = Duration::from_secs(10);
 const SESSION: &str = "desk";
@@ -142,7 +143,7 @@ impl Driver {
                 {
                     tokio::time::sleep(CONNECT_RETRY).await;
                 }
-                Err(e) => return Err(format!("connect cua-driver {}: {e}", self.endpoint)),
+                Err(e) => return Err(format!("{CONNECT_FAILED} {}: {e}", self.endpoint)),
             }
         }
     }
@@ -237,9 +238,11 @@ impl Input for Driver {
                 Some(point) => self.spaced(point, self.send(tool, &args)).await,
                 None => self.send(tool, &args).await,
             };
-            let _ = self
-                .send("end_session", &json!({"session": args["session"]}))
-                .await;
+            if !done.as_ref().is_err_and(|e| e.starts_with(CONNECT_FAILED)) {
+                let _ = self
+                    .send("end_session", &json!({"session": args["session"]}))
+                    .await;
+            }
             return done;
         }
         let foreground = self.admit(tool, &args)?;
@@ -563,6 +566,21 @@ mod tests {
         assert_eq!(sessions[0], sessions[1]);
         assert_eq!(sessions[2], sessions[3]);
         assert_ne!(sessions[0], sessions[2]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(start_paused = true)]
+    async fn on_linux_a_call_that_never_reached_the_driver_ends_no_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = Driver::new(dir.path().join("cua.sock").to_string_lossy().into_owned());
+        let started = Instant::now();
+        let err = d.call("press_key", json!({"key": "a"})).await.unwrap_err();
+        assert!(err.starts_with(CONNECT_FAILED), "{err}");
+        assert!(
+            started.elapsed() < CONNECT_WAIT + CONNECT_RETRY,
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[cfg(target_os = "macos")]
