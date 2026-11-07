@@ -273,7 +273,7 @@ impl Uia {
         answered: &mut HashMap<u32, bool>,
     ) -> Option<Frame> {
         let key = s.hwnd.0 as isize;
-        let top = if s.hung || !answer_of(answered, s.pid, || answers(s.hwnd)) {
+        let top = if s.hung || !answer_of(answered, s, || answers(s.hwnd)) {
             None
         } else {
             self.top_of(s)
@@ -297,7 +297,7 @@ impl Uia {
                 return Some(frame);
             }
         }
-        kept(&lock(&LAST), key, s.hwnd == foreground)
+        kept(&mut lock(&LAST), key, s.pid, s.hwnd == foreground)
     }
 }
 
@@ -560,6 +560,7 @@ struct Shown {
     hwnd: HWND,
     owner: isize,
     pid: u32,
+    thread: u32,
     hung: bool,
 }
 
@@ -721,9 +722,9 @@ fn shown() -> Vec<Shown> {
         .map(|hwnd| {
             let mut pid = 0u32;
             // SAFETY: the window calls take a handle; `pid` is a live u32 they write.
-            let (owner, hung) = unsafe {
-                GetWindowThreadProcessId(hwnd, Some(&raw mut pid));
+            let (thread, owner, hung) = unsafe {
                 (
+                    GetWindowThreadProcessId(hwnd, Some(&raw mut pid)),
                     GetWindow(hwnd, GW_OWNER).map_or(0, |o| o.0 as isize),
                     IsHungAppWindow(hwnd).as_bool(),
                 )
@@ -732,6 +733,7 @@ fn shown() -> Vec<Shown> {
                 hwnd,
                 owner,
                 pid,
+                thread,
                 hung,
             }
         })
@@ -754,14 +756,18 @@ fn answers(hwnd: HWND) -> bool {
     .0 != 0
 }
 
-fn answer_of(answered: &mut HashMap<u32, bool>, pid: u32, probe: impl FnOnce() -> bool) -> bool {
-    *answered.entry(pid).or_insert_with(probe)
+fn answer_of(answered: &mut HashMap<u32, bool>, s: &Shown, probe: impl FnOnce() -> bool) -> bool {
+    *answered.entry(s.thread).or_insert_with(probe)
 }
 
-fn kept(last: &BTreeMap<isize, Frame>, hwnd: isize, front: bool) -> Option<Frame> {
-    last.get(&hwnd).map(|f| Frame {
+fn kept(last: &mut BTreeMap<isize, Frame>, hwnd: isize, pid: u32, front: bool) -> Option<Frame> {
+    if last.get(&hwnd).is_some_and(|f| f.pid != Some(pid)) {
+        last.remove(&hwnd);
+    }
+    let f = last.get_mut(&hwnd)?;
+    f.active |= front;
+    Some(Frame {
         stale: true,
-        active: f.active || front,
         ..f.clone()
     })
 }
@@ -1012,37 +1018,60 @@ mod tests {
         let frame = |id: &str, active: bool| Frame {
             id: id.into(),
             title: id.into(),
+            pid: Some(1),
             active,
             ..Frame::default()
         };
-        let last = BTreeMap::from([(7, frame("hung", true)), (8, frame("left", false))]);
-        assert!(kept(&last, 9, false).is_none());
-        let mut frames = vec![frame("other", false), kept(&last, 7, false).unwrap()];
+        let mut last = BTreeMap::from([(7, frame("hung", true)), (8, frame("left", false))]);
+        assert!(kept(&mut last, 9, 1, false).is_none());
+        let mut frames = vec![frame("other", false), kept(&mut last, 7, 1, false).unwrap()];
         stale_front(&mut frames);
         assert!(frames[1].stale && frames[1].active && frames[1].title == "hung");
         frames[0].active = true;
         stale_front(&mut frames);
         assert!(frames[1].stale && !frames[1].active);
-        let front = kept(&last, 8, true).unwrap();
-        assert!(
-            front.stale && front.active,
-            "a window that hung after it took the foreground"
-        );
     }
 
     #[test]
-    fn one_probe_answers_for_every_window_of_its_process_in_a_listing() {
+    fn a_stale_window_that_was_in_front_stays_active_once_its_ghost_takes_the_foreground() {
+        let left = Frame {
+            pid: Some(1),
+            ..Frame::default()
+        };
+        let mut last = BTreeMap::from([(8, left)]);
+        assert!(kept(&mut last, 8, 1, true).unwrap().active);
+        assert!(kept(&mut last, 8, 1, false).unwrap().active);
+    }
+
+    #[test]
+    fn a_recycled_window_handle_of_another_process_has_no_last_frame() {
+        let old = Frame {
+            pid: Some(1),
+            active: true,
+            ..Frame::default()
+        };
+        let mut last = BTreeMap::from([(8, old)]);
+        assert!(kept(&mut last, 8, 2, true).is_none());
+        assert!(last.is_empty());
+    }
+
+    #[test]
+    fn one_probe_answers_for_every_window_of_its_thread_in_a_listing() {
         let (mut answered, mut probes) = (HashMap::new(), 0);
-        let mut probe = |pid, ok| {
-            answer_of(&mut answered, pid, || {
+        let thread = |t| Shown {
+            thread: t,
+            ..window(1, 0)
+        };
+        let mut probe = |t, ok| {
+            answer_of(&mut answered, &thread(t), || {
                 probes += 1;
                 ok
             })
         };
-        assert!(!probe(4, false));
-        assert!(!probe(4, true));
-        assert!(probe(5, true));
-        assert!(probe(5, false));
+        assert!(!probe(10, false));
+        assert!(!probe(10, true));
+        assert!(probe(11, true));
+        assert!(probe(11, false));
         assert_eq!(probes, 2);
     }
 
@@ -1051,6 +1080,7 @@ mod tests {
             hwnd: HWND(hwnd as *mut std::ffi::c_void),
             owner,
             pid: 1,
+            thread: 1,
             hung: false,
         }
     }
