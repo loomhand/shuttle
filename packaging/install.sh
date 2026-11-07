@@ -59,8 +59,6 @@ want=$(awk -v a="$asset" '$2 == a { print $1 }' "$tmp/SHA256SUMS")
 [ "$(sha256 "$tmp/$asset")" = "$want" ] || die "sha256 mismatch for $asset"
 say "sha256 ok"
 tar -xzf "$tmp/$asset" -C "$tmp"
-if [ "$os" = macos ]; then new="$tmp/$APP.app/Contents/MacOS/$NAME"; else new="$tmp/$NAME/$NAME"; fi
-installed=$("$new" --version) || die "the new $NAME does not start on this system; nothing was changed"
 
 if [ "$os" = macos ]; then home="$APP_DIR/$APP.app" && bin="$home/Contents/MacOS/$NAME"; else home="$PREFIX/lib/loomhand/$NAME" && bin="$home/$NAME"; fi
 link="$PREFIX/bin/$NAME"
@@ -79,6 +77,10 @@ fi
 mkdir -p "$PREFIX/bin" "${home%/*}"
 rm -rf "$home.new" "$home.old"
 if [ "$os" = macos ]; then mv "$tmp/$APP.app" "$home.new"; else mv "$tmp/$NAME" "$home.new"; fi
+installed=$("$home.new/${bin#"$home/"}" --version) || {
+	rm -rf "$home.new"
+	die "the new $NAME does not start on this system; nothing was changed"
+}
 [ ! -e "$home" ] || mv "$home" "$home.old"
 mv "$home.new" "$home"
 rm -rf "$home.old"
