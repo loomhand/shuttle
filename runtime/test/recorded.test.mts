@@ -29,6 +29,7 @@ async function canvas(t: TestContext, o: { shown: Buffer; look?: number; title?:
     if (tool === 'desk_screen') return '{"width":800,"height":600}'
     if (tool === 'desk_shot' && args.w === undefined) seen.shots += 1
     if (tool === 'desk_shot') return { text: '{"ok":true}', image: (args.w === undefined ? o.shown : gray(Number(args.w), Number(args.h))).toString('base64') }
+    if (tool === 'desk_at' && !(Number.isInteger(args.x) && Number.isInteger(args.y))) return { text: `invalid type: floating point \`${args.x}\`, expected i32`, error: true }
     if (tool === 'desk_at') return JSON.stringify({ found: { ref: 0, id: '1/2', parent: -1, depth: 0, role: 'document', name: '', states: [] }, path: [{ id: '1/1', role: 'window', name: win().title }], pid: process.pid })
     if (tool === 'model_ground') { seen.grounds += 1; return JSON.stringify({ x: 500, y: 300, usage }) }
     if (tool === 'model_decide') {
@@ -63,6 +64,13 @@ test('a recorded crop cut at the screen edge clicks its point, not its centre', 
   const r = await main({ steps: [{ click: 'the Green button', recorded: { text: 'the Green button', crop: crop(), offset: [-40, 5], root: true } }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual([seen.clicks, r.trace?.[0]?.how], [['320,285'], 'crop'])
+})
+
+test('a recorded crop point at a fractional offset is checked at whole pixels and clicked by its crop', async (t) => {
+  const seen = await canvas(t, { shown: screen(800, 600, [300, 250]) })
+  const r = await main({ steps: [{ click: 'the Green button', recorded: { text: 'the Green button', crop: crop(), offset: [-40.5, 5.5], root: true } }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual([seen.clicks, r.trace?.[0]?.how], [['319.5,285.5'], 'crop'])
 })
 
 test('a recorded click whose target a parameter changed skips the crop and the point, and grounding may land on the content root', async (t) => {
