@@ -28,7 +28,7 @@ const LOGO: [&str; 11] = [
     "cmd", "command", "meta", "win", "windows", "winleft", "winright", "super", "super_l",
     "super_r", "mod4",
 ];
-const ALIASES: [(&str, &str); 55] = [
+const ALIASES: [(&str, &str); 60] = [
     ("control", "ctrl"),
     ("primary", "ctrl"),
     ("ctl", "ctrl"),
@@ -49,25 +49,28 @@ const ALIASES: [(&str, &str); 55] = [
     ("mod1", "alt"),
     ("enter", "return"),
     ("kp_enter", "return"),
+    ("numpadenter", "return"),
     ("esc", "escape"),
     ("del", "delete"),
+    ("forwarddelete", "delete"),
+    ("fwddelete", "delete"),
+    ("deleteforward", "delete"),
     ("ins", "insert"),
     ("prior", "pageup"),
-    ("page_up", "pageup"),
-    ("page up", "pageup"),
     ("pgup", "pageup"),
     ("next", "pagedown"),
-    ("page_down", "pagedown"),
-    ("page down", "pagedown"),
     ("pgdn", "pagedown"),
+    ("pgdown", "pagedown"),
+    ("pagedn", "pagedown"),
     ("arrowup", "up"),
     ("arrowdown", "down"),
     ("arrowleft", "left"),
     ("arrowright", "right"),
+    ("uparrow", "up"),
+    ("downarrow", "down"),
+    ("leftarrow", "left"),
+    ("rightarrow", "right"),
     ("spacebar", "space"),
-    ("caps_lock", "capslock"),
-    ("num_lock", "numlock"),
-    ("back_space", "backspace"),
     ("bksp", "backspace"),
     ("plus", "+"),
     ("minus", "-"),
@@ -84,6 +87,8 @@ const ALIASES: [(&str, &str); 55] = [
     ("semicolon", ";"),
     ("colon", ":"),
     ("underscore", "_"),
+    ("parenleft", "("),
+    ("parenright", ")"),
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -110,18 +115,19 @@ pub fn key_names(combo: &str, os: Os) -> Result<Vec<String>, String> {
         parts.truncate(parts.len() - 2);
         parts.push("+");
     }
-    parts
+    let mut keys = parts
         .iter()
-        .map(|k| match key_name(k, os) {
-            Some(name) if !name.is_empty() => Ok(name),
-            Some(_) => Err(format!("bad key combination {combo:?}")),
-            None => Err(format!(
-                "unknown key {:?} in {combo:?}: a key is one character, f1 to f12, or one of {}",
-                k.trim(),
-                KEYS.join(", ")
-            )),
-        })
-        .collect()
+        .map(|k| key_name(k, os, combo))
+        .collect::<Result<Vec<_>, _>>()?;
+    if os == Os::Mac
+        && let Some(i) = keys.iter().position(|k| k == "+")
+    {
+        "=".clone_into(&mut keys[i]);
+        if !keys.iter().any(|k| k == "shift") {
+            keys.insert(i, "shift".to_owned());
+        }
+    }
+    Ok(keys)
 }
 
 /// A UIA AcceleratorKey or AccessKey such as `Ctrl+Shift+S` as `ctrl+shift+s`; none when empty.
@@ -171,28 +177,50 @@ pub fn keystroke(c: char) -> Option<Vec<String>> {
     }
 }
 
-fn key_name(key: &str, os: Os) -> Option<String> {
+fn key_name(key: &str, os: Os, combo: &str) -> Result<String, String> {
     let k = key.trim().to_lowercase();
-    if LOGO.contains(&k.as_str()) {
-        return Some(os.logo().to_owned());
+    if k.is_empty() {
+        return Err(format!("bad key combination {combo:?}"));
+    }
+    let named = |alias: &str| k.chars().count() > 1 && folded(alias).eq(folded(&k));
+    if LOGO.iter().any(|logo| named(logo)) {
+        return Ok(os.logo().to_owned());
     }
     let name = ALIASES
         .iter()
-        .find(|(alias, _)| *alias == k)
+        .find(|(alias, _)| named(alias))
         .map_or(k.as_str(), |(_, name)| name);
-    let function = name
-        .strip_prefix('f')
-        .and_then(|n| n.parse::<u8>().ok())
-        .is_some_and(|n| (1..=12).contains(&n));
-    if name.chars().count() > 1 && !function && !KEYS.contains(&name) {
-        return None;
+    if let Some(n) = name.strip_prefix('f').and_then(|n| n.parse::<u8>().ok()) {
+        return match n {
+            1..=12 => Ok(format!("f{n}")),
+            _ => Err(format!(
+                "unknown key {name:?} in {combo:?}: the function keys are f1 to f12"
+            )),
+        };
     }
-    let name = if os == Os::Mac && name == "delete" {
-        "forward_delete"
-    } else {
-        name
+    let name = match (name, os) {
+        ("insert" | "numlock", Os::Mac) => {
+            return Err(format!("{name:?} in {combo:?} is no key on macOS"));
+        }
+        ("delete", Os::Mac) => "forward_delete",
+        ("menu", Os::Mac | Os::Windows) => "alt",
+        ("fn", Os::Mac) => "fn",
+        _ if name.chars().count() == 1 => name,
+        _ => KEYS
+            .into_iter()
+            .find(|known| folded(known).eq(folded(name)))
+            .ok_or_else(|| {
+                format!(
+                    "unknown key {name:?} in {combo:?}: a key is one character, f1 to f12, or one of {}",
+                    KEYS.join(", ")
+                )
+            })?,
     };
-    Some(name.to_owned())
+    Ok(name.to_owned())
+}
+
+fn folded(name: &str) -> impl Iterator<Item = char> + '_ {
+    name.chars().filter(|c| !matches!(c, '_' | '-' | ' '))
 }
 
 #[cfg(test)]
@@ -226,19 +254,23 @@ mod tests {
         for os in [Os::Windows, Os::Mac, Os::Linux] {
             for (combo, keys) in [
                 ("ArrowUp", ["up"].as_slice()),
+                ("left_arrow", &["left"]),
+                ("Up-Arrow", &["up"]),
                 ("kp_enter", &["return"]),
-                ("shift+ins", &["shift", "insert"]),
                 ("bksp", &["backspace"]),
                 ("spacebar", &["space"]),
-                ("ctrl++", &["ctrl", "+"]),
-                ("ctrl+plus", &["ctrl", "+"]),
-                ("ctrl+minus", &["ctrl", "-"]),
-                ("alt+F12", &["alt", "f12"]),
+                ("PgDown", &["pagedown"]),
                 ("Page Down", &["pagedown"]),
+                ("caps_lock", &["capslock"]),
+                ("ctrl+minus", &["ctrl", "-"]),
+                ("shift+parenleft", &["shift", "("]),
+                ("parenright", &[")"]),
+                ("alt+F12", &["alt", "f12"]),
+                ("F01", &["f1"]),
             ] {
                 assert_eq!(key_names(combo, os).unwrap(), keys, "{combo} on {os:?}");
             }
-            for combo in ["menu", "ctrl+printscreen", "f13", "fn+f1"] {
+            for combo in ["ctrl+printscreen", "f13", "f0", "pause"] {
                 let err = key_names(combo, os).unwrap_err();
                 assert!(err.starts_with("unknown key"), "{combo} on {os:?}: {err}");
             }
@@ -246,14 +278,62 @@ mod tests {
     }
 
     #[test]
+    fn the_plus_key_is_shift_and_equals_on_macos_and_plus_elsewhere() {
+        assert_eq!(key_names("cmd++", Os::Mac).unwrap(), ["cmd", "shift", "="]);
+        assert_eq!(
+            key_names("cmd+shift+plus", Os::Mac).unwrap(),
+            ["cmd", "shift", "="]
+        );
+        assert_eq!(key_names("+", Os::Mac).unwrap(), ["shift", "="]);
+        for os in [Os::Windows, Os::Linux] {
+            assert_eq!(key_names("ctrl++", os).unwrap(), ["ctrl", "+"]);
+            assert_eq!(key_names("ctrl+plus", os).unwrap(), ["ctrl", "+"]);
+        }
+    }
+
+    #[test]
+    fn os_only_keys_pass_on_their_os_and_fail_elsewhere() {
+        assert_eq!(key_names("fn+f1", Os::Mac).unwrap(), ["fn", "f1"]);
+        assert_eq!(key_names("menu", Os::Mac).unwrap(), ["alt"]);
+        assert_eq!(key_names("menu", Os::Windows).unwrap(), ["alt"]);
+        assert_eq!(
+            key_names("shift+ins", Os::Windows).unwrap(),
+            ["shift", "insert"]
+        );
+        assert_eq!(key_names("num_lock", Os::Linux).unwrap(), ["numlock"]);
+        for (combo, os) in [
+            ("fn+f1", Os::Windows),
+            ("fn", Os::Linux),
+            ("menu", Os::Linux),
+        ] {
+            let err = key_names(combo, os).unwrap_err();
+            assert!(err.starts_with("unknown key"), "{combo} on {os:?}: {err}");
+        }
+        for combo in ["shift+insert", "numlock"] {
+            let err = key_names(combo, Os::Mac).unwrap_err();
+            assert!(err.ends_with("is no key on macOS"), "{combo}: {err}");
+        }
+    }
+
+    #[test]
     fn delete_is_the_forward_delete_key_on_every_os() {
-        assert_eq!(key_names("del", Os::Mac).unwrap(), ["forward_delete"]);
+        for combo in ["del", "Forward_Delete", "fwddelete"] {
+            assert_eq!(
+                key_names(combo, Os::Mac).unwrap(),
+                ["forward_delete"],
+                "{combo}"
+            );
+            assert_eq!(
+                key_names(combo, Os::Windows).unwrap(),
+                ["delete"],
+                "{combo}"
+            );
+            assert_eq!(key_names(combo, Os::Linux).unwrap(), ["delete"], "{combo}");
+        }
         assert_eq!(
             key_names("shift+Delete", Os::Mac).unwrap(),
             ["shift", "forward_delete"]
         );
-        assert_eq!(key_names("del", Os::Windows).unwrap(), ["delete"]);
-        assert_eq!(key_names("del", Os::Linux).unwrap(), ["delete"]);
         assert_eq!(key_names("backspace", Os::Mac).unwrap(), ["backspace"]);
     }
 
