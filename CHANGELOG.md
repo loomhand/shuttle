@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.41 - 2026-11-08
 
 - **Link nodes carry their URL.** `desk` `snapshot` and `find` with `urls: true`, and `read` always, give a `link` node `url`, its target, on Linux, macOS and Windows, so the permalinks of a feed's posts come from one snapshot instead of one `read --web` per link on macOS only. The text outline leaves it out. On Windows a link's `read` carries its target in `url` instead of `value`, and a `gui_plan` `verify` with `value` on a link compares that target on every platform ([wire.md](docs/wire.md#desk-calls)).
 - **Windows: a menu shortcut whose input stalled stops the plan.** When `gui_plan` chooses a menu item by its shortcut and cua-driver answers `input_delivery_stalled` (the keys went in but the target had not read them yet), the plan now stops and reports it instead of also invoking the menu item, which could run the command twice, such as a second Undo. Other shortcut errors still fall back to invoking the item.
