@@ -444,20 +444,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_collection_answer_skips_the_tree_read_and_only_a_failed_match_reads_it() {
+    fn a_match_names_the_focused_element_without_a_tree_read_and_no_match_falls_back_to_one() {
         let frame = Frame::default();
-        for (matched, want, trees) in [
-            (Ok(Some("field".to_owned())), Some("field"), 0),
-            (Ok(None), None, 0),
-            (Err("no Collection".to_owned()), Some("field"), 1),
-        ] {
-            let mut b = Focus { matched, trees: 0 };
-            assert_eq!(
-                b.focused(&frame, Duration::from_millis(100)),
-                Ok(want.map(str::to_owned))
-            );
-            assert_eq!(b.trees, trees, "{want:?}");
-        }
+        let mut matched = Focus {
+            matched: Some("field".into()),
+            trees: 0,
+        };
+        assert_eq!(
+            matched.focused(&frame, Duration::from_millis(100)),
+            Ok(Some("field".into()))
+        );
+        assert_eq!(matched.trees, 0);
+        let mut unmatched = Focus {
+            matched: None,
+            trees: 0,
+        };
+        assert_eq!(
+            unmatched.focused(&frame, Duration::from_millis(100)),
+            Ok(Some("field".into()))
+        );
+        assert_eq!(unmatched.trees, 1);
     }
 
     #[test]
@@ -497,7 +503,7 @@ mod tests {
     }
 
     struct Focus {
-        matched: Result<Option<String>, String>,
+        matched: Option<String>,
         trees: usize,
     }
 
@@ -526,8 +532,8 @@ mod tests {
 
         fn focused(&mut self, frame: &Frame, _: Duration) -> Result<Option<String>, String> {
             match self.matched.clone() {
-                Ok(found) => Ok(found),
-                Err(_) => focused_by_tree(self, frame),
+                Some(id) => Ok(Some(id)),
+                None => focused_by_tree(self, frame),
             }
         }
 
