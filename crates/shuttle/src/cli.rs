@@ -192,12 +192,7 @@ fn save_image(b64: &str) -> Result<PathBuf, String> {
 fn controls_serve(endpoint: String) -> ExitCode {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let ready = move |controls, safety: Safety, hotkey: Option<Hotkey>, input: InputMode| {
-            let input = match input {
-                InputMode::Foreground => "foreground",
-                InputMode::Background => "background",
-                InputMode::Auto => "auto",
-            };
+        let ready = move |controls, safety: Safety, hotkey: Option<Hotkey>, input: &str| {
             let _ = tx.send(Ui {
                 controls,
                 hotkey,
@@ -235,7 +230,7 @@ async fn serve(
         Arc<dyn Controls>,
         Safety,
         Option<Hotkey>,
-        InputMode,
+        &'static str,
     ),
 ) -> Result<(), String> {
     let path = default_path(home());
@@ -273,6 +268,13 @@ async fn serve(
         background: input == InputMode::Background,
     };
     let auto = local && !cfg!(target_os = "linux") && input == InputMode::Auto;
+    let mode = if guard.background {
+        "background"
+    } else if auto {
+        "auto"
+    } else {
+        "foreground"
+    };
     let overlay = config.as_ref().ok().is_none_or(|c| c.driver.overlay);
     let locked_input = config.as_ref().is_ok_and(|c| c.desk.locked_input);
     let group = config
@@ -320,13 +322,7 @@ async fn serve(
         path.with_file_name("flows"),
         key_vars,
     )
-    .input(if guard.background {
-        "background"
-    } else if auto {
-        "auto"
-    } else {
-        "foreground"
-    });
+    .input(mode);
     let desk = match android {
         Some(settings) => Desks::Android(Box::new(android::device(settings, &exe)?)),
         None => Desks::Native(server::native(
@@ -353,7 +349,7 @@ async fn serve(
     let recorder = Arc::clone(&daemon);
     tokio::spawn(async move { recorder.recordings().await });
     #[cfg(any(target_os = "macos", windows))]
-    ready(daemon.clone(), safety, hotkey.filter(|_| local), input);
+    ready(daemon.clone(), safety, hotkey.filter(|_| local), mode);
     let ending = Arc::clone(&daemon);
     let mut serving = Box::pin(server::serve(daemon, listener));
     let served = tokio::select! {

@@ -9,8 +9,6 @@ use desk_core::wire::{Call, Output};
 use shuttle_desk::server::{self, Conn};
 use tokio::process::{Child, Command};
 
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const START_WAIT: Duration = Duration::from_secs(10);
 const START_POLL: Duration = Duration::from_millis(100);
 const EXIT_WAIT: Duration = Duration::from_secs(1);
@@ -110,7 +108,7 @@ fn daemon(exe: &Path, endpoint: &str) -> Command {
     cmd.process_group(0);
     #[cfg(windows)]
     {
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
         crate::win::disinherit_stdio();
     }
     cmd
