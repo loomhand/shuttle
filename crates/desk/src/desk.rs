@@ -1162,22 +1162,22 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn click(&self, a: ClickArgs, turn: Option<Turn>) -> Result<String, String> {
-        let (to, named) = match a.window.as_deref() {
-            Some(window) => {
-                let (to, w) = self.shot_window(window, a.pid).await?;
-                (Some(to), Some(w))
-            }
+        let named = match a.window.as_deref() {
+            Some(window) => Some(self.shot_window(window, a.pid).await?.1),
             None if self.bg() && a.pid.is_some() => {
-                (None, Some(self.pick_window(None, a.pid, true).await?.1))
+                Some(self.pick_window(None, a.pid, true).await?.1)
             }
-            None => (None, None),
+            None => None,
         };
         let (x, y) = match &named {
             Some(w) if a.window.is_some() => self.desk_point(w, (a.x, a.y)).await?,
             _ => (a.x, a.y),
         };
-        if let Some(to) = to.filter(|_| !self.bg() && self.os != Os::Mac) {
-            self.front(to, a.pid, (x, y)).await?;
+        if let Some(w) = named
+            .as_ref()
+            .filter(|_| a.window.is_some() && !self.bg() && self.os != Os::Mac)
+        {
+            self.front(w, a.pid, (x, y)).await?;
         }
         let mut req = json!({"x": x, "y": y});
         if let Some(button) = a.button {
@@ -1389,9 +1389,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let (x, y) = match (a.x, a.y) {
             (Some(x), Some(y)) => match a.window.as_deref() {
                 Some(window) => {
-                    let (to, w) = self.shot_window(window, a.pid).await?;
+                    let (_, w) = self.shot_window(window, a.pid).await?;
                     let point = self.desk_point(&w, (x, y)).await?;
-                    self.front(to, a.pid, point).await?;
+                    self.front(&w, a.pid, point).await?;
                     point
                 }
                 None => (x, y),
@@ -1472,10 +1472,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return Ok(ok_with(self.unverified(&out, Some(target), false)));
         }
         if let Some(window) = a.window.as_deref() {
-            let (target, w) = self.shot_window(window, a.pid).await?;
+            let (_, w) = self.shot_window(window, a.pid).await?;
             from = self.desk_point(&w, from).await?;
             to = self.desk_point(&w, to).await?;
-            self.front(target, a.pid, from).await?;
+            self.front(&w, a.pid, from).await?;
         }
         self.admit_point(from.0, from.1).await?;
         self.admit_point(to.0, to.1).await?;
@@ -1649,18 +1649,19 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(Some((pid, id)))
     }
 
-    /// Raises the foreground target of pointer input named by `window` when another window than an untitled popup of its app is on top at the point, under the rule [`Self::raised_window`] keeps.
-    async fn front(
-        &self,
-        to: (i64, i64),
-        pid: Option<u32>,
-        (x, y): (f64, f64),
-    ) -> Result<(), String> {
+    /// Raises window `w`, the target of pointer input named by `window`, when the point lies in it and another window than an untitled popup of its app is on top there, under the rule [`Self::raised_window`] keeps.
+    async fn front(&self, w: &Value, pid: Option<u32>, (x, y): (f64, f64)) -> Result<(), String> {
         if pid.is_none() && self.os == Os::Linux {
             return Ok(());
         }
         let scale = self.scale().await?;
         let point = (x / scale, y / scale);
+        let [bx, by, bw, bh] = bounds(w);
+        if !(bx..bx + bw).contains(&point.0) || !(by..by + bh).contains(&point.1) {
+            return Ok(());
+        }
+        let (tp, tid, _) = window_key(w)?;
+        let to = (tp, tid);
         let key = |w: &Value| (w["pid"].as_i64(), w["window_id"].as_i64());
         let Some(cover) = self.top_at(point).await? else {
             return Ok(());
@@ -4291,6 +4292,31 @@ pub(crate) mod tests {
                 order(&calls)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_point_outside_the_named_window_does_not_raise_it() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(Apps),
+            BehindCover(
+                Behind(Arc::clone(&calls)),
+                AtomicBool::new(false),
+                (4, "Program Manager"),
+            ),
+            Os::Windows,
+        );
+        let _ = desk
+            .run(
+                "desk_click",
+                json!({"x": 300.0, "y": 550.0, "window": "Inbox", "pid": 8}),
+            )
+            .await;
+        assert!(
+            sent(&calls, "bring_to_front").is_empty(),
+            "{:?}",
+            order(&calls)
+        );
     }
 
     #[tokio::test]
