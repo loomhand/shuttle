@@ -1259,7 +1259,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (!hit) throw new Surprise(`verify: no element matches "${s.verify}"`, await seen())
     rec.how = hit.how; rec.fp = fingerprint(nodes, hit)
     const bad: string[] = []
-    if (s.value !== undefined) { let v = ''; try { v = (await desk.read(hit.n.id)).value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); v = hit.n.value }; if (!holds(hit.n.role, v, s.value)) bad.push(`reads "${v}"`) }
+    if (s.value !== undefined) { let v = ''; let url: string | undefined; try { const r = await desk.read(hit.n.id); url = r.url; v = r.url ?? r.value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); v = hit.n.value }; if (url !== undefined ? url !== s.value : !holds(hit.n.role, v, s.value)) bad.push(`reads "${v}"`) }
     if (s.enabled !== undefined && hit.n.disabled === s.enabled) bad.push(hit.n.disabled ? 'is disabled' : 'is enabled')
     if (s.on !== undefined) { const c = (w.pid === null ? null : gtkToggle(w.pid, hit.n.name)) ?? (await checked(hit.n)) ?? await cropState(hit.n); rec.was = c; if (c !== s.on) bad.push(c === 'mixed' ? 'is mixed' : c ? 'is on' : 'is off') }
     if (bad.length) throw new Surprise(`verify: "${hit.n.name || s.verify}" ${bad.join(', ')}`, await seen())

@@ -27,6 +27,7 @@ const ACCESSIBLE: &str = "org.a11y.atspi.Accessible";
 const ACTION: &str = "org.a11y.atspi.Action";
 const COMPONENT: &str = "org.a11y.atspi.Component";
 const TEXT: &str = "org.a11y.atspi.Text";
+const HYPERLINK: &str = "org.a11y.atspi.Hyperlink";
 const COLLECTION: &str = "org.a11y.atspi.Collection";
 const VALUE: &str = "org.a11y.atspi.Value";
 const SELECTION: &str = "org.a11y.atspi.Selection";
@@ -304,6 +305,7 @@ pub struct Node {
     pub value: Option<String>,
     pub keys: Option<String>,
     pub bounds: Option<[i32; 4]>,
+    pub url: Option<String>,
 }
 
 impl Node {
@@ -587,7 +589,7 @@ impl Atspi {
     /// The node's live role, name and states, with the reads `extras` asks for; a value has at most `chars` characters.
     pub async fn node(&self, obj: Obj, extras: Extras, chars: usize) -> Result<Node, String> {
         let r = self.raw(&obj).await?;
-        let (value, bounds, keys) = tokio::join!(
+        let (value, bounds, keys, url) = tokio::join!(
             async {
                 if extras.values {
                     self.value(&obj, r.role, r.ifaces, chars).await
@@ -608,6 +610,13 @@ impl Atspi {
                 } else {
                     None
                 }
+            },
+            async {
+                if extras.urls && role_name(r.role, true) == "link" {
+                    self.uri(&obj).await
+                } else {
+                    None
+                }
             }
         );
         Ok(Node {
@@ -622,6 +631,7 @@ impl Atspi {
             value,
             bounds,
             keys,
+            url,
         })
     }
 
@@ -833,17 +843,31 @@ impl Atspi {
                 }
                 .filter(|s| !s.is_empty())
             };
-            tokio::join!(value, bounds, keys, label)
+            let url = async {
+                if !(extras.urls && role == "link") {
+                    return None;
+                }
+                self.uri(obj).await
+            };
+            tokio::join!(value, bounds, keys, label, url)
         }))
         .await;
-        for (n, (value, bounds, keys, label)) in nodes.iter_mut().zip(reads) {
+        for (n, (value, bounds, keys, label, url)) in nodes.iter_mut().zip(reads) {
             n.value = value;
             n.bounds = bounds;
             n.keys = keys;
+            n.url = url;
             if let Some(label) = label {
                 n.name = label;
             }
         }
+    }
+
+    async fn uri(&self, obj: &Obj) -> Option<String> {
+        self.call(obj, HYPERLINK, "GetURI", &(0i32,))
+            .await
+            .ok()
+            .filter(|u: &String| !u.is_empty())
     }
 
     async fn raw(&self, obj: &Obj) -> Result<Raw, String> {
@@ -1399,6 +1423,7 @@ fn flatten<'a>(
             value: None,
             keys: None,
             bounds: None,
+            url: None,
         });
         Some(out.len() - 1)
     };

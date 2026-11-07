@@ -170,6 +170,10 @@ impl Uia {
         let role = mapped.unwrap_or("generic");
         let [x, y, w, h] = r.bounds;
         r.name.truncate(r.name.trim_end().len());
+        let url = (extras.urls && role == "link")
+            .then(|| r.value.take())
+            .flatten()
+            .filter(|u| !u.is_empty());
         let value = r
             .value
             .take()
@@ -194,6 +198,7 @@ impl Uia {
                 && h > 0
                 && (extras.frame || is_active(role)))
             .then_some([x, y, w, h]),
+            url,
             ..Node::default()
         })
     }
@@ -402,7 +407,7 @@ impl Access for Uia {
         let el = self.element(id)?;
         let fresh = self.cached(&el, &self.single)?;
         let mut node = self.node_of(&fresh, extras, chars)?;
-        if extras.values && node.value.is_none() {
+        if extras.values && node.value.is_none() && node.url.is_none() {
             node.value = document_text(&fresh, chars);
         }
         Ok(node)
@@ -662,7 +667,9 @@ fn raw(el: &IUIAutomationElement, extras: Extras) -> Raw {
         } else {
             String::new()
         },
-        value: match (values && extras.values).then(|| value(el, UIA_ValueValuePropertyId)) {
+        value: match (values && (extras.values || extras.urls))
+            .then(|| value(el, UIA_ValueValuePropertyId))
+        {
             Some(Val::Text(s)) => Some(s),
             _ => None,
         },

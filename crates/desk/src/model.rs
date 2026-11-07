@@ -133,6 +133,7 @@ pub struct Node {
     /// The raw key binding of a Linux element, `mnemonic;sequence;accelerator`.
     pub keys: Option<String>,
     pub bounds: Option<[i32; 4]>,
+    pub url: Option<String>,
 }
 
 impl Node {
@@ -162,6 +163,7 @@ impl Node {
             ("shortcut", self.shortcut),
             ("mnemonic", self.mnemonic),
             ("keys", self.keys),
+            ("url", self.url),
         ];
         for (key, field) in optional {
             if let Some(field) = field {
@@ -220,6 +222,7 @@ pub struct Extras {
     pub keys: bool,
     pub menus: bool,
     pub frame: bool,
+    pub urls: bool,
 }
 
 impl Extras {
@@ -229,6 +232,7 @@ impl Extras {
         keys: false,
         menus: false,
         frame: false,
+        urls: false,
     };
     pub const FRAME: Self = Self {
         frame: true,
@@ -482,6 +486,22 @@ mod tests {
             n.into_json(3),
             json!({"ref": 3, "id": "1/2", "parent": 0, "depth": 1, "role": "checkbox", "name": "Wrap",
                 "states": ["checked", "showing"], "shortcut": "ctrl+w"})
+        );
+    }
+
+    #[test]
+    fn a_link_node_carries_its_url() {
+        let n = Node {
+            id: "1/7".into(),
+            role: "link",
+            name: "3h".into(),
+            url: Some("https://example.com/post/1".into()),
+            ..Node::default()
+        };
+        assert_eq!(
+            n.into_json(0),
+            json!({"ref": 0, "id": "1/7", "parent": -1, "depth": 0, "role": "link", "name": "3h",
+                "states": [], "url": "https://example.com/post/1"})
         );
     }
 

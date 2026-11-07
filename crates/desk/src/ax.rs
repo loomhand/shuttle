@@ -43,7 +43,7 @@ const PATH_MAX: usize = 4096;
 const PATH_MAX_DEPTH: usize = 16;
 const NAME_CHARS: usize = 200;
 const WEB_SWITCHES: [&str; 2] = ["AXManualAccessibility", "AXEnhancedUserInterface"];
-const ATTRS: [&str; 17] = [
+const ATTRS: [&str; 18] = [
     "AXRole",
     "AXSubrole",
     "AXTitle",
@@ -61,6 +61,7 @@ const ATTRS: [&str; 17] = [
     "AXMenuItemCmdModifiers",
     "AXMenuItemMarkChar",
     "AXModal",
+    "AXURL",
 ];
 const APP_ATTRS: [&str; 5] = [
     "AXTitle",
@@ -358,6 +359,9 @@ impl Ax {
                 .then(|| ax_combo(&a.cmd_char, a.cmd_modifiers.unwrap_or(0)))
                 .flatten(),
             bounds,
+            url: (extras.urls && role == "link")
+                .then(|| a.url.take().and_then(url_text))
+                .flatten(),
             ..Node::default()
         }
     }
@@ -736,6 +740,7 @@ struct Attrs {
     cmd_modifiers: Option<i64>,
     mark: String,
     modal: bool,
+    url: Option<CFType>,
 }
 
 impl Attrs {
@@ -1007,6 +1012,7 @@ fn attrs(names: &CFArray<CFString>, el: &CFType) -> Attrs {
         cmd_modifiers,
         mark,
         modal,
+        url,
     ] = values(names, el);
     Attrs {
         role: string(role),
@@ -1028,6 +1034,7 @@ fn attrs(names: &CFArray<CFString>, el: &CFType) -> Attrs {
             .and_then(|n| n.to_i64()),
         mark: string(mark),
         modal: boolean(modal).unwrap_or(false),
+        url,
     }
 }
 

@@ -42,10 +42,10 @@ export const wait = (since: Win[], timeout_ms: number): Promise<{ changed: boole
   call('wait', { since, timeout_ms: Math.max(0, Math.round(timeout_ms)) })
 export const front = (ws: Win[]): Win | null => ws.find((w) => w.active && (w.title !== '' || w.role !== 'window')) ?? null
 export const focused = async (): Promise<Win | null> => front(await windows())
-export const snapshot = (window?: string, o: { pid?: number | null; id?: string; keys?: boolean; menus?: boolean; bounds?: boolean } = {}): Promise<Snap> =>
-  call('snapshot', { window, pid: o.pid ?? undefined, id: o.id, keys: o.keys, menus: o.menus, bounds: o.bounds })
+export const snapshot = (window?: string, o: { pid?: number | null; id?: string; keys?: boolean; menus?: boolean; bounds?: boolean; urls?: boolean } = {}): Promise<Snap> =>
+  call('snapshot', { window, pid: o.pid ?? undefined, id: o.id, keys: o.keys, menus: o.menus, bounds: o.bounds, urls: o.urls })
 export const outline = async (window?: string): Promise<string> => (await call<{ text: string }>('snapshot', { window, text: true })).text
-export const find = (name: string, o: { role?: string; window?: string } = {}): Promise<{ window: Win; found: El[] }> => call('find', { name, ...o })
+export const find = (name: string, o: { role?: string; window?: string; urls?: boolean } = {}): Promise<{ window: Win; found: El[] }> => call('find', { name, ...o })
 export const read = (id: string, o: { text?: boolean; web?: boolean } = {}): Promise<El> => call('read', { id, text: o.text, web: o.web })
 export const press = async (id: string): Promise<{ ok: boolean; how: string; unverified?: string; input?: 'foreground' }> => ran(await call('press', { id }))
 export const act = async (id: string, action: 'click' | 'action' | 'select' | 'focus'): Promise<{ ok: boolean; input?: 'foreground' }> => ran(await call('act', { id, action }))
