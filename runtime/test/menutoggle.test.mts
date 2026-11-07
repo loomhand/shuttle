@@ -48,3 +48,35 @@ test('a menu toggle whose state only pixels show reports no state after its pres
   assert.equal(r.trace?.[0]?.now, undefined, JSON.stringify(r))
   assert.deepEqual(r.caveats?.map((c) => c.step), [0], JSON.stringify(r))
 })
+
+test('a Windows menu toggle read by pixels keeps the menu the plan opened and never presses its popup', { skip: process.platform !== 'win32' }, async (t) => {
+  const state = { open: false, on: true }
+  const presses: string[] = []
+  const nodes = () => [
+    { ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: win.title, states: ['showing'] },
+    { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'menubar', name: 'Application', states: ['showing'] },
+    { ref: 2, id: '1/3', parent: 1, depth: 2, role: 'menu', name: 'View', states: ['showing'], bounds: [100, 0, 40, 20] },
+    ...(state.open ? [
+      { ref: 3, id: 'p/1', parent: 0, depth: 1, role: 'menu', name: 'View', states: ['showing'], bounds: [100, 20, 140, 44] },
+      { ref: 4, id: 'p/2', parent: 3, depth: 2, role: 'menuitem', name: 'Status Bar', states: ['showing'], bounds: [100, 20, 140, 22] },
+    ] : []),
+  ]
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: nodes() })
+    if (tool === 'desk_read') { const n = nodes().find((x) => x.id === args.id); return n ? JSON.stringify(n) : { text: `no element ${String(args.id)}`, error: true } }
+    if (tool === 'desk_press') {
+      presses.push(String(args.id))
+      if (args.id === '1/3') state.open = !state.open
+      if (args.id === 'p/1' || args.id === 'p/2') { state.on = !state.on; state.open = false }
+      return '{"ok":true,"how":"click"}'
+    }
+    if (tool === 'desk_shot') return { text: '', image: gray(120, 28).toString('base64') }
+    if (tool === 'model_ask') return JSON.stringify({ text: JSON.stringify({ on: state.on }), usage })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ menu: 'View > Status Bar', on: false }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(presses, ['1/3', 'p/2'])
+  assert.equal(state.on, false)
+})
