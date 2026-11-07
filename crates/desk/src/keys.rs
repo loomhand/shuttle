@@ -124,7 +124,7 @@ pub(crate) fn hid_plus(req: &mut Value) {
     if req["key"] == "+" {
         req["key"] = "=".into();
         req["modifiers"] = json!(["shift"]);
-    } else if let Some(keys) = req["keys"].as_array_mut()
+    } else if let Some(keys) = req.get_mut("keys").and_then(Value::as_array_mut)
         && let Some(i) = keys.iter().position(|k| k == "+")
     {
         keys[i] = "=".into();
@@ -301,6 +301,11 @@ mod tests {
                 json!({"key": "=", "modifiers": ["shift"]}),
             ),
             (json!({"keys": ["cmd", "0"]}), json!({"keys": ["cmd", "0"]})),
+            (json!({"key": "return"}), json!({"key": "return"})),
+            (
+                json!({"x": 10.0, "y": 20.0, "scope": "desktop", "delivery_mode": "foreground"}),
+                json!({"x": 10.0, "y": 20.0, "scope": "desktop", "delivery_mode": "foreground"}),
+            ),
         ] {
             hid_plus(&mut req);
             assert_eq!(req, want);

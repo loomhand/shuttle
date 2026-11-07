@@ -3897,6 +3897,15 @@ pub(crate) mod tests {
             assert_eq!(sent.len(), 1, "background {background}: {sent:?}");
             assert_eq!(sent[0]["keys"], want, "background {background}");
         }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Mac);
+        desk.run("desk_key", json!({"keys": "enter"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            sent(&calls, "press_key"),
+            [json!({"key": "return", "scope": "desktop"})]
+        );
     }
 
     #[tokio::test]

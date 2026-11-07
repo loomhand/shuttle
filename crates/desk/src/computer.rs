@@ -2999,9 +2999,18 @@ mod tests {
             .unwrap()
             .iter()
             .filter(|c| c["name"] == "hotkey")
-            .map(|c| c["args"]["keys"].clone())
+            .map(|c| {
+                let mut args = c["args"].clone();
+                args.as_object_mut().unwrap().remove("session");
+                args
+            })
             .collect();
-        assert_eq!(hotkeys, [json!(["cmd", "shift", "="])]);
+        assert_eq!(
+            hotkeys,
+            [
+                json!({"keys": ["cmd", "shift", "="], "pid": 7, "window_id": 9, "delivery_mode": "foreground"})
+            ]
+        );
         driver.abort();
     }
 
