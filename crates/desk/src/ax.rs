@@ -848,7 +848,7 @@ unsafe extern "C" {
     fn CGDisplayModeRelease(mode: *mut c_void);
 }
 
-/// What the hit test finds at desk point `(x, y)` now, read in one call per element so a click can be read before its app handles it.
+/// What the hit test finds at desk point `(x, y)` now, with its ancestors up to its window, read before its app handles the click.
 pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
     let names = names(ATTRS);
     let mut el = hit(&system_wide(), x, y, display_scale())?;

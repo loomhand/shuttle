@@ -252,7 +252,7 @@ impl Grabber {
         self.image([0, 0, self.width.into(), self.height.into()])
     }
 
-    /// Whether the root window still has the size the segment was made for, by the root configure events a RandR change sends; no round trip.
+    /// Whether the root window still has the size the segment was made for, by the root configure events a RandR change sends.
     pub fn current(&self) -> bool {
         self.drain();
         !self.resized.load(Ordering::Relaxed)

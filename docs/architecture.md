@@ -40,5 +40,5 @@ shuttle is thin and embeddable: it sends each model call once, non-streaming, to
 | `crates/models` (`shuttle-models`) | The model calls: chat completions and decisions over one OpenAI-compatible endpoint, a model name per role; usable as a library with a `Config` value |
 | `crates/shuttle` | The `shuttle` binary: the MCP proxy (`mcp`), the daemon with its script runner and service plugins (`serve`), `desk VERB`, `stop` and `resume`, and the safety controls (kill hotkey, indicator, confirm dialog) |
 | `runtime/lib` | `entry.mts` (the module the runner starts), `desk.mts` (the desk API for scripts), `gui_plan.mts` (the plan executor, flows and replays), `draft.mts` (a recording's draft plan) and `png.mts` |
-| `runtime/test` | Node tests that drive the runtime against fake desk sockets and fake model servers |
+| `runtime/test` | Node tests that drive the runtime against fake desk sockets, which also answer its `model_*` calls |
 | `packaging` | The release archive builder, the runtime type stripper, the third-party pins, the macOS bundle template and the installers |

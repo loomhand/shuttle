@@ -417,7 +417,7 @@ impl Access for Uia {
         let mut chain = Vec::new();
         let mut at = self.element(id)?;
         while chain.len() < MAX_DEPTH {
-            // SAFETY: `walker`, `at` and the root are live UIA objects of this thread.
+            // SAFETY: `walker` and `at` are live UIA objects of this thread.
             let Ok(parent) = (unsafe { walker.GetParentElement(&at) }) else {
                 break;
             };

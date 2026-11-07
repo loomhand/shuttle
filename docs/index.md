@@ -8,7 +8,7 @@ shuttle (binary `shuttle`, app Shuttle) is a computer-use host that runs on your
 
 shuttle is part of [loomhand](https://github.com/loomhand). Its input, capture and window layer is [cua-driver](https://github.com/loomhand/cua) (MIT).
 
-**Status:** on macOS and Windows the daemon drives the desktop through the bundled cua-driver (`desk`, `screenshot`, `gui_plan`, `script_run`), calls models with your own key, and has its safety controls: kill switch and hotkey, indicator, confirm mode and app allowlist. On Linux (X11) the daemon drives the desktop over AT-SPI, with input through the bundled cua-driver, without the hotkey, indicator or confirm dialog. On Linux and macOS the daemon can drive an Android device over adb instead of the desktop.See [Platforms](platforms.md).
+**Status:** on macOS and Windows the daemon drives the desktop through the bundled cua-driver (`desk`, `screenshot`, `gui_plan`, `script_run`), calls models with your own key, and has its safety controls: kill switch and hotkey, indicator, confirm mode and app allowlist. On Linux (X11) the daemon drives the desktop over AT-SPI, with input through the bundled cua-driver, without the hotkey, indicator or confirm dialog. The daemon can drive an Android device over adb instead of the desktop, tested from Linux and macOS hosts. See [Platforms](platforms.md).
 
 ## Guides
 
