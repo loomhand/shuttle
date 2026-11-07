@@ -25,8 +25,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IDOK, LoadIconW, MB_DEFBUTTON2, MB_ICONQUESTION, MB_OKCANCEL, MB_SETFOREGROUND, MB_TOPMOST,
     MF_STRING, MSG, MessageBoxW, PostMessageW, RegisterClassW, RegisterWindowMessageW,
     SetForegroundWindow, SetTimer, TPM_NONOTIFY, TPM_RETURNCMD, TrackPopupMenu, TranslateMessage,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP,
-    WM_TIMER, WNDCLASSW,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_HOTKEY, WM_LBUTTONUP, WM_NULL,
+    WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
 };
 use windows::core::{BOOL, HSTRING, w};
 
@@ -100,6 +100,7 @@ impl Shown {
                 window,
                 None,
             );
+            let _ = PostMessageW(Some(window), WM_NULL, WPARAM(0), LPARAM(0));
             let _ = DestroyMenu(menu);
             picked.0 as usize
         };

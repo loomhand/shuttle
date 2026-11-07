@@ -311,7 +311,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let log = seen.clone();
+        let log = Arc::clone(&seen);
         tokio::spawn(async move {
             loop {
                 let (mut s, _) = listener.accept().await.unwrap();

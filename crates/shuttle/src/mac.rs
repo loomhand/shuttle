@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, Sel};
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
 };
@@ -192,11 +192,7 @@ pub fn asker() -> Asker {
 }
 
 fn ask(mtm: MainThreadMarker, question: &str, tx: oneshot::Sender<bool>) {
-    #[allow(deprecated)]
-    NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
-    let alert = NSAlert::new(mtm);
-    alert.setMessageText(&NSString::from_str("Shuttle"));
-    alert.setInformativeText(&NSString::from_str(question));
+    let alert = alert(mtm, question);
     alert.addButtonWithTitle(&NSString::from_str("Cancel"));
     alert.addButtonWithTitle(&NSString::from_str("Allow"));
     let watch = Watch::new(mtm, tx);
@@ -220,12 +216,16 @@ fn ask(mtm: MainThreadMarker, question: &str, tx: oneshot::Sender<bool>) {
 }
 
 fn tell(mtm: MainThreadMarker, text: &str) {
+    alert(mtm, text).runModal();
+}
+
+fn alert(mtm: MainThreadMarker, text: &str) -> Retained<NSAlert> {
     #[allow(deprecated)]
     NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
     let alert = NSAlert::new(mtm);
     alert.setMessageText(&NSString::from_str("Shuttle"));
     alert.setInformativeText(&NSString::from_str(text));
-    alert.runModal();
+    alert
 }
 
 fn indicator(
@@ -283,7 +283,7 @@ fn indicator(
     }
 }
 
-fn entry(mtm: MainThreadMarker, title: &str, action: objc2::runtime::Sel) -> Retained<NSMenuItem> {
+fn entry(mtm: MainThreadMarker, title: &str, action: Sel) -> Retained<NSMenuItem> {
     // SAFETY: the item is a fresh NSMenuItem; the action names a method `Target` defines.
     unsafe {
         NSMenuItem::initWithTitle_action_keyEquivalent(

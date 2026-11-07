@@ -75,7 +75,7 @@ pub struct Hotkey {
     pub modifiers: u32,
 }
 
-/// Reads `ctrl+alt+cmd+escape`: modifiers, then one key; a hotkey without a modifier would take that key from every app. `off` is no hotkey.
+/// Reads `ctrl+alt+cmd+escape`: modifiers, then one key, with at least one modifier; `off` is no hotkey.
 pub fn parse(spec: &str) -> Result<Option<Hotkey>, String> {
     parse_for(spec, cfg!(windows))
 }
