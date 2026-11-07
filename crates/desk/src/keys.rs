@@ -1,5 +1,7 @@
 //! The desk key vocabulary per OS: combinations such as `ctrl+shift+s` in the names cua-driver takes.
 
+use serde_json::{Value, json};
+
 const SHIFTED: &str = "!@#$%^&*()_+:\"<>?~{}|";
 const BASE: &str = "1234567890-=;',./`[]\\";
 const KEYS: [&str; 20] = [
@@ -115,19 +117,21 @@ pub fn key_names(combo: &str, os: Os) -> Result<Vec<String>, String> {
         parts.truncate(parts.len() - 2);
         parts.push("+");
     }
-    let mut keys = parts
-        .iter()
-        .map(|k| key_name(k, os, combo))
-        .collect::<Result<Vec<_>, _>>()?;
-    if os == Os::Mac
+    parts.iter().map(|k| key_name(k, os, combo)).collect()
+}
+
+pub(crate) fn hid_plus(req: &mut Value) {
+    if req["key"] == "+" {
+        req["key"] = "=".into();
+        req["modifiers"] = json!(["shift"]);
+    } else if let Some(keys) = req["keys"].as_array_mut()
         && let Some(i) = keys.iter().position(|k| k == "+")
     {
-        "=".clone_into(&mut keys[i]);
+        keys[i] = "=".into();
         if !keys.iter().any(|k| k == "shift") {
-            keys.insert(i, "shift".to_owned());
+            keys.insert(i, "shift".into());
         }
     }
-    Ok(keys)
 }
 
 /// A UIA AcceleratorKey or AccessKey such as `Ctrl+Shift+S` as `ctrl+shift+s`; none when empty.
@@ -278,16 +282,28 @@ mod tests {
     }
 
     #[test]
-    fn the_plus_key_is_shift_and_equals_on_macos_and_plus_elsewhere() {
-        assert_eq!(key_names("cmd++", Os::Mac).unwrap(), ["cmd", "shift", "="]);
-        assert_eq!(
-            key_names("cmd+shift+plus", Os::Mac).unwrap(),
-            ["cmd", "shift", "="]
-        );
-        assert_eq!(key_names("+", Os::Mac).unwrap(), ["shift", "="]);
-        for os in [Os::Windows, Os::Linux] {
+    fn the_plus_key_is_plus_and_the_hid_path_takes_it_as_shift_and_equals() {
+        for os in [Os::Windows, Os::Mac, Os::Linux] {
             assert_eq!(key_names("ctrl++", os).unwrap(), ["ctrl", "+"]);
             assert_eq!(key_names("ctrl+plus", os).unwrap(), ["ctrl", "+"]);
+        }
+        for (mut req, want) in [
+            (
+                json!({"keys": ["cmd", "+"]}),
+                json!({"keys": ["cmd", "shift", "="]}),
+            ),
+            (
+                json!({"keys": ["cmd", "shift", "+"]}),
+                json!({"keys": ["cmd", "shift", "="]}),
+            ),
+            (
+                json!({"key": "+"}),
+                json!({"key": "=", "modifiers": ["shift"]}),
+            ),
+            (json!({"keys": ["cmd", "0"]}), json!({"keys": ["cmd", "0"]})),
+        ] {
+            hid_plus(&mut req);
+            assert_eq!(req, want);
         }
     }
 

@@ -25,7 +25,7 @@ use crate::auto;
 use crate::driver::{
     CAPTURE_SESSION, INPUT_TOOLS, Input, WINDOW_SESSION, background, desktop, image_of, text_of,
 };
-use crate::keys::{Os, key_names, keystroke};
+use crate::keys::{Os, hid_plus, key_names, keystroke};
 use crate::lock;
 use crate::model::{Access, Act, Capture, Extras, Frame, Node};
 use crate::press::{Press, plan_press};
@@ -928,8 +928,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn key(&self, a: KeyArgs) -> Result<String, String> {
-        let (tool, req) = key_request(key_names(&a.keys, self.os)?);
+        let (tool, mut req) = key_request(key_names(&a.keys, self.os)?);
         let to = self.target(a.window.as_deref(), a.pid).await?;
+        if self.os == Os::Mac && to.is_none() {
+            hid_plus(&mut req);
+        }
         let raised = self.raised_window(a.window.as_deref(), a.pid).await?;
         self.raise(raised).await?;
         let mut note = None;
@@ -3875,6 +3878,24 @@ pub(crate) mod tests {
             "bring_to_front",
         ] {
             assert!(sent(&calls, tool).is_empty(), "{tool}");
+        }
+    }
+
+    #[tokio::test]
+    async fn macos_sends_the_plus_key_as_shift_and_equals_only_on_the_hid_path() {
+        for (background, want) in [
+            (false, json!(["cmd", "shift", "="])),
+            (true, json!(["cmd", "+"])),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk =
+                Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Mac).background(background);
+            desk.run("desk_key", json!({"keys": "cmd++", "pid": 4}))
+                .await
+                .unwrap();
+            let sent = sent(&calls, "hotkey");
+            assert_eq!(sent.len(), 1, "background {background}: {sent:?}");
+            assert_eq!(sent[0]["keys"], want, "background {background}");
         }
     }
 
