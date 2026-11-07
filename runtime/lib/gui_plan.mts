@@ -210,7 +210,7 @@ async function perform(p: Params): Promise<Result> {
           try { return await run(s, rec) } catch (again: unknown) { if (!late(again) || Date.now() > end) throw again }
         }
       })
-      if (s.after) await landed(s.after, s.timeout_ms ?? 5000)
+      if (s.after) await landed(s.after, s.timeout_ms ?? 5000, ws)
       if (unheard && !rec.unverified) rec.unverified = unheard
       if (actioned && !s.after) rec.caveat = ACTION_ONLY
       if (desk.foreground.runs + foreground.steps > runs) { rec.fg = true; fronted = true; BG = false }
@@ -863,10 +863,10 @@ async function byDom(nodes: Node[], id: string, hit: Hit | null, target: string,
   return hit
 }
 
-async function landed(want: string, ms: number) {
+async function landed(want: string, ms: number, before: Win[]) {
   const t0 = Date.now()
   const opened = (ws: Win[]) => {
-    const named = BG ? ws.filter((x) => x.pid === target?.pid && x.role === 'window' && x.owner === undefined && awaited(x.title, want)) : []
+    const named = BG ? ws.filter((x) => x.pid === target?.pid && x.role === 'window' && x.owner === undefined && awaited(x.title, want) && !before.some((y) => y.id === x.id && y.title === x.title)) : []
     const exact = named.filter((x) => norm(x.title) === norm(want))
     const [one, other] = exact.length ? exact : named
     return other ? undefined : one
