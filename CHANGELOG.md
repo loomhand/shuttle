@@ -29,6 +29,7 @@
   - In the background, a recorded `after` takes the new top-level window of the plan's app that the step opened (#271).
   - `desk.at` sends whole pixels, a type step into a password field no longer quotes the secret in its error, and a background menu toggle that needs pixels refuses before it opens the menus (#262).
   - A recording's draft keeps the keys F1 to F12.
+  - In a tree whose nodes carry no bounds, as GTK 4 apps give, a shown element whose name matches is clicked without a model pick.
 - **Computer verbs.** A `computer_state` that read no elements drops the session's previous elements, and a `type` with `x`, `y` and no text is refused. An uncropped, unmasked `shot` returns the screenshot PNG as is instead of decoding and encoding it again.
 - **Android.** A UI server that exited while idle is started again instead of reused, which failed the next call with a broken pipe; the server frees each screenshot bitmap. A paste the window refused fails, a launch with `args` and a `key`, `type` or `click` naming an app are refused before any adb call (#261), and a paste key with no window in focus says so (#274).
 - **Recording (macOS).** The daemon answers `record_start`, `record_note` and `record_stop` only to its own user, so a `socket_group` member can no longer record your keystrokes and screen. A recorded click's window shot names the window's pid, so a same-titled window of another app is not cropped (#260).

@@ -670,6 +670,7 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   const t0 = Date.now()
   const pinned = byFp(nodes, fp, within)
   if (pinned) { tick('ax', t0); return pinned }
+  const placed = nodes.some((n) => !!n.bounds)
   const pool = candidates(nodes, role, within)
   const want = norm(target)
   const covers = (n: Node) => {
@@ -682,7 +683,7 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   const exact = (n: Node) => norm(n.name) === want || (!!core && norm(n.name) === core)
   const inside = (n: Node, i: number) => { for (const [p] of up(nodes, n.parent)) if (p === i) return true; return false }
   for (const f of [exact, (n: Node) => covers(n) && (!said || said.includes(n.role))]) {
-    const all = pool.filter(({ n }) => f(n)); const drawn = all.filter(({ n }) => n.shown && !!n.bounds)
+    const all = pool.filter(({ n }) => f(n)); const drawn = all.filter(({ n }) => n.shown && (!!n.bounds || !placed))
     const some = drawn.length ? drawn : all.filter(({ n }) => n.role.startsWith('menu'))
     const hit = some.filter(({ n, i }) => !some.some((o) => o.i !== i && norm(o.n.name) === norm(n.name) && inside(o.n, i)))
     const [one, two] = hit
