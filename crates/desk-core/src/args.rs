@@ -15,6 +15,8 @@ pub struct SnapArgs {
     pub keys: bool,
     #[serde(default)]
     pub menus: bool,
+    #[serde(default)]
+    pub urls: bool,
     pub bounds: Option<bool>,
     pub max_chars: Option<usize>,
 }
@@ -33,6 +35,8 @@ pub struct FindArgs {
     pub role: Option<String>,
     pub window: Option<String>,
     pub pid: Option<u32>,
+    #[serde(default)]
+    pub urls: bool,
 }
 
 #[derive(Deserialize)]

@@ -319,6 +319,7 @@ fn node(n: atspi::Node) -> Node {
         description: n.description,
         value: n.value,
         keys: n.keys,
+        url: n.url,
     }
 }
 

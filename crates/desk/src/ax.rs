@@ -358,6 +358,9 @@ impl Ax {
                 .then(|| ax_combo(&a.cmd_char, a.cmd_modifiers.unwrap_or(0)))
                 .flatten(),
             bounds,
+            url: (extras.urls && role == "link")
+                .then(|| attr(el, "AXURL").and_then(url_text))
+                .flatten(),
             ..Node::default()
         }
     }

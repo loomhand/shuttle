@@ -639,6 +639,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             keys: a.keys,
             menus: a.menus,
             frame: false,
+            urls: a.urls && !a.text,
         };
         let (window, pid, id) = (a.window, a.pid, a.id);
         let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
@@ -692,6 +693,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             keys: false,
             menus: true,
             frame: false,
+            urls: a.urls,
         };
         let (window, pid) = (a.window, a.pid);
         let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
@@ -720,6 +722,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             keys: true,
             menus: false,
             frame: false,
+            urls: true,
         };
         let chars = if a.text { READ_CHARS } else { NAME_CHARS };
         let (node, (url, dom_id)) = self
@@ -4474,6 +4477,31 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn snapshot_and_find_read_link_urls_only_when_asked_and_read_always_does() {
+        let desk = Desk::new(|| Ok(notepad()), Slow(Arc::default()), Os::Mac);
+        desk.run("desk_snapshot", json!({})).await.unwrap();
+        desk.run("desk_snapshot", json!({"urls": true}))
+            .await
+            .unwrap();
+        desk.run("desk_snapshot", json!({"urls": true, "text": true}))
+            .await
+            .unwrap();
+        desk.run("desk_find", json!({"name": "Save"}))
+            .await
+            .unwrap();
+        desk.run("desk_find", json!({"name": "Save", "urls": true}))
+            .await
+            .unwrap();
+        desk.run("desk_read", json!({"id": "ok"})).await.unwrap();
+        let urls = desk
+            .access
+            .run(CALL_LIMIT, (), |b| Ok(b.urls.clone()))
+            .await
+            .unwrap();
+        assert_eq!(urls, [false, true, false, false, true, true]);
+    }
+
+    #[tokio::test]
     async fn a_window_kept_from_an_earlier_list_is_listed_but_never_acted_on() {
         let busy = || {
             Ok(Stub {
@@ -5888,6 +5916,7 @@ pub(crate) mod tests {
         covers: Option<(String, Option<u32>)>,
         opened: bool,
         menus: Vec<bool>,
+        urls: Vec<bool>,
         untitled: bool,
         top: Option<u32>,
         blind: bool,
@@ -5929,13 +5958,15 @@ pub(crate) mod tests {
 
         fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
             self.menus.push(extras.menus);
+            self.urls.push(extras.urls);
             Ok(Tree {
                 frame: frame.clone(),
                 ..Tree::default()
             })
         }
 
-        fn node(&mut self, id: &str, _: Extras, _: usize) -> Result<Node, String> {
+        fn node(&mut self, id: &str, extras: Extras, _: usize) -> Result<Node, String> {
+            self.urls.push(extras.urls);
             let (mut n, _) = self.nodes.get(id).cloned().ok_or("gone")?;
             if self.opened && n.role == "menuitem" {
                 n.states.push("showing");
