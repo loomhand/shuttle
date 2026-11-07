@@ -406,3 +406,13 @@ test('a window that takes the plan window id under another process is not the pl
   assert.match(String(r.escalate?.reason), /plan's window "Untitled - Notepad" is gone/)
   assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'a', window: 'Untitled - Notepad', pid: 4 }])
 })
+
+test('an expect the tree does not meet fails a background plan without a look at the screen', async (t) => {
+  const d = desktop([user(), notepad()], ({ tool }) => tool === 'model_decide' ? JSON.stringify({ answers: { ok: { probability: 0.2 } }, served: { model: 'm', build: null, id: null }, usage: { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 } }) : undefined)
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { expect: 'the text is bold' }] })
+  assert.equal(r.ok, false)
+  assert.equal(r.escalate?.step, 1)
+  assert.match(String(r.escalate?.reason), /^expectation not met in the window's tree: the text is bold; background gui_plan does not read the screen/)
+  for (const tool of ['desk_shot', 'model_ask', 'desk_focus']) assert.ok(!d.calls.some((c) => c.tool === tool), tool)
+})
