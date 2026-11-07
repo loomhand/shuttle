@@ -120,6 +120,9 @@ test('a password that a window change follows with no click or key in between wa
   assert.deepEqual(await steps('rec-pw-8', [...start.slice(0, -1), sheet, owner]), [...head.slice(0, -1), { type: '{{password}}', focus: { role: 'textbox', name: 'Password', frame: 'dialog', secure: true } }, { key: 'return', after: 'Sign in' }])
   const workspace: Event = { t: 0, kind: 'after', window: 'Workspace', role: 'window', app: 'Safari' }
   assert.deepEqual(await steps('rec-pw-9', [workspace, ...start, { ...workspace, t: 9 }]), [{ app: 'Safari', title: 'Sign in' }, ...head, { key: 'return' }])
+  const sheetPassword: Event = { t: 2, kind: 'password', app: 'Safari', focus: { ...secure, window: 'Workspace', frame: 'dialog' } }
+  const sheetShown: Event = { t: 3, kind: 'after', window: 'Sign in', role: 'dialog', app: 'Safari' }
+  assert.deepEqual(await steps('rec-pw-11', [...start.slice(0, -1), sheetPassword, sheetShown, button, signedIn]), [...head.slice(0, -1), { type: '{{password}}', focus: { role: 'textbox', name: 'Password', frame: 'dialog', secure: true } }, { click: 'Sign In', role: 'button', after: 'Signed in' }])
   assert.deepEqual(await steps('rec-pw-10', [...hidden, ownWindow, button, signedIn]), [{ app: 'Safari', title: 'Sign in' }, { click: 'User' }, { type: '{{password}}', focus: { secure: true }, after: 'Sign in' }, { click: 'Sign In', role: 'button', after: 'Signed in' }])
 })
 

@@ -99,7 +99,7 @@ export async function main(p: Params): Promise<Draft> {
       const w = typeof e.window === 'string' ? e.window : undefined
       const last = draft.steps.at(-1)
       const typing = !!w && !!unsent && last === unsent.step
-      const sent = typing && (w !== unsent?.window || e.role !== unsent?.frame)
+      const sent = typing && e.role === 'window' && (w !== unsent?.window || e.role !== unsent?.frame)
       const attach = w && !seen.has(w) && e.role === 'window'
       if (sent) { draft.steps.push({ key: 'return', ...(attach ? { after: templ(w) } : {}), intent: 'press return' }); unsent = undefined }
       else if (attach && last && !last.app && !typing) last.after = templ(w)
