@@ -62,7 +62,7 @@ The screenshot mask is per window rectangle, not per pixel:
 - the tools of any service plugin, which run as your user whatever `script_run` says;
 - the model calls on your key, which stays in the daemon but pays for theirs.
 
-The daemon reads the user of each connection's peer and answers `safety_stop` and `safety_resume` only from its own user, so a member cannot send them directly. That keeps the stop yours only while `script_run` is off and no service plugin is installed: a member's script or service runs as your user, and its calls, the stop and the resume among them, pass as yours. The app allowlist and the confirm mode apply to their calls as to yours. Give the group only to accounts you would let use your desktop; `script_run = false` with no service plugin installed keeps them to the desk tools.
+The daemon reads the user of each connection's peer and answers `safety_stop`, `safety_resume` and the recording calls only from its own user, so a member cannot send them directly. That keeps the stop yours only while `script_run` is off and no service plugin is installed: a member's script or service runs as your user, and its calls, the stop and the resume among them, pass as yours. The app allowlist and the confirm mode apply to their calls as to yours. Give the group only to accounts you would let use your desktop; `script_run = false` with no service plugin installed keeps them to the desk tools.
 
 ## Turning script_run off
 
