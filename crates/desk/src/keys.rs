@@ -2,7 +2,33 @@
 
 const SHIFTED: &str = "!@#$%^&*()_+:\"<>?~{}|";
 const BASE: &str = "1234567890-=;',./`[]\\";
-const LINUX_ALIASES: [(&str, &str); 47] = [
+const KEYS: [&str; 20] = [
+    "return",
+    "tab",
+    "escape",
+    "space",
+    "backspace",
+    "delete",
+    "insert",
+    "home",
+    "end",
+    "pageup",
+    "pagedown",
+    "up",
+    "down",
+    "left",
+    "right",
+    "shift",
+    "ctrl",
+    "alt",
+    "capslock",
+    "numlock",
+];
+const LOGO: [&str; 11] = [
+    "cmd", "command", "meta", "win", "windows", "winleft", "winright", "super", "super_l",
+    "super_r", "mod4",
+];
+const ALIASES: [(&str, &str); 55] = [
     ("control", "ctrl"),
     ("primary", "ctrl"),
     ("ctl", "ctrl"),
@@ -19,17 +45,8 @@ const LINUX_ALIASES: [(&str, &str); 47] = [
     ("altleft", "alt"),
     ("altright", "alt"),
     ("option", "alt"),
+    ("opt", "alt"),
     ("mod1", "alt"),
-    ("cmd", "super"),
-    ("command", "super"),
-    ("meta", "super"),
-    ("win", "super"),
-    ("windows", "super"),
-    ("winleft", "super"),
-    ("winright", "super"),
-    ("super_l", "super"),
-    ("super_r", "super"),
-    ("mod4", "super"),
     ("enter", "return"),
     ("kp_enter", "return"),
     ("esc", "escape"),
@@ -37,9 +54,11 @@ const LINUX_ALIASES: [(&str, &str); 47] = [
     ("ins", "insert"),
     ("prior", "pageup"),
     ("page_up", "pageup"),
+    ("page up", "pageup"),
     ("pgup", "pageup"),
     ("next", "pagedown"),
     ("page_down", "pagedown"),
+    ("page down", "pagedown"),
     ("pgdn", "pagedown"),
     ("arrowup", "up"),
     ("arrowdown", "down"),
@@ -50,6 +69,21 @@ const LINUX_ALIASES: [(&str, &str); 47] = [
     ("num_lock", "numlock"),
     ("back_space", "backspace"),
     ("bksp", "backspace"),
+    ("plus", "+"),
+    ("minus", "-"),
+    ("dash", "-"),
+    ("equal", "="),
+    ("equals", "="),
+    ("asterisk", "*"),
+    ("star", "*"),
+    ("slash", "/"),
+    ("backslash", "\\"),
+    ("period", "."),
+    ("dot", "."),
+    ("comma", ","),
+    ("semicolon", ";"),
+    ("colon", ":"),
+    ("underscore", "_"),
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,18 +103,25 @@ impl Os {
     }
 }
 
-/// The driver's key names of `combo`: `Ctrl+Shift+S` is `["ctrl", "shift", "s"]`.
+/// The driver's key names of `combo`: `Ctrl+Shift+S` is `["ctrl", "shift", "s"]`; a name no driver knows fails.
 pub fn key_names(combo: &str, os: Os) -> Result<Vec<String>, String> {
     let mut parts: Vec<&str> = combo.split('+').collect();
-    if os == Os::Linux && parts.ends_with(&["", ""]) {
+    if parts.ends_with(&["", ""]) {
         parts.truncate(parts.len() - 2);
-        parts.push("plus");
+        parts.push("+");
     }
-    let keys: Vec<String> = parts.iter().map(|k| key_name(k, os)).collect();
-    if keys.iter().any(String::is_empty) {
-        return Err(format!("bad key combination {combo:?}"));
-    }
-    Ok(keys)
+    parts
+        .iter()
+        .map(|k| match key_name(k, os) {
+            Some(name) if !name.is_empty() => Ok(name),
+            Some(_) => Err(format!("bad key combination {combo:?}")),
+            None => Err(format!(
+                "unknown key {:?} in {combo:?}: a key is one character, f1 to f12, or one of {}",
+                k.trim(),
+                KEYS.join(", ")
+            )),
+        })
+        .collect()
 }
 
 /// A UIA AcceleratorKey or AccessKey such as `Ctrl+Shift+S` as `ctrl+shift+s`; none when empty.
@@ -130,25 +171,28 @@ pub fn keystroke(c: char) -> Option<Vec<String>> {
     }
 }
 
-fn key_name(key: &str, os: Os) -> String {
+fn key_name(key: &str, os: Os) -> Option<String> {
     let k = key.trim().to_lowercase();
-    if os == Os::Linux {
-        return LINUX_ALIASES
-            .iter()
-            .find(|(alias, _)| *alias == k)
-            .map_or(k, |(_, name)| (*name).to_owned());
+    if LOGO.contains(&k.as_str()) {
+        return Some(os.logo().to_owned());
     }
-    match k.as_str() {
-        "control" | "primary" | "ctl" => "ctrl".to_owned(),
-        "enter" => "return".to_owned(),
-        "esc" => "escape".to_owned(),
-        "del" => "delete".to_owned(),
-        "option" | "opt" | "menu" => "alt".to_owned(),
-        "pgup" | "page up" | "page_up" | "prior" => "pageup".to_owned(),
-        "pgdn" | "page down" | "page_down" | "next" => "pagedown".to_owned(),
-        "cmd" | "command" | "meta" | "win" | "windows" | "super" => os.logo().to_owned(),
-        _ => k,
+    let name = ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == k)
+        .map_or(k.as_str(), |(_, name)| name);
+    let function = name
+        .strip_prefix('f')
+        .and_then(|n| n.parse::<u8>().ok())
+        .is_some_and(|n| (1..=12).contains(&n));
+    if name.chars().count() > 1 && !function && !KEYS.contains(&name) {
+        return None;
     }
+    let name = if os == Os::Mac && name == "delete" {
+        "forward_delete"
+    } else {
+        name
+    };
+    Some(name.to_owned())
 }
 
 #[cfg(test)]
@@ -171,11 +215,46 @@ mod tests {
     fn linux_combinations_take_the_keysym_aliases_and_a_plus_key() {
         assert_eq!(key_names("Super_L+l", Os::Linux).unwrap(), ["super", "l"]);
         assert_eq!(key_names("cmd+q", Os::Linux).unwrap(), ["super", "q"]);
-        assert_eq!(key_names("ctrl++", Os::Linux).unwrap(), ["ctrl", "plus"]);
-        assert_eq!(key_names("+", Os::Linux).unwrap(), ["plus"]);
-        assert_eq!(key_names("menu", Os::Linux).unwrap(), ["menu"]);
+        assert_eq!(key_names("ctrl++", Os::Linux).unwrap(), ["ctrl", "+"]);
+        assert_eq!(key_names("+", Os::Linux).unwrap(), ["+"]);
         assert_eq!(key_names("KP_Enter", Os::Linux).unwrap(), ["return"]);
         assert!(key_names("ctrl+", Os::Linux).is_err());
+    }
+
+    #[test]
+    fn every_os_takes_the_same_aliases_and_refuses_a_name_no_driver_knows() {
+        for os in [Os::Windows, Os::Mac, Os::Linux] {
+            for (combo, keys) in [
+                ("ArrowUp", ["up"].as_slice()),
+                ("kp_enter", &["return"]),
+                ("shift+ins", &["shift", "insert"]),
+                ("bksp", &["backspace"]),
+                ("spacebar", &["space"]),
+                ("ctrl++", &["ctrl", "+"]),
+                ("ctrl+plus", &["ctrl", "+"]),
+                ("ctrl+minus", &["ctrl", "-"]),
+                ("alt+F12", &["alt", "f12"]),
+                ("Page Down", &["pagedown"]),
+            ] {
+                assert_eq!(key_names(combo, os).unwrap(), keys, "{combo} on {os:?}");
+            }
+            for combo in ["menu", "ctrl+printscreen", "f13", "fn+f1"] {
+                let err = key_names(combo, os).unwrap_err();
+                assert!(err.starts_with("unknown key"), "{combo} on {os:?}: {err}");
+            }
+        }
+    }
+
+    #[test]
+    fn delete_is_the_forward_delete_key_on_every_os() {
+        assert_eq!(key_names("del", Os::Mac).unwrap(), ["forward_delete"]);
+        assert_eq!(
+            key_names("shift+Delete", Os::Mac).unwrap(),
+            ["shift", "forward_delete"]
+        );
+        assert_eq!(key_names("del", Os::Windows).unwrap(), ["delete"]);
+        assert_eq!(key_names("del", Os::Linux).unwrap(), ["delete"]);
+        assert_eq!(key_names("backspace", Os::Mac).unwrap(), ["backspace"]);
     }
 
     #[test]

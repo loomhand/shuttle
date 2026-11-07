@@ -4887,7 +4887,7 @@ pub(crate) mod tests {
             [
                 (
                     "hotkey".to_owned(),
-                    json!({"keys": ["super", "ctrl", "plus"], "scope": "desktop"})
+                    json!({"keys": ["super", "ctrl", "+"], "scope": "desktop"})
                 ),
                 (
                     "type_text".to_owned(),
