@@ -40,15 +40,20 @@ test('a verify by value passes only on the value itself, and a spin button may a
   assert.equal(await ok('5'), false)
 })
 
-test('a verify by value on a link compares the url that a read gives it', async (t) => {
+test('a verify by value on a link compares the url that a read gives it exactly', async (t) => {
+  let url = 'https://example.com/'
   const link = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'link', name: 'Docs', states: ['showing'], bounds: [10, 10, 100, 20] }
   await daemon(t, ({ tool }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root, link] })
-    if (tool === 'desk_read') return JSON.stringify({ ...link, url: 'https://example.com/' })
+    if (tool === 'desk_read') return JSON.stringify({ ...link, url })
     return '{"ok":true}'
   })
   const ok = async (want: string) => (await main({ steps: [{ verify: 'Docs', role: 'link', value: want }] })).ok
   assert.equal(await ok('https://example.com/'), true)
   assert.equal(await ok('https://example.com/other'), false)
+  url = 'https://example.com/a_b'
+  assert.equal(await ok('https://example.com/ab'), false)
+  assert.equal(await ok('https://example.com/A_b'), false)
+  assert.equal(await ok('https://example.com/a_b'), true)
 })
