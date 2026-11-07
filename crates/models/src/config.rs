@@ -150,10 +150,11 @@ impl Default for Roles {
     }
 }
 
-/// The safety controls: `apps` limits the desk calls to windows of those apps, matched by app name or executable; empty allows every app.
+/// The safety controls.
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Safety {
+    /// The apps the desk calls may reach, matched by app name or executable; empty allows every app.
     pub apps: Vec<String>,
     /// The global key combination that stops shuttle, such as `ctrl+alt+cmd+escape`.
     pub kill_hotkey: String,

@@ -165,7 +165,7 @@ pub fn configured(config: &Result<Config, String>, path: &Path, builtins: &[&str
 
 /// Whether `name` has a plugin tool's form: `^[a-z][a-z0-9_]*_run$`.
 fn is_name(name: &str) -> bool {
-    name.len() > SUFFIX.len() && name.ends_with(SUFFIX) && is_word(name)
+    name.ends_with(SUFFIX) && is_word(name)
 }
 
 /// Reads the `*.json` plugins in `dir` in file-name order, so the first of two files with one name wins.
