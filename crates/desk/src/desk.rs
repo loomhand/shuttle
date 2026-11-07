@@ -1649,7 +1649,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(Some((pid, id)))
     }
 
-    /// Raises the foreground target of pointer input named by `window`, under the rule [`Self::raised_window`] keeps.
+    /// Raises the foreground target of pointer input named by `window` unless it is already on top at the point, under the rule [`Self::raised_window`] keeps.
     async fn front(
         &self,
         to: (i64, i64),
@@ -1659,16 +1659,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if pid.is_none() && self.os == Os::Linux {
             return Ok(());
         }
+        let on_top = |u: Option<Under>| u.is_some_and(|u| (u.pid, u.id) == to);
+        if on_top(self.window_at(x, y).await?) {
+            return Ok(());
+        }
         self.raise(Some(to)).await?;
         let end = Instant::now() + RAISE_WAIT;
-        while Instant::now() < end {
-            if self
-                .window_at(x, y)
-                .await?
-                .is_some_and(|u| (u.pid, u.id) == to)
-            {
-                break;
-            }
+        while Instant::now() < end && !on_top(self.window_at(x, y).await?) {
             tokio::time::sleep(WAIT_POLL).await;
         }
         Ok(())
@@ -2934,10 +2931,7 @@ pub(crate) mod tests {
             "{}",
             out.text
         );
-        assert_eq!(
-            order(&calls),
-            ["bring_to_front -", "bring_to_front -", "drag desktop"]
-        );
+        assert_eq!(order(&calls), ["bring_to_front -", "drag desktop"]);
     }
 
     #[tokio::test]
@@ -4255,7 +4249,11 @@ pub(crate) mod tests {
             [json!({"keys": ["ctrl", "s"], "scope": "desktop"})]
         );
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Windows);
+        let desk = Desk::new(
+            || Ok(Apps),
+            BehindCover(Behind(Arc::clone(&calls)), AtomicBool::new(false)),
+            Os::Windows,
+        );
         let named = json!({"window": "Inbox", "pid": 8});
         for (tool, mut args) in [
             ("desk_type", json!({"text": "a"})),
@@ -6427,6 +6425,30 @@ pub(crate) mod tests {
                 "click" => json!({"structuredContent": {"effect": "unverifiable"}}),
                 _ => json!({}),
             })
+        }
+    }
+
+    struct BehindCover(Behind, AtomicBool);
+
+    impl Input for BehindCover {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let mut out = self.0.call(tool, args).await?;
+            match tool {
+                "bring_to_front" => self.1.store(true, Ordering::SeqCst),
+                "list_windows" if !self.1.load(Ordering::SeqCst) => {
+                    for w in out["structuredContent"]["windows"]
+                        .as_array_mut()
+                        .into_iter()
+                        .flatten()
+                        .filter(|w| w["pid"] == 4)
+                    {
+                        w["z_index"] = 3.into();
+                    }
+                }
+                "list_windows" | "get_window_state" | "get_screen_size" => {}
+                _ => self.1.store(false, Ordering::SeqCst),
+            }
+            Ok(out)
         }
     }
 
