@@ -33,18 +33,16 @@ export async function main(p: Params): Promise<Draft> {
   const captions = new Map(events.flatMap((e) => e.kind === 'click' && e.crop && !own(e) ? [[e, slot(() => caption(e.crop ?? '', e.crop_scale ?? 1, e.crop_offset ?? [0, 0], e.element?.role))] as const] : []))
   const seen = new Set<string>()
   let typed = ''; let secrets = 0; let secret = false; let filled = false
-  let unsent: { step: Step; window?: string } | undefined
+  let unsent: { step: Step; window: string; frame: string } | undefined
   let into: Field | null | undefined
   let clicked: { e: Event; step: Step } | undefined
   // a recording that read no focus checks none on replay
   const focus = (f: Field | null | undefined) => f === null ? { focus: 'unverified' } : f ? onPage(f, f) : {}
   const onPage = (f: Partial<Field>, to: Partial<Field>) => { const { url: _url, window: _window, ...field } = to; return { focus: field, ...(f.url ? { web: { url: templ(f.url) } } : {}) } }
-  const password = (f?: Field | null, window = f?.window) => {
+  const password = (f?: Field | null) => {
     const name = `password${secrets ? `_${secrets + 1}` : ''}`; secrets += 1
     params[name] = { secret: true }
-    const step = { type: `{{${name}}}`, ...onPage(f ?? {}, { ...f, secure: true }), intent: `type the ${name.replace('_', ' ')} (a password field: not recorded, pass it as ${name})` }
-    unsent = { step, window }
-    draft.steps.push(step)
+    draft.steps.push({ type: `{{${name}}}`, ...onPage(f ?? {}, { ...f, secure: true }), intent: `type the ${name.replace('_', ' ')} (a password field: not recorded, pass it as ${name})` })
   }
   const flush = () => {
     if (secret) {
@@ -93,19 +91,19 @@ export async function main(p: Params): Promise<Draft> {
       if (!filled) password(e.focus)
       else if (last && e.focus && !(last.focus as Partial<Field> | undefined)?.role) Object.assign(last, onPage(e.focus, { ...e.focus, secure: true }))
       filled = true
+      const step = draft.steps.at(-1)
+      if (step && e.focus?.window) unsent = { step, window: e.focus.window, frame: e.focus.frame }
     }
     else if (e.kind === 'skipped') draft.gaps.push(draft.steps.length)
     else if (e.kind === 'after') {
       const w = typeof e.window === 'string' ? e.window : undefined
       const last = draft.steps.at(-1)
-      const typing = !!w && last === unsent?.step
-      const sent = typing && w !== unsent?.window
-      if (w && last && !last.app && !seen.has(w) && e.role === 'window' && (sent || !typing)) {
-        if (sent) draft.steps.push({ key: 'return', after: templ(w), intent: 'press return' })
-        else last.after = templ(w)
-      }
+      const typing = !!w && !!unsent && last === unsent.step
+      const sent = typing && (w !== unsent?.window || e.role !== unsent?.frame)
+      const attach = w && !seen.has(w) && e.role === 'window'
+      if (sent) { draft.steps.push({ key: 'return', ...(attach ? { after: templ(w) } : {}), intent: 'press return' }); unsent = undefined }
+      else if (attach && last && !last.app && !typing) last.after = templ(w)
       if (w) seen.add(w)
-      if (sent) unsent = undefined
       if (w && e.app && e.role === 'window') here = { app: e.app, window: w }
     } else if (e.kind === 'click') {
       const el = e.element ?? {}
@@ -122,7 +120,7 @@ export async function main(p: Params): Promise<Draft> {
       clicked = { e, step: click(e, templ, await captions.get(e)) }
       draft.steps.push(clicked.step)
       filled = !!e.secret
-      if (filled) password(undefined, windowOf(e))
+      if (filled) password()
     }
   }
   flush()

@@ -110,11 +110,17 @@ test('a password that a window change follows with no click or key in between wa
   assert.deepEqual(await steps('rec-pw-3', [...start, shown, signedIn]), [...head, { key: 'return', after: 'Signed in' }])
   const hidden: Event[] = [user, { t: 1, kind: 'key', secret: true, app: 'Safari' }, { t: 2, kind: 'key', secret: true, app: 'Safari' }]
   const bare = [{ app: 'Safari', title: 'Sign in' }, { click: 'User' }, { type: '{{password}}', focus: { secure: true } }]
-  assert.deepEqual(await steps('rec-pw-4', [...hidden, signedIn]), [...bare, { key: 'return', after: 'Signed in' }])
+  assert.deepEqual(await steps('rec-pw-4', [...hidden, signedIn]), [{ app: 'Safari', title: 'Sign in' }, { click: 'User' }, { type: '{{password}}', focus: { secure: true }, after: 'Signed in' }])
   assert.deepEqual(await steps('rec-pw-5', [...hidden, shown, signedIn]), [...bare, { key: 'return', after: 'Signed in' }])
   const ownWindow: Event = { t: 2, kind: 'after', window: 'Sign in', role: 'window', app: 'Safari' }
   assert.deepEqual(await steps('rec-pw-6', [...start, ownWindow, button, signedIn]), [...head, { click: 'Sign In', role: 'button', after: 'Signed in' }])
   assert.deepEqual(await steps('rec-pw-7', [...start, ownWindow, signedIn]), [...head, { key: 'return', after: 'Signed in' }])
+  const sheet: Event = { t: 2, kind: 'password', app: 'Safari', focus: { ...secure, frame: 'dialog' } }
+  const owner: Event = { t: 9, kind: 'after', window: 'Sign in', role: 'window', app: 'Safari' }
+  assert.deepEqual(await steps('rec-pw-8', [...start.slice(0, -1), sheet, owner]), [...head.slice(0, -1), { type: '{{password}}', focus: { role: 'textbox', name: 'Password', frame: 'dialog', secure: true } }, { key: 'return', after: 'Sign in' }])
+  const workspace: Event = { t: 0, kind: 'after', window: 'Workspace', role: 'window', app: 'Safari' }
+  assert.deepEqual(await steps('rec-pw-9', [workspace, ...start, { ...workspace, t: 9 }]), [{ app: 'Safari', title: 'Sign in' }, ...head, { key: 'return' }])
+  assert.deepEqual(await steps('rec-pw-10', [...hidden, ownWindow, button, signedIn]), [{ app: 'Safari', title: 'Sign in' }, { click: 'User' }, { type: '{{password}}', focus: { secure: true }, after: 'Sign in' }, { click: 'Sign In', role: 'button', after: 'Signed in' }])
 })
 
 test('a click near the screen edge keeps its crop offset for the replay', async (t) => {
