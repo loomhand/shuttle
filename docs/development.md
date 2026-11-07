@@ -35,4 +35,4 @@ The release workflow fails a tag that is not on `main`, that differs from the `C
 `packaging/pins` lists the cua-driver and Node.js archive of each platform with its sha256; `packaging/fetch.sh`, which `packaging/package.sh` and CI use, refuses an archive whose sha256 differs.
 
 - **Node.js:** take the archive names and sums from `https://nodejs.org/dist/vX.Y.Z/SHASUMS256.txt`.
-- **cua-driver:** tag `vX.Y.Z-loomhand.N` on [loomhand/cua](https://github.com/loomhand/cua); its `Fork: Release` workflow publishes the five archives with `SHA256SUMS`, and a published release is never overwritten.
+- **cua-driver:** tag `vX.Y.Z-loomhand.N` on [loomhand/cua](https://github.com/loomhand/cua); its `Fork: Release` workflow publishes the five archives with `SHA256SUMS`, and a published release is never overwritten. shuttle needs this fork: on macOS and Windows a computer click on a text field asks the driver for `verify_hit`, which only the fork knows, so a build without a bundled driver that talks to an upstream cua-driver fails those clicks.
