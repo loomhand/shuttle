@@ -91,6 +91,17 @@ pub async fn call(name: &str, args: Value, endpoint: &str, plugins: &Plugins) ->
     })
 }
 
+/// The MIME type and file suffix of a base64 image: JPEG, WebP, else PNG.
+pub fn image_type(b64: &str) -> (&'static str, &'static str) {
+    if b64.starts_with("/9j/") {
+        ("image/jpeg", ".jpg")
+    } else if b64.starts_with("UklGR") && b64.get(12..16) == Some("RUJQ") {
+        ("image/webp", ".webp")
+    } else {
+        ("image/png", ".png")
+    }
+}
+
 fn builtins() -> Value {
     json!({"tools": [
         {
@@ -230,7 +241,7 @@ fn status() -> Value {
 fn output(out: Output) -> Value {
     let mut r = result(out.text, out.is_error);
     if let (Some(png), Some(content)) = (out.image_b64, r["content"].as_array_mut()) {
-        let mut image = json!({"type": "image", "mimeType": "image/png"});
+        let mut image = json!({"type": "image", "mimeType": image_type(&png).0});
         image["data"] = png.into();
         content.push(image);
     }

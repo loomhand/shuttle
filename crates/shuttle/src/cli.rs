@@ -170,11 +170,7 @@ fn save_image(b64: &str) -> Result<PathBuf, String> {
     let image = B64
         .decode(b64)
         .map_err(|e| format!("decode screenshot: {e}"))?;
-    let suffix = match image.get(..12) {
-        Some([0xff, 0xd8, ..]) => ".jpg",
-        Some([b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P']) => ".webp",
-        _ => ".png",
-    };
+    let suffix = tools::image_type(b64).1;
     let mut file = tempfile::Builder::new()
         .prefix(&format!("{NAME}-"))
         .suffix(suffix)
