@@ -372,3 +372,16 @@ test('a recorded after waits for the window the step opens and never takes an ol
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'x', window: 'Untitled 2', pid: 4 }])
 })
+
+test('a recorded after that the window the step opened satisfies confirms the step the driver could not', async (t) => {
+  const ws = [user(), notepad()]
+  const d = desktop(ws, ({ tool }) => {
+    if (tool !== 'desk_key') return undefined
+    ws.push({ id: '2', title: 'Untitled 2', role: 'window', pid: 4, active: false })
+    return JSON.stringify({ ok: true, unverified: 'unverifiable: ctrl+n is the key equivalent of File > New' })
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+n', after: 'Untitled 2' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.unverified, undefined)
+})

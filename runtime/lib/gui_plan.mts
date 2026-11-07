@@ -210,7 +210,7 @@ async function perform(p: Params): Promise<Result> {
           try { return await run(s, rec) } catch (again: unknown) { if (!late(again) || Date.now() > end) throw again }
         }
       })
-      if (s.after) await landed(s.after, s.timeout_ms ?? 5000, ws)
+      if (s.after) { await landed(s.after, s.timeout_ms ?? 5000, ws); rec.confirmed = true }
       if (unheard && !rec.unverified) rec.unverified = unheard
       if (actioned && !s.after) rec.caveat = ACTION_ONLY
       if (desk.foreground.runs + foreground.steps > runs) { rec.fg = true; fronted = true; BG = false }
