@@ -53,7 +53,7 @@ test('a plan that continues a flow from the step it stopped at saves the fixed s
   const dir = process.env.SHUTTLE_FLOWS ?? ''
   const blank = { role: 'textbox', name: '', parent: '', nth: 0 }
   mkdirSync(dir, { recursive: true })
-  writeFileSync(`${dir}/note.json`, JSON.stringify({ name: 'note', params: { n: '0' }, steps: [{ app: 'mousepad' }, { type: 'replay run {{n}}', blank }], idempotent: false, runs: 1, saved_at: '2026-10-29T00:00:00.000Z', rewrites: 0 }))
+  writeFileSync(`${dir}/note.json`, JSON.stringify({ name: 'note', params: { n: '0' }, steps: [{ app: 'mousepad' }, { type: 'replay run {{n}}', blank }], idempotent: false, saved_at: '2026-10-29T00:00:00.000Z' }))
   const stopped = await main({ flow: 'note', params: { n: '1' } })
   assert.equal(stopped.escalate?.step, 1, JSON.stringify(stopped))
   const healed = await main({ steps: [{ key: 'ctrl+n' }, { type: 'replay run {{n}}' }], params: { n: '1' } })

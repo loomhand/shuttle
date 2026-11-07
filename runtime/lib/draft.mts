@@ -16,7 +16,7 @@ type Step = Record<string, unknown> & { intent: string }
 type Params = { recording: Recording; params?: Record<string, string> }
 type Draft = { id: string; apps: string[]; params: Record<string, { example?: string; secret?: true }>; steps: Step[]; notes: { step: number; text: string }[]; gaps: number[] }
 
-const KEYS: Record<number, string> = { 36: 'return', 76: 'enter', 48: 'tab', 53: 'escape', 51: 'backspace', 117: 'delete', 123: 'left', 124: 'right', 125: 'down', 126: 'up', 115: 'home', 119: 'end', 116: 'pageup', 121: 'pagedown' }
+const KEYS: Record<number, string> = { 36: 'return', 76: 'enter', 48: 'tab', 53: 'escape', 51: 'backspace', 117: 'delete', 123: 'left', 124: 'right', 125: 'down', 126: 'up', 115: 'home', 119: 'end', 116: 'pageup', 121: 'pagedown', 122: 'f1', 120: 'f2', 99: 'f3', 118: 'f4', 96: 'f5', 97: 'f6', 98: 'f7', 100: 'f8', 101: 'f9', 109: 'f10', 103: 'f11', 111: 'f12' }
 const NAMED_ROLES = new Set(['button', 'checkbox', 'radio', 'tab', 'link', 'switch', 'togglebutton', 'menuitem'])
 const CAPTION = 'The image is a crop of a screen; a red ring with four ticks marks the point a user clicked. Name the control under the ring as a short noun phrase a person would use to find it on screen, such as: the Save button. At most 8 words; answer with the phrase only.'
 const RING_PT = 14
