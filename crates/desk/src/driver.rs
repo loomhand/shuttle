@@ -40,6 +40,10 @@ const SESSION: &str = "desk";
 const CLICK_DISTANCE: f64 = 16.0;
 const USER_IDLE: Duration = Duration::from_secs(1);
 const OWN_INPUT_LAG: Duration = Duration::from_millis(600);
+#[cfg(windows)]
+const PER_TYPED_UNIT: Duration = Duration::from_secs(2);
+#[cfg(not(windows))]
+const PER_TYPED_UNIT: Duration = Duration::from_millis(40);
 #[cfg(all(target_os = "macos", not(test)))]
 const HID_SYSTEM_STATE: i32 = 1;
 #[cfg(all(target_os = "macos", not(test)))]
@@ -126,7 +130,7 @@ impl Driver {
         let mut line =
             serde_json::to_vec(&request).map_err(|e| format!("encode cua-driver {tool}: {e}"))?;
         line.push(b'\n');
-        tokio::time::timeout(limit, self.exchange(line))
+        tokio::time::timeout(call_limit(tool, args, limit), self.exchange(line))
             .await
             .map_err(|_| format!("cua-driver {tool} timed out"))?
     }
@@ -332,6 +336,16 @@ fn result(tool: &str, reply: &str) -> Result<Value, String> {
     Ok(out)
 }
 
+fn call_limit(tool: &str, args: &Value, limit: Duration) -> Duration {
+    let units = args["text"]
+        .as_str()
+        .map_or(0, |t| t.encode_utf16().count());
+    match tool {
+        "type_text" => limit + PER_TYPED_UNIT * u32::try_from(units).unwrap_or(u32::MAX),
+        _ => limit,
+    }
+}
+
 /// Whether HID input `since` seconds ago is the user's: within [`USER_IDLE`], and over [`OWN_INPUT_LAG`] after the driver's own last input, whose events reach the HID counter that late.
 fn user_busy(since: f64, own: Option<Duration>) -> bool {
     since < USER_IDLE.as_secs_f64()
@@ -368,6 +382,44 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_type_waits_its_driver_s_slowest_time_per_utf16_unit_and_other_calls_their_limit() {
+        let text = json!({"text": "x".repeat(6000)});
+        assert_eq!(
+            call_limit("type_text", &text, REQUEST_TIMEOUT),
+            REQUEST_TIMEOUT + PER_TYPED_UNIT * 6000
+        );
+        assert_eq!(
+            call_limit(
+                "type_text",
+                &json!({"text": "a\u{4e2d}\u{1f600}"}),
+                REQUEST_TIMEOUT
+            ),
+            REQUEST_TIMEOUT + PER_TYPED_UNIT * 4
+        );
+        assert_eq!(call_limit("click", &text, REQUEST_TIMEOUT), REQUEST_TIMEOUT);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_type_waits_the_driver_s_two_second_stall_cap_per_unit() {
+        let text = json!({"text": "x".repeat(1000)});
+        assert_eq!(
+            call_limit("type_text", &text, REQUEST_TIMEOUT),
+            Duration::from_secs(2030)
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn elsewhere_a_type_waits_forty_ms_more_per_unit() {
+        let text = json!({"text": "x".repeat(6000)});
+        assert_eq!(
+            call_limit("type_text", &text, REQUEST_TIMEOUT),
+            Duration::from_secs(270)
+        );
+    }
 
     #[test]
     fn only_input_within_a_second_and_past_the_lag_of_the_drivers_own_is_the_users() {
