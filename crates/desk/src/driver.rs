@@ -40,6 +40,7 @@ const SESSION: &str = "desk";
 const CLICK_DISTANCE: f64 = 16.0;
 const USER_IDLE: Duration = Duration::from_secs(1);
 const OWN_INPUT_LAG: Duration = Duration::from_millis(600);
+const PER_TYPED_CHAR: Duration = Duration::from_millis(40);
 #[cfg(all(target_os = "macos", not(test)))]
 const HID_SYSTEM_STATE: i32 = 1;
 #[cfg(all(target_os = "macos", not(test)))]
@@ -126,7 +127,7 @@ impl Driver {
         let mut line =
             serde_json::to_vec(&request).map_err(|e| format!("encode cua-driver {tool}: {e}"))?;
         line.push(b'\n');
-        tokio::time::timeout(limit, self.exchange(line))
+        tokio::time::timeout(call_limit(tool, args, limit), self.exchange(line))
             .await
             .map_err(|_| format!("cua-driver {tool} timed out"))?
     }
@@ -329,6 +330,14 @@ fn result(tool: &str, reply: &str) -> Result<Value, String> {
     Ok(out)
 }
 
+fn call_limit(tool: &str, args: &Value, limit: Duration) -> Duration {
+    let chars = args["text"].as_str().map_or(0, |t| t.chars().count());
+    match tool {
+        "type_text" => limit + PER_TYPED_CHAR * u32::try_from(chars).unwrap_or(u32::MAX),
+        _ => limit,
+    }
+}
+
 /// Whether HID input `since` seconds ago is the user's: within [`USER_IDLE`], and over [`OWN_INPUT_LAG`] after the driver's own last input, whose events reach the HID counter that late.
 fn user_busy(since: f64, own: Option<Duration>) -> bool {
     since < USER_IDLE.as_secs_f64()
@@ -365,6 +374,20 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_type_waits_forty_ms_more_per_character_and_other_calls_their_limit() {
+        let text = json!({"text": "x".repeat(6000)});
+        assert_eq!(
+            call_limit("type_text", &text, REQUEST_TIMEOUT),
+            Duration::from_secs(270)
+        );
+        assert_eq!(
+            call_limit("type_text", &json!({"text": "ab\u{4e2d}"}), REQUEST_TIMEOUT),
+            Duration::from_millis(30_120)
+        );
+        assert_eq!(call_limit("click", &text, REQUEST_TIMEOUT), REQUEST_TIMEOUT);
+    }
 
     #[test]
     fn only_input_within_a_second_and_past_the_lag_of_the_drivers_own_is_the_users() {
