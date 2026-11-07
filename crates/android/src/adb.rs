@@ -451,11 +451,7 @@ impl Android {
         }
         match tokio::time::timeout(PASTE_TIMEOUT, self.served("paste")).await {
             Ok(answer) => answer.map(|a| a.trim() == "true"),
-            Err(_) => Err(format!(
-                "{} did not handle the paste key within {} s; the paste may still land, so check the field before typing again",
-                self.focused_window().await,
-                PASTE_TIMEOUT.as_secs()
-            )),
+            Err(_) => Err(unhandled_paste(&self.focused_window().await)),
         }
     }
 
@@ -958,6 +954,17 @@ pub(crate) fn is_package(s: &str) -> bool {
             part.starts_with(|c: char| c.is_ascii_alphabetic())
                 && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         })
+}
+
+fn unhandled_paste(focus: &str) -> String {
+    let stalled = match focus {
+        "null" => "no window has input focus to handle the paste key".to_owned(),
+        window => format!("{window} did not handle the paste key"),
+    };
+    format!(
+        "{stalled} within {} s; the paste may still land, so check the field before typing again",
+        PASTE_TIMEOUT.as_secs()
+    )
 }
 
 fn server_error(answer: &str) -> Option<&str> {
@@ -1943,6 +1950,18 @@ mod tests {
         let mut refused = Command::new("sh");
         refused.args(["-c", "read l; printf 'false\\n<<end>>\\n'; sleep 30"]);
         assert_eq!(paste_through(&android, peer, refused).await, Ok(false));
+    }
+
+    #[test]
+    fn a_paste_key_with_no_window_in_focus_fails_naming_no_focus() {
+        assert_eq!(
+            unhandled_paste("null"),
+            "no window has input focus to handle the paste key within 5 s; the paste may still land, so check the field before typing again"
+        );
+        assert!(
+            unhandled_paste("Window{1 u0 Settings}")
+                .starts_with("Window{1 u0 Settings} did not handle")
+        );
     }
 
     #[cfg(unix)]
