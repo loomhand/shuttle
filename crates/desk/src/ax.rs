@@ -1,7 +1,7 @@
 //! The macOS desk backend: window trees by a budgeted AX walk with one batched attribute read per element.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, c_void};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::os::unix::ffi::OsStrExt;
@@ -187,7 +187,11 @@ impl Ax {
                     .is_some_and(|f| f == w || sheets.iter().any(|(s, _)| s == f));
                 let mut active = front && mine;
                 let title = string(title).trim().to_owned();
-                let owner = self.id_of(w);
+                let number = number_of(w);
+                let owner = match number {
+                    Some(n) => self.window_id(w, n),
+                    None => self.id_of(w),
+                };
                 let ids: Vec<String> = sheets.iter().map(|(s, _)| self.id_of(s)).collect();
                 for (k, (sheet, parent)) in sheets.iter().enumerate().rev() {
                     let s = attrs(&self.names, sheet);
@@ -224,7 +228,7 @@ impl Ax {
                     active,
                     app: name.clone(),
                     hidden: !shows(&bounds, frame),
-                    number: number_of(w),
+                    number,
                     bounds: frame.map(|f| f.map(|v| (v * scale).round() as i32)),
                     ..Frame::default()
                 });
@@ -265,8 +269,17 @@ impl Ax {
             return id.clone();
         }
         if self.ids.len() >= MAX_IDS {
-            self.ids.clear();
-            self.hashes.clear();
+            let windows: HashSet<&str> = self
+                .last
+                .values()
+                .flatten()
+                .map(|f| f.id.as_str())
+                .collect();
+            self.ids.retain(|id, _| windows.contains(id.as_str()));
+            self.hashes.retain(|_, held| {
+                held.retain(|(_, id)| windows.contains(id.as_str()));
+                !held.is_empty()
+            });
         }
         let n = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let id = format!("{}/{n}", pid(el).unwrap_or(0));
@@ -275,6 +288,15 @@ impl Ax {
             .entry(hash)
             .or_default()
             .push((el.clone(), id.clone()));
+        id
+    }
+
+    fn window_id(&mut self, w: &CFType, number: u32) -> String {
+        let id = number.to_string();
+        let held = self.hashes.entry(hash_of(w)).or_default();
+        held.retain(|(e, _)| e != w);
+        held.push((w.clone(), id.clone()));
+        self.ids.insert(id.clone(), w.clone());
         id
     }
 
@@ -1508,6 +1530,42 @@ fn text(v: &CFType, chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_window_keeps_its_number_as_id_across_an_eviction_and_elements_are_renumbered() {
+        let mut ax = bare();
+        let (window, element) = (application(901), application(902));
+        let early = ax.id_of(&window);
+        assert_eq!(ax.window_id(&window, 4242), "4242");
+        assert_eq!(ax.id_of(&window), "4242");
+        let element_id = ax.id_of(&element);
+        let frame = Frame {
+            id: "4242".to_owned(),
+            ..Frame::default()
+        };
+        ax.last.insert(901, vec![frame]);
+        let filler = CFString::new("filler").as_CFType();
+        for n in ax.ids.len()..MAX_IDS {
+            ax.ids.insert(format!("0/filler{n}"), filler.clone());
+        }
+        ax.id_of(&application(903));
+        assert!(ax.ids.len() < MAX_IDS, "{}", ax.ids.len());
+        assert_ne!(early, "4242");
+        assert_eq!(ax.id_of(&window), "4242");
+        assert!(ax.element("4242").is_ok());
+        assert_ne!(ax.id_of(&element), element_id);
+    }
+
+    #[test]
+    fn a_window_listed_on_this_space_and_then_off_it_has_one_id() {
+        let mut ax = bare();
+        let on = ax.window_id(&application(905), 4243);
+        let key = CFString::from_static_string("kCGWindowNumber");
+        let listed =
+            CFDictionary::from_CFType_pairs(&[(key.clone(), CFNumber::from(4243).as_CFType())]);
+        let off = number(&listed, &key).unwrap().to_string();
+        assert_eq!(on, off);
+    }
 
     #[test]
     fn a_frame_shows_when_it_is_one_of_its_process_s_on_screen_windows() {
