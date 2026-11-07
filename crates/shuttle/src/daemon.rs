@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::hash::{BuildHasher, RandomState};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use desk_core::args::parse;
@@ -25,7 +25,7 @@ use crate::plugins::Plugin;
 use crate::record::{self, Recorder};
 use crate::runner::Runner;
 use crate::services;
-use crate::{NAME, STOPPED};
+use crate::{NAME, STOPPED, lock};
 
 const BUSY: &str = "desk busy: another run or action is still going";
 const SCRIPT_RUN_OFF: &str =
@@ -218,7 +218,7 @@ impl<H: Handler> Daemon<H> {
         };
         let n = self.runs.fetch_add(1, Ordering::Relaxed);
         let agent = format!("run-{:x}-{n}", self.nonce);
-        *self.running() = Some(agent.clone());
+        *lock(&self.running) = Some(agent.clone());
         let _running = RunningAgent(&self.running);
         self.actions.fetch_add(1, Ordering::Relaxed);
         let _acting = Acting(&self.actions);
@@ -243,7 +243,7 @@ impl<H: Handler> Daemon<H> {
         };
         self.actions.fetch_add(1, Ordering::Relaxed);
         let _acting = Acting(&self.actions);
-        let _turn = if self.running().as_deref() == Some(call.agent_id.as_str()) {
+        let _turn = if lock(&self.running).as_deref() == Some(call.agent_id.as_str()) {
             None
         } else {
             let Ok(turn) = tokio::time::timeout(self.wait, self.turn.lock()).await else {
@@ -288,10 +288,6 @@ impl<H: Handler> Daemon<H> {
     fn stop(&self, stopped: bool) -> Output {
         self.halt(stopped);
         Output::text(json!({"ok": true, "stopped": stopped}).to_string())
-    }
-
-    fn running(&self) -> MutexGuard<'_, Option<String>> {
-        self.running.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     async fn model(models: &Models, tool: &str, args: Value) -> Result<String, String> {
@@ -443,7 +439,7 @@ struct RunningAgent<'a>(&'a Mutex<Option<String>>);
 
 impl Drop for RunningAgent<'_> {
     fn drop(&mut self) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        *lock(self.0) = None;
     }
 }
 

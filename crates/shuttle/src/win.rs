@@ -2,7 +2,7 @@
 
 use std::os::windows::io::AsRawHandle;
 use std::sync::atomic::{AtomicIsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use tokio::sync::oneshot;
@@ -57,7 +57,7 @@ impl Shown {
         } else {
             ("Shuttle", IDI_APPLICATION)
         };
-        let mut last = self.title.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut last = crate::lock(&self.title);
         if action == NIM_MODIFY && *last == title {
             return;
         }
@@ -229,7 +229,7 @@ fn ask(question: &str, tx: oneshot::Sender<bool>) {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(POLL);
-            let guard = watched.lock().unwrap_or_else(PoisonError::into_inner);
+            let guard = crate::lock(&watched);
             let gone = match guard.as_ref() {
                 None => return,
                 Some(tx) => tx.is_closed(),
@@ -245,7 +245,7 @@ fn ask(question: &str, tx: oneshot::Sender<bool>) {
     let style = MB_OKCANCEL | MB_DEFBUTTON2 | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND;
     // SAFETY: both strings outlive the call; the dialog has no owner window.
     let answer = unsafe { MessageBoxW(None, &text, w!("Shuttle"), style) };
-    if let Some(tx) = call.lock().unwrap_or_else(PoisonError::into_inner).take() {
+    if let Some(tx) = crate::lock(&call).take() {
         let _ = tx.send(answer == IDOK);
     }
 }

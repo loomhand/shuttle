@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::hash::{BuildHasher, RandomState};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
@@ -21,7 +21,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{Notify, Semaphore};
 
 use crate::plugins::Plugins;
-use crate::{log, mcp};
+use crate::{lock, log, mcp};
 
 /// The environment variable that holds the bearer token every HTTP request must carry.
 pub const TOKEN_ENV: &str = "SHUTTLE_MCP_TOKEN";
@@ -210,10 +210,6 @@ fn local_origin(origin: Option<&HeaderValue>) -> bool {
 /// Compares in time that does not depend on where the inputs differ.
 fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
-fn lock(calls: &Calls) -> MutexGuard<'_, HashMap<(String, String), Arc<Notify>>> {
-    calls.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn session_id() -> String {
