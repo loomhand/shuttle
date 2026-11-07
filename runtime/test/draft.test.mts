@@ -90,6 +90,30 @@ test('a password field that took the focus with no click becomes one secret pass
   assert.deepEqual(d.steps.map(({ intent: _, recorded: __, ...s }) => s), [{ app: 'Safari', title: 'pw' }, { click: 'the user field' }, { type: '{{user}}' }, { key: 'tab' }, { type: '{{password}}', focus: { secure: true } }])
 })
 
+test('a password that a window change follows with no click or key in between was sent with a Return the recording could not see', async (t) => {
+  await daemon(t, () => JSON.stringify({ text: 'the Sign In button', usage: { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 } }))
+  const secure = { role: 'textbox', name: 'Password', frame: 'window', secure: true }
+  const user: Event = { t: 0, kind: 'click', x: 60, y: 173, app: 'Safari', element: { role: 'textbox', name: 'User' }, root: false, window: win('Sign in'), crop }
+  const start: Event[] = [
+    user,
+    ...keys('alice', 'Safari'),
+    { t: 1, kind: 'key', code: 48, text: '\t', mods: [], app: 'Safari' },
+    { t: 2, kind: 'password', app: 'Safari', focus: secure },
+  ]
+  const signedIn: Event = { t: 9, kind: 'after', window: 'Signed in', role: 'window', app: 'Safari' }
+  const head = [{ app: 'Safari', title: 'Sign in' }, { click: 'User' }, { type: '{{user}}' }, { key: 'tab' }, { type: '{{password}}', focus: { role: 'textbox', name: 'Password', frame: 'window', secure: true } }]
+  const steps = async (id: string, events: Event[]) => (await main({ recording: { id, events }, params: { user: 'alice' } })).steps.map(({ intent: _, recorded: __, ...s }) => s)
+  assert.deepEqual(await steps('rec-pw-1', [...start, signedIn]), [...head, { key: 'return', after: 'Signed in' }])
+  const button: Event = { t: 3, kind: 'click', x: 200, y: 300, app: 'Safari', element: { role: 'button', name: 'Sign In' }, root: false, window: win('Sign in'), crop }
+  assert.deepEqual(await steps('rec-pw-2', [...start, button, signedIn]), [...head, { click: 'Sign In', role: 'button', after: 'Signed in' }])
+  const shown: Event = { t: 3, kind: 'key', code: 36, text: '\r', mods: [], app: 'Safari' }
+  assert.deepEqual(await steps('rec-pw-3', [...start, shown, signedIn]), [...head, { key: 'return', after: 'Signed in' }])
+  const hidden: Event[] = [user, { t: 1, kind: 'key', secret: true, app: 'Safari' }, { t: 2, kind: 'key', secret: true, app: 'Safari' }]
+  const bare = [{ app: 'Safari', title: 'Sign in' }, { click: 'User' }, { type: '{{password}}', focus: { secure: true } }]
+  assert.deepEqual(await steps('rec-pw-4', [...hidden, signedIn]), [...bare, { key: 'return', after: 'Signed in' }])
+  assert.deepEqual(await steps('rec-pw-5', [...hidden, shown, signedIn]), [...bare, { key: 'return', after: 'Signed in' }])
+})
+
 test('a click near the screen edge keeps its crop offset for the replay', async (t) => {
   await daemon(t, () => JSON.stringify({ text: 'the user field', usage: { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 } }))
   const events: Event[] = [{ t: 0, kind: 'click', x: 60, y: 173, app: 'Safari', element: { role: 'textbox', name: '' }, root: false, window: win('pw', [0, 31, 1240, 697]), crop, crop_offset: [-20, 0] }]

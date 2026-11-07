@@ -33,6 +33,7 @@ export async function main(p: Params): Promise<Draft> {
   const captions = new Map(events.flatMap((e) => e.kind === 'click' && e.crop && !own(e) ? [[e, slot(() => caption(e.crop ?? '', e.crop_scale ?? 1, e.crop_offset ?? [0, 0], e.element?.role))] as const] : []))
   const seen = new Set<string>()
   let typed = ''; let secrets = 0; let secret = false; let filled = false
+  let unsent: Step | undefined
   let into: Field | null | undefined
   let clicked: { e: Event; step: Step } | undefined
   // a recording that read no focus checks none on replay
@@ -41,7 +42,8 @@ export async function main(p: Params): Promise<Draft> {
   const password = (f?: Field | null) => {
     const name = `password${secrets ? `_${secrets + 1}` : ''}`; secrets += 1
     params[name] = { secret: true }
-    draft.steps.push({ type: `{{${name}}}`, ...onPage(f ?? {}, { ...f, secure: true }), intent: `type the ${name.replace('_', ' ')} (a password field: not recorded, pass it as ${name})` })
+    unsent = { type: `{{${name}}}`, ...onPage(f ?? {}, { ...f, secure: true }), intent: `type the ${name.replace('_', ' ')} (a password field: not recorded, pass it as ${name})` }
+    draft.steps.push(unsent)
   }
   const flush = () => {
     if (secret) {
@@ -72,6 +74,7 @@ export async function main(p: Params): Promise<Draft> {
   }
   for (const [i, e] of events.entries()) {
     if (e.kind === 'key' || e.kind === 'click') move(e)
+    if (e.kind === 'click' || (e.kind === 'key' && !e.secret)) unsent = undefined
     if (e.kind === 'key') {
       const mods = e.mods ?? []
       if (e.secret) { if (typed) flush(); if (!secret && e.focus) into = e.focus; secret = true; continue }
@@ -94,8 +97,11 @@ export async function main(p: Params): Promise<Draft> {
     else if (e.kind === 'after') {
       const w = typeof e.window === 'string' ? e.window : undefined
       const last = draft.steps.at(-1)
-      if (w && last && !last.app && !seen.has(w) && e.role === 'window') last.after = templ(w)
-      if (w) seen.add(w)
+      if (w && last && !last.app && !seen.has(w) && e.role === 'window') {
+        if (last === unsent) draft.steps.push({ key: 'return', after: templ(w), intent: 'press return' })
+        else last.after = templ(w)
+      }
+      if (w) { seen.add(w); unsent = undefined }
       if (w && e.app && e.role === 'window') here = { app: e.app, window: w }
     } else if (e.kind === 'click') {
       const el = e.element ?? {}
