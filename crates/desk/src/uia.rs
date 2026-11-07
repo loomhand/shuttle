@@ -266,9 +266,14 @@ impl Uia {
             })
     }
 
-    fn frame_of(&mut self, s: &Shown, foreground: HWND) -> Option<Frame> {
+    fn frame_of(
+        &mut self,
+        s: &Shown,
+        foreground: HWND,
+        answered: &mut HashMap<u32, bool>,
+    ) -> Option<Frame> {
         let key = s.hwnd.0 as isize;
-        let top = if s.hung || !answers(s.hwnd) {
+        let top = if s.hung || !answer_of(answered, s.pid, || answers(s.hwnd)) {
             None
         } else {
             self.top_of(s)
@@ -292,7 +297,7 @@ impl Uia {
                 return Some(frame);
             }
         }
-        kept(&lock(&LAST), key)
+        kept(&lock(&LAST), key, s.hwnd == foreground)
     }
 }
 
@@ -300,14 +305,14 @@ impl Access for Uia {
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
         let front = foreground();
         let (shown, roots) = self.roots();
-        let mut frames = Vec::new();
+        let (mut frames, mut answered) = (Vec::new(), HashMap::new());
         for i in roots {
-            let Some(top) = self.frame_of(&shown[i], front) else {
+            let Some(top) = self.frame_of(&shown[i], front, &mut answered) else {
                 continue;
             };
             let found = owned(&shown, i)
                 .into_iter()
-                .filter_map(|o| Some((o, self.frame_of(&shown[o], front)?)))
+                .filter_map(|o| Some((o, self.frame_of(&shown[o], front, &mut answered)?)))
                 .collect();
             frames.extend(link(&shown, i, &top, found));
             frames.push(top);
@@ -749,9 +754,14 @@ fn answers(hwnd: HWND) -> bool {
     .0 != 0
 }
 
-fn kept(last: &BTreeMap<isize, Frame>, hwnd: isize) -> Option<Frame> {
+fn answer_of(answered: &mut HashMap<u32, bool>, pid: u32, probe: impl FnOnce() -> bool) -> bool {
+    *answered.entry(pid).or_insert_with(probe)
+}
+
+fn kept(last: &BTreeMap<isize, Frame>, hwnd: isize, front: bool) -> Option<Frame> {
     last.get(&hwnd).map(|f| Frame {
         stale: true,
+        active: f.active || front,
         ..f.clone()
     })
 }
@@ -1005,14 +1015,35 @@ mod tests {
             active,
             ..Frame::default()
         };
-        let last = BTreeMap::from([(7, frame("hung", true))]);
-        assert!(kept(&last, 9).is_none());
-        let mut frames = vec![frame("other", false), kept(&last, 7).unwrap()];
+        let last = BTreeMap::from([(7, frame("hung", true)), (8, frame("left", false))]);
+        assert!(kept(&last, 9, false).is_none());
+        let mut frames = vec![frame("other", false), kept(&last, 7, false).unwrap()];
         stale_front(&mut frames);
         assert!(frames[1].stale && frames[1].active && frames[1].title == "hung");
         frames[0].active = true;
         stale_front(&mut frames);
         assert!(frames[1].stale && !frames[1].active);
+        let front = kept(&last, 8, true).unwrap();
+        assert!(
+            front.stale && front.active,
+            "a window that hung after it took the foreground"
+        );
+    }
+
+    #[test]
+    fn one_probe_answers_for_every_window_of_its_process_in_a_listing() {
+        let (mut answered, mut probes) = (HashMap::new(), 0);
+        let mut probe = |pid, ok| {
+            answer_of(&mut answered, pid, || {
+                probes += 1;
+                ok
+            })
+        };
+        assert!(!probe(4, false));
+        assert!(!probe(4, true));
+        assert!(probe(5, true));
+        assert!(probe(5, false));
+        assert_eq!(probes, 2);
     }
 
     fn window(hwnd: isize, owner: isize) -> Shown {
