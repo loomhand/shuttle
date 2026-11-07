@@ -223,6 +223,9 @@ impl Driver {
 
 impl Input for Driver {
     async fn call(&self, tool: &str, mut args: Value) -> Result<Value, String> {
+        let point = (tool == "click")
+            .then(|| args["x"].as_f64().zip(args["y"].as_f64()))
+            .flatten();
         if cfg!(target_os = "linux") {
             // a session keeps its capture scale and a master keyboard that Chrome's core input loses to
             args["session"] = format!(
@@ -231,9 +234,6 @@ impl Input for Driver {
                 self.calls.fetch_add(1, Ordering::Relaxed)
             )
             .into();
-            let point = (tool == "click")
-                .then(|| args["x"].as_f64().zip(args["y"].as_f64()))
-                .flatten();
             let done = match point {
                 Some(point) => self.spaced(point, self.send(tool, &args)).await,
                 None => self.send(tool, &args).await,
@@ -246,7 +246,10 @@ impl Input for Driver {
             return done;
         }
         let foreground = self.admit(tool, &args)?;
-        let done = self.call_session(tool, args).await;
+        let done = match point {
+            Some(point) => self.spaced(point, self.call_session(tool, args)).await,
+            None => self.call_session(tool, args).await,
+        };
         if foreground {
             self.stamp();
         }
@@ -624,6 +627,25 @@ mod tests {
         daemon.await.unwrap();
     }
 
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_desk_click_near_the_last_one_waits_out_the_spacing_off_linux() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let daemon = answering(&socket);
+        let d = Driver::new(socket.to_string_lossy().into_owned());
+        d.call("click", json!({"x": 10, "y": 10})).await.unwrap();
+        let started = Instant::now();
+        d.call("click", json!({"x": 12, "y": 10})).await.unwrap();
+        assert!(
+            started.elapsed() >= CLICK_SPACING,
+            "{:?}",
+            started.elapsed()
+        );
+        drop(d);
+        daemon.await.unwrap();
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_click_near_the_last_one_waits_out_the_spacing() {
         let d = Driver::new(String::new());
@@ -654,7 +676,7 @@ mod tests {
         tokio::spawn(async move {
             let mut lines = Vec::new();
             while let Ok(Ok((s, _))) =
-                tokio::time::timeout(Duration::from_millis(500), listener.accept()).await
+                tokio::time::timeout(Duration::from_secs(1), listener.accept()).await
             {
                 let mut s = BufReader::new(s);
                 let mut line = String::new();
