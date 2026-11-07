@@ -210,7 +210,7 @@ async function perform(p: Params): Promise<Result> {
           try { return await run(s, rec) } catch (again: unknown) { if (!late(again) || Date.now() > end) throw again }
         }
       })
-      if (s.after) await landed(s.after, s.timeout_ms ?? 5000)
+      if (s.after && await landed(s.after, s.timeout_ms ?? 5000, ws)) rec.confirmed = true
       if (unheard && !rec.unverified) rec.unverified = unheard
       if (actioned && !s.after) rec.caveat = ACTION_ONLY
       if (desk.foreground.runs + foreground.steps > runs) { rec.fg = true; fronted = true; BG = false }
@@ -379,7 +379,7 @@ function targetIn(ws: Win[]): Win | null {
   listed = ws
   if (!target) return null
   const t = target
-  const live = ws.find((x) => x.id === t.id) ?? null
+  const live = ws.find((x) => x.id === t.id && x.pid === t.pid) ?? null
   if (!live) doubt = `the plan's window "${t.title}" is gone, and background gui_plan never takes another window of that title for it`
   const mine = new Set(live ? [live.id] : [])
   const owned: Win[] = []
@@ -401,13 +401,13 @@ function targetIn(ws: Win[]): Win | null {
   }
 }
 function ours(x: Win, ws: Win[]) {
-  for (let y: Win | undefined = x, k = 0; y && k < ws.length; y = ws.find((z) => z.id === y?.owner), k++) if (y.id === target?.id || adopted.has(y.id)) return true
+  for (let y: Win | undefined = x, k = 0; y && k < ws.length; y = ws.find((z) => z.id === y?.owner), k++) if ((y.id === target?.id && y.pid === target.pid) || adopted.has(y.id)) return true
   return false
 }
 function ownerOf(w: Win, ws: Win[]) {
   let x = w
   for (let k = 0; k < ws.length; k++) { const o = ws.find((y) => y.id === x.owner); if (!o) break; x = o }
-  return x.id !== w.id ? x : ws.find((y) => y.id === target?.id && y.id !== w.id)
+  return x.id !== w.id ? x : ws.find((y) => y.id === target?.id && y.pid === target.pid && y.id !== w.id)
 }
 async function front(w: Win | null) {
   const to = w ? at(w) : {}
@@ -863,12 +863,23 @@ async function byDom(nodes: Node[], id: string, hit: Hit | null, target: string,
   return hit
 }
 
-async function landed(want: string, ms: number) {
+async function landed(want: string, ms: number, before: Win[]): Promise<boolean> {
   const t0 = Date.now()
-  const f = frontOf(await until((ws) => { const f = frontOf(ws); return !!f && awaited(f.title, want) }, ms))
+  const opened = (ws: Win[]) => {
+    const named = BG ? ws.filter((x) => x.pid === target?.pid && x.role === 'window' && x.owner === undefined && awaited(x.title, want) && !before.some((y) => y.id === x.id && y.title === x.title)) : []
+    const exact = named.filter((x) => norm(x.title) === norm(want))
+    const [one, other] = exact.length ? exact : named
+    return other ? undefined : one
+  }
+  const ws = await until((ws) => { const f = frontOf(ws); return !!f && awaited(f.title, want) || !!opened(ws) }, ms)
+  let f = frontOf(ws)
+  const fresh = f && awaited(f.title, want) ? undefined : opened(ws)
+  if (fresh) { follow(fresh, ws); f = fresh }
   tick('wait', t0)
   if (!f || !awaited(f.title, want)) throw new Diverged(`after this step the recording saw "${want}" in front, and the replay did not: ${f ? `"${f.title}"` : 'no window'} is in front`, await seen())
   known.add(f.title); lastSeen = f.title
+  const w = f
+  return !before.some((y) => y.id === w.id && y.title === w.title)
 }
 
 async function placed(x: number, y: number, w: Win, roots = false): Promise<Grounding & { found?: desk.El }> {

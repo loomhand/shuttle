@@ -319,3 +319,90 @@ test('a Windows menu toggle that needs pixels refuses in the background and clos
   assert.deepEqual(sent(d.calls, 'desk_press').map((a) => a.id), ['1/3'])
   assert.equal(state.open, false)
 })
+
+test('a recorded after names a new window of the app, which the background plan then takes as its target', async (t) => {
+  const ws = [user(), notepad()]
+  const d = desktop(ws, ({ tool }) => {
+    if (tool === 'desk_key') ws.push({ id: '2', title: 'Untitled 2 - Notepad', role: 'window', pid: 4, active: false })
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+n', after: 'Untitled 2 - Notepad' }, { type: 'x' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'x', window: 'Untitled 2 - Notepad', pid: 4 }])
+})
+
+test('a recorded after takes the one window of the app with that exact title over a longer title listed first, and no window when two titles only contain it', async (t) => {
+  for (const [first, second, want] of [['Untitled 20', 'Untitled 2', 'Untitled 2'], ['Report 1 draft', 'Report 1 final', null]] as const) {
+    const ws = [user(), notepad()]
+    const d = desktop(ws, ({ tool }) => {
+      if (tool === 'desk_key') ws.push({ id: '3', title: first, role: 'window', pid: 4, active: false }, { id: '2', title: second, role: 'window', pid: 4, active: false })
+      return undefined
+    })
+    await daemon(t, d.reply)
+    const r = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+n', after: want ?? 'Report 1', timeout_ms: 300 }, { type: 'x' }] })
+    assert.equal(r.ok, want !== null, JSON.stringify(r))
+    assert.deepEqual(sent(d.calls, 'desk_type'), want ? [{ text: 'x', window: want, pid: 4 }] : [])
+  }
+})
+
+test('a recorded after never takes a dialog of the app that the plan window does not own', async (t) => {
+  const ws = [user(), notepad()]
+  const d = desktop(ws, ({ tool }) => {
+    if (tool === 'desk_key') ws.push({ id: 'd', title: 'Untitled 2', role: 'dialog', pid: 4, active: false, owner: 'elsewhere' })
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+n', after: 'Untitled 2', timeout_ms: 300 }, { type: 'x' }] })
+  assert.equal(r.ok, false)
+  assert.match(String(r.escalate?.reason), /recording saw "Untitled 2" in front/)
+  assert.deepEqual(sent(d.calls, 'desk_type'), [])
+})
+
+test('a recorded after waits for the window the step opens and never takes an older window whose title contains it', async (t) => {
+  const ws = [user(), notepad(), { id: '3', title: 'Untitled 20', role: 'window', pid: 4, active: false }]
+  let lists = -1
+  const d = desktop(ws, ({ tool }) => {
+    if (tool === 'desk_key') lists = 0
+    if (tool === 'desk_windows' && lists >= 0 && ++lists === 3) ws.push({ id: '2', title: 'Untitled 2', role: 'window', pid: 4, active: false })
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+n', after: 'Untitled 2' }, { type: 'x' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'x', window: 'Untitled 2', pid: 4 }])
+})
+
+test('a recorded after that the window the step opened satisfies confirms the step the driver could not', async (t) => {
+  const ws = [user(), notepad()]
+  const d = desktop(ws, ({ tool }) => {
+    if (tool !== 'desk_key') return undefined
+    ws.push({ id: '2', title: 'Untitled 2', role: 'window', pid: 4, active: false })
+    return JSON.stringify({ ok: true, unverified: 'unverifiable: ctrl+n is the key equivalent of File > New' })
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+n', after: 'Untitled 2' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.unverified, undefined)
+})
+
+test('a recorded after that was already in front before the step leaves the step the driver could not confirm unverified', async (t) => {
+  const d = desktop([user(), notepad()], ({ tool }) => tool === 'desk_key' ? JSON.stringify({ ok: true, unverified: 'unverifiable: posted' }) : undefined)
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+s', after: 'Untitled - Notepad' }] })
+  assert.equal(r.ok, false)
+  assert.match(String(r.escalate?.reason), /step 1 \(key\) was sent but not confirmed/)
+})
+
+test('a window that takes the plan window id under another process is not the plan window, and no input goes to it', async (t) => {
+  const ws = [user(), notepad()]
+  const d = desktop(ws, ({ tool }) => {
+    if (tool === 'desk_type' && ws[1]?.pid === 4) { ws[1] = { ...notepad(), title: 'Other app', pid: 7 }; return JSON.stringify({ ok: true, chars: 1 }) }
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { type: 'a' }, { type: 'b' }] })
+  assert.equal(r.ok, false)
+  assert.match(String(r.escalate?.reason), /plan's window "Untitled - Notepad" is gone/)
+  assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'a', window: 'Untitled - Notepad', pid: 4 }])
+})
