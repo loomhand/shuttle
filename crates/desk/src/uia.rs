@@ -1,8 +1,9 @@
 //! The Windows desk backend: Win32 top-level windows and window trees from one cached UIA request; ids are runtime ids.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use desk_core::text::clip;
@@ -24,11 +25,13 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GW_OWNER, GetForegroundWindow, GetWindow, GetWindowTextW,
-    GetWindowThreadProcessId, IsHungAppWindow, IsWindowVisible, PostMessageW, WM_CLOSE,
+    GetWindowThreadProcessId, IsHungAppWindow, IsWindowVisible, PostMessageW, SMTO_ABORTIFHUNG,
+    SMTO_BLOCK, SendMessageTimeoutW, WM_CLOSE, WM_NULL,
 };
 use windows::core::{BOOL, HRESULT, Interface, PWSTR};
 
 use crate::keys::uia_combo;
+use crate::lock;
 use crate::model::{
     Access, Act, Extras, Frame, MAX_DEPTH, MAX_IDS, MAX_NODES, Node, Tree, VALUE_CHARS,
     format_number, is_active, lookup, place,
@@ -39,6 +42,7 @@ const ACT_TIMEOUT_MS: u32 = 2_000;
 const TIMED_OUT: HRESULT = HRESULT(UIA_E_TIMEOUT.cast_signed());
 const ACT_TIMED_OUT: &str = "the app did not answer the action within 2 s, as when the action opens a modal dialog; it may have taken effect: read the window before acting again";
 const TITLE_CHARS: usize = 512;
+const ANSWER_MS: u32 = 500;
 const PROPS: [UIA_PROPERTY_ID; 24] = [
     UIA_ControlTypePropertyId,
     UIA_NamePropertyId,
@@ -71,6 +75,8 @@ const TOP_PROPS: [UIA_PROPERTY_ID; 4] = [
     UIA_WindowIsModalPropertyId,
     UIA_IsWindowPatternAvailablePropertyId,
 ];
+
+static LAST: Mutex<BTreeMap<isize, Frame>> = Mutex::new(BTreeMap::new());
 
 /// The UIA backend of this thread.
 pub struct Uia {
@@ -240,8 +246,9 @@ impl Uia {
 
     fn roots(&mut self) -> (Vec<Shown>, Vec<usize>) {
         let shown = shown();
-        self.tops
-            .retain(|h, _| shown.iter().any(|s| s.hwnd.0 as isize == *h));
+        let listed = |h: &isize| shown.iter().any(|s| s.hwnd.0 as isize == *h);
+        self.tops.retain(|h, _| listed(h));
+        lock(&LAST).retain(|h, _| listed(h));
         let roots = (0..shown.len())
             .filter(|&i| {
                 let owner = shown[i].owner;
@@ -260,21 +267,32 @@ impl Uia {
     }
 
     fn frame_of(&mut self, s: &Shown, foreground: HWND) -> Option<Frame> {
-        let (dialog, app, el) = match self.top_of(s)? {
-            t if t.control_type == UIA_WindowControlTypeId.0 => {
-                (t.dialog, t.app.clone(), t.el.clone())
-            }
-            _ => return None,
+        let key = s.hwnd.0 as isize;
+        let top = if s.hung || !answers(s.hwnd) {
+            None
+        } else {
+            self.top_of(s)
         };
-        Some(Frame {
-            id: self.id_of(&el).ok()?,
-            title: title(s.hwnd).trim().to_owned(),
-            role: if dialog { "dialog" } else { "window" },
-            pid: Some(s.pid),
-            active: s.hwnd == foreground,
-            app,
-            ..Frame::default()
-        })
+        if let Some(t) = top {
+            if t.control_type != UIA_WindowControlTypeId.0 {
+                return None;
+            }
+            let (dialog, app, el) = (t.dialog, t.app.clone(), t.el.clone());
+            if let Ok(id) = self.id_of(&el) {
+                let frame = Frame {
+                    id,
+                    title: title(s.hwnd).trim().to_owned(),
+                    role: if dialog { "dialog" } else { "window" },
+                    pid: Some(s.pid),
+                    active: s.hwnd == foreground,
+                    app,
+                    ..Frame::default()
+                };
+                lock(&LAST).insert(key, frame.clone());
+                return Some(frame);
+            }
+        }
+        kept(&lock(&LAST), key)
     }
 }
 
@@ -294,6 +312,7 @@ impl Access for Uia {
             frames.extend(link(&shown, i, &top, found));
             frames.push(top);
         }
+        stale_front(&mut frames);
         Ok(frames)
     }
 
@@ -536,6 +555,7 @@ struct Shown {
     hwnd: HWND,
     owner: isize,
     pid: u32,
+    hung: bool,
 }
 
 /// One element's cached properties; a property it lacks stays empty.
@@ -683,7 +703,6 @@ fn shown() -> Vec<Shown> {
             // SAFETY: the window calls take a handle and write at most the 4 bytes of `cloaked`.
             unsafe {
                 IsWindowVisible(hwnd).as_bool()
-                    && !IsHungAppWindow(hwnd).as_bool()
                     && (DwmGetWindowAttribute(
                         hwnd,
                         DWMWA_CLOAKED,
@@ -697,13 +716,52 @@ fn shown() -> Vec<Shown> {
         .map(|hwnd| {
             let mut pid = 0u32;
             // SAFETY: the window calls take a handle; `pid` is a live u32 they write.
-            let owner = unsafe {
+            let (owner, hung) = unsafe {
                 GetWindowThreadProcessId(hwnd, Some(&raw mut pid));
-                GetWindow(hwnd, GW_OWNER).map_or(0, |o| o.0 as isize)
+                (
+                    GetWindow(hwnd, GW_OWNER).map_or(0, |o| o.0 as isize),
+                    IsHungAppWindow(hwnd).as_bool(),
+                )
             };
-            Shown { hwnd, owner, pid }
+            Shown {
+                hwnd,
+                owner,
+                pid,
+                hung,
+            }
         })
         .collect()
+}
+
+fn answers(hwnd: HWND) -> bool {
+    // SAFETY: WM_NULL carries no pointers; the call waits at most ANSWER_MS for the window's thread.
+    unsafe {
+        SendMessageTimeoutW(
+            hwnd,
+            WM_NULL,
+            WPARAM(0),
+            LPARAM(0),
+            SMTO_ABORTIFHUNG | SMTO_BLOCK,
+            ANSWER_MS,
+            None,
+        )
+    }
+    .0 != 0
+}
+
+fn kept(last: &BTreeMap<isize, Frame>, hwnd: isize) -> Option<Frame> {
+    last.get(&hwnd).map(|f| Frame {
+        stale: true,
+        ..f.clone()
+    })
+}
+
+fn stale_front(frames: &mut [Frame]) {
+    if frames.iter().any(|f| f.active && !f.stale) {
+        for f in frames.iter_mut().filter(|f| f.stale) {
+            f.active = false;
+        }
+    }
 }
 
 fn owned(shown: &[Shown], root: usize) -> Vec<usize> {
@@ -939,11 +997,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_window_that_stopped_answering_keeps_its_last_frame_stale_and_active_while_no_other_is() {
+        let frame = |id: &str, active: bool| Frame {
+            id: id.into(),
+            title: id.into(),
+            active,
+            ..Frame::default()
+        };
+        let last = BTreeMap::from([(7, frame("hung", true))]);
+        assert!(kept(&last, 9).is_none());
+        let mut frames = vec![frame("other", false), kept(&last, 7).unwrap()];
+        stale_front(&mut frames);
+        assert!(frames[1].stale && frames[1].active && frames[1].title == "hung");
+        frames[0].active = true;
+        stale_front(&mut frames);
+        assert!(frames[1].stale && !frames[1].active);
+    }
+
     fn window(hwnd: isize, owner: isize) -> Shown {
         Shown {
             hwnd: HWND(hwnd as *mut std::ffi::c_void),
             owner,
             pid: 1,
+            hung: false,
         }
     }
 }
