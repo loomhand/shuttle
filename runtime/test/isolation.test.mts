@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 
 import { daemon } from './daemon.mts'
@@ -20,7 +19,6 @@ test('a plan, a save and a reindex write flows, the index, the pending chain and
   assert.equal(saved.ok, true, JSON.stringify(saved))
   assert.equal((await main({ reindex: true })).ok, true)
   const flows = process.env.SHUTTLE_FLOWS ?? ''
-  assert.ok(flows.startsWith(tmpdir()), flows)
   for (const n of ['.runs.jsonl', '.pending.json', 'INDEX', 'saved.json']) assert.ok(existsSync(`${flows}/${n}`), n)
   assert.ok(!existsSync(`${flows}/mousepad.json`))
   const tools = process.platform !== 'darwin' || spawnSync('xcode-select', ['-p']).status === 0

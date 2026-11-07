@@ -36,5 +36,6 @@ test('a complete outline gets no cut note', async (t) => {
   await escalation(t, false, 3)
   const r = await main({ steps: [{ check: 'Nope' }] })
   assert.equal(r.ok, false, JSON.stringify(r))
-  assert.doesNotMatch(r.escalate?.outline ?? '', /reads the rest|accessibility read stopped/)
+  assert.ok(r.escalate?.outline, JSON.stringify(r))
+  assert.doesNotMatch(r.escalate.outline, /reads the rest|accessibility read stopped/)
 })
