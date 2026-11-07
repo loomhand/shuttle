@@ -18,6 +18,7 @@ use core_foundation::number::CFNumber;
 use core_foundation::string::{CFString, CFStringRef};
 use core_foundation::url::CFURL;
 use desk_core::text::clip;
+use objc2_app_kit::NSWorkspace;
 
 use crate::ax_roles::{self, Facts, Kind};
 use crate::keys::ax_combo;
@@ -237,7 +238,7 @@ impl Ax {
             self.last.insert(p, frames[from..].to_vec());
         }
         if frames.iter().any(|f| f.stale) {
-            stale_front(&mut frames, answered.or_else(focused_app));
+            stale_front(&mut frames, answered.or_else(front_app));
         }
         frames
     }
@@ -249,7 +250,6 @@ impl Ax {
             .get(&p)
             .map_or(LAUNCH_GRACE, Instant::elapsed);
         if hung(slow, listed) {
-            self.slow.remove(&p);
             self.hung.insert(p, Instant::now());
         }
         frames.extend(kept(&self.last, p));
@@ -1281,10 +1281,11 @@ fn unread<T>(read: &[Option<T>; 5], waited: Duration) -> bool {
     late(waited) && read[4].is_none()
 }
 
-fn focused_app() -> Option<u32> {
-    attr(&system_wide(), "AXFocusedApplication")
-        .and_then(|a| pid(&a))
-        .and_then(|p| u32::try_from(p).ok())
+fn front_app() -> Option<u32> {
+    objc2::rc::autoreleasepool(|_| {
+        let app = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+        u32::try_from(app.processIdentifier()).ok()
+    })
 }
 
 fn kept(last: &HashMap<i32, Vec<Frame>>, p: i32) -> Vec<Frame> {
@@ -1668,6 +1669,39 @@ mod tests {
         assert_eq!(actives(Some(9), true), ["Terminal"]);
         assert_eq!(actives(Some(7), true), ["Terminal"]);
         assert!(actives(None, false).is_empty());
+    }
+
+    #[test]
+    fn a_still_hung_app_is_marked_again_at_its_first_miss_after_the_skip() {
+        let mut ax = bare();
+        ax.listed_at.insert(7, Instant::now() - LAUNCH_GRACE);
+        ax.missed(7, Instant::now() - Duration::from_secs(2), &mut Vec::new());
+        assert!(ax.hung.contains_key(&7));
+        ax.hung.clear();
+        ax.missed(7, Instant::now(), &mut Vec::new());
+        assert!(ax.hung.contains_key(&7));
+    }
+
+    #[test]
+    fn the_front_app_is_read_off_the_main_thread_without_asking_an_app() {
+        let front = std::thread::spawn(front_app).join().unwrap();
+        assert!(front.is_none_or(|p| p > 0));
+    }
+
+    fn bare() -> Ax {
+        Ax {
+            names: names(ATTRS),
+            app_names: names(APP_ATTRS),
+            frame_names: names(FRAME_ATTRS),
+            climb_names: names(CLIMB_ATTRS),
+            ids: HashMap::new(),
+            hashes: HashMap::new(),
+            hung: HashMap::new(),
+            slow: HashMap::new(),
+            last: HashMap::new(),
+            listed_at: HashMap::new(),
+            driver: None,
+        }
     }
 
     fn listed(pid: u32, layer: i64, alpha: f64, bounds: [f64; 4]) -> Listed {
