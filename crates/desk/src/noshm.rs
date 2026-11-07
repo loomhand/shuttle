@@ -29,7 +29,7 @@ impl Grabber {
         match *self {}
     }
 
-    pub fn pixels(&self) -> Result<&[u8], String> {
+    pub fn pixels(&mut self) -> Result<&[u8], String> {
         match *self {}
     }
 

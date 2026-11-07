@@ -263,7 +263,7 @@ impl Computer {
                 w.h as f64 / scale
             );
         }
-        for m in self.shm(Grabber::modals).unwrap_or_default() {
+        for m in self.shm(|g| g.modals()).unwrap_or_default() {
             head.push_str(&modal_line(&m));
         }
         text.insert_str(0, &head);
@@ -283,6 +283,8 @@ impl Computer {
                     screen,
                 },
             );
+        } else {
+            self.last.lock().await.remove(&session);
         }
         if let Some(b64) = &image_b64 {
             let _ = write!(text, "\nScreenshot: {}", weigh(b64));
@@ -583,9 +585,9 @@ impl Computer {
 
     async fn end(&self, args: Value) -> Result<String, String> {
         let session = session_of(&args);
-        self.request(&session, "end_session", json!({})).await?;
         self.last.lock().await.remove(&session);
         self.scales().remove(&session);
+        self.request(&session, "end_session", json!({})).await?;
         Ok(format!("ended session {session}"))
     }
 
@@ -652,7 +654,7 @@ impl Computer {
 
     /// Types text with non-ASCII characters or at a point, which a click focuses first, in the calls [`text_runs`] cuts.
     async fn type_mixed(&self, session: &str, a: &ActArgs, input: Turn) -> Result<Output, String> {
-        let full = without_protocol_tail(a.text.as_deref().unwrap_or_default());
+        let full = without_protocol_tail(required(&a.text, "text")?);
         let before = self.before_input(Some(a)).await;
         let mut failure = None;
         if a.element.is_some() || (a.x.is_some() && a.y.is_some()) {
@@ -1129,7 +1131,7 @@ impl Computer {
     }
 
     /// Runs `read` on the MIT-SHM grabber, opening it when needed or after the screen changed size; `None` when it is unavailable or fails.
-    fn shm<T>(&self, read: impl FnOnce(&Grabber) -> Result<T, String>) -> Option<T> {
+    fn shm<T>(&self, read: impl FnOnce(&mut Grabber) -> Result<T, String>) -> Option<T> {
         if !cfg!(target_os = "linux") {
             return None;
         }
@@ -1144,7 +1146,7 @@ impl Computer {
                 }
             }
         }
-        match read(slot.as_ref()?) {
+        match read(slot.as_mut()?) {
             Ok(v) => Some(v),
             Err(e) => {
                 eprintln!("desk: MIT-SHM capture: {e}");
@@ -1188,7 +1190,7 @@ impl Computer {
             return Ok(Some(window));
         }
         let (start, mut waited) = (Instant::now(), false);
-        while !self.shm(Grabber::wm).unwrap_or(true) {
+        while !self.shm(|g| g.wm()).unwrap_or(true) {
             if start.elapsed() >= WM_WAIT {
                 return Err(format!(
                     "no window manager after {} s: the desktop is still starting; try again",

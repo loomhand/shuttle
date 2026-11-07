@@ -172,9 +172,7 @@ impl Ax {
                 answered.get_or_insert(p as u32);
             }
             let focused = focused.or(main);
-            let Some(windows) = windows.map(|w| items(&w)) else {
-                continue;
-            };
+            let windows = windows.map(|w| items(&w)).unwrap_or_default();
             let mut cut = false;
             for w in windows.iter() {
                 let [role, subrole, title, children, pos, size] = values(&self.frame_names, w);

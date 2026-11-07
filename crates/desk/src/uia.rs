@@ -376,9 +376,6 @@ impl Access for Uia {
                 };
                 menus.extend(self.cached(&el, &self.subtree).ok());
             }
-            if nodes.iter().any(|n| n.role == "menu" && n.has("expanded")) {
-                menus_in(&kids, &mut menus);
-            }
             for menu in menus {
                 let listed = runtime_id(&menu).is_ok_and(|id| nodes.iter().any(|n| n.id == id));
                 if truncated || listed {
@@ -791,12 +788,6 @@ fn stale_front(frames: &mut [Frame], last: &mut BTreeMap<isize, Frame>, front: i
         for (_, f) in last.iter_mut().filter(|(h, _)| **h != front) {
             f.active = false;
         }
-        return;
-    }
-    if frames.iter().any(|f| f.active && !f.stale) {
-        for f in frames.iter_mut().filter(|f| f.stale) {
-            f.active = false;
-        }
     }
 }
 
@@ -928,15 +919,6 @@ fn value(el: &IUIAutomationElement, p: UIA_PROPERTY_ID) -> Val {
     }
 }
 
-fn menus_in(kids: &[IUIAutomationElement], out: &mut Vec<IUIAutomationElement>) {
-    for child in kids {
-        if raw_control_type(child) == UIA_MenuControlTypeId.0 {
-            out.push(child.clone());
-        }
-        menus_in(&children(child), out);
-    }
-}
-
 fn children(el: &IUIAutomationElement) -> Vec<IUIAutomationElement> {
     // SAFETY: `el` is a live UIA element of this thread built with a subtree cache.
     unsafe { el.GetCachedChildren() }
@@ -1034,7 +1016,7 @@ mod tests {
     }
 
     #[test]
-    fn a_window_that_stopped_answering_keeps_its_last_frame_stale_and_active_while_no_other_is() {
+    fn a_window_that_stopped_answering_keeps_its_last_frame_stale_and_active() {
         let frame = |id: &str, active: bool| Frame {
             id: id.into(),
             title: id.into(),
@@ -1047,9 +1029,6 @@ mod tests {
         let mut frames = vec![frame("other", false), kept(&mut last, 7, 1, false).unwrap()];
         stale_front(&mut frames, &mut last, 0);
         assert!(frames[1].stale && frames[1].active && frames[1].title == "hung");
-        frames[0].active = true;
-        stale_front(&mut frames, &mut last, 0);
-        assert!(frames[1].stale && !frames[1].active);
     }
 
     #[test]
