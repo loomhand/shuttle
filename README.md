@@ -66,7 +66,7 @@ claude mcp add --transport http shuttle http://localhost:8765/mcp --header "Auth
 
 ## Command line
 
-`shuttle mcp [--http ADDR]` serves MCP, `shuttle serve [ENDPOINT]` runs the daemon, and `shuttle stop` and `shuttle resume` stop and resume it. `shuttle desk VERB [key=value ... | JSON]` makes one desk call ([docs/wire.md](docs/wire.md)), where a value is parsed as JSON when it can be; an image in the answer goes to a temporary file whose path follows `image:`.
+`shuttle mcp [--http ADDR]` serves MCP, `shuttle serve [ENDPOINT]` runs the daemon, and `shuttle stop` and `shuttle resume` stop and resume it. `shuttle desk VERB [key=value ... | JSON]` makes one desk call ([docs/wire.md](docs/wire.md)), where a value is parsed as JSON when it can be, except `id` and `window`, which stay strings; an image in the answer goes to a temporary file whose path follows `image:`.
 
 ## Tools
 

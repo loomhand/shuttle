@@ -123,7 +123,7 @@ fn call_desk(rest: &[String]) -> ExitCode {
     send(&call, format_args!("desk {verb}"))
 }
 
-/// One JSON object, or `key=value` pairs whose values parse as JSON when they can.
+/// One JSON object, or `key=value` pairs whose values parse as JSON when they can, except `id` and `window`, which stay strings.
 fn cli_args(rest: &[String]) -> Result<Value, String> {
     if let [one] = rest
         && one.trim_start().starts_with('{')
@@ -135,7 +135,10 @@ fn cli_args(rest: &[String]) -> Result<Value, String> {
         let (k, v) = pair
             .split_once('=')
             .ok_or_else(|| format!("{pair:?} is not key=value"))?;
-        let v = serde_json::from_str(v).unwrap_or_else(|_| Value::String(v.to_owned()));
+        let v = match k {
+            "id" | "window" => Value::String(v.to_owned()),
+            _ => serde_json::from_str(v).unwrap_or_else(|_| Value::String(v.to_owned())),
+        };
         args.insert(k.to_owned(), v);
     }
     Ok(Value::Object(args))
@@ -442,6 +445,10 @@ mod tests {
             serde_json::json!({"id": "1/2"})
         );
         assert!(cli_args(&["nope".into()]).is_err());
+        assert_eq!(
+            cli_args(&["id=21".into(), "window=2048".into()]).unwrap(),
+            serde_json::json!({"id": "21", "window": "2048"})
+        );
     }
 
     #[test]
