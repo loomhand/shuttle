@@ -1400,6 +1400,9 @@ impl Computer {
     }
 
     fn to_dialog(&self, req: &Value) -> bool {
+        if self.os != Os::Linux {
+            return false;
+        }
         let window = req["window_id"]
             .as_u64()
             .and_then(|w| u32::try_from(w).ok());
@@ -3037,6 +3040,28 @@ mod tests {
             ]
         );
         driver.abort();
+    }
+
+    #[tokio::test]
+    async fn off_linux_a_typed_trailing_newline_goes_with_the_text() {
+        for os in [Os::Mac, Os::Windows] {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = endpoint(dir.path());
+            let calls = std::sync::Arc::default();
+            let driver = window_driver(&socket, &calls, usize::MAX);
+            let act = json!({"action": "type", "text": "name\n", "foreground": true});
+            let out = cua_on(&socket, os).act(act).await.unwrap();
+            assert!(!out.is_error, "{os:?}: {}", out.text);
+            let calls = calls.lock().unwrap();
+            let typed: Vec<&Value> = calls.iter().filter(|c| c["name"] == "type_text").collect();
+            assert_eq!(typed.len(), 1, "{os:?}: {calls:?}");
+            assert_eq!(typed[0]["args"]["text"], "name\n", "{os:?}");
+            assert!(
+                !calls.iter().any(|c| c["name"] == "press_key"),
+                "{os:?}: {calls:?}"
+            );
+            driver.abort();
+        }
     }
 
     #[tokio::test]

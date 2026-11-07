@@ -30,7 +30,7 @@
   - `desk.at` sends whole pixels, a type step into a password field no longer quotes the secret in its error, and a background menu toggle that needs pixels refuses before it opens the menus (#262).
   - A recording's draft keeps the keys F1 to F12.
   - In a tree whose nodes carry no bounds, as GTK 4 apps give, a shown element whose name matches is clicked without a model pick.
-- **Computer verbs.** A `computer_state` that read no elements drops the session's previous elements, and a `type` with `x`, `y` and no text is refused.
+- **Computer verbs.** A `computer_state` that read no elements drops the session's previous elements, and a `type` with `x`, `y` and no text is refused. On macOS and Windows a `type` that ends in a newline sends it with the text, which the driver delivers as Return, instead of pressing Return 300 ms later; Linux keeps the split for GTK dialogs.
 - **Android.** A UI server that exited while idle is started again instead of reused, which failed the next call with a broken pipe; the server frees each screenshot bitmap. A paste the window refused fails, a launch with `args` and a `key`, `type` or `click` naming an app are refused before any adb call (#261), and a paste key with no window in focus says so (#274).
 - **Recording (macOS).** The daemon answers `record_start`, `record_note` and `record_stop` only to its own user, so a `socket_group` member can no longer record your keystrokes and screen. A recorded click's window shot names the window's pid, so a same-titled window of another app is not cropped (#260).
 - **`shuttle mcp --http`** takes the `Bearer` scheme in any case, and an MCP image carries the MIME type of its bytes, so a service tool's JPEG or WebP is no longer labelled `image/png`.
