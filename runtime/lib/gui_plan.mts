@@ -865,7 +865,11 @@ async function byDom(nodes: Node[], id: string, hit: Hit | null, target: string,
 
 async function landed(want: string, ms: number) {
   const t0 = Date.now()
-  const f = frontOf(await until((ws) => { const f = frontOf(ws); return !!f && awaited(f.title, want) }, ms))
+  const opened = (ws: Win[]) => BG ? ws.find((x) => x.pid === target?.pid && awaited(x.title, want)) : undefined
+  const ws = await until((ws) => { const f = frontOf(ws); return !!f && awaited(f.title, want) || !!opened(ws) }, ms)
+  let f = frontOf(ws)
+  const fresh = f && awaited(f.title, want) ? undefined : opened(ws)
+  if (fresh) { follow(fresh, ws); f = fresh }
   tick('wait', t0)
   if (!f || !awaited(f.title, want)) throw new Diverged(`after this step the recording saw "${want}" in front, and the replay did not: ${f ? `"${f.title}"` : 'no window'} is in front`, await seen())
   known.add(f.title); lastSeen = f.title

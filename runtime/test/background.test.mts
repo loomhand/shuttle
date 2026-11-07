@@ -319,3 +319,15 @@ test('a Windows menu toggle that needs pixels refuses in the background and clos
   assert.deepEqual(sent(d.calls, 'desk_press').map((a) => a.id), ['1/3'])
   assert.equal(state.open, false)
 })
+
+test('a recorded after names a new window of the app, which the background plan then takes as its target', async (t) => {
+  const ws = [user(), notepad()]
+  const d = desktop(ws, ({ tool }) => {
+    if (tool === 'desk_key') ws.push({ id: '2', title: 'Untitled 2 - Notepad', role: 'window', pid: 4, active: false })
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+n', after: 'Untitled 2 - Notepad' }, { type: 'x' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'x', window: 'Untitled 2 - Notepad', pid: 4 }])
+})
