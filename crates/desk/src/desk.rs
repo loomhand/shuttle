@@ -1691,12 +1691,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if title.is_empty() {
             return Ok(true);
         }
-        let pid = u32::try_from(pid).ok();
-        Ok(!self
-            .listed()
-            .await?
-            .iter()
-            .any(|f| f.pid == pid && f.owner.is_none() && f.title.trim() == title))
+        Ok(!lists_top_level(&self.listed().await?, w))
     }
 
     async fn raise(&self, window: Option<(i64, i64)>) -> Result<(), String> {
@@ -2519,6 +2514,21 @@ fn key_request(mut keys: Vec<String>) -> (&'static str, Value) {
     }
     req["keys"] = keys.into();
     ("hotkey", req)
+}
+
+/// Whether `frames` hold driver window `w` as an unowned top-level window: by window number where frames carry one, else by title.
+fn lists_top_level(frames: &[Frame], w: &Value) -> bool {
+    let pid = w["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
+    let number = w["window_id"].as_u64().and_then(|n| u32::try_from(n).ok());
+    let title = w["title"].as_str().unwrap_or_default().trim();
+    frames.iter().any(|f| {
+        f.pid == pid
+            && f.owner.is_none()
+            && match f.number {
+                Some(n) => Some(n) == number,
+                None => f.title.trim() == title,
+            }
+    })
 }
 
 fn window_key(w: &Value) -> Result<(i64, i64, [f64; 4]), String> {
@@ -4336,6 +4346,32 @@ pub(crate) mod tests {
             "{:?}",
             order(&calls)
         );
+    }
+
+    #[test]
+    fn a_listed_window_is_found_by_its_number_where_frames_carry_one_else_by_title() {
+        let numbered = Frame {
+            title: "A very long document title that the window server shortens".into(),
+            pid: Some(8),
+            number: Some(41),
+            ..Frame::default()
+        };
+        let elided = json!({"pid": 8, "window_id": 41, "title": "A very long document…"});
+        assert!(lists_top_level(std::slice::from_ref(&numbered), &elided));
+        let other = json!({"pid": 8, "window_id": 42, "title": numbered.title});
+        assert!(!lists_top_level(std::slice::from_ref(&numbered), &other));
+        let titled = Frame {
+            title: "Other - Mail".into(),
+            pid: Some(8),
+            ..Frame::default()
+        };
+        let sibling = json!({"pid": 8, "window_id": 7, "title": "Other - Mail"});
+        assert!(lists_top_level(std::slice::from_ref(&titled), &sibling));
+        let owned = Frame {
+            owner: Some("8/1".into()),
+            ..titled
+        };
+        assert!(!lists_top_level(&[owned], &sibling));
     }
 
     #[tokio::test]
