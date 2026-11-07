@@ -25,6 +25,7 @@ Every platform installs and runs `shuttle mcp`. On macOS and Windows, the `desk`
 - **SmartScreen.** The binaries are unsigned. `install.ps1` downloads without the mark of the web; a zip downloaded with a browser may still show "Windows protected your PC" (More info > Run anyway).
 - **Elevated windows.** Driving a window that runs as administrator needs a UIAccess helper, which Windows starts only when it is signed and installed under Program Files. shuttle ships without it, so windows of elevated processes are out of reach.
 - **Windows on Arm** runs the x64 build under emulation.
+- **Unresponsive windows.** A window that stops answering stays in `windows`, marked `stale`. Each window list then costs about 0.5 s for each stuck UI thread, so a list with many stuck threads at once can time out. When you activate the "Not Responding" ghost of a hung window after another window was in front, Windows leaves no window active: a plan then does not stop at the stale front window, and foreground input goes to the hung app.
 - **Keyboard layout.** With background input, `type` sends digits, punctuation and shifted symbols as the keys that type them on a US layout, so under another layout, such as German or French AZERTY, they come out as other characters while the call reports success. Letters and characters outside ASCII are not affected. Switch the target window to a US layout, or paste the text.
 
 ## Linux
