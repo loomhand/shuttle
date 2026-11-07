@@ -270,9 +270,7 @@ struct Rect {
 
 pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, String> {
     if matches!(verb, "desk_key" | "desk_type" | "desk_click") && args.get("app").is_some() {
-        return Err(format!(
-            "{verb}: a device names its window by window or pid, not app"
-        ));
+        return Err("a device names its window by window or pid, not app".to_owned());
     }
     let text = match verb {
         "desk_windows" => {
@@ -1708,8 +1706,8 @@ mod tests {
         ] {
             let err = run(&android, verb, args).await.unwrap_err();
             assert_eq!(
-                err,
-                format!("{verb}: a device names its window by window or pid, not app")
+                err, "a device names its window by window or pid, not app",
+                "{verb}"
             );
         }
     }
