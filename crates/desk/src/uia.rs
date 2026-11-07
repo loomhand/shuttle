@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use desk_core::text::clip;
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, WPARAM};
@@ -38,8 +38,6 @@ use crate::uia_roles::{self, Facts, Kind};
 const ACT_TIMEOUT_MS: u32 = 2_000;
 const TIMED_OUT: HRESULT = HRESULT(UIA_E_TIMEOUT.cast_signed());
 const ACT_TIMED_OUT: &str = "the app did not answer the action within 2 s, as when the action opens a modal dialog; it may have taken effect: read the window before acting again";
-const CACHE_TRIES: u32 = 3;
-const CACHE_RETRY: Duration = Duration::from_millis(40);
 const TITLE_CHARS: usize = 512;
 const PROPS: [UIA_PROPERTY_ID; 24] = [
     UIA_ControlTypePropertyId,
@@ -140,18 +138,8 @@ impl Uia {
         el: &IUIAutomationElement,
         request: &IUIAutomationCacheRequest,
     ) -> Result<IUIAutomationElement, String> {
-        let mut tries = 0;
-        loop {
-            // SAFETY: `el` and `request` are live UIA objects of this thread.
-            match unsafe { el.BuildUpdatedCache(request) } {
-                Ok(c) => return Ok(c),
-                Err(e) if tries + 1 >= CACHE_TRIES => return Err(format!("UIA cache: {e}")),
-                Err(_) => {
-                    tries += 1;
-                    std::thread::sleep(CACHE_RETRY);
-                }
-            }
-        }
+        // SAFETY: `el` and `request` are live UIA objects of this thread.
+        unsafe { el.BuildUpdatedCache(request) }.map_err(|e| format!("UIA cache: {e}"))
     }
 
     fn node_of(
