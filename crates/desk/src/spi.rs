@@ -112,8 +112,8 @@ impl Access for Spi {
         let obj = Obj::parse(&frame.id)?;
         match answered(&self.rt, within, self.atspi.focused_in(&obj)) {
             None => Ok(None),
-            Some(Some(found)) => Ok(Some(found.id())),
-            Some(None) => focused_by_tree(self, frame),
+            Some(Ok(found)) => Ok(found.as_ref().map(Obj::id)),
+            Some(Err(_)) => focused_by_tree(self, frame),
         }
     }
 

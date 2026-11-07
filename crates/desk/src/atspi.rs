@@ -625,13 +625,12 @@ impl Atspi {
         })
     }
 
-    /// The first descendant of `obj` in the focused state, by one Collection match; none when the app does not serve Collection.
-    pub async fn focused_in(&self, obj: &Obj) -> Option<Obj> {
+    /// The first descendant of `obj` in the focused state, by one Collection match; an error when the app does not serve Collection.
+    pub async fn focused_in(&self, obj: &Obj) -> Result<Option<Obj>, String> {
         let found: Vec<(String, OwnedObjectPath)> = self
             .call(obj, COLLECTION, "GetMatches", &focused_rule())
-            .await
-            .ok()?;
-        found.into_iter().next().map(Obj::of)
+            .await?;
+        Ok(found.into_iter().next().map(Obj::of))
     }
 
     /// The text of a text node, at most `max` characters, else the current value of a value node; none for a password field or a failed read.
