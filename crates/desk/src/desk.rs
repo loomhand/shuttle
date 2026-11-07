@@ -1649,7 +1649,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(Some((pid, id)))
     }
 
-    /// Raises window `w`, the target of pointer input named by `window`, when the point lies in it and another window than an untitled popup of its app is on top there, under the rule [`Self::raised_window`] keeps.
+    /// Raises window `w`, the target of pointer input named by `window`, when the point lies in it and another window than one of [`Self::own_popup`] is on top there, under the rule [`Self::raised_window`] keeps.
     async fn front(&self, w: &Value, pid: Option<u32>, (x, y): (f64, f64)) -> Result<(), String> {
         if pid.is_none() && self.os == Os::Linux {
             return Ok(());
@@ -1666,9 +1666,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let Some(cover) = self.top_at(point).await? else {
             return Ok(());
         };
-        let popup = cover["pid"].as_i64() == Some(to.0)
-            && cover["title"].as_str().is_none_or(|t| t.trim().is_empty());
-        if key(&cover) == (Some(to.0), Some(to.1)) || popup {
+        if key(&cover) == (Some(to.0), Some(to.1)) || self.own_popup(&cover, to.0).await? {
             return Ok(());
         }
         self.raise(Some(to)).await?;
@@ -1682,6 +1680,23 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             tokio::time::sleep(WAIT_POLL).await;
         }
         Ok(())
+    }
+
+    /// Whether driver window `w` is a window of process `pid` other than an unowned top-level window the desk lists, such as its popup menu or a dialog it owns.
+    async fn own_popup(&self, w: &Value, pid: i64) -> Result<bool, String> {
+        if w["pid"].as_i64() != Some(pid) {
+            return Ok(false);
+        }
+        let title = w["title"].as_str().unwrap_or_default().trim();
+        if title.is_empty() {
+            return Ok(true);
+        }
+        let pid = u32::try_from(pid).ok();
+        Ok(!self
+            .listed()
+            .await?
+            .iter()
+            .any(|f| f.pid == pid && f.owner.is_none() && f.title.trim() == title))
     }
 
     async fn raise(&self, window: Option<(i64, i64)>) -> Result<(), String> {
@@ -4271,11 +4286,15 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_same_app_window_on_top_is_raised_past_unless_it_is_an_untitled_popup() {
-        for (cover, raised) in [((8, "Other - Mail"), true), ((8, ""), false)] {
+    async fn a_same_app_window_on_top_is_raised_past_unless_the_desk_does_not_list_it() {
+        for (cover, raised) in [
+            ((8, "Other - Mail"), true),
+            ((8, ""), false),
+            ((8, "PopupHost"), false),
+        ] {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let desk = Desk::new(
-                || Ok(Apps),
+                || Ok(Sibling),
                 BehindCover(Behind(Arc::clone(&calls)), AtomicBool::new(false), cover),
                 Os::Windows,
             );
@@ -7157,6 +7176,40 @@ pub(crate) mod tests {
 
         fn close(&mut self, _: &Frame) -> Result<(), String> {
             Ok(())
+        }
+    }
+
+    struct Sibling;
+
+    impl Access for Sibling {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            let mut frames = Apps.frames()?;
+            frames.push(frame("8/3", "Other - Mail", 8, false, Some("Mail")));
+            Ok(frames)
+        }
+
+        fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
+            Apps.tree(frame, extras)
+        }
+
+        fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String> {
+            Apps.node(id, extras, chars)
+        }
+
+        fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
+            Apps.ancestors(id)
+        }
+
+        fn at(&mut self, window: &str, x: i32, y: i32) -> Result<Option<String>, String> {
+            Apps.at(window, x, y)
+        }
+
+        fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
+            Apps.act(id, act)
+        }
+
+        fn close(&mut self, frame: &Frame) -> Result<(), String> {
+            Apps.close(frame)
         }
     }
 
