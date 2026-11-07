@@ -40,7 +40,10 @@ const SESSION: &str = "desk";
 const CLICK_DISTANCE: f64 = 16.0;
 const USER_IDLE: Duration = Duration::from_secs(1);
 const OWN_INPUT_LAG: Duration = Duration::from_millis(600);
-const PER_TYPED_CHAR: Duration = Duration::from_millis(40);
+#[cfg(windows)]
+const PER_TYPED_UNIT: Duration = Duration::from_secs(2);
+#[cfg(not(windows))]
+const PER_TYPED_UNIT: Duration = Duration::from_millis(40);
 #[cfg(all(target_os = "macos", not(test)))]
 const HID_SYSTEM_STATE: i32 = 1;
 #[cfg(all(target_os = "macos", not(test)))]
@@ -331,9 +334,11 @@ fn result(tool: &str, reply: &str) -> Result<Value, String> {
 }
 
 fn call_limit(tool: &str, args: &Value, limit: Duration) -> Duration {
-    let chars = args["text"].as_str().map_or(0, |t| t.chars().count());
+    let units = args["text"]
+        .as_str()
+        .map_or(0, |t| t.encode_utf16().count());
     match tool {
-        "type_text" => limit + PER_TYPED_CHAR * u32::try_from(chars).unwrap_or(u32::MAX),
+        "type_text" => limit + PER_TYPED_UNIT * u32::try_from(units).unwrap_or(u32::MAX),
         _ => limit,
     }
 }
@@ -376,17 +381,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_type_waits_forty_ms_more_per_character_and_other_calls_their_limit() {
+    fn a_type_waits_its_driver_s_slowest_time_per_utf16_unit_and_other_calls_their_limit() {
+        let text = json!({"text": "x".repeat(6000)});
+        assert_eq!(
+            call_limit("type_text", &text, REQUEST_TIMEOUT),
+            REQUEST_TIMEOUT + PER_TYPED_UNIT * 6000
+        );
+        assert_eq!(
+            call_limit(
+                "type_text",
+                &json!({"text": "a\u{4e2d}\u{1f600}"}),
+                REQUEST_TIMEOUT
+            ),
+            REQUEST_TIMEOUT + PER_TYPED_UNIT * 4
+        );
+        assert_eq!(call_limit("click", &text, REQUEST_TIMEOUT), REQUEST_TIMEOUT);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_type_waits_the_driver_s_two_second_stall_cap_per_unit() {
+        let text = json!({"text": "x".repeat(1000)});
+        assert_eq!(
+            call_limit("type_text", &text, REQUEST_TIMEOUT),
+            Duration::from_secs(2030)
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn elsewhere_a_type_waits_forty_ms_more_per_unit() {
         let text = json!({"text": "x".repeat(6000)});
         assert_eq!(
             call_limit("type_text", &text, REQUEST_TIMEOUT),
             Duration::from_secs(270)
         );
-        assert_eq!(
-            call_limit("type_text", &json!({"text": "ab\u{4e2d}"}), REQUEST_TIMEOUT),
-            Duration::from_millis(30_120)
-        );
-        assert_eq!(call_limit("click", &text, REQUEST_TIMEOUT), REQUEST_TIMEOUT);
     }
 
     #[test]
