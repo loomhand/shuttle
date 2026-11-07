@@ -28,8 +28,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(unix)]
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use tokio::process::Child;
@@ -113,6 +112,10 @@ pub fn home() -> PathBuf {
 
 pub fn embedded() -> bool {
     std::env::var(EMBEDDED).is_ok_and(|v| v == "1")
+}
+
+pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 pub(crate) fn log(line: impl Display) {
@@ -209,7 +212,7 @@ pub(crate) async fn end_process(pid: u32, grace: Duration) -> bool {
 #[cfg(unix)]
 pub(crate) fn kill_later(rt: &tokio::runtime::Handle, group: u32, grace: Duration) {
     {
-        let mut graced = GRACED.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut graced = lock(&GRACED);
         if ENDING.load(Ordering::Relaxed) {
             drop(graced);
             signal_group(group, libc::SIGKILL);
@@ -219,17 +222,14 @@ pub(crate) fn kill_later(rt: &tokio::runtime::Handle, group: u32, grace: Duratio
     }
     rt.spawn(async move {
         kill_after(grace, move |sig| signal_group(group, sig)).await;
-        GRACED
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|g| *g != group);
+        lock(&GRACED).retain(|g| *g != group);
     });
 }
 
 #[cfg(unix)]
 pub(crate) fn kill_graced() {
     ENDING.store(true, Ordering::Relaxed);
-    let graced = std::mem::take(&mut *GRACED.lock().unwrap_or_else(PoisonError::into_inner));
+    let graced = std::mem::take(&mut *lock(&GRACED));
     for group in graced {
         signal_group(group, libc::SIGKILL);
     }

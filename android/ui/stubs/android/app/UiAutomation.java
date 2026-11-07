@@ -1,10 +1,10 @@
 package android.app;
 
 import android.accessibilityservice.AccessibilityServiceInfo;
+import android.graphics.Bitmap;
 import android.os.Looper;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
-import android.graphics.Bitmap;
 import java.util.List;
 
 public class UiAutomation {

@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use desk_core::args::parse;
@@ -339,7 +339,7 @@ async fn capture(mut r: impl AsyncRead + Unpin, into: Captured) {
         if n == 0 {
             break;
         }
-        let mut buf = into.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut buf = crate::lock(&into);
         let room = MAX_OUTPUT.saturating_sub(buf.len());
         buf.extend_from_slice(&chunk[..n.min(room)]);
     }
@@ -357,7 +357,7 @@ fn exited(program: &Path, status: std::process::ExitStatus, stderr: &str) -> Str
 }
 
 fn text(captured: &Captured) -> String {
-    let bytes = std::mem::take(&mut *captured.lock().unwrap_or_else(PoisonError::into_inner));
+    let bytes = std::mem::take(&mut *crate::lock(captured));
     String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 

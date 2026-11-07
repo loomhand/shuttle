@@ -120,6 +120,7 @@ pub fn key_names(combo: &str, os: Os) -> Result<Vec<String>, String> {
     parts.iter().map(|k| key_name(k, os, combo)).collect()
 }
 
+/// A UIA AcceleratorKey or AccessKey such as `Ctrl+Shift+S` as `ctrl+shift+s`; none when empty.
 pub fn uia_combo(text: &str) -> Option<String> {
     let text = text.trim();
     if text.is_empty() {
@@ -180,7 +181,6 @@ pub(crate) fn hid_plus(req: &mut Value) {
     }
 }
 
-/// A UIA AcceleratorKey or AccessKey such as `Ctrl+Shift+S` as `ctrl+shift+s`; none when empty.
 fn key_name(key: &str, os: Os, combo: &str) -> Result<String, String> {
     let k = key.trim().to_lowercase();
     if k.is_empty() {
