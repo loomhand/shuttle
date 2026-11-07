@@ -393,3 +393,16 @@ test('a recorded after that was already in front before the step leaves the step
   assert.equal(r.ok, false)
   assert.match(String(r.escalate?.reason), /step 1 \(key\) was sent but not confirmed/)
 })
+
+test('a window that takes the plan window id under another process is not the plan window, and no input goes to it', async (t) => {
+  const ws = [user(), notepad()]
+  const d = desktop(ws, ({ tool }) => {
+    if (tool === 'desk_type' && ws[1]?.pid === 4) { ws[1] = { ...notepad(), title: 'Other app', pid: 7 }; return JSON.stringify({ ok: true, chars: 1 }) }
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { type: 'a' }, { type: 'b' }] })
+  assert.equal(r.ok, false)
+  assert.match(String(r.escalate?.reason), /plan's window "Untitled - Notepad" is gone/)
+  assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'a', window: 'Untitled - Notepad', pid: 4 }])
+})
