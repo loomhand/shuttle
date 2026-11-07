@@ -376,7 +376,7 @@ impl Android {
             .await
     }
 
-    /// The UI tree of window `window`, else of the active one, from the image's UI server.
+    /// The UI tree of window `window`, else of the active one, from the UI server.
     pub(crate) async fn tree(&self, window: Option<&str>) -> Result<String, String> {
         match window {
             Some(w) => self.served(&format!("dump {w}")).await,
@@ -608,10 +608,12 @@ impl Android {
     }
 
     async fn ui_server(&self, slot: &mut Option<UiServer>) -> Result<UiServer, String> {
-        match slot.take() {
-            Some(server) => Ok(server),
-            None => self.start_ui().await,
+        if let Some(mut server) = slot.take()
+            && matches!(server.child.try_wait(), Ok(None))
+        {
+            return Ok(server);
         }
+        self.start_ui().await
     }
 
     async fn start_ui(&self) -> Result<UiServer, String> {
@@ -643,7 +645,7 @@ impl Android {
             return Err(self.start_failure(&mut child, stderr, ready.trim()).await);
         }
         Ok(UiServer {
-            _child: child,
+            child,
             stdin,
             stdout,
         })
@@ -754,7 +756,7 @@ enum Injection {
 
 /// The UI server (`android/ui`) on the device, one answer per request line; dropping it stops the server.
 struct UiServer {
-    _child: Child,
+    child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
 }
@@ -2435,7 +2437,7 @@ mod tests {
         *android.ui.lock().await = Some(UiServer {
             stdin: ui.stdin.take().unwrap(),
             stdout: BufReader::new(ui.stdout.take().unwrap()),
-            _child: ui,
+            child: ui,
         });
         let pasted = android.paste("hi").await;
         assert_eq!(device.await.unwrap().0, clipboard_message("hi", 1));
