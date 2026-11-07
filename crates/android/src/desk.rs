@@ -1689,6 +1689,31 @@ mod tests {
         assert_eq!(started.elapsed(), Duration::from_millis(151));
     }
 
+    #[tokio::test]
+    async fn a_launch_with_args_and_input_naming_an_app_are_refused_before_the_device() {
+        let android = Android::new(crate::adb::Device {
+            adb: "/nonexistent/adb".into(),
+            serial: None,
+            ui_jar: "/u.jar".into(),
+            scrcpy_jar: "/s.jar".into(),
+            su: None,
+        });
+        let launch = json!({"app": "com.android.settings", "args": ["https://example.test"]});
+        let err = run(&android, "desk_launch", launch).await.unwrap_err();
+        assert_eq!(err, "a device launch takes no args");
+        for (verb, args) in [
+            ("desk_key", json!({"keys": "enter", "app": "Settings"})),
+            ("desk_type", json!({"text": "hi", "app": "Settings"})),
+            ("desk_click", json!({"x": 10, "y": 20, "app": "Settings"})),
+        ] {
+            let err = run(&android, verb, args).await.unwrap_err();
+            assert_eq!(
+                err,
+                format!("{verb}: a device names its window by window or pid, not app")
+            );
+        }
+    }
+
     fn window(bounds: [i32; 4]) -> WindowInfo {
         WindowInfo {
             id: 7,
