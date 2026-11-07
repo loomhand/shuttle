@@ -1367,7 +1367,7 @@ impl Computer {
         let (Some(pid), Some(window_id)) = (req["pid"].as_i64(), req["window_id"].as_i64()) else {
             return Ok(());
         };
-        if req["delivery_mode"] != "foreground" {
+        if self.os != Os::Linux || req["delivery_mode"] != "foreground" {
             return Ok(());
         }
         let front = json!({"pid": pid, "window_id": window_id});
@@ -3038,16 +3038,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_foreground_type_brings_its_window_to_the_front_before_typing() {
+    async fn a_linux_foreground_type_brings_its_window_to_the_front_before_typing() {
         let call = |name: &str, args: Value| json!({"name": name, "args": args});
         let shot = || call("get_desktop_state", json!({"max_image_dimension": 0}));
         let end = || call("end_session", json!({}));
         let list = || call("list_windows", json!({"on_screen_only": true}));
         let front = || call("bring_to_front", json!({"pid": 7, "window_id": 9}));
         let typed = |args: Value| call("type_text", args);
-        let foreground =
-            json!({"delivery_mode": "foreground", "pid": 7, "window_id": 9, "text": "abc"});
-        let mixed = json!({"delivery_mode": "foreground", "pid": 7, "window_id": 9, "text": "h\u{e9}llo", "literal": true});
+        let foreground = || {
+            typed(json!({"delivery_mode": "foreground", "pid": 7, "window_id": 9, "text": "abc"}))
+        };
+        let mixed = || {
+            typed(
+                json!({"delivery_mode": "foreground", "pid": 7, "window_id": 9, "text": "h\u{e9}llo", "literal": true}),
+            )
+        };
+        let plain = json!({"action": "type", "text": "abc", "foreground": true});
+        let accented = json!({"action": "type", "text": "h\u{e9}llo", "foreground": true});
         let background = if cfg!(target_os = "linux") {
             vec![
                 list(),
@@ -3068,31 +3075,42 @@ mod tests {
                 shot(),
             ]
         };
-        for (act, want) in [
+        let mut cases = vec![
             (
-                json!({"action": "type", "text": "abc", "foreground": true}),
-                vec![
-                    list(),
-                    shot(),
-                    end(),
-                    front(),
-                    typed(foreground),
-                    end(),
-                    shot(),
-                ],
+                Os::Linux,
+                plain.clone(),
+                vec![list(), shot(), end(), front(), foreground(), end(), shot()],
             ),
             (
-                json!({"action": "type", "text": "h\u{e9}llo", "foreground": true}),
-                vec![shot(), end(), list(), front(), typed(mixed), end(), shot()],
+                Os::Linux,
+                accented.clone(),
+                vec![shot(), end(), list(), front(), mixed(), end(), shot()],
             ),
-            (json!({"action": "type", "text": "abc"}), background),
-        ] {
+            (
+                Os::Linux,
+                json!({"action": "type", "text": "abc"}),
+                background,
+            ),
+        ];
+        for os in [Os::Mac, Os::Windows] {
+            cases.push((
+                os,
+                plain.clone(),
+                vec![list(), shot(), end(), foreground(), end(), shot()],
+            ));
+            cases.push((
+                os,
+                accented.clone(),
+                vec![shot(), end(), list(), mixed(), end(), shot()],
+            ));
+        }
+        for (os, act, want) in cases {
             let dir = tempfile::tempdir().unwrap();
             let socket = endpoint(dir.path());
             let calls = std::sync::Arc::default();
             let driver = window_driver(&socket, &calls, usize::MAX);
-            let out = cua(&socket).act(act.clone()).await.unwrap();
-            assert!(!out.is_error, "{}", out.text);
+            let out = cua_on(&socket, os).act(act.clone()).await.unwrap();
+            assert!(!out.is_error, "{os:?} {act}: {}", out.text);
             let sent: Vec<Value> = calls
                 .lock()
                 .unwrap()
@@ -3103,7 +3121,7 @@ mod tests {
                     call(c["name"].as_str().unwrap(), args)
                 })
                 .collect();
-            assert_eq!(sent, want, "{act}");
+            assert_eq!(sent, want, "{os:?} {act}");
             driver.abort();
         }
     }
