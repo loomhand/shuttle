@@ -1533,7 +1533,7 @@ mod tests {
 
     #[test]
     fn a_window_keeps_its_number_as_id_across_an_eviction_and_elements_are_renumbered() {
-        let mut ax = bare_ax();
+        let mut ax = bare();
         let (window, element) = (application(901), application(902));
         let early = ax.id_of(&window);
         assert_eq!(ax.window_id(&window, 4242), "4242");
@@ -1558,7 +1558,7 @@ mod tests {
 
     #[test]
     fn a_window_listed_on_this_space_and_then_off_it_has_one_id() {
-        let mut ax = bare_ax();
+        let mut ax = bare();
         let on = ax.window_id(&application(905), 4243);
         let key = CFString::from_static_string("kCGWindowNumber");
         let listed =
@@ -1768,22 +1768,6 @@ mod tests {
             layer,
             alpha,
             bounds,
-        }
-    }
-
-    fn bare_ax() -> Ax {
-        Ax {
-            names: names(ATTRS),
-            app_names: names(APP_ATTRS),
-            frame_names: names(FRAME_ATTRS),
-            climb_names: names(CLIMB_ATTRS),
-            ids: HashMap::new(),
-            hashes: HashMap::new(),
-            hung: HashMap::new(),
-            slow: HashMap::new(),
-            last: HashMap::new(),
-            listed_at: HashMap::new(),
-            driver: None,
         }
     }
 }
