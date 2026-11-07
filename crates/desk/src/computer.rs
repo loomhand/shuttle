@@ -55,6 +55,7 @@ const STILL_FOR: Duration = Duration::from_millis(40);
 const WINDOW_STILL_FOR: Duration = Duration::from_millis(150);
 const COMMIT_STILL_FOR: Duration = Duration::from_millis(400);
 const COMMIT_FIRST: Duration = Duration::from_millis(1500);
+#[cfg(target_os = "linux")]
 const RETURN_GAP: Duration = Duration::from_millis(300);
 #[cfg(target_os = "linux")]
 const RETURN_POLL: Duration = Duration::from_millis(10);
@@ -1380,6 +1381,7 @@ impl Computer {
     }
 
     async fn press_return(&self, session: &str, mut req: Value) -> Result<Value, String> {
+        #[cfg(target_os = "linux")]
         self.wait_default().await;
         if let Some(fields) = req.as_object_mut() {
             for k in ["text", "x", "y"] {
@@ -1402,11 +1404,6 @@ impl Computer {
                 _ => return tokio::time::sleep_until(end).await,
             }
         }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    async fn wait_default(&self) {
-        tokio::time::sleep(RETURN_GAP).await;
     }
 
     /// A driver session for one pid-addressed input; an open session's virtual keyboard makes Chrome drop core keys.
@@ -2926,6 +2923,37 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.text);
+        driver.abort();
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[tokio::test]
+    async fn off_linux_a_typed_line_presses_return_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = std::sync::Arc::clone(&seen);
+        let driver = tokio::spawn(listener.serve(move |req| {
+            let name = req["name"].as_str().unwrap_or_default();
+            let call = (name.to_owned(), req["args"]["text"].clone(), Instant::now());
+            log.lock().unwrap().push(call);
+            match name {
+                "list_windows" => json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "TextEdit", "title": "Save", "bounds": {"x": 0, "y": 0, "width": 800, "height": 600}, "z_index": 1}]}}}),
+                _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+            }
+        }));
+        let out = cua_on(&socket, Os::Mac)
+            .act(json!({"action": "type", "text": "name\n"}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        let seen = seen.lock().unwrap().clone();
+        let at = |name: &str| seen.iter().position(|(n, _, _)| n == name).unwrap();
+        let (typed, pressed) = (at("type_text"), at("press_key"));
+        assert_eq!(seen[typed].1, "name");
+        let gap = seen[pressed].2 - seen[typed].2;
+        assert!(gap < Duration::from_millis(150), "{gap:?}");
         driver.abort();
     }
 
