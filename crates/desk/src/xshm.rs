@@ -53,7 +53,7 @@ pub struct Grabber {
     resized: AtomicBool,
 }
 
-// SAFETY: the segment is private to this Grabber and only read through `&self` after a reply.
+// SAFETY: the segment is private to this Grabber, and a slice of it lives only while `&mut self` is borrowed.
 unsafe impl Send for Grabber {}
 
 impl Grabber {
@@ -243,15 +243,16 @@ impl Grabber {
     pub fn blocks(&self) -> Result<Vec<u64>, String> {
         let (width, height) = self.size();
         let docks = self.docks();
-        Ok(block_hashes(self.pixels()?, width, height, &docks))
+        let all = self.image([0, 0, self.width.into(), self.height.into()])?;
+        Ok(block_hashes(all, width, height, &docks))
     }
 
-    /// The root window as BGRX rows, valid until the next grab.
-    pub fn pixels(&self) -> Result<&[u8], String> {
+    /// The root window as BGRX rows.
+    pub fn pixels(&mut self) -> Result<&[u8], String> {
         self.image([0, 0, self.width.into(), self.height.into()])
     }
 
-    /// Whether the root window still has the size the segment was made for, by the root configure events a RandR change sends; no round trip.
+    /// Whether the root window still has the size the segment was made for, by the root configure events a RandR change sends.
     pub fn current(&self) -> bool {
         self.drain();
         !self.resized.load(Ordering::Relaxed)

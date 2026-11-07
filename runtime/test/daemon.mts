@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -23,7 +23,8 @@ export async function daemon(t: { after(fn: () => void): void }, answer: (c: Cal
       buf = Buffer.concat([buf, d])
       if (buf.length < 4 || buf.length < 4 + buf.readUInt32BE(0)) return
       const c = JSON.parse(buf.subarray(4).toString()) as Call
-      const r = c.tool === 'desk_wait' ? await wait(answer, c.args) : c.tool === 'desk_unanswered' ? unanswered(answer(c)) : answer(c)
+      let r: Reply
+      try { r = c.tool === 'desk_wait' ? await wait(answer, c.args) : c.tool === 'desk_unanswered' ? unanswered(answer(c)) : answer(c) } catch (e: unknown) { r = { text: String(e), error: true } }
       const body = Buffer.from(JSON.stringify(typeof r === 'string' ? { text: r, is_error: false } : { text: r.text, is_error: r.error ?? false, image_b64: r.image }))
       const head = Buffer.alloc(4)
       head.writeUInt32BE(body.length)
@@ -32,7 +33,7 @@ export async function daemon(t: { after(fn: () => void): void }, answer: (c: Cal
   })
   const dir = mkdtempSync(`${tmpdir()}/daemon-`)
   await new Promise<void>((r) => server.listen(endpoint(dir), r))
-  t.after(() => server.close())
+  t.after(() => { server.close(); rmSync(dir, { recursive: true, force: true }) })
   Object.assign(process.env, { SHUTTLE_SOCKET: endpoint(dir), HOME: dir, USERPROFILE: dir })
 }
 

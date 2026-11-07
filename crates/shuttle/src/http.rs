@@ -170,8 +170,9 @@ impl Server {
 
     fn authorized(&self, header: Option<&HeaderValue>) -> bool {
         header
-            .and_then(|h| h.as_bytes().strip_prefix(b"Bearer "))
-            .is_some_and(|got| same(got, self.token.as_bytes()))
+            .and_then(|h| h.as_bytes().split_at_checked(7))
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case(b"Bearer "))
+            .is_some_and(|(_, got)| same(got, self.token.as_bytes()))
     }
 }
 
@@ -342,6 +343,8 @@ mod tests {
         assert_eq!(unsent("POST", &wrong, &ping).await.0, 401);
         assert_eq!(unsent("GET", &[], "").await.0, 401);
         assert_eq!(call(addr, "POST", PATH, &[], &ping).await.0, 200);
+        let lower = [("authorization", "bearer s3cret")];
+        assert_eq!(unsent("POST", &lower, &ping).await.0, 200);
     }
 
     #[tokio::test]

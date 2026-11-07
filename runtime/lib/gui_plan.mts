@@ -28,7 +28,7 @@ type Kept = Reads & { id: string; snap: desk.Snap; nodes: Node[] }
 type Fp = { role: string; name: string; parent: string; nth: number; of?: number; label?: string }
 type Node = { ref: number; id: string; depth: number; role: string; name: string; value: string; disabled: boolean; parent: number; shortcut: string; checked: boolean; shown: boolean; bounds?: [number, number, number, number] }
 type Hit = { n: Node; i: number; how: string; p?: number; margin?: number }
-type Flow = { name: string; params: Record<string, string>; steps: Step[]; idempotent: boolean; runs: number; saved_at: string; rewrites: number; usage?: desk.Usage }
+type Flow = { name: string; params: Record<string, string>; steps: Step[]; idempotent: boolean; saved_at: string; usage?: desk.Usage }
 type Chain = { at: number; window: string | null; pid: number | null; name?: string; named?: boolean; params: Record<string, string>; steps: Step[]; dirty: boolean; saved?: boolean; escalated?: boolean; usage?: desk.Usage }
 type Params = { steps?: Step[]; flow?: string; params?: Record<string, string>; save?: string; start?: number; find?: string; reindex?: boolean; locate?: { target: string; press?: boolean } }
 type Rec = {
@@ -94,6 +94,7 @@ const ARROW_KEY = /^(shift\+)?(arrow)?(up|down|left|right)$/i
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
 const FILLER = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'and', 'or', 'by', 'from', 'into', 'this', 'that', 'its', 'it', 'is', 'button', 'link', 'tab', 'field', 'box', 'icon', 'toggle', 'dropdown', 'input', 'control', 'item', 'entry'])
 const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close']
+const PINNED = ['menu', 'click', 'check', 'set', 'verify', 'wait', 'window'] as const
 const TEXT_CUT = '\n(the outline shows only the start of the window: desk snapshot or find reads the rest)'
 const TREE_CUT = '\n(this accessibility read stopped before the end of the window: the elements past the cut are missing here; narrowing the view, e.g. by scrolling or opening a pane, brings them in)'
 const SHELL_TARGET = /\b(dock|panel|taskbar|desktop)\b/i
@@ -263,17 +264,16 @@ async function perform(p: Params): Promise<Result> {
     const front = escalate ? await focused() : null
     putPending(escalate ? { at: Date.now(), window: front?.title ?? null, pid: front && !isShell(front) ? front.pid : null, name: flow.name, named: true, params, steps: plan.slice(0, done), dirty: recs.some((r) => r?.unsaved), escalated: true, saved: false, usage: plus({}, desk.usage) } : null, plan)
     if (settled && recs.every((r) => !r?.unsaved)) {
-      const rewrites = recs.filter((r, i) => r?.fp && !isDeepStrictEqual(r.fp, flow.steps[i]?.fp))
-      flow.runs += 1
+      const rewrites = recs.filter((r, i) => r?.fp && flow.steps[i] && pinned(flow.steps[i]) && !isDeepStrictEqual(r.fp, flow.steps[i].fp))
       if (rewrites.length) {
-        recs.forEach((r, i) => { const st = flow.steps[i]; if (!st) return; if (r?.fp) st.fp = r.fp; if (r?.seen) st.seen = r.seen })
-        flow.rewrites += 1; flow.saved_at = new Date().toISOString(); saveFlow(flow, `replay re-resolved ${rewrites.length} step(s)`)
+        recs.forEach((r, i) => { const st = flow.steps[i]; if (!st || !pinned(st)) return; if (r?.fp) st.fp = r.fp; if (r?.seen) st.seen = r.seen })
+        flow.saved_at = new Date().toISOString(); saveFlow(flow, `replay re-resolved ${rewrites.length} step(s)`)
       }
       saved = flow.name
     }
   } else {
     // a chain spans calls: it starts at an app step, and later calls extend it from the window it left
-    const ran = plan.slice(p.start ?? 0, done).map((s, k) => { const r = recs[(p.start ?? 0) + k]; const o: Step = { ...s }; if (r?.fp) o.fp = r.fp; if (r?.seen && !s.app) o.seen = r.seen; if (r?.blank) o.blank = r.blank; return o })
+    const ran = plan.slice(p.start ?? 0, done).map((s, k) => { const r = recs[(p.start ?? 0) + k]; const o: Step = { ...s }; if (r?.fp && pinned(s)) o.fp = r.fp; if (r?.seen && !s.app && pinned(s)) o.seen = r.seen; if (r?.blank) o.blank = r.blank; return o })
     const dirty = recs.some((r) => r?.unsaved)
     let chain: Chain | null = null; const prev = held
     if (plan[0]?.app && !(p.start ?? 0)) chain = { at: Date.now(), window: null, pid: null, params: { ...(p.params ?? {}) }, steps: ran, dirty, usage: plus({}, desk.usage) }
@@ -670,6 +670,7 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   const t0 = Date.now()
   const pinned = byFp(nodes, fp, within)
   if (pinned) { tick('ax', t0); return pinned }
+  const placed = nodes.some((n) => !!n.bounds)
   const pool = candidates(nodes, role, within)
   const want = norm(target)
   const covers = (n: Node) => {
@@ -682,7 +683,7 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   const exact = (n: Node) => norm(n.name) === want || (!!core && norm(n.name) === core)
   const inside = (n: Node, i: number) => { for (const [p] of up(nodes, n.parent)) if (p === i) return true; return false }
   for (const f of [exact, (n: Node) => covers(n) && (!said || said.includes(n.role))]) {
-    const all = pool.filter(({ n }) => f(n)); const drawn = all.filter(({ n }) => n.shown && !!n.bounds)
+    const all = pool.filter(({ n }) => f(n)); const drawn = all.filter(({ n }) => n.shown && (!!n.bounds || !placed))
     const some = drawn.length ? drawn : all.filter(({ n }) => n.role.startsWith('menu'))
     const hit = some.filter(({ n, i }) => !some.some((o) => o.i !== i && norm(o.n.name) === norm(n.name) && inside(o.n, i)))
     const [one, two] = hit
@@ -1138,7 +1139,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const own = (w: Win) => titled(w) || (word && (ownedBy(w.pid, name) || entries.some((e) => worded(w.title, e))))
     const mine = (ws: Win[]) => [...ws.filter(named), ...ws.filter(own)]
     let started: Awaited<ReturnType<typeof desk.launch>> | undefined
-    const has = async () => { const ws = await desk.windows(); return mine(ws)[0] ?? (started?.running ? ws.find((w) => w.title === started?.title && w.pid === started?.pid) : launched ? ws.find((w) => w.title && !before.has(w.id) && (!pids.has(w.pid) || (!!w.app && terms(w.app).some((x) => terms(app).includes(x))))) : undefined) }
+    const has = async () => { const ws = await desk.windows(); return mine(ws)[0] ?? (s.title ? undefined : started?.running ? ws.find((w) => w.title === started?.title && w.pid === started?.pid) : launched ? ws.find((w) => w.title && !before.has(w.id) && (!pids.has(w.pid) || (!!w.app && terms(w.app).some((x) => terms(app).includes(x))))) : undefined) }
     const owned = mine(ws); let w = (BG ? owned.find((x) => !!x.title.trim()) : undefined) ?? owned[0] ?? (s.url ? ws.find((x) => x.stale && !!x.app && ` ${words(app)}`.endsWith(` ${words(x.app)}`)) : undefined)
     const hung = w ? (w.stale ? w : null) : await desk.unanswered().catch(() => null)
     if (hung && (hung === w || own(hung) || named(hung))) throw new Surprise(unresponsive(s.app, hung), { window: hung.title, windows: titles(ws) })
@@ -1421,7 +1422,7 @@ async function menuEntry(w: Win, nodes: Node[], menu: string, fp: Fp | undefined
     const role = k < parts.length - 1 ? 'menu' : undefined
     hit = (k === 0 && role ? barMenu(nodes, part) : null) ?? await soft(part, role, within) ?? (role ? await soft(part, undefined, within) : null)
     if (!hit) {
-      const leaf = await resolve(nodes, parts.at(-1) ?? part, 'menuitem|menu|menuitemcheckbox|menuitemradio')
+      const leaf = await resolve(nodes, parts.at(-1) ?? part, 'menuitem|menu|menuitemcheckbox|menuitemradio', undefined, 0.5, undefined, false)
       if (leaf?.how !== 'ax') throw new Surprise(`menu entry "${part}" not found`, await seen())
       rec.how = 'ax-anywhere'; rec.path = menus(nodes, leaf.n.parent).map((q) => q.name).reverse()
       return { hit: leaf, nodes }
@@ -1434,8 +1435,12 @@ async function menuEntry(w: Win, nodes: Node[], menu: string, fp: Fp | undefined
 
 function fill(s: Step, p: Record<string, string>): Step {
   const sub = (v: string) => v.replace(/\{\{(\w+)(:base)?\}\}/g, (all: string, n: string, b: string | undefined) => { const x = p[n]; return x === undefined ? all : b ? win32.basename(x) : x })
-  return Object.fromEntries(Object.entries(s).map(([k, v]) => [k, typeof v === 'string' ? sub(v) : k === 'web' ? { ...(v as Web), url: sub((v as Web).url) } : v])) as Step
+  const out = Object.fromEntries(Object.entries(s).map(([k, v]) => [k, typeof v === 'string' ? sub(v) : k === 'web' ? { ...(v as Web), url: sub((v as Web).url) } : v])) as Step
+  if (!pinned(s)) { delete out.fp; delete out.seen }
+  return out
 }
+
+function pinned(s: Step) { return !PINNED.some((k) => s[k]?.includes('{{')) }
 
 function templated(steps: Step[], params: Record<string, string>) {
   const p = { ...params }; const used = new Set([...JSON.stringify(steps).matchAll(/\{\{(\w+)/g)].map((m) => m[1]))
@@ -1523,7 +1528,7 @@ function store(chain: Chain) {
   const auto = slug([chain.steps[0]?.app, ...targets].filter((x): x is string => !!x).map((x) => x.split(' ').slice(0, 3).join(' ')).join(' ')) || undefined
   if (!chain.named && auto && chain.name && auto !== chain.name) rmSync(`${FLOWS}/${chain.name}.json`, { force: true })
   if (!chain.named) chain.name = auto
-  if (chain.name) saveFlow({ name: chain.name, params: tpl.params, steps: tpl.steps, idempotent: idempotent(chain.steps), runs: 1, saved_at: new Date().toISOString(), rewrites: 0, usage: chain.usage ?? {} }, `saved from ${chain.steps.length} passing steps`)
+  if (chain.name) saveFlow({ name: chain.name, params: tpl.params, steps: tpl.steps, idempotent: idempotent(chain.steps), saved_at: new Date().toISOString(), usage: chain.usage ?? {} }, `saved from ${chain.steps.length} passing steps`)
   return chain.name
 }
 

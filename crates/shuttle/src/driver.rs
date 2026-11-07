@@ -234,8 +234,6 @@ if sys.argv[1] == "stop":
     if os.path.exists(args["--socket"] + ".hang"):
         time.sleep(30)
     pid = int(open(args["--socket"] + ".fake-pid").read())
-    if args.get("--expected-pid", str(pid)) != str(pid):
-        sys.exit(1)
     os.kill(pid, 15)
     sys.exit(0)
 child = os.fork()

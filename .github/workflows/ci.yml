@@ -45,6 +45,7 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           cargo build --release --locked -p shuttle
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           packaging/crt.ps1 target/release/shuttle.exe
 
       - name: Upload the Windows binary

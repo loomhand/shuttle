@@ -13,7 +13,7 @@ The desk verbs on macOS, Windows and Linux (X11): `desk_windows`, `desk_unanswer
 | `auto.rs` | Which background refusals `auto` input runs again in the foreground: those raised before any input was sent |
 | `model.rs` | Neutral windows, nodes and trees, and the `Access` trait each OS backend implements |
 | `uia.rs`, `uia_roles.rs` | Windows: top-level windows from the Win32 window list, one UIA cache request over the control view per tree, one per child when the window owns a dialog; control types and Toggle/ExpandCollapse/SelectionItem/Value states mapped to ARIA roles and desk states; ids are runtime ids |
-| `ax.rs`, `ax_roles.rs` | macOS: a walk with one batched AX read per element, at most 2500 nodes and 4 s; the app's menu bar joins each of its windows' trees; sheets are dialogs; bounds in pixels by the display scale |
+| `ax.rs`, `ax_roles.rs` | macOS: a walk with one batched AX read per element, at most 2500 nodes and 4 s; the app's menu bar joins a window's tree for `find` and for a snapshot that asks for `menus`; sheets are dialogs; bounds in pixels by the display scale |
 | `spi.rs`, `atspi.rs` | Linux: a window's tree from its app's AT-SPI cache, filled in by live D-Bus calls on the worker's own runtime; live reads and actions on one node; window-manager close |
 | `screen.rs` | Window placements, rectangle clipping and the block hashes the settle compares, on every OS |
 | `xshm.rs`, `noshm.rs` | Linux: the root window over MIT-SHM, its block hashes with the docks masked, the mapped windows, the desktop shell's windows and pids, and the modal dialogs the screen does not show; off Linux a grabber that never opens |

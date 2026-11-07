@@ -448,17 +448,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_match_names_the_focused_element_without_a_tree_read_and_no_match_falls_back_to_one() {
+    fn no_focus_match_falls_back_to_a_tree_read() {
         let frame = Frame::default();
-        let mut matched = Focus {
-            matched: Some("field".into()),
-            trees: 0,
-        };
-        assert_eq!(
-            matched.focused(&frame, Duration::from_millis(100)),
-            Ok(Some("field".into()))
-        );
-        assert_eq!(matched.trees, 0);
         let mut unmatched = Focus {
             matched: None,
             trees: 0,

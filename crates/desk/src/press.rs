@@ -120,7 +120,7 @@ fn reachable<B: Access>(
     background: bool,
 ) -> Option<(i32, i32)> {
     let [x, y, w, h] = node.bounds?;
-    if !node.has("showing") || w <= 0 || h <= 0 || x < 0 || y < 0 {
+    if !node.has("showing") || w <= 0 || h <= 0 {
         return None;
     }
     let (cx, cy) = (x + w / 2, y + h / 2);

@@ -142,7 +142,7 @@ test('a background plan reads its window by id and refuses input when another wi
   assert.ok(snaps.length > 0 && snaps.every((a) => a.id === '1' && a.window === undefined), JSON.stringify(snaps))
 })
 
-test('an unnamed background close shuts only a dialog the plan window owns and leaves another document\'s dialog open', async (t) => {
+test('an unnamed background close leaves another document\'s dialog open', async (t) => {
   const find: W = { id: 'f', title: 'Find', role: 'dialog', pid: 4, active: false, owner: '2' }
   const ws = [user(), notepad(), { id: '2', title: 'Notes - Notepad', role: 'window', pid: 4, active: false }, find]
   const dialog = JSON.stringify({ window: find, nodes: [{ ref: 0, id: 'f0', parent: -1, depth: 0, role: 'dialog', name: 'Find', states: [] }], truncated: false })

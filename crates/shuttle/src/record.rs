@@ -1,5 +1,6 @@
 //! Recordings of what the user does: each click and key with what the desk saw then, for a draft of replayable steps.
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -611,7 +612,6 @@ fn save(path: &Path, recording: &Value) -> Result<(), String> {
 }
 
 fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
     let mut open = std::fs::OpenOptions::new();
     open.write(true).create(true).truncate(true);
     #[cfg(unix)]

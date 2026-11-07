@@ -306,7 +306,10 @@ impl<H: Handler> Daemon<H> {
 
 impl<H: Handler> Handler for Daemon<H> {
     fn owner_only(&self, tool: &str) -> bool {
-        matches!(tool, "safety_stop" | "safety_resume")
+        matches!(
+            tool,
+            "safety_stop" | "safety_resume" | "record_start" | "record_note" | "record_stop"
+        )
     }
 
     async fn answer(&self, call: Call) -> Output {
@@ -554,9 +557,10 @@ mod tests {
     }
 
     #[test]
-    fn only_the_stop_and_resume_are_kept_to_the_daemons_own_user() {
+    fn the_stop_resume_and_recording_are_kept_to_the_daemons_own_user() {
         let d = daemon(Slow, Guard::default());
         assert!(d.owner_only("safety_stop") && d.owner_only("safety_resume"));
+        assert!(d.owner_only("record_start") && d.owner_only("record_stop"));
         assert!(!d.owner_only("desk_click") && !d.owner_only("script_run"));
     }
 
