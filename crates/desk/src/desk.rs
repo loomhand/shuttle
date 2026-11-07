@@ -80,6 +80,7 @@ const APP_INPUT: [&str; 5] = [
 const TREE_LIMIT: Duration = Duration::from_secs(10);
 const READ_CHARS: usize = 64 << 10;
 const WAIT_MAX: Duration = Duration::from_secs(5);
+const RAISE_WAIT: Duration = Duration::from_millis(500);
 const WAIT_POLL: Duration = Duration::from_millis(10);
 const WAIT_CHECK: Duration = Duration::from_millis(100);
 
@@ -1161,23 +1162,23 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn click(&self, a: ClickArgs, turn: Option<Turn>) -> Result<String, String> {
-        let named = match a.window.as_deref() {
+        let (to, named) = match a.window.as_deref() {
             Some(window) => {
                 let (to, w) = self.shot_window(window, a.pid).await?;
-                if self.os != Os::Mac {
-                    self.front(to, a.pid).await?;
-                }
-                Some(w)
+                (Some(to), Some(w))
             }
             None if self.bg() && a.pid.is_some() => {
-                Some(self.pick_window(None, a.pid, true).await?.1)
+                (None, Some(self.pick_window(None, a.pid, true).await?.1))
             }
-            None => None,
+            None => (None, None),
         };
         let (x, y) = match &named {
             Some(w) if a.window.is_some() => self.desk_point(w, (a.x, a.y)).await?,
             _ => (a.x, a.y),
         };
+        if let Some(to) = to.filter(|_| !self.bg() && self.os != Os::Mac) {
+            self.front(to, a.pid, (x, y)).await?;
+        }
         let mut req = json!({"x": x, "y": y});
         if let Some(button) = a.button {
             req["button"] = button.into();
@@ -1389,8 +1390,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             (Some(x), Some(y)) => match a.window.as_deref() {
                 Some(window) => {
                     let (to, w) = self.shot_window(window, a.pid).await?;
-                    self.front(to, a.pid).await?;
-                    self.desk_point(&w, (x, y)).await?
+                    let point = self.desk_point(&w, (x, y)).await?;
+                    self.front(to, a.pid, point).await?;
+                    point
                 }
                 None => (x, y),
             },
@@ -1471,9 +1473,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
         if let Some(window) = a.window.as_deref() {
             let (target, w) = self.shot_window(window, a.pid).await?;
-            self.front(target, a.pid).await?;
             from = self.desk_point(&w, from).await?;
             to = self.desk_point(&w, to).await?;
+            self.front(target, a.pid, from).await?;
         }
         self.admit_point(from.0, from.1).await?;
         self.admit_point(to.0, to.1).await?;
@@ -1648,9 +1650,26 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     /// Raises the foreground target of pointer input named by `window`, under the rule [`Self::raised_window`] keeps.
-    async fn front(&self, to: (i64, i64), pid: Option<u32>) -> Result<(), String> {
-        if pid.is_some() || self.os != Os::Linux {
-            self.raise(Some(to)).await?;
+    async fn front(
+        &self,
+        to: (i64, i64),
+        pid: Option<u32>,
+        (x, y): (f64, f64),
+    ) -> Result<(), String> {
+        if pid.is_none() && self.os == Os::Linux {
+            return Ok(());
+        }
+        self.raise(Some(to)).await?;
+        let end = Instant::now() + RAISE_WAIT;
+        while Instant::now() < end {
+            if self
+                .window_at(x, y)
+                .await?
+                .is_some_and(|u| (u.pid, u.id) == to)
+            {
+                break;
+            }
+            tokio::time::sleep(WAIT_POLL).await;
         }
         Ok(())
     }
@@ -4200,6 +4219,23 @@ pub(crate) mod tests {
             .is_err()
         );
         assert_eq!(sent(&calls, "click").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_background_click_in_a_named_window_does_not_raise_it() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Windows).background(true);
+        let _ = desk
+            .run(
+                "desk_click",
+                json!({"x": 300.0, "y": 250.0, "window": "Inbox", "pid": 8}),
+            )
+            .await;
+        assert!(
+            sent(&calls, "bring_to_front").is_empty(),
+            "{:?}",
+            order(&calls)
+        );
     }
 
     #[tokio::test]
