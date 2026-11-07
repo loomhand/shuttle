@@ -395,8 +395,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_snapshot" => self.snapshot(parse(args)?).await?,
             "desk_find" => self.find(parse(args)?).await?,
             "desk_read" => self.read(parse(args)?).await?,
-            "desk_press" => self.press(parse::<IdArgs>(args)?.id, turn.clone()).await?,
-            "desk_act" => self.act(parse(args)?, turn.clone()).await?,
+            "desk_press" => self.press(parse::<IdArgs>(args)?.id, turn).await?,
+            "desk_act" => self.act(parse(args)?, turn).await?,
             "desk_at" => self.at(parse(args)?).await?,
             "desk_key" => self.key(parse(args)?).await?,
             "desk_type" => self.type_text(parse(args)?, turn).await?,
@@ -793,7 +793,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let pressed = id.clone();
         match self
             .access
-            .run(TREE_LIMIT, turn, move |b| {
+            .run(TREE_LIMIT, turn.clone(), move |b| {
                 plan_press(b, &pressed, os, background)
             })
             .await?
@@ -823,7 +823,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 let id = a.id.clone();
                 let n = self
                     .access
-                    .run(CALL_LIMIT, turn, move |b| b.node(&id, Extras::BOUNDS, 0))
+                    .run(CALL_LIMIT, turn.clone(), move |b| {
+                        b.node(&id, Extras::BOUNDS, 0)
+                    })
                     .await?;
                 let [x, y, w, h] = n.bounds.ok_or("the element has no screen position")?;
                 let note = self
@@ -2569,7 +2571,7 @@ fn outline(nodes: &[Node], max_chars: usize) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::sync::Mutex;
+    use std::sync::{Mutex, OnceLock};
 
     use super::*;
     use crate::model::Tree;
@@ -5001,6 +5003,23 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn an_element_click_holds_the_input_turn_until_the_driver_clicks() {
+        for call in [json!({"id": "ok"}), json!({"id": "ok", "action": "click"})] {
+            let (turn, held) = (Arc::new(OnceLock::new()), Arc::new(Mutex::new(Vec::new())));
+            let driver = HeldWhileClicking(Arc::clone(&turn), Arc::clone(&held));
+            let desk = Desk::new(|| Ok(notepad()), driver, Os::Windows);
+            turn.set(desk.turn()).unwrap();
+            let tool = if call["action"].is_null() {
+                "desk_press"
+            } else {
+                "desk_act"
+            };
+            desk.run(tool, call).await.unwrap();
+            assert_eq!(*held.lock().unwrap(), [true], "{tool}");
+        }
+    }
+
+    #[tokio::test]
     async fn a_press_click_goes_through_the_driver() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(notepad()), Recorder(calls.clone()), Os::Windows);
@@ -6158,6 +6177,22 @@ pub(crate) mod tests {
     impl Input for Recorder {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
             self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(json!({}))
+        }
+    }
+
+    struct HeldWhileClicking(
+        Arc<OnceLock<Arc<tokio::sync::Mutex<()>>>>,
+        Arc<Mutex<Vec<bool>>>,
+    );
+
+    impl Input for HeldWhileClicking {
+        async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
+            if tool == "click"
+                && let Some(turn) = self.0.get()
+            {
+                self.1.lock().unwrap().push(turn.try_lock().is_err());
+            }
             Ok(json!({}))
         }
     }
