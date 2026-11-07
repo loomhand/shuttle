@@ -23,17 +23,25 @@ pub fn crop_png(
     let mut reader = dec
         .read_info()
         .map_err(|e| format!("decode screenshot: {e}"))?;
+    let info = reader.info();
+    let (width, height) = (info.width, info.height);
+    let plain = info.bit_depth == png::BitDepth::Eight
+        && matches!(info.color_type, png::ColorType::Rgb | png::ColorType::Rgba)
+        && !info.interlaced;
+    let clip = |v: f64, max: u32| (v * factor).floor().clamp(0.0, f64::from(max)) as u32;
+    let (left, top) = (clip(x, width), clip(y, height));
+    let (right, bottom) = (clip(x + w, width), clip(y + h, height));
+    if right <= left || bottom <= top {
+        return Err(OFF_SCREEN.to_owned());
+    }
+    if plain && mask.is_none() && (left, top, right, bottom) == (0, 0, width, height) {
+        return Ok((width, height, png.to_vec()));
+    }
     let mut buf = vec![0; reader.output_buffer_size().ok_or("screenshot too large")?];
     let info = reader
         .next_frame(&mut buf)
         .map_err(|e| format!("decode screenshot: {e}"))?;
     let channels = info.color_type.samples();
-    let clip = |v: f64, max: u32| (v * factor).floor().clamp(0.0, f64::from(max)) as u32;
-    let (left, top) = (clip(x, info.width), clip(y, info.height));
-    let (right, bottom) = (clip(x + w, info.width), clip(y + h, info.height));
-    if right <= left || bottom <= top {
-        return Err(OFF_SCREEN.to_owned());
-    }
     let (cw, ch) = (right - left, bottom - top);
     let keep = mask.map(|m| keep_map(m, [left, top, right, bottom]));
     let mut rgb = Vec::with_capacity((cw * ch * 3) as usize);
