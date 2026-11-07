@@ -1649,7 +1649,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(Some((pid, id)))
     }
 
-    /// Raises the foreground target of pointer input named by `window` when another app's window is on top at the point, under the rule [`Self::raised_window`] keeps.
+    /// Raises the foreground target of pointer input named by `window` when another window than an untitled popup of its app is on top at the point, under the rule [`Self::raised_window`] keeps.
     async fn front(
         &self,
         to: (i64, i64),
@@ -1659,12 +1659,25 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if pid.is_none() && self.os == Os::Linux {
             return Ok(());
         }
-        if self.window_at(x, y).await?.is_none_or(|u| u.pid == to.0) {
+        let scale = self.scale().await?;
+        let point = (x / scale, y / scale);
+        let key = |w: &Value| (w["pid"].as_i64(), w["window_id"].as_i64());
+        let Some(cover) = self.top_at(point).await? else {
+            return Ok(());
+        };
+        let popup = cover["pid"].as_i64() == Some(to.0)
+            && cover["title"].as_str().is_none_or(|t| t.trim().is_empty());
+        if key(&cover) == (Some(to.0), Some(to.1)) || popup {
             return Ok(());
         }
         self.raise(Some(to)).await?;
         let end = Instant::now() + RAISE_WAIT;
-        while Instant::now() < end && self.window_at(x, y).await?.is_some_and(|u| u.pid != to.0) {
+        while Instant::now() < end
+            && self
+                .top_at(point)
+                .await?
+                .is_some_and(|w| key(&w) == key(&cover))
+        {
             tokio::time::sleep(WAIT_POLL).await;
         }
         Ok(())
@@ -4236,7 +4249,11 @@ pub(crate) mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(
             || Ok(Apps),
-            BehindCover(Behind(Arc::clone(&calls)), AtomicBool::new(false)),
+            BehindCover(
+                Behind(Arc::clone(&calls)),
+                AtomicBool::new(false),
+                (4, "Untitled - Notepad"),
+            ),
             Os::Windows,
         );
         let _ = desk
@@ -4250,6 +4267,30 @@ pub(crate) mod tests {
             "{:?}",
             order(&calls)
         );
+    }
+
+    #[tokio::test]
+    async fn a_same_app_window_on_top_is_raised_past_unless_it_is_an_untitled_popup() {
+        for (cover, raised) in [((8, "Other - Mail"), true), ((8, ""), false)] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(
+                || Ok(Apps),
+                BehindCover(Behind(Arc::clone(&calls)), AtomicBool::new(false), cover),
+                Os::Windows,
+            );
+            let _ = desk
+                .run(
+                    "desk_scroll",
+                    json!({"direction": "down", "x": 300.0, "y": 250.0, "window": "Inbox", "pid": 8}),
+                )
+                .await;
+            assert_eq!(
+                !sent(&calls, "bring_to_front").is_empty(),
+                raised,
+                "{cover:?}: {:?}",
+                order(&calls)
+            );
+        }
     }
 
     #[tokio::test]
@@ -4271,7 +4312,11 @@ pub(crate) mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(
             || Ok(Apps),
-            BehindCover(Behind(Arc::clone(&calls)), AtomicBool::new(false)),
+            BehindCover(
+                Behind(Arc::clone(&calls)),
+                AtomicBool::new(false),
+                (4, "Untitled - Notepad"),
+            ),
             Os::Windows,
         );
         let named = json!({"window": "Inbox", "pid": 8});
@@ -6448,7 +6493,7 @@ pub(crate) mod tests {
         }
     }
 
-    struct BehindCover(Behind, AtomicBool);
+    struct BehindCover(Behind, AtomicBool, (i64, &'static str));
 
     impl Input for BehindCover {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
@@ -6463,6 +6508,8 @@ pub(crate) mod tests {
                         .filter(|w| w["pid"] == 4)
                     {
                         w["z_index"] = 3.into();
+                        w["pid"] = self.2.0.into();
+                        w["title"] = self.2.1.into();
                     }
                 }
                 "list_windows" | "get_window_state" | "get_screen_size" => {}
