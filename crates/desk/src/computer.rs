@@ -2929,6 +2929,56 @@ mod tests {
         driver.abort();
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn an_action_or_a_launch_behind_a_held_turn_answers_busy_after_the_turn_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        let cua = cua(&socket);
+        let held = turn(&cua).await;
+        for act in [
+            json!({"action": "key", "key": "escape"}),
+            json!({"action": "launch_app", "app": "gedit"}),
+        ] {
+            let started = Instant::now();
+            let busy = tokio::time::timeout(2 * TURN_WAIT, cua.act(act)).await;
+            assert_eq!(busy.unwrap().unwrap_err(), BUSY);
+            assert_eq!(started.elapsed(), TURN_WAIT);
+        }
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "{:?}",
+            calls.lock().unwrap()
+        );
+        drop(held);
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_typed_protocol_tail_reaches_neither_the_xtest_typer_nor_the_driver() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        let mut cua = cua(&socket);
+        cua.typer = |text, _| match text {
+            "hello" => Ok(true),
+            other => Err(format!("the typer got {other:?}")),
+        };
+        let out = cua
+            .act(json!({"action": "type", "text": "hello</parameter>"}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            types(&calls).iter().all(|t| t == "hello"),
+            "{:?}",
+            types(&calls)
+        );
+        driver.abort();
+    }
+
     #[tokio::test]
     async fn pid_addressed_input_a_dialog_line_and_cjk_never_reach_the_typer() {
         let dir = tempfile::tempdir().unwrap();

@@ -5534,6 +5534,26 @@ pub(crate) mod tests {
         let refused = switch(9, true, "run-2").await.unwrap_err();
         assert!(refused.contains("1Password"), "{refused}");
         assert!(!lit());
+        let (go, held) = std::sync::mpsc::channel::<()>();
+        desk.access.post(move |_| {
+            let _ = held.recv();
+        });
+        let first = switch(7, true, "run-3");
+        let second = switch(7, true, "run-4");
+        tokio::pin!(first, second);
+        for pending in [&mut first, &mut second] {
+            assert!(tokio::time::timeout(Duration::ZERO, pending).await.is_err());
+        }
+        go.send(()).unwrap();
+        let on = r#"{"ok":true,"was":true}"#;
+        assert_eq!(second.await.unwrap().text, on);
+        assert_eq!(first.await.unwrap().text, off);
+        switch(7, false, "run-4").await.unwrap();
+        switch(7, false, "run-3").await.unwrap();
+        assert!(
+            !lit(),
+            "two first holders turned the tree on, so the last one off turns it off"
+        );
     }
 
     #[tokio::test]
