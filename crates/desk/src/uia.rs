@@ -407,7 +407,7 @@ impl Access for Uia {
         let el = self.element(id)?;
         let fresh = self.cached(&el, &self.single)?;
         let mut node = self.node_of(&fresh, extras, chars)?;
-        if extras.values && node.value.is_none() {
+        if extras.values && node.value.is_none() && node.url.is_none() {
             node.value = document_text(&fresh, chars);
         }
         Ok(node)
