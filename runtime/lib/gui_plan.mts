@@ -865,7 +865,12 @@ async function byDom(nodes: Node[], id: string, hit: Hit | null, target: string,
 
 async function landed(want: string, ms: number) {
   const t0 = Date.now()
-  const opened = (ws: Win[]) => BG ? ws.find((x) => x.pid === target?.pid && awaited(x.title, want)) : undefined
+  const opened = (ws: Win[]) => {
+    const named = BG ? ws.filter((x) => x.pid === target?.pid && x.role === 'window' && x.owner === undefined && awaited(x.title, want)) : []
+    const exact = named.filter((x) => norm(x.title) === norm(want))
+    const [one, other] = exact.length ? exact : named
+    return other ? undefined : one
+  }
   const ws = await until((ws) => { const f = frontOf(ws); return !!f && awaited(f.title, want) || !!opened(ws) }, ms)
   let f = frontOf(ws)
   const fresh = f && awaited(f.title, want) ? undefined : opened(ws)

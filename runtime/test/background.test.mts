@@ -331,3 +331,30 @@ test('a recorded after names a new window of the app, which the background plan 
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'x', window: 'Untitled 2 - Notepad', pid: 4 }])
 })
+
+test('a recorded after takes the one window of the app with that exact title over a longer title listed first, and no window when two titles only contain it', async (t) => {
+  for (const [old, opened, want] of [['Untitled 20', 'Untitled 2', 'Untitled 2'], ['Report 1 draft', 'Report 1 final', null]] as const) {
+    const ws = [user(), notepad(), { id: '3', title: old, role: 'window', pid: 4, active: false }]
+    const d = desktop(ws, ({ tool }) => {
+      if (tool === 'desk_key') ws.push({ id: '2', title: opened, role: 'window', pid: 4, active: false })
+      return undefined
+    })
+    await daemon(t, d.reply)
+    const r = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+n', after: want ?? 'Report 1', timeout_ms: 300 }, { type: 'x' }] })
+    assert.equal(r.ok, want !== null, JSON.stringify(r))
+    assert.deepEqual(sent(d.calls, 'desk_type'), want ? [{ text: 'x', window: want, pid: 4 }] : [])
+  }
+})
+
+test('a recorded after never takes a dialog of the app that the plan window does not own', async (t) => {
+  const ws = [user(), notepad()]
+  const d = desktop(ws, ({ tool }) => {
+    if (tool === 'desk_key') ws.push({ id: 'd', title: 'Untitled 2', role: 'dialog', pid: 4, active: false, owner: 'elsewhere' })
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+n', after: 'Untitled 2', timeout_ms: 300 }, { type: 'x' }] })
+  assert.equal(r.ok, false)
+  assert.match(String(r.escalate?.reason), /recording saw "Untitled 2" in front/)
+  assert.deepEqual(sent(d.calls, 'desk_type'), [])
+})
