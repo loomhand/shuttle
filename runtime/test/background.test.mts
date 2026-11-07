@@ -385,3 +385,11 @@ test('a recorded after that the window the step opened satisfies confirms the st
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(r.unverified, undefined)
 })
+
+test('a recorded after that was already in front before the step leaves the step the driver could not confirm unverified', async (t) => {
+  const d = desktop([user(), notepad()], ({ tool }) => tool === 'desk_key' ? JSON.stringify({ ok: true, unverified: 'unverifiable: posted' }) : undefined)
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+s', after: 'Untitled - Notepad' }] })
+  assert.equal(r.ok, false)
+  assert.match(String(r.escalate?.reason), /step 1 \(key\) was sent but not confirmed/)
+})

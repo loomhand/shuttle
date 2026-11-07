@@ -210,7 +210,7 @@ async function perform(p: Params): Promise<Result> {
           try { return await run(s, rec) } catch (again: unknown) { if (!late(again) || Date.now() > end) throw again }
         }
       })
-      if (s.after) { await landed(s.after, s.timeout_ms ?? 5000, ws); rec.confirmed = true }
+      if (s.after && await landed(s.after, s.timeout_ms ?? 5000, ws)) rec.confirmed = true
       if (unheard && !rec.unverified) rec.unverified = unheard
       if (actioned && !s.after) rec.caveat = ACTION_ONLY
       if (desk.foreground.runs + foreground.steps > runs) { rec.fg = true; fronted = true; BG = false }
@@ -863,7 +863,7 @@ async function byDom(nodes: Node[], id: string, hit: Hit | null, target: string,
   return hit
 }
 
-async function landed(want: string, ms: number, before: Win[]) {
+async function landed(want: string, ms: number, before: Win[]): Promise<boolean> {
   const t0 = Date.now()
   const opened = (ws: Win[]) => {
     const named = BG ? ws.filter((x) => x.pid === target?.pid && x.role === 'window' && x.owner === undefined && awaited(x.title, want) && !before.some((y) => y.id === x.id && y.title === x.title)) : []
@@ -878,6 +878,8 @@ async function landed(want: string, ms: number, before: Win[]) {
   tick('wait', t0)
   if (!f || !awaited(f.title, want)) throw new Diverged(`after this step the recording saw "${want}" in front, and the replay did not: ${f ? `"${f.title}"` : 'no window'} is in front`, await seen())
   known.add(f.title); lastSeen = f.title
+  const w = f
+  return !before.some((y) => y.id === w.id && y.title === w.title)
 }
 
 async function placed(x: number, y: number, w: Win, roots = false): Promise<Grounding & { found?: desk.El }> {
