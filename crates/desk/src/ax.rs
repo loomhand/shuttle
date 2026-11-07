@@ -1,13 +1,13 @@
 //! The macOS desk backend: window trees by a budgeted AX walk with one batched attribute read per element.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::{CStr, c_void};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use core_foundation::array::{CFArray, CFArrayCreate, CFArrayRef};
@@ -22,6 +22,7 @@ use objc2_app_kit::NSWorkspace;
 
 use crate::ax_roles::{self, Facts, Kind};
 use crate::keys::ax_combo;
+use crate::lock;
 use crate::model::{
     Access, Act, Extras, Frame, LAUNCH_GRACE, MAX_DEPTH, MAX_IDS, MAX_NODES, Node, Tree,
     VALUE_CHARS, format_number, hung, is_active, lookup, place,
@@ -82,7 +83,21 @@ const FRAME_ATTRS: [&str; 6] = [
 
 static PROMPTED: AtomicBool = AtomicBool::new(false);
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+static HANG: Mutex<Hang> = Mutex::new(Hang {
+    hung: BTreeMap::new(),
+    slow: BTreeMap::new(),
+    last: BTreeMap::new(),
+    listed_at: BTreeMap::new(),
+});
 static CGS: OnceLock<Option<Cgs>> = OnceLock::new();
+
+/// Per pid: when it was marked hung, when its reads turned slow, its last frames and when it was first listed; kept across backend restarts.
+struct Hang {
+    hung: BTreeMap<i32, Instant>,
+    slow: BTreeMap<i32, Instant>,
+    last: BTreeMap<i32, Vec<Frame>>,
+    listed_at: BTreeMap<i32, Instant>,
+}
 
 /// The AX backend: element ids are `pid/n`, `n` unique in this process, kept while this backend lives.
 pub struct Ax {
@@ -92,10 +107,6 @@ pub struct Ax {
     climb_names: CFArray<CFString>,
     ids: HashMap<String, CFType>,
     hashes: HashMap<usize, Vec<(CFType, String)>>,
-    hung: HashMap<i32, Instant>,
-    slow: HashMap<i32, Instant>,
-    last: HashMap<i32, Vec<Frame>>,
-    listed_at: HashMap<i32, Instant>,
     driver: Option<PathBuf>,
 }
 
@@ -118,10 +129,6 @@ impl Ax {
             climb_names: names(CLIMB_ATTRS),
             ids: HashMap::new(),
             hashes: HashMap::new(),
-            hung: HashMap::new(),
-            slow: HashMap::new(),
-            last: HashMap::new(),
-            listed_at: HashMap::new(),
             driver: std::env::current_exe()
                 .and_then(std::fs::canonicalize)
                 .ok()
@@ -132,13 +139,15 @@ impl Ax {
     fn listed(&mut self) -> Vec<(i32, Vec<[f64; 4]>)> {
         let shown = shown_windows();
         let has = |p: &i32| shown.iter().any(|(q, _)| q == p);
-        self.hung.retain(|_, at| at.elapsed() < HUNG_SKIP);
-        self.last.retain(|p, _| has(p));
-        self.slow.retain(|p, _| has(p));
-        self.listed_at.retain(|p, _| has(p));
+        let mut hang = lock(&HANG);
+        hang.hung.retain(|_, at| at.elapsed() < HUNG_SKIP);
+        hang.last.retain(|p, _| has(p));
+        hang.slow.retain(|p, _| has(p));
+        hang.listed_at.retain(|p, _| has(p));
         for (p, _) in &shown {
-            self.listed_at.entry(*p).or_insert_with(Instant::now);
+            hang.listed_at.entry(*p).or_insert_with(Instant::now);
         }
+        drop(hang);
         let driver = self.driver.as_ref();
         shown
             .into_iter()
@@ -151,9 +160,12 @@ impl Ax {
         let mut answered = None;
         let scale = display_scale();
         for (p, bounds) in apps {
-            if self.hung.contains_key(&p) {
-                frames.extend(kept(&self.last, p));
-                continue;
+            {
+                let hang = lock(&HANG);
+                if hang.hung.contains_key(&p) {
+                    frames.extend(kept(&hang.last, p));
+                    continue;
+                }
             }
             let app = application(p);
             let asked = Instant::now();
@@ -237,8 +249,9 @@ impl Ax {
                 self.missed(p, asked, &mut frames);
                 continue;
             }
-            self.slow.remove(&p);
-            self.last.insert(p, frames[from..].to_vec());
+            let mut hang = lock(&HANG);
+            hang.slow.remove(&p);
+            hang.last.insert(p, frames[from..].to_vec());
         }
         if frames.iter().any(|f| f.stale) {
             stale_front(&mut frames, answered.or_else(front_app));
@@ -247,15 +260,16 @@ impl Ax {
     }
 
     fn missed(&mut self, p: i32, asked: Instant, frames: &mut Vec<Frame>) {
-        let slow = self.slow.entry(p).or_insert(asked).elapsed();
-        let listed = self
+        let mut hang = lock(&HANG);
+        let slow = hang.slow.entry(p).or_insert(asked).elapsed();
+        let listed = hang
             .listed_at
             .get(&p)
             .map_or(LAUNCH_GRACE, Instant::elapsed);
         if hung(slow, listed) {
-            self.hung.insert(p, Instant::now());
+            hang.hung.insert(p, Instant::now());
         }
-        frames.extend(kept(&self.last, p));
+        frames.extend(kept(&hang.last, p));
     }
 
     fn id_of(&mut self, el: &CFType) -> String {
@@ -268,7 +282,8 @@ impl Ax {
             return id.clone();
         }
         if self.ids.len() >= MAX_IDS {
-            let windows: HashSet<&str> = self
+            let hang = lock(&HANG);
+            let windows: HashSet<&str> = hang
                 .last
                 .values()
                 .flatten()
@@ -1315,7 +1330,7 @@ fn front_app() -> Option<u32> {
     })
 }
 
-fn kept(last: &HashMap<i32, Vec<Frame>>, p: i32) -> Vec<Frame> {
+fn kept(last: &BTreeMap<i32, Vec<Frame>>, p: i32) -> Vec<Frame> {
     last.get(&p)
         .into_iter()
         .flatten()
@@ -1548,7 +1563,7 @@ mod tests {
             id: "4242".to_owned(),
             ..Frame::default()
         };
-        ax.last.insert(901, vec![frame]);
+        lock(&HANG).last.insert(901, vec![frame]);
         let filler = CFString::new("filler").as_CFType();
         for n in ax.ids.len()..MAX_IDS {
             ax.ids.insert(format!("0/filler{n}"), filler.clone());
@@ -1693,7 +1708,7 @@ mod tests {
             active: true,
             ..Frame::default()
         };
-        let last = HashMap::from([(7, vec![doc])]);
+        let last = BTreeMap::from([(7, vec![doc])]);
         let listed = kept(&last, 7);
         assert_eq!(listed.len(), 1);
         assert!(listed[0].stale && listed[0].active && listed[0].title == "Notes.rtf");
@@ -1737,12 +1752,14 @@ mod tests {
     #[test]
     fn a_still_hung_app_is_marked_again_at_its_first_miss_after_the_skip() {
         let mut ax = bare();
-        ax.listed_at.insert(7, Instant::now() - LAUNCH_GRACE);
+        lock(&HANG)
+            .listed_at
+            .insert(7, Instant::now() - LAUNCH_GRACE);
         ax.missed(7, Instant::now() - Duration::from_secs(2), &mut Vec::new());
-        assert!(ax.hung.contains_key(&7));
-        ax.hung.clear();
+        assert!(lock(&HANG).hung.contains_key(&7));
+        lock(&HANG).hung.remove(&7);
         ax.missed(7, Instant::now(), &mut Vec::new());
-        assert!(ax.hung.contains_key(&7));
+        assert!(lock(&HANG).hung.contains_key(&7));
     }
 
     #[test]
@@ -1759,10 +1776,6 @@ mod tests {
             climb_names: names(CLIMB_ATTRS),
             ids: HashMap::new(),
             hashes: HashMap::new(),
-            hung: HashMap::new(),
-            slow: HashMap::new(),
-            last: HashMap::new(),
-            listed_at: HashMap::new(),
             driver: None,
         }
     }
