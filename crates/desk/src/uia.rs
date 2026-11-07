@@ -317,7 +317,7 @@ impl Access for Uia {
             frames.extend(link(&shown, i, &top, found));
             frames.push(top);
         }
-        stale_front(&mut frames);
+        stale_front(&mut frames, &mut lock(&LAST), front.0 as isize);
         Ok(frames)
     }
 
@@ -772,7 +772,20 @@ fn kept(last: &mut BTreeMap<isize, Frame>, hwnd: isize, pid: u32, front: bool) -
     })
 }
 
-fn stale_front(frames: &mut [Frame]) {
+fn stale_front(frames: &mut [Frame], last: &mut BTreeMap<isize, Frame>, front: isize) {
+    let listed = last
+        .get(&front)
+        .map(|f| f.id.clone())
+        .filter(|id| frames.iter().any(|f| &f.id == id));
+    if let Some(id) = listed {
+        for f in frames.iter_mut() {
+            f.active = f.id == id;
+        }
+        for (_, f) in last.iter_mut().filter(|(h, _)| **h != front) {
+            f.active = false;
+        }
+        return;
+    }
     if frames.iter().any(|f| f.active && !f.stale) {
         for f in frames.iter_mut().filter(|f| f.stale) {
             f.active = false;
@@ -1025,11 +1038,30 @@ mod tests {
         let mut last = BTreeMap::from([(7, frame("hung", true)), (8, frame("left", false))]);
         assert!(kept(&mut last, 9, 1, false).is_none());
         let mut frames = vec![frame("other", false), kept(&mut last, 7, 1, false).unwrap()];
-        stale_front(&mut frames);
+        stale_front(&mut frames, &mut last, 0);
         assert!(frames[1].stale && frames[1].active && frames[1].title == "hung");
         frames[0].active = true;
-        stale_front(&mut frames);
+        stale_front(&mut frames, &mut last, 0);
         assert!(frames[1].stale && !frames[1].active);
+    }
+
+    #[test]
+    fn a_listed_front_window_is_the_only_active_one_and_clears_the_others_last_state() {
+        let frame = |id: &str, active: bool| Frame {
+            id: id.into(),
+            pid: Some(1),
+            active,
+            ..Frame::default()
+        };
+        let mut last = BTreeMap::from([(1, frame("allowed", true)), (2, frame("other", false))]);
+        let mut frames = vec![
+            kept(&mut last, 2, 1, true).unwrap(),
+            kept(&mut last, 1, 1, false).unwrap(),
+        ];
+        assert!(frames.iter().all(|f| f.active));
+        stale_front(&mut frames, &mut last, 2);
+        assert!(frames[0].active && !frames[1].active);
+        assert!(last[&2].active && !last[&1].active);
     }
 
     #[test]
