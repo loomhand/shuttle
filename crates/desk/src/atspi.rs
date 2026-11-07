@@ -625,8 +625,20 @@ impl Atspi {
         })
     }
 
+    /// The first element of `window`'s tree in the focused state: one Collection match, else one tree read.
+    pub async fn focused(&self, window: Obj) -> Option<Obj> {
+        if let Some(found) = self.focused_in(&window).await {
+            return Some(found);
+        }
+        let tree = self.tree(window, Extras::default()).await.ok()?;
+        tree.nodes
+            .into_iter()
+            .find(|n| n.states & (1 << FOCUSED) != 0)
+            .map(|n| Rc::unwrap_or_clone(n.obj))
+    }
+
     /// The first descendant of `obj` in the focused state, by one Collection match; none when the app does not serve Collection.
-    pub async fn focused_in(&self, obj: &Obj) -> Option<Obj> {
+    async fn focused_in(&self, obj: &Obj) -> Option<Obj> {
         let found: Vec<(String, OwnedObjectPath)> = self
             .call(obj, COLLECTION, "GetMatches", &focused_rule())
             .await

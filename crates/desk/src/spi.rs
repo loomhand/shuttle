@@ -9,7 +9,7 @@ use x11rb::connection::Connection as _;
 use x11rb::protocol::xproto::{AtomEnum, ClientMessageEvent, ConnectionExt as _, EventMask};
 
 use crate::atspi::{self, Atspi, Obj};
-use crate::model::{Access, Act, Capture, Extras, Frame, Modal, Node, Tree, focused_by_tree};
+use crate::model::{Access, Act, Capture, Extras, Frame, Modal, Node, Tree};
 use crate::xshm::{Grabber, clip};
 
 const FRAME_ROLES: [u32; 6] = [2, 16, 19, 20, 23, WINDOW_ROLE];
@@ -109,12 +109,10 @@ impl Access for Spi {
     }
 
     fn focused(&mut self, frame: &Frame, within: Duration) -> Result<Option<String>, String> {
-        let obj = Obj::parse(&frame.id)?;
-        match answered(&self.rt, within, self.atspi.focused_in(&obj)) {
-            None => Ok(None),
-            Some(Some(found)) => Ok(Some(found.id())),
-            Some(None) => focused_by_tree(self, frame),
-        }
+        let window = Obj::parse(&frame.id)?;
+        Ok(answered(&self.rt, within, self.atspi.focused(window))
+            .flatten()
+            .map(|o| o.id()))
     }
 
     fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String> {
