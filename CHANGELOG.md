@@ -18,6 +18,7 @@
   - A desk click waits out the click spacing on every OS, so two desk clicks at one point no longer make a double click on Windows (#279).
   - `press` and `act` hold the input turn through the element click (#264), and on macOS a menu-item click that outlives its call limit holds it until the press ends. A computer action or launch that waits for the turn answers busy after 15 s, as a desk action does (#263).
   - A `press` clicks at negative desk coordinates, on a display left of or above the main one.
+  - A foreground `click`, `scroll` or `drag` with `window` brings that window to the front first, as `key` and `type` do, so a covered point no longer reaches the window on top while the call reports success.
   - A `delivery_mode` the desk does not use is refused at once, not after the 15 s turn wait.
   - Two first holders of a page tree no longer leave it on after the last release (#263).
 - **Windows.** A press on a hung app holds the turn about 20 s instead of about 60 s (#280). A menu toggle read by pixels reads the entry in the menu the step opened and closes it after; in the background it refuses with no menu left open (#282). A second open of the tray menu no longer closes at once.

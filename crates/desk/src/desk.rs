@@ -1162,7 +1162,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn click(&self, a: ClickArgs, turn: Option<Turn>) -> Result<String, String> {
         let named = match a.window.as_deref() {
-            Some(window) => Some(self.shot_window(window, a.pid).await?.1),
+            Some(window) => {
+                let (to, w) = self.shot_window(window, a.pid).await?;
+                if self.os != Os::Mac {
+                    self.front(to, a.pid).await?;
+                }
+                Some(w)
+            }
             None if self.bg() && a.pid.is_some() => {
                 Some(self.pick_window(None, a.pid, true).await?.1)
             }
@@ -1382,7 +1388,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let (x, y) = match (a.x, a.y) {
             (Some(x), Some(y)) => match a.window.as_deref() {
                 Some(window) => {
-                    let (_, w) = self.shot_window(window, a.pid).await?;
+                    let (to, w) = self.shot_window(window, a.pid).await?;
+                    self.front(to, a.pid).await?;
                     self.desk_point(&w, (x, y)).await?
                 }
                 None => (x, y),
@@ -1463,7 +1470,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return Ok(ok_with(self.unverified(&out, Some(target), false)));
         }
         if let Some(window) = a.window.as_deref() {
-            let (_, w) = self.shot_window(window, a.pid).await?;
+            let (target, w) = self.shot_window(window, a.pid).await?;
+            self.front(target, a.pid).await?;
             from = self.desk_point(&w, from).await?;
             to = self.desk_point(&w, to).await?;
         }
@@ -1637,6 +1645,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let (_, w, _) = self.pick_window(window, pid, true).await?;
         let (pid, id, _) = window_key(&w)?;
         Ok(Some((pid, id)))
+    }
+
+    /// Raises the foreground target of pointer input named by `window`, under the rule [`Self::raised_window`] keeps.
+    async fn front(&self, to: (i64, i64), pid: Option<u32>) -> Result<(), String> {
+        if pid.is_some() || self.os != Os::Linux {
+            self.raise(Some(to)).await?;
+        }
+        Ok(())
     }
 
     async fn raise(&self, window: Option<(i64, i64)>) -> Result<(), String> {
@@ -2899,7 +2915,10 @@ pub(crate) mod tests {
             "{}",
             out.text
         );
-        assert_eq!(order(&calls), ["bring_to_front -", "drag desktop"]);
+        assert_eq!(
+            order(&calls),
+            ["bring_to_front -", "bring_to_front -", "drag desktop"]
+        );
     }
 
     #[tokio::test]
@@ -4184,7 +4203,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn foreground_input_goes_to_the_desktop_at_the_named_windows_pixels() {
+    async fn foreground_input_raises_the_named_window_and_goes_to_the_desktop_at_its_pixels() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Mac);
         desk.run("desk_key", json!({"keys": "ctrl+s", "window": "Inbox"}))
@@ -4240,12 +4259,24 @@ pub(crate) mod tests {
                     json!({"literal": true, "text": "a", "scope": "desktop"})
                 ),
                 (
+                    "bring_to_front".to_owned(),
+                    json!({"pid": 8, "window_id": 2})
+                ),
+                (
                     "click".to_owned(),
                     json!({"x": 800.0, "y": 250.0, "scope": "desktop"})
                 ),
                 (
+                    "bring_to_front".to_owned(),
+                    json!({"pid": 8, "window_id": 2})
+                ),
+                (
                     "scroll".to_owned(),
                     json!({"direction": "down", "amount": 3, "x": 800.0, "y": 250.0, "scope": "desktop"})
+                ),
+                (
+                    "bring_to_front".to_owned(),
+                    json!({"pid": 8, "window_id": 2})
                 ),
                 (
                     "drag".to_owned(),
