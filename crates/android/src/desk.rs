@@ -1,4 +1,4 @@
-//! The desk calls of GUI plans and scripts on Android: windows and element trees from the UI server, input through adb.
+//! The desk calls of GUI plans and scripts on Android: windows and element trees from the UI server, input through the UI server and adb.
 
 use std::borrow::Cow;
 use std::fmt::Write as _;

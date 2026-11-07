@@ -358,7 +358,7 @@ impl Android {
         self.input(&argv).await
     }
 
-    pub(crate) async fn input(&self, args: &[&str]) -> Result<(), String> {
+    async fn input(&self, args: &[&str]) -> Result<(), String> {
         let mut argv = vec!["shell", "input"];
         argv.extend_from_slice(args);
         self.adb(&argv).await.map(drop)
@@ -439,7 +439,7 @@ impl Android {
     }
 
     /// Pastes `text` through the clipboard, which takes any Unicode; false when the device refused the paste key.
-    pub(crate) async fn paste(&self, text: &str) -> Result<bool, String> {
+    async fn paste(&self, text: &str) -> Result<bool, String> {
         {
             let mut slot = self.control.lock().await;
             let mut control = match slot.take() {
@@ -467,7 +467,7 @@ impl Android {
             .copied()
     }
 
-    pub(crate) async fn adb(&self, args: &[&str]) -> Result<Vec<u8>, String> {
+    async fn adb(&self, args: &[&str]) -> Result<Vec<u8>, String> {
         let mut cmd = self.command();
         cmd.args(args).stdin(Stdio::null()).kill_on_drop(true);
         let out = tokio::time::timeout(ADB_TIMEOUT, cmd.output())

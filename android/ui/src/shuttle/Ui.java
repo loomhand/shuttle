@@ -103,7 +103,9 @@ public final class Ui {
             throw new IOException("no screenshot");
         }
         ByteArrayOutputStream png = new ByteArrayOutputStream(SHOT_BUFFER);
-        if (!screen.compress(Bitmap.CompressFormat.PNG, 100, png) || png.size() == 0) {
+        boolean compressed = screen.compress(Bitmap.CompressFormat.PNG, 100, png);
+        screen.recycle();
+        if (!compressed || png.size() == 0) {
             throw new IOException("no PNG");
         }
         out.println("png " + png.size());
