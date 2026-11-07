@@ -450,10 +450,7 @@ mod tests {
     #[test]
     fn no_focus_match_falls_back_to_a_tree_read() {
         let frame = Frame::default();
-        let mut unmatched = Focus {
-            matched: None,
-            trees: 0,
-        };
+        let mut unmatched = Focus { trees: 0 };
         assert_eq!(
             unmatched.focused(&frame, Duration::from_millis(100)),
             Ok(Some("field".into()))
@@ -514,7 +511,6 @@ mod tests {
     }
 
     struct Focus {
-        matched: Option<String>,
         trees: usize,
     }
 
@@ -539,13 +535,6 @@ mod tests {
 
         fn node(&mut self, _: &str, _: Extras, _: usize) -> Result<Node, String> {
             Err("unused".into())
-        }
-
-        fn focused(&mut self, frame: &Frame, _: Duration) -> Result<Option<String>, String> {
-            match self.matched.clone() {
-                Some(id) => Ok(Some(id)),
-                None => focused_by_tree(self, frame),
-            }
         }
 
         fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {

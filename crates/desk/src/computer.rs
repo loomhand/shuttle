@@ -3459,25 +3459,7 @@ mod tests {
     #[tokio::test]
     async fn a_driver_without_frame_scale_maps_by_its_screen_and_screenshot_widths() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = endpoint(dir.path());
-        let listener = Fake::bind(&socket).unwrap();
-        let clicks = Clicks::default();
-        let log = std::sync::Arc::clone(&clicks);
-        let full = full_shot(1280, 800, 640);
-        let driver = tokio::spawn(listener.serve(move |req| {
-            let args = &req["args"];
-            match req["name"].as_str().unwrap_or_default() {
-                "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
-                name => {
-                    if name == "click" {
-                        log.lock()
-                            .unwrap()
-                            .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
-                    }
-                    json!({"ok": true, "result": {"structuredContent": {}}})
-                }
-            }
-        }));
+        let (socket, clicks, driver) = scaling_driver(dir.path(), 640);
         let cua = cua(&socket);
         cua.state(json!({})).await.unwrap();
         let out = cua
@@ -3492,25 +3474,7 @@ mod tests {
     #[tokio::test]
     async fn every_point_of_an_action_list_maps_by_the_screenshot_taken_before_it() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = endpoint(dir.path());
-        let listener = Fake::bind(&socket).unwrap();
-        let clicks = Clicks::default();
-        let log = std::sync::Arc::clone(&clicks);
-        let full = full_shot(1280, 800, 1280);
-        let driver = tokio::spawn(listener.serve(move |req| {
-            let args = &req["args"];
-            match req["name"].as_str().unwrap_or_default() {
-                "get_desktop_state" if args["max_image_dimension"] == 0 => full.clone(),
-                name => {
-                    if name == "click" {
-                        log.lock()
-                            .unwrap()
-                            .push((args["x"].as_f64().unwrap(), args["y"].as_f64().unwrap()));
-                    }
-                    json!({"ok": true, "result": {"structuredContent": {}}})
-                }
-            }
-        }));
+        let (socket, clicks, driver) = scaling_driver(dir.path(), 1280);
         let cua = cua(&socket);
         let click = |x: f64| json!({"action": "click", "x": x, "y": 30.0});
         cua.state(json!({"max_edge": 0})).await.unwrap();
@@ -3564,7 +3528,7 @@ mod tests {
     #[tokio::test]
     async fn a_pinned_scale_maps_an_action_and_every_action_of_a_list() {
         let dir = tempfile::tempdir().unwrap();
-        let (socket, clicks, driver) = scaling_driver(dir.path());
+        let (socket, clicks, driver) = scaling_driver(dir.path(), 1280);
         let cua = cua(&socket);
         let click = |x: f64| json!({"action": "click", "x": x, "y": 40.0});
         cua.state(json!({"max_edge": 640})).await.unwrap();
@@ -3589,7 +3553,7 @@ mod tests {
     #[tokio::test]
     async fn two_acts_at_once_on_one_session_each_map_by_their_own_scale() {
         let dir = tempfile::tempdir().unwrap();
-        let (socket, clicks, driver) = scaling_driver(dir.path());
+        let (socket, clicks, driver) = scaling_driver(dir.path(), 1280);
         let cua = cua(&socket);
         cua.state(json!({"max_edge": 640})).await.unwrap();
         let (one, two) = tokio::join!(
@@ -3606,7 +3570,7 @@ mod tests {
     #[tokio::test]
     async fn a_session_without_its_own_screenshot_maps_by_the_latest_one_of_any_session() {
         let dir = tempfile::tempdir().unwrap();
-        let (socket, clicks, driver) = scaling_driver(dir.path());
+        let (socket, clicks, driver) = scaling_driver(dir.path(), 1280);
         let cua = cua(&socket);
         let click =
             |session: &str| json!({"action": "click", "x": 100.0, "y": 40.0, "session": session});
@@ -3634,7 +3598,7 @@ mod tests {
     #[tokio::test]
     async fn a_read_share_screenshot_leaves_the_scale_of_other_sessions_alone() {
         let dir = tempfile::tempdir().unwrap();
-        let (socket, clicks, driver) = scaling_driver(dir.path());
+        let (socket, clicks, driver) = scaling_driver(dir.path(), 1280);
         let cua = cua(&socket);
         let click =
             |session: &str| json!({"action": "click", "x": 100.0, "y": 40.0, "session": session});
@@ -4955,12 +4919,15 @@ mod tests {
         (socket, landed, driver)
     }
 
-    fn scaling_driver(dir: &Path) -> (PathBuf, Clicks, tokio::task::JoinHandle<()>) {
+    fn scaling_driver(
+        dir: &Path,
+        screen_width: u32,
+    ) -> (PathBuf, Clicks, tokio::task::JoinHandle<()>) {
         let socket = endpoint(dir);
         let listener = Fake::bind(&socket).unwrap();
         let clicks = Clicks::default();
         let log = std::sync::Arc::clone(&clicks);
-        let full = full_shot(1280, 800, 1280);
+        let full = full_shot(1280, 800, screen_width);
         let driver = tokio::spawn(listener.serve(move |req| {
             let args = &req["args"];
             match req["name"].as_str().unwrap_or_default() {
