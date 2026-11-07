@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { test } from 'node:test'
 
 import { daemon } from './daemon.mts'
@@ -160,4 +160,27 @@ test('saving a plan whose password step adds a Return runs it again', async (t) 
   const saved = await main({ steps: [{ app: 'Notepad' }, { type: 'hunter7\n', focus: { secure: true } }], save: 'login7' })
   assert.notEqual(saved.ran, false, JSON.stringify(saved))
   assert.deepEqual(typed, ['hunter7\n'])
+})
+
+test('find names the saved flow the model picks, and no flow under 0.6 or within 0.25 of the runner-up', async (t) => {
+  let probabilities: Record<string, number> = {}
+  const usage = { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 }
+  await daemon(t, ({ tool }) => {
+    if (tool !== 'model_decide') return '{"ok":true}'
+    const [choice] = Object.entries(probabilities).sort((a, b) => b[1] - a[1])[0] ?? ['none']
+    return JSON.stringify({ answers: { pick: { choice, confidence: 1, probabilities } }, served: { model: 'm', build: null, id: null }, usage })
+  })
+  const dir = process.env.SHUTTLE_FLOWS ?? ''
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(`${dir}/INDEX`, 'note(n) once: app mousepad, type "replay run {{n}}"\nmail(to, subject): app Mail, type "{{to}}"\n')
+  for (const [given, want] of [
+    [{ f1: 0.9, f0: 0.05, none: 0.05 }, { ok: true, flow: 'mail', p: 0.9 }],
+    [{ f0: 0.55, none: 0.45 }, { ok: false, flow: null, p: 0.55 }],
+    [{ f0: 0.62, f1: 0.38 }, { ok: false, flow: null, p: 0.62 }],
+    [{ none: 0.9, f0: 0.1 }, { ok: false, flow: null, p: 0.9 }],
+  ] as const) {
+    probabilities = { ...given }
+    const r = await main({ find: 'send a mail' })
+    assert.deepEqual({ ok: r.ok, flow: r.flow, p: r.p }, want, JSON.stringify(given))
+  }
 })
