@@ -25,7 +25,7 @@ use crate::desk::{
     BUSY, TURN_WAIT, Turn, Typer, launch_name, runs_app, text_runs, without_protocol_tail, xtest,
 };
 use crate::driver::{CONNECT_RETRY, Driver, ENDED, image_of, text_of};
-use crate::keys::{Os, key_names};
+use crate::keys::{Os, hid_plus, key_names};
 use crate::lock;
 use crate::model::Modal;
 #[cfg(target_os = "linux")]
@@ -1323,6 +1323,9 @@ impl Computer {
         }
         if a.foreground {
             req["delivery_mode"] = "foreground".into();
+        }
+        if self.os == Os::Mac && req["delivery_mode"] == "foreground" {
+            hid_plus(&mut req);
         }
         Ok((tool, req))
     }
@@ -2975,6 +2978,38 @@ mod tests {
             types(&calls).iter().all(|t| t == "hello"),
             "{:?}",
             types(&calls)
+        );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_macos_foreground_plus_key_goes_as_shift_and_equals() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        let cua = cua_on(&socket, Os::Mac);
+        let out = cua
+            .act(json!({"action": "key", "key": "cmd++", "foreground": true}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        let hotkeys: Vec<Value> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c["name"] == "hotkey")
+            .map(|c| {
+                let mut args = c["args"].clone();
+                args.as_object_mut().unwrap().remove("session");
+                args
+            })
+            .collect();
+        assert_eq!(
+            hotkeys,
+            [
+                json!({"keys": ["cmd", "shift", "="], "pid": 7, "window_id": 9, "delivery_mode": "foreground"})
+            ]
         );
         driver.abort();
     }
