@@ -583,6 +583,9 @@ impl Atspi {
         };
         self.extras(&mut tree.nodes, extras).await;
         tree.phases.push(("extras", clock.elapsed().as_micros()));
+        if is_hung(&root.bus) {
+            return Err(not_responding(&root.bus));
+        }
         Ok(tree)
     }
 
@@ -1000,14 +1003,8 @@ impl Atspi {
         }
     }
 
-    fn is_hung(&self, bus: &str) -> bool {
-        let mut hung = lock(&HUNG);
-        hung.retain(|_, at| at.elapsed() < HUNG_FOR);
-        hung.contains_key(bus)
-    }
-
     async fn skips(&self, bus: &str) -> bool {
-        if !self.is_hung(bus) {
+        if !is_hung(bus) {
             return false;
         }
         if let Ok(conn) = self.connection().await {
@@ -1500,6 +1497,12 @@ fn failed(obj: &Obj, iface: &str, method: &str, e: &zbus::Error) -> String {
     }
 }
 
+fn is_hung(bus: &str) -> bool {
+    let mut hung = lock(&HUNG);
+    hung.retain(|_, at| at.elapsed() < HUNG_FOR);
+    hung.contains_key(bus)
+}
+
 fn not_responding(bus: &str) -> String {
     format!("AT-SPI peer {bus} is not responding")
 }
@@ -1659,10 +1662,10 @@ mod tests {
         let late = settle(&mut seen, ":9.94", None, now);
         assert_eq!(late.len(), 1);
         assert!(late[0].stale && late[0].name == "Doc");
-        assert!(!Atspi::default().is_hung(":9.94"));
+        assert!(!is_hung(":9.94"));
         seen.get_mut(":9.94").unwrap().slow = Some(ago(2));
         let hung = settle(&mut seen, ":9.94", None, now);
-        assert!(Atspi::default().is_hung(":9.94"));
+        assert!(is_hung(":9.94"));
         assert_eq!(hung.len(), 1);
         assert!(hung[0].stale && hung[0].name == "Doc");
         let skipped = kept(&seen, ":9.94");
@@ -1689,7 +1692,7 @@ mod tests {
         let ago = |s: u64| now.checked_sub(Duration::from_secs(s)).unwrap();
         settle(&mut seen, ":9.91", Some(vec![calc]), ago(30));
         mark_hung(":9.91");
-        assert!(Atspi::default().is_hung(":9.91"));
+        assert!(is_hung(":9.91"));
         let listed = kept(&seen, ":9.91");
         assert_eq!(listed.len(), 1);
         assert!(listed[0].stale && listed[0].active() && listed[0].pid == Some(4242));
@@ -1703,7 +1706,7 @@ mod tests {
         let ago = |s: u64| now.checked_sub(Duration::from_secs(s)).unwrap();
         assert!(settle(&mut seen, ":9.93", None, ago(5)).is_empty());
         assert!(settle(&mut seen, ":9.93", None, now).is_empty());
-        assert!(!Atspi::default().is_hung(":9.93"));
+        assert!(!is_hung(":9.93"));
         assert!(settle(&mut seen, ":9.93", Some(Vec::new()), now).is_empty());
         assert_eq!(seen[":9.93"].slow, None);
     }
@@ -1716,18 +1719,18 @@ mod tests {
         release_on_answer(&probing, ":9.92", async { rx.await.is_ok() });
         release_on_answer(&probing, ":9.92", async { true });
         tokio::task::yield_now().await;
-        assert!(Atspi::default().is_hung(":9.92"));
+        assert!(is_hung(":9.92"));
         tx.send(()).unwrap();
         while probing.lock().unwrap().contains(":9.92") {
             tokio::task::yield_now().await;
         }
-        assert!(!Atspi::default().is_hung(":9.92"));
+        assert!(!is_hung(":9.92"));
         mark_hung(":9.91");
         release_on_answer(&probing, ":9.91", async { false });
         while probing.lock().unwrap().contains(":9.91") {
             tokio::task::yield_now().await;
         }
-        assert!(Atspi::default().is_hung(":9.91"));
+        assert!(is_hung(":9.91"));
     }
 
     #[test]

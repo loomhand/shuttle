@@ -429,11 +429,15 @@ pub fn native(_: String, _: &[String], _: bool, _: bool, _: bool, _: bool) -> im
 
 #[cfg(unix)]
 fn bind_at(endpoint: &str, gid: Option<u32>) -> Result<Listener, String> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 
     let path = std::path::Path::new(endpoint);
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o755)
+            .create(dir)
+            .map_err(|e| format!("create {}: {e}", dir.display()))?;
         if gid.is_some() {
             private_dir(dir)?;
         }
@@ -1040,7 +1044,7 @@ mod tests {
         let look = call(&endpoint, &ask("desk_look", json!({}))).await.unwrap();
         assert_eq!(
             (look.is_error, look.text.as_str()),
-            (true, "desk_look: this desk answers no computer verbs")
+            (true, "unknown desk tool desk_look")
         );
         server.abort();
     }

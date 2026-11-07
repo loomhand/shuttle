@@ -233,10 +233,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             self.app_target(&mut args).await?;
         }
         let turn = if ACTIONS.contains(&tool) {
+            self.check_mode(&args)?;
             let turn = tokio::time::timeout(self.turn_wait, self.acting.clone().lock_owned())
                 .await
                 .map_err(|_| BUSY.to_owned())?;
-            self.check_mode(&args)?;
             if tool != "desk_type" {
                 *lock(&self.clicked) = None;
             }
@@ -271,7 +271,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self
     }
 
-    /// Turns an input call's `app` into the `pid` of that app's window, so its input goes to that app or nowhere.
+    /// Turns an input call's `app` into the `pid` of that app's window.
     async fn app_target(&self, args: &mut Value) -> Result<(), String> {
         let Some(app) = args.as_object_mut().and_then(|a| a.remove("app")) else {
             return Ok(());
@@ -400,7 +400,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_at" => self.at(parse(args)?).await?,
             "desk_key" => self.key(parse(args)?).await?,
             "desk_type" => self.type_text(parse(args)?, turn).await?,
-            "desk_click" => self.click(parse(args)?).await?,
+            "desk_click" => self.click(parse(args)?, turn).await?,
             "desk_scroll" => self.scroll(parse(args)?).await?,
             "desk_drag" => self.drag(parse(args)?).await?,
             "desk_still" => self.still(parse(args)?).await?,
@@ -464,9 +464,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     }
                 }
                 size.to_string()
-            }
-            t if COMPUTER_VERBS.contains(&t) => {
-                return Err(format!("{t}: this desk answers no computer verbs"));
             }
             other => return Err(format!("unknown desk tool {other}")),
         };
@@ -804,7 +801,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             Press::Selected => Ok(json!({"ok": true, "how": "select"}).to_string()),
             Press::Acted(ok) => Ok(json!({"ok": ok, "how": "action"}).to_string()),
             Press::Click(x, y) => {
-                let note = self.click_element(id, json!({"x": x, "y": y})).await?;
+                let note = self
+                    .click_element(id, json!({"x": x, "y": y}), turn)
+                    .await?;
                 let mut out = json!({"ok": true, "how": "click", "x": x, "y": y});
                 if let Some(note) = note {
                     out["unverified"] = note.into();
@@ -832,7 +831,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     .await?;
                 let [x, y, w, h] = n.bounds.ok_or("the element has no screen position")?;
                 let note = self
-                    .click_element(a.id, json!({"x": x + w / 2, "y": y + h / 2}))
+                    .click_element(a.id, json!({"x": x + w / 2, "y": y + h / 2}), turn)
                     .await?;
                 return Ok(ok_with(note));
             }
@@ -1161,7 +1160,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         .await;
     }
 
-    async fn click(&self, a: ClickArgs) -> Result<String, String> {
+    async fn click(&self, a: ClickArgs, turn: Option<Turn>) -> Result<String, String> {
         let named = match a.window.as_deref() {
             Some(window) => Some(self.shot_window(window, a.pid).await?.1),
             None if self.bg() && a.pid.is_some() => {
@@ -1185,7 +1184,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
         let note = match named {
             Some(w) if self.bg() || self.os == Os::Mac => self.click_in(req, &w, (x, y)).await?,
-            _ => self.click_at(req).await?,
+            _ => self.click_at(req, turn.clone()).await?,
         };
         let mut out = json!({"ok": true});
         if let Some(note) = note {
@@ -1223,9 +1222,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     /// A click at the centre `(x, y)` of element `id`; in the background in the element's own window, whatever covers it.
-    async fn click_element(&self, id: String, req: Value) -> Result<Option<String>, String> {
+    async fn click_element(
+        &self,
+        id: String,
+        req: Value,
+        turn: Option<Turn>,
+    ) -> Result<Option<String>, String> {
         if !self.bg() {
-            return self.click_at(req).await;
+            return self.click_at(req, turn).await;
         }
         let point = req["x"]
             .as_f64()
@@ -1277,7 +1281,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
     }
 
-    async fn click_at(&self, req: Value) -> Result<Option<String>, String> {
+    async fn click_at(&self, req: Value, turn: Option<Turn>) -> Result<Option<String>, String> {
         let point = req["x"].as_f64().zip(req["y"].as_f64());
         if self.os == Os::Mac
             && let Some((x, y)) = point
@@ -1286,7 +1290,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let allow = self.allow.clone();
             let pressed = self
                 .access
-                .run(CALL_LIMIT, (), move |b| {
+                .run(CALL_LIMIT, turn.clone(), move |b| {
                     let Some(item) = b.menu_at(px, py)? else {
                         return Ok(false);
                     };
@@ -1351,7 +1355,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.check_point(x, y, under.as_ref()).await
     }
 
-    /// Wheel notches at a screen point, else a scroll of the front app window.
     async fn scroll(&self, a: ScrollArgs) -> Result<String, String> {
         if a.x.is_some() != a.y.is_some() {
             return Err(SCROLL_POINT.to_owned());
@@ -1441,7 +1444,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .ok_or_else(|| "no app window is in front to scroll".to_owned())
     }
 
-    /// A press-drag-release from (x, y) to (to_x, to_y) in desk coordinates, or in pixels of the named window's `shot`.
     async fn drag(&self, a: DragArgs) -> Result<String, String> {
         let (mut from, mut to) = ((a.x, a.y), (a.to_x, a.to_y));
         if self.bg() {
