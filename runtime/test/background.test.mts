@@ -294,3 +294,28 @@ test('a fresh background run saves the chain the last plan left at its window an
   const found = await fresh({ locate: { target: 'Bold' } })
   assert.equal(found.found, true, JSON.stringify(found))
 })
+
+test('a Windows menu toggle that needs pixels refuses in the background and closes the menu it opened', { skip: process.platform !== 'win32' }, async (t) => {
+  const state = { open: false }
+  const nodes = () => [
+    { ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad().title, states: ['showing'] },
+    { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'menubar', name: 'Application', states: ['showing'] },
+    { ref: 2, id: '1/3', parent: 1, depth: 2, role: 'menu', name: 'View', states: ['showing'], bounds: [100, 0, 40, 20] },
+    ...(state.open ? [
+      { ref: 3, id: 'p/1', parent: 0, depth: 1, role: 'menu', name: 'View', states: ['showing'], bounds: [100, 20, 140, 44] },
+      { ref: 4, id: 'p/2', parent: 3, depth: 2, role: 'menuitem', name: 'Status Bar', states: ['showing'], bounds: [100, 20, 140, 22] },
+    ] : []),
+  ]
+  const d = desktop([user(), notepad()], ({ tool, args }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes: nodes(), truncated: false })
+    if (tool === 'desk_press' && args.id === '1/3') state.open = true
+    if (tool === 'desk_key' && args.keys === 'Escape') state.open = false
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { menu: 'View > Status Bar', on: false }] })
+  assert.equal(r.ok, false)
+  assert.match(String(r.escalate?.reason), /needs a look at the screen/)
+  assert.deepEqual(sent(d.calls, 'desk_press').map((a) => a.id), ['1/3'])
+  assert.equal(state.open, false)
+})

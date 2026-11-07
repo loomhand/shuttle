@@ -1322,10 +1322,11 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       if (now.on !== s.on) throw new Surprise(`menu toggle "${hit.n.name}" is still ${now.on ? 'on' : 'off'}`, await seen())
       rec.confirmed = true; return
     }
-    if (BG) throw new Surprise(`the state of "${hit.n.name}" needs a look at the screen: ${NO_PIXELS}`, await seen())
-    for (const q of chain) { await act(q); await sleep(120) }
+    const opened = rec.opened ?? 0
+    if (BG) { for (let k = 0; k < opened; k++) await desk.key('Escape', at(w)); throw new Surprise(`the state of "${hit.n.name}" needs a look at the screen: ${NO_PIXELS}`, await seen()) }
+    if (!opened) for (const q of chain) { await act(q); await sleep(120) }
     const on = await cropState(hit.n); rec.was = on; rec.state = 'vision'
-    if (on === s.on) { for (const _ of chain) await desk.key('Escape', at(w)); rec.noop = true; return }
+    if (on === s.on) { for (let k = 0; k < (opened || chain.length); k++) await desk.key('Escape', at(w)); rec.noop = true; return }
     await act(hit.n); await settle(w.title); rec.caveat = TOGGLE_UNREAD; return
   }
   const target = s.click ?? s.check ?? s.set ?? ''
