@@ -1649,7 +1649,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(Some((pid, id)))
     }
 
-    /// Raises the foreground target of pointer input named by `window` unless it is already on top at the point, under the rule [`Self::raised_window`] keeps.
+    /// Raises the foreground target of pointer input named by `window` when another app's window is on top at the point, under the rule [`Self::raised_window`] keeps.
     async fn front(
         &self,
         to: (i64, i64),
@@ -1659,13 +1659,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if pid.is_none() && self.os == Os::Linux {
             return Ok(());
         }
-        let on_top = |u: Option<Under>| u.is_some_and(|u| (u.pid, u.id) == to);
-        if on_top(self.window_at(x, y).await?) {
+        if self.window_at(x, y).await?.is_none_or(|u| u.pid == to.0) {
             return Ok(());
         }
         self.raise(Some(to)).await?;
         let end = Instant::now() + RAISE_WAIT;
-        while Instant::now() < end && !on_top(self.window_at(x, y).await?) {
+        while Instant::now() < end && self.window_at(x, y).await?.is_some_and(|u| u.pid != to.0) {
             tokio::time::sleep(WAIT_POLL).await;
         }
         Ok(())
@@ -4223,6 +4222,27 @@ pub(crate) mod tests {
             .run(
                 "desk_click",
                 json!({"x": 300.0, "y": 250.0, "window": "Inbox", "pid": 8}),
+            )
+            .await;
+        assert!(
+            sent(&calls, "bring_to_front").is_empty(),
+            "{:?}",
+            order(&calls)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_foreground_click_where_no_window_is_does_not_raise_the_named_one() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(Apps),
+            BehindCover(Behind(Arc::clone(&calls)), AtomicBool::new(false)),
+            Os::Windows,
+        );
+        let _ = desk
+            .run(
+                "desk_click",
+                json!({"x": 600.0, "y": 250.0, "window": "Inbox", "pid": 8}),
             )
             .await;
         assert!(
