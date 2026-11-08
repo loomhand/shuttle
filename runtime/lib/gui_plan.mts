@@ -617,10 +617,11 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string): Pro
     const ws = await desk.windows(); const w = frontOf(ws)
     if (w && awaited(w.title, want, saw)) return found(w, t0)
     if (BG) {
-      const named = (x: Win) => awaited(x.title, want, saw)
       const t = target
-      const bg = ws.find((x) => named(x) && x.pid === t?.pid) ?? ws.find(named)
-      if (bg) { follow(bg, ws); return found(bg, t0) }
+      const hits = ws.filter((x) => awaited(x.title, want, saw)); const own = hits.filter((x) => x.pid === t?.pid)
+      const pool = own.length ? own : hits; const exact = pool.filter((x) => norm(x.title) === norm(want))
+      const [bg, other] = exact.length ? exact : pool; many = exact.length || pool.length
+      if (bg && !other) { follow(bg, ws); return found(bg, t0) }
     } else if ((!w || known.has(w.title)) && Date.now() - t0 > 150) {
       const hits = ws.filter((x) => norm(x.title).includes(norm(want)) && (!!w || x.role !== 'alert'))
       const [bg, other] = hits; many = hits.length
