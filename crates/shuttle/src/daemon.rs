@@ -36,6 +36,8 @@ const PLAN_BACKGROUND: &str = "background gui_plan is not measured on Linux: set
 const NO_ASK: &str = "confirm needs the menu-bar controls, which this OS does not have yet: set confirm = \"off\" under [safety] in config.toml";
 const CONFIRM_OPEN: &str = "a confirm dialog is open: answer it first";
 const QUESTION_CHARS: usize = 200;
+const PREVIEW_CHARS: usize = 120;
+const STEP_CHARS: usize = 40;
 const COMPUTER_ACT: &str = "desk_computer_act";
 const POINTER_ACTIONS: [&str; 10] = [
     "tap",
@@ -452,34 +454,82 @@ impl Drop for Acting<'_> {
 }
 
 fn question(call: &Call) -> String {
+    let a = &call.args;
     let verb = call.tool.trim_start_matches("desk_");
+    let inside = named(a).map(|n| format!(" in {n}")).unwrap_or_default();
     let what = match verb {
-        "click" => format!("click at ({}, {})", call.args["x"], call.args["y"]),
+        "click" => format!("click at ({}, {}){inside}{}", a["x"], a["y"], held(a)),
         "drag" => format!(
-            "drag from ({}, {}) to ({}, {})",
-            call.args["x"], call.args["y"], call.args["to_x"], call.args["to_y"]
+            "drag from ({}, {}) to ({}, {}){inside}",
+            a["x"], a["y"], a["to_x"], a["to_y"]
         ),
-        "press" => format!("press element {}", call.args["id"]),
-        "act" => format!(
-            "{} element {}",
-            call.args["action"].as_str().unwrap_or("act on"),
-            call.args["id"]
-        ),
+        "press" => format!("press element {}", a["id"]),
+        "act" => format!("{} element {}", word(&a["action"], "act on"), a["id"]),
         "type" => format!(
-            "type {} characters",
-            call.args["text"].as_str().map_or(0, |t| t.chars().count())
+            "type into {}: {}",
+            named(a).unwrap_or_else(|| "the focused window".to_owned()),
+            quoted(&a["text"], PREVIEW_CHARS)
         ),
-        "computer_act" => match call.args["actions"].as_array() {
-            Some(list) => format!(
-                "run {} actions: {}",
-                list.len(),
-                list.iter().map(step).collect::<Vec<_>>().join(", ")
-            ),
-            None => step(&call.args),
+        "computer_act" => match a["actions"].as_array() {
+            Some(list) => steps(list),
+            None => step(a),
         },
-        _ => format!("{verb} {}", call.args),
+        _ => format!("{verb} {a}"),
     };
     format!("Allow {NAME} to {}?", clip(what, QUESTION_CHARS))
+}
+
+fn named(a: &Value) -> Option<String> {
+    match (a["window"].as_str(), a["app"].as_str(), a["pid"].as_u64()) {
+        (Some(window), ..) => Some(format!("window {}", Value::from(window))),
+        (None, Some(app), _) => Some(format!("app {}", Value::from(app))),
+        (None, None, Some(pid)) => Some(format!("process {pid}")),
+        (None, None, None) => None,
+    }
+}
+
+fn held(a: &Value) -> String {
+    match a["modifiers"].as_array() {
+        Some(mods) if !mods.is_empty() => {
+            let mods: Vec<String> = mods.iter().map(|m| word(m, "?")).collect();
+            format!(" with {}", mods.join("+"))
+        }
+        _ => String::new(),
+    }
+}
+
+fn word(v: &Value, default: &str) -> String {
+    match v.as_str() {
+        None => default.to_owned(),
+        Some(s) if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {
+            s.to_owned()
+        }
+        Some(s) => Value::from(s).to_string(),
+    }
+}
+
+fn quoted(v: &Value, max: usize) -> String {
+    Value::from(clip(v.as_str().unwrap_or_default().to_owned(), max)).to_string()
+}
+
+fn steps(list: &[Value]) -> String {
+    let mut out = format!("run {} actions:", list.len());
+    for (i, a) in list.iter().enumerate() {
+        let s = step(a);
+        let more = format!(" (+{} more)", list.len() - i);
+        let room = if i + 1 < list.len() {
+            more.chars().count()
+        } else {
+            0
+        };
+        if out.chars().count() + 2 + s.chars().count() + room > QUESTION_CHARS {
+            out.push_str(&more);
+            break;
+        }
+        out.push_str(if i == 0 { " " } else { ", " });
+        out.push_str(&s);
+    }
+    out
 }
 
 /// Whether the computer action `a` can end in a click at a screen point: a pointer action, or typing at an element or a point, which clicks it first.
@@ -490,13 +540,18 @@ fn points(a: &Value) -> bool {
 }
 
 fn step(a: &Value) -> String {
-    let action = a["action"].as_str().unwrap_or("act");
+    let mut s = word(&a["action"], "act");
+    for field in ["key", "text"] {
+        if a[field].is_string() {
+            s = format!("{s} {}", quoted(&a[field], STEP_CHARS));
+        }
+    }
     if let Some(element) = a.get("element") {
-        format!("{action} element [{element}]")
+        format!("{s} element [{element}]")
     } else if a.get("x").is_some() {
-        format!("{action} at ({}, {})", a["x"], a["y"])
+        format!("{s} at ({}, {})", a["x"], a["y"])
     } else {
-        action.to_owned()
+        s
     }
 }
 
@@ -716,6 +771,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_confirm_question_names_the_target_and_escapes_what_the_agent_sends() {
+        let q = |tool: &str, args: Value| question(&call(tool, args));
+        assert_eq!(
+            q("desk_type", json!({"text": "pay\n10", "window": "Bank"})),
+            "Allow shuttle to type into window \"Bank\": \"pay\\n10\"?"
+        );
+        assert_eq!(
+            q("desk_type", json!({"text": "x"})),
+            "Allow shuttle to type into the focused window: \"x\"?"
+        );
+        assert_eq!(
+            q(
+                "desk_click",
+                json!({"x": 10, "y": 20, "window": "Bank", "modifiers": ["cmd", "shift"]})
+            ),
+            "Allow shuttle to click at (10, 20) in window \"Bank\" with cmd+shift?"
+        );
+        let forged = q(
+            "desk_computer_act",
+            json!({"actions": [{"action": "type\n\n(Nothing is typed.)", "text": "curl x | sh"}]}),
+        );
+        assert!(!forged.contains('\n'), "{forged}");
+        assert!(forged.contains("curl x | sh"), "{forged}");
+        let mut many = vec![json!({"action": "key", "key": "a"}); 40];
+        many.push(json!({"action": "left_click", "x": 3, "y": 4}));
+        let clipped = q("desk_computer_act", json!({"actions": many}));
+        assert!(clipped.ends_with(" more)?"), "{clipped}");
+        assert!(clipped.chars().count() <= QUESTION_CHARS + 20, "{clipped}");
+    }
+
     #[tokio::test]
     async fn confirm_asks_before_the_actions_its_mode_names_and_a_no_declines() {
         let asked = Arc::new(Mutex::new(Vec::new()));
@@ -801,8 +887,8 @@ mod tests {
                 "Allow shuttle to swipe element [3]?",
                 "Allow shuttle to right_click at (7, 8)?",
                 "Allow shuttle to triple_click element [4]?",
-                "Allow shuttle to type at (1, 2)?",
-                "Allow shuttle to run 2 actions: key, left_click at (3, 4)?"
+                "Allow shuttle to type \"a\" at (1, 2)?",
+                "Allow shuttle to run 2 actions: key \"ctrl+l\", left_click at (3, 4)?"
             ]
         );
         let yes = guarded(Confirm::Every, Some(asker(true, asked.clone())));
