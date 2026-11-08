@@ -28,7 +28,7 @@ type Kept = Reads & { id: string; snap: desk.Snap; nodes: Node[] }
 type Fp = { role: string; name: string; parent: string; nth: number; of?: number; label?: string }
 type Node = { ref: number; id: string; depth: number; role: string; name: string; value: string; disabled: boolean; parent: number; shortcut: string; checked: boolean; shown: boolean; focused: boolean; bounds?: [number, number, number, number] }
 type Hit = { n: Node; i: number; how: string; p?: number; margin?: number }
-type Flow = { name: string; params: Record<string, string>; steps: Step[]; idempotent: boolean; saved_at: string; usage?: desk.Usage }
+type Flow = { name: string; named?: boolean; params: Record<string, string>; steps: Step[]; idempotent: boolean; saved_at: string; usage?: desk.Usage }
 type Chain = { at: number; window: string | null; pid: number | null; name?: string; named?: boolean; params: Record<string, string>; steps: Step[]; dirty: boolean; saved?: boolean; escalated?: boolean; usage?: desk.Usage }
 type Params = { steps?: Step[]; flow?: string; params?: Record<string, string>; save?: string; start?: number; find?: string; reindex?: boolean; locate?: { target: string; press?: boolean } }
 type Rec = {
@@ -1552,11 +1552,17 @@ function bare(s: Step, p: Record<string, string>) { return JSON.stringify(Object
 function store(chain: Chain) {
   const tpl = templated(chain.steps, chain.params)
   const targets = chain.steps.filter((s) => s.menu || s.check || s.set || s.click || SHORTCUT_VERBS[s.key?.toLowerCase() ?? '']).slice(-2).map((s) => s.key ? SHORTCUT_VERBS[s.key.toLowerCase()] : (s.menu ?? s.check ?? s.set ?? s.click ?? '').split('>').at(-1))
-  const auto = slug([chain.steps[0]?.app, ...targets].filter((x): x is string => !!x).map((x) => x.split(' ').slice(0, 3).join(' ')).join(' ')) || undefined
+  const base = slug([chain.steps[0]?.app, ...targets].filter((x): x is string => !!x).map((x) => x.split(' ').slice(0, 3).join(' ')).join(' ')) || undefined
+  let auto = base
+  for (let n = 2; !chain.named && auto && auto !== chain.name && byName(auto); n++) auto = `${base}-${n}`
   if (!chain.named && auto && chain.name && auto !== chain.name) rmSync(`${FLOWS}/${chain.name}.json`, { force: true })
   if (!chain.named) chain.name = auto
-  if (chain.name) saveFlow({ name: chain.name, params: tpl.params, steps: tpl.steps, idempotent: idempotent(chain.steps), saved_at: new Date().toISOString(), usage: chain.usage ?? {} }, `saved from ${chain.steps.length} passing steps`)
+  if (chain.name) saveFlow({ name: chain.name, ...(chain.named ? { named: true } : {}), params: tpl.params, steps: tpl.steps, idempotent: idempotent(chain.steps), saved_at: new Date().toISOString(), usage: chain.usage ?? {} }, `saved from ${chain.steps.length} passing steps`)
   return chain.name
+}
+
+function byName(name: string) {
+  try { return (JSON.parse(readFileSync(`${FLOWS}/${name}.json`, 'utf8')) as Flow).named === true } catch { return false }
 }
 
 async function promote(name: string, params: Record<string, string> = {}, rerun = false) {
