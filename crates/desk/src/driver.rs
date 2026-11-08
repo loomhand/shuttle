@@ -105,6 +105,7 @@ impl Driver {
         if let Some(wait) = wait {
             tokio::time::sleep(wait).await;
         }
+        *last = Some((Instant::now(), x, y));
         let done = click.await;
         *last = Some((Instant::now(), x, y));
         done
@@ -742,6 +743,20 @@ mod tests {
         let started = Instant::now();
         d.spaced((300.0, 100.0), async {}).await;
         assert_eq!(started.elapsed(), Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_click_dropped_while_it_runs_still_spaces_the_next_near_one() {
+        let d = Driver::new(String::new());
+        let dropped = Duration::from_millis(100);
+        let _ = tokio::time::timeout(
+            dropped,
+            d.spaced((100.0, 100.0), std::future::pending::<()>()),
+        )
+        .await;
+        let started = Instant::now();
+        d.spaced((104.0, 100.0), async {}).await;
+        assert_eq!(started.elapsed(), CLICK_SPACING - dropped);
     }
 
     #[tokio::test(start_paused = true)]
