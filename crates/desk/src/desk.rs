@@ -95,6 +95,7 @@ const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
 const WINDOW_NEVER_READ: &str = "window_never_read";
 
 const COVERED: &str = "covers the point, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
+const COVERED_NO_CLICK: &str = "another app's window covers the point and this window takes no click of its own, so nothing was clicked: bring the window to the front, then click again";
 const COVER_UNKNOWN: &str = "the point could not be checked for another app's window on top, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
 const ANOTHER_SPACE: &str = "accessibility does not reach it there, so a snapshot or an element action needs it on the current Space; background key, type, click, scroll and drag reach it by its title or pid";
 const UNSEEN_SENT: &str = "the app may not repaint a window nobody sees, so the input may have taken effect even if a screenshot looks unchanged: do not send it again, and confirm its effect by a read-back you can trust or by asking the user";
@@ -1539,6 +1540,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             None => self.pixels(w).await?,
         };
         let Some(k) = k else {
+            if cover.is_some() {
+                return Err(COVERED_NO_CLICK.to_owned());
+            }
             return self.desktop_click(req).await.map(|()| None);
         };
         let mut win = req.clone();
@@ -1558,6 +1562,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         at(&mut win, k);
         let out = match self.call("click", win.clone()).await {
             Err(e) if e.contains(NO_WINDOWSERVER_CONNECTION) => {
+                if cover.is_some() {
+                    return Err(COVERED_NO_CLICK.to_owned());
+                }
                 return self.desktop_click(req).await.map(|()| None);
             }
             Err(e) if cached.is_some() && e.contains(WINDOW_NEVER_READ) => {
@@ -6109,6 +6116,48 @@ pub(crate) mod tests {
         assert!(
             (150..1000).contains(&short["ms"].as_u64().unwrap()),
             "{short}"
+        );
+    }
+
+    struct RefusingSheet(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for RefusingSheet {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            lock(&self.0).push((tool.to_owned(), args.clone()));
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
+                "list_windows" if args["pid"] == 12 => {
+                    json!({"structuredContent": {"windows": [{"pid": 12, "window_id": 9, "app_name": "Terminal"}]}})
+                }
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "app_name": "Notepad", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 800.0}}
+                ]}}),
+                "get_window_state" => json!({"structuredContent": {
+                    "screenshot_width": 800, "screenshot_height": 800,
+                    "window_bounds": {"width": 800.0, "height": 800.0},
+                    "background_input": {"routes": [{"route": "window_pointer", "status": "refused"}]}
+                }}),
+                _ => json!({}),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_named_window_click_under_another_apps_window_never_falls_back_to_the_desktop() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), RefusingSheet(Arc::clone(&calls)), Os::Mac)
+            .allow(&["notepad".into()]);
+        let out = desk
+            .run(
+                "desk_click",
+                json!({"x": 50.0, "y": 600.0, "window": "Untitled"}),
+            )
+            .await;
+        assert_eq!(out.unwrap_err(), COVERED_NO_CLICK);
+        assert!(
+            sent(&calls, "click").is_empty(),
+            "{:?}",
+            sent(&calls, "click")
         );
     }
 
