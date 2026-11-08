@@ -638,7 +638,12 @@ server.serve_forever()
         let echoed: Value =
             serde_json::from_str(out[1]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(echoed["args"], json!({"say": "hi"}));
-        assert_eq!(echoed["agent_id"], crate::NAME);
+        assert!(
+            echoed["agent_id"]
+                .as_str()
+                .is_some_and(|a| a.starts_with("mcp-")),
+            "{echoed}"
+        );
         assert_eq!(out[2]["error"]["message"], "unknown tool demo_hold");
         s.stop().await;
     }

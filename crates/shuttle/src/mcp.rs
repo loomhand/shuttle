@@ -1,7 +1,9 @@
 //! The MCP server: newline-delimited JSON-RPC 2.0 on stdio with the tools of `tools` and the resources of the script plugins; `http` answers the same messages over HTTP.
 
 use std::collections::VecDeque;
+use std::hash::{BuildHasher, RandomState};
 use std::pin::Pin;
+use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
@@ -14,6 +16,7 @@ const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
+const AGENT_PART: usize = 32;
 const INSTRUCTIONS: &str = "These tools act on the user's own desktop. GUI work in a desktop app goes to gui_plan, the whole plan in one call; a loop or logic a plan cannot hold goes to one script_run; one look or one click goes to desk or screenshot. To learn a task by watching the user, record_start, let them do it, then record_stop and run its draft with gui_plan.";
 
 pub(crate) type Message = Result<Map<String, Value>, String>;
@@ -31,6 +34,8 @@ where
     W: AsyncWrite + Unpin,
 {
     let mut lines = input.lines();
+    let nonce = format!("{:08x}", RandomState::new().hash_one(()) as u32);
+    let mut agent: Arc<str> = agent_id(&[&nonce]).into();
     let mut queued: VecDeque<Message> = VecDeque::new();
     let mut running: Option<(Option<String>, Answer<'_>)> = None;
     let mut open = true;
@@ -38,7 +43,15 @@ where
         if running.is_none()
             && let Some(msg) = queued.pop_front()
         {
-            running = Some((request_id(&msg), Box::pin(answer(msg, endpoint, plugins))));
+            if method(&msg) == Some("initialize") {
+                agent = agent_id(&[client(&msg), &nonce]).into();
+            }
+            let agent = Arc::clone(&agent);
+            let id = request_id(&msg);
+            running = Some((
+                id,
+                Box::pin(async move { answer(msg, &agent, endpoint, plugins).await }),
+            ));
         }
         tokio::select! {
             line = lines.next_line(), if open => match line.map_err(|e| format!("read stdin: {e}"))? {
@@ -69,6 +82,22 @@ where
     Ok(())
 }
 
+/// The `agent_id` the calls of one MCP session carry: `mcp`, then each non-empty part in letters, digits, `_` and `-`.
+pub(crate) fn agent_id(parts: &[&str]) -> String {
+    let mut id = "mcp".to_owned();
+    for part in parts.iter().filter(|p| !p.is_empty()) {
+        id.push('-');
+        id.extend(part.chars().take(AGENT_PART).map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        }));
+    }
+    id
+}
+
 pub(crate) fn parse(body: &[u8]) -> Message {
     serde_json::from_slice(body).map_err(|e| format!("parse: {e}"))
 }
@@ -93,8 +122,13 @@ pub(crate) fn cancelled(msg: &Message) -> Option<String> {
     msg.get("params")?.get("requestId").map(Value::to_string)
 }
 
-/// Answers `msg`; none for a notification.
-pub(crate) async fn answer(msg: Message, endpoint: &str, plugins: &Plugins) -> Option<Value> {
+/// Answers `msg` of the MCP session whose calls carry `agent`; none for a notification.
+pub(crate) async fn answer(
+    msg: Message,
+    agent: &str,
+    endpoint: &str,
+    plugins: &Plugins,
+) -> Option<Value> {
     let mut msg = match msg {
         Ok(m) => m,
         Err(e) => return Some(reply(Value::Null, Err((PARSE_ERROR, e)))),
@@ -115,13 +149,20 @@ pub(crate) async fn answer(msg: Message, endpoint: &str, plugins: &Plugins) -> O
                 .get_mut("arguments")
                 .map_or_else(|| json!({}), Value::take);
             let name = params["name"].as_str().unwrap_or_default();
-            tools::call(name, args, endpoint, plugins)
+            tools::call(name, args, agent, endpoint, plugins)
                 .await
                 .ok_or_else(|| (INVALID_PARAMS, format!("unknown tool {name}")))
         }
         _ => Err((METHOD_NOT_FOUND, format!("unknown method {method}"))),
     };
     Some(reply(id, result))
+}
+
+fn client(msg: &Message) -> &str {
+    msg.as_ref()
+        .ok()
+        .and_then(|m| m.get("params")?.get("clientInfo")?.get("name")?.as_str())
+        .unwrap_or_default()
 }
 
 async fn write<W: AsyncWrite + Unpin>(output: &mut W, reply: &Value) -> Result<(), String> {
@@ -194,9 +235,6 @@ fn reply(id: Value, result: Result<Value, (i64, String)>) -> Value {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
-    use std::sync::Arc;
-
     #[cfg(unix)]
     use desk_core::wire::{Call, Output};
     #[cfg(unix)]
@@ -428,6 +466,48 @@ mod tests {
         assert_eq!(without[2]["error"]["message"], "unknown tool demo_run");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn each_mcp_session_calls_the_daemon_as_its_own_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let daemon = daemon(Callers(Arc::clone(&seen)), &endpoint).await;
+        let open = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"clientInfo": {"name": "claude-code", "version": "2"}}});
+        let web = |id: i64, on: bool| json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": "desk", "arguments": {"verb": "web", "args": {"pid": 7, "on": on}}}});
+        session(&[open.clone(), web(2, true)], &endpoint).await;
+        session(&[open, web(2, true), web(3, false)], &endpoint).await;
+        daemon.abort();
+        let seen = seen.lock().unwrap().clone();
+        let agents: Vec<&str> = seen.iter().map(|(a, _)| a.as_str()).collect();
+        assert_eq!(agents.len(), 3, "{seen:?}");
+        assert!(
+            agents.iter().all(|a| a.starts_with("mcp-claude-code-")),
+            "{agents:?}"
+        );
+        assert_ne!(
+            agents[0], agents[1],
+            "two sessions of one client share an agent"
+        );
+        assert_eq!(agents[1], agents[2]);
+        assert_eq!(seen[2].1, json!({"pid": 7, "on": false}));
+    }
+
+    #[test]
+    fn an_agent_id_keeps_letters_digits_and_cuts_each_part() {
+        assert_eq!(agent_id(&[]), "mcp");
+        assert_eq!(agent_id(&["", "ab12"]), "mcp-ab12");
+        assert_eq!(
+            agent_id(&["My Client/1.0", "ab12"]),
+            "mcp-My-Client-1-0-ab12"
+        );
+        assert_eq!(agent_id(&["run-3", "x"]), "mcp-run-3-x");
+        assert_eq!(
+            agent_id(&[&"é".repeat(40)]),
+            format!("mcp-{}", "-".repeat(AGENT_PART))
+        );
+    }
+
     async fn session(lines: &[Value], endpoint: &str) -> Vec<Value> {
         session_with(lines, endpoint, &Plugins::default()).await
     }
@@ -479,6 +559,17 @@ mod tests {
         async fn answer(&self, _: Call) -> Output {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             Output::text("[]")
+        }
+    }
+
+    #[cfg(unix)]
+    struct Callers(Arc<std::sync::Mutex<Vec<(String, Value)>>>);
+
+    #[cfg(unix)]
+    impl Handler for Callers {
+        async fn answer(&self, call: Call) -> Output {
+            self.0.lock().unwrap().push((call.agent_id, call.args));
+            Output::text(r#"{"ok":true,"was":false}"#)
         }
     }
 

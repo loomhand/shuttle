@@ -136,6 +136,7 @@ impl Server {
             .and_then(|s| s.to_str().ok())
             .unwrap_or_default();
         let msg = mcp::parse(&body);
+        let agent = mcp::agent_id(&["http", session]);
         if let Some(id) = mcp::cancelled(&msg) {
             if let Some(call) = lock(&self.calls).remove(&(session.to_owned(), id)) {
                 call.notify_one();
@@ -147,11 +148,11 @@ impl Server {
             Some(id) => {
                 let call = Tracked::new(&self.calls, (session.to_owned(), id));
                 tokio::select! {
-                    reply = mcp::answer(msg, &self.endpoint, &self.plugins) => reply,
+                    reply = mcp::answer(msg, &agent, &self.endpoint, &self.plugins) => reply,
                     () = call.cancel.notified() => None,
                 }
             }
-            None => mcp::answer(msg, &self.endpoint, &self.plugins).await,
+            None => mcp::answer(msg, &agent, &self.endpoint, &self.plugins).await,
         };
         let Some(reply) = reply else {
             return status(StatusCode::ACCEPTED);
@@ -476,6 +477,41 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn the_calls_of_one_session_carry_one_agent_and_another_session_another() {
+        use shuttle_desk::server;
+
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        tokio::spawn(server::serve(
+            Arc::new(Callers(Arc::clone(&seen))),
+            server::bind(&endpoint).await.unwrap(),
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(Server::new(endpoint, Plugins::default(), TOKEN.to_owned()).run(listener));
+        let windows = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "desk", "arguments": {"verb": "windows"}}}).to_string();
+        for session in ["0123456789abcdef", "0123456789abcdef", "fedcba9876543210"] {
+            let raw = request(
+                "POST",
+                PATH,
+                &[BEARER, ("mcp-session-id", session)],
+                &windows,
+            );
+            assert_eq!(send(addr, raw.as_bytes()).await.0, 200);
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                "mcp-http-0123456789abcdef",
+                "mcp-http-0123456789abcdef",
+                "mcp-http-fedcba9876543210"
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_dropped_client_closes_its_daemon_connection() {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
@@ -560,6 +596,17 @@ mod tests {
             self.release.notified().await;
             gone.0 = None;
             desk_core::wire::Output::text(tag)
+        }
+    }
+
+    #[cfg(unix)]
+    struct Callers(Arc<std::sync::Mutex<Vec<String>>>);
+
+    #[cfg(unix)]
+    impl shuttle_desk::server::Handler for Callers {
+        async fn answer(&self, call: desk_core::wire::Call) -> desk_core::wire::Output {
+            self.0.lock().unwrap().push(call.agent_id);
+            desk_core::wire::Output::text("[]")
         }
     }
 

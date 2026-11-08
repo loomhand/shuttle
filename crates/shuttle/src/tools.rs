@@ -64,8 +64,14 @@ pub fn list(plugins: &Plugins) -> Value {
     listed
 }
 
-/// Answers a `tools/call` of `name` with `args`: an MCP tool result, or `None` for a tool that is neither built in nor one of `plugins`.
-pub async fn call(name: &str, args: Value, endpoint: &str, plugins: &Plugins) -> Option<Value> {
+/// Answers a `tools/call` of `name` with `args` for caller `agent`: an MCP tool result, or `None` for a tool that is neither built in nor one of `plugins`.
+pub async fn call(
+    name: &str,
+    args: Value,
+    agent: &str,
+    endpoint: &str,
+    plugins: &Plugins,
+) -> Option<Value> {
     if name == "status" {
         return Some(result(status().to_string(), false));
     }
@@ -81,7 +87,7 @@ pub async fn call(name: &str, args: Value, endpoint: &str, plugins: &Plugins) ->
         Err(e) => return Some(result(e, true)),
     };
     let call = Call {
-        agent_id: NAME.to_owned(),
+        agent_id: agent.to_owned(),
         tool,
         args,
     };
@@ -324,7 +330,7 @@ mod tests {
             json!({"name": "demo_echo", "description": "Echo.", "inputSchema": {"type": "object", "properties": {"say": {"type": "string"}}}})
         );
         assert!(
-            call("demo_stream", json!({}), "unused", &plugins)
+            call("demo_stream", json!({}), "mcp", "unused", &plugins)
                 .await
                 .is_none()
         );

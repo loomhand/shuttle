@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Each MCP session is its own caller** (#317). Every `shuttle mcp` session reached the daemon as the same agent, so two MCP clients shared one `web` hold, and one client turning a page tree off turned it off for the other; they also shared the default computer session and looked the same to service plugins. A session on stdio now calls as `mcp-<client name>-<nonce>` and one over HTTP as `mcp-http-<Mcp-Session-Id>`; the CLI and `gui_plan` and `script_run` runs keep their own ids.
+
 ## 0.1.42 - 2026-11-09
 
 - **The confirm dialog shows what it allows.** It printed an agent's action names as given, so a name could carry line breaks and words that read as reassurance; it said only how many characters a `type` would type; a click named no window although its point is then in that window's pixels; and a long `computer_act` list was cut off before the step that asked. A name that is not a plain word is now quoted and escaped, a `type` or key step shows its text as an escaped preview with its window, app or process first, a click or drag names its window and modifiers, and a list too long for the dialog says how many steps it leaves out. A password the agent types therefore shows in the dialog on your screen ([safety.md](docs/safety.md#confirm-mode)).
