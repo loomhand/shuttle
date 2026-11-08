@@ -51,9 +51,10 @@ pub(crate) fn app_key(app: &str) -> String {
 }
 
 pub(crate) fn app_of(frames: &[Frame], pid: Option<u32>) -> Option<&str> {
+    let pid = pid?;
     frames
         .iter()
-        .find(|f| pid.is_some() && f.pid == pid)
+        .find(|f| f.pid == Some(pid))
         .and_then(|f| f.app.as_deref())
 }
 

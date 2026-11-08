@@ -444,7 +444,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     }
                     (v, _) => v?,
                 };
-                let mut out = json!({"ok": true, "launched": text_of(&v)});
+                let mut out = json!({"ok": true});
+                out["launched"] = text_of(&v).into();
                 if self.os == Os::Mac {
                     out["background"] = true.into();
                 }
