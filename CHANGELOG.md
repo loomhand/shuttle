@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Linux: a `gui_plan` step after a GTK 4 action click waits for the focus to move** (#291). GTK 4 runs a button's accessibility action from a 250 ms timer, so a `type` or `key` step right after such a click, as after New tab in GNOME Text Editor, went to the element that still had the focus. Such a step now waits until that element loses the focus, at most 500 ms after the press; a click whose action moves no focus costs at most about 350 ms more, and a click not followed by `type` or `key` costs nothing.
 - **macOS: declining the confirm dialog gives the front back** (#297). After Cancel, Escape or a stop closed the dialog, no app was active, so keys typed next reached no window. The app that was in front before the dialog is active again; an allowed step still activates its own target.
 
 ## 0.1.41 - 2026-11-08
