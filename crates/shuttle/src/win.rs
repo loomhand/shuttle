@@ -26,7 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     MF_STRING, MSG, MessageBoxW, PostMessageW, RegisterClassW, RegisterWindowMessageW,
     SetForegroundWindow, SetTimer, TPM_NONOTIFY, TPM_RETURNCMD, TrackPopupMenu, TranslateMessage,
     WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_HOTKEY, WM_LBUTTONUP, WM_NULL,
-    WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
+    WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{BOOL, HSTRING, w};
 
@@ -243,8 +243,24 @@ fn ask(question: &str, tx: oneshot::Sender<bool>) {
     });
     let text = HSTRING::from(format!("{question}\n\nOK allows it; Cancel refuses."));
     let style = MB_OKCANCEL | MB_DEFBUTTON2 | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND;
-    // SAFETY: both strings outlive the call; the dialog has no owner window.
-    let answer = unsafe { MessageBoxW(None, &text, w!("Shuttle"), style) };
+    // SAFETY: the owner is a hidden window of this thread, which goes with the thread; both strings outlive the call.
+    let answer = unsafe {
+        let owner = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            w!("Static"),
+            None,
+            WS_POPUP,
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            None,
+            None,
+        );
+        MessageBoxW(owner.ok(), &text, w!("Shuttle"), style)
+    };
     if let Some(tx) = crate::lock(&call).take() {
         let _ = tx.send(answer == IDOK);
     }
@@ -275,4 +291,43 @@ extern "system" fn procedure(
     }
     // SAFETY: the arguments are the ones Windows passed to this window procedure.
     unsafe { DefWindowProcW(window, message, wparam, lparam) }
+}
+
+#[cfg(test)]
+mod tests {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, GW_OWNER, GWL_EXSTYLE, GetWindow, GetWindowLongW, IsWindow,
+    };
+
+    use super::*;
+
+    #[test]
+    fn the_confirm_box_is_topmost_under_a_topmost_owner_and_closes_when_its_call_ends() {
+        let topmost = |window| {
+            // SAFETY: `window` is a window handle; a stale one only reads as 0.
+            let style = unsafe { GetWindowLongW(window, GWL_EXSTYLE) };
+            style as u32 & WS_EX_TOPMOST.0 != 0
+        };
+        let find = || {
+            // SAFETY: both strings are static.
+            unsafe { FindWindowW(w!("#32770"), w!("Shuttle")) }.ok()
+        };
+        let rx = asker()("Allow the test?".into());
+        let mut dialog = None;
+        for _ in 0..100 {
+            dialog = find();
+            if dialog.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let dialog = dialog.expect("the confirm box opens");
+        // SAFETY: `dialog` is the window found above.
+        let owner = unsafe { GetWindow(dialog, GW_OWNER) }.expect("the box has an owner");
+        assert!(topmost(owner) && topmost(dialog));
+        drop(rx);
+        std::thread::sleep(POLL * 4);
+        // SAFETY: IsWindow takes any handle.
+        assert!(!unsafe { IsWindow(Some(dialog)) }.as_bool());
+    }
 }
