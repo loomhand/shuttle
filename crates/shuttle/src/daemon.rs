@@ -271,7 +271,10 @@ impl<H: Handler> Daemon<H> {
             Err(e) => return Output::error(e),
         };
         if let Some(ask) = asker {
-            if let Err(e) = self.confirmed(ask, question(&call)).await {
+            if let Err(e) = self
+                .confirmed(ask, question(&call, self.guard.background))
+                .await
+            {
                 return Output::error(e);
             }
             self.desk.allowed();
@@ -487,13 +490,14 @@ impl Drop for Acting<'_> {
     }
 }
 
-fn question(call: &Call) -> String {
+fn question(call: &Call, background: bool) -> String {
     let a = &call.args;
     let verb = call.tool.trim_start_matches("desk_");
-    let inside = a["window"]
-        .as_str()
-        .map(|w| format!(" in window {}", Value::from(w)))
-        .unwrap_or_default();
+    let inside = match a["window"].as_str() {
+        Some(w) => format!(" in window {}", Value::from(w)),
+        None if background => named(a).map(|n| format!(" in {n}")).unwrap_or_default(),
+        None => String::new(),
+    };
     let what = match verb {
         "click" => format!("click at ({}, {}){inside}{}", a["x"], a["y"], held(a)),
         "drag" => format!(
@@ -567,7 +571,7 @@ fn quoted(v: &Value, max: usize) -> String {
 fn steps(list: &[Value]) -> String {
     let mut out = format!("run {} actions:", list.len());
     for (i, a) in list.iter().enumerate() {
-        let s = step(a);
+        let s = visible(&step(a));
         let more = format!(" (+{} more)", list.len() - i);
         let room = if i + 1 < list.len() {
             more.chars().count()
@@ -825,7 +829,7 @@ mod tests {
 
     #[test]
     fn the_confirm_question_names_the_target_and_escapes_what_the_agent_sends() {
-        let q = |tool: &str, args: Value| question(&call(tool, args));
+        let q = |tool: &str, args: Value| question(&call(tool, args), false);
         assert_eq!(
             q("desk_type", json!({"text": "pay\n10", "window": "Bank"})),
             "Allow shuttle to type into window \"Bank\": \"pay\\n10\"?"
@@ -848,6 +852,28 @@ mod tests {
             ),
             "Allow shuttle to click at (10, 20)?"
         );
+        assert_eq!(
+            question(
+                &call("desk_click", json!({"x": 10, "y": 20, "app": "Bank"})),
+                true
+            ),
+            "Allow shuttle to click at (10, 20) in app \"Bank\"?"
+        );
+        assert_eq!(
+            question(
+                &call(
+                    "desk_drag",
+                    json!({"x": 1, "y": 2, "to_x": 3, "to_y": 4, "pid": 7})
+                ),
+                true
+            ),
+            "Allow shuttle to drag from (1, 2) to (3, 4) in process 7?"
+        );
+        let mut separated =
+            vec![json!({"action": "type", "text": "\u{2028}\u{2028}\u{2028}\u{2028}"}); 12];
+        separated.push(json!({"action": "left_click", "x": 3, "y": 4}));
+        let kept = q("desk_computer_act", json!({"actions": separated}));
+        assert!(kept.ends_with(" more)?"), "{kept}");
         assert_eq!(
             q("desk_type", json!({"text": "x", "app": "Bank"})),
             "Allow shuttle to type into app \"Bank\": \"x\"?"
