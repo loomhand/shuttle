@@ -69,7 +69,7 @@ impl Security {
         Ok(Self {
             descriptor,
             attributes: SECURITY_ATTRIBUTES {
-                nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).unwrap_or(u32::MAX),
+                nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
                 lpSecurityDescriptor: descriptor.0,
                 bInheritHandle: false.into(),
             },
