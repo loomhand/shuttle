@@ -216,7 +216,7 @@ impl Driver {
             self.start(kind).await?;
         }
         match self.send(tool, &args).await {
-            Err(e) if e.contains(ENDED) => {
+            Err(e) if e.starts_with(&format!("{tool}: {ENDED}")) => {
                 self.start(kind).await?;
                 self.send(tool, &args).await
             }
@@ -535,6 +535,40 @@ mod tests {
                 "press_key"
             ]
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_tool_error_that_only_mentions_an_ended_session_is_not_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let ok = b"{\"ok\":true,\"result\":{}}\n";
+        let failed = b"{\"ok\":true,\"result\":{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":\"no button named 'session has ended'\"}]}}\n";
+        let daemon = tokio::spawn(async move {
+            let mut lines = Vec::new();
+            while let Ok(Ok((s, _))) =
+                tokio::time::timeout(Duration::from_secs(1), listener.accept()).await
+            {
+                let mut s = BufReader::new(s);
+                let mut line = String::new();
+                s.read_line(&mut line).await.unwrap();
+                let line = serde_json::from_str::<Value>(&line).unwrap();
+                let reply: &[u8] = if line["name"] == "start_session" {
+                    ok
+                } else {
+                    failed
+                };
+                s.get_mut().write_all(reply).await.unwrap();
+                lines.push(line["name"].as_str().unwrap().to_owned());
+            }
+            lines
+        });
+        let d = Driver::new(socket.to_string_lossy().into_owned());
+        let err = d.call("press_key", json!({"key": "a"})).await.unwrap_err();
+        assert_eq!(err, "press_key: no button named 'session has ended'");
+        drop(d);
+        assert_eq!(daemon.await.unwrap(), ["start_session", "press_key"]);
     }
 
     #[cfg(target_os = "macos")]
