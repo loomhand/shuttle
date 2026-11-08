@@ -165,7 +165,12 @@ impl<H: Handler> Daemon<H> {
         self
     }
 
-    async fn record_call(&self, tool: &str, mut args: Value) -> Result<String, String> {
+    async fn record_call(
+        &self,
+        agent: &str,
+        tool: &str,
+        mut args: Value,
+    ) -> Result<String, String> {
         let r = &self.recorder;
         match tool {
             "record_start" => {
@@ -173,9 +178,14 @@ impl<H: Handler> Daemon<H> {
                     let Some(ask) = &self.guard.asker else {
                         return Err(NO_ASK.to_owned());
                     };
-                    self.confirmed(ask, format!("Allow {NAME} to record your input?"))
-                        .await
-                        .map_err(str::to_owned)?;
+                    let _turn = self.held_turn(agent).await.map_err(str::to_owned)?;
+                    let mut halted = self.halted.subscribe();
+                    tokio::select! {
+                        asked = self.confirmed(ask, format!("Allow {NAME} to record your input?")) => {
+                            asked.map_err(str::to_owned)?;
+                        }
+                        _ = halted.wait_for(|h| *h) => return Err(STOPPED.to_owned()),
+                    }
                     if *self.halted.borrow() {
                         return Err(STOPPED.to_owned());
                     }
@@ -256,13 +266,9 @@ impl<H: Handler> Daemon<H> {
         };
         self.actions.fetch_add(1, Ordering::Relaxed);
         let _acting = Acting(&self.actions);
-        let _turn = if lock(&self.running).as_deref() == Some(call.agent_id.as_str()) {
-            None
-        } else {
-            let Ok(turn) = tokio::time::timeout(self.wait, self.turn.lock()).await else {
-                return Output::error(BUSY);
-            };
-            Some(turn)
+        let _turn = match self.held_turn(&call.agent_id).await {
+            Ok(turn) => turn,
+            Err(e) => return Output::error(e),
         };
         if let Some(ask) = asker {
             if let Err(e) = self.confirmed(ask, question(&call)).await {
@@ -274,6 +280,19 @@ impl<H: Handler> Daemon<H> {
             return Output::error(STOPPED);
         }
         self.desk.answer(call).await
+    }
+
+    async fn held_turn(
+        &self,
+        agent: &str,
+    ) -> Result<Option<tokio::sync::MutexGuard<'_, ()>>, &'static str> {
+        if lock(&self.running).as_deref() == Some(agent) {
+            return Ok(None);
+        }
+        tokio::time::timeout(self.wait, self.turn.lock())
+            .await
+            .map(Some)
+            .map_err(|_| BUSY)
     }
 
     async fn confirmed(&self, ask: &Asker, question: String) -> Result<(), &'static str> {
@@ -344,7 +363,7 @@ impl<H: Handler> Handler for Daemon<H> {
         let tool = call.tool.as_str();
         if matches!(tool, "record_start" | "record_note" | "record_stop") {
             return self
-                .record_call(tool, call.args)
+                .record_call(&call.agent_id, tool, call.args)
                 .await
                 .map_or_else(Output::error, Output::text);
         }
@@ -1084,6 +1103,64 @@ mod tests {
         assert_eq!(
             *asked.lock().unwrap(),
             ["Allow shuttle to record your input?"]
+        );
+    }
+
+    #[tokio::test]
+    async fn record_start_asks_only_once_it_holds_the_desk() {
+        let (asker, pending) = held();
+        let mut d = daemon(
+            Echo,
+            Guard {
+                confirm: Confirm::Coordinate,
+                asker: Some(asker),
+                ..Guard::default()
+            },
+        )
+        .with_recordings(std::env::temp_dir());
+        d.wait = Duration::from_millis(100);
+        let held = d.turn.lock().await;
+        let out = tokio::time::timeout(
+            Duration::from_secs(2),
+            d.answer(call("record_start", json!({}))),
+        )
+        .await
+        .expect("record_start waited on a question it opened before its turn");
+        drop(held);
+        assert_eq!(out.text, BUSY);
+        assert!(pending.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_stop_closes_an_open_record_start_question() {
+        let (asker, pending) = held();
+        let d = daemon(
+            Echo,
+            Guard {
+                confirm: Confirm::Coordinate,
+                asker: Some(asker),
+                ..Guard::default()
+            },
+        )
+        .with_recordings(std::env::temp_dir());
+        let (out, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(d.answer(call("record_start", json!({}))), async {
+                while pending.lock().unwrap().is_none() {
+                    tokio::task::yield_now().await;
+                }
+                d.answer(call("safety_stop", json!({}))).await;
+            })
+        })
+        .await
+        .expect("a stop ends the open question");
+        assert_eq!(out.text, STOPPED);
+        assert!(pending.lock().unwrap().as_ref().unwrap().is_closed());
+        assert!(!d.recording());
+        d.answer(call("safety_resume", json!({}))).await;
+        assert!(
+            !d.answer(call("desk_key", json!({"keys": "a"})))
+                .await
+                .is_error
         );
     }
 
