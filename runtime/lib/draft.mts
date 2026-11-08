@@ -168,6 +168,6 @@ async function caption(crop: string, scale: number, [dx, dy]: [number, number], 
     const img = unpng(Buffer.from(crop, 'base64'))
     const marked = ring(img, Math.round(img.w / 2 + dx * scale), Math.round(img.h / 2 + dy * scale), Math.round(RING_PT * scale))
     const kind = role && role !== 'generic' && role !== 'document' ? ` The accessibility tree calls it a ${role} with no name.` : ''
-    return (await desk.ask(`${CAPTION}${kind}`, marked)).trim().replace(/[."]+$/g, '').replace(/^"/, '')
+    return ((await desk.ask(`${CAPTION}${kind}`, marked)).trim().split('\n')[0] ?? '').slice(0, 80).trim().replace(/[."]+$/g, '').replace(/^"/, '')
   } catch { return '' }
 }
