@@ -14,15 +14,15 @@ use windows::Win32::Security::{
     SECURITY_DESCRIPTOR_RELATIVE, SECURITY_MAX_SID_SIZE, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER,
     TokenUser,
 };
-use windows::Win32::System::Pipes::{GetNamedPipeServerProcessId, ImpersonateNamedPipeClient};
+use windows::Win32::System::Pipes::ImpersonateNamedPipeClient;
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, GetCurrentThread, OpenProcess, OpenProcessToken, OpenThreadToken,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcess, GetCurrentThread, OpenProcessToken, OpenThreadToken,
 };
 use windows::core::{BOOL, HSTRING, PWSTR};
 
 use crate::server::pipe_sddl;
 
+const ADMINISTRATORS: &str = "S-1-5-32-544";
 const OWNER_WORDS: usize = (size_of::<SECURITY_DESCRIPTOR_RELATIVE>()
     + SECURITY_MAX_SID_SIZE as usize)
     .div_ceil(size_of::<u64>());
@@ -69,7 +69,7 @@ impl Security {
         Ok(Self {
             descriptor,
             attributes: SECURITY_ATTRIBUTES {
-                nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).unwrap_or(u32::MAX),
+                nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
                 lpSecurityDescriptor: descriptor.0,
                 bInheritHandle: false.into(),
             },
@@ -98,7 +98,7 @@ pub fn check_server(pipe: HANDLE, owner: Option<&str>) -> Result<(), String> {
         None => own_sid()?,
     };
     let found = owner_of(pipe)?;
-    if found == owner || server_user(pipe).is_some_and(|user| user == owner) {
+    if admits(&found, owner, own_sid()?) {
         Ok(())
     } else {
         Err(format!("the pipe belongs to {found}, not to {owner}"))
@@ -157,6 +157,10 @@ pub fn sid_of(account: &str) -> Result<String, String> {
     sid_string(PSID(sid.as_mut_ptr().cast()), false)
 }
 
+fn admits(found: &str, owner: &str, own: &str) -> bool {
+    found == owner || (found == ADMINISTRATORS && owner == own)
+}
+
 fn owner_of(pipe: HANDLE) -> Result<String, String> {
     let mut buf = [0u64; OWNER_WORDS];
     let descriptor = PSECURITY_DESCRIPTOR(buf.as_mut_ptr().cast());
@@ -177,18 +181,6 @@ fn owner_of(pipe: HANDLE) -> Result<String, String> {
     unsafe { GetSecurityDescriptorOwner(descriptor, &raw mut sid, &raw mut defaulted) }
         .map_err(|e| format!("read the pipe's owner: {e}"))?;
     sid_string(sid, false)
-}
-
-fn server_user(pipe: HANDLE) -> Option<String> {
-    let mut pid = 0;
-    // SAFETY: `pipe` is a live client handle of a connected pipe; `pid` receives the server's id.
-    unsafe { GetNamedPipeServerProcessId(pipe, &raw mut pid) }.ok()?;
-    // SAFETY: OpenProcess takes plain values; the handle is closed below.
-    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
-    let user = user_of(process).ok();
-    // SAFETY: `process` is the handle opened above, closed once.
-    let _ = unsafe { CloseHandle(process) };
-    user
 }
 
 fn client_user(pipe: HANDLE) -> Result<String, String> {
@@ -314,6 +306,16 @@ mod tests {
             check_server(pipe, Some("S-1-5-18")).unwrap_err(),
             format!("the pipe belongs to {me}, not to S-1-5-18")
         );
+    }
+
+    #[test]
+    fn an_administrators_pipe_passes_only_for_this_users_own_endpoint() {
+        let me = "S-1-5-21-1-2-3-1001";
+        assert!(admits(me, me, me));
+        assert!(admits(ADMINISTRATORS, me, me));
+        assert!(!admits(ADMINISTRATORS, "S-1-5-18", me));
+        assert!(!admits("S-1-5-21-1-2-3-1002", me, me));
+        assert!(admits("S-1-5-18", "S-1-5-18", me));
     }
 
     async fn open(case: &str, sddl: &str) -> std::io::Result<()> {

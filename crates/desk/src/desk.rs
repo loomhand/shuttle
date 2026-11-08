@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -30,7 +30,7 @@ use crate::lock;
 use crate::model::{Access, Act, Capture, Extras, Frame, Node};
 use crate::press::{Press, plan_press};
 use crate::still::{Frame as StillFrame, Watch};
-use crate::worker::Worker;
+use crate::worker::{Cancel, Worker};
 
 pub const TURN_WAIT: Duration = Duration::from_secs(15);
 /// The verbs a vision agent drives the screen with, which the Linux X11, macOS and Windows desks answer.
@@ -95,6 +95,9 @@ const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
 const WINDOW_NEVER_READ: &str = "window_never_read";
 
 const COVERED: &str = "covers the point, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
+const LAUNCH_FLAGS: &str = "the app allowlist admits no launch argument that starts with - (or / on Windows), since a flag can make an allowed app start another program";
+const COVERED_NO_CLICK: &str = "another app's window covers the point and this window takes no click of its own, so nothing was clicked: bring the window to the front, then click again";
+const COVER_UNCHECKED_NO_CLICK: &str = "the point could not be checked for another app's window and this window takes no click of its own, so nothing was clicked: bring the window to the front, then click again";
 const COVER_UNKNOWN: &str = "the point could not be checked for another app's window on top, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
 const ANOTHER_SPACE: &str = "accessibility does not reach it there, so a snapshot or an element action needs it on the current Space; background key, type, click, scroll and drag reach it by its title or pid";
 const UNSEEN_SENT: &str = "the app may not repaint a window nobody sees, so the input may have taken effect even if a screenshot looks unchanged: do not send it again, and confirm its effect by a read-back you can trust or by asking the user";
@@ -442,7 +445,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     }
                     (v, _) => v?,
                 };
-                let mut out = json!({"ok": true, "launched": text_of(&v)});
+                let mut out = json!({"ok": true});
+                out["launched"] = text_of(&v).into();
                 if self.os == Os::Mac {
                     out["background"] = true.into();
                 }
@@ -593,12 +597,20 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     #[cfg(test)]
     fn now(&self) -> Instant {
-        Instant::now() + Duration::from_millis(self.skew.load(Ordering::Relaxed))
+        Instant::now() + Duration::from_millis(self.skew.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     async fn admit(&self, tool: &str, args: &Value) -> Result<(), String> {
         let id = match tool {
-            "desk_launch" => return self.allow.check(args["app"].as_str()),
+            "desk_launch" => {
+                let flagged = args["args"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|s| s.as_str().is_some_and(|s| self.flag(s))));
+                if flagged {
+                    return Err(LAUNCH_FLAGS.to_owned());
+                }
+                return self.allow.check(args["app"].as_str());
+            }
             "desk_read" | "desk_press" | "desk_act" => {
                 Some(args["id"].as_str().ok_or("no element id")?.to_owned())
             }
@@ -1539,7 +1551,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             None => self.pixels(w).await?,
         };
         let Some(k) = k else {
-            return self.desktop_click(req).await.map(|()| None);
+            return self.uncovered_click(cover.as_deref(), req).await;
         };
         let mut win = req.clone();
         win["session"] = WINDOW_SESSION.into();
@@ -1558,7 +1570,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         at(&mut win, k);
         let out = match self.call("click", win.clone()).await {
             Err(e) if e.contains(NO_WINDOWSERVER_CONNECTION) => {
-                return self.desktop_click(req).await.map(|()| None);
+                return self.uncovered_click(cover.as_deref(), req).await;
             }
             Err(e) if cached.is_some() && e.contains(WINDOW_NEVER_READ) => {
                 match self.pixels(w).await? {
@@ -1566,7 +1578,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         at(&mut win, k);
                         self.call("click", win).await?
                     }
-                    None => return self.desktop_click(req).await.map(|()| None),
+                    None => return self.uncovered_click(cover.as_deref(), req).await,
                 }
             }
             done => done?,
@@ -1583,6 +1595,22 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             });
         }
         Ok(self.unverified(&out, Some((w.pid, w.id)), false))
+    }
+
+    fn flag(&self, arg: &str) -> bool {
+        arg.starts_with('-') || (self.os == Os::Windows && arg.starts_with('/'))
+    }
+
+    async fn uncovered_click(
+        &self,
+        cover: Option<&str>,
+        req: Value,
+    ) -> Result<Option<String>, String> {
+        match cover {
+            Some(COVER_UNKNOWN) => Err(COVER_UNCHECKED_NO_CLICK.to_owned()),
+            Some(_) => Err(COVERED_NO_CLICK.to_owned()),
+            None => self.desktop_click(req).await.map(|()| None),
+        }
     }
 
     /// Why the point of `req` takes no foreground click into process `pid`: another app's window is on top there.
@@ -2025,7 +2053,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             a.h.unwrap_or(f64::MAX / 4.0),
         ];
         if let Some(window) = a.window.as_deref() {
-            return self.window_shot(window, a.pid, rect, a.path).await;
+            return self.window_shot(window, a.pid, rect).await;
         }
         let (grab, shown) = if self.allow.is_open() {
             (self.grab(rect).await?, None)
@@ -2037,7 +2065,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             Grab::Read(c) => {
                 let mask = self.mask(shown, 1.0).await?;
                 let png = rgb_png(c.rgb, c.rect, mask.as_deref())?;
-                delivered(png, sized(c.rect[2], c.rect[3]), a.path).await
+                Ok(delivered(png, sized(c.rect[2], c.rect[3])))
             }
             Grab::Driver(png, factor) => {
                 let mask = self.mask(shown, factor).await?;
@@ -2048,7 +2076,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         e
                     }
                 })?;
-                self.shot_out(png, sized(w, h), a.path).await
+                Ok(delivered(png, sized(w, h)))
             }
         }
     }
@@ -2088,29 +2116,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Err(WINDOWS_MOVING.to_owned())
     }
 
-    async fn shot_out(
-        &self,
-        png: Vec<u8>,
-        out: Value,
-        path: Option<String>,
-    ) -> Result<Output, String> {
-        if self.os == Os::Linux {
-            return delivered(png, out, path).await;
-        }
-        Ok(Output {
-            text: out.to_string(),
-            image_b64: Some(B64.encode(&png)),
-            ..Output::default()
-        })
-    }
-
     /// The image of the window titled `window`, as the driver captures that window alone, cropped to `rect` in its pixels.
     async fn window_shot(
         &self,
         window: &str,
         pid: Option<u32>,
         rect: [f64; 4],
-        path: Option<String>,
     ) -> Result<Output, String> {
         let (_, w, _) = self.pick_window(Some(window), pid, true).await?;
         let key = window_key(&w)?;
@@ -2148,7 +2159,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             out["stale"] = true.into();
             out["note"] = note.into();
         }
-        self.shot_out(png, out, path).await
+        Ok(delivered(png, out))
     }
 
     async fn mask(
@@ -2177,15 +2188,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 (bounds(&w), self.allow.admits(app_of(&frames, pid)))
             })
             .collect())
-    }
-}
-
-/// Sets its flag when dropped, as when a stop drops the call that holds it.
-struct Cancel(Arc<AtomicBool>);
-
-impl Drop for Cancel {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::Relaxed);
     }
 }
 
@@ -2479,18 +2481,12 @@ fn live(frame: Frame) -> Result<Frame, String> {
     Ok(frame)
 }
 
-async fn delivered(png: Vec<u8>, mut out: Value, path: Option<String>) -> Result<Output, String> {
-    if let Some(path) = path {
-        tokio::fs::write(&path, &png)
-            .await
-            .map_err(|e| format!("write {path}: {e}"))?;
-        out["path"] = path.into();
-    }
-    Ok(Output {
+fn delivered(png: Vec<u8>, out: Value) -> Output {
+    Output {
         text: out.to_string(),
         image_b64: Some(B64.encode(&png)),
         ..Output::default()
-    })
+    }
 }
 
 fn sized(w: u32, h: u32) -> Value {
@@ -2649,6 +2645,7 @@ fn outline(nodes: &[Node], max_chars: usize) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::sync::atomic::Ordering;
     use std::sync::{Mutex, OnceLock};
 
     use super::*;
@@ -3827,6 +3824,39 @@ pub(crate) mod tests {
         ] {
             assert!(!names_app(app, name), "{app} {name:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn an_allowlist_refuses_launch_flags_and_keeps_plain_arguments() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Linux)
+            .allow(&["Google Chrome".into()]);
+        let err = desk
+            .run(
+                "desk_launch",
+                json!({"app": "Google Chrome", "args": ["--gpu-launcher=/bin/sh"]}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err, LAUNCH_FLAGS);
+        assert!(sent(&calls, "launch_app").is_empty());
+        desk.run(
+            "desk_launch",
+            json!({"app": "Google Chrome", "args": ["https://example.com/"]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sent(&calls, "launch_app").len(), 1);
+        let windows = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Windows)
+            .allow(&["Google Chrome".into()]);
+        let err = windows
+            .run(
+                "desk_launch",
+                json!({"app": "Google Chrome", "args": ["/gpu-launcher=cmd"]}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err, LAUNCH_FLAGS);
     }
 
     #[tokio::test]
@@ -5518,12 +5548,8 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_linux_shot_from_the_driver_answers_the_image_and_writes_its_path() {
+    async fn a_linux_shot_from_the_driver_answers_the_image_and_writes_no_file() {
         let desk = Desk::new(|| Ok(Apps), Desktop(Arc::default()), Os::Linux);
-        let shot = desk.run("desk_shot", json!({})).await.unwrap();
-        let text: Value = serde_json::from_str(&shot.text).unwrap();
-        assert_eq!(text, json!({"ok": true, "width": 10, "height": 10}));
-        assert!(shot.image_b64.is_some());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shot.png");
         let shot = desk
@@ -5531,12 +5557,9 @@ pub(crate) mod tests {
             .await
             .unwrap();
         let text: Value = serde_json::from_str(&shot.text).unwrap();
-        assert_eq!(text["path"].as_str(), Some(&*path.to_string_lossy()));
-        assert!(text.get("png_b64").is_none(), "{text}");
-        assert_eq!(
-            B64.encode(std::fs::read(&path).unwrap()),
-            shot.image_b64.unwrap()
-        );
+        assert_eq!(text, json!({"ok": true, "width": 10, "height": 10}));
+        assert!(shot.image_b64.is_some());
+        assert!(!path.exists());
     }
 
     #[tokio::test]
@@ -6117,6 +6140,48 @@ pub(crate) mod tests {
         assert!(
             (150..1000).contains(&short["ms"].as_u64().unwrap()),
             "{short}"
+        );
+    }
+
+    struct RefusingSheet(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for RefusingSheet {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            lock(&self.0).push((tool.to_owned(), args.clone()));
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
+                "list_windows" if args["pid"] == 12 => {
+                    json!({"structuredContent": {"windows": [{"pid": 12, "window_id": 9, "app_name": "Terminal"}]}})
+                }
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "app_name": "Notepad", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 800.0}}
+                ]}}),
+                "get_window_state" => json!({"structuredContent": {
+                    "screenshot_width": 800, "screenshot_height": 800,
+                    "window_bounds": {"width": 800.0, "height": 800.0},
+                    "background_input": {"routes": [{"route": "window_pointer", "status": "refused"}]}
+                }}),
+                _ => json!({}),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_named_window_click_under_another_apps_window_never_falls_back_to_the_desktop() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), RefusingSheet(Arc::clone(&calls)), Os::Mac)
+            .allow(&["notepad".into()]);
+        let out = desk
+            .run(
+                "desk_click",
+                json!({"x": 50.0, "y": 600.0, "window": "Untitled"}),
+            )
+            .await;
+        assert_eq!(out.unwrap_err(), COVERED_NO_CLICK);
+        assert!(
+            sent(&calls, "click").is_empty(),
+            "{:?}",
+            sent(&calls, "click")
         );
     }
 

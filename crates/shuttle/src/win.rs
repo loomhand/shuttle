@@ -22,15 +22,17 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
     EnumThreadWindows, GetCursorPos, GetMessageW, IDI_APPLICATION, IDI_ERROR, IDI_INFORMATION,
-    IDOK, LoadIconW, MB_DEFBUTTON2, MB_ICONQUESTION, MB_OKCANCEL, MB_SETFOREGROUND, MB_TOPMOST,
-    MF_STRING, MSG, MessageBoxW, PostMessageW, RegisterClassW, RegisterWindowMessageW,
-    SetForegroundWindow, SetTimer, TPM_NONOTIFY, TPM_RETURNCMD, TrackPopupMenu, TranslateMessage,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_HOTKEY, WM_LBUTTONUP, WM_NULL,
-    WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    IDOK, LoadIconW, MB_DEFBUTTON2, MB_ICONQUESTION, MB_ICONWARNING, MB_OK, MB_OKCANCEL,
+    MB_SETFOREGROUND, MB_TOPMOST, MF_STRING, MSG, MessageBoxW, PostMessageW, RegisterClassW,
+    RegisterWindowMessageW, SetForegroundWindow, SetTimer, TPM_NONOTIFY, TPM_RETURNCMD,
+    TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_HOTKEY,
+    WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP,
 };
 use windows::core::{BOOL, HSTRING, w};
 
 use crate::daemon::{Asker, Controls, Ui};
+use crate::hotkey::UNREGISTERED;
 use crate::log;
 
 const POLL: Duration = Duration::from_millis(250);
@@ -44,7 +46,7 @@ static TRAY: AtomicIsize = AtomicIsize::new(0);
 
 struct Shown {
     controls: Arc<dyn Controls>,
-    stop_label: String,
+    stop_label: Mutex<String>,
     title: Mutex<&'static str>,
 }
 
@@ -80,7 +82,7 @@ impl Shown {
     }
 
     fn menu(&self, window: HWND) {
-        let stop = HSTRING::from(self.stop_label.as_str());
+        let stop = HSTRING::from(crate::lock(&self.stop_label).as_str());
         // SAFETY: the menu is created, shown and destroyed on this thread; both labels outlive it.
         let picked = unsafe {
             let Ok(menu) = CreatePopupMenu() else {
@@ -116,7 +118,7 @@ impl Shown {
 pub fn run(ui: Ui) -> ! {
     let shown = SHOWN.get_or_init(|| Shown {
         controls: ui.controls,
-        stop_label: ui.stop_label,
+        stop_label: Mutex::new(ui.stop_label),
         title: Mutex::new(""),
     });
     // SAFETY: the window class and window live until the process exits; `procedure` reads only `SHOWN`, set above.
@@ -163,6 +165,18 @@ pub fn run(ui: Ui) -> ! {
             log(format_args!(
                 "the kill hotkey did not register: {e}; shuttle stop still works"
             ));
+            *crate::lock(&shown.stop_label) = "Stop".to_owned();
+            std::thread::spawn(|| {
+                // SAFETY: both strings are static and the box has no owner window.
+                unsafe {
+                    MessageBoxW(
+                        None,
+                        &HSTRING::from(UNREGISTERED),
+                        w!("Shuttle"),
+                        MB_OK | MB_ICONWARNING,
+                    )
+                };
+            });
         }
     }
     if ui.indicator {

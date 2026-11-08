@@ -8,4 +8,5 @@ public class MotionEvent extends InputEvent {
         throw new RuntimeException();
     }
     public void setSource(int source) { throw new RuntimeException(); }
+    public final void recycle() { throw new RuntimeException(); }
 }

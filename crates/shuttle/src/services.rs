@@ -205,7 +205,6 @@ where
     Ok(())
 }
 
-// the service gets TERM first, so it can close the apps it started
 async fn terminate(running: &mut Running) {
     #[cfg(unix)]
     if let Some(pid) = running.child.id() {

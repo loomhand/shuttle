@@ -1,0 +1,6 @@
+[advisories]
+ignore = [
+    { id = "RUSTSEC-2026-0370", reason = "zvariant comes with zbus 5, which shuttle-desk uses for D-Bus; zbus 6 folds it in, and no zbus 5 release drops it" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names comes with zbus 5, which shuttle-desk uses for D-Bus; zbus 6 folds it in, and no zbus 5 release drops it" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive comes with zbus 5, which shuttle-desk uses for D-Bus; zbus 6 folds it in, and no zbus 5 release drops it" },
+]

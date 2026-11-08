@@ -79,3 +79,17 @@ test('an expect the tree does not meet is checked on a screenshot, which fails i
   assert.equal(passed.ok, true, JSON.stringify(passed))
   assert.deepEqual(['desk_shot', 'model_ask'].map((c) => calls.filter((x) => x === c).length), [2, 2])
 })
+
+test('a screenshot check whose answer is no true or false fails the expect', async (t) => {
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root] })
+    if (tool === 'model_decide') return JSON.stringify({ answers: { ok: { probability: 0.2 } }, served: { model: 'm', build: null, id: null }, usage })
+    if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(800, 600).toString('base64') }
+    if (tool === 'model_ask') return JSON.stringify({ text: '{"ok": "false", "why": "no text is bold"}', usage })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ expect: 'the text is bold' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /no true or false/)
+})

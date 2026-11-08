@@ -53,7 +53,7 @@ pub struct Grabber {
     resized: AtomicBool,
 }
 
-// SAFETY: the segment is private to this Grabber, and a slice of it lives only while `&mut self` is borrowed.
+// SAFETY: the segment is private to this Grabber, and each `image(&self)` slice is dropped before the next request on its connection.
 unsafe impl Send for Grabber {}
 
 impl Grabber {

@@ -91,14 +91,6 @@ static HANG: Mutex<Hang> = Mutex::new(Hang {
 });
 static CGS: OnceLock<Option<Cgs>> = OnceLock::new();
 
-/// Per pid: when it was marked hung, when its reads turned slow, its last frames and when it was first listed; kept across backend restarts.
-struct Hang {
-    hung: BTreeMap<i32, Instant>,
-    slow: BTreeMap<i32, Instant>,
-    last: BTreeMap<i32, Vec<Frame>>,
-    listed_at: BTreeMap<i32, Instant>,
-}
-
 /// The AX backend: element ids are `pid/n`, `n` unique in this process, kept while this backend lives.
 pub struct Ax {
     names: CFArray<CFString>,
@@ -564,13 +556,7 @@ impl Access for Ax {
             })
             .and_then(|f| f.pid);
         Ok(pid
-            .and_then(|p| exe_path(i32::try_from(p).ok()?))
-            .and_then(|exe| {
-                let bundle = exe
-                    .ancestors()
-                    .find(|a| a.extension().is_some_and(|e| e == "app"))?;
-                Some(bundle.file_stem()?.to_string_lossy().into_owned())
-            })
+            .and_then(|p| bundle_stem(i32::try_from(p).ok()?))
             .filter(|name| !name.eq_ignore_ascii_case(app)))
     }
 
@@ -723,6 +709,14 @@ pub struct Focused {
     pub window: String,
     pub secure: bool,
     pub page: Option<Page>,
+}
+
+/// Per pid: when it was marked hung, when its reads turned slow, its last frames and when it was first listed; kept across backend restarts.
+struct Hang {
+    hung: BTreeMap<i32, Instant>,
+    slow: BTreeMap<i32, Instant>,
+    last: BTreeMap<i32, Vec<Frame>>,
+    listed_at: BTreeMap<i32, Instant>,
 }
 
 struct Walk {
@@ -988,6 +982,14 @@ pub fn display_scale() -> f64 {
         CGDisplayModeRelease(mode);
         if pt == 0 { 1.0 } else { px as f64 / pt as f64 }
     }
+}
+
+pub fn bundle_stem(pid: i32) -> Option<String> {
+    let exe = exe_path(pid)?;
+    let bundle = exe
+        .ancestors()
+        .find(|a| a.extension().is_some_and(|e| e == "app"))?;
+    Some(bundle.file_stem()?.to_string_lossy().into_owned())
 }
 
 /// Whether process `pid` is a Chromium or Electron app, whose bundle holds a framework with helper apps.

@@ -184,3 +184,28 @@ test('find names the saved flow the model picks, and no flow under 0.6 or within
     assert.deepEqual({ ok: r.ok, flow: r.flow, p: r.p }, want, JSON.stringify(given))
   }
 })
+
+test('an unnamed chain never overwrites a flow saved by name under its slug, and auto saves still replace each other', async (t) => {
+  await daemon(t, answer(() => [notepad]))
+  const named = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+b' }, { type: 'quarterly report' }], save: 'notepad' })
+  assert.equal(named.saved, 'notepad', JSON.stringify(named))
+  const before = readFileSync(`${process.env.SHUTTLE_FLOWS}/notepad.json`, 'utf8')
+  const later = await main({ steps: [{ app: 'Notepad' }, { type: 'scratch' }] })
+  assert.equal(later.saved, 'notepad-2', JSON.stringify(later))
+  assert.equal(readFileSync(`${process.env.SHUTTLE_FLOWS}/notepad.json`, 'utf8'), before)
+  const again = await main({ steps: [{ app: 'Notepad' }, { type: 'draft' }] })
+  assert.equal(again.saved, 'notepad-2', JSON.stringify(again))
+  assert.equal(flow('notepad-2').params.text, 'draft')
+})
+
+test('a suffixed auto name stays within the slug length, so it never names the flow it stepped around', async (t) => {
+  const app = 'Supercalifragilisticexpialidocious Notebook Editor'
+  const long = { id: '1', title: `a.txt - ${app}`, role: 'window', pid: process.pid, active: true }
+  await daemon(t, answer(() => [long]))
+  const named = await main({ steps: [{ app }, { type: 'quarterly report' }], save: app })
+  const before = readFileSync(`${process.env.SHUTTLE_FLOWS}/${named.saved}.json`, 'utf8')
+  const later = await main({ steps: [{ app }, { type: 'scratch' }] })
+  assert.ok(typeof later.saved === 'string' && later.saved.length <= 40 && later.saved !== named.saved, JSON.stringify(later))
+  assert.equal(readFileSync(`${process.env.SHUTTLE_FLOWS}/${named.saved}.json`, 'utf8'), before)
+  assert.equal(flow(later.saved).params.text, 'scratch')
+})

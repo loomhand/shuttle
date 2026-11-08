@@ -191,3 +191,21 @@ test('a background note left open before a later step took the foreground still 
   assert.match(String(r.escalate?.reason), /not confirmed.*posted ctrl\+b/)
   assert.deepEqual(r.unverified, [{ step: 1, note: 'unverifiable: posted ctrl+b' }])
 })
+
+test('a password auto cannot see in its field is never typed again in the foreground', async (t) => {
+  const calls: Call[] = []
+  const field = { ref: 1, id: 'p', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'focused', 'protected'] }
+  await daemon(t, (c) => {
+    calls.push(c)
+    if (c.tool === 'desk_windows') return JSON.stringify([user(), notepad()])
+    if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes: [{ ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: notepad().title, states: [] }, field], truncated: false })
+    if (c.tool === 'desk_read') return JSON.stringify({ ...field, value: '' })
+    if (c.tool === 'desk_type') return JSON.stringify({ ok: true, chars: 7, unverified: NOTE })
+    return '{"ok":true}'
+  })
+  const r = await auto({ steps: [{ app: 'Notepad' }, { type: '{{password}}', focus: { secure: true } }], params: { password: 'hunter2' } })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(String(r.escalate?.reason), /^the password did not show/)
+  assert.ok(!calls.some((c) => c.tool === 'desk_focus'))
+  assert.equal(calls.filter((c) => c.tool === 'desk_type').length, 1)
+})

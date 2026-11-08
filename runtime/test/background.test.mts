@@ -416,3 +416,25 @@ test('an expect the tree does not meet fails a background plan without a look at
   assert.match(String(r.escalate?.reason), /^expectation not met in the window's tree: the text is bold; background gui_plan does not read the screen/)
   for (const tool of ['desk_shot', 'model_ask', 'desk_focus']) assert.ok(!d.calls.some((c) => c.tool === tool), tool)
 })
+
+test('a background wait whose text several windows contain takes none of them', async (t) => {
+  const one = { id: '2', title: 'Report 1 - Viewer', role: 'window', pid: 7, active: false }
+  const two = { id: '3', title: 'Report 2 - Viewer', role: 'window', pid: 7, active: false }
+  const d = desktop([user(), one, two])
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ wait: 'Viewer', timeout_ms: 400 }, { type: 'x' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.step, 0)
+  assert.match(String(r.escalate?.reason), /2 windows match "Viewer"/)
+  assert.ok(!d.calls.some((c) => c.tool === 'desk_type'))
+})
+
+test('a background wait takes the one window whose title is exactly the text over others that contain it', async (t) => {
+  const one = { id: '2', title: 'Viewer', role: 'window', pid: 7, active: false }
+  const two = { id: '3', title: 'Report 2 - Viewer', role: 'window', pid: 7, active: false }
+  const d = desktop([user(), two, one])
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ wait: 'Viewer', timeout_ms: 400 }, { type: 'x' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'x', window: 'Viewer', pid: 7 }])
+})

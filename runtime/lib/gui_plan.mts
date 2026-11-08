@@ -28,7 +28,7 @@ type Kept = Reads & { id: string; snap: desk.Snap; nodes: Node[] }
 type Fp = { role: string; name: string; parent: string; nth: number; of?: number; label?: string }
 type Node = { ref: number; id: string; depth: number; role: string; name: string; value: string; disabled: boolean; parent: number; shortcut: string; checked: boolean; shown: boolean; focused: boolean; bounds?: [number, number, number, number] }
 type Hit = { n: Node; i: number; how: string; p?: number; margin?: number }
-type Flow = { name: string; params: Record<string, string>; steps: Step[]; idempotent: boolean; saved_at: string; usage?: desk.Usage }
+type Flow = { name: string; named?: boolean; params: Record<string, string>; steps: Step[]; idempotent: boolean; saved_at: string; usage?: desk.Usage }
 type Chain = { at: number; window: string | null; pid: number | null; name?: string; named?: boolean; params: Record<string, string>; steps: Step[]; dirty: boolean; saved?: boolean; escalated?: boolean; usage?: desk.Usage }
 type Params = { steps?: Step[]; flow?: string; params?: Record<string, string>; save?: string; start?: number; find?: string; reindex?: boolean; locate?: { target: string; press?: boolean } }
 type Rec = {
@@ -94,7 +94,7 @@ const INERT_KEY = /^shift\+[^+]$/i
 const ARROW_KEY = /^(shift\+)?(arrow)?(up|down|left|right)$/i
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
 const FILLER = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'and', 'or', 'by', 'from', 'into', 'this', 'that', 'its', 'it', 'is', 'button', 'link', 'tab', 'field', 'box', 'icon', 'toggle', 'dropdown', 'input', 'control', 'item', 'entry'])
-const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close']
+const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close'] as const
 const PINNED = ['menu', 'click', 'check', 'set', 'verify', 'wait', 'window'] as const
 const TEXT_CUT = '\n(the outline shows only the start of the window: desk snapshot or find reads the rest)'
 const TREE_CUT = '\n(this accessibility read stopped before the end of the window: the elements past the cut are missing here; narrowing the view, e.g. by scrolling or opening a pane, brings them in)'
@@ -157,7 +157,7 @@ async function perform(p: Params): Promise<Result> {
     }
   }
   const trace: Trace[] = []; const log: Record<string, unknown>[] = []
-  const bad = plan.findIndex((s) => OPS.filter((k) => k in s).length !== 1)
+  const bad = plan.findIndex((s) => ops(s).length !== 1)
   if (bad >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: bad, plan_step: plan[bad] && unrecorded(plan[bad]), reason: `step ${bad} needs exactly one op of ${OPS.join(', ')}; nothing ran` } }
   const unfilled = (s: Step) => Object.values(s).flatMap((v) => typeof v === 'string' ? [...v.matchAll(/\{\{(\w+)(?::base)?\}\}/g)].map((x) => x[1] ?? '') : []).find((n) => params[n] === undefined)
   const gap = plan.findIndex((s, i) => i >= (p.start ?? 0) && unfilled(s))
@@ -181,7 +181,7 @@ async function perform(p: Params): Promise<Result> {
   left()
   for (const [i, planned] of plan.entries()) {
     if (i < (p.start ?? 0)) continue
-    const s = fill(planned, params); T = {}; const rec: Rec = { i, op: OPS.find((k) => k in s) }
+    const s = fill(planned, params); T = {}; const rec: Rec = { i, op: ops(s)[0] }
     const ts = Date.now(); const calls = desk.served.length
     try {
       let ws = i === (p.start ?? 0) ? ws0 : await desk.windows(); let f = BG ? frontOf(ws) : desk.front(ws)
@@ -310,6 +310,8 @@ async function perform(p: Params): Promise<Result> {
 
 function unrecorded({ recorded: _, fp: __, blank: ___, ...s }: Step): Bare { return s }
 
+function ops(s: Step) { return OPS.filter((k) => k === 'type' ? s.type !== undefined : !!s[k]) }
+
 function stopped(plan: Step[], e: Escalation) {
   const step = e.step ?? 0
   const remaining = plan.slice(step).map(unrecorded)
@@ -385,12 +387,6 @@ function targetIn(ws: Win[]): Win | null {
   if (!live) doubt = `the plan's window "${t.title}" is gone, and background gui_plan never takes another window of that title for it`
   const mine = new Set(live ? [live.id] : [])
   const owned: Win[] = []
-  for (let grew = true; grew;) {
-    grew = false
-    for (const x of ws) if (!mine.has(x.id) && belongs(x) && (!!x.title.trim() || x.role !== 'window')) { mine.add(x.id); owned.push(x); grew = true }
-  }
-  const leaves = owned.filter((x) => !owned.some((y) => y.owner === x.id))
-  return leaves.find((x) => x.active) ?? leaves.at(-1) ?? live
   // on macOS the one new ownerless dialog of the target's app belongs to the target
   function belongs(x: Win) {
     if (x.owner !== undefined) return mine.has(x.owner)
@@ -401,6 +397,12 @@ function targetIn(ws: Win[]): Win | null {
     if (fresh[0]?.id !== x.id) return false
     adopted.add(x.id); return true
   }
+  for (let grew = true; grew;) {
+    grew = false
+    for (const x of ws) if (!mine.has(x.id) && belongs(x) && (!!x.title.trim() || x.role !== 'window')) { mine.add(x.id); owned.push(x); grew = true }
+  }
+  const leaves = owned.filter((x) => !owned.some((y) => y.owner === x.id))
+  return leaves.find((x) => x.active) ?? leaves.at(-1) ?? live
 }
 function ours(x: Win, ws: Win[]) {
   for (let y: Win | undefined = x, k = 0; y && k < ws.length; y = ws.find((z) => z.id === y?.owner), k++) if ((y.id === target?.id && y.pid === target.pid) || adopted.has(y.id)) return true
@@ -537,11 +539,13 @@ async function decide(state: unknown, q: Record<string, desk.Question>) {
   try { return await desk.decide(state, q) } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
 
-async function vision(prompt: string, shot: Buffer): Promise<Vision> {
+async function vision(prompt: string, shot: Buffer, field: 'ok' | 'on'): Promise<Vision> {
   const t0 = Date.now()
   try {
     const a = await desk.ask(`${prompt}\nAnswer with one JSON object and nothing else.`, [shot])
-    return JSON.parse(a.slice(a.indexOf('{'), a.lastIndexOf('}') + 1)) as Vision
+    const v = JSON.parse(a.slice(a.indexOf('{'), a.lastIndexOf('}') + 1)) as Vision
+    if (typeof v[field] !== 'boolean') throw new Error(`the screen check answered no true or false for "${field}"`)
+    return v
   } finally { tick('vision', t0) }
 }
 
@@ -617,10 +621,11 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string): Pro
     const ws = await desk.windows(); const w = frontOf(ws)
     if (w && awaited(w.title, want, saw)) return found(w, t0)
     if (BG) {
-      const named = (x: Win) => awaited(x.title, want, saw)
       const t = target
-      const bg = ws.find((x) => named(x) && x.pid === t?.pid) ?? ws.find(named)
-      if (bg) { follow(bg, ws); return found(bg, t0) }
+      const hits = ws.filter((x) => awaited(x.title, want, saw)); const own = hits.filter((x) => x.pid === t?.pid)
+      const pool = own.length ? own : hits; const exact = pool.filter((x) => norm(x.title) === norm(want))
+      const [bg, other] = exact.length ? exact : pool; many = exact.length || pool.length
+      if (bg && !other) { follow(bg, ws); return found(bg, t0) }
     } else if ((!w || known.has(w.title)) && Date.now() - t0 > 150) {
       const hits = ws.filter((x) => norm(x.title).includes(norm(want)) && (!!w || x.role !== 'alert'))
       const [bg, other] = hits; many = hits.length
@@ -971,7 +976,7 @@ async function choose(nodes: Node[], n: Node, rec: { via?: string }, open = fals
     const mods = n.shortcut.split('+').slice(0, -1)
     if (OS !== 'darwin' && n.shortcut && (mods.some((x) => x !== 'shift') || /^f\d+$/.test(n.shortcut))) {
       if (open) for (const _ of menus(nodes, n.parent)) await desk.key('Escape', at(w))
-      try { const k = await desk.key(n.shortcut, at(w)); if (BG && k.unverified) unheard ??= k.unverified; rec.via = 'shortcut'; return } catch (e: unknown) { if (e instanceof Error && e.message.includes('input_delivery_stalled:')) throw e }
+      try { const k = await desk.key(n.shortcut, at(w)); if (BG && k.unverified) unheard ??= k.unverified; rec.via = 'shortcut'; return } catch (e: unknown) { if (e instanceof Error && (e.message.includes('input_delivery_stalled:') || e.message.startsWith('declined by the user'))) throw e }
     }
     rec.via = await act(n)
   } finally { tick('act', t0) }
@@ -1008,6 +1013,7 @@ async function submit(w: Win, chooser = false) {
   const [title, pid] = [w.title, w.pid]
   let ws = await desk.windows()
   for (let i = 0; i < 3 && titledIn(ws, title, pid); i++) {
+    if (i && frontOf(ws)?.id !== w.id) break
     await desk.key('Return', at(w))
     ws = await until((ws) => !titledIn(ws, title, pid), 600)
   }
@@ -1133,7 +1139,7 @@ async function cropState(n: Node, unsent = true) {
   const b = (await desk.read(n.id)).bounds ?? n.bounds
   if (!b) throw new Error(`"${n.name}" has no screen position`)
   const shot = await desk.shot({ x: Math.max(0, b[0] - 40), y: Math.max(0, b[1] - 4), w: b[2] + 80, h: b[3] + 8 })
-  return (await vision(`This is one control of a desktop app: "${n.name}". Is it switched on (a check mark, tick, filled box or pressed state)? {"on": true or false}`, shot)).on === true
+  return (await vision(`This is one control of a desktop app: "${n.name}". Is it switched on (a check mark, tick, filled box or pressed state)? {"on": true or false}`, shot, 'on')).on === true
 }
 
 async function run(s: Step, rec: Rec, kept?: Kept) {
@@ -1188,7 +1194,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     tick('act', t0)
     if (BG && rec.unverified && w && !sub) {
       const now = await texts(w)
-      if (AUTO && !shows(was, now, s.type) && unchanged(was, now) && !taken(await desk.windows())) {
+      if (AUTO && !secure(s) && !shows(was, now, s.type) && unchanged(was, now) && !taken(await desk.windows())) {
         await desk.focus(w.title, w.pid)
         await desk.typeText(s.type, FG)
         rec.how = 'foreground'; rec.unverified = undefined; fronted = true; BG = false
@@ -1263,7 +1269,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (prob(d.ok) >= 0.5) return
     if (BG && !AUTO) throw new Surprise(`expectation not met in the window's tree: ${s.expect}; ${NO_PIXELS}`, await seen())
     if (BG) await front(w)
-    const v = await vision(`You check the state of a computer screen.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot()); rec.verdict = v
+    const v = await vision(`You check the state of a computer screen.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot(), 'ok'); rec.verdict = v
     if (!v.ok) throw new Surprise(`expectation not met: ${s.expect} (${v.why})`, await seen())
     return
   }
@@ -1507,7 +1513,7 @@ function sealed(c: Chain, plan: Step[]): Chain {
 function git(...args: string[]) {
   gitWorks ??= OS !== 'darwin' || developerTools()
   if (!gitWorks) return
-  try { execFileSync('git', ['-C', FLOWS, ...args], { stdio: 'ignore', timeout: 5000 }) } catch {}
+  try { execFileSync('git', ['-c', 'commit.gpgsign=false', '-C', FLOWS, ...args], { stdio: 'ignore', timeout: 5000 }) } catch {}
 }
 
 function developerTools() {
@@ -1546,11 +1552,17 @@ function bare(s: Step, p: Record<string, string>) { return JSON.stringify(Object
 function store(chain: Chain) {
   const tpl = templated(chain.steps, chain.params)
   const targets = chain.steps.filter((s) => s.menu || s.check || s.set || s.click || SHORTCUT_VERBS[s.key?.toLowerCase() ?? '']).slice(-2).map((s) => s.key ? SHORTCUT_VERBS[s.key.toLowerCase()] : (s.menu ?? s.check ?? s.set ?? s.click ?? '').split('>').at(-1))
-  const auto = slug([chain.steps[0]?.app, ...targets].filter((x): x is string => !!x).map((x) => x.split(' ').slice(0, 3).join(' ')).join(' ')) || undefined
+  const base = slug([chain.steps[0]?.app, ...targets].filter((x): x is string => !!x).map((x) => x.split(' ').slice(0, 3).join(' ')).join(' ')) || undefined
+  let auto = base
+  for (let n = 2; !chain.named && base && auto && auto !== chain.name && byName(auto); n++) auto = slug(`${base.slice(0, 39 - String(n).length)}-${n}`)
   if (!chain.named && auto && chain.name && auto !== chain.name) rmSync(`${FLOWS}/${chain.name}.json`, { force: true })
   if (!chain.named) chain.name = auto
-  if (chain.name) saveFlow({ name: chain.name, params: tpl.params, steps: tpl.steps, idempotent: idempotent(chain.steps), saved_at: new Date().toISOString(), usage: chain.usage ?? {} }, `saved from ${chain.steps.length} passing steps`)
+  if (chain.name) saveFlow({ name: chain.name, ...(chain.named ? { named: true } : {}), params: tpl.params, steps: tpl.steps, idempotent: idempotent(chain.steps), saved_at: new Date().toISOString(), usage: chain.usage ?? {} }, `saved from ${chain.steps.length} passing steps`)
   return chain.name
+}
+
+function byName(name: string) {
+  try { return (JSON.parse(readFileSync(`${FLOWS}/${name}.json`, 'utf8')) as Flow).named === true } catch { return false }
 }
 
 async function promote(name: string, params: Record<string, string> = {}, rerun = false) {

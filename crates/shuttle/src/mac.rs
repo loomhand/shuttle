@@ -21,7 +21,7 @@ use objc2_foundation::{
 use tokio::sync::oneshot;
 
 use crate::daemon::{Asker, Controls, Ui};
-use crate::hotkey::Hotkey;
+use crate::hotkey::{Hotkey, UNREGISTERED};
 use crate::log;
 
 const POLL_S: f64 = 0.25;
@@ -169,12 +169,20 @@ pub fn run(ui: Ui) -> ! {
     let mtm = MainThreadMarker::new().expect("the macOS controls run on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-    if let Some(hotkey) = ui.hotkey {
-        register(hotkey, Arc::clone(&ui.controls));
-    }
+    let missed = ui
+        .hotkey
+        .is_some_and(|hotkey| !register(hotkey, Arc::clone(&ui.controls)));
+    let stop = if missed {
+        "Stop".to_owned()
+    } else {
+        ui.stop_label
+    };
     let _indicator = ui
         .indicator
-        .then(|| indicator(mtm, &ui.controls, &ui.stop_label, ui.about));
+        .then(|| indicator(mtm, &ui.controls, &stop, ui.about));
+    if missed {
+        tell(mtm, UNREGISTERED);
+    }
     app.run();
     std::process::exit(0)
 }
@@ -212,7 +220,7 @@ fn ask(mtm: MainThreadMarker, question: &str, tx: oneshot::Sender<bool>) {
     };
     let allowed = alert.runModal() == NSAlertSecondButtonReturn;
     timer.invalidate();
-    if !allowed && let Some(front) = front {
+    if let Some(front) = front {
         front.activateWithOptions(NSApplicationActivationOptions::empty());
     }
     if let Some(tx) = watch.ivars().take() {
@@ -315,7 +323,7 @@ extern "C" fn pressed(_: *mut c_void, _: *mut c_void, user: *mut c_void) -> i32 
     0
 }
 
-fn register(hotkey: Hotkey, controls: Arc<dyn Controls>) {
+fn register(hotkey: Hotkey, controls: Arc<dyn Controls>) -> bool {
     let user = Box::into_raw(Box::new((controls, hotkey.code))).cast::<c_void>();
     let spec = EventTypeSpec {
         class: KEYBOARD_CLASS,
@@ -345,7 +353,9 @@ fn register(hotkey: Hotkey, controls: Arc<dyn Controls>) {
         log(format_args!(
             "the kill hotkey did not register (handler {installed}, hotkey {registered}); shuttle stop still works"
         ));
+        return false;
     }
+    true
 }
 
 #[link(name = "Carbon", kind = "framework")]

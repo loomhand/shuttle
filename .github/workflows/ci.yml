@@ -21,11 +21,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-24.04, macos-26, macos-15-intel, windows-2025]
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x64
+            bin: bin
+          - runner: ubuntu-24.04-arm
+            platform: linux-arm64
+            bin: bin
+          - runner: macos-26
+            platform: macos-arm64
+            bin: bin
+          - runner: macos-15-intel
+            platform: macos-x64
+            bin: bin
+          - runner: windows-2025
+            platform: windows-x64
+            bin: .
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
+
+      - name: Node from packaging/pins
+        shell: bash
+        run: |
+          dir=$(packaging/fetch.sh ${{ matrix.platform }} node "$RUNNER_TEMP")
+          echo "$dir/${{ matrix.bin }}" >> "$GITHUB_PATH"
 
       - name: Toolchain
         shell: bash
@@ -41,6 +62,10 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+      - name: Test the cgroup timeout as root
+        if: runner.os == 'Linux'
+        run: sudo -E env "PATH=$PATH" cargo test -p shuttle --locked -- --ignored a_timeout_spares
+
       - name: No Visual C++ runtime imports
         if: runner.os == 'Windows'
         run: |
@@ -55,6 +80,26 @@ jobs:
           name: shuttle-windows-x64
           path: target/release/shuttle.exe
           retention-days: 7
+
+  advisories:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
+
+      - name: cargo-deny
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/cargo-deny.tar.gz" https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+          echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  $RUNNER_TEMP/cargo-deny.tar.gz" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/cargo-deny"
+          tar -xzf "$RUNNER_TEMP/cargo-deny.tar.gz" -C "$RUNNER_TEMP/cargo-deny" --strip-components=1
+          echo "$RUNNER_TEMP/cargo-deny" >> "$GITHUB_PATH"
+
+      - name: Advisories
+        run: cargo deny --locked check advisories
 
   android-ui:
     runs-on: ubuntu-24.04

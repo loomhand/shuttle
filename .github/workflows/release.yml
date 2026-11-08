@@ -200,6 +200,8 @@ jobs:
           - runner: macos-26
           - runner: macos-15-intel
           - runner: windows-2025
+          - runner: windows-2025
+            powershell: true
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
     steps:
@@ -212,8 +214,16 @@ jobs:
         run: curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/install.sh" | SHUTTLE_VERSION="$GITHUB_REF_NAME" sh
 
       - name: Install (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && !matrix.powershell
         shell: pwsh
+        run: |
+          $env:SHUTTLE_VERSION = $env:GITHUB_REF_NAME
+          irm "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME/install.ps1" | iex
+          "$env:LOCALAPPDATA\Programs\loomhand\shuttle" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Install (Windows PowerShell 5.1)
+        if: matrix.powershell
+        shell: powershell
         run: |
           $env:SHUTTLE_VERSION = $env:GITHUB_REF_NAME
           irm "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME/install.ps1" | iex
@@ -225,6 +235,23 @@ jobs:
           [ "$RUNNER_OS" = Windows ] || export PATH="$HOME/.local/bin:$PATH"
           printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"status","arguments":{}}}' | shuttle mcp | tee status.json
           grep -F "\\\"version\\\":\\\"${GITHUB_REF_NAME#v}\\\"" status.json
+
+      - name: Bundled Node runs the runtime
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+          Linux) node=$HOME/.local/lib/loomhand/shuttle/node runtime=$HOME/.local/lib/loomhand/shuttle/runtime ;;
+          macOS) node=$HOME/Applications/Loomhand/Shuttle.app/Contents/MacOS/node runtime=$HOME/Applications/Loomhand/Shuttle.app/Contents/Resources/runtime ;;
+          Windows) node=$LOCALAPPDATA/Programs/loomhand/shuttle/node.exe runtime=$LOCALAPPDATA/Programs/loomhand/shuttle/runtime ;;
+          esac
+          "$node" --version
+          run=$RUNNER_TEMP/run
+          mkdir "$run"
+          echo '{"n":41}' > "$run/params.json"
+          echo 'export const main = ({ n }) => ({ n: n + 1, desk: typeof desk.windows })' > "$run/script.mjs"
+          SHUTTLE_SCRIPT="$run/script.mjs" SHUTTLE_RUN="$run" "$node" "$runtime/entry.mjs"
+          cat "$run/result.json"
+          grep -qF '{"n":42,"desk":"function"}' "$run/result.json"
 
   promote:
     needs: install

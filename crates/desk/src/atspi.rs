@@ -548,7 +548,8 @@ impl Atspi {
                 let sorted = sorted.into_iter().map(|(_, c)| c);
                 let mut list: Vec<Rc<Obj>> = match listed.remove(&o) {
                     Some(mut list) => {
-                        let extra: Vec<Rc<Obj>> = sorted.filter(|c| !list.contains(c)).collect();
+                        let have: HashSet<&Rc<Obj>> = list.iter().collect();
+                        let extra: Vec<Rc<Obj>> = sorted.filter(|c| !have.contains(c)).collect();
                         list.extend(extra);
                         list
                     }
@@ -595,7 +596,9 @@ impl Atspi {
         let (value, bounds, keys, url) = tokio::join!(
             async {
                 if extras.values {
-                    self.value(&obj, r.role, r.ifaces, chars).await
+                    self.value(&obj, r.role, r.ifaces, chars)
+                        .await
+                        .filter(|v| !v.is_empty())
                 } else {
                     None
                 }
@@ -675,7 +678,7 @@ impl Atspi {
                 .ok()
                 .map(format_number);
         }
-        Some(String::new())
+        None
     }
 
     /// The screen rectangle of `obj` as `[x, y, width, height]`.
@@ -1007,7 +1010,8 @@ impl Atspi {
         if !is_hung(bus) {
             return false;
         }
-        if let Ok(conn) = self.connection().await {
+        let cached = self.conn.lock().await.clone();
+        if let Some(conn) = cached {
             let root = bus.to_owned();
             release_on_answer(&self.probing, bus, async move {
                 let asked =
@@ -1023,22 +1027,27 @@ impl Atspi {
         if let Some(conn) = slot.as_ref() {
             return Ok(conn.clone());
         }
-        let session = Connection::session()
+        let connect = async {
+            let session = Connection::session()
+                .await
+                .map_err(|e| format!("connect the session bus: {e}"))?;
+            let reply = session
+                .call_method(Some(BUS_NAME), BUS_PATH, Some(BUS_NAME), "GetAddress", &())
+                .await
+                .map_err(|e| format!("org.a11y.Bus.GetAddress: {e}"))?;
+            let address: String = reply
+                .body()
+                .deserialize()
+                .map_err(|e| format!("org.a11y.Bus.GetAddress: {e}"))?;
+            zbus::connection::Builder::address(address.as_str())
+                .map_err(|e| format!("accessibility bus address {address}: {e}"))?
+                .build()
+                .await
+                .map_err(|e| format!("connect the accessibility bus: {e}"))
+        };
+        let conn = tokio::time::timeout(CALL_TIMEOUT, connect)
             .await
-            .map_err(|e| format!("connect the session bus: {e}"))?;
-        let reply = session
-            .call_method(Some(BUS_NAME), BUS_PATH, Some(BUS_NAME), "GetAddress", &())
-            .await
-            .map_err(|e| format!("org.a11y.Bus.GetAddress: {e}"))?;
-        let address: String = reply
-            .body()
-            .deserialize()
-            .map_err(|e| format!("org.a11y.Bus.GetAddress: {e}"))?;
-        let conn = zbus::connection::Builder::address(address.as_str())
-            .map_err(|e| format!("accessibility bus address {address}: {e}"))?
-            .build()
-            .await
-            .map_err(|e| format!("connect the accessibility bus: {e}"))?;
+            .map_err(|_| "connect the accessibility bus: timed out".to_owned())??;
         if new_bus(&mut lock(&BUS), conn.server_guid().as_str()) {
             forget_apps();
         }

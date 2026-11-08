@@ -358,12 +358,6 @@ impl Android {
         self.input(&argv).await
     }
 
-    async fn input(&self, args: &[&str]) -> Result<(), String> {
-        let mut argv = vec!["shell", "input"];
-        argv.extend_from_slice(args);
-        self.adb(&argv).await.map(drop)
-    }
-
     pub(crate) async fn swipe(
         &self,
         from: (i32, i32),
@@ -438,6 +432,24 @@ impl Android {
         Ok(typed)
     }
 
+    /// The screen size `wm size` reports in the device's natural rotation, read once per device.
+    pub(crate) async fn natural(&self) -> Result<(i32, i32), String> {
+        self.natural
+            .get_or_try_init(|| async {
+                let out = self.adb(&["shell", "wm", "size"]).await?;
+                let out = String::from_utf8_lossy(&out);
+                wm_size(&out).ok_or_else(|| format!("wm size said {:?}", out.trim()))
+            })
+            .await
+            .copied()
+    }
+
+    async fn input(&self, args: &[&str]) -> Result<(), String> {
+        let mut argv = vec!["shell", "input"];
+        argv.extend_from_slice(args);
+        self.adb(&argv).await.map(drop)
+    }
+
     /// Pastes `text` through the clipboard, which takes any Unicode; false when the device refused the paste key.
     async fn paste(&self, text: &str) -> Result<bool, String> {
         {
@@ -453,18 +465,6 @@ impl Android {
             Ok(answer) => answer.map(|a| a.trim() == "true"),
             Err(_) => Err(unhandled_paste(&self.focused_window().await)),
         }
-    }
-
-    /// The screen size `wm size` reports in the device's natural rotation, read once per device.
-    pub(crate) async fn natural(&self) -> Result<(i32, i32), String> {
-        self.natural
-            .get_or_try_init(|| async {
-                let out = self.adb(&["shell", "wm", "size"]).await?;
-                let out = String::from_utf8_lossy(&out);
-                wm_size(&out).ok_or_else(|| format!("wm size said {:?}", out.trim()))
-            })
-            .await
-            .copied()
     }
 
     async fn adb(&self, args: &[&str]) -> Result<Vec<u8>, String> {

@@ -194,7 +194,12 @@ public final class Ui {
         float x = Float.parseFloat(xy[0]);
         float y = Float.parseFloat(xy[1]);
         long now = SystemClock.uptimeMillis();
-        return press(touch(now, MotionEvent.ACTION_DOWN, x, y, 1.0f), touch(now, MotionEvent.ACTION_UP, x, y, 0.0f));
+        MotionEvent down = touch(now, MotionEvent.ACTION_DOWN, x, y, 1.0f);
+        MotionEvent up = touch(now, MotionEvent.ACTION_UP, x, y, 0.0f);
+        String pressed = press(down, up);
+        down.recycle();
+        up.recycle();
+        return pressed;
     }
 
     private static MotionEvent touch(long now, int action, float x, float y, float pressure) {

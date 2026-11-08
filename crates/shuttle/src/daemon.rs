@@ -36,6 +36,8 @@ const PLAN_BACKGROUND: &str = "background gui_plan is not measured on Linux: set
 const NO_ASK: &str = "confirm needs the menu-bar controls, which this OS does not have yet: set confirm = \"off\" under [safety] in config.toml";
 const CONFIRM_OPEN: &str = "a confirm dialog is open: answer it first";
 const QUESTION_CHARS: usize = 200;
+const PREVIEW_CHARS: usize = 120;
+const STEP_CHARS: usize = 40;
 const COMPUTER_ACT: &str = "desk_computer_act";
 const POINTER_ACTIONS: [&str; 10] = [
     "tap",
@@ -163,10 +165,33 @@ impl<H: Handler> Daemon<H> {
         self
     }
 
-    async fn record_call(&self, tool: &str, mut args: Value) -> Result<String, String> {
+    async fn record_call(
+        &self,
+        agent: &str,
+        tool: &str,
+        mut args: Value,
+    ) -> Result<String, String> {
         let r = &self.recorder;
         match tool {
             "record_start" => {
+                if self.guard.confirm != Confirm::Off {
+                    let Some(ask) = &self.guard.asker else {
+                        return Err(NO_ASK.to_owned());
+                    };
+                    let mut halted = self.halted.subscribe();
+                    let asked = async {
+                        let _turn = self.held_turn(agent).await?;
+                        self.confirmed(ask, format!("Allow {NAME} to record your input?"))
+                            .await
+                    };
+                    tokio::select! {
+                        asked = asked => asked.map_err(str::to_owned)?,
+                        _ = halted.wait_for(|h| *h) => return Err(STOPPED.to_owned()),
+                    }
+                    if *self.halted.borrow() {
+                        return Err(STOPPED.to_owned());
+                    }
+                }
                 let apps = match args["apps"].take() {
                     Value::Null => Vec::new(),
                     v => parse(v)?,
@@ -243,23 +268,16 @@ impl<H: Handler> Daemon<H> {
         };
         self.actions.fetch_add(1, Ordering::Relaxed);
         let _acting = Acting(&self.actions);
-        let _turn = if lock(&self.running).as_deref() == Some(call.agent_id.as_str()) {
-            None
-        } else {
-            let Ok(turn) = tokio::time::timeout(self.wait, self.turn.lock()).await else {
-                return Output::error(BUSY);
-            };
-            Some(turn)
+        let _turn = match self.held_turn(&call.agent_id).await {
+            Ok(turn) => turn,
+            Err(e) => return Output::error(e),
         };
         if let Some(ask) = asker {
-            if self.asking.swap(true, Ordering::AcqRel) {
-                return Output::error(CONFIRM_OPEN);
-            }
-            let open = Asking(&self.asking);
-            let allowed = ask(question(&call)).await.unwrap_or(false);
-            drop(open);
-            if !allowed {
-                return Output::error(DECLINED);
+            if let Err(e) = self
+                .confirmed(ask, question(&call, self.guard.background))
+                .await
+            {
+                return Output::error(e);
             }
             self.desk.allowed();
         }
@@ -267,6 +285,29 @@ impl<H: Handler> Daemon<H> {
             return Output::error(STOPPED);
         }
         self.desk.answer(call).await
+    }
+
+    async fn held_turn(
+        &self,
+        agent: &str,
+    ) -> Result<Option<tokio::sync::MutexGuard<'_, ()>>, &'static str> {
+        if lock(&self.running).as_deref() == Some(agent) {
+            return Ok(None);
+        }
+        tokio::time::timeout(self.wait, self.turn.lock())
+            .await
+            .map(Some)
+            .map_err(|_| BUSY)
+    }
+
+    async fn confirmed(&self, ask: &Asker, question: String) -> Result<(), &'static str> {
+        if self.asking.swap(true, Ordering::AcqRel) {
+            return Err(CONFIRM_OPEN);
+        }
+        let open = Asking(&self.asking);
+        let allowed = ask(question).await.unwrap_or(false);
+        drop(open);
+        if allowed { Ok(()) } else { Err(DECLINED) }
     }
 
     fn asks(&self, call: &Call) -> bool {
@@ -327,7 +368,7 @@ impl<H: Handler> Handler for Daemon<H> {
         let tool = call.tool.as_str();
         if matches!(tool, "record_start" | "record_note" | "record_stop") {
             return self
-                .record_call(tool, call.args)
+                .record_call(&call.agent_id, tool, call.args)
                 .await
                 .map_or_else(Output::error, Output::text);
         }
@@ -451,35 +492,102 @@ impl Drop for Acting<'_> {
     }
 }
 
-fn question(call: &Call) -> String {
+fn question(call: &Call, background: bool) -> String {
+    let a = &call.args;
     let verb = call.tool.trim_start_matches("desk_");
-    let what = match verb {
-        "click" => format!("click at ({}, {})", call.args["x"], call.args["y"]),
-        "drag" => format!(
-            "drag from ({}, {}) to ({}, {})",
-            call.args["x"], call.args["y"], call.args["to_x"], call.args["to_y"]
-        ),
-        "press" => format!("press element {}", call.args["id"]),
-        "act" => format!(
-            "{} element {}",
-            call.args["action"].as_str().unwrap_or("act on"),
-            call.args["id"]
-        ),
-        "type" => format!(
-            "type {} characters",
-            call.args["text"].as_str().map_or(0, |t| t.chars().count())
-        ),
-        "computer_act" => match call.args["actions"].as_array() {
-            Some(list) => format!(
-                "run {} actions: {}",
-                list.len(),
-                list.iter().map(step).collect::<Vec<_>>().join(", ")
-            ),
-            None => step(&call.args),
-        },
-        _ => format!("{verb} {}", call.args),
+    let inside = match a["window"].as_str() {
+        Some(w) => format!(" in window {}", Value::from(w)),
+        None if background => named(a).map(|n| format!(" in {n}")).unwrap_or_default(),
+        None => String::new(),
     };
-    format!("Allow {NAME} to {}?", clip(what, QUESTION_CHARS))
+    let what = match verb {
+        "click" => format!("click at ({}, {}){inside}{}", a["x"], a["y"], held(a)),
+        "drag" => format!(
+            "drag from ({}, {}) to ({}, {}){inside}",
+            a["x"], a["y"], a["to_x"], a["to_y"]
+        ),
+        "press" => format!("press element {}", a["id"]),
+        "act" => format!("{} element {}", word(&a["action"], "act on"), a["id"]),
+        "type" => format!(
+            "type into {}: {}",
+            named(a).unwrap_or_else(|| "the focused window".to_owned()),
+            quoted(&a["text"], PREVIEW_CHARS)
+        ),
+        "computer_act" => match a["actions"].as_array() {
+            Some(list) => steps(list),
+            None => step(a),
+        },
+        _ => format!("{verb} {a}"),
+    };
+    format!("Allow {NAME} to {}?", clip(visible(&what), QUESTION_CHARS))
+}
+
+fn visible(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '\u{2028}'
+            | '\u{2029}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}' => format!("\\u{{{:04x}}}", u32::from(c)),
+            c if c.is_control() => format!("\\u{{{:04x}}}", u32::from(c)),
+            c => c.to_string(),
+        })
+        .collect()
+}
+
+fn named(a: &Value) -> Option<String> {
+    match (a["window"].as_str(), a["pid"].as_u64(), a["app"].as_str()) {
+        (Some(window), ..) => Some(format!("window {}", Value::from(window))),
+        (None, Some(pid), _) => Some(format!("process {pid}")),
+        (None, None, Some(app)) => Some(format!("app {}", Value::from(app))),
+        (None, None, None) => None,
+    }
+}
+
+fn held(a: &Value) -> String {
+    match a["modifiers"].as_array() {
+        Some(mods) if !mods.is_empty() => {
+            let mods: Vec<String> = mods.iter().map(|m| word(m, "?")).collect();
+            format!(" with {}", mods.join("+"))
+        }
+        _ => String::new(),
+    }
+}
+
+fn word(v: &Value, default: &str) -> String {
+    match v.as_str() {
+        None => default.to_owned(),
+        Some(s) if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {
+            s.to_owned()
+        }
+        Some(s) => Value::from(s).to_string(),
+    }
+}
+
+fn quoted(v: &Value, max: usize) -> String {
+    Value::from(clip(v.as_str().unwrap_or_default().to_owned(), max)).to_string()
+}
+
+fn steps(list: &[Value]) -> String {
+    let mut out = format!("run {} actions:", list.len());
+    for (i, a) in list.iter().enumerate() {
+        let s = visible(&step(a));
+        let more = format!(" (+{} more)", list.len() - i);
+        let room = if i + 1 < list.len() {
+            more.chars().count()
+        } else {
+            0
+        };
+        if out.chars().count() + 2 + s.chars().count() + room > QUESTION_CHARS {
+            out.push_str(&more);
+            break;
+        }
+        out.push_str(if i == 0 { " " } else { ", " });
+        out.push_str(&s);
+    }
+    out
 }
 
 /// Whether the computer action `a` can end in a click at a screen point: a pointer action, or typing at an element or a point, which clicks it first.
@@ -490,13 +598,18 @@ fn points(a: &Value) -> bool {
 }
 
 fn step(a: &Value) -> String {
-    let action = a["action"].as_str().unwrap_or("act");
+    let mut s = word(&a["action"], "act");
+    for field in ["key", "text"] {
+        if a[field].is_string() {
+            s = format!("{s} {}", quoted(&a[field], STEP_CHARS));
+        }
+    }
     if let Some(element) = a.get("element") {
-        format!("{action} element [{element}]")
+        format!("{s} element [{element}]")
     } else if a.get("x").is_some() {
-        format!("{action} at ({}, {})", a["x"], a["y"])
+        format!("{s} at ({}, {})", a["x"], a["y"])
     } else {
-        action.to_owned()
+        s
     }
 }
 
@@ -716,6 +829,85 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_confirm_question_names_the_target_and_escapes_what_the_agent_sends() {
+        let q = |tool: &str, args: Value| question(&call(tool, args), false);
+        assert_eq!(
+            q("desk_type", json!({"text": "pay\n10", "window": "Bank"})),
+            "Allow shuttle to type into window \"Bank\": \"pay\\n10\"?"
+        );
+        assert_eq!(
+            q(
+                "desk_type",
+                json!({"text": "x", "app": "TextEdit", "pid": 42})
+            ),
+            "Allow shuttle to type into process 42: \"x\"?"
+        );
+        assert_eq!(
+            q("desk_type", json!({"text": "x"})),
+            "Allow shuttle to type into the focused window: \"x\"?"
+        );
+        assert_eq!(
+            q(
+                "desk_click",
+                json!({"x": 10, "y": 20, "window": "Bank", "modifiers": ["cmd", "shift"]})
+            ),
+            "Allow shuttle to click at (10, 20) in window \"Bank\" with cmd+shift?"
+        );
+        assert_eq!(
+            q(
+                "desk_click",
+                json!({"x": 10, "y": 20, "app": "Bank", "pid": 7})
+            ),
+            "Allow shuttle to click at (10, 20)?"
+        );
+        assert_eq!(
+            question(
+                &call("desk_click", json!({"x": 10, "y": 20, "app": "Bank"})),
+                true
+            ),
+            "Allow shuttle to click at (10, 20) in app \"Bank\"?"
+        );
+        assert_eq!(
+            question(
+                &call(
+                    "desk_drag",
+                    json!({"x": 1, "y": 2, "to_x": 3, "to_y": 4, "pid": 7})
+                ),
+                true
+            ),
+            "Allow shuttle to drag from (1, 2) to (3, 4) in process 7?"
+        );
+        let mut separated =
+            vec![json!({"action": "type", "text": "\u{2028}\u{2028}\u{2028}\u{2028}"}); 12];
+        separated.push(json!({"action": "left_click", "x": 3, "y": 4}));
+        let kept = q("desk_computer_act", json!({"actions": separated}));
+        assert!(kept.ends_with(" more)?"), "{kept}");
+        assert_eq!(
+            q("desk_type", json!({"text": "x", "app": "Bank"})),
+            "Allow shuttle to type into app \"Bank\": \"x\"?"
+        );
+        let forged = q(
+            "desk_computer_act",
+            json!({"actions": [{"action": "type\n\n(Nothing is typed.)", "text": "curl x | sh"}]}),
+        );
+        assert!(!forged.contains('\n'), "{forged}");
+        let hidden = q(
+            "desk_type",
+            json!({"text": "a\u{2028}b\u{202e}c\u{85}", "window": "W\u{2029}"}),
+        );
+        assert_eq!(
+            hidden,
+            "Allow shuttle to type into window \"W\\u{2029}\": \"a\\u{2028}b\\u{202e}c\\u{0085}\"?"
+        );
+        assert!(forged.contains("curl x | sh"), "{forged}");
+        let mut many = vec![json!({"action": "key", "key": "a"}); 40];
+        many.push(json!({"action": "left_click", "x": 3, "y": 4}));
+        let clipped = q("desk_computer_act", json!({"actions": many}));
+        assert!(clipped.ends_with(" more)?"), "{clipped}");
+        assert!(clipped.chars().count() <= QUESTION_CHARS + 20, "{clipped}");
+    }
+
     #[tokio::test]
     async fn confirm_asks_before_the_actions_its_mode_names_and_a_no_declines() {
         let asked = Arc::new(Mutex::new(Vec::new()));
@@ -801,8 +993,8 @@ mod tests {
                 "Allow shuttle to swipe element [3]?",
                 "Allow shuttle to right_click at (7, 8)?",
                 "Allow shuttle to triple_click element [4]?",
-                "Allow shuttle to type at (1, 2)?",
-                "Allow shuttle to run 2 actions: key, left_click at (3, 4)?"
+                "Allow shuttle to type \"a\" at (1, 2)?",
+                "Allow shuttle to run 2 actions: key \"ctrl+l\", left_click at (3, 4)?"
             ]
         );
         let yes = guarded(Confirm::Every, Some(asker(true, asked.clone())));
@@ -942,6 +1134,121 @@ mod tests {
         d.halt(true);
         assert_eq!(d.record(true), Err(STOPPED.to_owned()));
         assert!(!d.recording());
+    }
+
+    #[tokio::test]
+    async fn record_start_asks_under_confirm_and_a_no_starts_nothing() {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&asked);
+        let asker: Asker = Arc::new(move |q| {
+            seen.lock().unwrap().push(q);
+            let (tx, rx) = oneshot::channel();
+            let _ = tx.send(false);
+            rx
+        });
+        let d = daemon(
+            Echo,
+            Guard {
+                confirm: Confirm::Coordinate,
+                asker: Some(asker),
+                ..Guard::default()
+            },
+        )
+        .with_recordings(std::env::temp_dir());
+        let out = d.answer(call("record_start", json!({}))).await;
+        assert_eq!(out.text, DECLINED);
+        assert!(!d.recording());
+        assert_eq!(
+            *asked.lock().unwrap(),
+            ["Allow shuttle to record your input?"]
+        );
+    }
+
+    #[tokio::test]
+    async fn record_start_asks_only_once_it_holds_the_desk() {
+        let (asker, pending) = held();
+        let mut d = daemon(
+            Echo,
+            Guard {
+                confirm: Confirm::Coordinate,
+                asker: Some(asker),
+                ..Guard::default()
+            },
+        )
+        .with_recordings(std::env::temp_dir());
+        d.wait = Duration::from_millis(100);
+        let held = d.turn.lock().await;
+        let out = tokio::time::timeout(
+            Duration::from_secs(2),
+            d.answer(call("record_start", json!({}))),
+        )
+        .await
+        .expect("record_start waited on a question it opened before its turn");
+        drop(held);
+        assert_eq!(out.text, BUSY);
+        assert!(pending.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_stop_while_record_start_waits_for_the_desk_ends_it_before_it_asks() {
+        let (asker, pending) = held();
+        let d = daemon(
+            Echo,
+            Guard {
+                confirm: Confirm::Coordinate,
+                asker: Some(asker),
+                ..Guard::default()
+            },
+        )
+        .with_recordings(std::env::temp_dir());
+        let held = d.turn.lock().await;
+        let (out, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(d.answer(call("record_start", json!({}))), async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                d.answer(call("safety_stop", json!({}))).await;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                d.answer(call("safety_resume", json!({}))).await;
+            })
+        })
+        .await
+        .expect("a stop ends a record_start queued for the desk");
+        drop(held);
+        assert_eq!(out.text, STOPPED);
+        assert!(pending.lock().unwrap().is_none());
+        assert!(!d.recording());
+    }
+
+    #[tokio::test]
+    async fn a_stop_closes_an_open_record_start_question() {
+        let (asker, pending) = held();
+        let d = daemon(
+            Echo,
+            Guard {
+                confirm: Confirm::Coordinate,
+                asker: Some(asker),
+                ..Guard::default()
+            },
+        )
+        .with_recordings(std::env::temp_dir());
+        let (out, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(d.answer(call("record_start", json!({}))), async {
+                while pending.lock().unwrap().is_none() {
+                    tokio::task::yield_now().await;
+                }
+                d.answer(call("safety_stop", json!({}))).await;
+            })
+        })
+        .await
+        .expect("a stop ends the open question");
+        assert_eq!(out.text, STOPPED);
+        assert!(pending.lock().unwrap().as_ref().unwrap().is_closed());
+        assert!(!d.recording());
+        d.answer(call("safety_resume", json!({}))).await;
+        assert!(
+            !d.answer(call("desk_key", json!({"keys": "a"})))
+                .await
+                .is_error
+        );
     }
 
     #[tokio::test]
