@@ -127,7 +127,7 @@ impl Named for Node {
 }
 
 /// An Android window the desk lists: an app's activity or dialog, titled `<title> - <package>`.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub(crate) struct Frame {
     id: String,
     package: String,
