@@ -1194,7 +1194,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     tick('act', t0)
     if (BG && rec.unverified && w && !sub) {
       const now = await texts(w)
-      if (AUTO && !shows(was, now, s.type) && unchanged(was, now) && !taken(await desk.windows())) {
+      if (AUTO && !secure(s) && !shows(was, now, s.type) && unchanged(was, now) && !taken(await desk.windows())) {
         await desk.focus(w.title, w.pid)
         await desk.typeText(s.type, FG)
         rec.how = 'foreground'; rec.unverified = undefined; fronted = true; BG = false
