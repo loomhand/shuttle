@@ -596,7 +596,9 @@ impl Atspi {
         let (value, bounds, keys, url) = tokio::join!(
             async {
                 if extras.values {
-                    self.value(&obj, r.role, r.ifaces, chars).await
+                    self.value(&obj, r.role, r.ifaces, chars)
+                        .await
+                        .filter(|v| !v.is_empty())
                 } else {
                     None
                 }
@@ -676,7 +678,7 @@ impl Atspi {
                 .ok()
                 .map(format_number);
         }
-        Some(String::new())
+        None
     }
 
     /// The screen rectangle of `obj` as `[x, y, width, height]`.
