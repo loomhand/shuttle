@@ -98,7 +98,7 @@ pub fn check_server(pipe: HANDLE, owner: Option<&str>) -> Result<(), String> {
         None => own_sid()?,
     };
     let found = owner_of(pipe)?;
-    if found == owner || found == ADMINISTRATORS {
+    if admits(&found, owner, own_sid()?) {
         Ok(())
     } else {
         Err(format!("the pipe belongs to {found}, not to {owner}"))
@@ -155,6 +155,10 @@ pub fn sid_of(account: &str) -> Result<String, String> {
     }
     .map_err(|e| format!("socket_group {account}: {e}"))?;
     sid_string(PSID(sid.as_mut_ptr().cast()), false)
+}
+
+fn admits(found: &str, owner: &str, own: &str) -> bool {
+    found == owner || (found == ADMINISTRATORS && owner == own)
 }
 
 fn owner_of(pipe: HANDLE) -> Result<String, String> {
@@ -302,6 +306,16 @@ mod tests {
             check_server(pipe, Some("S-1-5-18")).unwrap_err(),
             format!("the pipe belongs to {me}, not to S-1-5-18")
         );
+    }
+
+    #[test]
+    fn an_administrators_pipe_passes_only_for_this_users_own_endpoint() {
+        let me = "S-1-5-21-1-2-3-1001";
+        assert!(admits(me, me, me));
+        assert!(admits(ADMINISTRATORS, me, me));
+        assert!(!admits(ADMINISTRATORS, "S-1-5-18", me));
+        assert!(!admits("S-1-5-21-1-2-3-1002", me, me));
+        assert!(admits("S-1-5-18", "S-1-5-18", me));
     }
 
     async fn open(case: &str, sddl: &str) -> std::io::Result<()> {
