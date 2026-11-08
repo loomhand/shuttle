@@ -136,23 +136,6 @@ impl Driver {
             .map_err(|_| format!("cua-driver {tool} timed out"))?
     }
 
-    /// Connects to the daemon, waiting out a restart: the one each desktop session start triggers, or the supervisor's after the driver died.
-    pub(crate) async fn connect(&self) -> Result<Conn, String> {
-        let deadline = Instant::now() + CONNECT_WAIT;
-        loop {
-            match crate::server::connect(&self.endpoint).await {
-                Ok(stream) => return Ok(stream),
-                Err(e)
-                    if matches!(e.kind(), ErrorKind::ConnectionRefused | ErrorKind::NotFound)
-                        && Instant::now() < deadline =>
-                {
-                    tokio::time::sleep(CONNECT_RETRY).await;
-                }
-                Err(e) => return Err(format!("{CONNECT_FAILED} {}: {e}", self.endpoint)),
-            }
-        }
-    }
-
     pub(crate) fn admit(&self, tool: &str, args: &Value) -> Result<bool, String> {
         let foreground = INPUT_TOOLS.contains(&tool) && args["delivery_mode"] != "background";
         if foreground || tool == "bring_to_front" {
@@ -183,6 +166,23 @@ impl Driver {
         .await?;
         self.started[kind].store(true, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Connects to the daemon, waiting out a restart: the one each desktop session start triggers, or the supervisor's after the driver died.
+    async fn connect(&self) -> Result<Conn, String> {
+        let deadline = Instant::now() + CONNECT_WAIT;
+        loop {
+            match crate::server::connect(&self.endpoint).await {
+                Ok(stream) => return Ok(stream),
+                Err(e)
+                    if matches!(e.kind(), ErrorKind::ConnectionRefused | ErrorKind::NotFound)
+                        && Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(CONNECT_RETRY).await;
+                }
+                Err(e) => return Err(format!("{CONNECT_FAILED} {}: {e}", self.endpoint)),
+            }
+        }
     }
 
     async fn exchange(&self, line: Vec<u8>) -> Result<String, String> {
