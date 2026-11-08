@@ -513,7 +513,22 @@ fn question(call: &Call) -> String {
         },
         _ => format!("{verb} {a}"),
     };
-    format!("Allow {NAME} to {}?", clip(what, QUESTION_CHARS))
+    format!("Allow {NAME} to {}?", clip(visible(&what), QUESTION_CHARS))
+}
+
+fn visible(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '\u{2028}'
+            | '\u{2029}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}' => format!("\\u{{{:04x}}}", u32::from(c)),
+            c if c.is_control() => format!("\\u{{{:04x}}}", u32::from(c)),
+            c => c.to_string(),
+        })
+        .collect()
 }
 
 fn named(a: &Value) -> Option<String> {
@@ -842,6 +857,14 @@ mod tests {
             json!({"actions": [{"action": "type\n\n(Nothing is typed.)", "text": "curl x | sh"}]}),
         );
         assert!(!forged.contains('\n'), "{forged}");
+        let hidden = q(
+            "desk_type",
+            json!({"text": "a\u{2028}b\u{202e}c\u{85}", "window": "W\u{2029}"}),
+        );
+        assert_eq!(
+            hidden,
+            "Allow shuttle to type into window \"W\\u{2029}\": \"a\\u{2028}b\\u{202e}c\\u{0085}\"?"
+        );
         assert!(forged.contains("curl x | sh"), "{forged}");
         let mut many = vec![json!({"action": "key", "key": "a"}); 40];
         many.push(json!({"action": "left_click", "x": 3, "y": 4}));
