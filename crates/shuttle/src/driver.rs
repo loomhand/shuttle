@@ -15,6 +15,7 @@ use crate::{Backoff, Running, home, log};
 
 const TELEMETRY: &str = "CUA_DRIVER_RS_TELEMETRY_ENABLED";
 const DRIVER_EMBEDDED: &str = "CUA_DRIVER_EMBEDDED";
+const CONSENT_ALERT: &str = "CUA_DRIVER_ALLOW_CAPTURE_CONSENT_ALERT";
 const WINDOW_WATCH: &str = "CUA_DRIVER_WINDOW_CHANGE_TIMEOUT_MS";
 const WINDOW_WATCH_MS: &str = "50";
 const GLIDE_MS: &str = "1";
@@ -96,6 +97,7 @@ impl Proc {
             .env(TELEMETRY, "false")
             .envs(self.embedded.then_some((DRIVER_EMBEDDED, "1")))
             .envs(self.watch.then_some((WINDOW_WATCH, WINDOW_WATCH_MS)))
+            .envs((!self.embedded && cfg!(target_os = "macos")).then_some((CONSENT_ALERT, "1")))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -249,6 +251,7 @@ if os.environ.get("CUA_DRIVER_EMBEDDED") == "1" and os.path.exists(args["--socke
     sys.exit(4)
 open(args["--socket"] + ".env", "w").write(os.environ.get("CUA_DRIVER_EMBEDDED", ""))
 open(args["--socket"] + ".watch", "w").write(os.environ.get("CUA_DRIVER_WINDOW_CHANGE_TIMEOUT_MS", ""))
+open(args["--socket"] + ".consent", "w").write(os.environ.get("CUA_DRIVER_ALLOW_CAPTURE_CONSENT_ALERT", ""))
 if os.path.exists(args["--socket"]):
     os.remove(args["--socket"])
 s = socket.socket(socket.AF_UNIX)
@@ -364,6 +367,25 @@ while True:
             let watch = std::fs::read_to_string(format!("{endpoint}.watch")).unwrap_or_default();
             driver.stop().await;
             assert_eq!(watch, want, "foreground {foreground}");
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_macos_driver_shuttle_owns_may_raise_the_capture_consent_alert() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake(dir.path(), FAKE).unwrap();
+        let own = if cfg!(target_os = "macos") { "1" } else { "" };
+        for (embedded, want) in [(false, own), (true, "")] {
+            let sock = dir.path().join(format!("{embedded}.sock"));
+            let endpoint = endpoint(&sock.to_string_lossy());
+            let driver = Bundled::start(&exe, &endpoint, true, embedded, false)
+                .await
+                .unwrap()
+                .unwrap();
+            let consent =
+                std::fs::read_to_string(format!("{endpoint}.consent")).unwrap_or_default();
+            driver.stop().await;
+            assert_eq!(consent, want, "embedded {embedded}");
         }
     }
 
