@@ -387,12 +387,6 @@ function targetIn(ws: Win[]): Win | null {
   if (!live) doubt = `the plan's window "${t.title}" is gone, and background gui_plan never takes another window of that title for it`
   const mine = new Set(live ? [live.id] : [])
   const owned: Win[] = []
-  for (let grew = true; grew;) {
-    grew = false
-    for (const x of ws) if (!mine.has(x.id) && belongs(x) && (!!x.title.trim() || x.role !== 'window')) { mine.add(x.id); owned.push(x); grew = true }
-  }
-  const leaves = owned.filter((x) => !owned.some((y) => y.owner === x.id))
-  return leaves.find((x) => x.active) ?? leaves.at(-1) ?? live
   // on macOS the one new ownerless dialog of the target's app belongs to the target
   function belongs(x: Win) {
     if (x.owner !== undefined) return mine.has(x.owner)
@@ -403,6 +397,12 @@ function targetIn(ws: Win[]): Win | null {
     if (fresh[0]?.id !== x.id) return false
     adopted.add(x.id); return true
   }
+  for (let grew = true; grew;) {
+    grew = false
+    for (const x of ws) if (!mine.has(x.id) && belongs(x) && (!!x.title.trim() || x.role !== 'window')) { mine.add(x.id); owned.push(x); grew = true }
+  }
+  const leaves = owned.filter((x) => !owned.some((y) => y.owner === x.id))
+  return leaves.find((x) => x.active) ?? leaves.at(-1) ?? live
 }
 function ours(x: Win, ws: Win[]) {
   for (let y: Win | undefined = x, k = 0; y && k < ws.length; y = ws.find((z) => z.id === y?.owner), k++) if ((y.id === target?.id && y.pid === target.pid) || adopted.has(y.id)) return true
