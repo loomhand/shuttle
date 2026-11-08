@@ -10,17 +10,21 @@ use windows::Win32::Security::Authorization::{
     ConvertStringSidToSidW, SDDL_REVISION_1,
 };
 use windows::Win32::Security::{
-    GetTokenInformation, LookupAccountNameW, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
-    SID_NAME_USE, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    GetTokenInformation, LookupAccountNameW, PSECURITY_DESCRIPTOR, PSID, RevertToSelf,
+    SECURITY_ATTRIBUTES, SECURITY_MAX_SID_SIZE, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
-use windows::Win32::System::Pipes::{GetNamedPipeClientProcessId, GetNamedPipeServerProcessId};
+use windows::Win32::System::Pipes::{GetNamedPipeServerProcessId, ImpersonateNamedPipeClient};
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcess, GetCurrentThread, OpenProcess, OpenProcessToken, OpenThreadToken,
+    PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::core::{HSTRING, PWSTR};
 
 use crate::lock;
 use crate::server::pipe_sddl;
+
+const TOKEN_USER_WORDS: usize =
+    (size_of::<TOKEN_USER>() + SECURITY_MAX_SID_SIZE as usize).div_ceil(size_of::<u64>());
 
 static SERVER: Mutex<Option<(u32, String, OwnedHandle)>> = Mutex::new(None);
 
@@ -80,20 +84,7 @@ impl Drop for Security {
 
 /// Whether the client at the far end of `pipe`, a server handle, runs as this process's user.
 pub fn client_is_owner(pipe: HANDLE) -> bool {
-    let mut pid = 0;
-    // SAFETY: `pipe` is a live server handle of a connected pipe; `pid` receives the client's id.
-    if unsafe { GetNamedPipeClientProcessId(pipe, &raw mut pid) }.is_err() {
-        return false;
-    }
-    // SAFETY: OpenProcess takes plain values; the handle is closed below.
-    let Ok(process) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) })
-    else {
-        return false;
-    };
-    let user = user_of(process);
-    // SAFETY: `process` is the handle opened above, closed once.
-    let _ = unsafe { CloseHandle(process) };
-    match (user, own_sid()) {
+    match (client_user(pipe), own_sid()) {
         (Ok(user), Ok(own)) => user == own,
         _ => false,
     }
@@ -185,26 +176,43 @@ fn server_of(pid: u32) -> Result<(u32, String, OwnedHandle), String> {
     Ok((pid, user, process))
 }
 
+fn client_user(pipe: HANDLE) -> Result<String, String> {
+    // SAFETY: `pipe` is a live server handle of a connected pipe; this thread reverts below before it does anything else.
+    unsafe { ImpersonateNamedPipeClient(pipe) }
+        .map_err(|e| format!("impersonate the pipe's client: {e}"))?;
+    let mut token = HANDLE::default();
+    // SAFETY: the pseudo handle of this thread needs no closing; `token_user` closes `token`.
+    let opened = unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, true, &raw mut token) };
+    // SAFETY: RevertToSelf ends the impersonation this thread began above.
+    if unsafe { RevertToSelf() }.is_err() {
+        std::process::abort();
+    }
+    opened.map_err(|e| format!("open the client's token: {e}"))?;
+    token_user(token)
+}
+
 fn user_of(process: HANDLE) -> Result<String, String> {
     let mut token = HANDLE::default();
-    // SAFETY: `process` is a live process handle; `token` is closed below.
+    // SAFETY: `process` is a live process handle; `token_user` closes `token`.
     unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut token) }
         .map_err(|e| format!("open the process token: {e}"))?;
+    token_user(token)
+}
+
+fn token_user(token: HANDLE) -> Result<String, String> {
+    let mut buf = [0u64; TOKEN_USER_WORDS];
     let mut len = 0;
-    // SAFETY: a first call with no buffer only reports its size.
-    let _ = unsafe { GetTokenInformation(token, TokenUser, None, 0, &raw mut len) };
-    let mut buf = vec![0u64; (len as usize).div_ceil(8).max(1)];
-    // SAFETY: `buf` holds at least `len` bytes, aligned for TOKEN_USER.
+    // SAFETY: `buf` holds `size_of_val(&buf)` bytes, aligned for TOKEN_USER.
     let read = unsafe {
         GetTokenInformation(
             token,
             TokenUser,
             Some(buf.as_mut_ptr().cast()),
-            len,
+            size_of_val(&buf) as u32,
             &raw mut len,
         )
     };
-    // SAFETY: `token` was opened above and is closed once.
+    // SAFETY: `token` is a token handle the caller opened, closed once here.
     let _ = unsafe { CloseHandle(token) };
     read.map_err(|e| format!("read the token user: {e}"))?;
     // SAFETY: GetTokenInformation filled `buf` with a TOKEN_USER whose SID points into `buf`.
@@ -243,6 +251,28 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.raw_os_error(), Some(5), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_client_that_runs_as_this_user_is_the_owner() {
+        use std::os::windows::io::AsRawHandle;
+
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let name = format!(r"\\.\pipe\shuttle-test-client-owner-{}", std::process::id());
+        let security = Security::new(None).unwrap();
+        // SAFETY: `security` outlives the call and holds a valid SECURITY_ATTRIBUTES.
+        let mut server = unsafe {
+            ServerOptions::new()
+                .first_pipe_instance(true)
+                .create_with_security_attributes_raw(&name, security.attributes())
+        }
+        .unwrap();
+        let mut client = crate::server::connect(&name).await.unwrap();
+        server.connect().await.unwrap();
+        client.write_all(b"x").await.unwrap();
+        server.read_exact(&mut [0; 1]).await.unwrap();
+        assert!(client_is_owner(HANDLE(server.as_raw_handle())));
     }
 
     async fn open(case: &str, sddl: &str) -> std::io::Result<()> {
