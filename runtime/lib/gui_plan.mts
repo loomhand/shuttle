@@ -1509,7 +1509,7 @@ function sealed(c: Chain, plan: Step[]): Chain {
 function git(...args: string[]) {
   gitWorks ??= OS !== 'darwin' || developerTools()
   if (!gitWorks) return
-  try { execFileSync('git', ['-C', FLOWS, ...args], { stdio: 'ignore', timeout: 5000 }) } catch {}
+  try { execFileSync('git', ['-c', 'commit.gpgsign=false', '-C', FLOWS, ...args], { stdio: 'ignore', timeout: 5000 }) } catch {}
 }
 
 function developerTools() {
