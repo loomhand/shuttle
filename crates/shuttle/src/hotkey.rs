@@ -11,6 +11,7 @@ const MOD_SHIFT: u32 = 0x4;
 const MOD_WIN: u32 = 0x8;
 
 const OFF: &str = "off";
+pub const UNREGISTERED: &str = "The kill hotkey did not register, since another app may hold it. Stop shuttle from its menu or with shuttle stop, or set another kill_hotkey under [safety] in config.toml.";
 
 const KEYS: [(&str, u32, u32); 53] = [
     ("escape", 53, 0x1B),
