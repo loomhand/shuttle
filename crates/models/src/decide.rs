@@ -126,20 +126,25 @@ fn answers(
             let Some(Value::String(choice)) = a.remove("choice") else {
                 return Err(format!("{model}: {k} has no choice"));
             };
-            if q["criteria"]
-                .as_object()
-                .is_some_and(|criteria| !criteria.contains_key(&choice))
-            {
-                return Err(format!(
-                    "{model}: {k} chose {choice}, not one of its criteria"
-                ));
-            }
             let Some(Value::Object(probabilities)) = a.remove("probabilities") else {
                 return Err(format!("{model}: {k} has no probabilities"));
             };
-            let confidence = a
-                .get("confidence")
-                .and_then(Value::as_f64)
+            let (choice, given) = match q["criteria"].as_object() {
+                Some(criteria) if !criteria.contains_key(&choice) => {
+                    let best = probabilities
+                        .iter()
+                        .filter(|(c, _)| criteria.contains_key(*c))
+                        .filter_map(|(c, p)| Some((c, p.as_f64()?)))
+                        .max_by(|x, y| x.1.total_cmp(&y.1))
+                        .map(|(c, _)| c.clone())
+                        .ok_or_else(|| {
+                            format!("{model}: {k} chose {choice}, not one of its criteria")
+                        })?;
+                    (best, None)
+                }
+                _ => (choice, a.get("confidence").and_then(Value::as_f64)),
+            };
+            let confidence = given
                 .or_else(|| probabilities.get(&choice).and_then(Value::as_f64))
                 .unwrap_or(0.0);
             let answer = Map::from_iter([
@@ -193,7 +198,13 @@ mod tests {
     }
 
     #[test]
-    fn a_choice_outside_the_criteria_is_an_error() {
+    fn a_choice_outside_the_criteria_falls_back_to_the_likeliest_criterion() {
+        let given = object(
+            json!({"on": {"noul": 0.2}, "pick": {"choice": "r2", "confidence": 0.99, "probabilities": {"r2": 0.9, "r1": 0.3, "none": 0.1}}}),
+        );
+        let got = answers("m", given, &questions()).unwrap();
+        assert_eq!(got["pick"]["choice"], "r1");
+        assert_eq!(got["pick"]["confidence"], 0.3);
         let given = object(
             json!({"on": {"noul": 0.2}, "pick": {"choice": "r2", "probabilities": {"r2": 1.0}}}),
         );
