@@ -1,7 +1,8 @@
 //! A thread that owns an accessibility backend, since UIA and AX objects stay on the thread that made them.
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::oneshot;
@@ -13,7 +14,7 @@ type Job<B> = Box<dyn FnOnce(Result<&mut B, &str>) + Send>;
 /// Runs calls on the backend that `open` makes on the worker thread.
 pub struct Worker<B> {
     open: fn() -> Result<B, String>,
-    jobs: Mutex<Sender<Job<B>>>,
+    jobs: Mutex<(u64, Sender<Job<B>>)>,
 }
 
 impl<B: 'static> Worker<B> {
@@ -21,7 +22,7 @@ impl<B: 'static> Worker<B> {
     pub fn new(open: fn() -> Result<B, String>) -> Self {
         Self {
             open,
-            jobs: Mutex::new(spawn(open)),
+            jobs: Mutex::new((0, spawn(open))),
         }
     }
 
@@ -33,24 +34,31 @@ impl<B: 'static> Worker<B> {
         H: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let _cancel = Cancel(dropped.clone());
         let job: Job<B> = Box::new(move |backend| {
-            let _ = tx.send(backend.map_err(str::to_owned).and_then(f));
+            if !dropped.load(Ordering::Relaxed) {
+                let _ = tx.send(backend.map_err(str::to_owned).and_then(f));
+            }
             drop(hold);
         });
-        if let Err(back) = self.sender().send(job) {
-            self.restart();
-            self.sender()
+        let (mut sent_on, sender) = self.sender();
+        if let Err(back) = sender.send(job) {
+            self.restart(sent_on);
+            let (generation, sender) = self.sender();
+            sent_on = generation;
+            sender
                 .send(back.0)
                 .map_err(|_| "the accessibility worker is gone".to_owned())?;
         }
         match tokio::time::timeout(limit, rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => {
-                self.restart();
+                self.restart(sent_on);
                 Err("the accessibility worker stopped".to_owned())
             }
             Err(_) => {
-                self.restart();
+                self.restart(sent_on);
                 Err(format!(
                     "no accessibility answer within {} ms; the app may hang, and an action sent to it may still take effect once it answers",
                     limit.as_millis()
@@ -68,15 +76,28 @@ impl<B: 'static> Worker<B> {
                 f(b);
             }
         });
-        let _ = self.sender().send(job);
+        let _ = self.sender().1.send(job);
     }
 
-    fn sender(&self) -> Sender<Job<B>> {
-        lock(&self.jobs).clone()
+    fn sender(&self) -> (u64, Sender<Job<B>>) {
+        let jobs = lock(&self.jobs);
+        (jobs.0, jobs.1.clone())
     }
 
-    fn restart(&self) {
-        *lock(&self.jobs) = spawn(self.open);
+    fn restart(&self, generation: u64) {
+        let mut jobs = lock(&self.jobs);
+        if jobs.0 == generation {
+            *jobs = (generation + 1, spawn(self.open));
+        }
+    }
+}
+
+/// Sets its flag when dropped, as when a stop drops the call that holds it.
+pub(crate) struct Cancel(pub(crate) Arc<AtomicBool>);
+
+impl Drop for Cancel {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
     }
 }
 
@@ -156,6 +177,61 @@ mod tests {
         assert!(turn.try_lock().is_err());
         let freed = tokio::time::timeout(Duration::from_secs(2), turn.lock()).await;
         assert!(freed.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_queued_call_that_times_out_before_it_starts_never_runs() {
+        let w = Arc::new(Worker::new(|| Ok(())));
+        let hung = Arc::clone(&w);
+        let hang = tokio::spawn(async move {
+            hung.run(Duration::from_secs(2), (), |_| {
+                std::thread::sleep(Duration::from_millis(300));
+                Ok(())
+            })
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&ran);
+        let err = w
+            .run(Duration::from_millis(50), (), move |_| {
+                lock(&seen).push(7);
+                Ok(())
+            })
+            .await
+            .unwrap_err();
+        assert!(err.contains("within 50 ms"), "{err}");
+        hang.await.unwrap().unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(lock(&ran).is_empty(), "{:?}", lock(&ran));
+    }
+
+    #[tokio::test]
+    async fn callers_queued_behind_one_hang_restart_the_backend_once() {
+        static OPENS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let w = Arc::new(Worker::new(|| {
+            OPENS.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }));
+        let mut calls = Vec::new();
+        for i in 0..5 {
+            let w = Arc::clone(&w);
+            calls.push(tokio::spawn(async move {
+                w.run(Duration::from_millis(100), (), move |_| {
+                    if i == 0 {
+                        std::thread::sleep(Duration::from_millis(400));
+                    }
+                    Ok(())
+                })
+                .await
+            }));
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        for call in calls {
+            let _ = call.await;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(OPENS.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

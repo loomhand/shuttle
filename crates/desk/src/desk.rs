@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -30,7 +30,7 @@ use crate::lock;
 use crate::model::{Access, Act, Capture, Extras, Frame, Node};
 use crate::press::{Press, plan_press};
 use crate::still::{Frame as StillFrame, Watch};
-use crate::worker::Worker;
+use crate::worker::{Cancel, Worker};
 
 pub const TURN_WAIT: Duration = Duration::from_secs(15);
 /// The verbs a vision agent drives the screen with, which the Linux X11, macOS and Windows desks answer.
@@ -593,7 +593,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     #[cfg(test)]
     fn now(&self) -> Instant {
-        Instant::now() + Duration::from_millis(self.skew.load(Ordering::Relaxed))
+        Instant::now() + Duration::from_millis(self.skew.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     async fn admit(&self, tool: &str, args: &Value) -> Result<(), String> {
@@ -2180,15 +2180,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 }
 
-/// Sets its flag when dropped, as when a stop drops the call that holds it.
-struct Cancel(Arc<AtomicBool>);
-
-impl Drop for Cancel {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
-}
-
 enum Grab {
     Read(Capture),
     Driver(Vec<u8>, f64),
@@ -2649,6 +2640,7 @@ fn outline(nodes: &[Node], max_chars: usize) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::sync::atomic::Ordering;
     use std::sync::{Mutex, OnceLock};
 
     use super::*;
