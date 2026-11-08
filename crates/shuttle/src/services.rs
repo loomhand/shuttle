@@ -990,7 +990,7 @@ mod pipe_tests {
         let Some(pipe) = std::env::var_os(SOCKET_VAR) else {
             return;
         };
-        let child = std::process::Command::new("ping")
+        let child = Command::new("ping")
             .args(["-n", "60", "127.0.0.1"])
             .stdout(Stdio::null())
             .spawn()
@@ -1001,7 +1001,7 @@ mod pipe_tests {
             let mut conn =
                 std::mem::replace(&mut next, ServerOptions::new().create(&pipe).unwrap());
             read_body(&mut conn).await.unwrap();
-            write_frame(&mut conn, &Output::text(child.id().to_string()))
+            write_frame(&mut conn, &Output::text(child.id().unwrap().to_string()))
                 .await
                 .unwrap();
         }
