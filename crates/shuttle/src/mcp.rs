@@ -17,7 +17,7 @@ const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const AGENT_PART: usize = 32;
-const INSTRUCTIONS: &str = "These tools act on the user's own desktop. GUI work in a desktop app goes to gui_plan, the whole plan in one call; a loop or logic a plan cannot hold goes to one script_run; one look or one click goes to desk or screenshot. To learn a task by watching the user, record_start, let them do it, then record_stop and run its draft with gui_plan.";
+const INSTRUCTIONS: &str = "These tools act on the user's own desktop. GUI work in a desktop app goes to gui_plan, the whole plan in one call; a loop or logic a plan cannot hold goes to one script_run; one look or one click goes to desk or screenshot. To learn a task by watching the user, record_start, let them do it, then record_stop and run its draft with gui_plan. A desk result that says declined by the user, a confirm dialog is open or desk busy sent nothing for that call. A result that says stopped by the user, has unverified, or counts the lines a type sent before its error may have taken effect, and a gui_plan error that says what it left, or a result with caveats, names steps that ran; the same input sent again can act twice.";
 
 pub(crate) type Message = Result<Map<String, Value>, String>;
 type Answer<'a> = Pin<Box<dyn Future<Output = Option<Value>> + Send + 'a>>;

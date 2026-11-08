@@ -112,7 +112,7 @@ fn builtins() -> Value {
     json!({"tools": [
         {
             "name": "gui_plan",
-            "description": "Run a desktop-app GUI plan in one call: each step runs on the accessibility tree, is checked, and the plan stops at the first surprise; caveats lists the Linux and Windows steps whose only proof is an accessibility action's reply: read their effect before relying on them. One op per step: {app}, {menu}, {click}, {check, on}, {set, value}, {type}, {key}, {wait}, {expect}, {verify}, {close: true}. A passing plan can be saved as a flow with save, and replayed with flow and params.",
+            "description": "Run a desktop-app GUI plan in one call: each step runs on the accessibility tree, is checked, and the plan stops at the first surprise; caveats lists the Linux and Windows steps whose only proof is an accessibility action's reply: read their effect before relying on them. One op per step: {app}, {menu}, {click}, {check, on}, {set, value}, {type}, {key}, {wait}, {expect}, {verify}, {close: true}. A passing plan can be saved as a flow with save, and replayed with flow and params. An error that says what it left reports the steps that ran before it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -141,7 +141,7 @@ fn builtins() -> Value {
         },
         {
             "name": "desk",
-            "description": "One desk call on this desktop: list windows, name the front window of an app that stopped answering accessibility, or wait for windows to change, snapshot or search a window's accessibility tree, read, press or act on an element, send keys, type, click, scroll or drag, wait for the screen to hold still, focus, close or launch, or crop the screen. In a macOS Qt app with no accessibility focus, such as WeChat, background typing into a search field can land in another field: reach a chat by scrolling its list, or use foreground input.",
+            "description": "One desk call on this desktop: list windows, name the front window of an app that stopped answering accessibility, or wait for windows to change, snapshot or search a window's accessibility tree, read, press or act on an element, send keys, type, click, scroll or drag, wait for the screen to hold still, focus, close or launch, or crop the screen. In a macOS Qt app with no accessibility focus, such as WeChat, background typing into a search field can land in another field: reach a chat by scrolling its list, or use foreground input. A key, type, click, scroll or drag result with unverified, and a type error that counts the lines typed before it, may have taken effect.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

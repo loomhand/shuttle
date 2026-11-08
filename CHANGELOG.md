@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Each MCP session is its own caller** (#317). Every `shuttle mcp` session reached the daemon as the same agent, so two MCP clients shared one `web` hold, and one client turning a page tree off turned it off for the other; they also shared the default computer session and looked the same to service plugins. A session on stdio now calls as `mcp-<client name>-<nonce>` and one over HTTP as `mcp-http-<Mcp-Session-Id>`; the CLI and `gui_plan` and `script_run` runs keep their own ids.
+- **MCP results say what they mean** (#316). The server instructions and the `desk` and `gui_plan` descriptions state which desk results sent nothing for their call (declined, a confirm dialog open, desk busy) and which may have taken effect (stopped by the user, `unverified`, a `type` that counts the lines typed before its error, `gui_plan` caveats and what a failed plan left).
 
 ## 0.1.42 - 2026-11-09
 
