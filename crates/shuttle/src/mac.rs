@@ -212,7 +212,7 @@ fn ask(mtm: MainThreadMarker, question: &str, tx: oneshot::Sender<bool>) {
     };
     let allowed = alert.runModal() == NSAlertSecondButtonReturn;
     timer.invalidate();
-    if !allowed && let Some(front) = front {
+    if let Some(front) = front {
         front.activateWithOptions(NSApplicationActivationOptions::empty());
     }
     if let Some(tx) = watch.ivars().take() {
