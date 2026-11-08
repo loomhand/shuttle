@@ -984,7 +984,6 @@ pub fn display_scale() -> f64 {
     }
 }
 
-/// Whether process `pid` is a Chromium or Electron app, whose bundle holds a framework with helper apps.
 pub fn bundle_stem(pid: i32) -> Option<String> {
     let exe = exe_path(pid)?;
     let bundle = exe
@@ -993,6 +992,7 @@ pub fn bundle_stem(pid: i32) -> Option<String> {
     Some(bundle.file_stem()?.to_string_lossy().into_owned())
 }
 
+/// Whether process `pid` is a Chromium or Electron app, whose bundle holds a framework with helper apps.
 fn chromium(pid: u32) -> bool {
     let Some(exe) = i32::try_from(pid).ok().and_then(exe_path) else {
         return false;
