@@ -91,14 +91,6 @@ static HANG: Mutex<Hang> = Mutex::new(Hang {
 });
 static CGS: OnceLock<Option<Cgs>> = OnceLock::new();
 
-/// Per pid: when it was marked hung, when its reads turned slow, its last frames and when it was first listed; kept across backend restarts.
-struct Hang {
-    hung: BTreeMap<i32, Instant>,
-    slow: BTreeMap<i32, Instant>,
-    last: BTreeMap<i32, Vec<Frame>>,
-    listed_at: BTreeMap<i32, Instant>,
-}
-
 /// The AX backend: element ids are `pid/n`, `n` unique in this process, kept while this backend lives.
 pub struct Ax {
     names: CFArray<CFString>,
@@ -717,6 +709,14 @@ pub struct Focused {
     pub window: String,
     pub secure: bool,
     pub page: Option<Page>,
+}
+
+/// Per pid: when it was marked hung, when its reads turned slow, its last frames and when it was first listed; kept across backend restarts.
+struct Hang {
+    hung: BTreeMap<i32, Instant>,
+    slow: BTreeMap<i32, Instant>,
+    last: BTreeMap<i32, Vec<Frame>>,
+    listed_at: BTreeMap<i32, Instant>,
 }
 
 struct Walk {
