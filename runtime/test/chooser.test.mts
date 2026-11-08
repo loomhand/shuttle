@@ -54,3 +54,30 @@ test('a typed line into a large window that is no dialog but holds a File name f
   assert.equal(d.calls.filter((c) => /^key return$/i.test(c)).length, 0, d.calls.join(' '))
   assert.deepEqual(d.typed, ['b.txt\n'])
 })
+
+test('a typed line whose first Return opens an overwrite confirmation sends no second Return into it and escalates', async (t) => {
+  const doc = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: false }
+  const chooser = { id: '2', title: 'Save As', role: 'dialog', pid: process.pid, active: true }
+  const confirm = { id: '3', title: '', role: 'alert', pid: process.pid, active: true }
+  const nodes = [
+    { ref: 0, id: '2/1', parent: -1, depth: 0, role: 'dialog', name: 'Save As', states: ['showing'] },
+    { ref: 1, id: '2/2', parent: 0, depth: 1, role: 'text', name: 'Save As:', states: ['showing'] },
+    { ref: 2, id: '2/3', parent: 0, depth: 1, role: 'textbox', name: 'File name:', states: ['showing', 'focused'] },
+    { ref: 3, id: '2/4', parent: 0, depth: 1, role: 'filler', name: 'File Chooser Widget', states: ['showing'] },
+  ]
+  let alert = false; let replaced = false
+  const keys: string[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify(replaced ? [{ ...doc, active: true }] : alert ? [doc, { ...chooser, active: false }, confirm] : [doc, chooser])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: chooser, truncated: false, nodes })
+    if (tool === 'desk_key') {
+      keys.push(String(args.keys))
+      if (/^return$/i.test(String(args.keys))) { if (alert) replaced = true; else alert = true }
+    }
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ type: 'b.txt\n' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(replaced, false, keys.join(' '))
+  assert.equal(keys.filter((k) => /^return$/i.test(k)).length, 1, keys.join(' '))
+})

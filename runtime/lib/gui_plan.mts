@@ -1008,6 +1008,7 @@ async function submit(w: Win, chooser = false) {
   const [title, pid] = [w.title, w.pid]
   let ws = await desk.windows()
   for (let i = 0; i < 3 && titledIn(ws, title, pid); i++) {
+    if (i && frontOf(ws)?.id !== w.id) break
     await desk.key('Return', at(w))
     ws = await until((ws) => !titledIn(ws, title, pid), 600)
   }
