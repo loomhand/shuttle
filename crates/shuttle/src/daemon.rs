@@ -169,6 +169,17 @@ impl<H: Handler> Daemon<H> {
         let r = &self.recorder;
         match tool {
             "record_start" => {
+                if self.guard.confirm != Confirm::Off {
+                    let Some(ask) = &self.guard.asker else {
+                        return Err(NO_ASK.to_owned());
+                    };
+                    self.confirmed(ask, format!("Allow {NAME} to record your input?"))
+                        .await
+                        .map_err(str::to_owned)?;
+                    if *self.halted.borrow() {
+                        return Err(STOPPED.to_owned());
+                    }
+                }
                 let apps = match args["apps"].take() {
                     Value::Null => Vec::new(),
                     v => parse(v)?,
@@ -254,14 +265,8 @@ impl<H: Handler> Daemon<H> {
             Some(turn)
         };
         if let Some(ask) = asker {
-            if self.asking.swap(true, Ordering::AcqRel) {
-                return Output::error(CONFIRM_OPEN);
-            }
-            let open = Asking(&self.asking);
-            let allowed = ask(question(&call)).await.unwrap_or(false);
-            drop(open);
-            if !allowed {
-                return Output::error(DECLINED);
+            if let Err(e) = self.confirmed(ask, question(&call)).await {
+                return Output::error(e);
             }
             self.desk.allowed();
         }
@@ -269,6 +274,16 @@ impl<H: Handler> Daemon<H> {
             return Output::error(STOPPED);
         }
         self.desk.answer(call).await
+    }
+
+    async fn confirmed(&self, ask: &Asker, question: String) -> Result<(), &'static str> {
+        if self.asking.swap(true, Ordering::AcqRel) {
+            return Err(CONFIRM_OPEN);
+        }
+        let open = Asking(&self.asking);
+        let allowed = ask(question).await.unwrap_or(false);
+        drop(open);
+        if allowed { Ok(()) } else { Err(DECLINED) }
     }
 
     fn asks(&self, call: &Call) -> bool {
@@ -1028,6 +1043,34 @@ mod tests {
         d.halt(true);
         assert_eq!(d.record(true), Err(STOPPED.to_owned()));
         assert!(!d.recording());
+    }
+
+    #[tokio::test]
+    async fn record_start_asks_under_confirm_and_a_no_starts_nothing() {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&asked);
+        let asker: Asker = Arc::new(move |q| {
+            seen.lock().unwrap().push(q);
+            let (tx, rx) = oneshot::channel();
+            let _ = tx.send(false);
+            rx
+        });
+        let d = daemon(
+            Echo,
+            Guard {
+                confirm: Confirm::Coordinate,
+                asker: Some(asker),
+                ..Guard::default()
+            },
+        )
+        .with_recordings(std::env::temp_dir());
+        let out = d.answer(call("record_start", json!({}))).await;
+        assert_eq!(out.text, DECLINED);
+        assert!(!d.recording());
+        assert_eq!(
+            *asked.lock().unwrap(),
+            ["Allow shuttle to record your input?"]
+        );
     }
 
     #[tokio::test]
