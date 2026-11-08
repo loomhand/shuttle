@@ -95,6 +95,7 @@ const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
 const WINDOW_NEVER_READ: &str = "window_never_read";
 
 const COVERED: &str = "covers the point, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
+const LAUNCH_FLAGS: &str = "the app allowlist admits no launch argument that starts with -, since a flag can make an allowed app start another program";
 const COVERED_NO_CLICK: &str = "another app's window covers the point and this window takes no click of its own, so nothing was clicked: bring the window to the front, then click again";
 const COVER_UNKNOWN: &str = "the point could not be checked for another app's window on top, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
 const ANOTHER_SPACE: &str = "accessibility does not reach it there, so a snapshot or an element action needs it on the current Space; background key, type, click, scroll and drag reach it by its title or pid";
@@ -599,7 +600,16 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn admit(&self, tool: &str, args: &Value) -> Result<(), String> {
         let id = match tool {
-            "desk_launch" => return self.allow.check(args["app"].as_str()),
+            "desk_launch" => {
+                let flagged = args["args"].as_array().is_some_and(|a| {
+                    a.iter()
+                        .any(|s| s.as_str().is_some_and(|s| s.starts_with('-')))
+                });
+                if flagged {
+                    return Err(LAUNCH_FLAGS.to_owned());
+                }
+                return self.allow.check(args["app"].as_str());
+            }
             "desk_read" | "desk_press" | "desk_act" => {
                 Some(args["id"].as_str().ok_or("no element id")?.to_owned())
             }
@@ -3826,6 +3836,29 @@ pub(crate) mod tests {
         ] {
             assert!(!names_app(app, name), "{app} {name:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn an_allowlist_refuses_launch_flags_and_keeps_plain_arguments() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Linux)
+            .allow(&["Google Chrome".into()]);
+        let err = desk
+            .run(
+                "desk_launch",
+                json!({"app": "Google Chrome", "args": ["--gpu-launcher=/bin/sh"]}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err, LAUNCH_FLAGS);
+        assert!(sent(&calls, "launch_app").is_empty());
+        desk.run(
+            "desk_launch",
+            json!({"app": "Google Chrome", "args": ["https://example.com/"]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sent(&calls, "launch_app").len(), 1);
     }
 
     #[tokio::test]
