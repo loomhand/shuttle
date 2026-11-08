@@ -82,6 +82,7 @@ const FULL_BAR = 0.95
 const RING = 14
 const PICK_MARGIN = 0.6
 const SETTLE = 150
+const FOCUS_MOVE = 500
 const STALE_WAIT = 2000
 const OPENING = 1000
 const LIST_REUSE = 25
@@ -986,7 +987,7 @@ async function refocused() {
   const a = acted; acted = null
   if (!a) return
   const t0 = Date.now()
-  while (Date.now() - a.at < OPENING && (await desk.read(a.id).catch(() => null))?.states.includes('focused')) await sleep(20)
+  while (Date.now() - a.at < FOCUS_MOVE && (await desk.read(a.id).catch(() => null))?.states.includes('focused')) await sleep(20)
   tick('settle', t0)
 }
 
