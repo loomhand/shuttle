@@ -30,6 +30,7 @@ The daemon runs the bundled cua-driver on a socket of its own, `driver.sock` bes
 - **Windows on Arm** runs the x64 build under emulation.
 - **Unresponsive windows.** A window that stops answering stays in `windows`, marked `stale`. Each window list then costs about 0.5 s for each stuck UI thread, so a list with many stuck threads at once can time out. When you activate the "Not Responding" ghost of a hung window after another window was in front, Windows leaves no window active: a plan then does not stop at the stale front window, and foreground input goes to the hung app.
 - **Keyboard layout.** With background input, `type` sends digits, punctuation and shifted symbols as the keys that type them on a US layout, so under another layout, such as German or French AZERTY, they come out as other characters while the call reports success. Letters and characters outside ASCII are not affected. Switch the target window to a US layout, or paste the text.
+- **Keys right after a large write.** An app that checks spelling or corrects text as you type, such as Windows 11 Notepad, can hold the keys that follow a large text write and replay them later. On a loaded machine a chord sent in that window, such as `ctrl+s`, can then land as plain text (`s`) while `key` reports it sent: the app replays the key after the modifier is already up. No hold on the driver side covers it, since the replay can come seconds later. After a chord that follows a large `type`, check its effect, such as the title losing its leading `*` after a save.
 
 ## Linux
 
