@@ -548,7 +548,8 @@ impl Atspi {
                 let sorted = sorted.into_iter().map(|(_, c)| c);
                 let mut list: Vec<Rc<Obj>> = match listed.remove(&o) {
                     Some(mut list) => {
-                        let extra: Vec<Rc<Obj>> = sorted.filter(|c| !list.contains(c)).collect();
+                        let have: HashSet<&Rc<Obj>> = list.iter().collect();
+                        let extra: Vec<Rc<Obj>> = sorted.filter(|c| !have.contains(c)).collect();
                         list.extend(extra);
                         list
                     }
