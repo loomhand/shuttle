@@ -1,8 +1,7 @@
-//! Who may open the daemon's named pipe, whether a client runs as this process's user, and whether a server runs as the user a pipe belongs to.
+//! Who may open the daemon's named pipe, whether a client runs as this process's user, and whether a pipe belongs to the user its name carries.
 
 use std::ffi::c_void;
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
 use windows::Win32::Security::Authorization::{
@@ -10,23 +9,25 @@ use windows::Win32::Security::Authorization::{
     ConvertStringSidToSidW, SDDL_REVISION_1,
 };
 use windows::Win32::Security::{
-    GetTokenInformation, LookupAccountNameW, PSECURITY_DESCRIPTOR, PSID, RevertToSelf,
-    SECURITY_ATTRIBUTES, SECURITY_MAX_SID_SIZE, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    GetKernelObjectSecurity, GetSecurityDescriptorOwner, GetTokenInformation, LookupAccountNameW,
+    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, RevertToSelf, SECURITY_ATTRIBUTES,
+    SECURITY_DESCRIPTOR_RELATIVE, SECURITY_MAX_SID_SIZE, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER,
+    TokenUser,
 };
 use windows::Win32::System::Pipes::{GetNamedPipeServerProcessId, ImpersonateNamedPipeClient};
 use windows::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentThread, OpenProcess, OpenProcessToken, OpenThreadToken,
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
-use windows::core::{HSTRING, PWSTR};
+use windows::core::{BOOL, HSTRING, PWSTR};
 
-use crate::lock;
 use crate::server::pipe_sddl;
 
+const OWNER_WORDS: usize = (size_of::<SECURITY_DESCRIPTOR_RELATIVE>()
+    + SECURITY_MAX_SID_SIZE as usize)
+    .div_ceil(size_of::<u64>());
 const TOKEN_USER_WORDS: usize =
     (size_of::<TOKEN_USER>() + SECURITY_MAX_SID_SIZE as usize).div_ceil(size_of::<u64>());
-
-static SERVER: Mutex<Option<(u32, String, OwnedHandle)>> = Mutex::new(None);
 
 /// The security descriptor every instance of the daemon's pipe carries.
 pub struct Security {
@@ -40,10 +41,11 @@ unsafe impl Send for Security {}
 unsafe impl Sync for Security {}
 
 impl Security {
-    /// Admits SYSTEM and this process's user, and `group`, an account name or SID string, when set.
+    /// Owned by this process's user; admits SYSTEM, that user, and `group`, an account name or SID string, when set.
     pub fn new(group: Option<&str>) -> Result<Self, String> {
         let group = group.map(sid_of).transpose()?;
-        Self::from_sddl(&pipe_sddl(own_sid()?, group.as_deref()))
+        let own = own_sid()?;
+        Self::from_sddl(&format!("O:{own}{}", pipe_sddl(own, group.as_deref())))
     }
 
     /// The `SECURITY_ATTRIBUTES` to create a pipe instance with, valid while `self` lives.
@@ -95,23 +97,12 @@ pub fn check_server(pipe: HANDLE, owner: Option<&str>) -> Result<(), String> {
         Some(owner) => owner,
         None => own_sid()?,
     };
-    let mut pid = 0;
-    // SAFETY: `pipe` is a live client handle of a connected pipe; `pid` receives the server's id.
-    unsafe { GetNamedPipeServerProcessId(pipe, &raw mut pid) }
-        .map_err(|e| format!("read the pipe's server process: {e}"))?;
-    let mut last = lock(&SERVER);
-    let server = match last.take() {
-        Some(known) if known.0 == pid => known,
-        _ => server_of(pid)?,
-    };
-    let refused = (server.1 != owner).then(|| {
-        format!(
-            "process {pid} serves the pipe as {}, not as {owner}",
-            server.1
-        )
-    });
-    *last = Some(server);
-    refused.map_or(Ok(()), Err)
+    let found = owner_of(pipe)?;
+    if found == owner || server_user(pipe).is_some_and(|user| user == owner) {
+        Ok(())
+    } else {
+        Err(format!("the pipe belongs to {found}, not to {owner}"))
+    }
 }
 
 pub fn own_sid() -> Result<&'static str, String> {
@@ -166,14 +157,38 @@ pub fn sid_of(account: &str) -> Result<String, String> {
     sid_string(PSID(sid.as_mut_ptr().cast()), false)
 }
 
-fn server_of(pid: u32) -> Result<(u32, String, OwnedHandle), String> {
-    // SAFETY: OpenProcess takes plain values.
-    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }
-        .map_err(|e| format!("open the pipe's server process {pid}: {e}"))?;
-    // SAFETY: `process` is a handle OpenProcess just returned, owned here alone.
-    let process = unsafe { OwnedHandle::from_raw_handle(process.0) };
-    let user = user_of(HANDLE(process.as_raw_handle()))?;
-    Ok((pid, user, process))
+fn owner_of(pipe: HANDLE) -> Result<String, String> {
+    let mut buf = [0u64; OWNER_WORDS];
+    let descriptor = PSECURITY_DESCRIPTOR(buf.as_mut_ptr().cast());
+    let mut len = 0;
+    // SAFETY: `pipe` is a live handle opened for reading, which includes READ_CONTROL; `descriptor` points to `buf`, `size_of_val(&buf)` bytes.
+    unsafe {
+        GetKernelObjectSecurity(
+            pipe,
+            OWNER_SECURITY_INFORMATION.0,
+            Some(descriptor),
+            size_of_val(&buf) as u32,
+            &raw mut len,
+        )
+    }
+    .map_err(|e| format!("read the pipe's owner: {e}"))?;
+    let (mut sid, mut defaulted) = (PSID::default(), BOOL::default());
+    // SAFETY: `descriptor` holds the self-relative descriptor just read; `sid` points into it.
+    unsafe { GetSecurityDescriptorOwner(descriptor, &raw mut sid, &raw mut defaulted) }
+        .map_err(|e| format!("read the pipe's owner: {e}"))?;
+    sid_string(sid, false)
+}
+
+fn server_user(pipe: HANDLE) -> Option<String> {
+    let mut pid = 0;
+    // SAFETY: `pipe` is a live client handle of a connected pipe; `pid` receives the server's id.
+    unsafe { GetNamedPipeServerProcessId(pipe, &raw mut pid) }.ok()?;
+    // SAFETY: OpenProcess takes plain values; the handle is closed below.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+    let user = user_of(process).ok();
+    // SAFETY: `process` is the handle opened above, closed once.
+    let _ = unsafe { CloseHandle(process) };
+    user
 }
 
 fn client_user(pipe: HANDLE) -> Result<String, String> {
@@ -273,6 +288,32 @@ mod tests {
         client.write_all(b"x").await.unwrap();
         server.read_exact(&mut [0; 1]).await.unwrap();
         assert!(client_is_owner(HANDLE(server.as_raw_handle())));
+    }
+
+    #[tokio::test]
+    async fn the_daemon_pipe_belongs_to_this_user_and_a_client_expecting_another_refuses_it() {
+        use std::os::windows::io::AsRawHandle;
+
+        use tokio::net::windows::named_pipe::ClientOptions;
+
+        let me = own_sid().unwrap();
+        let name = format!(r"\\.\pipe\shuttle-test-owned-{}", std::process::id());
+        let security = Security::new(None).unwrap();
+        // SAFETY: `security` outlives the call and holds a valid SECURITY_ATTRIBUTES.
+        let _server = unsafe {
+            ServerOptions::new()
+                .first_pipe_instance(true)
+                .create_with_security_attributes_raw(&name, security.attributes())
+        }
+        .unwrap();
+        let client = ClientOptions::new().open(&name).unwrap();
+        let pipe = HANDLE(client.as_raw_handle());
+        assert_eq!(owner_of(pipe).unwrap(), me);
+        check_server(pipe, None).unwrap();
+        assert_eq!(
+            check_server(pipe, Some("S-1-5-18")).unwrap_err(),
+            format!("the pipe belongs to {me}, not to S-1-5-18")
+        );
     }
 
     async fn open(case: &str, sddl: &str) -> std::io::Result<()> {
