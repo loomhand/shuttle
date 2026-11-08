@@ -27,7 +27,7 @@ Both installers download the archive and the release's `SHA256SUMS`, refuse an a
 ## First-time setup
 
 1. **Install** with the installer above. `shuttle --version` should print the version; on macOS and Linux it lives in `~/.local/bin`, so that directory must be on your `PATH`.
-2. **macOS permissions.** shuttle needs Accessibility and Screen Recording, granted to the app, not to your terminal. When its daemon first starts, shuttle opens System Settings and asks for them, and its calls answer `permissions_pending` until both are on: turn on Shuttle under Accessibility, then under Screen & System Audio Recording. When Shuttle is not in a list, click +, choose `~/Applications/Loomhand/Shuttle.app` and turn it on. Accessibility covers the window list, tree reads and element actions; Screen Recording covers screenshots, the allowlist's masked ones included. The calls work as soon as both switches are on, without a restart; when macOS offers to quit and reopen Shuttle, either answer works. The first screenshot after that shows macOS's one-time alert that Shuttle asks to access the screen directly: choose Allow. Each upgrade needs the grants again ([platforms.md](platforms.md#macos) explains why).
+2. **macOS permissions.** shuttle needs Accessibility and Screen Recording, granted to the app, not to your terminal. When its daemon first starts (step 6), shuttle opens System Settings and asks for them, and its calls answer `permissions_pending` until both are on: turn on Shuttle under Accessibility, then under Screen & System Audio Recording. When Shuttle is not in a list, click +, choose `~/Applications/Loomhand/Shuttle.app` and turn it on. Accessibility covers the window list, tree reads and element actions; Screen Recording covers screenshots, the allowlist's masked ones included. The calls work as soon as both switches are on, without a restart; when macOS offers to quit and reopen Shuttle, either answer works. The first screenshot after that shows macOS's one-time alert that Shuttle asks to access the screen directly: choose Allow. Each upgrade needs the grants again ([platforms.md](platforms.md#macos) explains why).
 3. **Your model key.** Create a key at <https://openrouter.ai/settings/keys> and put it in the configuration file, which on macOS is simplest since the daemon does not see your shell's environment:
 
    ```sh
@@ -46,7 +46,7 @@ Both installers download the archive and the release's `SHA256SUMS`, refuse an a
    apps = ["TextEdit"]
    ```
 
-   [safety.md](safety.md) describes each control and its limits.
+   [safety.md](safety.md) describes each control and its limits. The daemon reads this file when it starts: if one already runs, quit it (`pkill -f 'shuttle serve'`) so the next call starts it with these settings.
 5. **Add shuttle to your agent:** `claude mcp add shuttle -- shuttle mcp` (Codex and Cursor: see the [README](https://github.com/loomhand/shuttle#use-it-from-an-agent)). The first tool call other than `status` starts the daemon. An agent that reaches shuttle across a container boundary or the LAN uses `shuttle mcp --http ADDR` with a token instead ([README](https://github.com/loomhand/shuttle#over-http)).
 6. **Check it:** ask the agent to call shuttle's `status` tool, which answers without the daemon, then to list your windows with the `desk` tool (verb `windows`), which starts it. With the allowlist above, only TextEdit's windows show.
 

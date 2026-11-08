@@ -2,7 +2,7 @@
 
 use std::fmt::Display;
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -38,11 +38,11 @@ use crate::{NAME, VENDOR, VERSION, home, http, log, mcp, plugins};
 /// Runs the command in `args` (the program name excluded) and returns its exit code.
 pub fn run(args: &[String]) -> ExitCode {
     let Some((cmd, rest)) = args.split_first() else {
-        return if relaunched() {
-            run(&["serve".to_owned()])
-        } else {
-            usage()
-        };
+        #[cfg(unix)]
+        if relaunched() {
+            return serve_in_place();
+        }
+        return usage();
     };
     match cmd.as_str() {
         "--version" | "-V" => {
@@ -91,18 +91,29 @@ pub fn run(args: &[String]) -> ExitCode {
     }
 }
 
+#[cfg(unix)]
 fn relaunched() -> bool {
-    #[cfg(unix)]
-    let parent = std::os::unix::process::parent_id();
-    #[cfg(not(unix))]
-    let parent = 0;
     std::env::current_exe()
         .and_then(std::fs::canonicalize)
-        .is_ok_and(|exe| launched_by_launchd(parent, &exe))
+        .is_ok_and(|exe| launched_by_launchd(std::os::unix::process::parent_id(), &exe))
 }
 
-fn launched_by_launchd(parent: u32, exe: &Path) -> bool {
+#[cfg(unix)]
+fn launched_by_launchd(parent: u32, exe: &std::path::Path) -> bool {
     parent == 1 && crate::proxy::app_bundle(exe).is_some()
+}
+
+#[cfg(unix)]
+fn serve_in_place() -> ExitCode {
+    use std::os::unix::process::CommandExt as _;
+
+    match std::env::current_exe() {
+        Ok(exe) => fail(format_args!(
+            "start serve: {}",
+            std::process::Command::new(exe).arg("serve").exec()
+        )),
+        Err(e) => fail(format_args!("locate this program: {e}")),
+    }
 }
 
 fn desk_endpoint() -> String {
@@ -461,8 +472,11 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn only_launchd_starting_the_macos_app_bundle_counts_as_a_relaunch() {
+        use std::path::Path;
+
         let bundled =
             Path::new("/Users/u/Applications/Loomhand/Shuttle.app/Contents/MacOS/shuttle");
         assert_eq!(launched_by_launchd(1, bundled), cfg!(target_os = "macos"));
