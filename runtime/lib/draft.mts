@@ -76,7 +76,7 @@ export async function main(p: Params): Promise<Draft> {
       const mods = e.mods ?? []
       if (e.secret) { if (typed) flush(); if (!secret && e.focus) into = e.focus; secret = true; continue }
       const named = KEYS[e.code ?? -1]
-      if (mods.every((m) => m === 'shift') && !named && e.text) { if (secret) flush(); filled = false; if (!typed && 'focus' in e) into = e.focus; typed += e.text; continue }
+      if (mods.every((m) => m === 'shift' || m === 'alt') && !named && e.text) { if (secret) flush(); filled = false; if (!typed && 'focus' in e) into = e.focus; typed += e.text; continue }
       flush(); filled = false
       const key = [...mods, named ?? (e.text ?? '').toLowerCase()].join('+')
       draft.steps.push({ key, intent: `press ${key}` })

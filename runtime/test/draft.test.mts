@@ -244,3 +244,10 @@ test('a recording in a web page opens its address and keeps the page and DOM id 
   ])
   assert.equal(d.steps[0]?.intent, 'open https://shop.test/order?ref=mail in Browser')
 })
+
+test('an Option-typed character stays inside its typed run', async (t) => {
+  await daemon(t, () => '{"ok":true}')
+  const events: Event[] = [...keys('an'), { t: 2, kind: 'key', code: 37, text: '@', mods: ['alt'], app: 'TextEdit' }, ...keys('b.de')]
+  const d = await main({ recording: { id: 'rec-14', events }, params: { to: 'an@b.de' } })
+  assert.deepEqual(d.steps.map(({ intent: _, ...s }) => s), [{ app: 'TextEdit' }, { type: '{{to}}' }])
+})
