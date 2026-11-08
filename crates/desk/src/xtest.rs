@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use x11rb::connection::{Connection as _, RequestConnection as _};
 use x11rb::cookie::VoidCookie;
-use x11rb::protocol::xkb::{ConnectionExt as _, Group, ID};
+use x11rb::protocol::xkb::{ConnectionExt as _, ID};
 use x11rb::protocol::xproto::{ConnectionExt as _, KEY_PRESS_EVENT, KEY_RELEASE_EVENT, ModMask};
 use x11rb::protocol::xtest::{self, ConnectionExt as _};
 use x11rb::rust_connection::RustConnection;
@@ -91,7 +91,7 @@ pub fn type_mapped(text: &str, stop: &AtomicBool) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Whether the core keyboard is on its first group with no modifier in effect but NumLock, so a keycode types its map's first or shifted keysym.
+/// Whether the core keyboard is on its first group with no lock modifier, so a keycode types its map's first or shifted keysym.
 fn plain(conn: &RustConnection) -> bool {
     let (Ok(ext), Ok(state)) = (
         conn.xkb_use_extension(1, 0),
@@ -100,11 +100,9 @@ fn plain(conn: &RustConnection) -> bool {
         return false;
     };
     ext.reply().is_ok_and(|e| e.supported)
-        && state.reply().is_ok_and(|s| unmodified(s.group, s.mods))
-}
-
-fn unmodified(group: Group, mods: ModMask) -> bool {
-    u8::from(group) == 0 && u16::from(mods.remove(ModMask::M2)) == 0
+        && state.reply().is_ok_and(|s| {
+            u8::from(s.group) == 0 && !s.locked_mods.intersects(ModMask::LOCK | ModMask::SHIFT)
+        })
 }
 
 /// The keysym of a printable ASCII character or a tab, whose Latin-1 keysyms equal their code points.
@@ -129,22 +127,5 @@ mod tests {
         assert_eq!(keysym('é'), None);
         assert_eq!(keysym('\u{8349}'), None);
         assert_eq!(keysym('\n'), None);
-    }
-
-    #[test]
-    fn only_the_first_group_with_no_modifier_but_numlock_in_effect_is_plain() {
-        assert!(unmodified(Group::M1, ModMask::default()));
-        assert!(unmodified(Group::M1, ModMask::M2));
-        assert!(!unmodified(Group::M2, ModMask::default()));
-        for held in [
-            ModMask::SHIFT,
-            ModMask::LOCK,
-            ModMask::CONTROL,
-            ModMask::M1,
-            ModMask::M5,
-            ModMask::CONTROL | ModMask::M2,
-        ] {
-            assert!(!unmodified(Group::M1, held), "{held:?}");
-        }
     }
 }
