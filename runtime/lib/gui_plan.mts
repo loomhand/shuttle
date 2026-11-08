@@ -537,11 +537,13 @@ async function decide(state: unknown, q: Record<string, desk.Question>) {
   try { return await desk.decide(state, q) } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
 
-async function vision(prompt: string, shot: Buffer): Promise<Vision> {
+async function vision(prompt: string, shot: Buffer, field: 'ok' | 'on'): Promise<Vision> {
   const t0 = Date.now()
   try {
     const a = await desk.ask(`${prompt}\nAnswer with one JSON object and nothing else.`, [shot])
-    return JSON.parse(a.slice(a.indexOf('{'), a.lastIndexOf('}') + 1)) as Vision
+    const v = JSON.parse(a.slice(a.indexOf('{'), a.lastIndexOf('}') + 1)) as Vision
+    if (typeof v[field] !== 'boolean') throw new Error(`the screen check answered no true or false for "${field}"`)
+    return v
   } finally { tick('vision', t0) }
 }
 
@@ -1135,7 +1137,7 @@ async function cropState(n: Node, unsent = true) {
   const b = (await desk.read(n.id)).bounds ?? n.bounds
   if (!b) throw new Error(`"${n.name}" has no screen position`)
   const shot = await desk.shot({ x: Math.max(0, b[0] - 40), y: Math.max(0, b[1] - 4), w: b[2] + 80, h: b[3] + 8 })
-  return (await vision(`This is one control of a desktop app: "${n.name}". Is it switched on (a check mark, tick, filled box or pressed state)? {"on": true or false}`, shot)).on === true
+  return (await vision(`This is one control of a desktop app: "${n.name}". Is it switched on (a check mark, tick, filled box or pressed state)? {"on": true or false}`, shot, 'on')).on === true
 }
 
 async function run(s: Step, rec: Rec, kept?: Kept) {
@@ -1265,7 +1267,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (prob(d.ok) >= 0.5) return
     if (BG && !AUTO) throw new Surprise(`expectation not met in the window's tree: ${s.expect}; ${NO_PIXELS}`, await seen())
     if (BG) await front(w)
-    const v = await vision(`You check the state of a computer screen.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot()); rec.verdict = v
+    const v = await vision(`You check the state of a computer screen.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot(), 'ok'); rec.verdict = v
     if (!v.ok) throw new Surprise(`expectation not met: ${s.expect} (${v.why})`, await seen())
     return
   }
