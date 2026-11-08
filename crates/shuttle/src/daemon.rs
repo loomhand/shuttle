@@ -178,12 +178,14 @@ impl<H: Handler> Daemon<H> {
                     let Some(ask) = &self.guard.asker else {
                         return Err(NO_ASK.to_owned());
                     };
-                    let _turn = self.held_turn(agent).await.map_err(str::to_owned)?;
                     let mut halted = self.halted.subscribe();
+                    let asked = async {
+                        let _turn = self.held_turn(agent).await?;
+                        self.confirmed(ask, format!("Allow {NAME} to record your input?"))
+                            .await
+                    };
                     tokio::select! {
-                        asked = self.confirmed(ask, format!("Allow {NAME} to record your input?")) => {
-                            asked.map_err(str::to_owned)?;
-                        }
+                        asked = asked => asked.map_err(str::to_owned)?,
                         _ = halted.wait_for(|h| *h) => return Err(STOPPED.to_owned()),
                     }
                     if *self.halted.borrow() {
@@ -536,10 +538,10 @@ fn visible(s: &str) -> String {
 }
 
 fn named(a: &Value) -> Option<String> {
-    match (a["window"].as_str(), a["app"].as_str(), a["pid"].as_u64()) {
+    match (a["window"].as_str(), a["pid"].as_u64(), a["app"].as_str()) {
         (Some(window), ..) => Some(format!("window {}", Value::from(window))),
-        (None, Some(app), _) => Some(format!("app {}", Value::from(app))),
-        (None, None, Some(pid)) => Some(format!("process {pid}")),
+        (None, Some(pid), _) => Some(format!("process {pid}")),
+        (None, None, Some(app)) => Some(format!("app {}", Value::from(app))),
         (None, None, None) => None,
     }
 }
@@ -833,6 +835,13 @@ mod tests {
         assert_eq!(
             q("desk_type", json!({"text": "pay\n10", "window": "Bank"})),
             "Allow shuttle to type into window \"Bank\": \"pay\\n10\"?"
+        );
+        assert_eq!(
+            q(
+                "desk_type",
+                json!({"text": "x", "app": "TextEdit", "pid": 42})
+            ),
+            "Allow shuttle to type into process 42: \"x\"?"
         );
         assert_eq!(
             q("desk_type", json!({"text": "x"})),
@@ -1178,6 +1187,35 @@ mod tests {
         drop(held);
         assert_eq!(out.text, BUSY);
         assert!(pending.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_stop_while_record_start_waits_for_the_desk_ends_it_before_it_asks() {
+        let (asker, pending) = held();
+        let d = daemon(
+            Echo,
+            Guard {
+                confirm: Confirm::Coordinate,
+                asker: Some(asker),
+                ..Guard::default()
+            },
+        )
+        .with_recordings(std::env::temp_dir());
+        let held = d.turn.lock().await;
+        let (out, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(d.answer(call("record_start", json!({}))), async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                d.answer(call("safety_stop", json!({}))).await;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                d.answer(call("safety_resume", json!({}))).await;
+            })
+        })
+        .await
+        .expect("a stop ends a record_start queued for the desk");
+        drop(held);
+        assert_eq!(out.text, STOPPED);
+        assert!(pending.lock().unwrap().is_none());
+        assert!(!d.recording());
     }
 
     #[tokio::test]
