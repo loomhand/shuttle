@@ -564,13 +564,7 @@ impl Access for Ax {
             })
             .and_then(|f| f.pid);
         Ok(pid
-            .and_then(|p| exe_path(i32::try_from(p).ok()?))
-            .and_then(|exe| {
-                let bundle = exe
-                    .ancestors()
-                    .find(|a| a.extension().is_some_and(|e| e == "app"))?;
-                Some(bundle.file_stem()?.to_string_lossy().into_owned())
-            })
+            .and_then(|p| bundle_stem(i32::try_from(p).ok()?))
             .filter(|name| !name.eq_ignore_ascii_case(app)))
     }
 
@@ -991,6 +985,14 @@ pub fn display_scale() -> f64 {
 }
 
 /// Whether process `pid` is a Chromium or Electron app, whose bundle holds a framework with helper apps.
+pub fn bundle_stem(pid: i32) -> Option<String> {
+    let exe = exe_path(pid)?;
+    let bundle = exe
+        .ancestors()
+        .find(|a| a.extension().is_some_and(|e| e == "app"))?;
+    Some(bundle.file_stem()?.to_string_lossy().into_owned())
+}
+
 fn chromium(pid: u32) -> bool {
     let Some(exe) = i32::try_from(pid).ok().and_then(exe_path) else {
         return false;
