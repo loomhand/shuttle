@@ -945,64 +945,66 @@ server.serve_forever()
 #[cfg(test)]
 #[cfg(windows)]
 mod pipe_tests {
-    use desk_core::wire::{Call, Output, read_frame};
+    use desk_core::wire::{Call, Output, read_body, read_frame, write_frame};
     use serde_json::json;
 
     use super::*;
     use crate::plugins::ServiceTool;
 
-    const POWERSHELL: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
-    const FAKE: &str = r#"
-$child = Start-Process -FilePath ping -ArgumentList '-n','60','127.0.0.1' -WindowStyle Hidden -PassThru
-Set-Content -Path $args[0] -Value $child.Id
-$name = $env:SHUTTLE_SERVICE_SOCKET -replace '^\\\\\.\\pipe\\', ''
-while ($true) {
-  $p = New-Object System.IO.Pipes.NamedPipeServerStream($name, [System.IO.Pipes.PipeDirection]::InOut, 10)
-  $p.WaitForConnection()
-  $head = New-Object byte[] 4; [void]$p.Read($head, 0, 4); [Array]::Reverse($head)
-  $n = [BitConverter]::ToInt32($head, 0); $body = New-Object byte[] $n; $got = 0
-  while ($got -lt $n) { $got += $p.Read($body, $got, $n - $got) }
-  $out = [Text.Encoding]::UTF8.GetBytes('{"text":"pong","is_error":false}')
-  $len = [BitConverter]::GetBytes([int]$out.Length); [Array]::Reverse($len)
-  $p.Write($len, 0, 4); $p.Write($out, 0, $out.Length); $p.Flush(); $p.WaitForPipeDrain(); $p.Dispose()
-}
-"#;
+    const FAKE: &str = "services::pipe_tests::fake_service";
 
     #[tokio::test]
     async fn a_service_serves_its_pipe_and_a_stop_ends_it_with_the_process_it_started() {
-        let dir = tempfile::tempdir().unwrap();
-        let script = dir.path().join("service.ps1");
-        std::fs::write(&script, FAKE).unwrap();
-        let pidfile = dir.path().join("child.pid");
-        let args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]
-            .into_iter()
+        let args = ["--ignored", "--exact", "--quiet", FAKE]
             .map(str::to_owned)
-            .chain([script.display().to_string(), pidfile.display().to_string()])
-            .collect();
+            .to_vec();
         let desk = format!(r"\\.\pipe\shuttle-test-serve-{}", std::process::id());
-        let running = Services::start(&[service(POWERSHELL, args)], &desk, &[]).unwrap();
+        let running = Services::start(
+            &[service(std::env::current_exe().unwrap(), args)],
+            &desk,
+            &[],
+        )
+        .unwrap();
         let (mut client, mut far) = tokio::io::duplex(1 << 16);
         let routed =
             tokio::spawn(async move { route(&socket(&desk, "demo"), body(), &mut far).await });
-        let out: Output = read_frame(&mut client).await.unwrap();
-        assert_eq!((out.text.as_str(), out.is_error), ("pong", false));
+        let out: Output = match read_frame(&mut client).await {
+            Ok(out) => out,
+            Err(e) => panic!("{e}; the route: {:?}", routed.await),
+        };
+        assert!(!out.is_error, "{}", out.text);
         drop(client);
         routed.await.unwrap().unwrap();
-        let mut child = String::new();
-        for _ in 0..100 {
-            child = std::fs::read_to_string(&pidfile)
-                .unwrap_or_default()
-                .trim()
-                .to_owned();
-            if !child.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        let child = out.text;
         assert!(alive(&child), "{child} never started");
         running.stop().await;
         let gone = crate::until(40, || !alive(&child)).await;
         assert!(gone, "{child} outlived the service's stop");
+    }
+
+    #[tokio::test]
+    #[ignore = "the service the pipe test starts"]
+    async fn fake_service() {
+        use tokio::net::windows::named_pipe::ServerOptions;
+
+        let Some(pipe) = std::env::var_os(SOCKET_VAR) else {
+            return;
+        };
+        let child = std::process::Command::new("ping")
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut next = ServerOptions::new().create(&pipe).unwrap();
+        loop {
+            next.connect().await.unwrap();
+            let mut conn =
+                std::mem::replace(&mut next, ServerOptions::new().create(&pipe).unwrap());
+            read_body(&mut conn).await.unwrap();
+            write_frame(&mut conn, &Output::text(child.id().to_string()))
+                .await
+                .unwrap();
+        }
     }
 
     #[tokio::test]
@@ -1063,10 +1065,10 @@ while ($true) {
         );
     }
 
-    fn service(bin: &str, args: Vec<String>) -> Service {
+    fn service(bin: PathBuf, args: Vec<String>) -> Service {
         Service {
             service: "demo".into(),
-            bin: bin.into(),
+            bin,
             args,
             tools: vec![ServiceTool {
                 name: "demo_ping".into(),
