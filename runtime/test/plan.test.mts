@@ -98,3 +98,13 @@ test('a press the desk reports as not done fails the step', async (t) => {
   assert.equal(r.ok, false, JSON.stringify(r))
   assert.match(r.escalate?.reason ?? '', /Apply/)
 })
+
+test('a step whose only op is empty is malformed and makes no desk call', async (t) => {
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => { calls.push(tool); return '[]' })
+  for (const step of [{ key: '' }, { click: '' }, { menu: '' }, { wait: '' }, { check: '' }, { close: false }]) {
+    const r = await main({ steps: [step] })
+    assert.match(r.escalate?.reason ?? '', /needs exactly one op/, JSON.stringify(step))
+  }
+  assert.deepEqual(calls, [])
+})

@@ -94,7 +94,7 @@ const INERT_KEY = /^shift\+[^+]$/i
 const ARROW_KEY = /^(shift\+)?(arrow)?(up|down|left|right)$/i
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
 const FILLER = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'and', 'or', 'by', 'from', 'into', 'this', 'that', 'its', 'it', 'is', 'button', 'link', 'tab', 'field', 'box', 'icon', 'toggle', 'dropdown', 'input', 'control', 'item', 'entry'])
-const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close']
+const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close'] as const
 const PINNED = ['menu', 'click', 'check', 'set', 'verify', 'wait', 'window'] as const
 const TEXT_CUT = '\n(the outline shows only the start of the window: desk snapshot or find reads the rest)'
 const TREE_CUT = '\n(this accessibility read stopped before the end of the window: the elements past the cut are missing here; narrowing the view, e.g. by scrolling or opening a pane, brings them in)'
@@ -157,7 +157,7 @@ async function perform(p: Params): Promise<Result> {
     }
   }
   const trace: Trace[] = []; const log: Record<string, unknown>[] = []
-  const bad = plan.findIndex((s) => OPS.filter((k) => k in s).length !== 1)
+  const bad = plan.findIndex((s) => ops(s).length !== 1)
   if (bad >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: bad, plan_step: plan[bad] && unrecorded(plan[bad]), reason: `step ${bad} needs exactly one op of ${OPS.join(', ')}; nothing ran` } }
   const unfilled = (s: Step) => Object.values(s).flatMap((v) => typeof v === 'string' ? [...v.matchAll(/\{\{(\w+)(?::base)?\}\}/g)].map((x) => x[1] ?? '') : []).find((n) => params[n] === undefined)
   const gap = plan.findIndex((s, i) => i >= (p.start ?? 0) && unfilled(s))
@@ -181,7 +181,7 @@ async function perform(p: Params): Promise<Result> {
   left()
   for (const [i, planned] of plan.entries()) {
     if (i < (p.start ?? 0)) continue
-    const s = fill(planned, params); T = {}; const rec: Rec = { i, op: OPS.find((k) => k in s) }
+    const s = fill(planned, params); T = {}; const rec: Rec = { i, op: ops(s)[0] }
     const ts = Date.now(); const calls = desk.served.length
     try {
       let ws = i === (p.start ?? 0) ? ws0 : await desk.windows(); let f = BG ? frontOf(ws) : desk.front(ws)
@@ -309,6 +309,8 @@ async function perform(p: Params): Promise<Result> {
 }
 
 function unrecorded({ recorded: _, fp: __, blank: ___, ...s }: Step): Bare { return s }
+
+function ops(s: Step) { return OPS.filter((k) => k === 'type' ? s.type !== undefined : !!s[k]) }
 
 function stopped(plan: Step[], e: Escalation) {
   const step = e.step ?? 0
