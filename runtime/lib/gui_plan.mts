@@ -1320,11 +1320,6 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
         }
         return ns[at]
       }
-      const fresh = async () => {
-        for (let t = 0; ; t++) {
-          try { return parse(await snapOf(w, { menus: true })) } catch (e: unknown) { if (t >= 4 || !String(e).includes('window list is stale')) throw e; await sleep(150) }
-        }
-      }
       const shut = async () => { for (const _ of chain) await desk.key('Escape', at(w)) }
       let cur = nodes
       const open = async () => {
@@ -1334,8 +1329,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
         }
       }
       const read = async () => {
-        try { await open() } catch (e: unknown) { if (!String(e).includes('is gone')) throw e; await shut(); cur = await fresh(); await open() }
-        await shut(); cur = await fresh()
+        try { await open() } catch (e: unknown) { if (!String(e).includes('is gone')) throw e; await shut(); cur = await menuTree(w, { menus: true }); await open() }
+        await shut(); cur = await menuTree(w, { menus: true })
         const leaf = locate(cur, chain.length); if (!leaf) throw new Surprise(`menu entry "${hit.n.name}" not found`, await seen())
         return { leaf, on: leaf.checked }
       }
@@ -1418,13 +1413,21 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (raw.endsWith('\n')) { rec.submit = true; await submit(w, isChooser(render(nodes, 100, false))) }
 }
 
-async function menuEntry(w: Win, nodes: Node[], menu: string, fp: Fp | undefined, rec: Rec): Promise<{ hit: Hit; nodes: Node[] }> {
+async function menuTree(w: Win, r: Reads) {
+  for (let t = 0; ; t++) {
+    try { return parse(await snapOf(w, r)) } catch (e: unknown) { if (t >= 4 || !String(e).includes('window list is stale')) throw e; await sleep(150) }
+  }
+}
+
+async function menuEntry(w: Win, nodes: Node[], menu: string, fp: Fp | undefined, rec: Rec, tries = OS === 'darwin' ? 2 : 0): Promise<{ hit: Hit; nodes: Node[] }> {
   const pinned = byFp(nodes, fp)
   if (pinned) { rec.how = 'fp'; return { hit: pinned, nodes } }
   const parts = menu.split('>').map((x) => x.trim())
   const soft = async (target: string, role: string | undefined, inside?: number) => { try { return await resolve(nodes, target, role, inside, 0.7) } catch (e: unknown) { if (e instanceof Surprise) return null; throw e } }
+  const plain = (target: string, role: string | undefined, inside?: number) => resolve(nodes, target, role, inside, 0.7, undefined, false)
   let within: number | undefined
   let hit: Hit | null = null
+  const path: Node[] = []
   for (const [k, part] of parts.entries()) {
     const prev = hit
     // a Windows menu lists its entries only while it is open
@@ -1433,6 +1436,11 @@ async function menuEntry(w: Win, nodes: Node[], menu: string, fp: Fp | undefined
       for (let t = 0; t < 10; t++) { nodes = parse(await snapOf(w, { keys: true, menus: true })); if (candidates(nodes).some(({ n }) => norm(n.name) === norm(part))) break; await sleep(30) }
     }
     const role = k < parts.length - 1 ? 'menu' : undefined
+    if (tries && path.length && !(role && await plain(part, role, within)) && !await plain(part, undefined, within)) {
+      let opened = 0; let gone = false
+      try { for (const q of path) { await act(q); opened++; await sleep(120) } } catch (e: unknown) { if (!String(e).includes('is gone')) throw e; gone = true } finally { for (let j = 0; j < opened; j++) await desk.key('Escape', at(w)) }
+      return menuEntry(w, await menuTree(w, { keys: true, menus: true }), menu, fp, rec, gone ? tries - 1 : 0)
+    }
     hit = (k === 0 && role ? barMenu(nodes, part) : null) ?? await soft(part, role, within) ?? (role ? await soft(part, undefined, within) : null)
     if (!hit) {
       const leaf = await resolve(nodes, parts.at(-1) ?? part, 'menuitem|menu|menuitemcheckbox|menuitemradio', undefined, 0.5, undefined, false)
@@ -1440,7 +1448,7 @@ async function menuEntry(w: Win, nodes: Node[], menu: string, fp: Fp | undefined
       rec.how = 'ax-anywhere'; rec.path = menus(nodes, leaf.n.parent).map((q) => q.name).reverse()
       return { hit: leaf, nodes }
     }
-    within = hit.i; rec.how = hit.how
+    within = hit.i; rec.how = hit.how; path.push(hit.n)
     if (k === parts.length - 1) return { hit, nodes }
   }
   throw new Surprise(`menu "${menu}" names no entry`, await seen())
