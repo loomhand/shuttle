@@ -126,6 +126,14 @@ fn answers(
             let Some(Value::String(choice)) = a.remove("choice") else {
                 return Err(format!("{model}: {k} has no choice"));
             };
+            if q["criteria"]
+                .as_object()
+                .is_some_and(|criteria| !criteria.contains_key(&choice))
+            {
+                return Err(format!(
+                    "{model}: {k} chose {choice}, not one of its criteria"
+                ));
+            }
             let Some(Value::Object(probabilities)) = a.remove("probabilities") else {
                 return Err(format!("{model}: {k} has no probabilities"));
             };
@@ -181,6 +189,17 @@ mod tests {
             json_object("m", "no json here")
                 .unwrap_err()
                 .starts_with("m: no JSON object")
+        );
+    }
+
+    #[test]
+    fn a_choice_outside_the_criteria_is_an_error() {
+        let given = object(
+            json!({"on": {"noul": 0.2}, "pick": {"choice": "r2", "probabilities": {"r2": 1.0}}}),
+        );
+        assert_eq!(
+            answers("m", given, &questions()).unwrap_err(),
+            "m: pick chose r2, not one of its criteria"
         );
     }
 
