@@ -452,23 +452,19 @@ impl Android {
 
     /// Pastes `text` through the clipboard, which takes any Unicode; false when the device refused the paste key.
     async fn paste(&self, text: &str) -> Result<bool, String> {
-        let mut slot = self.control.lock().await;
-        let mut control = match slot.take() {
-            Some(control) if control.is_open() => control,
-            _ => self.open_control().await?,
-        };
-        control.set_clipboard(text).await?;
-        let pasted = match tokio::time::timeout(PASTE_TIMEOUT, self.served("paste")).await {
-            Ok(answer) => answer.map(|a| a.trim() == "true"),
-            Err(_) => Err(unhandled_paste(&self.focused_window().await)),
-        };
-        let cleared = control.set_clipboard("").await;
-        if cleared.is_ok() {
+        {
+            let mut slot = self.control.lock().await;
+            let mut control = match slot.take() {
+                Some(control) if control.is_open() => control,
+                _ => self.open_control().await?,
+            };
+            control.set_clipboard(text).await?;
             *slot = Some(control);
         }
-        let pasted = pasted?;
-        cleared.map_err(|e| format!("the clipboard still holds the pasted text: {e}"))?;
-        Ok(pasted)
+        match tokio::time::timeout(PASTE_TIMEOUT, self.served("paste")).await {
+            Ok(answer) => answer.map(|a| a.trim() == "true"),
+            Err(_) => Err(unhandled_paste(&self.focused_window().await)),
+        }
     }
 
     async fn adb(&self, args: &[&str]) -> Result<Vec<u8>, String> {
@@ -1951,33 +1947,6 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_delivered_paste_leaves_an_empty_clipboard() {
-        let (android, peer) = session("/nonexistent/adb").await;
-        let mut delivered = Command::new("sh");
-        delivered.args(["-c", "read l; printf 'true\\n<<end>>\\n'; sleep 30"]);
-        assert_eq!(paste_through(&android, peer, delivered).await, Ok(true));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_clipboard_that_cannot_be_cleared_drops_the_session() {
-        let (android, mut peer) = session("/nonexistent/adb").await;
-        let mut ack = vec![ACK_CLIPBOARD];
-        ack.extend_from_slice(&1u64.to_be_bytes());
-        peer.write_all(&ack).await.unwrap();
-        let device = tokio::spawn(async move {
-            let mut got = vec![0; clipboard_message("hi", 1).len()];
-            peer.read_exact(&mut got).await.unwrap();
-            got
-        });
-        let err = android.paste("hi").await.unwrap_err();
-        assert!(err.contains("run adb"), "{err}");
-        assert_eq!(device.await.unwrap(), clipboard_message("hi", 1));
-        assert!(android.control.lock().await.is_none());
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
     async fn a_paste_key_the_device_refused_answers_not_delivered() {
         let (android, peer) = session("/nonexistent/adb").await;
         let mut refused = Command::new("sh");
@@ -2451,15 +2420,13 @@ mod tests {
         mut peer: TcpStream,
         mut ui: Command,
     ) -> Result<bool, String> {
-        for sequence in [1u64, 2] {
-            let mut ack = vec![ACK_CLIPBOARD];
-            ack.extend_from_slice(&sequence.to_be_bytes());
-            peer.write_all(&ack).await.unwrap();
-        }
+        let mut ack = vec![ACK_CLIPBOARD];
+        ack.extend_from_slice(&1u64.to_be_bytes());
+        peer.write_all(&ack).await.unwrap();
         let device = tokio::spawn(async move {
-            let mut got = Vec::new();
-            let _ = peer.read_to_end(&mut got).await;
-            got
+            let mut buf = [0; 64];
+            let n = peer.read(&mut buf).await.unwrap();
+            (buf[..n].to_vec(), peer)
         });
         let mut ui = ui
             .stdin(Stdio::piped())
@@ -2473,10 +2440,7 @@ mod tests {
             child: ui,
         });
         let pasted = android.paste("hi").await;
-        drop(android.control.lock().await.take());
-        let mut sent = clipboard_message("hi", 1);
-        sent.extend(clipboard_message("", 2));
-        assert_eq!(device.await.unwrap(), sent);
+        assert_eq!(device.await.unwrap().0, clipboard_message("hi", 1));
         pasted
     }
 
