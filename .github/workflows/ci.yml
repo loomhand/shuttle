@@ -21,11 +21,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-24.04, macos-26, macos-15-intel, windows-2025]
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x64
+            bin: bin
+          - runner: macos-26
+            platform: macos-arm64
+            bin: bin
+          - runner: macos-15-intel
+            platform: macos-x64
+            bin: bin
+          - runner: windows-2025
+            platform: windows-x64
+            bin: .
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
+
+      - name: Node from packaging/pins
+        shell: bash
+        run: |
+          dir=$(packaging/fetch.sh ${{ matrix.platform }} node "$RUNNER_TEMP")
+          echo "$dir/${{ matrix.bin }}" >> "$GITHUB_PATH"
 
       - name: Toolchain
         shell: bash
