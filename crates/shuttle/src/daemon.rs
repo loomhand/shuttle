@@ -471,7 +471,10 @@ impl Drop for Acting<'_> {
 fn question(call: &Call) -> String {
     let a = &call.args;
     let verb = call.tool.trim_start_matches("desk_");
-    let inside = named(a).map(|n| format!(" in {n}")).unwrap_or_default();
+    let inside = a["window"]
+        .as_str()
+        .map(|w| format!(" in window {}", Value::from(w)))
+        .unwrap_or_default();
     let what = match verb {
         "click" => format!("click at ({}, {}){inside}{}", a["x"], a["y"], held(a)),
         "drag" => format!(
@@ -803,6 +806,17 @@ mod tests {
                 json!({"x": 10, "y": 20, "window": "Bank", "modifiers": ["cmd", "shift"]})
             ),
             "Allow shuttle to click at (10, 20) in window \"Bank\" with cmd+shift?"
+        );
+        assert_eq!(
+            q(
+                "desk_click",
+                json!({"x": 10, "y": 20, "app": "Bank", "pid": 7})
+            ),
+            "Allow shuttle to click at (10, 20)?"
+        );
+        assert_eq!(
+            q("desk_type", json!({"text": "x", "app": "Bank"})),
+            "Allow shuttle to type into app \"Bank\": \"x\"?"
         );
         let forged = q(
             "desk_computer_act",
