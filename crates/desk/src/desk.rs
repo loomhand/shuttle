@@ -2042,7 +2042,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             a.h.unwrap_or(f64::MAX / 4.0),
         ];
         if let Some(window) = a.window.as_deref() {
-            return self.window_shot(window, a.pid, rect, a.path).await;
+            return self.window_shot(window, a.pid, rect).await;
         }
         let (grab, shown) = if self.allow.is_open() {
             (self.grab(rect).await?, None)
@@ -2054,7 +2054,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             Grab::Read(c) => {
                 let mask = self.mask(shown, 1.0).await?;
                 let png = rgb_png(c.rgb, c.rect, mask.as_deref())?;
-                delivered(png, sized(c.rect[2], c.rect[3]), a.path).await
+                Ok(delivered(png, sized(c.rect[2], c.rect[3])))
             }
             Grab::Driver(png, factor) => {
                 let mask = self.mask(shown, factor).await?;
@@ -2065,7 +2065,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         e
                     }
                 })?;
-                self.shot_out(png, sized(w, h), a.path).await
+                Ok(delivered(png, sized(w, h)))
             }
         }
     }
@@ -2105,29 +2105,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Err(WINDOWS_MOVING.to_owned())
     }
 
-    async fn shot_out(
-        &self,
-        png: Vec<u8>,
-        out: Value,
-        path: Option<String>,
-    ) -> Result<Output, String> {
-        if self.os == Os::Linux {
-            return delivered(png, out, path).await;
-        }
-        Ok(Output {
-            text: out.to_string(),
-            image_b64: Some(B64.encode(&png)),
-            ..Output::default()
-        })
-    }
-
     /// The image of the window titled `window`, as the driver captures that window alone, cropped to `rect` in its pixels.
     async fn window_shot(
         &self,
         window: &str,
         pid: Option<u32>,
         rect: [f64; 4],
-        path: Option<String>,
     ) -> Result<Output, String> {
         let (_, w, _) = self.pick_window(Some(window), pid, true).await?;
         let key = window_key(&w)?;
@@ -2165,7 +2148,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             out["stale"] = true.into();
             out["note"] = note.into();
         }
-        self.shot_out(png, out, path).await
+        Ok(delivered(png, out))
     }
 
     async fn mask(
@@ -2487,18 +2470,12 @@ fn live(frame: Frame) -> Result<Frame, String> {
     Ok(frame)
 }
 
-async fn delivered(png: Vec<u8>, mut out: Value, path: Option<String>) -> Result<Output, String> {
-    if let Some(path) = path {
-        tokio::fs::write(&path, &png)
-            .await
-            .map_err(|e| format!("write {path}: {e}"))?;
-        out["path"] = path.into();
-    }
-    Ok(Output {
+fn delivered(png: Vec<u8>, out: Value) -> Output {
+    Output {
         text: out.to_string(),
         image_b64: Some(B64.encode(&png)),
         ..Output::default()
-    })
+    }
 }
 
 fn sized(w: u32, h: u32) -> Value {
@@ -5550,12 +5527,8 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_linux_shot_from_the_driver_answers_the_image_and_writes_its_path() {
+    async fn a_linux_shot_from_the_driver_answers_the_image_and_writes_no_file() {
         let desk = Desk::new(|| Ok(Apps), Desktop(Arc::default()), Os::Linux);
-        let shot = desk.run("desk_shot", json!({})).await.unwrap();
-        let text: Value = serde_json::from_str(&shot.text).unwrap();
-        assert_eq!(text, json!({"ok": true, "width": 10, "height": 10}));
-        assert!(shot.image_b64.is_some());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shot.png");
         let shot = desk
@@ -5563,12 +5536,9 @@ pub(crate) mod tests {
             .await
             .unwrap();
         let text: Value = serde_json::from_str(&shot.text).unwrap();
-        assert_eq!(text["path"].as_str(), Some(&*path.to_string_lossy()));
-        assert!(text.get("png_b64").is_none(), "{text}");
-        assert_eq!(
-            B64.encode(std::fs::read(&path).unwrap()),
-            shot.image_b64.unwrap()
-        );
+        assert_eq!(text, json!({"ok": true, "width": 10, "height": 10}));
+        assert!(shot.image_b64.is_some());
+        assert!(!path.exists());
     }
 
     #[tokio::test]

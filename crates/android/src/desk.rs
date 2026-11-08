@@ -2,7 +2,6 @@
 
 use std::borrow::Cow;
 use std::fmt::Write as _;
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -1038,11 +1037,7 @@ async fn shot(android: &Android, a: ShotArgs) -> Result<Output, String> {
     } else {
         crop_png(&png, rect, 1.0, None)?
     };
-    let mut out = json!({"ok": true, "width": w, "height": h});
-    if let Some(path) = a.path {
-        write_bytes(Path::new(&path), &png).await?;
-        out["path"] = path.into();
-    }
+    let out = json!({"ok": true, "width": w, "height": h});
     Ok(Output {
         text: out.to_string(),
         image_b64: Some(B64.encode(&png)),
@@ -1075,17 +1070,6 @@ where
             return Ok(out);
         }
     }
-}
-
-async fn write_bytes(path: &Path, data: &[u8]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| format!("create {}: {e}", parent.display()))?;
-    }
-    tokio::fs::write(path, data)
-        .await
-        .map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 #[cfg(test)]
