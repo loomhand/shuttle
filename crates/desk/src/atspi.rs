@@ -1010,7 +1010,8 @@ impl Atspi {
         if !is_hung(bus) {
             return false;
         }
-        if let Ok(conn) = self.connection().await {
+        let cached = self.conn.lock().await.clone();
+        if let Some(conn) = cached {
             let root = bus.to_owned();
             release_on_answer(&self.probing, bus, async move {
                 let asked =
