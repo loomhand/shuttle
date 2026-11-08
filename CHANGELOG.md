@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Windows: the confirm box stays on top** (#295). After the step before brought another app to the front, the message box opened behind that app with only its taskbar button flashing. It now has an always-on-top owner, so it shows on top until you answer it; it takes the keyboard focus when Windows lets it, else click OK or Cancel. It no longer has a taskbar button.
+- **Windows: `shuttle stop` works from an SSH session** (#296). The daemon read a caller's user by opening its process, which an elevated SSH-session process does not allow, so `stop`, `resume` and the recording calls refused the daemon's own user as another one. It now reads the user from the pipe client's token; another user is still refused.
 - **Linux: a `gui_plan` step after a GTK 4 action click waits for the focus to move** (#291). GTK 4 runs a button's accessibility action from a 250 ms timer, so a `type` or `key` step right after such a click, as after New tab in GNOME Text Editor, went to the element that still had the focus. Such a step now waits until that element loses the focus, at most 500 ms after the press; a click whose action moves no focus costs at most about 350 ms more, and a click not followed by `type` or `key` costs nothing.
 - **macOS: declining the confirm dialog gives the front back** (#297). After Cancel, Escape or a stop closed the dialog, no app was active, so keys typed next reached no window. The app that was in front before the dialog is active again; an allowed step still activates its own target.
 
