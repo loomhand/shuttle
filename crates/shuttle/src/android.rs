@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use desk_core::wire::{Call, Output};
+use serde_json::Value;
 use shuttle_android::adb::{Android, Device};
 use shuttle_android::desk;
 use shuttle_desk::server::Handler;
@@ -64,14 +65,29 @@ fn ui_jar(configured: Option<PathBuf>, exe: &Path) -> Result<PathBuf, String> {
 }
 
 async fn answer(android: &Android, call: Call) -> Output {
-    let answered = match call.tool.as_str() {
-        "desk_computer_state" => android.state(call.args).await,
-        "desk_computer_act" => android.act(call.args).await,
-        "desk_computer_end" => android.end(&call.args).await.map(Output::text),
+    let Call {
+        agent_id,
+        tool,
+        args,
+    } = call;
+    let answered = match tool.as_str() {
+        "desk_computer_state" => android.state(with_session(agent_id, args)).await,
+        "desk_computer_act" => android.act(with_session(agent_id, args)).await,
+        "desk_computer_end" => android
+            .end(&with_session(agent_id, args))
+            .await
+            .map(Output::text),
         "desk_look" => android.look().await,
-        verb => desk::run(android, verb, call.args).await,
+        verb => desk::run(android, verb, args).await,
     };
     answered.unwrap_or_else(Output::error)
+}
+
+fn with_session(agent: String, mut args: Value) -> Value {
+    if (args.is_object() || args.is_null()) && !args["session"].is_string() {
+        args["session"] = agent.into();
+    }
+    args
 }
 
 #[cfg(test)]
@@ -101,6 +117,16 @@ mod tests {
         )
         .await;
         assert_eq!((out.is_error, out.text.as_str()), (false, "ended"));
+    }
+
+    #[test]
+    fn a_computer_verb_without_a_session_takes_its_callers_own() {
+        let a = with_session("agent-a".into(), serde_json::json!({"action": "tap"}));
+        let b = with_session("agent-b".into(), Value::Null);
+        assert_ne!(a["session"], b["session"]);
+        assert_eq!(a["session"], "agent-a");
+        let named = with_session("agent-a".into(), serde_json::json!({"session": "cu-1"}));
+        assert_eq!(named["session"], "cu-1");
     }
 
     #[test]
