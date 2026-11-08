@@ -33,6 +33,34 @@ test('a Linux step that only ran an accessibility action carries a caveat that n
   assert.equal(clicked.caveats, undefined, JSON.stringify(clicked))
 })
 
+test('a Linux accessibility action that moves the focus late, as a GTK 4 button does, is waited out before the next step types or presses a key', { skip: process.platform !== 'linux' }, async (t) => {
+  const win = { id: '1.20/5', title: 'New Document (Draft) - Text Editor', role: 'window', pid: 901, active: true }
+  let pressed = 0
+  const moved = () => pressed > 0 && Date.now() - pressed > 400
+  const view = (id: string, on: boolean) => ({ ref: 0, id, parent: 0, depth: 1, role: 'textbox', name: '', states: on ? ['showing', 'focused'] : ['showing'] })
+  const nodes = () => [
+    { ref: 0, id: '1.20/5', parent: -1, depth: 0, role: 'window', name: win.title, states: ['showing'] },
+    { ref: 1, id: '1.20/6', parent: 0, depth: 1, role: 'button', name: 'New tab', states: ['showing'] },
+    { ...view('1.20/7', !moved()), ref: 2 },
+    ...(moved() ? [{ ...view('1.20/8', true), ref: 3 }] : []),
+  ]
+  const got: string[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, nodes: nodes(), truncated: false })
+    if (tool === 'desk_read') return JSON.stringify(nodes().find((n) => n.id === args.id))
+    if (tool === 'desk_press') { pressed = Date.now(); return '{"ok":true,"how":"action"}' }
+    if (tool === 'desk_type' || tool === 'desk_key') got.push(`${String(args.text ?? args.keys)} -> ${moved() ? 'new tab' : 'old tab'}`)
+    return '{"ok":true}'
+  })
+  const typed = await plan({ steps: [{ click: 'New tab' }, { type: 'some text' }] })
+  assert.equal(typed.ok, true, JSON.stringify(typed))
+  pressed = 0
+  const keyed = await plan({ steps: [{ click: 'New tab' }, { key: 'ctrl+v' }] })
+  assert.equal(keyed.ok, true, JSON.stringify(keyed))
+  assert.deepEqual(got, ['some text -> new tab', 'ctrl+v -> new tab'])
+})
+
 test('a shown match in a tree without bounds, as GTK 4 gives, is clicked without a model pick', async (t) => {
   const win = { id: '1.20/5', title: 'Untitled - Text Editor', role: 'window', pid: 901, active: true }
   const nodes = [

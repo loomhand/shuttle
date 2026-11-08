@@ -26,7 +26,7 @@ type Recorded = { text: string; crop?: string; scale?: number; offset?: [number,
 type Reads = { keys?: boolean; menus?: boolean }
 type Kept = Reads & { id: string; snap: desk.Snap; nodes: Node[] }
 type Fp = { role: string; name: string; parent: string; nth: number; of?: number; label?: string }
-type Node = { ref: number; id: string; depth: number; role: string; name: string; value: string; disabled: boolean; parent: number; shortcut: string; checked: boolean; shown: boolean; bounds?: [number, number, number, number] }
+type Node = { ref: number; id: string; depth: number; role: string; name: string; value: string; disabled: boolean; parent: number; shortcut: string; checked: boolean; shown: boolean; focused: boolean; bounds?: [number, number, number, number] }
 type Hit = { n: Node; i: number; how: string; p?: number; margin?: number }
 type Flow = { name: string; params: Record<string, string>; steps: Step[]; idempotent: boolean; saved_at: string; usage?: desk.Usage }
 type Chain = { at: number; window: string | null; pid: number | null; name?: string; named?: boolean; params: Record<string, string>; steps: Step[]; dirty: boolean; saved?: boolean; escalated?: boolean; usage?: desk.Usage }
@@ -114,6 +114,7 @@ let lastSeen = ''
 let recording = false
 let typed = false
 let pressed: { title: string; at: number } | null = null
+let acted: { id: string; at: number } | null = null
 let target: Win | null = null
 let listed: Win[] = []
 let targetSince = new Set<string>()
@@ -360,7 +361,7 @@ function parse(snap: desk.Snap): Node[] {
   }
   return snap.nodes.map((n) => ({
     ref: n.ref, id: n.id, depth: n.depth, role: n.role, name: called(n).slice(0, 80).trim(), value: n.value ?? '', disabled: n.states.includes('disabled'), parent: n.parent,
-    shortcut: n.shortcut ?? '', checked: n.states.includes('checked') || n.states.includes('pressed'), shown: n.states.includes('showing'), bounds: n.bounds,
+    shortcut: n.shortcut ?? '', checked: n.states.includes('checked') || n.states.includes('pressed'), shown: n.states.includes('showing'), focused: n.states.includes('focused'), bounds: n.bounds,
   }))
 }
 
@@ -981,6 +982,14 @@ async function settle(before: string | undefined) {
   tick('settle', t0); return ws
 }
 
+async function refocused() {
+  const a = acted; acted = null
+  if (!a) return
+  const t0 = Date.now()
+  while (Date.now() - a.at < OPENING && (await desk.read(a.id).catch(() => null))?.states.includes('focused')) await sleep(20)
+  tick('settle', t0)
+}
+
 async function ready(w: Win) {
   const t0 = Date.now()
   for (;;) {
@@ -1160,6 +1169,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     known.add(w.title); rec.window = lastSeen = w.title; await windowFor(w.title); return
   }
   if (s.type !== undefined) {
+    await refocused()
     const nl = s.type.endsWith('\n'); const ws = await current(nl ? OPENING : SETTLE); const w = frontOf(ws); const t0 = Date.now()
     if (BG && !w) throw new Surprise('background gui_plan has no target window to type into: start the plan with an app step, or name the window with a wait step')
     if (s.web && w) await onPage(s.web, w)
@@ -1198,6 +1208,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     return
   }
   if (s.key) {
+    await refocused()
     const w = frontOf(await listNow())
     if (BG && !w) throw new Surprise('background gui_plan has no target window for the key: start the plan with an app step, or name the window with a wait step')
     const o = /^(enter|return)$/i.test(s.key) && w ? await filled(w, kept) : ''
@@ -1379,7 +1390,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   }
   if (s.click) {
     const read = norm(hit.n.name) === 'replace all' ? await documents(w) : null; const before = await read?.()
-    await act(hit.n)
+    const had = nodes.filter((n) => n.focused).at(-1)
+    if (await act(hit.n) === 'action' && OS === 'linux' && had) acted = { id: had.id, at: Date.now() }
     if (read) await replaced(nodes, read, before); else await settle(w.title)
     return
   }
