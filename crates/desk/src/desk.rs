@@ -95,7 +95,7 @@ const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
 const WINDOW_NEVER_READ: &str = "window_never_read";
 
 const COVERED: &str = "covers the point, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
-const LAUNCH_FLAGS: &str = "the app allowlist admits no launch argument that starts with -, since a flag can make an allowed app start another program";
+const LAUNCH_FLAGS: &str = "the app allowlist admits no launch argument that starts with - (or / on Windows), since a flag can make an allowed app start another program";
 const COVERED_NO_CLICK: &str = "another app's window covers the point and this window takes no click of its own, so nothing was clicked: bring the window to the front, then click again";
 const COVER_UNCHECKED_NO_CLICK: &str = "the point could not be checked for another app's window and this window takes no click of its own, so nothing was clicked: bring the window to the front, then click again";
 const COVER_UNKNOWN: &str = "the point could not be checked for another app's window on top, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
@@ -603,10 +603,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn admit(&self, tool: &str, args: &Value) -> Result<(), String> {
         let id = match tool {
             "desk_launch" => {
-                let flagged = args["args"].as_array().is_some_and(|a| {
-                    a.iter()
-                        .any(|s| s.as_str().is_some_and(|s| s.starts_with('-')))
-                });
+                let flagged = args["args"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|s| s.as_str().is_some_and(|s| self.flag(s))));
                 if flagged {
                     return Err(LAUNCH_FLAGS.to_owned());
                 }
@@ -1596,6 +1595,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             });
         }
         Ok(self.unverified(&out, Some((w.pid, w.id)), false))
+    }
+
+    fn flag(&self, arg: &str) -> bool {
+        arg.starts_with('-') || (self.os == Os::Windows && arg.starts_with('/'))
     }
 
     async fn uncovered_click(
@@ -3844,6 +3847,16 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(sent(&calls, "launch_app").len(), 1);
+        let windows = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Windows)
+            .allow(&["Google Chrome".into()]);
+        let err = windows
+            .run(
+                "desk_launch",
+                json!({"app": "Google Chrome", "args": ["/gpu-launcher=cmd"]}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err, LAUNCH_FLAGS);
     }
 
     #[tokio::test]
