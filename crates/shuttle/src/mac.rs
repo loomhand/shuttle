@@ -11,8 +11,9 @@ use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
 };
 use objc2_app_kit::{
-    NSAlert, NSAlertSecondButtonReturn, NSApplication, NSApplicationActivationPolicy, NSImage,
-    NSMenu, NSMenuItem, NSSquareStatusItemLength, NSStatusBar, NSStatusItem,
+    NSAlert, NSAlertSecondButtonReturn, NSApplication, NSApplicationActivationOptions,
+    NSApplicationActivationPolicy, NSImage, NSMenu, NSMenuItem, NSSquareStatusItemLength,
+    NSStatusBar, NSStatusItem, NSWorkspace,
 };
 use objc2_foundation::{
     NSData, NSObject, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer,
@@ -192,6 +193,7 @@ pub fn asker() -> Asker {
 }
 
 fn ask(mtm: MainThreadMarker, question: &str, tx: oneshot::Sender<bool>) {
+    let front = NSWorkspace::sharedWorkspace().frontmostApplication();
     let alert = alert(mtm, question);
     alert.addButtonWithTitle(&NSString::from_str("Cancel"));
     alert.addButtonWithTitle(&NSString::from_str("Allow"));
@@ -210,6 +212,9 @@ fn ask(mtm: MainThreadMarker, question: &str, tx: oneshot::Sender<bool>) {
     };
     let allowed = alert.runModal() == NSAlertSecondButtonReturn;
     timer.invalidate();
+    if !allowed && let Some(front) = front {
+        front.activateWithOptions(NSApplicationActivationOptions::empty());
+    }
     if let Some(tx) = watch.ivars().take() {
         let _ = tx.send(allowed);
     }

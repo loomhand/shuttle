@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **macOS: declining the confirm dialog gives the front back** (#297). After Cancel, Escape or a stop closed the dialog, no app was active, so keys typed next reached no window. The app that was in front before the dialog is active again; an allowed step still activates its own target.
+
 ## 0.1.41 - 2026-11-08
 
 - **Link nodes carry their URL.** `desk` `snapshot` and `find` with `urls: true`, and `read` always, give a `link` node `url`, its target, on Linux, macOS and Windows, so the permalinks of a feed's posts come from one snapshot instead of one `read --web` per link on macOS only. The text outline leaves it out. On Windows a link's `read` carries its target in `url` instead of `value`, and a `gui_plan` `verify` with `value` on a link compares that target on every platform ([wire.md](docs/wire.md#desk-calls)).
