@@ -97,6 +97,7 @@ const WINDOW_NEVER_READ: &str = "window_never_read";
 const COVERED: &str = "covers the point, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
 const LAUNCH_FLAGS: &str = "the app allowlist admits no launch argument that starts with -, since a flag can make an allowed app start another program";
 const COVERED_NO_CLICK: &str = "another app's window covers the point and this window takes no click of its own, so nothing was clicked: bring the window to the front, then click again";
+const COVER_UNCHECKED_NO_CLICK: &str = "the point could not be checked for another app's window and this window takes no click of its own, so nothing was clicked: bring the window to the front, then click again";
 const COVER_UNKNOWN: &str = "the point could not be checked for another app's window on top, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
 const ANOTHER_SPACE: &str = "accessibility does not reach it there, so a snapshot or an element action needs it on the current Space; background key, type, click, scroll and drag reach it by its title or pid";
 const UNSEEN_SENT: &str = "the app may not repaint a window nobody sees, so the input may have taken effect even if a screenshot looks unchanged: do not send it again, and confirm its effect by a read-back you can trust or by asking the user";
@@ -1551,10 +1552,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             None => self.pixels(w).await?,
         };
         let Some(k) = k else {
-            if cover.is_some() {
-                return Err(COVERED_NO_CLICK.to_owned());
-            }
-            return self.desktop_click(req).await.map(|()| None);
+            return self.uncovered_click(cover.as_deref(), req).await;
         };
         let mut win = req.clone();
         win["session"] = WINDOW_SESSION.into();
@@ -1573,10 +1571,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         at(&mut win, k);
         let out = match self.call("click", win.clone()).await {
             Err(e) if e.contains(NO_WINDOWSERVER_CONNECTION) => {
-                if cover.is_some() {
-                    return Err(COVERED_NO_CLICK.to_owned());
-                }
-                return self.desktop_click(req).await.map(|()| None);
+                return self.uncovered_click(cover.as_deref(), req).await;
             }
             Err(e) if cached.is_some() && e.contains(WINDOW_NEVER_READ) => {
                 match self.pixels(w).await? {
@@ -1584,7 +1579,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         at(&mut win, k);
                         self.call("click", win).await?
                     }
-                    None => return self.desktop_click(req).await.map(|()| None),
+                    None => return self.uncovered_click(cover.as_deref(), req).await,
                 }
             }
             done => done?,
@@ -1601,6 +1596,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             });
         }
         Ok(self.unverified(&out, Some((w.pid, w.id)), false))
+    }
+
+    async fn uncovered_click(
+        &self,
+        cover: Option<&str>,
+        req: Value,
+    ) -> Result<Option<String>, String> {
+        match cover {
+            Some(COVER_UNKNOWN) => Err(COVER_UNCHECKED_NO_CLICK.to_owned()),
+            Some(_) => Err(COVERED_NO_CLICK.to_owned()),
+            None => self.desktop_click(req).await.map(|()| None),
+        }
     }
 
     /// Why the point of `req` takes no foreground click into process `pid`: another app's window is on top there.
