@@ -114,7 +114,7 @@ fn daemon(exe: &Path, endpoint: &str) -> Command {
     cmd
 }
 
-fn app_bundle(exe: &Path) -> Option<&Path> {
+pub(crate) fn app_bundle(exe: &Path) -> Option<&Path> {
     if !cfg!(target_os = "macos") {
         return None;
     }

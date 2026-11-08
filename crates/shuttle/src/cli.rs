@@ -2,7 +2,7 @@
 
 use std::fmt::Display;
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -38,7 +38,11 @@ use crate::{NAME, VENDOR, VERSION, home, http, log, mcp, plugins};
 /// Runs the command in `args` (the program name excluded) and returns its exit code.
 pub fn run(args: &[String]) -> ExitCode {
     let Some((cmd, rest)) = args.split_first() else {
-        return usage();
+        return if relaunched() {
+            run(&["serve".to_owned()])
+        } else {
+            usage()
+        };
     };
     match cmd.as_str() {
         "--version" | "-V" => {
@@ -85,6 +89,20 @@ pub fn run(args: &[String]) -> ExitCode {
         "stop" | "resume" => safety(cmd),
         _ => usage(),
     }
+}
+
+fn relaunched() -> bool {
+    #[cfg(unix)]
+    let parent = std::os::unix::process::parent_id();
+    #[cfg(not(unix))]
+    let parent = 0;
+    std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .is_ok_and(|exe| launched_by_launchd(parent, &exe))
+}
+
+fn launched_by_launchd(parent: u32, exe: &Path) -> bool {
+    parent == 1 && crate::proxy::app_bundle(exe).is_some()
 }
 
 fn desk_endpoint() -> String {
@@ -441,6 +459,18 @@ mod tests {
             cli_args(&["id=21".into(), "window=2048".into()]).unwrap(),
             serde_json::json!({"id": "21", "window": "2048"})
         );
+    }
+
+    #[test]
+    fn only_launchd_starting_the_macos_app_bundle_counts_as_a_relaunch() {
+        let bundled =
+            Path::new("/Users/u/Applications/Loomhand/Shuttle.app/Contents/MacOS/shuttle");
+        assert_eq!(launched_by_launchd(1, bundled), cfg!(target_os = "macos"));
+        assert!(!launched_by_launchd(4242, bundled));
+        assert!(!launched_by_launchd(
+            1,
+            Path::new("/home/u/.local/bin/shuttle")
+        ));
     }
 
     #[test]
