@@ -657,6 +657,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let (tree, found) = self
             .access
             .run(TREE_LIMIT, (), move |b| {
+                b.evict();
                 let listed = frames(b, pid, &allow)?;
                 let frame = live(match id {
                     Some(id) => {
@@ -711,6 +712,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let mut tree = self
             .access
             .run(TREE_LIMIT, (), move |b| {
+                b.evict();
                 let listed = frames(b, pid, &allow)?;
                 let frame = live(pick(b, &allow, background, listed, window.as_deref(), pid)?)?;
                 b.tree(&frame, extras)
@@ -878,6 +880,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
         self.access
             .run(CALL_LIMIT, (), move |b| {
+                b.evict();
                 if under && !allow.is_open() {
                     check_process(b, &allow, a.pid)?;
                 }
@@ -2672,7 +2675,7 @@ pub(crate) mod tests {
     use std::sync::{Mutex, OnceLock};
 
     use super::*;
-    use crate::model::Tree;
+    use crate::model::{MAX_IDS, Tree, evict_ids, lookup};
 
     const PID_CALLS: [(&str, &str); 4] = [
         ("desk_snapshot", r#"{"pid": 4}"#),
@@ -5375,6 +5378,26 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_macos_press_resolves_an_id_of_the_snapshot_that_crossed_the_id_cap() {
+        let desk = Desk::new(|| Ok(Capped::full()), Recorder(Arc::default()), Os::Mac);
+        let snap = desk.run("desk_snapshot", json!({})).await.unwrap();
+        let snap: Value = serde_json::from_str(&snap.text).unwrap();
+        assert_eq!(snap["nodes"][0]["id"], "ok", "{snap}");
+        let out = desk.run("desk_press", json!({"id": "ok"})).await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&out.text).unwrap(),
+            json!({"ok": true, "how": "action"})
+        );
+        desk.run("desk_snapshot", json!({})).await.unwrap();
+        let held = desk
+            .access
+            .run(CALL_LIMIT, (), |b| Ok(b.ids.len()))
+            .await
+            .unwrap();
+        assert_eq!(held, 2);
+    }
+
+    #[tokio::test]
     async fn a_macos_window_click_without_a_windowserver_connection_goes_to_the_desktop() {
         let clicks = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(notepad()), NoConnection(clicks.clone()), Os::Mac);
@@ -6404,6 +6427,81 @@ pub(crate) mod tests {
         f.hits.insert((140, 110), "ok".into());
         f.hits.insert((340, 110), "w".into());
         f
+    }
+
+    struct Capped {
+        ids: HashMap<String, ()>,
+        last: Vec<Frame>,
+    }
+
+    impl Capped {
+        fn full() -> Self {
+            Self {
+                ids: (1..MAX_IDS - 1)
+                    .map(|n| (format!("0/{n}"), ()))
+                    .chain([("w".to_owned(), ())])
+                    .collect(),
+                last: Vec::new(),
+            }
+        }
+    }
+
+    impl Access for Capped {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            self.ids.insert("w".into(), ());
+            self.last = vec![frame("w", "Untitled - Notepad", 4, true, Some("Notepad"))];
+            Ok(self.last.clone())
+        }
+
+        fn evict(&mut self) {
+            evict_ids(&mut self.ids, &self.last);
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            lookup(&self.ids, &frame.id)?;
+            self.ids.insert("ok".into(), ());
+            Ok(Tree {
+                frame: frame.clone(),
+                nodes: vec![self.node("ok", Extras::BOUNDS, 0)?],
+                ..Tree::default()
+            })
+        }
+
+        fn node(&mut self, id: &str, _: Extras, _: usize) -> Result<Node, String> {
+            lookup(&self.ids, id)?;
+            Ok(Node {
+                id: id.into(),
+                role: if id == "w" { "window" } else { "button" },
+                states: vec!["showing"],
+                bounds: Some([100, 100, 80, 20]),
+                ..Node::default()
+            })
+        }
+
+        fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
+            lookup(&self.ids, id)?;
+            Ok(if id == "w" {
+                Vec::new()
+            } else {
+                vec!["w".into()]
+            })
+        }
+
+        fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
+            lookup(&self.ids, id).map(|()| Some(4))
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn act(&mut self, id: &str, _: Act) -> Result<bool, String> {
+            lookup(&self.ids, id).map(|()| true)
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     #[derive(Default)]
