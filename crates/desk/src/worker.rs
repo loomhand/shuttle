@@ -189,15 +189,7 @@ mod tests {
     #[tokio::test]
     async fn a_queued_call_that_times_out_before_it_starts_never_runs() {
         let w = Arc::new(Worker::new(|| Ok(())));
-        let hung = Arc::clone(&w);
-        let hang = tokio::spawn(async move {
-            hung.run(Duration::from_secs(2), (), |_| {
-                std::thread::sleep(Duration::from_millis(300));
-                Ok(())
-            })
-            .await
-        });
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        let (hang, release) = hang_first_call(&w).await;
         let ran = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&ran);
         let err = w
@@ -208,6 +200,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("within 50 ms"), "{err}");
+        release.send(()).unwrap();
         hang.await.unwrap().unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(lock(&ran).is_empty(), "{:?}", lock(&ran));
@@ -216,15 +209,7 @@ mod tests {
     #[tokio::test]
     async fn what_a_queued_call_holds_frees_when_it_times_out_before_it_starts() {
         let w = Arc::new(Worker::new(|| Ok(())));
-        let hung = Arc::clone(&w);
-        let hang = tokio::spawn(async move {
-            hung.run(Duration::from_secs(2), (), |_| {
-                std::thread::sleep(Duration::from_millis(300));
-                Ok(())
-            })
-            .await
-        });
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        let (hang, release) = hang_first_call(&w).await;
         let turn = Arc::new(tokio::sync::Mutex::new(()));
         let held = Arc::clone(&turn).lock_owned().await;
         let err = w
@@ -233,6 +218,7 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("within 50 ms"), "{err}");
         assert!(turn.try_lock().is_ok(), "the turn is still held");
+        release.send(()).unwrap();
         hang.await.unwrap().unwrap();
     }
 
@@ -272,5 +258,23 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, "no accessibility permission");
+    }
+
+    async fn hang_first_call(
+        w: &Arc<Worker<()>>,
+    ) -> (tokio::task::JoinHandle<Result<(), String>>, Sender<()>) {
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = channel::<()>();
+        let hung = Arc::clone(w);
+        let hang = tokio::spawn(async move {
+            hung.run(Duration::from_secs(30), (), move |_| {
+                let _ = entered_tx.send(());
+                let _ = release_rx.recv();
+                Ok(())
+            })
+            .await
+        });
+        entered_rx.await.unwrap();
+        (hang, release_tx)
     }
 }
