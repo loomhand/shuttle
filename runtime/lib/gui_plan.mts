@@ -167,7 +167,7 @@ async function perform(p: Params): Promise<Result> {
   if (gapStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: unrecorded(gapStep), reason: `no value for {{${unfilled(gapStep)}}}: pass it in params; nothing ran` } }
   BG = BEHIND
   const held = pending()
-  const ws0 = await desk.windows(); for (const w of ws0) known.add(w.title)
+  const ws0 = await desk.windows(); const at0 = Date.now(); for (const w of ws0) known.add(w.title)
   if (BG) { target = null; adopted = new Set(); doubt = null; fronted = false; userFront = desk.front(ws0); rejoin(held, ws0) }
   const vetted = new Set<string>()
   const startTitles = new Set(known)
@@ -186,7 +186,7 @@ async function perform(p: Params): Promise<Result> {
     const s = fill(planned, params); T = {}; const rec: Rec = { i, op: ops(s)[0] }
     const ts = Date.now(); const calls = desk.served.length
     try {
-      let { ws, at: since } = i === (p.start ?? 0) ? { ws: ws0, at: Date.now() } : await afterSettle(); let f = BG ? frontOf(ws) : desk.front(ws)
+      let { ws, at: since } = i === (p.start ?? 0) ? { ws: ws0, at: at0 } : await afterSettle(); let f = BG ? frontOf(ws) : desk.front(ws)
       if (f?.stale && !s.app) {
         const was = f
         const heir = (x: Win | null) => !!x && !x.stale && (x.id === was.id || (x.pid !== null && x.pid === was.pid) || (!!was.app && x.app === was.app) || (!!s.window && norm(x.title).includes(norm(s.window))))

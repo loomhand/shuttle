@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { test } from 'node:test'
 
-import { daemon, notepad, user } from './daemon.mts'
+import { daemon, notepad, root, user } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
 test('an app step focuses the app\'s open window, by its process or the window list, instead of launching the app, and names an app that does not exist', { skip: process.platform !== 'linux' }, async (t) => {
@@ -56,4 +56,21 @@ test('a type step sends its whole text in one desk type call, so a closing tag o
   const r = await main({ steps: [{ type: text }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(typed, [text])
+})
+
+test('the first step takes the start window list only within 25 ms of its read, however long the start outline took', async (t) => {
+  const popup = { id: '9', title: '', role: 'dialog', pid: 4, active: true }
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify([{ ...user(), active: false }, popup])
+    if (tool === 'desk_snapshot') {
+      for (const end = Date.now() + (calls.filter((c) => c === tool).length === 1 ? 40 : 0); Date.now() < end;);
+      return JSON.stringify({ window: popup, nodes: [root('dialog', '')], truncated: false })
+    }
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ key: 'a' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(calls.slice(0, calls.indexOf('desk_key')), ['desk_windows', 'desk_snapshot', 'desk_snapshot', 'desk_windows'])
 })
