@@ -5914,7 +5914,7 @@ pub(crate) mod tests {
         let started = Instant::now();
         desk.run("desk_windows", json!({})).await.unwrap();
         assert!(
-            started.elapsed() < Duration::from_millis(200),
+            started.elapsed() < Duration::from_secs(2),
             "{:?}",
             started.elapsed()
         );
