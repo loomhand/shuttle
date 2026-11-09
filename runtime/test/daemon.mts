@@ -15,7 +15,7 @@ export const user = (): W => ({ id: 'c', title: 'Calculator', role: 'window', pi
 export const notepad = (): W => ({ id: '1', title: 'Untitled - Notepad', role: 'window', pid: 4, active: false })
 export const root = (role: string, name: string) => ({ ref: 0, id: '1/1', parent: -1, depth: 0, role, name, states: ['showing'] })
 
-export async function daemon(t: { after(fn: () => void): void }, answer: (c: Call) => Reply): Promise<void> {
+export async function daemon(t: { after(fn: () => void): void }, answer: (c: Call) => Reply | Promise<Reply>): Promise<void> {
   const server = createServer((s) => {
     let buf = Buffer.alloc(0)
     s.on('error', () => {})
@@ -24,7 +24,7 @@ export async function daemon(t: { after(fn: () => void): void }, answer: (c: Cal
       if (buf.length < 4 || buf.length < 4 + buf.readUInt32BE(0)) return
       const c = JSON.parse(buf.subarray(4).toString()) as Call
       let r: Reply
-      try { r = c.tool === 'desk_wait' ? await wait(answer, c.args) : c.tool === 'desk_unanswered' ? unanswered(answer(c)) : answer(c) } catch (e: unknown) { r = { text: String(e), error: true } }
+      try { r = c.tool === 'desk_wait' ? await wait(answer, c.args) : c.tool === 'desk_unanswered' ? unanswered(await answer(c)) : await answer(c) } catch (e: unknown) { r = { text: String(e), error: true } }
       const body = Buffer.from(JSON.stringify(typeof r === 'string' ? { text: r, is_error: false } : { text: r.text, is_error: r.error ?? false, image_b64: r.image }))
       const head = Buffer.alloc(4)
       head.writeUInt32BE(body.length)
@@ -45,9 +45,9 @@ function unanswered(r: Reply): Reply {
   return r === '{"ok":true}' ? 'null' : r
 }
 
-async function wait(answer: (c: Call) => Reply, args: Record<string, unknown>): Promise<Reply> {
+async function wait(answer: (c: Call) => Reply | Promise<Reply>, args: Record<string, unknown>): Promise<Reply> {
   await sleep(Math.min(Number(args.timeout_ms), 10))
-  const r = answer({ tool: 'desk_windows', args: { waiting: true } })
+  const r = await answer({ tool: 'desk_windows', args: { waiting: true } })
   const text = typeof r === 'string' ? r : r.text
   return JSON.stringify({ changed: text !== JSON.stringify(args.since), windows: JSON.parse(text) })
 }
