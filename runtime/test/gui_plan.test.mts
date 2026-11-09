@@ -61,11 +61,15 @@ test('a type step sends its whole text in one desk type call, so a closing tag o
 test('the first step takes the start window list only within 25 ms of its read, however long the start outline took', async (t) => {
   const popup = { id: '9', title: '', role: 'dialog', pid: 4, active: true }
   const calls: string[] = []
-  await daemon(t, ({ tool }) => {
-    calls.push(tool)
+  const real = Date.now; let now = real()
+  Date.now = () => now
+  t.after(() => { Date.now = real })
+  await daemon(t, ({ tool, args }) => {
+    if (args.waiting) now += 10
+    else calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify([{ ...user(), active: false }, popup])
     if (tool === 'desk_snapshot') {
-      for (const end = Date.now() + (calls.filter((c) => c === tool).length === 1 ? 40 : 0); Date.now() < end;);
+      if (calls.filter((c) => c === tool).length === 1) now += 40
       return JSON.stringify({ window: popup, nodes: [root('dialog', '')], truncated: false })
     }
     return '{"ok":true}'

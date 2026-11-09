@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { setTimeout as sleep } from 'node:timers/promises'
 
 import { daemon, gray, notepad, root, user } from './daemon.mts'
 import type { Call, Reply, W } from './daemon.mts'
+import { calls } from '../lib/desk.mts'
 
 process.env.SHUTTLE_INPUT = 'background'
 const { main } = await import('../lib/gui_plan.mts')
@@ -83,12 +83,15 @@ test('a password the window does not show after typing escalates without the pas
 test('a background type reads the unvalued fields of its window four at a time', async (t) => {
   const fields = Array.from({ length: 40 }, (_, k) => ({ ref: k + 1, id: `1/${k + 2}`, parent: 0, depth: 1, role: 'textbox', name: `Field ${k}`, states: ['showing'] }))
   const d = desktop([user(), notepad()], ({ tool }) => tool === 'desk_snapshot' ? JSON.stringify({ window: notepad(), truncated: false, nodes: [root('window', notepad().title), ...fields] }) : undefined)
-  let open = 0; let most = 0
+  const held: (() => void)[] = []
+  let base = 0; let answered = 0; let most = 0
   await daemon(t, async (c) => {
-    if (c.tool !== 'desk_read') return d.reply(c)
-    open++; most = Math.max(most, open)
-    await sleep(20)
-    open--
+    if (c.tool !== 'desk_read') { base = calls.n; answered = 0; return d.reply(c) }
+    await new Promise<void>((go) => {
+      held.push(go)
+      const open = calls.n - base - answered; most = Math.max(most, open)
+      if (held.length === open) { answered += open; for (const release of held.splice(0)) release() }
+    })
     return '{"value":""}'
   })
   const r = await main({ steps: [{ app: 'Notepad' }, { type: 'hi' }] })
