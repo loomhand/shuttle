@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **`gui_plan` reads one window list fewer per settling step.** After a click, menu or close step waits for the window to settle, the next step and the end of the plan take the list that wait read, when it is under 25 ms old, shows a front window and no other call came after it; a macOS list costs 11-15 ms.
+
 ## 0.1.43 - 2026-11-09
 
 - **Each MCP session is its own caller** (#317). Every `shuttle mcp` session reached the daemon as the same agent, so two MCP clients shared one `web` hold, and one client turning a page tree off turned it off for the other; they also shared the default computer session and looked the same to service plugins. A session on stdio now calls as `mcp-<client name>-<nonce>` and one over HTTP as `mcp-http-<Mcp-Session-Id>`; the CLI and `gui_plan` and `script_run` runs keep their own ids.

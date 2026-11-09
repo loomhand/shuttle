@@ -65,6 +65,21 @@ test('a shown match in a tree without bounds, as GTK 4 gives, is clicked without
   assert.ok(!tools.some((x) => x.startsWith('model_')), tools.join(' '))
 })
 
+test('the step after a click, and the end of the plan, take the window list the click settled on instead of listing the windows again', async (t) => {
+  const { lists, tools } = await twoClicks(t)
+  assert.deepEqual(lists, [1, 2], tools.join(' '))
+})
+
+test('the step after a settle lists the windows again when another daemon call came after the settle', async (t) => {
+  const { lists, tools } = await twoClicks(t, { after: 'Untitled - Text Editor' })
+  assert.equal(lists[0], 3, tools.join(' '))
+})
+
+test('a settle that ends with no front window leaves the next step to list the windows again', async (t) => {
+  const { lists, tools } = await twoClicks(t, { handoff: true })
+  assert.equal(lists[0], 2, tools.join(' '))
+})
+
 async function newTab(t: TestContext, after: number) {
   const win = { id: '1.20/5', title: 'New Document (Draft) - Text Editor', role: 'window', pid: 901, active: true }
   let pressed = 0
@@ -91,4 +106,27 @@ async function newTab(t: TestContext, after: number) {
   const keyed = await plan({ steps: [{ click: 'New tab' }, { key: 'ctrl+v' }] })
   assert.equal(keyed.ok, true, JSON.stringify(keyed))
   return got
+}
+
+async function twoClicks(t: TestContext, o: { after?: string; handoff?: boolean } = {}) {
+  const win = { id: '1.20/5', title: 'Untitled - Text Editor', role: 'window', pid: 901, active: true }
+  const nodes = [
+    { ref: 0, id: '1.20/5', parent: -1, depth: 0, role: 'window', name: win.title, states: ['showing'] },
+    { ref: 1, id: '1.20/6', parent: 0, depth: 1, role: 'button', name: 'Save', states: ['showing'] },
+    { ref: 2, id: '1.20/7', parent: 0, depth: 1, role: 'button', name: 'Open', states: ['showing'] },
+  ]
+  const tools: string[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (!args.waiting) tools.push(tool)
+    const handedOff = !!o.handoff && tools.at(-2) === 'desk_press' && tools.indexOf('desk_press') === tools.length - 2
+    if (tool === 'desk_windows') return JSON.stringify([{ ...win, active: !handedOff }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, nodes, truncated: false })
+    if (tool === 'desk_press') return JSON.stringify({ ok: true, how: 'click' })
+    return '{"ok":true}'
+  })
+  const r = await plan({ steps: [{ click: 'Save', ...(o.after ? { after: o.after } : {}) }, { click: 'Open' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  const first = tools.indexOf('desk_press'), second = tools.indexOf('desk_press', first + 1)
+  const count = (x: string[]) => x.filter((y) => y === 'desk_windows').length
+  return { lists: [count(tools.slice(first + 1, second)), count(tools.slice(second + 1))], tools }
 }

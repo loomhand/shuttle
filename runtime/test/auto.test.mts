@@ -192,6 +192,26 @@ test('a background note left open before a later step took the foreground still 
   assert.deepEqual(r.unverified, [{ step: 1, note: 'unverifiable: posted ctrl+b' }])
 })
 
+test('a background step that fell back to the foreground leaves the end of the plan to list the windows again', async (t) => {
+  const nodes = [
+    { ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: notepad().title, states: ['showing'] },
+    { ref: 1, id: 's', parent: 0, depth: 1, role: 'button', name: 'Save', states: ['showing'] },
+  ]
+  const calls: Call[] = []
+  await daemon(t, (c) => {
+    if (!c.args.waiting) calls.push(c)
+    if (c.tool === 'desk_windows') return JSON.stringify([user(), notepad()])
+    if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes, truncated: false })
+    if (c.tool === 'desk_press') return JSON.stringify({ ok: true, how: 'click', input: 'foreground' })
+    return '{"ok":true}'
+  })
+  const r = await auto({ steps: [{ app: 'Notepad' }, { click: 'Save' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  const pressed = calls.findIndex((c) => c.tool === 'desk_press')
+  assert.ok(pressed >= 0, tools(calls).join('\n'))
+  assert.equal(calls.slice(pressed + 1).filter((c) => c.tool === 'desk_windows').length, 3, tools(calls).join('\n'))
+})
+
 test('a password auto cannot see in its field is never typed again in the foreground', async (t) => {
   const calls: Call[] = []
   const field = { ref: 1, id: 'p', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'focused', 'protected'] }
