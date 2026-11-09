@@ -10,8 +10,9 @@ use x11rb::protocol::shape::{ConnectionExt as _, SK};
 use x11rb::protocol::shm::ConnectionExt as _;
 use x11rb::protocol::xinput::{ConnectionExt as _, DeviceType};
 use x11rb::protocol::xproto::{
-    Atom, AtomEnum, ChangeWindowAttributesAux, ConnectionExt as _, EventMask, GrabMode, GrabStatus,
-    ImageFormat, ImageOrder, MapState, Window, WindowClass,
+    Atom, AtomEnum, ChangeWindowAttributesAux, ConnectionExt as _, EventMask, GetGeometryReply,
+    GetWindowAttributesReply, GrabMode, GrabStatus, ImageFormat, ImageOrder, MapState, Window,
+    WindowClass,
 };
 use x11rb::protocol::{ErrorKind, Event};
 use x11rb::rust_connection::RustConnection;
@@ -482,13 +483,11 @@ impl Grabber {
 
     /// The top drawn child of the root at the screen point `(x, y)`, past a cua-driver cursor overlay, which input passes through.
     pub fn top_at(&self, x: i32, y: i32) -> Result<Option<Placement>, String> {
-        Ok(self.children(true)?.into_iter().rev().find(|p| {
-            p.drawn
-                && p.contains(x, y)
-                && !self
-                    .name(p.id)
-                    .is_some_and(|n| n.as_bytes().starts_with(OVERLAY_NAME))
-        }))
+        Ok(self
+            .children(true)?
+            .into_iter()
+            .rev()
+            .find(|p| p.drawn && p.contains(x, y)))
     }
 
     /// Whether the screen point `(x, y)` shows a window title: a desktop panel or the band of a frame above its client.
@@ -552,7 +551,7 @@ impl Grabber {
             .collect())
     }
 
-    /// The mapped children of the root with their geometry; the desktop shell's only with `shell`.
+    /// The mapped children of the root with their geometry, past a cua-driver cursor overlay; the desktop shell's only with `shell`.
     fn children(&self, shell: bool) -> Result<Vec<Placement>, String> {
         let tree = self
             .conn
@@ -572,27 +571,24 @@ impl Grabber {
                     .conn
                     .get_geometry(w)
                     .map_err(|e| format!("geometry: {e}"))?;
-                Ok((w, attrs, geometry))
+                let name = self
+                    .conn
+                    .get_property(false, w, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 16)
+                    .map_err(|e| format!("get WM_NAME: {e}"))?;
+                Ok((w, attrs, geometry, name))
             })
             .collect::<Result<Vec<_>, String>>()?;
         let known = (!shell).then(|| self.shell());
         let mut mapped = Vec::new();
-        for (id, attrs, geometry) in cookies {
+        for (id, attrs, geometry, name) in cookies {
             let (Ok(attrs), Ok(g)) = (attrs.reply(), geometry.reply()) else {
                 continue;
             };
-            if attrs.map_state == MapState::VIEWABLE
-                && known.as_ref().is_none_or(|k| !k.windows.contains(&id))
+            let name = name.reply().map(|r| r.value).unwrap_or_default();
+            if known.as_ref().is_none_or(|k| !k.windows.contains(&id))
+                && let Some(p) = placement(id, &attrs, &g, &name)
             {
-                mapped.push(Placement {
-                    id,
-                    x: g.x,
-                    y: g.y,
-                    width: g.width,
-                    height: g.height,
-                    popup: attrs.override_redirect,
-                    drawn: attrs.class == WindowClass::INPUT_OUTPUT,
-                });
+                mapped.push(p);
             }
         }
         Ok(mapped)
@@ -921,6 +917,23 @@ fn cover(
         .map(|p| Cover::Under(p.id))
 }
 
+fn placement(
+    id: Window,
+    attrs: &GetWindowAttributesReply,
+    g: &GetGeometryReply,
+    name: &[u8],
+) -> Option<Placement> {
+    (attrs.map_state == MapState::VIEWABLE && !name.starts_with(OVERLAY_NAME)).then(|| Placement {
+        id,
+        x: g.x,
+        y: g.y,
+        width: g.width,
+        height: g.height,
+        popup: attrs.override_redirect,
+        drawn: attrs.class == WindowClass::INPUT_OUTPUT,
+    })
+}
+
 fn whole(mut read: impl FnMut(u32) -> Option<(Vec<u8>, u32)>) -> Option<Vec<u8>> {
     let mut value = Vec::new();
     for _ in 0..TITLE_CHUNKS {
@@ -1174,6 +1187,35 @@ mod tests {
             matches!(&other, Err(e) if e.starts_with("get WM_NAME: ")),
             "{other:?}"
         );
+    }
+
+    #[test]
+    fn the_cursor_overlay_is_no_child_and_a_menu_and_a_dock_are() {
+        let attrs = |popup| GetWindowAttributesReply {
+            map_state: MapState::VIEWABLE,
+            override_redirect: popup,
+            class: WindowClass::INPUT_OUTPUT,
+            ..Default::default()
+        };
+        let at = |x, y, width, height| GetGeometryReply {
+            x,
+            y,
+            width,
+            height,
+            ..Default::default()
+        };
+        let screen = at(0, 0, 1280, 800);
+        let overlay = b"Cua.AgentCursorOverlay.default";
+        assert!(placement(7, &attrs(true), &screen, overlay).is_none());
+        let menu = placement(8, &attrs(true), &at(40, 30, 200, 300), b"");
+        assert!(menu.is_some_and(|p| p.popup && p.drawn && p.id == 8));
+        let dock = placement(9, &attrs(false), &at(0, 0, 1280, 27), b"xfce4-panel");
+        assert!(dock.is_some_and(|p| !p.popup && p.drawn && (p.width, p.height) == (1280, 27)));
+        let hidden = GetWindowAttributesReply {
+            map_state: MapState::UNMAPPED,
+            ..attrs(true)
+        };
+        assert!(placement(8, &hidden, &screen, b"").is_none());
     }
 
     fn property(value: &[u8], offset: u32) -> Option<(Vec<u8>, u32)> {
