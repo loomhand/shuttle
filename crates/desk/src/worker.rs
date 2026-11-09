@@ -126,8 +126,6 @@ fn spawn<B: 'static>(open: fn() -> Result<B, String>) -> Sender<Job<B>> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
 
     #[tokio::test]
