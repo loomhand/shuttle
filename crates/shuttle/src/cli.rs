@@ -266,7 +266,6 @@ async fn serve(
         .as_mut()
         .map(|c| std::mem::take(&mut c.safety))
         .unwrap_or_default();
-    safety.indicator &= local;
     #[cfg(any(target_os = "macos", windows))]
     let hotkey = match hotkey::parse(&safety.kill_hotkey) {
         Ok(h) => h,
@@ -276,6 +275,7 @@ async fn serve(
             hotkey::parse(&safety.kill_hotkey)?
         }
     };
+    safety.indicator &= local;
     let mut key_vars = vec![DEFAULT_KEY_ENV.to_owned()];
     if let Ok(c) = &config
         && !key_vars.contains(&c.api_key_env)
