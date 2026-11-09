@@ -28,6 +28,7 @@ const LONG_PRESS_MS: u32 = 800;
 const SWIPE_MS: u32 = 300;
 const TAP_GAP: Duration = Duration::from_millis(100);
 const SCROLL_FRACTION: i32 = 3;
+const MAX_SCROLL: u32 = 50;
 const DEVICE_JAR: &str = "/data/local/tmp/shuttle-scrcpy.jar";
 const DEVICE_SU: &str = "/data/local/tmp/su1000";
 const SCRCPY_VERSION: &str = "4.1";
@@ -218,7 +219,7 @@ impl Android {
                     "right" => (-w / SCROLL_FRACTION, 0),
                     other => return Err(format!("unknown direction {other}")),
                 };
-                for _ in 0..args.amount.unwrap_or(1).max(1) {
+                for _ in 0..args.amount.unwrap_or(1).clamp(1, MAX_SCROLL) {
                     self.swipe((x, y), (x + dx, y + dy), SWIPE_MS).await?;
                 }
                 "scrolled".to_owned()
@@ -1829,6 +1830,21 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("too slowly"), "{err}");
         assert_eq!(log(&fake, "adbinput"), "");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_scroll_amount_is_capped_at_the_drivers_fifty() {
+        let fake = Fake::new();
+        fake.windows("");
+        fake.android
+            .act(serde_json::json!({"action": "scroll", "direction": "down", "amount": 1000}))
+            .await
+            .unwrap();
+        assert_eq!(
+            log(&fake, "adbinput").matches("swipe").count(),
+            MAX_SCROLL as usize
+        );
     }
 
     #[tokio::test]
