@@ -34,3 +34,26 @@ test('a grounded check on a screen whose origin is left of zero crops around the
   assert.match(prompts.find((p) => p.includes('crop')) ?? '', /640x400 crop.*pixel \(320, 200\)/)
   assert.deepEqual(shots.at(-1), { x: 960, y: 200, w: 640, h: 400 })
 })
+
+test('a state check on a screen whose origin is left of zero crops the control from the screen origin, and a crop clamped at the edge narrows by the clamp', async (t) => {
+  const win = { id: '1.1/1', title: 'Portal', role: 'frame', pid: process.pid, active: true }
+  const usage = { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 }
+  const box = { ref: 1, id: '1.1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Bold', states: ['showing'], bounds: [-1000, 100, 20, 20] }
+  const shots: Record<string, unknown>[] = []
+  let reads = 0
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: '1.1/1', parent: -1, depth: 0, role: 'frame', name: 'Portal', states: ['showing'] }, box] })
+    if (tool === 'desk_screen') return '{"left":-1280,"top":0,"width":2560,"height":800}'
+    if (tool === 'desk_read') return reads++ % 2 ? JSON.stringify(box) : { text: 'no state', error: true }
+    if (tool === 'desk_shot') { shots.push(args); return { text: '{"ok":true}', image: gray(Number(args.w), Number(args.h)).toString('base64') } }
+    if (tool === 'model_ask') return JSON.stringify({ text: '{"on": true}', usage })
+    return '{"ok":true}'
+  })
+  const first = await main({ steps: [{ verify: 'Bold', on: true }] })
+  assert.equal(first.ok, true, JSON.stringify(first))
+  box.bounds = [-1270, 2, 20, 20]
+  const edge = await main({ steps: [{ verify: 'Bold', on: true }] })
+  assert.equal(edge.ok, true, JSON.stringify(edge))
+  assert.deepEqual(shots, [{ x: 240, y: 96, w: 100, h: 28 }, { x: 0, y: 0, w: 70, h: 26 }])
+})
