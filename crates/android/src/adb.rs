@@ -1940,7 +1940,19 @@ mod tests {
     async fn a_session_the_server_closed_is_reopened_before_anything_is_sent() {
         let (android, mut peer) = session("/nonexistent/adb").await;
         peer.shutdown().await.unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while android
+                .control
+                .lock()
+                .await
+                .as_ref()
+                .is_none_or(Control::is_open)
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
         let err = android.paste("hi").await.unwrap_err();
         assert!(err.contains("run adb"), "{err}");
         let mut sent = Vec::new();
