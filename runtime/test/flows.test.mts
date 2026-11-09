@@ -209,3 +209,15 @@ test('a suffixed auto name stays within the slug length, so it never names the f
   assert.equal(readFileSync(`${process.env.SHUTTLE_FLOWS}/${named.saved}.json`, 'utf8'), before)
   assert.equal(flow(later.saved).params.text, 'scratch')
 })
+
+test('a flow file without saved_at or params stays out of the index, and the flows beside it still index', async () => {
+  const dir = process.env.SHUTTLE_FLOWS ?? ''
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(`${dir}/broken.json`, '{"name":"broken"}')
+  writeFileSync(`${dir}/good.json`, JSON.stringify({ name: 'good', params: {}, steps: [{ app: 'Notepad' }, { key: 'ctrl+s' }], idempotent: false, saved_at: '2026-11-10T00:00:00.000Z' }))
+  const r = await main({ reindex: true })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  const index = readFileSync(`${dir}/INDEX`, 'utf8')
+  assert.match(index, /^good\(\) once: key ctrl\+s$/m)
+  assert.doesNotMatch(index, /broken/)
+})
