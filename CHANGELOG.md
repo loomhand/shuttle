@@ -4,6 +4,7 @@
 
 - **`gui_plan` reads one window list fewer per settling step.** After a click, menu or close step waits for the window to settle, the next step and the end of the plan take the list that wait read, when it is under 25 ms old, shows a front window and no other call came after it; a macOS list costs 11-15 ms.
 - **A faster first call after a cold start.** The daemon builds its model client while the rest of it starts, after it listens, and a call that starts the daemon checks for it every 10 ms instead of 100: 501 to 427 ms from a cold start to the first answer.
+- **macOS background typing reaches a Chromium app again.** The bundled 0.45.1 driver sends background text as key events that carry several characters, and a Chrome that has been in front once drops them all. Background typing into a Chromium or Electron app now asks the driver for 1 ms a character: 0 of 9 to 9 of 9 runs of 620 characters on a long-running Chrome, at about 11 ms a character. Safari, Terminal and TextEdit keep the driver default.
 
 ## 0.1.43 - 2026-11-09
 

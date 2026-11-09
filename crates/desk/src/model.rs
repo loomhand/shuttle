@@ -333,6 +333,9 @@ pub trait Access {
     fn bundle_name(&mut self, _app: &str) -> Result<Option<String>, String> {
         Ok(None)
     }
+    fn chromium(&mut self, _pid: u32) -> bool {
+        false
+    }
     /// The page URL and DOM id of the web element `id`, each none where the backend reads no web content.
     fn web_of(&mut self, _id: &str) -> Result<(Option<String>, Option<String>), String> {
         Ok((None, None))
