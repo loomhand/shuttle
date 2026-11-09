@@ -150,6 +150,13 @@ jobs:
           shellcheck -s sh packaging/install.sh
           shellcheck packaging/package.sh packaging/fetch.sh
 
+      - name: Parse install.ps1
+        if: matrix.runner == 'windows-2025'
+        shell: pwsh
+        run: |
+          $null = [scriptblock]::Create((Get-Content packaging/install.ps1 -Raw))
+          powershell -NoProfile -Command '$null = [scriptblock]::Create((Get-Content packaging/install.ps1 -Raw))'
+
       - name: Node from packaging/pins
         run: |
           dir=$(packaging/fetch.sh ${{ matrix.platform }} node "$RUNNER_TEMP")

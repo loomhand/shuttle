@@ -56,9 +56,11 @@
         Remove-Item -Recurse -Force -LiteralPath $Tmp
     }
 
-    $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if (-not (($UserPath -split ';') -contains $InstallDir)) {
-        [Environment]::SetEnvironmentVariable('Path', (@($UserPath, $InstallDir) | Where-Object { $_ }) -join ';', 'User')
+    $UserPath = (Get-Item HKCU:\Environment).GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+    if (-not (([Environment]::ExpandEnvironmentVariables($UserPath) -split ';') -contains $InstallDir)) {
+        Set-ItemProperty HKCU:\Environment Path ((@($UserPath, $InstallDir) | Where-Object { $_ }) -join ';') -Type ExpandString
+        Add-Type -Namespace Shuttle -Name SettingChange -MemberDefinition '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, IntPtr wParam, string lParam, uint flags, uint timeout, IntPtr result);'
+        $null = [Shuttle.SettingChange]::SendMessageTimeout([IntPtr]0xffff, 0x1a, [IntPtr]::Zero, 'Environment', 0, 1000, [IntPtr]::Zero)
         Write-Host "added $InstallDir to the user PATH; open a new terminal to use it"
     }
     $env:Path = "$env:Path;$InstallDir"
