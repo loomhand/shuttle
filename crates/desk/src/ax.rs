@@ -1587,6 +1587,8 @@ mod tests {
                 "{id} of the walk that crossed the cap"
             );
         }
+        ax.app_frames(Vec::new());
+        assert!(ax.ids.len() >= MAX_IDS, "{}", ax.ids.len());
         ax.evict();
         assert!(ax.ids.len() < MAX_IDS, "{}", ax.ids.len());
         assert_ne!(early, "4242");
