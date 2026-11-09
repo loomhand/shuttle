@@ -1144,7 +1144,8 @@ async function cropState(n: Node, unsent = true) {
   if (BG) await front(frontOf(await desk.windows()))
   const b = (await desk.read(n.id)).bounds ?? n.bounds
   if (!b) throw new Error(`"${n.name}" has no screen position`)
-  const shot = await desk.shot({ x: Math.max(0, b[0] - 40), y: Math.max(0, b[1] - 4), w: b[2] + 80, h: b[3] + 8 })
+  const area = await desk.screen(); const [x, y] = [b[0] - 40 - (area.left ?? 0), b[1] - 4 - (area.top ?? 0)]
+  const shot = await desk.shot({ x: Math.max(0, x), y: Math.max(0, y), w: b[2] + 80 + Math.min(0, x), h: b[3] + 8 + Math.min(0, y) })
   return (await vision(`This is one control of a desktop app: "${n.name}". Is it switched on (a check mark, tick, filled box or pressed state)? {"on": true or false}`, shot, 'on')).on === true
 }
 
