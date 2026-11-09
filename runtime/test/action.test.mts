@@ -116,8 +116,12 @@ async function twoClicks(t: TestContext, o: { after?: string; handoff?: boolean 
     { ref: 2, id: '1.20/7', parent: 0, depth: 1, role: 'button', name: 'Open', states: ['showing'] },
   ]
   const tools: string[] = []
+  const real = Date.now; let now = real()
+  Date.now = () => now
+  t.after(() => { Date.now = real })
   await daemon(t, ({ tool, args }) => {
-    if (!args.waiting) tools.push(tool)
+    if (args.waiting) now += 10
+    else tools.push(tool)
     const handedOff = !!o.handoff && tools.at(-2) === 'desk_press' && tools.indexOf('desk_press') === tools.length - 2
     if (tool === 'desk_windows') return JSON.stringify([{ ...win, active: !handedOff }])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, nodes, truncated: false })
