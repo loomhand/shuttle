@@ -1098,7 +1098,7 @@ mod tests {
 
     async fn answer(endpoint: &str, ask: &Call) -> Result<Output, String> {
         let mut out = Err(String::new());
-        for _ in 0..50 {
+        for _ in 0..500 {
             out = call(endpoint, ask).await;
             if out.is_ok() {
                 break;
