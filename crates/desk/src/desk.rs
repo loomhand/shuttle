@@ -1275,9 +1275,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 Ok((pid, title.ok_or(BACKGROUND_ELEMENT)?.title, frame))
             })
             .await?;
-        let (_, picked, _) = self.pick_window(Some(&title), Some(pid), false).await?;
-        let scale = self.scale().await?;
         let mut listed = self.call("list_windows", json!({})).await?;
+        let (_, picked, _) = self
+            .pick_listed(listed.clone(), Some(&title), Some(pid), false)
+            .await?;
+        let scale = self.scale().await?;
         let Value::Array(windows) = listed["structuredContent"]["windows"].take() else {
             return Err(BACKGROUND_ELEMENT.to_owned());
         };
@@ -1953,14 +1955,24 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(out.to_string())
     }
 
-    /// The driver window titled like `window` or of `pid`, as a frame and as the driver lists it, with how many listed windows its title picks among.
     async fn pick_window(
         &self,
         window: Option<&str>,
         pid: Option<u32>,
         by_title: bool,
     ) -> Result<(Frame, Value, usize), String> {
-        let mut listed = self.call("list_windows", json!({})).await?;
+        let listed = self.call("list_windows", json!({})).await?;
+        self.pick_listed(listed, window, pid, by_title).await
+    }
+
+    /// The driver window titled like `window` or of `pid`, as a frame and as the driver lists it, with how many listed windows its title picks among.
+    async fn pick_listed(
+        &self,
+        mut listed: Value,
+        window: Option<&str>,
+        pid: Option<u32>,
+        by_title: bool,
+    ) -> Result<(Frame, Value, usize), String> {
         let mut raw = match listed["structuredContent"]["windows"].take() {
             Value::Array(windows) => windows,
             _ => Vec::new(),
@@ -4133,6 +4145,7 @@ pub(crate) mod tests {
             ),
             (&json!(4), &json!(1), &json!(140.0), &json!(110.0))
         );
+        assert_eq!(sent(&calls, "list_windows").len(), 1);
         let err = desk
             .run("desk_act", json!({"id": "orphan", "action": "click"}))
             .await
