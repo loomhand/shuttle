@@ -1,6 +1,6 @@
 //! The platform-neutral desk model: windows, element trees and the accessibility calls each OS backend serves.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use desk_core::text::Named;
@@ -434,6 +434,18 @@ pub fn lookup<T: Clone>(ids: &HashMap<String, T>, id: &str) -> Result<T, String>
         .ok_or_else(|| format!("unknown element id {id:?}: take a new snapshot"))
 }
 
+pub fn evict_ids<'a, T>(
+    ids: &mut HashMap<String, T>,
+    frames: impl IntoIterator<Item = &'a Frame>,
+) -> bool {
+    if ids.len() < MAX_IDS {
+        return false;
+    }
+    let kept: HashSet<&str> = frames.into_iter().map(|f| f.id.as_str()).collect();
+    ids.retain(|id, _| kept.contains(id.as_str()));
+    true
+}
+
 /// The id of the first element of `frame`'s tree in the focused state, from one whole tree read.
 pub fn focused_by_tree<B: Access + ?Sized>(
     b: &mut B,
@@ -503,6 +515,20 @@ mod tests {
         assert!(hung(s(2), s(30)));
         assert!(!hung(s(5), s(4)));
         assert!(hung(s(5), s(10)));
+    }
+
+    #[test]
+    fn ids_are_evicted_only_at_the_cap_and_keep_the_listed_frames() {
+        let frame = Frame {
+            id: "w".into(),
+            ..Frame::default()
+        };
+        let mut ids: HashMap<String, u8> = (1..MAX_IDS - 1).map(|n| (n.to_string(), 0)).collect();
+        ids.insert("w".into(), 0);
+        assert!(!evict_ids(&mut ids, []));
+        ids.insert("0".into(), 0);
+        assert!(evict_ids(&mut ids, [&frame]));
+        assert_eq!(ids.into_keys().collect::<Vec<_>>(), ["w"]);
     }
 
     #[test]

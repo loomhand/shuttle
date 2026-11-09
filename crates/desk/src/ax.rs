@@ -1,7 +1,7 @@
 //! The macOS desk backend: window trees by a budgeted AX walk with one batched attribute read per element.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, c_void};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::os::unix::ffi::OsStrExt;
@@ -24,8 +24,8 @@ use crate::ax_roles::{self, Facts, Kind};
 use crate::keys::ax_combo;
 use crate::lock;
 use crate::model::{
-    Access, Act, Extras, Frame, LAUNCH_GRACE, MAX_DEPTH, MAX_IDS, MAX_NODES, Node, Tree,
-    VALUE_CHARS, format_number, hung, is_active, lookup, place,
+    Access, Act, Extras, Frame, LAUNCH_GRACE, MAX_DEPTH, MAX_NODES, Node, Tree, VALUE_CHARS,
+    evict_ids, format_number, hung, is_active, lookup, place,
 };
 
 const WALK_BUDGET: Duration = Duration::from_secs(4);
@@ -148,6 +148,7 @@ impl Ax {
     }
 
     fn app_frames(&mut self, apps: impl IntoIterator<Item = (i32, Vec<[f64; 4]>)>) -> Vec<Frame> {
+        self.evict();
         let mut frames = Vec::new();
         let mut answered = None;
         let scale = display_scale();
@@ -273,20 +274,6 @@ impl Ax {
         {
             return id.clone();
         }
-        if self.ids.len() >= MAX_IDS {
-            let hang = lock(&HANG);
-            let windows: HashSet<&str> = hang
-                .last
-                .values()
-                .flatten()
-                .map(|f| f.id.as_str())
-                .collect();
-            self.ids.retain(|id, _| windows.contains(id.as_str()));
-            self.hashes.retain(|_, held| {
-                held.retain(|(_, id)| windows.contains(id.as_str()));
-                !held.is_empty()
-            });
-        }
         let n = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let id = format!("{}/{n}", pid(el).unwrap_or(0));
         self.ids.insert(id.clone(), el.clone());
@@ -295,6 +282,16 @@ impl Ax {
             .or_default()
             .push((el.clone(), id.clone()));
         id
+    }
+
+    fn evict(&mut self) {
+        if evict_ids(&mut self.ids, lock(&HANG).last.values().flatten()) {
+            let ids = &self.ids;
+            self.hashes.retain(|_, held| {
+                held.retain(|(_, id)| ids.contains_key(id));
+                !held.is_empty()
+            });
+        }
     }
 
     fn window_id(&mut self, w: &CFType, number: u32) -> String {
@@ -439,6 +436,7 @@ impl Access for Ax {
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
         let started = Instant::now();
         let deadline = started + WALK_BUDGET;
+        self.evict();
         let el = self.element(&frame.id)?;
         if string(attr(&el, "AXRole")).is_empty() {
             return Err(format!(
@@ -1556,30 +1554,38 @@ fn text(v: &CFType, chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::MAX_IDS;
 
     #[test]
-    fn a_window_keeps_its_number_as_id_across_an_eviction_and_elements_are_renumbered() {
+    fn ids_of_a_walk_that_crosses_the_cap_resolve_and_the_next_walk_keeps_only_window_ids() {
         let mut ax = bare();
         let (window, element) = (application(901), application(902));
         let early = ax.id_of(&window);
         assert_eq!(ax.window_id(&window, 4242), "4242");
         assert_eq!(ax.id_of(&window), "4242");
-        let element_id = ax.id_of(&element);
         let frame = Frame {
             id: "4242".to_owned(),
             ..Frame::default()
         };
         lock(&HANG).last.insert(901, vec![frame]);
         let filler = CFString::new("filler").as_CFType();
-        for n in ax.ids.len()..MAX_IDS {
+        for n in ax.ids.len()..MAX_IDS - 1 {
             ax.ids.insert(format!("0/filler{n}"), filler.clone());
         }
-        ax.id_of(&application(903));
+        let walked = [&element, &application(903), &application(904)].map(|e| ax.id_of(e));
+        for id in &walked {
+            assert!(
+                ax.element(id).is_ok(),
+                "{id} of the walk that crossed the cap"
+            );
+        }
+        ax.app_frames(Vec::new());
         assert!(ax.ids.len() < MAX_IDS, "{}", ax.ids.len());
         assert_ne!(early, "4242");
         assert_eq!(ax.id_of(&window), "4242");
         assert!(ax.element("4242").is_ok());
-        assert_ne!(ax.id_of(&element), element_id);
+        assert!(ax.element(&walked[0]).is_err());
+        assert_ne!(ax.id_of(&element), walked[0]);
     }
 
     #[test]
