@@ -26,7 +26,7 @@ impl<B: 'static> Worker<B> {
         }
     }
 
-    /// Runs `f` on the backend and waits at most `limit` for its result; `hold` drops when `f` ends, even after the limit.
+    /// Runs `f` on the backend and waits at most `limit` for its result; `hold` drops when `f` ends, even after the limit, or when the call ends before `f` starts.
     pub async fn run<R, F, H>(&self, limit: Duration, hold: H, f: F) -> Result<R, String>
     where
         R: Send + 'static,
@@ -34,12 +34,13 @@ impl<B: 'static> Worker<B> {
         H: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
-        let dropped = Arc::new(AtomicBool::new(false));
-        let _cancel = Cancel(dropped.clone());
+        let slot = Arc::new(Mutex::new(Some(hold)));
+        let _unstarted = Unstarted(Arc::clone(&slot));
         let job: Job<B> = Box::new(move |backend| {
-            if !dropped.load(Ordering::Relaxed) {
-                let _ = tx.send(backend.map_err(str::to_owned).and_then(f));
-            }
+            let Some(hold) = lock(&slot).take() else {
+                return;
+            };
+            let _ = tx.send(backend.map_err(str::to_owned).and_then(f));
             drop(hold);
         });
         let (mut sent_on, sender) = self.sender();
@@ -98,6 +99,14 @@ pub(crate) struct Cancel(pub(crate) Arc<AtomicBool>);
 impl Drop for Cancel {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+struct Unstarted<H>(Arc<Mutex<Option<H>>>);
+
+impl<H> Drop for Unstarted<H> {
+    fn drop(&mut self) {
+        drop(lock(&self.0).take());
     }
 }
 
@@ -204,6 +213,29 @@ mod tests {
         hang.await.unwrap().unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(lock(&ran).is_empty(), "{:?}", lock(&ran));
+    }
+
+    #[tokio::test]
+    async fn what_a_queued_call_holds_frees_when_it_times_out_before_it_starts() {
+        let w = Arc::new(Worker::new(|| Ok(())));
+        let hung = Arc::clone(&w);
+        let hang = tokio::spawn(async move {
+            hung.run(Duration::from_secs(2), (), |_| {
+                std::thread::sleep(Duration::from_millis(300));
+                Ok(())
+            })
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let turn = Arc::new(tokio::sync::Mutex::new(()));
+        let held = Arc::clone(&turn).lock_owned().await;
+        let err = w
+            .run(Duration::from_millis(50), held, |_| Ok(()))
+            .await
+            .unwrap_err();
+        assert!(err.contains("within 50 ms"), "{err}");
+        assert!(turn.try_lock().is_ok(), "the turn is still held");
+        hang.await.unwrap().unwrap();
     }
 
     #[tokio::test]
