@@ -33,7 +33,7 @@ use windows::core::{BOOL, HRESULT, Interface, PWSTR};
 use crate::keys::uia_combo;
 use crate::lock;
 use crate::model::{
-    Access, Act, Extras, Frame, MAX_DEPTH, MAX_IDS, MAX_NODES, Node, Tree, VALUE_CHARS,
+    Access, Act, Extras, Frame, MAX_DEPTH, MAX_NODES, Node, Tree, VALUE_CHARS, evict_ids,
     format_number, is_active, lookup, place,
 };
 use crate::uia_roles::{self, Facts, Kind};
@@ -132,9 +132,6 @@ impl Uia {
 
     fn id_of(&mut self, el: &IUIAutomationElement) -> Result<String, String> {
         let id = runtime_id(el)?;
-        if self.ids.len() >= MAX_IDS {
-            self.ids.clear();
-        }
         self.ids.entry(id.clone()).or_insert_with(|| el.clone());
         Ok(id)
     }
@@ -308,6 +305,7 @@ impl Uia {
 
 impl Access for Uia {
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
+        evict_ids(&mut self.ids, lock(&LAST).values());
         let front = foreground();
         let (shown, roots) = self.roots();
         let (mut frames, mut answered) = (Vec::new(), HashMap::new());
@@ -343,6 +341,7 @@ impl Access for Uia {
 
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
         let started = Instant::now();
+        evict_ids(&mut self.ids, lock(&LAST).values());
         let el = self.element(&frame.id)?;
         // a subtree cache of a window spans the dialogs it owns, which the walk skips
         let shown = shown();
