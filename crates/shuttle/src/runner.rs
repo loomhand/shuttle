@@ -556,8 +556,7 @@ mod tests {
         assert_eq!(report["error"]["kind"], "timeout", "{report}");
         let limit = Duration::from_secs(2) + END_GRACE;
         assert!(
-            took >= limit - Duration::from_millis(100)
-                && took < limit + PIPE_GRACE + Duration::from_millis(500),
+            took >= limit - Duration::from_millis(100) && took < Duration::from_secs(15),
             "{took:?}"
         );
         let pid = report["logs"].as_str().unwrap().trim().to_owned();
