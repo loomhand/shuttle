@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { setTimeout as sleep } from 'node:timers/promises'
 
-import { daemon, gray, notepad, user } from './daemon.mts'
+import { daemon, gray, notepad, root, user } from './daemon.mts'
 import type { Call, Reply, W } from './daemon.mts'
 
 process.env.SHUTTLE_INPUT = 'background'
@@ -77,6 +78,22 @@ test('a password the window does not show after typing escalates without the pas
   assert.equal(r.ok, false)
   assert.match(String(r.escalate?.reason), /^the password did not show in "Untitled - Notepad" after typing: unverifiable: posted$/)
   assert.ok(!JSON.stringify(r).includes('hunter2'), JSON.stringify(r))
+})
+
+test('a background type reads the unvalued fields of its window four at a time', async (t) => {
+  const fields = Array.from({ length: 40 }, (_, k) => ({ ref: k + 1, id: `1/${k + 2}`, parent: 0, depth: 1, role: 'textbox', name: `Field ${k}`, states: ['showing'] }))
+  const d = desktop([user(), notepad()], ({ tool }) => tool === 'desk_snapshot' ? JSON.stringify({ window: notepad(), truncated: false, nodes: [root('window', notepad().title), ...fields] }) : undefined)
+  let open = 0; let most = 0
+  await daemon(t, async (c) => {
+    if (c.tool !== 'desk_read') return d.reply(c)
+    open++; most = Math.max(most, open)
+    await sleep(20)
+    open--
+    return '{"value":""}'
+  })
+  const r = await main({ steps: [{ app: 'Notepad' }, { type: 'hi' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(most, 4)
 })
 
 test('an element that is not in the tree is not looked for on the screen in the background', async (t) => {

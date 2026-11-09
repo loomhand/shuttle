@@ -119,15 +119,7 @@ export async function main(p: Params): Promise<Draft> {
   return draft
 }
 
-function pageOf(e: Event) {
-  return e.web?.url ?? e.focus?.url
-}
-
-function windowOf(e: Event) {
-  return (typeof e.window === 'object' ? e.window.title : e.focus?.window) || undefined
-}
-
-function pool(size: number) {
+export function pool(size: number): <T>(job: () => Promise<T>) => Promise<T> {
   let free = size
   const waiting: (() => void)[] = []
   return async <T,>(job: () => Promise<T>): Promise<T> => {
@@ -135,6 +127,14 @@ function pool(size: number) {
     free -= 1
     try { return await job() } finally { free += 1; waiting.shift()?.() }
   }
+}
+
+function pageOf(e: Event) {
+  return e.web?.url ?? e.focus?.url
+}
+
+function windowOf(e: Event) {
+  return (typeof e.window === 'object' ? e.window.title : e.focus?.window) || undefined
 }
 
 function own(e: Event) {

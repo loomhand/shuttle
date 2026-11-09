@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from 'node:util'
 
 import * as desk from './desk.mts'
 import type { Win } from './desk.mts'
+import { pool } from './draft.mts'
 import { cut, find as match, ring, unpng } from './png.mts'
 
 export type Result = {
@@ -90,6 +91,7 @@ const WEB_TREE_MS = 4000
 const PAGE_MS = 10_000
 const ON_PAGE_MS = 3000
 const DOM_READS = 60
+const READS_AT_ONCE = 4
 const INERT_KEY = /^shift\+[^+]$/i
 const ARROW_KEY = /^(shift\+)?(arrow)?(up|down|left|right)$/i
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
@@ -1054,10 +1056,11 @@ async function typedInto(w: Win, text: string): Promise<{ fp?: Fp; kept?: Kept }
 }
 async function texts(w: Win): Promise<Map<string, Text> | null> {
   try {
+    const slot = pool(READS_AT_ONCE)
     const all = await Promise.all(parse(await snapOf(w)).map(async (n): Promise<[string, Text][]> => {
       const field = n.role === 'document' || FIELD_ROLES.has(n.role)
       if (n.value) return [[n.id, { value: n.value, field }]]
-      return field ? [[n.id, { value: (await desk.read(n.id, { text: true }).catch(() => null))?.value, field }]] : []
+      return field ? [[n.id, { value: (await slot(() => desk.read(n.id, { text: true })).catch(() => null))?.value, field }]] : []
     }))
     return new Map(all.flat())
   } catch { return null }
