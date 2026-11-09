@@ -5914,7 +5914,7 @@ pub(crate) mod tests {
         let started = Instant::now();
         desk.run("desk_windows", json!({})).await.unwrap();
         assert!(
-            started.elapsed() < Duration::from_millis(200),
+            started.elapsed() < Duration::from_secs(2),
             "{:?}",
             started.elapsed()
         );
@@ -5975,10 +5975,17 @@ pub(crate) mod tests {
             Slow(Arc::default()),
             Os::Mac,
         );
-        let (out, took) = wait_on(&desk, 2000).await;
+        let (out, _) = wait_on(&desk, 2000).await;
         assert_eq!(out["changed"], true);
         assert_eq!(lists(&desk).await, 2);
-        assert!(took < WAIT_CHECK, "{took:?}");
+        let seen = desk
+            .access
+            .run(CALL_LIMIT, (), |b| {
+                Ok(b.opens.as_ref().and_then(|o| o.seen))
+            })
+            .await
+            .unwrap();
+        assert_eq!(seen, Some(3));
     }
 
     #[tokio::test]

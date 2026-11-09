@@ -154,8 +154,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_launch_without_a_pid_is_left_alone() {
-        adopt(&json!({"structuredContent": {"pid": null}}))
-            .await
-            .expect("adopt");
+        assert_eq!(
+            adopt(&json!({"structuredContent": {"pid": null}})).await,
+            Ok(false)
+        );
     }
 }

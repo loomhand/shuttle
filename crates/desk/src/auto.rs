@@ -85,6 +85,11 @@ mod tests {
                 Os::Mac,
                 "press_key: window 7 is minimized or its application is hidden (or that state could not be proven)",
             ),
+            (
+                "desk_key",
+                Os::Mac,
+                "press_key: window 7 is not among the process's current AXWindows (another Space, or its AX surface is unresolved); background input is refused so a sibling window cannot receive it. Observation (capture/list_windows) remains available",
+            ),
         ] {
             assert!(pre_send(tool, os, &none, e), "{tool} {e}");
         }
