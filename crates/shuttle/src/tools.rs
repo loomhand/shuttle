@@ -262,6 +262,8 @@ fn result(text: String, is_error: bool) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::plugins::Plugin;
 
@@ -338,15 +340,17 @@ mod tests {
 
     #[test]
     fn the_desk_tool_takes_every_verb_the_desk_answers() {
-        let answered: Vec<&str> = include_str!("../../desk/src/desk.rs")
+        let (_, dispatch) = include_str!("../../desk/src/desk.rs")
+            .split_once("async fn dispatch(")
+            .unwrap();
+        let (arms, _) = dispatch.split_once("unknown desk tool").unwrap();
+        let answered: BTreeSet<&str> = arms
             .lines()
-            .filter(|l| l.contains("=> self."))
-            .filter_map(|l| l.trim().strip_prefix("\"desk_")?.split_once('"'))
+            .filter_map(|l| l.trim().strip_prefix("\"desk_")?.split_once("\" =>"))
             .map(|(verb, _)| verb)
             .collect();
-        assert!(answered.contains(&"windows"), "{answered:?}");
+        assert_eq!(answered, BTreeSet::from(DESK_VERBS));
         for verb in answered {
-            assert!(DESK_VERBS.contains(&verb), "{verb}");
             assert!(
                 matches!(route("desk", json!({"verb": verb})), Some(Ok(_))),
                 "{verb}"
