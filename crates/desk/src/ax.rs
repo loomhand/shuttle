@@ -398,39 +398,11 @@ impl Access for Ax {
 
     fn off_space(&mut self) -> Vec<Frame> {
         let own = std::process::id();
-        let (name, owner, layer, shown) = (
-            CFString::from_static_string("kCGWindowName"),
-            CFString::from_static_string("kCGWindowOwnerName"),
-            CFString::from_static_string("kCGWindowLayer"),
-            CFString::from_static_string("kCGWindowIsOnscreen"),
-        );
-        let (id, pid) = (
-            CFString::from_static_string("kCGWindowNumber"),
-            CFString::from_static_string("kCGWindowOwnerPID"),
-        );
-        off_space_windows()
-            .iter()
-            .filter(|d| {
-                number(d, &layer) == Some(0)
-                    && boolean(d.find(&shown).map(|v| (*v).clone())) != Some(true)
-            })
-            .filter_map(|d| {
-                let pid = u32::try_from(number(d, &pid)?).ok()?;
-                let exe = || exe_path(i32::try_from(pid).ok()?);
-                if pid == own || self.driver.is_some() && exe() == self.driver {
-                    return None;
-                }
-                Some(Frame {
-                    id: number(d, &id)?.to_string(),
-                    title: string(d.find(&name).map(|v| (*v).clone())),
-                    role: "window",
-                    pid: Some(pid),
-                    app: Some(string(d.find(&owner).map(|v| (*v).clone()))),
-                    space: Some("other"),
-                    ..Frame::default()
-                })
-            })
-            .collect()
+        let driver = &self.driver;
+        off_space_frames(&off_space_windows(), |pid| {
+            let exe = || exe_path(i32::try_from(pid).ok()?);
+            pid == own || driver.is_some() && exe() == *driver
+        })
     }
 
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
@@ -1513,6 +1485,44 @@ fn off_space_windows() -> Vec<CFDictionary<CFString, CFType>> {
     described.iter().map(|d| (*d).clone()).collect()
 }
 
+fn off_space_frames(
+    windows: &[CFDictionary<CFString, CFType>],
+    skip: impl Fn(u32) -> bool,
+) -> Vec<Frame> {
+    let (name, owner, layer, shown) = (
+        CFString::from_static_string("kCGWindowName"),
+        CFString::from_static_string("kCGWindowOwnerName"),
+        CFString::from_static_string("kCGWindowLayer"),
+        CFString::from_static_string("kCGWindowIsOnscreen"),
+    );
+    let (id, pid) = (
+        CFString::from_static_string("kCGWindowNumber"),
+        CFString::from_static_string("kCGWindowOwnerPID"),
+    );
+    windows
+        .iter()
+        .filter(|d| {
+            number(d, &layer) == Some(0)
+                && boolean(d.find(&shown).map(|v| (*v).clone())) != Some(true)
+        })
+        .filter_map(|d| {
+            let pid = u32::try_from(number(d, &pid)?).ok()?;
+            if skip(pid) {
+                return None;
+            }
+            Some(Frame {
+                id: number(d, &id)?.to_string(),
+                title: string(d.find(&name).map(|v| (*v).clone())),
+                role: "window",
+                pid: Some(pid),
+                app: Some(string(d.find(&owner).map(|v| (*v).clone()))),
+                space: Some("other"),
+                ..Frame::default()
+            })
+        })
+        .collect()
+}
+
 fn user_space(kind: Option<i64>) -> bool {
     matches!(kind, Some(0 | 4))
 }
@@ -1592,11 +1602,22 @@ mod tests {
     fn a_window_listed_on_this_space_and_then_off_it_has_one_id() {
         let mut ax = bare();
         let on = ax.window_id(&application(905), 4243);
-        let key = CFString::from_static_string("kCGWindowNumber");
-        let listed =
-            CFDictionary::from_CFType_pairs(&[(key.clone(), CFNumber::from(4243).as_CFType())]);
-        let off = number(&listed, &key).unwrap().to_string();
-        assert_eq!(on, off);
+        let listed = CFDictionary::from_CFType_pairs(
+            &[
+                ("kCGWindowNumber", 4243),
+                ("kCGWindowOwnerPID", 905),
+                ("kCGWindowLayer", 0),
+            ]
+            .map(|(k, v)| {
+                (
+                    CFString::from_static_string(k),
+                    CFNumber::from(v).as_CFType(),
+                )
+            }),
+        );
+        let off = off_space_frames(&[listed], |_| false);
+        assert_eq!(off.len(), 1, "{off:?}");
+        assert_eq!(off[0].id, on);
     }
 
     #[test]
