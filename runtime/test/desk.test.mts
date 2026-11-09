@@ -25,3 +25,14 @@ test('ask sends one PNG buffer or a list of them as base64 and meters the usage 
   assert.deepEqual(desk.usage['vision-1'], { calls: 3, input_tokens: 30, output_tokens: 6, cached_tokens: 0 })
   assert.deepEqual(JSON.parse(readFileSync(`${run}/usage.json`, 'utf8')), desk.usage)
 })
+
+test('a key or a type that names an app sends the app to the daemon', async (t) => {
+  const sent: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    sent.push({ tool, ...args })
+    return '{"ok":true}'
+  })
+  await desk.key('ctrl+s', { app: 'TextEdit' })
+  await desk.typeText('hi', { app: 'TextEdit' })
+  assert.deepEqual(sent, [{ tool: 'desk_key', keys: 'ctrl+s', app: 'TextEdit' }, { tool: 'desk_type', text: 'hi', app: 'TextEdit' }])
+})
