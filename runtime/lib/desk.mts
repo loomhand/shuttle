@@ -27,6 +27,7 @@ export const foreground = { runs: 0 }
 export const usage: Usage = {}
 /** One entry per decide or look call, with the model, build and id that answered. */
 export const served: Served[] = []
+export const calls = { n: 0 }
 const LOOK_TIMEOUT = 5_000
 
 let screenSize: Size | null = null
@@ -104,6 +105,7 @@ async function request<T>(tool: string, args: Record<string, unknown>): Promise<
 }
 
 function exchange(tool: string, args: Record<string, unknown>): Promise<Output> {
+  calls.n += 1
   return new Promise((resolve, reject) => {
     const socket = process.env.SHUTTLE_SOCKET
     if (!socket) return reject(new Error('SHUTTLE_SOCKET names no daemon endpoint'))

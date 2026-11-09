@@ -128,6 +128,7 @@ let BG = BEHIND
 let fronted = false
 let T: Record<string, number> = {}
 let stepWs: { ws: Win[]; at: number } | null = null
+let settleWs: { ws: Win[]; at: number; calls: number } | null = null
 
 export async function main(p: Params): Promise<Result> {
   return { ...(await perform(p)), usage: desk.usage }
@@ -184,14 +185,14 @@ async function perform(p: Params): Promise<Result> {
     const s = fill(planned, params); T = {}; const rec: Rec = { i, op: ops(s)[0] }
     const ts = Date.now(); const calls = desk.served.length
     try {
-      let ws = i === (p.start ?? 0) ? ws0 : await desk.windows(); let f = BG ? frontOf(ws) : desk.front(ws)
+      let { ws, at: since } = i === (p.start ?? 0) ? { ws: ws0, at: Date.now() } : await afterSettle(); let f = BG ? frontOf(ws) : desk.front(ws)
       if (f?.stale && !s.app) {
         const was = f
         const heir = (x: Win | null) => !!x && !x.stale && (x.id === was.id || (x.pid !== null && x.pid === was.pid) || (!!was.app && x.app === was.app) || (!!s.window && norm(x.title).includes(norm(s.window))))
-        for (const end = Date.now() + STALE_WAIT; !heir(f) && Date.now() < end; await sleep(50)) { ws = await desk.windows(); f = BG ? frontOf(ws) : desk.front(ws) }
+        for (const end = Date.now() + STALE_WAIT; !heir(f) && Date.now() < end; await sleep(50)) { ws = await desk.windows(); since = Date.now(); f = BG ? frontOf(ws) : desk.front(ws) }
         if (!heir(f)) throw new Surprise(frozen(was, i, plan[i - 1]), { window: was.title, windows: titles(ws) })
       }
-      stepWs = { ws, at: Date.now() }; tops[i] = f?.title
+      stepWs = { ws, at: since }; tops[i] = f?.title
       if (BG && doubt && !s.app && !s.wait) throw new Surprise(doubt, await seen())
       if (BG && i > (p.start ?? 0)) stolen(ws, i - 1)
       const m = s.close ? null : await hiddenModal(ws, f)
@@ -216,7 +217,7 @@ async function perform(p: Params): Promise<Result> {
       if (s.after && await landed(s.after, s.timeout_ms ?? 5000, ws)) rec.confirmed = true
       if (unheard && !rec.unverified) rec.unverified = unheard
       if (actioned && !s.after) rec.caveat = ACTION_ONLY
-      if (desk.foreground.runs + foreground.steps > runs) { rec.fg = true; fronted = true; BG = false }
+      if (desk.foreground.runs + foreground.steps > runs) { rec.fg = true; fronted = true; BG = false; settleWs = null }
       const before = recs[i - 1]
       if (before && (s.expect || (s.verify && (s.value ?? s.on ?? s.enabled) !== undefined) || (s.wait && rec.seen !== tops[i - 1]))) before.confirmed = true
     } catch (e: unknown) {
@@ -241,7 +242,7 @@ async function perform(p: Params): Promise<Result> {
   let opened = false
   let end: Win | null = null
   if (!escalate) {
-    const ts = Date.now(); let ws = await desk.windows(); const front = frontOf(ws); const was = front?.title
+    const ts = Date.now(); let { ws } = await afterSettle(); const front = frontOf(ws); const was = front?.title
     const inert = (last.type !== undefined && !last.type.includes('\n')) || (last.key !== undefined && (INERT_KEY.test(last.key) || (ARROW_KEY.test(last.key) && front?.role === 'window')))
     if ((last.key || last.type !== undefined || last.click) && !recs.at(-1)?.submit && !inert) {
       await until((ws) => frontOf(ws)?.title !== was, 480, ws)
@@ -372,6 +373,10 @@ async function focused() { return frontOf(await desk.windows()) }
 async function listNow(): Promise<Win[]> {
   const k = stepWs; stepWs = null
   return k && Date.now() - k.at < LIST_REUSE ? k.ws : desk.windows()
+}
+async function afterSettle(): Promise<{ ws: Win[]; at: number }> {
+  const k = settleWs; settleWs = null
+  return k && k.calls === desk.calls.n && Date.now() - k.at < LIST_REUSE ? k : { ws: await desk.windows(), at: Date.now() }
 }
 function focusedIn(ws: Win[]) {
   const f = desk.front(ws); if (f) return f
@@ -985,6 +990,7 @@ async function choose(nodes: Node[], n: Node, rec: { via?: string }, open = fals
 async function settle(before: string | undefined) {
   const t0 = Date.now()
   const ws = await until((ws) => frontOf(ws)?.title !== before, 150)
+  if (frontOf(ws)) settleWs = { ws, at: Date.now(), calls: desk.calls.n }
   tick('settle', t0); return ws
 }
 
