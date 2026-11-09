@@ -1322,7 +1322,7 @@ mod tests {
                 .await
             }
         });
-        crate::until(40, || d.acting()).await;
+        assert!(crate::until(40, || d.acting()).await);
         run.abort();
         let _ = run.await;
         let holders = released.0.lock().unwrap().clone();
