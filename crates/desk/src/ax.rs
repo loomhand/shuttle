@@ -566,6 +566,10 @@ impl Access for Ax {
         Ok((attr(&el, "AXURL").and_then(url_text), dom_id))
     }
 
+    fn chromium(&mut self, pid: u32) -> bool {
+        chromium(pid)
+    }
+
     fn web(&mut self, pid: u32, on: bool) -> Result<bool, String> {
         if !chromium(pid) {
             return Err(format!("process {pid} is no Chromium app"));

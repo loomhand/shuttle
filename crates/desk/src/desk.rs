@@ -120,6 +120,7 @@ const TYPE_SETTLE: Duration = Duration::from_millis(100);
 const TYPE_POLL: Duration = Duration::from_millis(10);
 const TYPE_TAIL: usize = 16;
 const MAC_TYPE_DELAY_MS: u64 = 0;
+const CHROMIUM_TYPE_DELAY_MS: u64 = 1;
 const PROTOCOL_TAGS: [&str; 10] = [
     "text",
     "parameter",
@@ -966,6 +967,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             _ => None,
         };
         let raised = self.raised_window(a.window.as_deref(), a.pid).await?;
+        let chromium = match to.and_then(|(pid, _)| u32::try_from(pid).ok()) {
+            Some(pid) if self.os == Os::Mac => self
+                .access
+                .run(CALL_LIMIT, (), move |b| Ok(b.chromium(pid)))
+                .await
+                .unwrap_or(false),
+            _ => false,
+        };
         let mut note = None;
         let lines = text.split('\n').count();
         for (i, line) in text.split('\n').enumerate() {
@@ -996,7 +1005,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 if self.os == Os::Mac || to.is_none() {
                     if !line.is_empty() {
                         let mut req = json!({"text": line, "literal": true});
-                        if self.os == Os::Mac
+                        if chromium {
+                            req["delay_ms"] = CHROMIUM_TYPE_DELAY_MS.into();
+                        } else if self.os == Os::Mac
                             && !self.bg()
                             && line.chars().all(|c| c.len_utf16() == 1)
                         {
@@ -4049,23 +4060,35 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn macos_foreground_typing_sets_the_driver_delay_for_text_in_the_basic_plane_only() {
-        for (os, background, text, delay) in [
-            (Os::Mac, false, "ab\u{4e2d}\ncd", Some(MAC_TYPE_DELAY_MS)),
-            (Os::Mac, true, "ab\u{4e2d}\ncd", None),
-            (Os::Mac, false, "a\u{1f600}", None),
-            (Os::Windows, false, "ab\u{4e2d}\ncd", None),
+    async fn macos_typing_sets_the_driver_delay_for_foreground_basic_plane_text_and_background_chromium_apps()
+     {
+        for (os, background, pid, text, delay) in [
+            (Os::Mac, false, 4, "ab\u{4e2d}\ncd", Some(MAC_TYPE_DELAY_MS)),
+            (Os::Mac, true, 4, "ab\u{4e2d}\ncd", None),
+            (Os::Mac, false, 4, "a\u{1f600}", None),
+            (
+                Os::Mac,
+                true,
+                8,
+                "ab\u{4e2d}\ncd",
+                Some(CHROMIUM_TYPE_DELAY_MS),
+            ),
+            (Os::Mac, true, 8, "a\u{1f600}", Some(CHROMIUM_TYPE_DELAY_MS)),
+            (Os::Mac, false, 8, "ab\u{4e2d}\ncd", Some(MAC_TYPE_DELAY_MS)),
+            (Os::Mac, false, 8, "a\u{1f600}", None),
+            (Os::Windows, true, 8, "ab\u{4e2d}\ncd", None),
+            (Os::Windows, false, 4, "ab\u{4e2d}\ncd", None),
         ] {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let desk =
                 Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), os).background(background);
-            desk.run("desk_type", json!({"text": text, "pid": 4}))
+            desk.run("desk_type", json!({"text": text, "pid": pid}))
                 .await
                 .unwrap();
             let typed = sent(&calls, "type_text");
-            assert!(!typed.is_empty(), "{os:?}");
+            assert!(!typed.is_empty(), "{os:?} {pid}");
             for req in typed {
-                assert_eq!(req["delay_ms"].as_u64(), delay, "{os:?} {req}");
+                assert_eq!(req["delay_ms"].as_u64(), delay, "{os:?} {pid} {req}");
             }
         }
     }
@@ -7322,6 +7345,10 @@ pub(crate) mod tests {
                 frame("4/1", "Untitled - Notepad", 4, true, Some("Notepad.exe")),
                 frame("8/1", "Inbox", 8, false, Some("Mail")),
             ])
+        }
+
+        fn chromium(&mut self, pid: u32) -> bool {
+            pid == 8
         }
 
         fn off_space(&mut self) -> Vec<Frame> {
