@@ -267,7 +267,7 @@ mod tests {
         let (release_tx, release_rx) = channel::<()>();
         let hung = Arc::clone(w);
         let hang = tokio::spawn(async move {
-            hung.run(Duration::from_secs(2), (), move |_| {
+            hung.run(Duration::from_secs(30), (), move |_| {
                 let _ = entered_tx.send(());
                 let _ = release_rx.recv();
                 Ok(())
