@@ -305,7 +305,6 @@ impl Uia {
 
 impl Access for Uia {
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
-        evict_ids(&mut self.ids, lock(&LAST).values());
         let front = foreground();
         let (shown, roots) = self.roots();
         let (mut frames, mut answered) = (Vec::new(), HashMap::new());
@@ -322,6 +321,10 @@ impl Access for Uia {
         }
         stale_front(&mut frames, &mut lock(&LAST), front.0 as isize);
         Ok(frames)
+    }
+
+    fn evict(&mut self) {
+        evict_ids(&mut self.ids, lock(&LAST).values());
     }
 
     fn hint(&mut self) -> Option<u64> {
@@ -341,7 +344,6 @@ impl Access for Uia {
 
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
         let started = Instant::now();
-        evict_ids(&mut self.ids, lock(&LAST).values());
         let el = self.element(&frame.id)?;
         // a subtree cache of a window spans the dialogs it owns, which the walk skips
         let shown = shown();

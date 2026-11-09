@@ -278,6 +278,7 @@ pub trait Access {
             .filter(|f| f.pid == Some(pid))
             .collect())
     }
+    fn evict(&mut self) {}
     fn off_space(&mut self) -> Vec<Frame> {
         Vec::new()
     }

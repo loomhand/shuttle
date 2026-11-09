@@ -148,7 +148,6 @@ impl Ax {
     }
 
     fn app_frames(&mut self, apps: impl IntoIterator<Item = (i32, Vec<[f64; 4]>)>) -> Vec<Frame> {
-        self.evict();
         let mut frames = Vec::new();
         let mut answered = None;
         let scale = display_scale();
@@ -284,16 +283,6 @@ impl Ax {
         id
     }
 
-    fn evict(&mut self) {
-        if evict_ids(&mut self.ids, lock(&HANG).last.values().flatten()) {
-            let ids = &self.ids;
-            self.hashes.retain(|_, held| {
-                held.retain(|(_, id)| ids.contains_key(id));
-                !held.is_empty()
-            });
-        }
-    }
-
     fn window_id(&mut self, w: &CFType, number: u32) -> String {
         let id = number.to_string();
         let held = self.hashes.entry(hash_of(w)).or_default();
@@ -396,6 +385,16 @@ impl Access for Ax {
         Ok(self.app_frames(apps))
     }
 
+    fn evict(&mut self) {
+        if evict_ids(&mut self.ids, lock(&HANG).last.values().flatten()) {
+            let ids = &self.ids;
+            self.hashes.retain(|_, held| {
+                held.retain(|(_, id)| ids.contains_key(id));
+                !held.is_empty()
+            });
+        }
+    }
+
     fn off_space(&mut self) -> Vec<Frame> {
         let own = std::process::id();
         let driver = &self.driver;
@@ -408,7 +407,6 @@ impl Access for Ax {
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
         let started = Instant::now();
         let deadline = started + WALK_BUDGET;
-        self.evict();
         let el = self.element(&frame.id)?;
         if string(attr(&el, "AXRole")).is_empty() {
             return Err(format!(
@@ -1590,6 +1588,8 @@ mod tests {
             );
         }
         ax.app_frames(Vec::new());
+        assert!(ax.ids.len() >= MAX_IDS, "{}", ax.ids.len());
+        ax.evict();
         assert!(ax.ids.len() < MAX_IDS, "{}", ax.ids.len());
         assert_ne!(early, "4242");
         assert_eq!(ax.id_of(&window), "4242");
