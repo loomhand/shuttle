@@ -1537,7 +1537,7 @@ function repo() {
 
 function writeIndex() {
   const rows = readdirSync(FLOWS).filter((x) => x.endsWith('.json') && !x.startsWith('.')).map((x) => { try { return JSON.parse(readFileSync(`${FLOWS}/${x}`, 'utf8')) as Flow } catch { return null } })
-    .filter((x): x is Flow => !!x?.name).sort((a, b) => b.saved_at.localeCompare(a.saved_at))
+    .filter((x): x is Flow => !!x?.name && typeof x.saved_at === 'string' && !!x.params && Array.isArray(x.steps)).sort((a, b) => b.saved_at.localeCompare(a.saved_at))
   writeFileSync(INDEX, `${rows.map((x) => `${x.name}(${Object.keys(x.params).join(', ')})${x.idempotent ? '' : ' once'}: ${summary(x.steps)}`).join('\n')}\n`, PRIVATE)
 }
 
