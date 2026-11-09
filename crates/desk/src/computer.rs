@@ -2718,7 +2718,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let driver = tokio::spawn(closing_then_answering_driver(socket.clone()));
-        tokio::time::sleep(Duration::from_millis(50)).await;
         let out = cua(&socket).request("s", "list_windows", json!({})).await;
         assert!(out.is_ok(), "{out:?}");
         assert_eq!(driver.await.unwrap(), ["list_windows", "list_windows"]);
@@ -2729,7 +2728,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let driver = tokio::spawn(closing_then_answering_driver(socket.clone()));
-        tokio::time::sleep(Duration::from_millis(50)).await;
         let out = cua(&socket).request("s", "click", json!({})).await;
         assert!(out.unwrap_err().starts_with("decode cua-driver reply"));
         driver.abort();
