@@ -128,6 +128,7 @@ let BG = BEHIND
 let fronted = false
 let T: Record<string, number> = {}
 let stepWs: { ws: Win[]; at: number } | null = null
+let prior = new Set<string>()
 let settleWs: { ws: Win[]; at: number; calls: number } | null = null
 
 export async function main(p: Params): Promise<Result> {
@@ -173,7 +174,7 @@ async function perform(p: Params): Promise<Result> {
   const start = frontOf(ws0); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
   const startAlert = !start?.title.trim() && isAlert(await outline(start))
   const recs: Rec[] = []; const tops: (string | undefined)[] = []
-  let escalate: Escalation | null = null; let done = plan.length; let diverged = false
+  let escalate: Escalation | null = null; let done = plan.length; let diverged = false; let lastWs = ws0
   if (held && !held.dirty) putPending({ ...held, dirty: true })
   const left = () => {
     const at = (p.start ?? 0) + trace.length
@@ -192,7 +193,7 @@ async function perform(p: Params): Promise<Result> {
         for (const end = Date.now() + STALE_WAIT; !heir(f) && Date.now() < end; await sleep(50)) { ws = await desk.windows(); since = Date.now(); f = BG ? frontOf(ws) : desk.front(ws) }
         if (!heir(f)) throw new Surprise(frozen(was, i, plan[i - 1]), { window: was.title, windows: titles(ws) })
       }
-      stepWs = { ws, at: since }; tops[i] = f?.title
+      stepWs = { ws, at: since }; tops[i] = f?.title; prior = new Set(lastWs.map((x) => x.id)); lastWs = ws
       if (BG && doubt && !s.app && !s.wait) throw new Surprise(doubt, await seen())
       if (BG && i > (p.start ?? 0)) stolen(ws, i - 1)
       const m = s.close ? null : await hiddenModal(ws, f)
@@ -636,7 +637,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string): Pro
       const [bg, other] = hits; many = hits.length
       if (bg && !other) { await desk.focus(bg.title, bg.pid); return found(bg, t0) }
     }
-    if (w && !known.has(w.title) && w.title !== asked && Date.now() - t0 > 250) {
+    if (w && !known.has(w.title) && !prior.has(w.id) && w.title !== asked && Date.now() - t0 > 250) {
       asked = w.title
       const o = await outline(w)
       if (blocked(o)) { tick('wait', t0); throw new Surprise(unanswered(w.title), await seen()) }

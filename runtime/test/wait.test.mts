@@ -46,3 +46,25 @@ test('a wait that several windows behind a known front window match takes none o
   assert.match(r.escalate?.reason ?? '', /2 windows match "Viewer"/)
   assert.deepEqual(focused, [])
 })
+
+test('a wait asks no model about the front window that only changed its title, and takes the dialog that opens after it', async (t) => {
+  const doc = { id: '1', title: 'Untitled - Notepad', role: 'window', pid: process.pid, active: true }
+  const dialog = { id: '2', title: 'Save as', role: 'dialog', pid: process.pid, active: true }
+  const usage = { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 }
+  let typed = false; let pressed = 0; let asked = 0
+  await daemon(t, ({ tool }) => {
+    const open = pressed > 0 && Date.now() - pressed > 400
+    const ws = [{ ...doc, title: typed ? `*${doc.title}` : doc.title, active: !open }, ...(open ? [dialog] : [])]
+    const w = ws.find((x) => x.active) ?? doc
+    if (tool === 'desk_windows') return JSON.stringify(ws)
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: w, truncated: false, nodes: [{ ref: 0, id: `${w.id}/1`, parent: -1, depth: 0, role: w.role, name: w.title, states: ['showing'] }] })
+    if (tool === 'desk_type') typed = true
+    if (tool === 'desk_key') pressed = Date.now()
+    if (tool === 'model_decide') { asked++; return JSON.stringify({ answers: { is: { probability: 0.1 } }, served: { model: 'm', build: null, id: null }, usage }) }
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ type: 'hi' }, { key: 'ctrl+s' }, { wait: 'Save as' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.window, 'Save as')
+  assert.equal(asked, 0)
+})
