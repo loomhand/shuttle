@@ -10,7 +10,7 @@ use shuttle_desk::server::{self, Conn};
 use tokio::process::{Child, Command};
 
 const START_WAIT: Duration = Duration::from_secs(10);
-const START_POLL: Duration = Duration::from_millis(100);
+const START_POLL: Duration = Duration::from_millis(10);
 const EXIT_WAIT: Duration = Duration::from_secs(1);
 
 /// Sends `call` to the daemon at `endpoint`, starting it when nothing listens unless a host app embeds shuttle; a call that may have reached it is never resent.

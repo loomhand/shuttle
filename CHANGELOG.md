@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **`gui_plan` reads one window list fewer per settling step.** After a click, menu or close step waits for the window to settle, the next step and the end of the plan take the list that wait read, when it is under 25 ms old, shows a front window and no other call came after it; a macOS list costs 11-15 ms.
+- **A faster first call after a cold start.** The daemon builds its model client while the rest of it starts, after it listens, and a call that starts the daemon checks for it every 10 ms instead of 100: 501 to 427 ms from a cold start to the first answer.
 
 ## 0.1.43 - 2026-11-09
 

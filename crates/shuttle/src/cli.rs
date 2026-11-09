@@ -308,7 +308,6 @@ async fn serve(
         .and_then(|c| c.daemon.socket_group.take());
     let plugins = plugins::configured(&config, &path, &tools::NAMES);
     let routes = services::routes(&plugins.services, endpoint);
-    let models = config.map(Models::new);
     let exe = std::env::current_exe()
         .and_then(std::fs::canonicalize)
         .map_err(|e| format!("locate this program: {e}"))?;
@@ -316,6 +315,7 @@ async fn serve(
         Some(group) => server::bind_for(endpoint, group).await?,
         None => server::bind(endpoint).await?,
     };
+    let models = tokio::task::spawn_blocking(move || config.map(Models::new));
     let services = Services::start(&plugins.services, endpoint, &key_vars)?;
     let own = driver::endpoint(endpoint);
     let bundled = if local {
@@ -365,6 +365,9 @@ async fn serve(
         &home().to_string_lossy(),
         "recordings",
     );
+    let models = models
+        .await
+        .map_err(|e| format!("build the model client: {e}"))?;
     let daemon = Arc::new(
         Daemon::new(desk, models, runner, guard)
             .with_plugins(plugins.runs)
