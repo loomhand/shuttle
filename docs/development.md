@@ -8,7 +8,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-The toolchain is pinned in `rust-toolchain.toml`; the runner and daemon tests also run `node` from `PATH`, which must strip types as the archives' Node.js 24 does; CI's Rust jobs take the runner image's Node, and only the runtime job the pinned one. The unit tests drive fake accessibility backends, a fake cua-driver and in-memory MCP sessions: none reads a real accessibility tree or sends input, so they are safe on the machine you work on. Anything that drives a real desktop runs in a virtual machine or a CI runner, never on a developer's own session.
+The toolchain is pinned in `rust-toolchain.toml`; the runner and daemon tests also run `node` from `PATH`, which must strip types as the archives' Node.js 24 does; CI's Rust and runtime jobs put the Node.js pinned in `packaging/pins` on `PATH`. The unit tests drive fake accessibility backends, a fake cua-driver and in-memory MCP sessions: none reads a real accessibility tree or sends input, so they are safe on the machine you work on. Anything that drives a real desktop runs in a virtual machine or a CI runner, never on a developer's own session.
 
 `bash android/ui/build.sh OUT.jar` builds the Android UI server jar (it needs bash 4, a JDK, curl and GNU coreutils for `sha256sum` and `install -D`); `packaging/package.sh` takes it as `UI_JAR` for the Linux archive, and CI builds it twice to check the build is reproducible.
 
@@ -20,7 +20,7 @@ The runtime is TypeScript; the archives carry the `.mts` sources and, next to th
 node --test runtime/test/*.test.mts
 ```
 
-CI runs the Rust gates on Linux (x64), macOS (arm64, x64) and Windows (x64), the runtime tests on Linux (x64), macOS (arm64) and Windows (x64) and its typecheck on Linux, and shellcheck on Linux; on Windows it also builds the release binary and fails when it imports the Visual C++ runtime (`packaging/crt.ps1`); Linux arm64 is covered by the release build and install jobs on tags.
+CI runs the Rust gates on Linux (x64, arm64), macOS (arm64, x64) and Windows (x64), the runtime tests on Linux (x64), macOS (arm64) and Windows (x64) and its typecheck on Linux, shellcheck on Linux, and `cargo deny --locked check advisories` against the RustSec advisories, with the exceptions in `deny.toml`; on Windows it also builds the release binary and fails when it imports the Visual C++ runtime (`packaging/crt.ps1`).
 
 ## Release
 
