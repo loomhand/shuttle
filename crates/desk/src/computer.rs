@@ -2684,7 +2684,7 @@ mod tests {
         driver.await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_click_near_the_last_one_waits_out_the_double_click_time() {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
@@ -2707,9 +2707,9 @@ mod tests {
         cua.request("s", "click", click(300.0)).await.unwrap();
         let start = Instant::now();
         cua.request("s", "click", click(400.0)).await.unwrap();
-        assert!(start.elapsed() < CLICK_SPACING / 2, "{:?}", start.elapsed());
+        assert_eq!(start.elapsed(), Duration::ZERO);
         cua.request("s", "click", click(405.0)).await.unwrap();
-        assert!(start.elapsed() >= CLICK_SPACING, "{:?}", start.elapsed());
+        assert_eq!(start.elapsed(), CLICK_SPACING);
         driver.abort();
     }
 
