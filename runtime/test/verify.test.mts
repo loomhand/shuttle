@@ -93,3 +93,18 @@ test('a screenshot check whose answer is no true or false fails the expect', asy
   assert.equal(r.ok, false, JSON.stringify(r))
   assert.match(r.escalate?.reason ?? '', /no true or false/)
 })
+
+test('a verify that names a role reads an element of that role outside the controls, such as a document body, and one without a role still does not', async (t) => {
+  const body = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'document', name: 'Body', states: ['showing'], bounds: [10, 40, 400, 300] }
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root, body] })
+    if (tool === 'desk_read') return JSON.stringify({ ...body, value: 'hello' })
+    return '{"ok":true}'
+  })
+  const ok = async (want: string) => (await main({ steps: [{ verify: 'Body', role: 'document', value: want }] })).ok
+  assert.equal(await ok('hello'), true)
+  assert.equal(await ok('bye'), false)
+  const unnamed = await main({ steps: [{ verify: 'Body', value: 'hello' }] })
+  assert.match(unnamed.escalate?.reason ?? '', /no element matches "Body"/)
+})
