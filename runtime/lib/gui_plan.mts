@@ -676,7 +676,7 @@ function candidates(nodes: Node[], role?: string, within?: number) {
   const inside = (i: number) => { if (within === undefined) return true; for (const [p] of up(nodes, nodes[i]?.parent ?? -1)) if (p === within) return true; return false }
   const item = (n: Node) => ITEMS.has(n.role) && LISTS.has(nodes[n.parent]?.role ?? '')
   const roles = role ? new Set(role.split('|')) : null
-  return nodes.map((n, i) => ({ n, i })).filter(({ n, i }) => (ACTIVE.has(n.role) || item(n)) && (!roles || roles.has(n.role)) && inside(i))
+  return nodes.map((n, i) => ({ n, i })).filter(({ n, i }) => (roles ? roles.has(n.role) : ACTIVE.has(n.role) || item(n)) && inside(i))
 }
 
 async function resolve(nodes: Node[], target: string, role?: string, within?: number, bar = 0.5, fp?: Fp, ask = true): Promise<Hit | null> {
