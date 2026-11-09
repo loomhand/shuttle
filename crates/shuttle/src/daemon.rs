@@ -1005,7 +1005,7 @@ mod tests {
         assert!(!none.acting() && !none.halted());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_confirm_dialog_opens_only_once_the_actions_queued_before_it_are_done() {
         let (asker, pending) = held();
         let d = daemon(
