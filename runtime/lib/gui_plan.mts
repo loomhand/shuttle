@@ -53,6 +53,7 @@ const AUTO = process.env.SHUTTLE_INPUT === 'auto'
 const FG: desk.Target = AUTO ? { delivery_mode: 'foreground' } : {}
 const NO_PIXELS = 'background gui_plan does not read the screen, which shows whatever covers the plan\'s window'
 const NO_FRONT = 'no focused window'
+const TERMINAL = 'terminal emulator'
 const SPENT = 'model credits are used up'
 const FLOWS = process.env.SHUTTLE_FLOWS ?? ''
 const RUN = process.env.SHUTTLE_RUN
@@ -1204,13 +1205,13 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     heard(await desk.typeText(sub ? s.type.slice(0, -1) : s.type, at(w)), rec)
     tick('act', t0)
     if (BG && rec.unverified && w && !sub) {
-      const now = await texts(w)
-      if (AUTO && !secure(s) && !shows(was, now, s.type) && unchanged(was, now) && !taken(await desk.windows())) {
+      const now = await texts(w); const shown = shows(was, now, s.type); const tty = rec.unverified.includes(TERMINAL)
+      if (AUTO && !tty && !secure(s) && !shown && unchanged(was, now) && !taken(await desk.windows())) {
         await desk.focus(w.title, w.pid)
         await desk.typeText(s.type, FG)
         rec.how = 'foreground'; rec.unverified = undefined; fronted = true; BG = false
-      } else if (!shows(was, now, s.type)) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
-      rec.confirmed = true
+      } else if (!shown && !tty) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
+      rec.confirmed = shown || !tty
     }
     const blank = recording && first && !chooser && w ? await typedInto(w, s.type) : null
     if (blank) rec.blank = blank.fp
