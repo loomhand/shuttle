@@ -47,24 +47,20 @@ async function run(t: TestContext, plan: Plan, typed: (before: string, text: str
   return { r, calls: d.calls, doc: d.doc() }
 }
 
-async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc' } = {}) {
+async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '' } = {}) {
   const term: W = { id: 't', title: 'Terminal', role: 'window', pid: 7, active: false, app: 'Terminal' }
   const node = () => ({ ref: 0, id: 'd', parent: -1, depth: 0, role: 'document', name: '', states: [], value: screen })
-  const calls: Call[] = []
+  const calls: Call[] = []; let late = ''
   await daemon(t, (c) => {
     calls.push(c)
     if (c.tool === 'desk_windows') return JSON.stringify([user(), term])
-    if (c.tool === 'desk_snapshot') return JSON.stringify({ window: term, nodes: [{ ...node(), value: screen.slice(0, 200) }], truncated: false })
+    if (c.tool === 'desk_snapshot') { const out = JSON.stringify({ window: term, nodes: [{ ...node(), value: screen.slice(0, 200) }], truncated: false }); screen += late; late = ''; return out }
     if (c.tool === 'desk_read') return JSON.stringify({ ...node(), value: c.args.tail ? screen.slice(-READ) : screen.slice(0, READ), ...(screen.length > READ ? { truncated: true } : {}) })
-    if (c.tool === 'desk_key') screen += '\n$ '
+    if (c.tool === 'desk_key') { screen += '\n$ '; late = prompt; return JSON.stringify({ ok: true, ...(key ? { unverified: key } : {}) }) }
     if (c.tool !== 'desk_type') return '{"ok":true}'
-    const lines = String(c.args.text).split('\n')
-    for (const [i, line] of lines.entries()) {
-      if (i) screen += '\n'
-      screen = typed(screen, line)
-      if (i + 1 < lines.length) return { text: `the terminal did not confirm line ${i + 1} of ${lines.length}, so Return was not sent: ${TTY}${i ? `; ${i} of ${lines.length} lines were typed before it` : ''}`, error: true }
-    }
-    return JSON.stringify({ ok: true, chars: 3, unverified: TTY })
+    const text = String(c.args.text)
+    screen = typed(screen, text)
+    return JSON.stringify({ ok: true, chars: 3, terminal: true, ...(sure(text) ? {} : { unverified: TTY }) })
   })
   const steps = type.includes('\n') ? [{ app: 'Terminal' }, { type }] : [{ app: 'Terminal' }, { type }, { key: 'Return' }]
   return { r: await plan({ steps }), calls }
@@ -391,13 +387,83 @@ test('a background type of several lines sends each Return once when a terminal 
   }
 })
 
-test('a background type of several lines into a window that confirms them presses Return between its lines', async (t) => {
+test('a background type of several lines into a window that is not a terminal sends the lines after the first in one call with no read between', async (t) => {
   for (const [mode, plan] of modes) {
     const d = desktop((b, s) => b + s, false)
     await daemon(t, d.reply)
-    const r = await plan({ steps: [{ app: 'Notepad' }, { type: 'one\ntwo' }] })
+    const r = await plan({ steps: [{ app: 'Notepad' }, { type: 'one\ntwo\nthree' }] })
     assert.equal(r.ok, true, `${mode} ${JSON.stringify(r)}`)
-    assert.deepEqual(d.calls.filter((c) => c.tool === 'desk_type').map((c) => c.args.text), ['one', 'two'], mode)
-    assert.deepEqual(d.calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'], mode)
+    const typed = d.calls.findIndex((c) => c.tool === 'desk_type')
+    assert.deepEqual(d.calls.filter((c) => c.tool === 'desk_type').map((c) => c.args.text), ['one', '\ntwo\nthree'], mode)
+    assert.deepEqual(d.calls.slice(typed + 1, typed + 2).map((c) => c.tool), ['desk_type'], `${mode}\n${tools(d.calls).join('\n')}`)
+    assert.ok(!d.calls.some((c) => c.tool === 'desk_key'), mode)
+  }
+})
+
+test('a background type of several lines into a terminal types each line against its own read-back', async (t) => {
+  for (const [mode, plan] of modes) {
+    const { r, calls } = await terminal(t, plan, (screen, text) => screen + text, { type: 'ls\npwd\n', sure: () => true })
+    assert.equal(r.ok, true, `${mode} ${JSON.stringify(r.escalate?.reason)}`)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_type').map((c) => c.args.text), ['ls', 'pwd'], mode)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return', 'Return'], mode)
+  }
+})
+
+test('a terminal line waits for a prompt drawn after its Return before it is checked', async (t) => {
+  for (const [mode, plan] of modes) {
+    const { r, calls } = await terminal(t, plan, (screen, text) => text === 'pass' ? screen : screen + text, { type: 'read -s pw\npass\n', prompt: 'Password: ' })
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return', 'Return'], `${mode} ${JSON.stringify(r.escalate?.reason)}`)
+    assert.deepEqual(r.unverified, [{ step: 1, note: TTY }], mode)
+  }
+})
+
+test('a terminal step whose lines the driver confirmed is confirmed though a Return between them was not', async (t) => {
+  for (const [mode, plan] of modes) {
+    const { r, calls } = await terminal(t, plan, (screen, text) => screen + text, { type: 'ls\npwd\n', sure: () => true, key: 'unverifiable: posted return' })
+    assert.equal(r.ok, true, `${mode} ${JSON.stringify(r.escalate?.reason)}`)
+    assert.equal(r.unverified, undefined, mode)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return', 'Return'], mode)
+  }
+})
+
+test('a terminal note on a later line replaces a Return note the step heard before it', async (t) => {
+  for (const [mode, plan] of modes) {
+    const { r } = await terminal(t, plan, (screen, text) => text === 'pass' ? screen : screen + text, { type: 'read -s pw\npass\n', sure: (x) => x !== 'pass', key: 'unverifiable: posted return' })
+    assert.deepEqual(r.unverified, [{ step: 1, note: TTY }], `${mode} ${JSON.stringify(r)}`)
+  }
+})
+
+test('a terminal line that did not show stops the plan and says which line and what went before it', async (t) => {
+  for (const [mode, plan] of modes) {
+    const { r, calls } = await terminal(t, plan, (screen, text) => text === 'pwd' ? `${screen}pw` : screen + text, { type: 'ls\npwd\n' })
+    assert.match(String(r.escalate?.reason), /did not show in "Terminal" after typing line 2 of 2, after the 1 line before it and their Return were sent/, mode)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'], mode)
+  }
+})
+
+test('a terminal line that did not show keeps the step unverified though a later line showed', async (t) => {
+  for (const [mode, plan] of modes) {
+    const { r } = await terminal(t, plan, (screen, text) => text === 'pass' ? screen : screen + text, { type: 'pass\necho hi\n' })
+    assert.deepEqual(r.unverified, [{ step: 1, note: TTY }], `${mode} ${JSON.stringify(r)}`)
+  }
+})
+
+test('a long field read in part before or after typing is never typed into again in the foreground', async (t) => {
+  for (const cut of [0, 1]) {
+    const doc = HUGE
+    const calls: Call[] = []
+    let reads = 0
+    await daemon(t, (c) => {
+      calls.push(c)
+      if (c.tool === 'desk_windows') return JSON.stringify([user(), notepad()])
+      const node = { ref: 0, id: 'd', parent: -1, depth: 0, role: 'document', name: '', states: [], value: doc.slice(0, 200) }
+      if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes: [node], truncated: false })
+      if (c.tool === 'desk_read') return JSON.stringify({ ...node, value: doc.slice(-READ), ...(reads++ === cut ? { truncated: true } : {}) })
+      if (c.tool === 'desk_type') return JSON.stringify({ ok: true, chars: 2, unverified: NOTE })
+      return '{"ok":true}'
+    })
+    const r = await auto({ steps: [{ app: 'Notepad' }, { type: 'hi' }] })
+    assert.equal(r.ok, false, `${cut} ${JSON.stringify(r.trace)}`)
+    assert.ok(!calls.some((c) => c.tool === 'desk_focus'), `${cut}\n${tools(calls).join('\n')}`)
   }
 })

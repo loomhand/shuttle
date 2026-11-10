@@ -93,6 +93,7 @@ const PAGE_MS = 10_000
 const ON_PAGE_MS = 3000
 const DOM_READS = 60
 const READS_AT_ONCE = 4
+const BASE_SETTLE = 300
 const VALUE_CHARS = 200
 const INERT_KEY = /^shift\+[^+]$/i
 const ARROW_KEY = /^(shift\+)?(arrow)?(up|down|left|right)$/i
@@ -457,7 +458,7 @@ function traced(i: number, rec: Rec, s: Step, escalated: boolean): Trace {
   }
 }
 
-function heard(r: desk.Sent, rec: Rec) { if (BG && r.unverified && !rec.unverified) rec.unverified = r.unverified }
+function heard(r: desk.Sent, rec: Rec) { if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = r.unverified }
 async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
   let ws = seed ?? await desk.windows()
   for (const end = Date.now() + ms; !ok(ws) && Date.now() < end;) ws = (await desk.wait(ws, end - Date.now())).windows
@@ -1071,20 +1072,29 @@ async function texts(w: Win): Promise<Map<string, Text> | null> {
 }
 function whole(t: Map<string, Text> | null) { return !!t && [...t.values()].every((x) => !x.cut) }
 async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | null, rec: Rec) {
-  const lines = text.split('\n'); let quiet: boolean | undefined
+  const lines = text.split('\n'); const k = lines.findIndex(Boolean)
+  const first = await desk.typeText(k < 0 ? text : lines.slice(0, k + 1).join('\n'), at(w)); heard(first, rec)
+  if (k < 0 || !first.terminal) {
+    if (k >= 0 && k + 1 < lines.length) heard(await desk.typeText(`\n${lines.slice(k + 1).join('\n')}`, at(w)), rec)
+    return undefined
+  }
+  const n = lines.length - (text.endsWith('\n') ? 1 : 0); let quiet = false; let base = was
   for (const [i, line] of lines.entries()) {
-    if (line) {
-      const base = i ? await texts(w) : was
-      const r = await desk.typeText(line, at(w)); heard(r, rec)
-      if (r.unverified?.includes(TERMINAL)) {
-        const now = await texts(w); const shown = shows(base, now, line)
-        if (!shown && !unchanged(base, now)) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${r.unverified}`, await seen())
-        quiet ||= !shown
-      }
-    }
-    if (i < lines.length - 1) heard(await desk.key('Return', at(w)), rec)
+    if (i < k) continue
+    if (i > k) { heard(await desk.key('Return', at(w)), rec); if (!line) continue; base = await settled(w) }
+    const r = i > k ? await desk.typeText(line, at(w)) : first
+    if (i > k) heard(r, rec)
+    if (!r.unverified?.includes(TERMINAL)) continue
+    const now = await texts(w); const shown = shows(base, now, line)
+    if (!shown && !unchanged(base, now)) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing line ${i + 1} of ${n}${i ? `, after the ${i} line${i > 1 ? 's' : ''} before it and their Return were sent` : ''}: ${r.unverified}`, await seen())
+    quiet ||= !shown
   }
   return quiet
+}
+async function settled(w: Win) {
+  let a = await texts(w)
+  for (const end = Date.now() + BASE_SETTLE; Date.now() < end;) { const b = await texts(w); if (unchanged(a, b)) return b; a = b }
+  return a
 }
 function unchanged(before: Map<string, Text> | null, after: Map<string, Text> | null) {
   if (!before || !after || before.size !== after.size) return false

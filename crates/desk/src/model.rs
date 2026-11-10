@@ -134,6 +134,7 @@ pub struct Node {
     pub keys: Option<String>,
     pub bounds: Option<[i32; 4]>,
     pub url: Option<String>,
+    pub truncated: bool,
 }
 
 impl Node {

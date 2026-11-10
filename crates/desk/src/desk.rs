@@ -757,7 +757,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 Ok((node, web))
             })
             .await?;
-        let truncated = text && cut_read(&mut node.value, tail);
+        let truncated = text && (cut_read(&mut node.value, tail) | node.truncated);
         let mut out = node.into_json(0);
         if truncated {
             out["truncated"] = true.into();
@@ -990,6 +990,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             _ => false,
         };
         let mut note = None;
+        let mut terminal = false;
         let lines = text.split('\n').count();
         for (i, line) in text.split('\n').enumerate() {
             let sent: Result<(), String> = async {
@@ -1006,13 +1007,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         return Ok(());
                     }
                     for run in text_runs(line) {
-                        self.send(
-                            "type_text",
-                            json!({"text": run, "literal": true}),
-                            to,
-                            &mut note,
-                        )
-                        .await?;
+                        terminal |= self
+                            .send(
+                                "type_text",
+                                json!({"text": run, "literal": true}),
+                                to,
+                                &mut note,
+                            )
+                            .await?;
                     }
                     return Ok(());
                 }
@@ -1028,7 +1030,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                             req["delay_ms"] = MAC_TYPE_DELAY_MS.into();
                         }
                         let mut said = None;
-                        self.send("type_text", req, to, &mut said).await?;
+                        terminal |= self.send("type_text", req, to, &mut said).await?;
                         if let Some(n) = said.as_deref().filter(|n| n.contains(TERMINAL))
                             && i + 1 < lines
                         {
@@ -1075,6 +1077,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if let Some(note) = note {
             out["unverified"] = note.into();
         }
+        if terminal {
+            out["terminal"] = true.into();
+        }
         Ok(out.to_string())
     }
 
@@ -1119,7 +1124,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         req: Value,
         to: Option<(i64, i64)>,
         note: &mut Option<String>,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let mut req = match to {
             Some(to) => background(req, to),
             None => desktop(req),
@@ -1142,7 +1147,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if note.is_none() {
             *note = self.unverified(&out, to, tool == "type_text");
         }
-        Ok(())
+        Ok(out["content"].as_array().is_some_and(|c| {
+            c.iter()
+                .any(|t| t["text"].as_str().is_some_and(|t| t.contains(TERMINAL)))
+        }))
     }
 
     /// The driver's note on background input whose effect it could not confirm, with its escalation; for a window nobody sees, ours instead.
@@ -2695,6 +2703,8 @@ pub(crate) mod tests {
     use std::sync::atomic::Ordering;
     use std::sync::{Mutex, OnceLock};
 
+    use desk_core::text::clip;
+
     use super::*;
     use crate::model::{MAX_IDS, Tree, evict_ids, lookup};
 
@@ -2884,6 +2894,27 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(!err.contains("lines were typed"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_type_into_a_terminal_says_so_whether_or_not_the_driver_confirmed_it() {
+        let tty = "Sent (unverified) 1 char(s) via CGEvent (terminal emulator, 0ms delay).";
+        for (quiet, said, terminal) in [
+            ("a", tty, true),
+            ("-", tty, true),
+            ("a", "Posted via CGEvent.", false),
+            ("-", "Posted via CGEvent.", false),
+        ] {
+            let desk =
+                Desk::new(|| Ok(Apps), Tty(Arc::default(), quiet, said), Os::Mac).background(true);
+            let out = desk
+                .run("desk_type", json!({"text": "a", "window": "Doc"}))
+                .await
+                .unwrap();
+            let v: Value = serde_json::from_str(&out.text).unwrap();
+            assert_eq!(v.get("terminal").is_some(), terminal, "{quiet} {said}: {v}");
+            assert_eq!(v["terminal"] == true, terminal, "{quiet} {said}: {v}");
+        }
     }
 
     #[tokio::test]
@@ -7182,7 +7213,10 @@ pub(crate) mod tests {
                     "content": [{"type": "text", "text": self.2}],
                     "structuredContent": {"effect": "unverifiable"}
                 }),
-                "type_text" => json!({"structuredContent": {"effect": "confirmed"}}),
+                "type_text" => json!({
+                    "content": [{"type": "text", "text": if self.2.contains(TERMINAL) { "Typed 1 char(s) (terminal emulator)." } else { "Typed 1 char(s)." }}],
+                    "structuredContent": {"effect": "confirmed"}
+                }),
                 _ => json!({}),
             })
         }
@@ -7554,7 +7588,7 @@ pub(crate) mod tests {
             Ok(Node {
                 id: id.into(),
                 role: "document",
-                value: Some(desk_core::text::clip(
+                value: Some(clip(
                     match id {
                         "long" => format!("{}中🙂end", "a".repeat(READ_CHARS)),
                         _ => "b".repeat(READ_CHARS),
