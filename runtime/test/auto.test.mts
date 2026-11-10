@@ -436,7 +436,7 @@ test('a terminal note on a later line replaces a Return note the step heard befo
 test('a terminal line that did not show stops the plan and says which line and what went before it', async (t) => {
   for (const [mode, plan] of modes) {
     const { r, calls } = await terminal(t, plan, (screen, text) => text === 'pwd' ? `${screen}pw` : screen + text, { type: 'ls\npwd\n' })
-    assert.match(String(r.escalate?.reason), /did not show in "Terminal" after typing line 2 of 2, after the 1 line before it and their Return were sent/, mode)
+    assert.match(String(r.escalate?.reason), /did not show in "Terminal" after typing line 2 of 2, after the line before it and its Return were sent/, mode)
     assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'], mode)
   }
 })
@@ -466,4 +466,16 @@ test('a long field read in part before or after typing is never typed into again
     assert.equal(r.ok, false, `${cut} ${JSON.stringify(r.trace)}`)
     assert.ok(!calls.some((c) => c.tool === 'desk_focus'), `${cut}\n${tools(calls).join('\n')}`)
   }
+})
+
+test('a step keeps the first note it heard unless a later one names a terminal', async (t) => {
+  await daemon(t, (c) => {
+    if (c.tool === 'desk_windows') return JSON.stringify([user(), notepad()])
+    if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes: [{ ref: 0, id: 'd', parent: -1, depth: 0, role: 'document', name: '', states: [], value: 'x' }], truncated: false })
+    if (c.tool === 'desk_type') return JSON.stringify({ ok: true, chars: 3, unverified: `unverifiable: ${String(c.args.text).trim()}` })
+    return '{"ok":true}'
+  })
+  const r = await background({ steps: [{ app: 'Notepad' }, { type: 'one\ntwo' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(String(r.escalate?.reason), /did not show in "Untitled - Notepad" after typing: unverifiable: one$/)
 })

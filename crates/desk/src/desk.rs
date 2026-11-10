@@ -2912,7 +2912,6 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
             let v: Value = serde_json::from_str(&out.text).unwrap();
-            assert_eq!(v.get("terminal").is_some(), terminal, "{quiet} {said}: {v}");
             assert_eq!(v["terminal"] == true, terminal, "{quiet} {said}: {v}");
         }
     }

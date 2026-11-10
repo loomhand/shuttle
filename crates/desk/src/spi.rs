@@ -320,6 +320,7 @@ fn node(n: atspi::Node) -> Node {
         value: n.value,
         keys: n.keys,
         url: n.url,
+        truncated: false,
     }
 }
 
