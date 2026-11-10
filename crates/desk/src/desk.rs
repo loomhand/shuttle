@@ -140,6 +140,7 @@ const FOCUS_UNREAD: &str = "type refused, nothing was typed: the keyboard focus 
 const LOCKED_TOOLS: [&str; 2] = ["type_text", "press_key"];
 const LOCKED_INPUT_UNSUPPORTED: &str = "nothing was sent: [desk] locked_input is on, but this cua-driver does not take locked_input; update shuttle, whose bundled driver does";
 const LOCKED_SCREEN: &str = "shuttle cannot reach the lock screen: [desk] locked_input reaches only the window that had the focus before the lock, never the lock screen's password field; unlock over Screen Sharing or at the machine";
+const LOGIN_WINDOW: &str = "the lock screen belongs to loginwindow, and shuttle has no unlock action: unlock over Screen Sharing or at the machine";
 const FOCUS_UNKNOWN: &str = "focus unverified: accessibility shows no focused text field in the app, so which field took the text is unknown: confirm it in a screenshot before you press Return or Send";
 
 tokio::task_local! {
@@ -1712,7 +1713,23 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if !self.bg() {
             return Ok(None);
         }
-        Ok(Some(self.background_window(window, pid).await?.0))
+        match self.background_window(window, pid).await {
+            Ok((to, _)) => Ok(Some(to)),
+            Err(e) => match pid {
+                Some(pid) if self.locked_input && self.os == Os::Mac => {
+                    let login = self
+                        .call("list_windows", json!({"pid": pid}))
+                        .await
+                        .is_ok_and(|v| {
+                            v["structuredContent"]["windows"]
+                                .as_array()
+                                .is_some_and(|w| w.iter().any(|w| w["app_name"] == "loginwindow"))
+                        });
+                    Err(if login { LOGIN_WINDOW.to_owned() } else { e })
+                }
+                _ => Err(e),
+            },
+        }
     }
 
     async fn raised_window(
@@ -3857,6 +3874,31 @@ pub(crate) mod tests {
                 "{os:?} {auto} {err}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn locked_input_into_the_lock_screen_is_refused_before_anything_is_sent() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(Apps),
+            LoginWindow(Behind(Arc::clone(&calls))),
+            Os::Mac,
+        )
+        .background(true)
+        .locked_input(true);
+        for (tool, args) in [
+            ("desk_type", json!({"text": "a", "pid": 776})),
+            ("desk_key", json!({"keys": "return", "pid": 776})),
+        ] {
+            let err = desk.run(tool, args).await.unwrap_err();
+            assert_eq!(err, LOGIN_WINDOW, "{tool}");
+        }
+        assert!(sent(&calls, "type_text").is_empty());
+        assert!(sent(&calls, "press_key").is_empty());
+        desk.run("desk_type", json!({"text": "a", "pid": 4}))
+            .await
+            .unwrap();
+        assert_eq!(sent(&calls, "type_text").len(), 1);
     }
 
     #[tokio::test]
@@ -7020,6 +7062,19 @@ pub(crate) mod tests {
                 return Err(format!(
                     "{tool}: window 1 cannot receive input: {LOCK_HINT}"
                 ));
+            }
+            self.0.call(tool, args).await
+        }
+    }
+
+    struct LoginWindow(Behind);
+
+    impl Input for LoginWindow {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            if tool == "list_windows" && args["pid"] == 776 {
+                return Ok(json!({"structuredContent": {"windows": [
+                    {"pid": 776, "window_id": 692, "layer": 2002, "title": "", "app_name": "loginwindow", "bounds": {"x": 0.0, "y": 0.0, "width": 1280.0, "height": 800.0}}
+                ]}}));
             }
             self.0.call(tool, args).await
         }
