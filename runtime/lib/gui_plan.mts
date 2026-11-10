@@ -54,6 +54,7 @@ const FG: desk.Target = AUTO ? { delivery_mode: 'foreground' } : {}
 const NO_PIXELS = 'background gui_plan does not read the screen, which shows whatever covers the plan\'s window'
 const NO_FRONT = 'no focused window'
 const TERMINAL = 'terminal emulator'
+const UNCONFIRMED_LINE = /the terminal did not confirm line (\d+) of \d+, so Return was not sent: (.+?)(?:; \d+ of \d+ lines were typed before it)?$/s
 const SPENT = 'model credits are used up'
 const FLOWS = process.env.SHUTTLE_FLOWS ?? ''
 const RUN = process.env.SHUTTLE_RUN
@@ -93,6 +94,8 @@ const PAGE_MS = 10_000
 const ON_PAGE_MS = 3000
 const DOM_READS = 60
 const READS_AT_ONCE = 4
+const VALUE_CHARS = 200
+const READ_CHARS = 64 << 10
 const INERT_KEY = /^shift\+[^+]$/i
 const ARROW_KEY = /^(shift\+)?(arrow)?(up|down|left|right)$/i
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
@@ -1060,8 +1063,10 @@ async function texts(w: Win): Promise<Map<string, Text> | null> {
     const slot = pool(READS_AT_ONCE)
     const all = await Promise.all(parse(await snapOf(w)).map(async (n): Promise<[string, Text][]> => {
       const field = n.role === 'document' || FIELD_ROLES.has(n.role)
-      if (n.value) return [[n.id, { value: n.value, field }]]
-      return field ? [[n.id, { value: (await slot(() => desk.read(n.id, { text: true })).catch(() => null))?.value, field }]] : []
+      if (n.value && !(field && n.value.length >= VALUE_CHARS)) return [[n.id, { value: n.value, field }]]
+      if (!field) return []
+      const v = (await slot(() => desk.read(n.id, { text: true })).catch(() => null))?.value
+      return [[n.id, { value: v !== undefined && v.length >= READ_CHARS ? undefined : v, field }]]
     }))
     return new Map(all.flat())
   } catch { return null }
@@ -1202,16 +1207,28 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field in a plan that continues the flow from this step, which saves the fix into the flow`, await seen())
     // GTK preselects a file name only up to its last dot
     if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine(w)
-    heard(await desk.typeText(sub ? s.type.slice(0, -1) : s.type, at(w)), rec)
+    let text = sub ? s.type.slice(0, -1) : s.type; let base = was; let lined = false
+    for (;;) {
+      try { heard(await desk.typeText(text, at(w)), rec); break } catch (e: unknown) {
+        const why = e instanceof Error ? e.message : ''; const m = UNCONFIRMED_LINE.exec(why)
+        if (!m || !w) throw e
+        if (!unchanged(base, await texts(w))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${why}`, await seen())
+        rec.unverified ??= m[2]; lined = true
+        heard(await desk.key('Return', at(w)), rec)
+        text = text.split('\n').slice(Number(m[1])).join('\n')
+        if (!text) break
+        base = await texts(w)
+      }
+    }
     tick('act', t0)
-    if (BG && rec.unverified && w && !sub) {
-      const now = await texts(w); const shown = shows(was, now, s.type); const tty = rec.unverified.includes(TERMINAL)
-      if (AUTO && !tty && !secure(s) && !shown && unchanged(was, now) && !taken(await desk.windows())) {
+    if (BG && rec.unverified && w && !sub && text) {
+      const now = await texts(w); const shown = shows(base, now, text); const tty = rec.unverified.includes(TERMINAL)
+      if (AUTO && !tty && !secure(s) && !shown && unchanged(base, now) && !taken(await desk.windows())) {
         await desk.focus(w.title, w.pid)
         await desk.typeText(s.type, FG)
         rec.how = 'foreground'; rec.unverified = undefined; fronted = true; BG = false
-      } else if (!shown && !(tty && unchanged(was, now))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
-      rec.confirmed = shown || !tty
+      } else if (!shown && !(tty && unchanged(base, now))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
+      rec.confirmed = !lined && (shown || !tty)
     }
     const blank = recording && first && !chooser && w ? await typedInto(w, s.type) : null
     if (blank) rec.blank = blank.fp

@@ -121,6 +121,7 @@ const TYPE_POLL: Duration = Duration::from_millis(10);
 const TYPE_TAIL: usize = 16;
 const MAC_TYPE_DELAY_MS: u64 = 0;
 const CHROMIUM_TYPE_DELAY_MS: u64 = 1;
+const TERMINAL: &str = "terminal emulator";
 const PROTOCOL_TAGS: [&str; 10] = [
     "text",
     "parameter",
@@ -1016,7 +1017,17 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         {
                             req["delay_ms"] = MAC_TYPE_DELAY_MS.into();
                         }
-                        self.send("type_text", req, to, &mut note).await?;
+                        let mut said = None;
+                        self.send("type_text", req, to, &mut said).await?;
+                        if let Some(n) = said.as_deref().filter(|n| n.contains(TERMINAL))
+                            && i + 1 < lines
+                        {
+                            return Err(format!(
+                                "the terminal did not confirm line {} of {lines}, so Return was not sent: {n}",
+                                i + 1
+                            ));
+                        }
+                        note = note.take().or(said);
                     }
                     return Ok(());
                 }
@@ -2863,6 +2874,51 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(!err.contains("lines were typed"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_line_a_terminal_did_not_confirm_gets_no_return_and_other_lines_do() {
+        let tty = "Sent (unverified) 1 char(s) via CGEvent (terminal emulator, 0ms delay).";
+        for (quiet, said, text, stopped, returns) in [
+            ("a", tty, "a\nb", Some("line 1 of 2"), 0),
+            ("b", tty, "a\nb\nc", Some("line 2 of 3"), 1),
+            ("b", tty, "a\nb", None, 1),
+            ("-", tty, "a\nb", None, 1),
+            ("a", "Posted via CGEvent.", "a\nb", None, 1),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(Apps), Tty(Arc::clone(&calls), quiet, said), Os::Mac)
+                .background(true);
+            let out = desk
+                .run("desk_type", json!({"text": text, "window": "Doc"}))
+                .await;
+            match stopped {
+                Some(line) => {
+                    let err = out.unwrap_err();
+                    assert!(
+                        err.contains(&format!(
+                            "the terminal did not confirm {line}, so Return was not sent: unverifiable: {tty}"
+                        )),
+                        "{err}"
+                    );
+                    assert_eq!(
+                        err.ends_with("; 1 of 3 lines were typed before it"),
+                        returns == 1,
+                        "{err}"
+                    );
+                }
+                None => {
+                    let note = note(out.unwrap());
+                    assert_eq!(note.is_empty(), quiet == "-", "{text} {quiet}: {note}");
+                }
+            }
+            assert_eq!(sent(&calls, "press_key").len(), returns, "{text} {quiet}");
+            assert_eq!(
+                sent(&calls, "type_text").len(),
+                returns + 1,
+                "{text} {quiet}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -7068,6 +7124,26 @@ pub(crate) mod tests {
 
     fn doc_at(x: f64) -> Value {
         json!({"bounds": {"x": x, "y": 100.0, "width": 400.0, "height": 300.0}})
+    }
+
+    struct Tty(Arc<Mutex<Vec<(String, Value)>>>, &'static str, &'static str);
+
+    impl Input for Tty {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let quiet = args["text"] == self.1;
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 5, "window_id": 3, "layer": 0, "z_index": 1, "title": "Doc", "app_name": "TextEdit", "is_on_screen": true, "on_current_space": true, "space_ids": [8]}
+                ]}}),
+                "type_text" if quiet => json!({
+                    "content": [{"type": "text", "text": self.2}],
+                    "structuredContent": {"effect": "unverifiable"}
+                }),
+                "type_text" => json!({"structuredContent": {"effect": "confirmed"}}),
+                _ => json!({}),
+            })
+        }
     }
 
     struct HiddenTwin(Arc<Mutex<Vec<(String, Value)>>>);
