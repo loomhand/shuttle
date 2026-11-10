@@ -17,7 +17,7 @@ type Step = {
   app?: string; title?: string; menu?: string; click?: string; check?: string; on?: boolean; set?: string; value?: string
   type?: string; key?: string; wait?: string; expect?: string; verify?: string; close?: boolean; role?: string; window?: string
   timeout_ms?: number; enabled?: boolean; fp?: Fp; seen?: string; blank?: Fp; after?: string; recorded?: Recorded; focus?: Focus | 'unverified'
-  button?: string; count?: number; mods?: string[]; url?: string; web?: Web; intent?: string
+  button?: string; count?: number; mods?: string[]; url?: string; web?: Web; intent?: string; secret?: boolean
 }
 // frame is the role of the field's window or sheet
 type Focus = { role?: string; name?: string; frame?: string; secure?: boolean; id?: string }
@@ -319,7 +319,7 @@ async function perform(p: Params): Promise<Result> {
   return out
 }
 
-function unrecorded({ recorded: _, fp: __, blank: ___, ...s }: Step): Bare { return s }
+function unrecorded({ recorded: _, fp: __, blank: ___, ...s }: Step): Bare { return secure(s) && s.type?.replace(/\{\{\w+(?::base)?\}\}|\n/g, '') ? { ...s, type: 'the password' } : s }
 
 function ops(s: Step) { return OPS.filter((k) => k === 'type' ? s.type !== undefined : !!s[k]) }
 
@@ -1553,7 +1553,7 @@ function unsecret(steps: Step[], params: Record<string, string>) {
   return out
 }
 
-function secure(s: Step) { return typeof s.focus === 'object' && !!s.focus.secure }
+function secure(s: Step) { return s.secret === true || (typeof s.focus === 'object' && !!s.focus.secure) }
 
 function typedText(s: Step) { return secure(s) ? 'the password' : `"${s.type}"` }
 
