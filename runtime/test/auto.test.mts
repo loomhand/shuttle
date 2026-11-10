@@ -8,7 +8,7 @@ type Lib = typeof import('../lib/gui_plan.mts')
 type Plan = typeof auto
 
 const NOTE = 'unverifiable: Sent 2 char(s) via PostMessage (not verified).'
-const TTY = 'unverifiable: Sent (unverified) 3 char(s) via CGEvent (terminal emulator, 0ms delay). — driver could not confirm the text landed; verify via screenshot, and re-call with delivery_mode:"foreground" if it didn\'t.'
+const TTY = 'unverifiable: Sent (unverified) 3 char(s) via CGEvent (terminal emulator, 0ms delay). — a terminal may not echo what it reads (a password prompt), so neither the screen nor a screenshot can confirm it; do not type the text again.'
 const tools = (calls: Call[]) => calls.map((c) => `${c.tool} ${JSON.stringify(c.args)}`)
 const load = async (input: string): Promise<Lib['main']> => {
   process.env.SHUTTLE_INPUT = input
