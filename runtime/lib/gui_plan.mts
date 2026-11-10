@@ -1075,7 +1075,7 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
   const raw = text.split('\n'); const lines = raw.map((l) => l.replace(/\r$/, '')); const k = lines.findIndex(Boolean)
   if (k < 0) { heard(await desk.typeText(text, at(w)), rec); return undefined }
   let base = was
-  if (k > 0) { for (let i = 0; i < k; i++) heard(await desk.key('Return', at(w)), rec); base = await settled(w) }
+  if (k > 0) { heard(await desk.typeText('\n'.repeat(k), at(w)), rec); base = await settled(w) }
   const first = await desk.typeText(raw[k] ?? '', at(w)); heard(first, rec)
   if (!first.terminal) {
     if (k + 1 < raw.length) heard(await desk.typeText(`\n${raw.slice(k + 1).join('\n')}`, at(w)), rec)

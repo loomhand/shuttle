@@ -445,8 +445,8 @@ test('a blank answer before a quiet line is submitted alone and the quiet line i
   for (const [mode, plan] of modes) {
     const { r, calls } = await terminal(t, plan, (screen, text) => screen + text.replace('secret', '').replace(/\n/g, '\n$ '), { type: '\nsecret\n' })
     assert.doesNotMatch(String(r.escalate?.reason), /did not show/, mode)
-    assert.deepEqual(calls.filter((c) => c.tool === 'desk_type').map((c) => c.args.text), ['secret'], mode)
-    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return', 'Return'], mode)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_type').map((c) => c.args.text), ['\n', 'secret'], mode)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'], mode)
     assert.deepEqual(r.unverified, [{ step: 1, note: TTY }], mode)
   }
 })
@@ -455,8 +455,28 @@ test('a CRLF text into a terminal is typed line by line and a partial line stops
   for (const [mode, plan] of modes) {
     const { r, calls } = await terminal(t, plan, (screen, text) => screen + (text.startsWith('pass') ? 'pa' : text), { type: '\r\npass\r\n' })
     assert.match(String(r.escalate?.reason), /did not show in "Terminal" after typing line 2 of 2, after the line before it and its Return were sent/, mode)
-    assert.deepEqual(calls.filter((c) => c.tool === 'desk_type').map((c) => c.args.text), ['pass\r'], mode)
-    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'], mode)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_type').map((c) => c.args.text), ['\n', 'pass\r'], mode)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key'), [], mode)
+  }
+})
+
+test('leading blank lines go through the desk type that checks the focus of the last click', async (t) => {
+  const REFUSED = 'type refused, nothing was typed: the keyboard focus is in textbox "Search", not in the field of the last click into this window, so the text would go there; click the field to type into, then type again'
+  for (const [mode, plan] of modes) {
+    const ws = [user(), notepad()]; const calls: Call[] = []; let clicked = true
+    await daemon(t, (c) => {
+      calls.push(c)
+      if (c.tool === 'desk_windows') return JSON.stringify(ws)
+      if (c.tool === 'desk_snapshot') return JSON.stringify({ window: ws[1], nodes: [{ ref: 0, id: 'd', parent: -1, depth: 0, role: 'document', name: '', states: [], value: 'x' }], truncated: false })
+      if (c.tool === 'desk_type' && clicked) return { text: REFUSED, error: true }
+      if (c.tool !== 'desk_type' && c.tool.startsWith('desk_') && !['desk_windows', 'desk_snapshot', 'desk_read', 'desk_wait'].includes(c.tool)) clicked = false
+      return '{"ok":true}'
+    })
+    const r = await plan({ steps: [{ app: 'Notepad' }, { type: '\nhello' }] })
+    assert.equal(r.ok, false, mode)
+    assert.match(JSON.stringify(r), /type refused, nothing was typed/, mode)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key'), [], mode)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_type').map((c) => c.args.text), ['\n'], mode)
   }
 })
 
