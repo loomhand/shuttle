@@ -532,7 +532,8 @@ function modalBlocks(m: Win) { return `modal dialog "${m.title}" is open but ${m
 function blocked(o: string) { return /AT-SPI peer \S+ is not responding|no accessibility answer within/.test(o) }
 function isChooser(o: string) { return isDialog(o) && CHOOSER.test(o) }
 async function selectLine(w: Win | null) { if (OS === 'darwin') await desk.key(SELECT_ALL, at(w)); else { await desk.key('home', at(w)); await desk.key('shift+end', at(w)) } }
-function echoed(w: Win) { return new Surprise(`the password showed in "${w.title}": the prompt was not up, so it was not submitted`, { window: w.title }) }
+function echoed(w: Win) { return new Surprise(`the password showed in "${w.title}", so it was not submitted`, { window: w.title }) }
+function changed(w: Win, note: string) { return `"${w.title}" changed while the password was typed, and nothing showed that a prompt took it, so it was not submitted: ${note}` }
 
 function frozen(w: Win, i: number, prev: Step | undefined) { return `"${w.title}" stopped answering accessibility${prev ? ` after step ${i - 1} ${JSON.stringify(unrecorded(prev))}` : ''}: its app is busy or hung; wait and continue from step ${i}, or close it` }
 function titles(ws: Win[]) { return ws.filter((x) => x.title && !isShell(x)).map((x) => x.title) }
@@ -1101,6 +1102,7 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
     if (!r.unverified?.includes(TERMINAL)) { if (secure(s) && !r.unverified) throw echoed(w); continue }
     const now = await texts(w); const shown = shows(base, now, line, true)
     if (secure(s) && shown) throw echoed(w)
+    if (secure(s) && !unchanged(base, now)) throw new Surprise(changed(w, r.unverified), await seen())
     if (!shown && !unchanged(base, now)) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing line ${i + 1} of ${n}${i > 1 ? `, after the ${i} lines before it and their Returns were sent` : i ? ', after the line before it and its Return were sent' : ''}: ${r.unverified}`, await seen())
     quiet ||= !shown
   }
@@ -1260,7 +1262,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
         await desk.focus(w.title, w.pid)
         await desk.typeText(s.type, FG)
         rec.how = 'foreground'; rec.unverified = undefined; fronted = true; BG = false
-      } else if (!shown && !(tty && unchanged(was, now))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
+      } else if (tty && secure(s) && !unchanged(was, now)) throw new Surprise(changed(w, rec.unverified), await seen())
+      else if (!shown && !(tty && unchanged(was, now))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
       rec.confirmed = shown || !tty
     }
     const blank = recording && first && !chooser && w ? await typedInto(w, s.type) : null
