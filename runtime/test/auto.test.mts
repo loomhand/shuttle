@@ -290,8 +290,22 @@ test('terminal confirmation takes a typed trailing space or tab the terminal tri
   for (const [mode, plan] of modes) {
     for (const type of ['ls ', 'ls\t', 'ls \n', 'ls\t\n']) {
       const { r, calls } = await terminal(t, plan, (screen, text) => screen + text.trimEnd(), { type })
-      assert.doesNotMatch(String(r.escalate?.reason), /did not show/, `${mode} ${JSON.stringify(type)}`)
+      assert.equal(r.ok, true, `${mode} ${JSON.stringify(type)} ${JSON.stringify(r.escalate?.reason)}`)
+      assert.equal(r.unverified, undefined, `${mode} ${JSON.stringify(type)}`)
       assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'], `${mode} ${JSON.stringify(type)}`)
+    }
+    const { r, calls } = await terminal(t, plan, (screen, text) => screen + text.trimEnd(), { type: 'ls \npwd\n' })
+    assert.equal(r.ok, true, `${mode} ${JSON.stringify(r.escalate?.reason)}`)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return', 'Return'], mode)
+  }
+})
+
+test('terminal confirmation takes echoed whitespace-only text and lines', async (t) => {
+  for (const [mode, plan] of modes) {
+    for (const [type, returns] of [[' ', 1], ['\t', 1], ['ls\n    \npwd\n', 3], ['  \nls\n', 2]] as const) {
+      const { r, calls } = await terminal(t, plan, (screen, text) => screen + text, { type, sure: () => false })
+      assert.doesNotMatch(String(r.escalate?.reason), /did not show/, `${mode} ${JSON.stringify(type)}`)
+      assert.equal(calls.filter((c) => c.tool === 'desk_key').length, returns, `${mode} ${JSON.stringify(type)}`)
     }
   }
 })
