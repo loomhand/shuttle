@@ -95,7 +95,6 @@ const ON_PAGE_MS = 3000
 const DOM_READS = 60
 const READS_AT_ONCE = 4
 const VALUE_CHARS = 200
-const READ_CHARS = 64 << 10
 const INERT_KEY = /^shift\+[^+]$/i
 const ARROW_KEY = /^(shift\+)?(arrow)?(up|down|left|right)$/i
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
@@ -1065,8 +1064,7 @@ async function texts(w: Win): Promise<Map<string, Text> | null> {
       const field = n.role === 'document' || FIELD_ROLES.has(n.role)
       if (n.value && !(field && n.value.length >= VALUE_CHARS)) return [[n.id, { value: n.value, field }]]
       if (!field) return []
-      const v = (await slot(() => desk.read(n.id, { text: true })).catch(() => null))?.value
-      return [[n.id, { value: v !== undefined && v.length >= READ_CHARS ? undefined : v, field }]]
+      return [[n.id, { value: (await slot(() => desk.read(n.id, { text: true, tail: true })).catch(() => null))?.value, field }]]
     }))
     return new Map(all.flat())
   } catch { return null }

@@ -10,6 +10,8 @@ type Plan = typeof auto
 const NOTE = 'unverifiable: Sent 2 char(s) via PostMessage (not verified).'
 const TTY = 'unverifiable: Sent (unverified) 3 char(s) via CGEvent (terminal emulator, 0ms delay). — a terminal may not echo what it reads (a password prompt), so neither the screen nor a screenshot can confirm it; do not type the text again.'
 const LONG = `${'$ ls\nREADME.md\n'.repeat(20)}$ `
+const READ = 64 << 10
+const HUGE = LONG.repeat(250)
 const tools = (calls: Call[]) => calls.map((c) => `${c.tool} ${JSON.stringify(c.args)}`)
 const load = async (input: string): Promise<Lib['main']> => {
   process.env.SHUTTLE_INPUT = input
@@ -53,7 +55,7 @@ async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text
     calls.push(c)
     if (c.tool === 'desk_windows') return JSON.stringify([user(), term])
     if (c.tool === 'desk_snapshot') return JSON.stringify({ window: term, nodes: [{ ...node(), value: screen.slice(0, 200) }], truncated: false })
-    if (c.tool === 'desk_read') return JSON.stringify({ ...node(), value: screen.slice(0, 64 << 10) })
+    if (c.tool === 'desk_read') return JSON.stringify({ ...node(), value: c.args.tail ? screen.slice(-READ) : screen.slice(0, READ), ...(screen.length > READ ? { truncated: true } : {}) })
     if (c.tool === 'desk_key') screen += '\n$ '
     if (c.tool !== 'desk_type') return '{"ok":true}'
     const lines = String(c.args.text).split('\n')
@@ -305,12 +307,29 @@ test('typing a long terminal screen does not show goes on unverified', async (t)
   }
 })
 
-test('typing a terminal screen too long to read back in full stops the plan before its next key', async (t) => {
+test('typing a terminal screen past the read limit shows in part at its end stops the plan before its next key', async (t) => {
   for (const [mode, plan] of modes) {
-    const { r, calls } = await terminal(t, plan, (screen) => screen, { screen: LONG.repeat(250) })
+    const { r, calls } = await terminal(t, plan, (screen, text) => screen + text.slice(0, 2), { screen: HUGE })
     assert.equal(r.ok, false, mode)
     assert.match(String(r.escalate?.reason), /did not show/, mode)
     assert.ok(!calls.some((c) => c.tool === 'desk_key' || c.tool === 'desk_focus'), `${mode}\n${tools(calls).join('\n')}`)
+  }
+})
+
+test('typing a terminal screen past the read limit does not show goes on unverified', async (t) => {
+  for (const [mode, plan] of modes) {
+    const { r, calls } = await terminal(t, plan, (screen) => screen, { screen: HUGE })
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'], `${mode} ${JSON.stringify(r.escalate?.reason)}`)
+    assert.deepEqual(r.unverified, [{ step: 1, note: TTY }], mode)
+  }
+})
+
+test('typing a terminal screen past the read limit shows at its end is confirmed', async (t) => {
+  for (const [mode, plan] of modes) {
+    const { r, calls } = await terminal(t, plan, (screen, text) => screen + text, { screen: HUGE })
+    assert.equal(r.ok, true, `${mode} ${JSON.stringify(r.escalate?.reason)}`)
+    assert.equal(r.unverified, undefined, mode)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'], mode)
   }
 })
 

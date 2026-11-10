@@ -176,7 +176,7 @@ impl Uia {
             .take()
             .filter(|v| !v.is_empty())
             .or_else(|| r.range.map(format_number))
-            .map(|v| clip(v, chars));
+            .map(|v| clip(v, chars, extras.tail));
         Ok(Node {
             id: self.id_of(el)?,
             role,

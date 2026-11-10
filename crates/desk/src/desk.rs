@@ -15,7 +15,7 @@ use desk_core::args::{
     ScrollArgs, ShotArgs, SnapArgs, StillArgs, TypeArgs, WaitArgs, WebArgs, WindowArgs, parse,
 };
 use desk_core::shot::{OFF_SCREEN, crop_png, rgb_png};
-use desk_core::text::{MAX_FOUND, NAME_CHARS, matches, ms, quote};
+use desk_core::text::{MAX_FOUND, NAME_CHARS, clip, matches, ms, quote};
 use desk_core::window::{self, TITLE_TIERS, title_matches};
 use desk_core::wire::{OK, Output};
 use serde_json::{Map, Value, json};
@@ -79,6 +79,7 @@ const APP_INPUT: [&str; 5] = [
 
 const TREE_LIMIT: Duration = Duration::from_secs(10);
 const READ_CHARS: usize = 64 << 10;
+const READ_TAIL: &str = "read: tail needs text: true";
 const WAIT_MAX: Duration = Duration::from_secs(5);
 const RAISE_WAIT: Duration = Duration::from_millis(500);
 const WAIT_POLL: Duration = Duration::from_millis(10);
@@ -652,6 +653,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             menus: a.menus,
             frame: false,
             urls: a.urls && !a.text,
+            tail: false,
         };
         let (window, pid, id) = (a.window, a.pid, a.id);
         let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
@@ -707,6 +709,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             menus: true,
             frame: false,
             urls: a.urls,
+            tail: false,
         };
         let (window, pid) = (a.window, a.pid);
         let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
@@ -730,6 +733,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn read(&self, a: ReadArgs) -> Result<String, String> {
+        if a.tail && !a.text {
+            return Err(READ_TAIL.to_owned());
+        }
         let extras = Extras {
             values: true,
             bounds: true,
@@ -737,9 +743,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             menus: false,
             frame: false,
             urls: true,
+            tail: a.tail,
         };
-        let chars = if a.text { READ_CHARS } else { NAME_CHARS };
-        let (node, (url, dom_id)) = self
+        let (text, tail) = (a.text, a.tail);
+        let chars = if text { READ_CHARS + 1 } else { NAME_CHARS };
+        let (mut node, (url, dom_id)) = self
             .access
             .run(CALL_LIMIT, (), move |b| {
                 let node = b.node(&a.id, extras, chars)?;
@@ -751,7 +759,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 Ok((node, web))
             })
             .await?;
+        let truncated = text
+            && node
+                .value
+                .as_ref()
+                .is_some_and(|v| v.chars().nth(READ_CHARS).is_some());
+        if truncated {
+            node.value = node.value.take().map(|v| clip(v, READ_CHARS, tail));
+        }
         let mut out = node.into_json(0);
+        if truncated {
+            out["truncated"] = true.into();
+        }
         if let Some(url) = url {
             out["url"] = url.into();
         }
@@ -2919,6 +2938,38 @@ pub(crate) mod tests {
                 "{text} {quiet}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_text_read_keeps_its_head_or_with_tail_its_end_and_says_when_it_was_cut() {
+        let desk = Desk::new(
+            || Ok(Scrollback),
+            Stack(Arc::default(), Mutex::new(json!({}))),
+            Os::Mac,
+        );
+        let head = "a".repeat(READ_CHARS);
+        let end = format!("{}中🙂end", "a".repeat(READ_CHARS - 5));
+        let edge = "b".repeat(READ_CHARS);
+        for (id, tail, want, cut) in [
+            ("long", false, &head, true),
+            ("long", true, &end, true),
+            ("edge", true, &edge, false),
+            ("edge", false, &edge, false),
+        ] {
+            let out = desk
+                .run("desk_read", json!({"id": id, "text": true, "tail": tail}))
+                .await
+                .unwrap();
+            let v: Value = serde_json::from_str(&out.text).unwrap();
+            assert!(v["value"] == want.as_str(), "{id} {tail}");
+            assert_eq!(v.get("truncated").is_some(), cut, "{id} {tail}");
+            assert_eq!(v["truncated"] == true, cut, "{id} {tail}");
+        }
+        let err = desk
+            .run("desk_read", json!({"id": "long", "tail": true}))
+            .await
+            .unwrap_err();
+        assert_eq!(err, READ_TAIL);
     }
 
     #[tokio::test]
@@ -7478,6 +7529,50 @@ pub(crate) mod tests {
 
         fn bundle_name(&mut self, app: &str) -> Result<Option<String>, String> {
             Ok((app == "Chrome").then(|| "Google Chrome".to_owned()))
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct Scrollback;
+
+    impl Access for Scrollback {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            Ok(Vec::new())
+        }
+
+        fn tree(&mut self, _: &Frame, _: Extras) -> Result<Tree, String> {
+            Err("no tree".into())
+        }
+
+        fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String> {
+            Ok(Node {
+                id: id.into(),
+                role: "document",
+                value: Some(clip(
+                    match id {
+                        "long" => format!("{}中🙂end", "a".repeat(READ_CHARS)),
+                        _ => "b".repeat(READ_CHARS),
+                    },
+                    chars,
+                    extras.tail,
+                )),
+                ..Node::default()
+            })
         }
 
         fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {

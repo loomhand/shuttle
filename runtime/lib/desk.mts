@@ -5,7 +5,7 @@ export type Win = { id: string; title: string; role: string; pid: number | null;
 export type El = {
   ref: number; id: string; parent: number; depth: number; role: string; name: string; states: string[]
   value?: string; keys?: string; shortcut?: string; mnemonic?: string; native_role?: string; description?: string; bounds?: [number, number, number, number]
-  url?: string; dom_id?: string
+  url?: string; dom_id?: string; truncated?: boolean
 }
 export type Snap = { window: Win; nodes: El[]; truncated: boolean; ms: number }
 export type Question = { type: 'noul'; instructions: string } | { type: 'choice'; instructions: string; criteria: Record<string, string> }
@@ -47,7 +47,7 @@ export const snapshot = (window?: string, o: { pid?: number | null; id?: string;
   call('snapshot', { window, pid: o.pid ?? undefined, id: o.id, keys: o.keys, menus: o.menus, bounds: o.bounds, urls: o.urls })
 export const outline = async (window?: string): Promise<string> => (await call<{ text: string }>('snapshot', { window, text: true })).text
 export const find = (name: string, o: { role?: string; window?: string; urls?: boolean } = {}): Promise<{ window: Win; found: El[] }> => call('find', { name, ...o })
-export const read = (id: string, o: { text?: boolean; web?: boolean } = {}): Promise<El> => call('read', { id, text: o.text, web: o.web })
+export const read = (id: string, o: { text?: boolean; tail?: boolean; web?: boolean } = {}): Promise<El> => call('read', { id, text: o.text, tail: o.tail, web: o.web })
 export const press = async (id: string): Promise<{ ok: boolean; how: string; unverified?: string; input?: 'foreground' }> => ran(await call('press', { id }))
 export const act = async (id: string, action: 'click' | 'action' | 'select' | 'focus'): Promise<{ ok: boolean; input?: 'foreground' }> => ran(await call('act', { id, action }))
 export const at = (x: number, y: number, window?: string, pid?: number | null): Promise<{ found: El | null; path?: { id: string; role: string; name: string }[]; pid?: number | null; covered?: { title: string; pid: number | null } }> => call('at', { x: Math.round(x), y: Math.round(y), window, pid: pid ?? undefined })

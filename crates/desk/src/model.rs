@@ -223,6 +223,7 @@ pub struct Extras {
     pub menus: bool,
     pub frame: bool,
     pub urls: bool,
+    pub tail: bool,
 }
 
 impl Extras {
@@ -233,6 +234,7 @@ impl Extras {
         menus: false,
         frame: false,
         urls: false,
+        tail: false,
     };
     pub const FRAME: Self = Self {
         frame: true,
