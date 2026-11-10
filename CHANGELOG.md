@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-- **macOS: text typed into a terminal that does not echo it goes in once.** The bundled driver sends text in batches and read the terminal's screen back to count what landed. A prompt without echo, such as `read -s` for a password, leaves the screen unchanged, so the driver counted nothing delivered, typed the whole text again about 500 ms later and answered that 0 characters landed, to be retried from the start. A background `read -s` given "abc" read 6 characters; it now reads 3, and the call answers `unverified` instead. The driver now retypes only the rest of a text that a native field took part of, never into a terminal, and a terminal's screen counts only when it shows the whole text. Foreground typing, TextEdit and a secure password field type as before.
-- **Bundled:** cua-driver v0.45.1-loomhand.2 on every platform (was v0.45.1-loomhand.1).
+- **macOS: text typed into a terminal that does not echo it goes in once.** The bundled driver sends text in batches and read the terminal's screen back to count what landed. A prompt without echo, such as `read -s` for a password, leaves the screen unchanged, so the driver counted nothing delivered, typed the whole text again about 500 ms later and answered that 0 characters landed, to be retried from the start. A background `read -s` given "abc" read 6 characters; it now reads 3, and the call answers `unverified` instead. The driver now retypes the rest of a text only when a native field shows its old value followed by the start of the text, never into a terminal, and a terminal's screen counts only when it shows the whole text; a field that took scattered characters of a batch is reported unverified instead of retyped. Foreground typing, TextEdit and a secure password field type as before.
+- **`gui_plan`: a background type into a terminal is not typed again in the foreground.** Under `[desk] input = "auto"`, a type whose text a terminal did not show, such as a `read -s` password, was typed a second time in the foreground. A terminal type the driver could not confirm now stays unverified in the plan's result instead. The check reads the bundled driver's "terminal emulator" detail in its reply, so it follows the pinned driver.
+- **Bundled:** cua-driver v0.45.1-loomhand.3 on every platform (was v0.45.1-loomhand.1).
 
 ## 0.1.44 - 2026-11-10
 
