@@ -294,12 +294,12 @@ test('a secret step never shows its text, and a password the terminal echoed sto
   for (const [mode, plan] of modes) {
     for (const type of ['example-pass', 'example-pass\n']) {
       const part = await terminal(t, plan, (screen, text) => screen + (text === 'example-pass' ? 'exam' : text), { type, extra: { secret: true } })
-      assert.match(String(part.r.escalate?.reason), /^the password did not show/, `${mode} ${JSON.stringify(type)}`)
+      assert.match(String(part.r.escalate?.reason), /^"Terminal" changed while the password was typed, and nothing showed that a prompt took it, so it was not submitted: /, `${mode} ${JSON.stringify(type)}`)
       assert.equal(part.r.escalate?.outline, undefined, `${mode} ${JSON.stringify(type)}`)
       assert.ok(hidden(part.r), `${mode} ${JSON.stringify(type)} ${JSON.stringify(part.r)}`)
       for (const sure of [(_: string) => false, (x: string) => x === 'example-pass']) {
         const echo = await terminal(t, plan, (screen, text) => screen + text, { type, extra: { secret: true }, sure })
-        assert.match(String(echo.r.escalate?.reason), /^the password showed in "Terminal": the prompt was not up/, `${mode} ${JSON.stringify(type)}`)
+        assert.match(String(echo.r.escalate?.reason), /^the password showed in "Terminal", so it was not submitted$/, `${mode} ${JSON.stringify(type)}`)
         assert.deepEqual(echo.calls.filter((c) => c.tool === 'desk_key'), [], `${mode} ${JSON.stringify(type)}`)
         assert.ok(hidden(echo.r), `${mode} ${JSON.stringify(type)}`)
       }
