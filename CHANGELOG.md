@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **`gui_plan`: a terminal confirms a typed line that ends in a space or a tab.** Since 0.1.47 a terminal's read-back has to show the typed text exactly, so a line typed as `ls ` that the terminal showed as `ls`, or a trailing tab it expanded, stopped the plan with "did not show" before its Return. The trailing space or tab is no longer required to show.
+
 ## 0.1.47 - 2026-11-10
 
 - **`gui_plan`: a terminal confirms typed text only with its spaces and case.** The read-back that confirms a background type into a terminal dropped whitespace and case, so a terminal that showed `echohello` or `echo HELLO` confirmed `echo hello`, and the plan sent its Return. It now drops only the line breaks a terminal wraps into a long line.
