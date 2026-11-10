@@ -17,7 +17,7 @@ type Step = {
   app?: string; title?: string; menu?: string; click?: string; check?: string; on?: boolean; set?: string; value?: string
   type?: string; key?: string; wait?: string; expect?: string; verify?: string; close?: boolean; role?: string; window?: string
   timeout_ms?: number; enabled?: boolean; fp?: Fp; seen?: string; blank?: Fp; after?: string; recorded?: Recorded; focus?: Focus | 'unverified'
-  button?: string; count?: number; mods?: string[]; url?: string; web?: Web; intent?: string
+  button?: string; count?: number; mods?: string[]; url?: string; web?: Web; intent?: string; secret?: boolean
 }
 // frame is the role of the field's window or sheet
 type Focus = { role?: string; name?: string; frame?: string; secure?: boolean; id?: string }
@@ -159,9 +159,9 @@ async function perform(p: Params): Promise<Result> {
   const trace: Trace[] = []; const log: Record<string, unknown>[] = []
   const bad = plan.findIndex((s) => ops(s).length !== 1)
   if (bad >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: bad, plan_step: plan[bad] && unrecorded(plan[bad]), reason: `step ${bad} needs exactly one op of ${OPS.join(', ')}; nothing ran` } }
-  const loose = plan.findIndex((s) => untext(s))
+  const loose = plan.findIndex((s) => malformed(s))
   const looseStep = plan[loose]
-  if (looseStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: loose, plan_step: unrecorded(looseStep), reason: `step ${loose}: ${untext(looseStep)} takes a string; nothing ran` } }
+  if (looseStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: loose, plan_step: unrecorded(looseStep), reason: `step ${loose}: ${malformed(looseStep)}; nothing ran` } }
   if (p.save && !flow && !p.start && !idempotent(plan)) {
     const c = pending()
     const was = c?.steps.filter((s) => !s.close) ?? []; const now = plan.filter((s) => !s.close)
@@ -238,7 +238,8 @@ async function perform(p: Params): Promise<Result> {
       const note = step === i ? recs[i - 1]?.unverified : undefined
       const theft = BG && !(e instanceof Stolen) ? taken(await desk.windows()) : null
       const reason = `${sp.reason}${note ? ` (the step before was sent but not confirmed: ${note})` : ''}${theft ? `; meanwhile ${theft}` : ''}`
-      escalate = { step, plan_step: unrecorded(plan[step] ?? planned), reason, ...sp.seen }; done = step
+      const { outline, ...shown } = sp.seen
+      escalate = { step, plan_step: unrecorded(plan[step] ?? planned), reason, ...shown, ...(secure(plan[step] ?? planned) ? {} : { outline }) }; done = step
       diverged = e instanceof Diverged
     }
     stepWs = null
@@ -319,14 +320,18 @@ async function perform(p: Params): Promise<Result> {
   return out
 }
 
-function unrecorded({ recorded: _, fp: __, blank: ___, ...s }: Step): Bare { return s }
+function unrecorded({ recorded: _, fp: __, blank: ___, ...s }: Step): Bare { return literal(s) ? { ...unsaid(s), type: 'the password' } : s }
+
+function literal(s: Step) { return (secure(s) || (s.secret !== undefined && s.secret !== false)) && typeof s.type === 'string' && !!s.type.replace(/\{\{\w+(?::base)?\}\}|\n/g, '') }
+
+function unsaid<T extends Step>({ intent: _, ...s }: T) { return s }
 
 function ops(s: Step) { return OPS.filter((k) => k === 'type' ? s.type !== undefined : !!s[k]) }
 
 function stopped(plan: Step[], e: Escalation) {
   const step = e.step ?? 0
   const remaining = plan.slice(step).map(unrecorded)
-  return { step, intent: plan[step]?.intent ?? null, reason: e.reason, remaining }
+  return { step, intent: remaining[0]?.intent ?? null, reason: e.reason, remaining }
 }
 
 class Surprise extends Error {
@@ -527,6 +532,8 @@ function modalBlocks(m: Win) { return `modal dialog "${m.title}" is open but ${m
 function blocked(o: string) { return /AT-SPI peer \S+ is not responding|no accessibility answer within/.test(o) }
 function isChooser(o: string) { return isDialog(o) && CHOOSER.test(o) }
 async function selectLine(w: Win | null) { if (OS === 'darwin') await desk.key(SELECT_ALL, at(w)); else { await desk.key('home', at(w)); await desk.key('shift+end', at(w)) } }
+function echoed(w: Win) { return new Surprise(`the password showed in "${w.title}": the prompt was not up, so it was not submitted`, { window: w.title }) }
+
 function frozen(w: Win, i: number, prev: Step | undefined) { return `"${w.title}" stopped answering accessibility${prev ? ` after step ${i - 1} ${JSON.stringify(unrecorded(prev))}` : ''}: its app is busy or hung; wait and continue from step ${i}, or close it` }
 function titles(ws: Win[]) { return ws.filter((x) => x.title && !isShell(x)).map((x) => x.title) }
 function unresponsive(app: string, w: Win) { return `app "${app}" is not answering accessibility: "${w.title}" (pid ${w.pid ?? 'unknown'}) is busy or hung; wait and retry, or close it; a launch would open a second instance` }
@@ -1091,8 +1098,9 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
     if (i > k) { heard(await desk.key('Return', at(w)), rec); if (!line) continue; base = await settled(w) }
     const r = i > k ? await desk.typeText(raw[i] ?? '', at(w)) : first
     if (i > k) heard(r, rec)
-    if (!r.unverified?.includes(TERMINAL)) continue
+    if (!r.unverified?.includes(TERMINAL)) { if (secure(s) && !r.unverified) throw echoed(w); continue }
     const now = await texts(w); const shown = shows(base, now, line, true)
+    if (secure(s) && shown) throw echoed(w)
     if (!shown && !unchanged(base, now)) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing line ${i + 1} of ${n}${i > 1 ? `, after the ${i} lines before it and their Returns were sent` : i ? ', after the line before it and its Return were sent' : ''}: ${r.unverified}`, await seen())
     quiet ||= !shown
   }
@@ -1240,11 +1248,14 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     // GTK preselects a file name only up to its last dot
     if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine(w)
     const text = sub ? s.type.slice(0, -1) : s.type; let quiet: boolean | undefined
-    if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(await desk.typeText(text, at(w)), rec)
+    let sent: desk.Sent | undefined
+    if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(sent = await desk.typeText(text, at(w)), rec)
+    if (w && secure(s) && sent?.terminal && !sent.unverified) throw echoed(w)
     tick('act', t0)
     if (BG && rec.unverified && w && !sub && quiet !== undefined) rec.confirmed = !quiet
     else if (BG && rec.unverified && w && !sub) {
       const now = await texts(w); const tty = rec.unverified.includes(TERMINAL); const shown = shows(was, now, s.type, tty)
+      if (tty && secure(s) && shown) throw echoed(w)
       if (AUTO && !tty && !secure(s) && !shown && unchanged(was, now) && whole(was) && whole(now) && !taken(await desk.windows())) {
         await desk.focus(w.title, w.pid)
         await desk.typeText(s.type, FG)
@@ -1518,7 +1529,13 @@ function fill(s: Step, p: Record<string, string>): Step {
   return out
 }
 
-function untext(s: Step) { return TEXTS.find((k) => s[k] !== undefined && typeof s[k] !== 'string' && (s[k] !== null || k === 'type')) }
+function malformed(s: Step) {
+  const key = TEXTS.find((k) => s[k] !== undefined && typeof s[k] !== 'string' && (s[k] !== null || k === 'type'))
+  if (key) return `${key} takes a string`
+  if (s.secret !== undefined && typeof s.secret !== 'boolean') return 'secret takes true or false'
+  if (s.secret === true && typeof s.type === 'string' && s.type.replace(/\n$/, '').includes('\n')) return 'a secret step holds only the password line; put the command in its own type step'
+  return undefined
+}
 
 function pinned(s: Step) { return !PINNED.some((k) => s[k]?.includes('{{')) }
 
@@ -1553,13 +1570,13 @@ function unsecret(steps: Step[], params: Record<string, string>) {
   return out
 }
 
-function secure(s: Step) { return typeof s.focus === 'object' && !!s.focus.secure }
+function secure(s: Step) { return s.secret === true || (typeof s.focus === 'object' && !!s.focus.secure) }
 
 function typedText(s: Step) { return secure(s) ? 'the password' : `"${s.type}"` }
 
 function sealed(c: Chain, plan: Step[]): Chain {
   const named = templated(c.steps, c.params).steps
-  const steps = c.steps.map((s, i) => secure(s) ? { ...s, type: named[i]?.type ?? s.type } : s)
+  const steps = c.steps.map((s, i) => secure(s) ? { ...unsaid(s), type: named[i]?.type ?? s.type } : s)
   return { ...c, steps, params: unsecret([...steps, ...plan], c.params) }
 }
 

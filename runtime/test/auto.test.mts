@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { test, type TestContext } from 'node:test'
 
 import { daemon, notepad, user } from './daemon.mts'
@@ -47,7 +48,7 @@ async function run(t: TestContext, plan: Plan, typed: (before: string, text: str
   return { r, calls: d.calls, doc: d.doc() }
 }
 
-async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '' } = {}) {
+async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', extra = {} as Record<string, unknown> } = {}) {
   const term: W = { id: 't', title: 'Terminal', role: 'window', pid: 7, active: false, app: 'Terminal' }
   const node = () => ({ ref: 0, id: 'd', parent: -1, depth: 0, role: 'document', name: '', states: [], value: screen })
   const calls: Call[] = []; let late = ''
@@ -62,7 +63,8 @@ async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text
     screen = typed(screen, text)
     return JSON.stringify({ ok: true, chars: 3, terminal: true, ...(sure(text) ? {} : { unverified: TTY }) })
   })
-  const steps = type.includes('\n') ? [{ app: 'Terminal' }, { type }] : [{ app: 'Terminal' }, { type }, { key: 'Return' }]
+  const step = { type, ...extra }
+  const steps = type.includes('\n') ? [{ app: 'Terminal' }, step] : [{ app: 'Terminal' }, step, { key: 'Return' }]
   return { r: await plan({ steps }), calls }
 }
 
@@ -284,6 +286,57 @@ test('typing an echoing terminal shows is confirmed', async (t) => {
     assert.equal(r.unverified, undefined, mode)
     assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'], mode)
   }
+})
+
+test('a secret step never shows its text, and a password the terminal echoed stops before its Return', async (t) => {
+  const hidden = (r: unknown) => !JSON.stringify(r).includes('example-pass') && !JSON.stringify(r).includes('exam')
+  const kept = () => readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8').includes('exam')
+  for (const [mode, plan] of modes) {
+    for (const type of ['example-pass', 'example-pass\n']) {
+      const part = await terminal(t, plan, (screen, text) => screen + (text === 'example-pass' ? 'exam' : text), { type, extra: { secret: true } })
+      assert.match(String(part.r.escalate?.reason), /^the password did not show/, `${mode} ${JSON.stringify(type)}`)
+      assert.equal(part.r.escalate?.outline, undefined, `${mode} ${JSON.stringify(type)}`)
+      assert.ok(hidden(part.r), `${mode} ${JSON.stringify(type)} ${JSON.stringify(part.r)}`)
+      for (const sure of [(_: string) => false, (x: string) => x === 'example-pass']) {
+        const echo = await terminal(t, plan, (screen, text) => screen + text, { type, extra: { secret: true }, sure })
+        assert.match(String(echo.r.escalate?.reason), /^the password showed in "Terminal": the prompt was not up/, `${mode} ${JSON.stringify(type)}`)
+        assert.deepEqual(echo.calls.filter((c) => c.tool === 'desk_key'), [], `${mode} ${JSON.stringify(type)}`)
+        assert.ok(hidden(echo.r), `${mode} ${JSON.stringify(type)}`)
+      }
+    }
+    assert.equal(kept(), false, mode)
+  }
+})
+
+test('a secret step that is not one password line, or whose secret is not a boolean, is refused', async (t) => {
+  await daemon(t, () => '[]')
+  for (const [step, why] of [
+    [{ type: 5, secret: true }, 'type takes a string'],
+    [{ type: 'read -s pw\nexample-pass\n', secret: true }, 'a secret step holds only the password line; put the command in its own type step'],
+    [{ type: 'example-pass\n', secret: 'true' }, 'secret takes true or false'],
+  ] as const) {
+    const r = await auto({ steps: [{ app: 'Terminal' }, step as never] })
+    assert.equal(r.escalate?.reason, `step 1: ${why}; nothing ran`, JSON.stringify(step))
+    assert.ok(!JSON.stringify(r).includes('example-pass'), JSON.stringify(r))
+  }
+})
+
+test('a secret step drops its intent wherever the step is shown or kept', async (t) => {
+  for (const [mode, plan] of modes) {
+    const { r } = await terminal(t, plan, (screen, text) => screen + (text === 'example-pass' ? 'exam' : text), { type: 'example-pass\n', extra: { secret: true, intent: 'type "example-pass"' } })
+    assert.equal(r.escalate?.step, 1, mode)
+    assert.equal(r.escalate?.plan_step?.intent, undefined, mode)
+    assert.ok(!JSON.stringify(r).includes('example-pass'), `${mode} ${JSON.stringify(r)}`)
+  }
+  const d = desktop((b, x) => b + x, false)
+  await daemon(t, d.reply)
+  const kept = await auto({ steps: [{ app: 'Notepad' }, { type: 'example-pass', secret: true, intent: 'type "example-pass"' }] })
+  assert.equal(kept.ok, true, JSON.stringify(kept))
+  const chain = readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')
+  assert.ok(chain.includes('"secret":true') && !chain.includes('example-pass'), chain)
+  await daemon(t, () => '[]')
+  const two = await auto({ steps: [{ app: 'Terminal' }, { type: 'example-pass', secret: true, intent: 'type "example-pass"', key: 'x' } as never] })
+  assert.ok(!JSON.stringify(two).includes('example-pass'), JSON.stringify(two))
 })
 
 test('terminal confirmation takes a typed trailing space or tab the terminal trimmed', async (t) => {
