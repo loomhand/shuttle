@@ -1245,14 +1245,21 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     const chooser = isChooser(o); const sub = chooser && nl
     const first = !typed; typed = true
-    const was = BG && w ? await texts(w) : null
+    const held = !BG && !sub && nl && secure(s)
+    const was = (BG || held) && w ? await texts(w) : null
     if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field in a plan that continues the flow from this step, which saves the fix into the flow`, await seen())
     // GTK preselects a file name only up to its last dot
     if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine(w)
-    const text = sub ? s.type.slice(0, -1) : s.type; let quiet: boolean | undefined
+    const text = sub ? s.type.slice(0, -1) : s.type; const line = held ? text.slice(0, -1) : text; let quiet: boolean | undefined
     let sent: desk.Sent | undefined
-    if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(sent = await desk.typeText(text, at(w)), rec)
+    if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(sent = await desk.typeText(line, at(w)), rec)
     if (w && secure(s) && sent?.terminal && !sent.unverified) throw echoed(w)
+    if (held && w && sent?.terminal && sent.unverified) {
+      const now = await texts(w)
+      if (shows(was, now, line, true)) throw echoed(w)
+      if (!unchanged(was, now)) throw new Surprise(changed(w, sent.unverified), await seen())
+    }
+    if (held) heard(await desk.key('Return', at(w)), rec)
     tick('act', t0)
     if (BG && rec.unverified && w && !sub && quiet !== undefined) rec.confirmed = !quiet
     else if (BG && rec.unverified && w && !sub) {
@@ -1545,7 +1552,7 @@ function pinned(s: Step) { return !PINNED.some((k) => s[k]?.includes('{{')) }
 function templated(steps: Step[], params: Record<string, string>) {
   const p = { ...params }; const used = new Set([...JSON.stringify(steps).matchAll(/\{\{(\w+)/g)].map((m) => m[1]))
   const out = steps.map((s) => {
-    const t = { ...s }
+    const t = secure(s) ? unsaid(s) : { ...s }
     for (const k of ['value', 'type'] as const) {
       const v = t[k]; if (v === undefined || /\{\{\w+\}\}/.test(v) || !v.replace(/\n$/, '')) continue
       const body = v.replace(/\n$/, ''); const have = Object.entries(p).find(([, x]) => x === body)

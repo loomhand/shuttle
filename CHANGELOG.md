@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **`gui_plan`: a saved flow never keeps a secret step's `intent`.** A passing plan saves its flow, and the flow keeps the secret step's password as a parameter, but it kept the step's `intent` word for word, in the flow file and in the flows folder's git history. An intent that quoted the password saved it there. The stop reply and `.pending.json` already left the intent out.
+- **`gui_plan`: under foreground input, a secret step is checked before its Return.** A secret step ending in a line break went to the window in one call, Return included, and the check for a password the terminal showed ran only afterwards. When the terminal prompt was not up yet, the shell could run the password as a command. Foreground input now types the password alone, checks a terminal's screen as background input does (the password showed, or the screen changed without showing it), and only then presses Return. In a window that is not a terminal, the Return is sent as its own key after the text.
+
 ## 0.1.48 - 2026-11-11
 
 - **`gui_plan`: a `type` step can say its text is secret.** A password typed at a terminal prompt (`read -s`, `sudo`, `ssh`) has no password field for `focus: {secure: true}`, so a stop quoted it in its reason and in `escalate`, and a run that passed kept it in `.pending.json`. With `secret: true` (the password line alone, in its own step) the step is handled like a password field: the stop says "the password" and shows no window outline or intent, and the saved chain keeps a parameter instead of the text. A terminal that shows the password, because its prompt was not up yet or because it echoes, or that changes while the password is typed without showing it, gets no Return: the step stops before it instead of letting the shell run the line.
