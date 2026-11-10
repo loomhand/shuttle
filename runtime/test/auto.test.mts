@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { test, type TestContext } from 'node:test'
 
 import { daemon, notepad, user } from './daemon.mts'
@@ -47,7 +48,7 @@ async function run(t: TestContext, plan: Plan, typed: (before: string, text: str
   return { r, calls: d.calls, doc: d.doc() }
 }
 
-async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '' } = {}) {
+async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', secret = false } = {}) {
   const term: W = { id: 't', title: 'Terminal', role: 'window', pid: 7, active: false, app: 'Terminal' }
   const node = () => ({ ref: 0, id: 'd', parent: -1, depth: 0, role: 'document', name: '', states: [], value: screen })
   const calls: Call[] = []; let late = ''
@@ -62,7 +63,8 @@ async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text
     screen = typed(screen, text)
     return JSON.stringify({ ok: true, chars: 3, terminal: true, ...(sure(text) ? {} : { unverified: TTY }) })
   })
-  const steps = type.includes('\n') ? [{ app: 'Terminal' }, { type }] : [{ app: 'Terminal' }, { type }, { key: 'Return' }]
+  const step = secret ? { type, secret } : { type }
+  const steps = type.includes('\n') ? [{ app: 'Terminal' }, step] : [{ app: 'Terminal' }, step, { key: 'Return' }]
   return { r: await plan({ steps }), calls }
 }
 
@@ -283,6 +285,18 @@ test('typing an echoing terminal shows is confirmed', async (t) => {
     assert.equal(r.ok, true, `${mode} ${JSON.stringify(r)}`)
     assert.equal(r.unverified, undefined, mode)
     assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'], mode)
+  }
+})
+
+test('a secret step names the password, never its text, in a stop and in the saved chain', async (t) => {
+  for (const [mode, plan] of modes) {
+    for (const secret of [true, false]) {
+      const stop = await terminal(t, plan, (screen, text) => screen + (text === 'example-pass' ? 'exam' : text), { type: 'read -s pw\nexample-pass\n', secret })
+      assert.match(String(stop.r.escalate?.reason), secret ? /^the password did not show/ : /^"read -s pw\nexample-pass\n" did not show/, `${mode} ${secret}`)
+      assert.equal(JSON.stringify(stop.r).includes('example-pass'), !secret, `${mode} ${secret} result`)
+      await terminal(t, plan, (screen, text) => screen + text, { type: 'read -s pw\nexample-pass\n', secret })
+      assert.equal(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8').includes('example-pass'), !secret, `${mode} ${secret} chain`)
+    }
   }
 })
 
