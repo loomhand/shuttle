@@ -112,7 +112,7 @@ fn builtins() -> Value {
     json!({"tools": [
         {
             "name": "gui_plan",
-            "description": "Run a desktop-app GUI plan in one call: each step runs on the accessibility tree, is checked, and the plan stops at the first surprise; caveats lists the Linux and Windows steps whose only proof is an accessibility action's reply: read their effect before relying on them. One op per step: {app}, {menu}, {click}, {check, on}, {set, value}, {type}, {key}, {wait}, {expect}, {verify}, {close: true}. A passing plan can be saved as a flow with save, and replayed with flow and params. An error that says what it left reports the steps that ran before it.",
+            "description": "Run a desktop-app GUI plan in one call: each step runs on the accessibility tree, is checked, and the plan stops at the first surprise; caveats lists the Linux and Windows steps whose only proof is an accessibility action's reply: read their effect before relying on them. One op per step: {app}, {menu}, {click}, {check, on}, {set, value}, {type}, {key}, {wait}, {expect}, {verify}, {close: true}. A password typed at a terminal prompt (read -s, sudo, ssh) goes in its own step as {type, secret: true}, one line, so it is never quoted back or saved as text. A passing plan can be saved as a flow with save, and replayed with flow and params. An error that says what it left reports the steps that ran before it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
