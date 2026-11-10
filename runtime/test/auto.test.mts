@@ -441,6 +441,25 @@ test('a terminal line that did not show stops the plan and says which line and w
   }
 })
 
+test('a blank answer before a quiet line is submitted alone and the quiet line is checked against the screen after it', async (t) => {
+  for (const [mode, plan] of modes) {
+    const { r, calls } = await terminal(t, plan, (screen, text) => screen + text.replace('secret', '').replace(/\n/g, '\n$ '), { type: '\nsecret\n' })
+    assert.doesNotMatch(String(r.escalate?.reason), /did not show/, mode)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_type').map((c) => c.args.text), ['secret'], mode)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return', 'Return'], mode)
+    assert.deepEqual(r.unverified, [{ step: 1, note: TTY }], mode)
+  }
+})
+
+test('a CRLF text into a terminal is typed line by line and a partial line stops the plan', async (t) => {
+  for (const [mode, plan] of modes) {
+    const { r, calls } = await terminal(t, plan, (screen, text) => screen + (text.startsWith('pass') ? 'pa' : text), { type: '\r\npass\r\n' })
+    assert.match(String(r.escalate?.reason), /did not show in "Terminal" after typing line 2 of 2, after the line before it and its Return were sent/, mode)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_type').map((c) => c.args.text), ['pass\r'], mode)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'], mode)
+  }
+})
+
 test('a terminal line that did not show keeps the step unverified though a later line showed', async (t) => {
   for (const [mode, plan] of modes) {
     const { r } = await terminal(t, plan, (screen, text) => text === 'pass' ? screen : screen + text, { type: 'pass\necho hi\n' })

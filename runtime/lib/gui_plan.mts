@@ -1072,17 +1072,20 @@ async function texts(w: Win): Promise<Map<string, Text> | null> {
 }
 function whole(t: Map<string, Text> | null) { return !!t && [...t.values()].every((x) => !x.cut) }
 async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | null, rec: Rec) {
-  const lines = text.split('\n'); const k = lines.findIndex(Boolean)
-  const first = await desk.typeText(k < 0 ? text : lines.slice(0, k + 1).join('\n'), at(w)); heard(first, rec)
-  if (k < 0 || !first.terminal) {
-    if (k >= 0 && k + 1 < lines.length) heard(await desk.typeText(`\n${lines.slice(k + 1).join('\n')}`, at(w)), rec)
+  const raw = text.split('\n'); const lines = raw.map((l) => l.replace(/\r$/, '')); const k = lines.findIndex(Boolean)
+  if (k < 0) { heard(await desk.typeText(text, at(w)), rec); return undefined }
+  let base = was
+  if (k > 0) { for (let i = 0; i < k; i++) heard(await desk.key('Return', at(w)), rec); base = await settled(w) }
+  const first = await desk.typeText(raw[k] ?? '', at(w)); heard(first, rec)
+  if (!first.terminal) {
+    if (k + 1 < raw.length) heard(await desk.typeText(`\n${raw.slice(k + 1).join('\n')}`, at(w)), rec)
     return undefined
   }
-  const n = lines.length - (text.endsWith('\n') ? 1 : 0); let quiet = false; let base = was
+  const n = lines.length - (text.endsWith('\n') ? 1 : 0); let quiet = false
   for (const [i, line] of lines.entries()) {
     if (i < k) continue
     if (i > k) { heard(await desk.key('Return', at(w)), rec); if (!line) continue; base = await settled(w) }
-    const r = i > k ? await desk.typeText(line, at(w)) : first
+    const r = i > k ? await desk.typeText(raw[i] ?? '', at(w)) : first
     if (i > k) heard(r, rec)
     if (!r.unverified?.includes(TERMINAL)) continue
     const now = await texts(w); const shown = shows(base, now, line)
