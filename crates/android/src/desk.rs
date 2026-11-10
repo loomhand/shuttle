@@ -11,7 +11,9 @@ use desk_core::args::{
     SnapArgs, TypeArgs, WaitArgs, WindowArgs, parse,
 };
 use desk_core::shot::{crop_png, png_size};
-use desk_core::text::{MAX_FOUND, NAME_CHARS, Named, matches, ms, one_line, quote};
+use desk_core::text::{
+    MAX_FOUND, NAME_CHARS, Named, READ_TAIL, cut_read, matches, ms, one_line, quote,
+};
 use desk_core::window::{self, Window};
 use desk_core::wire::{OK, Output};
 use serde::Deserialize;
@@ -861,9 +863,21 @@ fn unique(nodes: &[Node], role: &str, name: &str) -> Option<usize> {
 }
 
 async fn read(android: &Android, a: ReadArgs) -> Result<String, String> {
-    let (frame, mut node) = node(android, &a.id).await?;
+    if a.tail && !a.text {
+        return Err(READ_TAIL.to_owned());
+    }
+    let (frame, node) = node(android, &a.id).await?;
+    Ok(read_out(node, &frame.package, a.text, a.tail).to_string())
+}
+
+fn read_out(mut node: Node, app: &str, text: bool, tail: bool) -> Value {
     node.parent = -1;
-    Ok(node.json(0, &frame.package).to_string())
+    let truncated = text && cut_read(&mut node.value, tail);
+    let mut out = node.json(0, app);
+    if truncated {
+        out["truncated"] = true.into();
+    }
+    out
 }
 
 /// Taps an element, after scrolling its list until it shows.
@@ -1074,10 +1088,43 @@ where
 
 #[cfg(test)]
 mod tests {
+    use desk_core::text::READ_CHARS;
+
     use super::*;
 
     const REDROID: (i32, i32) = (720, 1280);
     const DUMP: &str = r#"<hierarchy><node text="" class="android.widget.FrameLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0" bounds="[0,0][720,1280]" /><node text="" class="android.widget.LinearLayout" content-desc="" hint="" showing-hint="false" checkable="true" checked="true" clickable="true" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0" bounds="[0,300][720,400]" /><node text="Dark theme" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.0" bounds="[40,320][400,380]" /><node text="" class="android.widget.Switch" content-desc="" hint="" showing-hint="false" checkable="true" checked="true" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.1" bounds="[600,320][680,380]" /><node text="Search…" class="android.widget.EditText" content-desc="" hint="Search…" showing-hint="true" checkable="false" checked="false" clickable="true" long-clickable="false" editable="true" enabled="false" focused="true" selected="false" scrollable="false" visible="true" path="0.1" bounds="[40,100][680,180]" /><node text="gone" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="false" path="0.2" bounds="[0,0][0,0]" /></hierarchy>"#;
+
+    #[test]
+    fn a_text_read_keeps_its_head_or_with_tail_its_end_and_says_when_it_was_cut() {
+        let field = |value: &str| Node {
+            path: "0.1".into(),
+            parent: 3,
+            depth: 1,
+            role: "textbox",
+            name: String::new(),
+            description: String::new(),
+            value: Some(value.to_owned()),
+            states: vec!["showing"],
+            bounds: [0, 0, 10, 10],
+            visible: true,
+            scroller: None,
+        };
+        let long = format!("{}中🙂end", "a".repeat(READ_CHARS));
+        let end = format!("{}中🙂end", "a".repeat(READ_CHARS - 5));
+        let head = "a".repeat(READ_CHARS);
+        for (value, text, tail, want, cut) in [
+            (&long, true, true, &end, true),
+            (&long, true, false, &head, true),
+            (&long, false, false, &long, false),
+            (&head, true, true, &head, false),
+        ] {
+            let out = read_out(field(value), "com.app", text, tail);
+            assert!(out["value"] == want.as_str(), "{text} {tail}");
+            assert_eq!(out.get("truncated").is_some(), cut, "{text} {tail}");
+            assert_eq!(out["parent"], -1);
+        }
+    }
 
     #[test]
     fn an_active_system_window_is_in_front_of_the_apps() {

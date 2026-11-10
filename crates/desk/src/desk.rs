@@ -15,7 +15,7 @@ use desk_core::args::{
     ScrollArgs, ShotArgs, SnapArgs, StillArgs, TypeArgs, WaitArgs, WebArgs, WindowArgs, parse,
 };
 use desk_core::shot::{OFF_SCREEN, crop_png, rgb_png};
-use desk_core::text::{MAX_FOUND, NAME_CHARS, clip, matches, ms, quote};
+use desk_core::text::{MAX_FOUND, NAME_CHARS, READ_CHARS, READ_TAIL, cut_read, matches, ms, quote};
 use desk_core::window::{self, TITLE_TIERS, title_matches};
 use desk_core::wire::{OK, Output};
 use serde_json::{Map, Value, json};
@@ -78,8 +78,6 @@ const APP_INPUT: [&str; 5] = [
 ];
 
 const TREE_LIMIT: Duration = Duration::from_secs(10);
-const READ_CHARS: usize = 64 << 10;
-const READ_TAIL: &str = "read: tail needs text: true";
 const WAIT_MAX: Duration = Duration::from_secs(5);
 const RAISE_WAIT: Duration = Duration::from_millis(500);
 const WAIT_POLL: Duration = Duration::from_millis(10);
@@ -759,14 +757,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 Ok((node, web))
             })
             .await?;
-        let truncated = text
-            && node
-                .value
-                .as_ref()
-                .is_some_and(|v| v.chars().nth(READ_CHARS).is_some());
-        if truncated {
-            node.value = node.value.take().map(|v| clip(v, READ_CHARS, tail));
-        }
+        let truncated = text && cut_read(&mut node.value, tail);
         let mut out = node.into_json(0);
         if truncated {
             out["truncated"] = true.into();
@@ -7563,7 +7554,7 @@ pub(crate) mod tests {
             Ok(Node {
                 id: id.into(),
                 role: "document",
-                value: Some(clip(
+                value: Some(desk_core::text::clip(
                     match id {
                         "long" => format!("{}中🙂end", "a".repeat(READ_CHARS)),
                         _ => "b".repeat(READ_CHARS),

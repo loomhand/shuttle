@@ -6,6 +6,8 @@ use serde_json::{Value, json};
 pub const NAME_CHARS: usize = 80;
 /// The most elements a find returns.
 pub const MAX_FOUND: usize = 20;
+pub const READ_CHARS: usize = 64 << 10;
+pub const READ_TAIL: &str = "read: tail needs text: true";
 
 /// An element a find compares by name and role.
 pub trait Named {
@@ -82,6 +84,16 @@ pub fn clip(mut s: String, max: usize, tail: bool) -> String {
         s.drain(..i);
     }
     s
+}
+
+pub fn cut_read(value: &mut Option<String>, tail: bool) -> bool {
+    let cut = value
+        .as_ref()
+        .is_some_and(|v| v.chars().nth(READ_CHARS).is_some());
+    if cut {
+        *value = value.take().map(|v| clip(v, READ_CHARS, tail));
+    }
+    cut
 }
 
 /// Microseconds as milliseconds with one decimal.

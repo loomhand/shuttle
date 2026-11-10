@@ -361,3 +361,43 @@ test('a typed line a terminal does not echo is submitted with one Return and sta
     assert.deepEqual(r.unverified, [{ step: 1, note: TTY }], `${mode} ${JSON.stringify(r)}`)
   }
 })
+
+test('a long field whose cut tail did not change is never typed into again in the foreground', async (t) => {
+  let doc = `x${HUGE}`
+  const calls: Call[] = []
+  await daemon(t, (c) => {
+    calls.push(c)
+    if (c.tool === 'desk_windows') return JSON.stringify([user(), notepad()])
+    const node = { ref: 0, id: 'd', parent: -1, depth: 0, role: 'document', name: '', states: [], value: doc.slice(0, 200) }
+    if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes: [node], truncated: false })
+    if (c.tool === 'desk_read') return JSON.stringify({ ...node, value: doc.slice(-READ), truncated: true })
+    if (c.tool === 'desk_type') { doc = `${doc.slice(0, 1)}${String(c.args.text)}${doc.slice(1)}`; return JSON.stringify({ ok: true, chars: 2, unverified: NOTE }) }
+    return '{"ok":true}'
+  })
+  const r = await auto({ steps: [{ app: 'Notepad' }, { type: 'hi' }] })
+  assert.equal(r.ok, false, JSON.stringify(r.trace))
+  assert.match(String(r.escalate?.reason), /did not show/)
+  assert.ok(!calls.some((c) => c.tool === 'desk_focus'), tools(calls).join('\n'))
+  assert.equal(calls.filter((c) => c.tool === 'desk_type').length, 1)
+})
+
+test('a background type of several lines sends each Return once when a terminal line that does not echo leaves its own screen unchanged', async (t) => {
+  for (const [mode, plan] of modes) {
+    const { r, calls } = await terminal(t, plan, (screen, text) => text === 'pass' ? screen : screen + text, { type: 'read -s pw\npass\n' })
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_type').map((c) => c.args.text), ['read -s pw', 'pass'], `${mode} ${JSON.stringify(r.escalate?.reason)}`)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return', 'Return'], mode)
+    assert.ok(!calls.some((c) => c.tool === 'desk_focus'), mode)
+    assert.deepEqual(r.unverified, [{ step: 1, note: TTY }], mode)
+  }
+})
+
+test('a background type of several lines into a window that confirms them presses Return between its lines', async (t) => {
+  for (const [mode, plan] of modes) {
+    const d = desktop((b, s) => b + s, false)
+    await daemon(t, d.reply)
+    const r = await plan({ steps: [{ app: 'Notepad' }, { type: 'one\ntwo' }] })
+    assert.equal(r.ok, true, `${mode} ${JSON.stringify(r)}`)
+    assert.deepEqual(d.calls.filter((c) => c.tool === 'desk_type').map((c) => c.args.text), ['one', 'two'], mode)
+    assert.deepEqual(d.calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'], mode)
+  }
+})

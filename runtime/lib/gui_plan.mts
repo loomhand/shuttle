@@ -40,7 +40,7 @@ type Rec = {
 }
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
-type Text = { value?: string; field: boolean }
+type Text = { value?: string; field: boolean; cut?: boolean }
 type Bare = Omit<Step, 'recorded' | 'fp' | 'blank'>
 type Escalation = Seen & { reason: string; step?: number; plan_step?: Bare }
 type Grounding = { what: string; ok: boolean; check: string; p?: number; p_zoom?: number | null; p_full?: number | null; why?: string; cover?: string }
@@ -54,7 +54,6 @@ const FG: desk.Target = AUTO ? { delivery_mode: 'foreground' } : {}
 const NO_PIXELS = 'background gui_plan does not read the screen, which shows whatever covers the plan\'s window'
 const NO_FRONT = 'no focused window'
 const TERMINAL = 'terminal emulator'
-const UNCONFIRMED_LINE = /the terminal did not confirm line (\d+) of \d+, so Return was not sent: (.+?)(?:; \d+ of \d+ lines were typed before it)?$/s
 const SPENT = 'model credits are used up'
 const FLOWS = process.env.SHUTTLE_FLOWS ?? ''
 const RUN = process.env.SHUTTLE_RUN
@@ -1064,10 +1063,28 @@ async function texts(w: Win): Promise<Map<string, Text> | null> {
       const field = n.role === 'document' || FIELD_ROLES.has(n.role)
       if (n.value && !(field && n.value.length >= VALUE_CHARS)) return [[n.id, { value: n.value, field }]]
       if (!field) return []
-      return [[n.id, { value: (await slot(() => desk.read(n.id, { text: true, tail: true })).catch(() => null))?.value, field }]]
+      const r = await slot(() => desk.read(n.id, { text: true, tail: true })).catch(() => null)
+      return [[n.id, { value: r?.value, field, cut: r?.truncated }]]
     }))
     return new Map(all.flat())
   } catch { return null }
+}
+function whole(t: Map<string, Text> | null) { return !!t && [...t.values()].every((x) => !x.cut) }
+async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | null, rec: Rec) {
+  const lines = text.split('\n'); let quiet: boolean | undefined
+  for (const [i, line] of lines.entries()) {
+    if (line) {
+      const base = i ? await texts(w) : was
+      const r = await desk.typeText(line, at(w)); heard(r, rec)
+      if (r.unverified?.includes(TERMINAL)) {
+        const now = await texts(w); const shown = shows(base, now, line)
+        if (!shown && !unchanged(base, now)) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${r.unverified}`, await seen())
+        quiet ||= !shown
+      }
+    }
+    if (i < lines.length - 1) heard(await desk.key('Return', at(w)), rec)
+  }
+  return quiet
 }
 function unchanged(before: Map<string, Text> | null, after: Map<string, Text> | null) {
   if (!before || !after || before.size !== after.size) return false
@@ -1205,28 +1222,18 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field in a plan that continues the flow from this step, which saves the fix into the flow`, await seen())
     // GTK preselects a file name only up to its last dot
     if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine(w)
-    let text = sub ? s.type.slice(0, -1) : s.type; let base = was; let lined = false
-    for (;;) {
-      try { heard(await desk.typeText(text, at(w)), rec); break } catch (e: unknown) {
-        const why = e instanceof Error ? e.message : ''; const m = UNCONFIRMED_LINE.exec(why)
-        if (!m || !w) throw e
-        if (!unchanged(base, await texts(w))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${why}`, await seen())
-        rec.unverified ??= m[2]; lined = true
-        heard(await desk.key('Return', at(w)), rec)
-        text = text.split('\n').slice(Number(m[1])).join('\n')
-        if (!text) break
-        base = await texts(w)
-      }
-    }
+    const text = sub ? s.type.slice(0, -1) : s.type; let quiet: boolean | undefined
+    if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(await desk.typeText(text, at(w)), rec)
     tick('act', t0)
-    if (BG && rec.unverified && w && !sub && text) {
-      const now = await texts(w); const shown = shows(base, now, text); const tty = rec.unverified.includes(TERMINAL)
-      if (AUTO && !tty && !secure(s) && !shown && unchanged(base, now) && !taken(await desk.windows())) {
+    if (BG && rec.unverified && w && !sub && quiet !== undefined) rec.confirmed = !quiet
+    else if (BG && rec.unverified && w && !sub) {
+      const now = await texts(w); const shown = shows(was, now, s.type); const tty = rec.unverified.includes(TERMINAL)
+      if (AUTO && !tty && !secure(s) && !shown && unchanged(was, now) && whole(was) && whole(now) && !taken(await desk.windows())) {
         await desk.focus(w.title, w.pid)
         await desk.typeText(s.type, FG)
         rec.how = 'foreground'; rec.unverified = undefined; fronted = true; BG = false
-      } else if (!shown && !(tty && unchanged(base, now))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
-      rec.confirmed = !lined && (shown || !tty)
+      } else if (!shown && !(tty && unchanged(was, now))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
+      rec.confirmed = shown || !tty
     }
     const blank = recording && first && !chooser && w ? await typedInto(w, s.type) : null
     if (blank) rec.blank = blank.fp

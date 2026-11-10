@@ -406,7 +406,7 @@ impl Access for Uia {
         let fresh = self.cached(&el, &self.single)?;
         let mut node = self.node_of(&fresh, extras, chars)?;
         if extras.values && node.value.is_none() && node.url.is_none() {
-            node.value = document_text(&fresh, chars);
+            node.value = document_text(&fresh, chars, extras.tail);
         }
         Ok(node)
     }
@@ -868,15 +868,30 @@ fn exe_name(pid: u32) -> Option<String> {
     path.rsplit('\\').next().map(str::to_owned)
 }
 
-fn document_text(el: &IUIAutomationElement, chars: usize) -> Option<String> {
-    let max = i32::try_from(chars).unwrap_or(i32::MAX);
+fn document_text(el: &IUIAutomationElement, chars: usize, tail: bool) -> Option<String> {
+    let (max, back) = text_span(chars, tail);
     // SAFETY: `el` is a live UIA element of this thread; the text pattern and range come from it.
     let text = unsafe {
         el.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
             .and_then(|p| p.DocumentRange())
-            .and_then(|r| r.GetText(max))
+            .and_then(|r| {
+                if let Some(back) = back {
+                    r.MoveEndpointByRange(
+                        TextPatternRangeEndpoint_Start,
+                        &r,
+                        TextPatternRangeEndpoint_End,
+                    )?;
+                    r.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, back)?;
+                }
+                r.GetText(max)
+            })
     };
     text.ok().map(|t| t.to_string()).filter(|t| !t.is_empty())
+}
+
+fn text_span(chars: usize, tail: bool) -> (i32, Option<i32>) {
+    let max = i32::try_from(chars).unwrap_or(i32::MAX);
+    (max, tail.then_some(-max))
 }
 
 fn listed_dialog(el: &IUIAutomationElement, walked: isize, shown: &[Shown]) -> bool {
@@ -974,6 +989,13 @@ mod tests {
             Bounded::new(&uia.auto).0.is_some(),
             "the automation object lacks IUIAutomation2"
         );
+    }
+
+    #[test]
+    fn a_tail_text_read_starts_its_range_that_many_characters_before_the_end() {
+        assert_eq!(text_span(65_537, false), (65_537, None));
+        assert_eq!(text_span(65_537, true), (65_537, Some(-65_537)));
+        assert_eq!(text_span(usize::MAX, true), (i32::MAX, Some(-i32::MAX)));
     }
 
     #[test]
