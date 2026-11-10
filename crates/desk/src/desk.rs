@@ -3860,6 +3860,31 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn locked_input_typing_aimed_at_loginwindows_pid_sends_nothing() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(Apps),
+            LoginWindow(Behind(Arc::clone(&calls))),
+            Os::Mac,
+        )
+        .background(true)
+        .locked_input(true);
+        for (tool, args) in [
+            ("desk_type", json!({"text": "a", "pid": 776})),
+            ("desk_key", json!({"keys": "return", "pid": 776})),
+        ] {
+            let err = desk.run(tool, args).await.unwrap_err();
+            assert_eq!(err, "no focused window", "{tool}");
+        }
+        assert!(sent(&calls, "type_text").is_empty());
+        assert!(sent(&calls, "press_key").is_empty());
+        desk.run("desk_type", json!({"text": "a", "pid": 4}))
+            .await
+            .unwrap();
+        assert_eq!(sent(&calls, "type_text").len(), 1);
+    }
+
+    #[tokio::test]
     async fn locked_input_asks_the_driver_to_send_background_keys_and_typing_only() {
         for (background, on) in [(true, false), (true, true), (false, true)] {
             let calls = Arc::new(Mutex::new(Vec::new()));
@@ -7020,6 +7045,19 @@ pub(crate) mod tests {
                 return Err(format!(
                     "{tool}: window 1 cannot receive input: {LOCK_HINT}"
                 ));
+            }
+            self.0.call(tool, args).await
+        }
+    }
+
+    struct LoginWindow(Behind);
+
+    impl Input for LoginWindow {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            if tool == "list_windows" && args["pid"] == 776 {
+                return Ok(json!({"structuredContent": {"windows": [
+                    {"pid": 776, "window_id": 692, "layer": 2002, "title": "", "app_name": "loginwindow", "bounds": {"x": 0.0, "y": 0.0, "width": 1280.0, "height": 800.0}}
+                ]}}));
             }
             self.0.call(tool, args).await
         }
