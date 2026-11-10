@@ -8,7 +8,8 @@
 - **macOS: an unconfirmed type into a terminal is not advised to go in again.** The bundled driver told a caller to send a terminal type it could not confirm once more in the foreground; at a prompt without echo, such as `read -s`, a screenshot never shows the text, so an agent that followed the advice typed it twice. The driver now answers that a terminal may not echo what it reads and that the text must not be typed again, with no foreground advice.
 - **macOS: an accessibility insert whose field changed the text is not typed again as keys.** The driver followed such an insert with the same text as key presses, which could type it twice; it now answers it unverified.
 - **macOS: a typed field that stops changing without growing settles in 0.5 s instead of 2 s.** The driver waited out its full 2 s read-back window when a field changed without growing; it now answers unverified once the field has not changed for 0.5 s, and still waits for a field that keeps changing.
-- **Bundled:** cua-driver v0.45.1-loomhand.5 on every platform (was v0.45.1-loomhand.4).
+- **macOS: a terminal type is confirmed only by a copy of the text the terminal did not already show.** A terminal's text holds its scrollback, so the bundled driver confirmed a command typed again, such as `git push` already on screen from an earlier run, when only part of it landed (`git pu`), and a plan's next Return ran the partial command. The driver now confirms a terminal type only when the screen holds more copies of the text than before it, and answers unverified when it cannot read the screen before typing, so `gui_plan` checks the screen itself. Typing into other fields is confirmed as before.
+- **Bundled:** cua-driver v0.45.1-loomhand.6 on every platform (was v0.45.1-loomhand.4).
 
 ## 0.1.45 - 2026-11-10
 
