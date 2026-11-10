@@ -8,6 +8,7 @@ type Lib = typeof import('../lib/gui_plan.mts')
 type Plan = typeof auto
 
 const NOTE = 'unverifiable: Sent 2 char(s) via PostMessage (not verified).'
+const TTY = 'unverifiable: Sent (unverified) 3 char(s) via CGEvent (terminal emulator, 0ms delay). — driver could not confirm the text landed; verify via screenshot, and re-call with delivery_mode:"foreground" if it didn\'t.'
 const tools = (calls: Call[]) => calls.map((c) => `${c.tool} ${JSON.stringify(c.args)}`)
 const load = async (input: string): Promise<Lib['main']> => {
   process.env.SHUTTLE_INPUT = input
@@ -15,6 +16,7 @@ const load = async (input: string): Promise<Lib['main']> => {
 }
 const background = await load('background')
 const auto = await load('auto')
+const modes = [['background', background], ['auto', auto]] as const
 
 function desktop(typed: (before: string, text: string) => string, note: boolean) {
   const ws = [user(), notepad()]
@@ -40,6 +42,20 @@ async function run(t: TestContext, plan: Plan, typed: (before: string, text: str
   await daemon(t, d.reply)
   const r = await plan({ steps: [{ app: 'Notepad' }, { type: 'hi' }] })
   return { r, calls: d.calls, doc: d.doc() }
+}
+
+async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string) {
+  const term: W = { id: 't', title: 'Terminal', role: 'window', pid: 7, active: false, app: 'Terminal' }
+  let screen = '$ read -s'
+  const calls: Call[] = []
+  await daemon(t, (c) => {
+    calls.push(c)
+    if (c.tool === 'desk_windows') return JSON.stringify([user(), term])
+    if (c.tool === 'desk_snapshot') return JSON.stringify({ window: term, nodes: [{ ref: 0, id: 'd', parent: -1, depth: 0, role: 'document', name: '', states: [], value: screen }], truncated: false })
+    if (c.tool === 'desk_type') { screen = typed(screen, String(c.args.text)); return JSON.stringify({ ok: true, chars: 3, unverified: TTY }) }
+    return '{"ok":true}'
+  })
+  return { r: await plan({ steps: [{ app: 'Terminal' }, { type: 'abc' }, { key: 'Return' }] }), calls }
 }
 
 test('an auto plan sends the same desk calls as a background plan when nothing falls back', async (t) => {
@@ -231,27 +247,33 @@ test('a password auto cannot see in its field is never typed again in the foregr
 })
 
 test('typing a terminal does not show is never typed again in the foreground, and the plan goes on with the step unverified', async (t) => {
-  const after = ' — driver could not confirm the text landed; verify via screenshot, and re-call with delivery_mode:"foreground" if it didn\'t.'
-  const terminals = [
-    { app: 'Terminal', note: `unverifiable: Sent (unverified) 3 char(s) via CGEvent (terminal emulator, 0ms delay).${after}` },
-    { app: 'kitty', note: `unverifiable: 📨 Sent (unverified) 3 char(s) via AXValue (terminal emulator, kitty commits it to the terminal as typed text).${after}` },
-  ]
-  for (const { app, note } of terminals) {
-    const term: W = { id: 't', title: app, role: 'window', pid: 7, active: false, app }
-    const calls: Call[] = []
-    await daemon(t, (c) => {
-      calls.push(c)
-      if (c.tool === 'desk_windows') return JSON.stringify([user(), term])
-      if (c.tool === 'desk_snapshot') return JSON.stringify({ window: term, nodes: [{ ref: 0, id: 'd', parent: -1, depth: 0, role: 'document', name: '', states: [], value: '$ read -s' }], truncated: false })
-      if (c.tool === 'desk_type') return JSON.stringify({ ok: true, chars: 3, unverified: note })
-      return '{"ok":true}'
-    })
-    const r = await auto({ steps: [{ app }, { type: 'abc' }, { key: 'Return' }] })
-    assert.equal(calls.filter((c) => c.tool === 'desk_type').length, 1, `${app}\n${tools(calls).join('\n')}`)
-    assert.ok(!calls.some((c) => c.tool === 'desk_focus'), app)
-    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'])
-    assert.deepEqual(r.unverified, [{ step: 1, note }])
-    assert.equal(r.escalate?.step, 1)
-    assert.match(String(r.escalate?.reason), /not confirmed/)
+  for (const [mode, plan] of modes) {
+    const { r, calls } = await terminal(t, plan, (screen) => screen)
+    assert.equal(calls.filter((c) => c.tool === 'desk_type').length, 1, `${mode}\n${tools(calls).join('\n')}`)
+    assert.ok(!calls.some((c) => c.tool === 'desk_focus'), mode)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'], mode)
+    assert.deepEqual(r.unverified, [{ step: 1, note: TTY }], mode)
+    assert.equal(r.escalate?.step, 1, mode)
+    assert.match(String(r.escalate?.reason), /not confirmed/, mode)
+  }
+})
+
+test('typing a terminal shows in part stops the plan before its next key', async (t) => {
+  for (const [mode, plan] of modes) {
+    const { r, calls } = await terminal(t, plan, (screen, text) => screen + text.slice(0, 2))
+    assert.equal(r.ok, false, mode)
+    assert.equal(r.escalate?.step, 1, mode)
+    assert.match(String(r.escalate?.reason), /did not show/, mode)
+    assert.equal(calls.filter((c) => c.tool === 'desk_type').length, 1, mode)
+    assert.ok(!calls.some((c) => c.tool === 'desk_key' || c.tool === 'desk_focus'), `${mode}\n${tools(calls).join('\n')}`)
+  }
+})
+
+test('typing an echoing terminal shows is confirmed', async (t) => {
+  for (const [mode, plan] of modes) {
+    const { r, calls } = await terminal(t, plan, (screen, text) => screen + text)
+    assert.equal(r.ok, true, `${mode} ${JSON.stringify(r)}`)
+    assert.equal(r.unverified, undefined, mode)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'], mode)
   }
 })

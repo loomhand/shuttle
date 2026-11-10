@@ -1210,7 +1210,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
         await desk.focus(w.title, w.pid)
         await desk.typeText(s.type, FG)
         rec.how = 'foreground'; rec.unverified = undefined; fronted = true; BG = false
-      } else if (!shown && !tty) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
+      } else if (!shown && !(tty && unchanged(was, now))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
       rec.confirmed = shown || !tty
     }
     const blank = recording && first && !chooser && w ? await typedInto(w, s.type) : null
