@@ -519,7 +519,10 @@ fn question(call: &Call, background: bool) -> String {
         },
         _ => format!("{verb} {a}"),
     };
-    format!("Allow {NAME} to {}?", clip(visible(&what), QUESTION_CHARS))
+    format!(
+        "Allow {NAME} to {}?",
+        clip(visible(&what), QUESTION_CHARS, false)
+    )
 }
 
 fn visible(s: &str) -> String {
@@ -567,7 +570,7 @@ fn word(v: &Value, default: &str) -> String {
 }
 
 fn quoted(v: &Value, max: usize) -> String {
-    Value::from(clip(v.as_str().unwrap_or_default().to_owned(), max)).to_string()
+    Value::from(clip(v.as_str().unwrap_or_default().to_owned(), max, false)).to_string()
 }
 
 fn steps(list: &[Value]) -> String {

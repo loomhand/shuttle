@@ -342,7 +342,7 @@ impl Ax {
             states: ax_roles::states(role, facts),
             value: extras
                 .values
-                .then(|| a.value.as_ref().map(|v| text(v, chars)))
+                .then(|| a.value.as_ref().map(|v| text(v, chars, extras.tail)))
                 .flatten()
                 .filter(|v| !v.is_empty()),
             shortcut: extras
@@ -1224,7 +1224,10 @@ fn name_of(a: &mut Attrs, chars: usize) -> String {
     } else if !a.description.is_empty() {
         std::mem::take(&mut a.description)
     } else if a.role == "AXStaticText" {
-        a.value.as_ref().map(|v| text(v, chars)).unwrap_or_default()
+        a.value
+            .as_ref()
+            .map(|v| text(v, chars, false))
+            .unwrap_or_default()
     } else {
         String::new()
     };
@@ -1549,9 +1552,9 @@ fn float(d: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<f64> {
         .and_then(|n| n.to_f64())
 }
 
-fn text(v: &CFType, chars: usize) -> String {
+fn text(v: &CFType, chars: usize, tail: bool) -> String {
     if let Some(s) = v.downcast::<CFString>() {
-        return clip(s.to_string(), chars);
+        return clip(s.to_string(), chars, tail);
     }
     v.downcast::<CFNumber>()
         .and_then(|n| n.to_f64())

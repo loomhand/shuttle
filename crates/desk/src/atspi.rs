@@ -596,7 +596,7 @@ impl Atspi {
         let (value, bounds, keys, url) = tokio::join!(
             async {
                 if extras.values {
-                    self.value(&obj, r.role, r.ifaces, chars)
+                    self.value(&obj, r.role, r.ifaces, chars, extras.tail)
                         .await
                         .filter(|v| !v.is_empty())
                 } else {
@@ -663,13 +663,29 @@ impl Atspi {
     }
 
     /// The text of a text node, at most `max` characters, else the current value of a value node; none for a password field or a failed read.
-    pub async fn value(&self, obj: &Obj, role: u32, ifaces: u8, max: usize) -> Option<String> {
+    pub async fn value(
+        &self,
+        obj: &Obj,
+        role: u32,
+        ifaces: u8,
+        max: usize,
+        tail: bool,
+    ) -> Option<String> {
         if role == PASSWORD_TEXT {
             return None;
         }
         if ifaces & IF_TEXT != 0 {
             let max = i32::try_from(max).unwrap_or(i32::MAX);
-            return self.call(obj, TEXT, "GetText", &(0i32, max)).await.ok();
+            let start = if tail {
+                let count = self.prop::<i32>(obj, TEXT, "CharacterCount").await.ok()?;
+                count.saturating_sub(max).max(0)
+            } else {
+                0
+            };
+            return self
+                .call(obj, TEXT, "GetText", &(start, start.saturating_add(max)))
+                .await
+                .ok();
         }
         if ifaces & IF_VALUE != 0 {
             return self
@@ -814,7 +830,7 @@ impl Atspi {
                 if !(extras.values && is_field(role)) {
                     return None;
                 }
-                self.value(obj, n.role, n.ifaces, VALUE_CHARS)
+                self.value(obj, n.role, n.ifaces, VALUE_CHARS, false)
                     .await
                     .filter(|v| !v.is_empty())
             };

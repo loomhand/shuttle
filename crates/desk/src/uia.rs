@@ -42,6 +42,8 @@ const ACT_TIMEOUT_MS: u32 = 2_000;
 const TIMED_OUT: HRESULT = HRESULT(UIA_E_TIMEOUT.cast_signed());
 const ACT_TIMED_OUT: &str = "the app did not answer the action within 2 s, as when the action opens a modal dialog; it may have taken effect: read the window before acting again";
 const TITLE_CHARS: usize = 512;
+const TAIL_LINES: i32 = 256;
+const TAIL_ROUNDS: u32 = 12;
 const ANSWER_MS: u32 = 500;
 const PROPS: [UIA_PROPERTY_ID; 24] = [
     UIA_ControlTypePropertyId,
@@ -176,7 +178,7 @@ impl Uia {
             .take()
             .filter(|v| !v.is_empty())
             .or_else(|| r.range.map(format_number))
-            .map(|v| clip(v, chars));
+            .map(|v| clip(v, chars, extras.tail));
         Ok(Node {
             id: self.id_of(el)?,
             role,
@@ -405,8 +407,13 @@ impl Access for Uia {
         let el = self.element(id)?;
         let fresh = self.cached(&el, &self.single)?;
         let mut node = self.node_of(&fresh, extras, chars)?;
-        if extras.values && node.value.is_none() && node.url.is_none() {
-            node.value = document_text(&fresh, chars);
+        if extras.values
+            && node.value.is_none()
+            && node.url.is_none()
+            && let Some((text, cut)) = document_text(&fresh, chars, extras.tail)
+        {
+            node.value = Some(text);
+            node.truncated = cut;
         }
         Ok(node)
     }
@@ -868,15 +875,57 @@ fn exe_name(pid: u32) -> Option<String> {
     path.rsplit('\\').next().map(str::to_owned)
 }
 
-fn document_text(el: &IUIAutomationElement, chars: usize) -> Option<String> {
-    let max = i32::try_from(chars).unwrap_or(i32::MAX);
+fn document_text(el: &IUIAutomationElement, chars: usize, tail: bool) -> Option<(String, bool)> {
     // SAFETY: `el` is a live UIA element of this thread; the text pattern and range come from it.
-    let text = unsafe {
+    let read = unsafe {
         el.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
             .and_then(|p| p.DocumentRange())
-            .and_then(|r| r.GetText(max))
+            .and_then(|doc| {
+                if !tail {
+                    let text = doc.GetText(head_units(chars))?.to_string();
+                    let cut = text.chars().nth(chars).is_some();
+                    return Ok((clip(text, chars, false), cut));
+                }
+                let r = doc.Clone()?;
+                r.MoveEndpointByRange(
+                    TextPatternRangeEndpoint_Start,
+                    &doc,
+                    TextPatternRangeEndpoint_End,
+                )?;
+                let mut round = 0;
+                loop {
+                    let step = TAIL_LINES << round;
+                    let moved =
+                        r.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Line, -step)?;
+                    let text = r.GetText(-1)?.to_string();
+                    let at_start = moved > -step
+                        || r.CompareEndpoints(
+                            TextPatternRangeEndpoint_Start,
+                            &doc,
+                            TextPatternRangeEndpoint_Start,
+                        )? <= 0;
+                    if let Some(cut) = tail_stop(text.chars().count(), chars, at_start, round) {
+                        return Ok((clip(text, chars, true), cut));
+                    }
+                    round += 1;
+                }
+            })
     };
-    text.ok().map(|t| t.to_string()).filter(|t| !t.is_empty())
+    read.ok().filter(|(t, _)| !t.is_empty())
+}
+
+fn head_units(chars: usize) -> i32 {
+    i32::try_from(chars.saturating_mul(2).saturating_add(1)).unwrap_or(i32::MAX)
+}
+
+fn tail_stop(scalars: usize, chars: usize, at_start: bool, round: u32) -> Option<bool> {
+    if scalars > chars {
+        Some(true)
+    } else if at_start {
+        Some(false)
+    } else {
+        (round + 1 >= TAIL_ROUNDS).then_some(true)
+    }
 }
 
 fn listed_dialog(el: &IUIAutomationElement, walked: isize, shown: &[Shown]) -> bool {
@@ -974,6 +1023,24 @@ mod tests {
             Bounded::new(&uia.auto).0.is_some(),
             "the automation object lacks IUIAutomation2"
         );
+    }
+
+    #[test]
+    fn a_tail_text_read_stops_once_it_holds_more_than_its_limit_or_reaches_the_start() {
+        assert_eq!(tail_stop(65_538, 65_537, false, 0), Some(true));
+        assert_eq!(tail_stop(65_538, 65_537, true, 3), Some(true));
+        assert_eq!(tail_stop(65_537, 65_537, true, 0), Some(false));
+        assert_eq!(tail_stop(10, 65_537, true, 5), Some(false));
+        assert_eq!(tail_stop(10, 65_537, false, 0), None);
+        assert_eq!(tail_stop(10, 65_537, false, TAIL_ROUNDS - 2), None);
+        assert_eq!(tail_stop(10, 65_537, false, TAIL_ROUNDS - 1), Some(true));
+    }
+
+    #[test]
+    fn a_head_text_read_asks_for_two_units_a_character_and_one_more() {
+        assert_eq!(head_units(65_537), 131_075);
+        assert_eq!(head_units(80), 161);
+        assert_eq!(head_units(usize::MAX), i32::MAX);
     }
 
     #[test]

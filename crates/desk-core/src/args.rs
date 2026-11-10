@@ -44,6 +44,8 @@ pub struct ReadArgs {
     pub id: String,
     #[serde(default)]
     pub text: bool,
+    #[serde(default)]
+    pub tail: bool,
     /// Adds the page URL and DOM id of a web element.
     #[serde(default)]
     pub web: bool,

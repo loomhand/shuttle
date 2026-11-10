@@ -15,7 +15,7 @@ use desk_core::args::{
     ScrollArgs, ShotArgs, SnapArgs, StillArgs, TypeArgs, WaitArgs, WebArgs, WindowArgs, parse,
 };
 use desk_core::shot::{OFF_SCREEN, crop_png, rgb_png};
-use desk_core::text::{MAX_FOUND, NAME_CHARS, matches, ms, quote};
+use desk_core::text::{MAX_FOUND, NAME_CHARS, READ_CHARS, READ_TAIL, cut_read, matches, ms, quote};
 use desk_core::window::{self, TITLE_TIERS, title_matches};
 use desk_core::wire::{OK, Output};
 use serde_json::{Map, Value, json};
@@ -78,7 +78,6 @@ const APP_INPUT: [&str; 5] = [
 ];
 
 const TREE_LIMIT: Duration = Duration::from_secs(10);
-const READ_CHARS: usize = 64 << 10;
 const WAIT_MAX: Duration = Duration::from_secs(5);
 const RAISE_WAIT: Duration = Duration::from_millis(500);
 const WAIT_POLL: Duration = Duration::from_millis(10);
@@ -121,6 +120,7 @@ const TYPE_POLL: Duration = Duration::from_millis(10);
 const TYPE_TAIL: usize = 16;
 const MAC_TYPE_DELAY_MS: u64 = 0;
 const CHROMIUM_TYPE_DELAY_MS: u64 = 1;
+const TERMINAL: &str = "terminal emulator";
 const PROTOCOL_TAGS: [&str; 10] = [
     "text",
     "parameter",
@@ -651,6 +651,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             menus: a.menus,
             frame: false,
             urls: a.urls && !a.text,
+            tail: false,
         };
         let (window, pid, id) = (a.window, a.pid, a.id);
         let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
@@ -706,6 +707,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             menus: true,
             frame: false,
             urls: a.urls,
+            tail: false,
         };
         let (window, pid) = (a.window, a.pid);
         let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
@@ -729,6 +731,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn read(&self, a: ReadArgs) -> Result<String, String> {
+        if a.tail && !a.text {
+            return Err(READ_TAIL.to_owned());
+        }
         let extras = Extras {
             values: true,
             bounds: true,
@@ -736,9 +741,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             menus: false,
             frame: false,
             urls: true,
+            tail: a.tail,
         };
-        let chars = if a.text { READ_CHARS } else { NAME_CHARS };
-        let (node, (url, dom_id)) = self
+        let (text, tail) = (a.text, a.tail);
+        let chars = if text { READ_CHARS + 1 } else { NAME_CHARS };
+        let (mut node, (url, dom_id)) = self
             .access
             .run(CALL_LIMIT, (), move |b| {
                 let node = b.node(&a.id, extras, chars)?;
@@ -750,7 +757,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 Ok((node, web))
             })
             .await?;
+        let truncated = text && (cut_read(&mut node.value, tail) | node.truncated);
         let mut out = node.into_json(0);
+        if truncated {
+            out["truncated"] = true.into();
+        }
         if let Some(url) = url {
             out["url"] = url.into();
         }
@@ -979,6 +990,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             _ => false,
         };
         let mut note = None;
+        let mut terminal = false;
         let lines = text.split('\n').count();
         for (i, line) in text.split('\n').enumerate() {
             let sent: Result<(), String> = async {
@@ -995,13 +1007,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         return Ok(());
                     }
                     for run in text_runs(line) {
-                        self.send(
-                            "type_text",
-                            json!({"text": run, "literal": true}),
-                            to,
-                            &mut note,
-                        )
-                        .await?;
+                        terminal |= self
+                            .send(
+                                "type_text",
+                                json!({"text": run, "literal": true}),
+                                to,
+                                &mut note,
+                            )
+                            .await?;
                     }
                     return Ok(());
                 }
@@ -1016,7 +1029,17 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         {
                             req["delay_ms"] = MAC_TYPE_DELAY_MS.into();
                         }
-                        self.send("type_text", req, to, &mut note).await?;
+                        let mut said = None;
+                        terminal |= self.send("type_text", req, to, &mut said).await?;
+                        if let Some(n) = said.as_deref().filter(|n| n.contains(TERMINAL))
+                            && i + 1 < lines
+                        {
+                            return Err(format!(
+                                "the terminal did not confirm line {} of {lines}, so Return was not sent: {n}",
+                                i + 1
+                            ));
+                        }
+                        note = note.take().or(said);
                     }
                     return Ok(());
                 }
@@ -1053,6 +1076,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
         if let Some(note) = note {
             out["unverified"] = note.into();
+        }
+        if terminal {
+            out["terminal"] = true.into();
         }
         Ok(out.to_string())
     }
@@ -1098,7 +1124,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         req: Value,
         to: Option<(i64, i64)>,
         note: &mut Option<String>,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let mut req = match to {
             Some(to) => background(req, to),
             None => desktop(req),
@@ -1121,7 +1147,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if note.is_none() {
             *note = self.unverified(&out, to, tool == "type_text");
         }
-        Ok(())
+        Ok(out["content"].as_array().is_some_and(|c| {
+            c.iter()
+                .any(|t| t["text"].as_str().is_some_and(|t| t.contains(TERMINAL)))
+        }))
     }
 
     /// The driver's note on background input whose effect it could not confirm, with its escalation; for a window nobody sees, ours instead.
@@ -2674,6 +2703,8 @@ pub(crate) mod tests {
     use std::sync::atomic::Ordering;
     use std::sync::{Mutex, OnceLock};
 
+    use desk_core::text::clip;
+
     use super::*;
     use crate::model::{MAX_IDS, Tree, evict_ids, lookup};
 
@@ -2863,6 +2894,103 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(!err.contains("lines were typed"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_type_into_a_terminal_says_so_whether_or_not_the_driver_confirmed_it() {
+        let tty = "Sent (unverified) 1 char(s) via CGEvent (terminal emulator, 0ms delay).";
+        for (quiet, said, terminal) in [
+            ("a", tty, true),
+            ("-", tty, true),
+            ("a", "Posted via CGEvent.", false),
+            ("-", "Posted via CGEvent.", false),
+        ] {
+            let desk =
+                Desk::new(|| Ok(Apps), Tty(Arc::default(), quiet, said), Os::Mac).background(true);
+            let out = desk
+                .run("desk_type", json!({"text": "a", "window": "Doc"}))
+                .await
+                .unwrap();
+            let v: Value = serde_json::from_str(&out.text).unwrap();
+            assert_eq!(v["terminal"] == true, terminal, "{quiet} {said}: {v}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_line_a_terminal_did_not_confirm_gets_no_return_and_other_lines_do() {
+        let tty = "Sent (unverified) 1 char(s) via CGEvent (terminal emulator, 0ms delay).";
+        for (quiet, said, text, stopped, returns) in [
+            ("a", tty, "a\nb", Some("line 1 of 2"), 0),
+            ("b", tty, "a\nb\nc", Some("line 2 of 3"), 1),
+            ("b", tty, "a\nb", None, 1),
+            ("-", tty, "a\nb", None, 1),
+            ("a", "Posted via CGEvent.", "a\nb", None, 1),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(Apps), Tty(Arc::clone(&calls), quiet, said), Os::Mac)
+                .background(true);
+            let out = desk
+                .run("desk_type", json!({"text": text, "window": "Doc"}))
+                .await;
+            match stopped {
+                Some(line) => {
+                    let err = out.unwrap_err();
+                    assert!(
+                        err.contains(&format!(
+                            "the terminal did not confirm {line}, so Return was not sent: unverifiable: {tty}"
+                        )),
+                        "{err}"
+                    );
+                    assert_eq!(
+                        err.ends_with("; 1 of 3 lines were typed before it"),
+                        returns == 1,
+                        "{err}"
+                    );
+                }
+                None => {
+                    let note = note(out.unwrap());
+                    assert_eq!(note.is_empty(), quiet == "-", "{text} {quiet}: {note}");
+                }
+            }
+            assert_eq!(sent(&calls, "press_key").len(), returns, "{text} {quiet}");
+            assert_eq!(
+                sent(&calls, "type_text").len(),
+                returns + 1,
+                "{text} {quiet}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_text_read_keeps_its_head_or_with_tail_its_end_and_says_when_it_was_cut() {
+        let desk = Desk::new(
+            || Ok(Scrollback),
+            Stack(Arc::default(), Mutex::new(json!({}))),
+            Os::Mac,
+        );
+        let head = "a".repeat(READ_CHARS);
+        let end = format!("{}中🙂end", "a".repeat(READ_CHARS - 5));
+        let edge = "b".repeat(READ_CHARS);
+        for (id, tail, want, cut) in [
+            ("long", false, &head, true),
+            ("long", true, &end, true),
+            ("edge", true, &edge, false),
+            ("edge", false, &edge, false),
+        ] {
+            let out = desk
+                .run("desk_read", json!({"id": id, "text": true, "tail": tail}))
+                .await
+                .unwrap();
+            let v: Value = serde_json::from_str(&out.text).unwrap();
+            assert!(v["value"] == want.as_str(), "{id} {tail}");
+            assert_eq!(v.get("truncated").is_some(), cut, "{id} {tail}");
+            assert_eq!(v["truncated"] == true, cut, "{id} {tail}");
+        }
+        let err = desk
+            .run("desk_read", json!({"id": "long", "tail": true}))
+            .await
+            .unwrap_err();
+        assert_eq!(err, READ_TAIL);
     }
 
     #[tokio::test]
@@ -7070,6 +7198,29 @@ pub(crate) mod tests {
         json!({"bounds": {"x": x, "y": 100.0, "width": 400.0, "height": 300.0}})
     }
 
+    struct Tty(Arc<Mutex<Vec<(String, Value)>>>, &'static str, &'static str);
+
+    impl Input for Tty {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let quiet = args["text"] == self.1;
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 5, "window_id": 3, "layer": 0, "z_index": 1, "title": "Doc", "app_name": "TextEdit", "is_on_screen": true, "on_current_space": true, "space_ids": [8]}
+                ]}}),
+                "type_text" if quiet => json!({
+                    "content": [{"type": "text", "text": self.2}],
+                    "structuredContent": {"effect": "unverifiable"}
+                }),
+                "type_text" => json!({
+                    "content": [{"type": "text", "text": if self.2.contains(TERMINAL) { "Typed 1 char(s) (terminal emulator)." } else { "Typed 1 char(s)." }}],
+                    "structuredContent": {"effect": "confirmed"}
+                }),
+                _ => json!({}),
+            })
+        }
+    }
+
     struct HiddenTwin(Arc<Mutex<Vec<(String, Value)>>>);
 
     impl Input for HiddenTwin {
@@ -7402,6 +7553,50 @@ pub(crate) mod tests {
 
         fn bundle_name(&mut self, app: &str) -> Result<Option<String>, String> {
             Ok((app == "Chrome").then(|| "Google Chrome".to_owned()))
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct Scrollback;
+
+    impl Access for Scrollback {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            Ok(Vec::new())
+        }
+
+        fn tree(&mut self, _: &Frame, _: Extras) -> Result<Tree, String> {
+            Err("no tree".into())
+        }
+
+        fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String> {
+            Ok(Node {
+                id: id.into(),
+                role: "document",
+                value: Some(clip(
+                    match id {
+                        "long" => format!("{}中🙂end", "a".repeat(READ_CHARS)),
+                        _ => "b".repeat(READ_CHARS),
+                    },
+                    chars,
+                    extras.tail,
+                )),
+                ..Node::default()
+            })
         }
 
         fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {

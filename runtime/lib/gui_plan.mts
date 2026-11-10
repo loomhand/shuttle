@@ -40,7 +40,7 @@ type Rec = {
 }
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
-type Text = { value?: string; field: boolean }
+type Text = { value?: string; field: boolean; cut?: boolean }
 type Bare = Omit<Step, 'recorded' | 'fp' | 'blank'>
 type Escalation = Seen & { reason: string; step?: number; plan_step?: Bare }
 type Grounding = { what: string; ok: boolean; check: string; p?: number; p_zoom?: number | null; p_full?: number | null; why?: string; cover?: string }
@@ -93,6 +93,8 @@ const PAGE_MS = 10_000
 const ON_PAGE_MS = 3000
 const DOM_READS = 60
 const READS_AT_ONCE = 4
+const BASE_SETTLE = 300
+const VALUE_CHARS = 200
 const INERT_KEY = /^shift\+[^+]$/i
 const ARROW_KEY = /^(shift\+)?(arrow)?(up|down|left|right)$/i
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
@@ -456,7 +458,7 @@ function traced(i: number, rec: Rec, s: Step, escalated: boolean): Trace {
   }
 }
 
-function heard(r: desk.Sent, rec: Rec) { if (BG && r.unverified && !rec.unverified) rec.unverified = r.unverified }
+function heard(r: desk.Sent, rec: Rec) { if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = r.unverified }
 async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
   let ws = seed ?? await desk.windows()
   for (const end = Date.now() + ms; !ok(ws) && Date.now() < end;) ws = (await desk.wait(ws, end - Date.now())).windows
@@ -1060,11 +1062,42 @@ async function texts(w: Win): Promise<Map<string, Text> | null> {
     const slot = pool(READS_AT_ONCE)
     const all = await Promise.all(parse(await snapOf(w)).map(async (n): Promise<[string, Text][]> => {
       const field = n.role === 'document' || FIELD_ROLES.has(n.role)
-      if (n.value) return [[n.id, { value: n.value, field }]]
-      return field ? [[n.id, { value: (await slot(() => desk.read(n.id, { text: true })).catch(() => null))?.value, field }]] : []
+      if (n.value && !(field && n.value.length >= VALUE_CHARS)) return [[n.id, { value: n.value, field }]]
+      if (!field) return []
+      const r = await slot(() => desk.read(n.id, { text: true, tail: true })).catch(() => null)
+      return [[n.id, { value: r?.value, field, cut: r?.truncated }]]
     }))
     return new Map(all.flat())
   } catch { return null }
+}
+function whole(t: Map<string, Text> | null) { return !!t && [...t.values()].every((x) => !x.cut) }
+async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | null, rec: Rec) {
+  const raw = text.split('\n'); const lines = raw.map((l) => l.replace(/\r$/, '')); const k = lines.findIndex(Boolean)
+  if (k < 0) { heard(await desk.typeText(text, at(w)), rec); return undefined }
+  let base = was
+  if (k > 0) { heard(await desk.typeText('\n'.repeat(k), at(w)), rec); base = await settled(w) }
+  const first = await desk.typeText(raw[k] ?? '', at(w)); heard(first, rec)
+  if (!first.terminal) {
+    if (k + 1 < raw.length) heard(await desk.typeText(`\n${raw.slice(k + 1).join('\n')}`, at(w)), rec)
+    return undefined
+  }
+  const n = lines.length - (text.endsWith('\n') ? 1 : 0); let quiet = false
+  for (const [i, line] of lines.entries()) {
+    if (i < k) continue
+    if (i > k) { heard(await desk.key('Return', at(w)), rec); if (!line) continue; base = await settled(w) }
+    const r = i > k ? await desk.typeText(raw[i] ?? '', at(w)) : first
+    if (i > k) heard(r, rec)
+    if (!r.unverified?.includes(TERMINAL)) continue
+    const now = await texts(w); const shown = shows(base, now, line)
+    if (!shown && !unchanged(base, now)) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing line ${i + 1} of ${n}${i > 1 ? `, after the ${i} lines before it and their Returns were sent` : i ? ', after the line before it and its Return were sent' : ''}: ${r.unverified}`, await seen())
+    quiet ||= !shown
+  }
+  return quiet
+}
+async function settled(w: Win) {
+  let a = await texts(w)
+  for (const end = Date.now() + BASE_SETTLE; Date.now() < end;) { const b = await texts(w); if (unchanged(a, b)) return b; a = b }
+  return a
 }
 function unchanged(before: Map<string, Text> | null, after: Map<string, Text> | null) {
   if (!before || !after || before.size !== after.size) return false
@@ -1202,15 +1235,17 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field in a plan that continues the flow from this step, which saves the fix into the flow`, await seen())
     // GTK preselects a file name only up to its last dot
     if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine(w)
-    heard(await desk.typeText(sub ? s.type.slice(0, -1) : s.type, at(w)), rec)
+    const text = sub ? s.type.slice(0, -1) : s.type; let quiet: boolean | undefined
+    if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(await desk.typeText(text, at(w)), rec)
     tick('act', t0)
-    if (BG && rec.unverified && w && !sub) {
+    if (BG && rec.unverified && w && !sub && quiet !== undefined) rec.confirmed = !quiet
+    else if (BG && rec.unverified && w && !sub) {
       const now = await texts(w); const shown = shows(was, now, s.type); const tty = rec.unverified.includes(TERMINAL)
-      if (AUTO && !tty && !secure(s) && !shown && unchanged(was, now) && !taken(await desk.windows())) {
+      if (AUTO && !tty && !secure(s) && !shown && unchanged(was, now) && whole(was) && whole(now) && !taken(await desk.windows())) {
         await desk.focus(w.title, w.pid)
         await desk.typeText(s.type, FG)
         rec.how = 'foreground'; rec.unverified = undefined; fronted = true; BG = false
-      } else if (!shown && !tty) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
+      } else if (!shown && !(tty && unchanged(was, now))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
       rec.confirmed = shown || !tty
     }
     const blank = recording && first && !chooser && w ? await typedInto(w, s.type) : null
