@@ -231,21 +231,27 @@ test('a password auto cannot see in its field is never typed again in the foregr
 })
 
 test('typing a terminal does not show is never typed again in the foreground, and the plan goes on with the step unverified', async (t) => {
-  const note = 'unverifiable: Sent (unverified) 3 char(s) via CGEvent (terminal emulator, 0ms delay). — driver could not confirm the text landed; verify via screenshot, and re-call with delivery_mode:"foreground" if it didn\'t.'
-  const term: W = { id: 't', title: 'Terminal', role: 'window', pid: 7, active: false, app: 'Terminal' }
-  const calls: Call[] = []
-  await daemon(t, (c) => {
-    calls.push(c)
-    if (c.tool === 'desk_windows') return JSON.stringify([user(), term])
-    if (c.tool === 'desk_snapshot') return JSON.stringify({ window: term, nodes: [{ ref: 0, id: 'd', parent: -1, depth: 0, role: 'document', name: '', states: [], value: '$ read -s' }], truncated: false })
-    if (c.tool === 'desk_type') return JSON.stringify({ ok: true, chars: 3, unverified: note })
-    return '{"ok":true}'
-  })
-  const r = await auto({ steps: [{ app: 'Terminal' }, { type: 'abc' }, { key: 'Return' }] })
-  assert.equal(calls.filter((c) => c.tool === 'desk_type').length, 1, tools(calls).join('\n'))
-  assert.ok(!calls.some((c) => c.tool === 'desk_focus'))
-  assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'])
-  assert.deepEqual(r.unverified, [{ step: 1, note }])
-  assert.equal(r.escalate?.step, 1)
-  assert.match(String(r.escalate?.reason), /not confirmed/)
+  const after = ' — driver could not confirm the text landed; verify via screenshot, and re-call with delivery_mode:"foreground" if it didn\'t.'
+  const terminals = [
+    { app: 'Terminal', note: `unverifiable: Sent (unverified) 3 char(s) via CGEvent (terminal emulator, 0ms delay).${after}` },
+    { app: 'kitty', note: `unverifiable: 📨 Sent (unverified) 3 char(s) via AXValue (terminal emulator, kitty commits it to the terminal as typed text).${after}` },
+  ]
+  for (const { app, note } of terminals) {
+    const term: W = { id: 't', title: app, role: 'window', pid: 7, active: false, app }
+    const calls: Call[] = []
+    await daemon(t, (c) => {
+      calls.push(c)
+      if (c.tool === 'desk_windows') return JSON.stringify([user(), term])
+      if (c.tool === 'desk_snapshot') return JSON.stringify({ window: term, nodes: [{ ref: 0, id: 'd', parent: -1, depth: 0, role: 'document', name: '', states: [], value: '$ read -s' }], truncated: false })
+      if (c.tool === 'desk_type') return JSON.stringify({ ok: true, chars: 3, unverified: note })
+      return '{"ok":true}'
+    })
+    const r = await auto({ steps: [{ app }, { type: 'abc' }, { key: 'Return' }] })
+    assert.equal(calls.filter((c) => c.tool === 'desk_type').length, 1, `${app}\n${tools(calls).join('\n')}`)
+    assert.ok(!calls.some((c) => c.tool === 'desk_focus'), app)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'])
+    assert.deepEqual(r.unverified, [{ step: 1, note }])
+    assert.equal(r.escalate?.step, 1)
+    assert.match(String(r.escalate?.reason), /not confirmed/)
+  }
 })
