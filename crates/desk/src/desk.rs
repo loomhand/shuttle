@@ -139,6 +139,7 @@ const FOCUS_UNREAD: &str = "type refused, nothing was typed: the keyboard focus 
 
 const LOCKED_TOOLS: [&str; 2] = ["type_text", "press_key"];
 const LOCKED_INPUT_UNSUPPORTED: &str = "nothing was sent: [desk] locked_input is on, but this cua-driver does not take locked_input; update shuttle, whose bundled driver does";
+const LOCKED_SCREEN: &str = "shuttle cannot reach the lock screen: [desk] locked_input lets background typing and single keys reach the window that had the focus before the lock, never the lock screen's password field; unlock the Mac at the machine or over Screen Sharing, then retry";
 const FOCUS_UNKNOWN: &str = "focus unverified: accessibility shows no focused text field in the app, so which field took the text is unknown: confirm it in a screenshot before you press Return or Send";
 
 tokio::task_local! {
@@ -257,10 +258,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
         let scale = Cell::new(None);
         if self.auto && !foreground && auto::VERBS.contains(&tool) {
-            return SCALE.scope(scale, self.auto_run(tool, args, turn)).await;
+            return SCALE
+                .scope(scale, self.auto_run(tool, args, turn))
+                .await
+                .map_err(at_lock);
         }
         let run = FOREGROUND.scope(foreground, self.dispatch(tool, args, turn));
-        SCALE.scope(scale, run).await
+        SCALE.scope(scale, run).await.map_err(at_lock)
     }
 
     pub fn release(&self, holder: &str) {
@@ -2555,6 +2559,14 @@ fn typed_tail(text: &str) -> Option<String> {
     (n > 0).then(|| line.chars().skip(n.saturating_sub(TYPE_TAIL)).collect())
 }
 
+fn at_lock(e: String) -> String {
+    if e.contains("the screen is locked") {
+        format!("{e}; {LOCKED_SCREEN}")
+    } else {
+        e
+    }
+}
+
 fn key_request(mut keys: Vec<String>) -> (&'static str, Value) {
     let mut req = json!({});
     if keys.len() == 1
@@ -3814,6 +3826,18 @@ pub(crate) mod tests {
                 .as_str()
                 .is_some_and(|n| n.ends_with(FOCUS_UNKNOWN)),
             "{typed}"
+        );
+    }
+
+    #[test]
+    fn a_lock_screen_refusal_says_shuttle_cannot_reach_the_password_field() {
+        let refused = "click: window 7 cannot receive input: the screen is locked or showing the screen saver";
+        let said = at_lock(refused.to_owned());
+        assert!(said.starts_with(refused), "{said}");
+        assert!(said.ends_with(LOCKED_SCREEN), "{said}");
+        assert_eq!(
+            at_lock("click: no such window".to_owned()),
+            "click: no such window"
         );
     }
 

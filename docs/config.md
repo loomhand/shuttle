@@ -104,6 +104,7 @@ input = "foreground"                  # or "background", "auto"
 
 `locked_input = true`, off by default, lets background `type` and a single-key `key` on macOS reach their window while the screen is locked; without it the driver refuses them there, as it refuses every other action. The lock hides every window from accessibility, so:
 - place the keyboard focus before you lock: the keys go to the app's key window as it was then, and shuttle can neither read nor move the focus;
+- it never reaches the lock screen itself: shuttle cannot click, focus or type into the macOS password field, and a refused action says so; unlock the Mac at the machine or over Screen Sharing, then retry;
 - only typing and single keys work: key combinations, clicks, presses, menus and every other action still refuse, and `gui_plan` cannot read the window;
 - the result is unverified: confirm it in a screenshot of the window;
 - a window screenshot works only while the display is on. The bundled driver keeps the display on for 10 minutes after each call, so an agent that keeps working keeps it on; after a longer pause the display turns off within about 30 seconds, and window screenshots fail until the Mac is woken.
