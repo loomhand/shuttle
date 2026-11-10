@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { test } from 'node:test'
 
 import { daemon, root } from './daemon.mts'
@@ -97,6 +98,30 @@ test('a press the desk reports as not done fails the step', async (t) => {
   const r = await main({ steps: [{ click: 'Apply' }] })
   assert.equal(r.ok, false, JSON.stringify(r))
   assert.match(r.escalate?.reason ?? '', /Apply/)
+})
+
+test('a step with a non-string value on a text key is refused by key and makes no desk call', async (t) => {
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => { calls.push(tool); return '[]' })
+  for (const [step, key] of [[{ wait: 2 }, 'wait'], [{ type: 5 }, 'type'], [{ type: null }, 'type'], [{ click: ['OK'] }, 'click'], [{ app: 'Notes', window: 3 }, 'window']] as const) {
+    const r = await main({ steps: [{ app: 'Notes' }, step as never] })
+    assert.equal(r.ok, false, JSON.stringify(step))
+    assert.equal(r.done, 0, JSON.stringify(step))
+    assert.equal(r.escalate?.step, 1, JSON.stringify(step))
+    assert.equal(r.escalate?.reason, `step 1: ${key} takes a string; nothing ran`, JSON.stringify(step))
+  }
+  mkdirSync(String(process.env.SHUTTLE_FLOWS), { recursive: true })
+  writeFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, JSON.stringify({ at: Date.now(), window: null, pid: null, params: {}, steps: [{ app: 'Notes' }, { type: 'x' }, { wait: 'Doc' }], dirty: false, usage: {} }))
+  const saved = await main({ steps: [{ app: 'Notes' }, { type: 'x' }, { wait: 2 as never }], save: 'n' })
+  assert.equal(saved.escalate?.reason, 'step 2: wait takes a string; nothing ran')
+  assert.equal(saved.done, 0)
+  assert.deepEqual(calls, [])
+})
+
+test('a null on an optional text key is taken as absent', async (t) => {
+  await daemon(t, () => '[]')
+  const r = await main({ steps: [{ verify: 'Wrap lines', window: null as never }] })
+  assert.doesNotMatch(String(r.escalate?.reason), /takes a string|needs exactly one op/)
 })
 
 test('a step whose only op is empty is malformed and makes no desk call', async (t) => {
