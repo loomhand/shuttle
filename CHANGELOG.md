@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.47 - 2026-11-10
 
 - **`gui_plan`: a terminal confirms typed text only with its spaces and case.** The read-back that confirms a background type into a terminal dropped whitespace and case, so a terminal that showed `echohello` or `echo HELLO` confirmed `echo hello`, and the plan sent its Return. It now drops only the line breaks a terminal wraps into a long line.
+- **Validation:** runtime unit tests and CI on every platform; no new hardware run.
 
 ## 0.1.46 - 2026-11-10
 
