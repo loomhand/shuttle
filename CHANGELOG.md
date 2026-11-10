@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **`gui_plan`: a terminal confirms typed text only with its spaces and case.** The read-back that confirms a background type into a terminal dropped whitespace and case, so a terminal that showed `echohello` or `echo HELLO` confirmed `echo hello`, and the plan sent its Return. It now drops only the line breaks a terminal wraps into a long line.
+
 ## 0.1.46 - 2026-11-10
 
 - **`gui_plan`: a terminal that shows part of a typed text stops the plan.** Since 0.1.45, a background type into a terminal that the driver could not confirm let the plan go on, under `background` as under `auto` input, even when the terminal's screen showed part of the text, so a following `{key: "Return"}` ran a partial command line. The plan now goes on, with the step unverified, only when the terminal's screen did not change, as at a `read -s` prompt; a screen that changed without showing the whole text stops the plan with "did not show", and a screen that shows the whole text confirms the step. The driver recognizes Terminal, iTerm2, Ghostty, WezTerm, kitty, Alacritty, Warp, Hyper and Zed's embedded terminal; others, such as VS Code's integrated terminal, Tabby and Rio, are not recognized, and a type into them is handled as in any other window, so under `auto` text they did not show can be typed once more in the foreground.

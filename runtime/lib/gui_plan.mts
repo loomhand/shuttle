@@ -1088,7 +1088,7 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
     const r = i > k ? await desk.typeText(raw[i] ?? '', at(w)) : first
     if (i > k) heard(r, rec)
     if (!r.unverified?.includes(TERMINAL)) continue
-    const now = await texts(w); const shown = shows(base, now, line)
+    const now = await texts(w); const shown = shows(base, now, line, true)
     if (!shown && !unchanged(base, now)) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing line ${i + 1} of ${n}${i > 1 ? `, after the ${i} lines before it and their Returns were sent` : i ? ', after the line before it and its Return were sent' : ''}: ${r.unverified}`, await seen())
     quiet ||= !shown
   }
@@ -1104,8 +1104,8 @@ function unchanged(before: Map<string, Text> | null, after: Map<string, Text> | 
   const all = [...after]
   return all.some(([, t]) => t.field) && all.every(([id, t]) => t.value !== undefined && before.get(id)?.value === t.value)
 }
-function shows(before: Map<string, Text> | null, after: Map<string, Text> | null, text: string) {
-  const squash = (v: string) => v.replace(/\s+/g, '').toLowerCase()
+function shows(before: Map<string, Text> | null, after: Map<string, Text> | null, text: string, terminal = false) {
+  const squash = (v: string) => terminal ? v.replace(/[\r\n]/g, '') : v.replace(/\s+/g, '').toLowerCase()
   const want = squash(text)
   const count = (v: string | undefined) => want ? squash(v ?? '').split(want).length - 1 : 0
   return !!before && !!after && [...after].some(([id, t]) => count(t.value) > count(before.get(id)?.value))
@@ -1240,7 +1240,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     tick('act', t0)
     if (BG && rec.unverified && w && !sub && quiet !== undefined) rec.confirmed = !quiet
     else if (BG && rec.unverified && w && !sub) {
-      const now = await texts(w); const shown = shows(was, now, s.type); const tty = rec.unverified.includes(TERMINAL)
+      const now = await texts(w); const tty = rec.unverified.includes(TERMINAL); const shown = shows(was, now, s.type, tty)
       if (AUTO && !tty && !secure(s) && !shown && unchanged(was, now) && whole(was) && whole(now) && !taken(await desk.windows())) {
         await desk.focus(w.title, w.pid)
         await desk.typeText(s.type, FG)
