@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **macOS: text typed into a terminal that does not echo it goes in once.** The bundled driver sends text in batches and read the terminal's screen back to count what landed. A prompt without echo, such as `read -s` for a password, leaves the screen unchanged, so the driver counted nothing delivered, typed the whole text again about 500 ms later and answered that 0 characters landed, to be retried from the start. A background `read -s` given "abc" read 6 characters; it now reads 3, and the call answers `unverified` instead. The driver now retypes only the rest of a text that a native field took part of, never into a terminal, and a terminal's screen counts only when it shows the whole text. Foreground typing, TextEdit and a secure password field type as before.
+- **Bundled:** cua-driver v0.45.1-loomhand.2 on every platform (was v0.45.1-loomhand.1).
+
 ## 0.1.44 - 2026-11-10
 
 - **`gui_plan` reads one window list fewer per settling step.** After a click, menu or close step waits for the window to settle, the next step and the end of the plan take the list that wait read, when it is under 25 ms old, shows a front window and no other call came after it; a macOS list costs 11-15 ms.
