@@ -156,6 +156,12 @@ async function perform(p: Params): Promise<Result> {
   if (!plan.length) return { ok: false, error: 'pass steps, flow or find' }
   recording = !flow && !!plan[0]?.app && !p.start
   lastSeen = ''
+  const trace: Trace[] = []; const log: Record<string, unknown>[] = []
+  const bad = plan.findIndex((s) => ops(s).length !== 1)
+  if (bad >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: bad, plan_step: plan[bad] && unrecorded(plan[bad]), reason: `step ${bad} needs exactly one op of ${OPS.join(', ')}; nothing ran` } }
+  const loose = plan.findIndex((s) => untext(s))
+  const looseStep = plan[loose]
+  if (looseStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: loose, plan_step: unrecorded(looseStep), reason: `step ${loose}: ${untext(looseStep)} takes a string; nothing ran` } }
   if (p.save && !flow && !p.start && !idempotent(plan)) {
     const c = pending()
     const was = c?.steps.filter((s) => !s.close) ?? []; const now = plan.filter((s) => !s.close)
@@ -164,12 +170,6 @@ async function perform(p: Params): Promise<Result> {
       if (r.ok) return { ...r, ran: false, why: 'these steps passed in the last plan, so they were saved without running them again; call without save to run them' }
     }
   }
-  const trace: Trace[] = []; const log: Record<string, unknown>[] = []
-  const bad = plan.findIndex((s) => ops(s).length !== 1)
-  if (bad >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: bad, plan_step: plan[bad] && unrecorded(plan[bad]), reason: `step ${bad} needs exactly one op of ${OPS.join(', ')}; nothing ran` } }
-  const loose = plan.findIndex((s) => TEXTS.some((k) => s[k] !== undefined && typeof s[k] !== 'string'))
-  const looseStep = plan[loose]
-  if (looseStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: loose, plan_step: unrecorded(looseStep), reason: `step ${loose}: ${TEXTS.find((k) => looseStep[k] !== undefined && typeof looseStep[k] !== 'string')} takes a string; nothing ran` } }
   const unfilled = (s: Step) => Object.values(s).flatMap((v) => typeof v === 'string' ? [...v.matchAll(/\{\{(\w+)(?::base)?\}\}/g)].map((x) => x[1] ?? '') : []).find((n) => params[n] === undefined)
   const gap = plan.findIndex((s, i) => i >= (p.start ?? 0) && unfilled(s))
   const gapStep = plan[gap]
@@ -1517,6 +1517,8 @@ function fill(s: Step, p: Record<string, string>): Step {
   if (!pinned(s)) { delete out.fp; delete out.seen }
   return out
 }
+
+function untext(s: Step) { return TEXTS.find((k) => s[k] !== undefined && typeof s[k] !== 'string' && (s[k] !== null || k === 'type')) }
 
 function pinned(s: Step) { return !PINNED.some((k) => s[k]?.includes('{{')) }
 
