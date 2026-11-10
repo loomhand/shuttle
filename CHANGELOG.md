@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **macOS: an action refused at the lock screen says that shuttle cannot unlock the Mac.** The driver's "the screen is locked" refusal now adds that `[desk] locked_input` reaches only the window that had the focus before the lock, never the lock screen's password field, and to unlock the Mac at the machine or over Screen Sharing; docs/config.md says the same.
+- **macOS: an action refused at the lock screen says that shuttle cannot unlock the Mac.** The driver's "the screen is locked" refusal now adds that `[desk] locked_input` reaches only the window that had the focus before the lock, never the lock screen's password field, and to unlock over Screen Sharing or at the machine; docs/config.md says the same.
 - **`gui_plan`: a step with a non-string value on a text key is refused before anything runs.** A step such as `{"wait": 2}` threw `TypeError: s[k]?.includes is not a function`; the plan now returns an escalation that names the step and the key, as for a step with two ops. A `null` on an optional text key counts as absent, as before.
 - **`gui_plan`: a terminal confirms a typed line that ends in a space or a tab.** Since 0.1.47 a terminal's read-back has to show the typed text exactly, so a line typed as `ls ` that the terminal showed as `ls`, or a trailing tab it expanded, stopped the plan with "did not show" before its Return. The trailing space or tab is no longer required to show.
 

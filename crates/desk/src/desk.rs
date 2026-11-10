@@ -139,7 +139,7 @@ const FOCUS_UNREAD: &str = "type refused, nothing was typed: the keyboard focus 
 
 const LOCKED_TOOLS: [&str; 2] = ["type_text", "press_key"];
 const LOCKED_INPUT_UNSUPPORTED: &str = "nothing was sent: [desk] locked_input is on, but this cua-driver does not take locked_input; update shuttle, whose bundled driver does";
-const LOCKED_SCREEN: &str = "shuttle cannot reach the lock screen: [desk] locked_input lets background typing and single keys reach the window that had the focus before the lock, never the lock screen's password field; unlock the Mac at the machine or over Screen Sharing, then retry";
+const LOCKED_SCREEN: &str = "shuttle cannot reach the lock screen: [desk] locked_input reaches only the window that had the focus before the lock, never the lock screen's password field; unlock over Screen Sharing or at the machine";
 const FOCUS_UNKNOWN: &str = "focus unverified: accessibility shows no focused text field in the app, so which field took the text is unknown: confirm it in a screenshot before you press Return or Send";
 
 tokio::task_local! {
@@ -261,10 +261,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return SCALE
                 .scope(scale, self.auto_run(tool, args, turn))
                 .await
-                .map_err(at_lock);
+                .map_err(|e| at_lock(self.os, e));
         }
         let run = FOREGROUND.scope(foreground, self.dispatch(tool, args, turn));
-        SCALE.scope(scale, run).await.map_err(at_lock)
+        SCALE
+            .scope(scale, run)
+            .await
+            .map_err(|e| at_lock(self.os, e))
     }
 
     pub fn release(&self, holder: &str) {
@@ -2559,8 +2562,8 @@ fn typed_tail(text: &str) -> Option<String> {
     (n > 0).then(|| line.chars().skip(n.saturating_sub(TYPE_TAIL)).collect())
 }
 
-fn at_lock(e: String) -> String {
-    if e.contains("the screen is locked") {
+fn at_lock(os: Os, e: String) -> String {
+    if os == Os::Mac && e.contains("cannot receive input: the screen is locked") {
         format!("{e}; {LOCKED_SCREEN}")
     } else {
         e
@@ -3829,16 +3832,31 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
-    fn a_lock_screen_refusal_says_shuttle_cannot_reach_the_password_field() {
-        let refused = "click: window 7 cannot receive input: the screen is locked or showing the screen saver";
-        let said = at_lock(refused.to_owned());
-        assert!(said.starts_with(refused), "{said}");
-        assert!(said.ends_with(LOCKED_SCREEN), "{said}");
-        assert_eq!(
-            at_lock("click: no such window".to_owned()),
-            "click: no such window"
-        );
+    #[tokio::test]
+    async fn a_lock_screen_refusal_says_once_that_shuttle_cannot_reach_the_password_field() {
+        for (os, auto, notes) in [
+            (Os::Mac, false, 1),
+            (Os::Mac, true, 1),
+            (Os::Linux, false, 0),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(Apps), Locked(Behind(Arc::clone(&calls))), os)
+                .background(true)
+                .auto(auto);
+            let err = desk
+                .run(
+                    "desk_key",
+                    json!({"keys": "return", "window": "Untitled - Notepad"}),
+                )
+                .await
+                .unwrap_err();
+            assert!(err.contains(LOCK_HINT), "{os:?} {auto} {err}");
+            assert_eq!(
+                err.matches(LOCKED_SCREEN).count(),
+                notes,
+                "{os:?} {auto} {err}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -6989,6 +7007,21 @@ pub(crate) mod tests {
                 "press_key" => json!({"structuredContent": {"effect": "confirmed"}}),
                 _ => json!({}),
             })
+        }
+    }
+
+    const LOCK_HINT: &str = "the screen is locked or showing the screen saver, which also happens when the screen saver starts or the display sleeps with no password required. While it lasts, macOS hides every app's windows from accessibility and sends input to the lock screen, so Cua Driver refuses instead of acting; screenshots still work. Wake and unlock the Mac, then retry.";
+
+    struct Locked(Behind);
+
+    impl Input for Locked {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            if tool == "press_key" {
+                return Err(format!(
+                    "{tool}: window 1 cannot receive input: {LOCK_HINT}"
+                ));
+            }
+            self.0.call(tool, args).await
         }
     }
 
