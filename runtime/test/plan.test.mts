@@ -99,6 +99,18 @@ test('a press the desk reports as not done fails the step', async (t) => {
   assert.match(r.escalate?.reason ?? '', /Apply/)
 })
 
+test('a step whose op is not a string is refused by key and makes no desk call', async (t) => {
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => { calls.push(tool); return '[]' })
+  for (const [step, key] of [[{ wait: 2 }, 'wait'], [{ type: 5 }, 'type'], [{ click: ['OK'] }, 'click'], [{ app: 'Notes', window: 3 }, 'window']] as const) {
+    const r = await main({ steps: [{ app: 'Notes' }, step as never] })
+    assert.equal(r.ok, false, JSON.stringify(step))
+    assert.equal(r.escalate?.step, 1, JSON.stringify(step))
+    assert.equal(r.escalate?.reason, `step 1: ${key} takes a string; nothing ran`, JSON.stringify(step))
+  }
+  assert.deepEqual(calls, [])
+})
+
 test('a step whose only op is empty is malformed and makes no desk call', async (t) => {
   const calls: string[] = []
   await daemon(t, ({ tool }) => { calls.push(tool); return '[]' })

@@ -101,6 +101,7 @@ const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'tog
 const FILLER = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'and', 'or', 'by', 'from', 'into', 'this', 'that', 'its', 'it', 'is', 'button', 'link', 'tab', 'field', 'box', 'icon', 'toggle', 'dropdown', 'input', 'control', 'item', 'entry'])
 const OPS = ['app', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'close'] as const
 const PINNED = ['menu', 'click', 'check', 'set', 'verify', 'wait', 'window'] as const
+const TEXTS = ['app', 'title', 'menu', 'click', 'check', 'set', 'type', 'key', 'wait', 'expect', 'verify', 'window'] as const
 const TEXT_CUT = '\n(the outline shows only the start of the window: desk snapshot or find reads the rest)'
 const TREE_CUT = '\n(this accessibility read stopped before the end of the window: the elements past the cut are missing here; narrowing the view, e.g. by scrolling or opening a pane, brings them in)'
 const SHELL_TARGET = /\b(dock|panel|taskbar|desktop)\b/i
@@ -166,6 +167,9 @@ async function perform(p: Params): Promise<Result> {
   const trace: Trace[] = []; const log: Record<string, unknown>[] = []
   const bad = plan.findIndex((s) => ops(s).length !== 1)
   if (bad >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: bad, plan_step: plan[bad] && unrecorded(plan[bad]), reason: `step ${bad} needs exactly one op of ${OPS.join(', ')}; nothing ran` } }
+  const loose = plan.findIndex((s) => TEXTS.some((k) => s[k] !== undefined && typeof s[k] !== 'string'))
+  const looseStep = plan[loose]
+  if (looseStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: loose, plan_step: unrecorded(looseStep), reason: `step ${loose}: ${TEXTS.find((k) => looseStep[k] !== undefined && typeof looseStep[k] !== 'string')} takes a string; nothing ran` } }
   const unfilled = (s: Step) => Object.values(s).flatMap((v) => typeof v === 'string' ? [...v.matchAll(/\{\{(\w+)(?::base)?\}\}/g)].map((x) => x[1] ?? '') : []).find((n) => params[n] === undefined)
   const gap = plan.findIndex((s, i) => i >= (p.start ?? 0) && unfilled(s))
   const gapStep = plan[gap]
