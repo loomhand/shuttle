@@ -286,6 +286,16 @@ test('typing an echoing terminal shows is confirmed', async (t) => {
   }
 })
 
+test('terminal confirmation takes a line break the terminal wrapped into the text', async (t) => {
+  for (const [mode, plan] of modes) {
+    for (const type of ['echo hello', 'echo hello\n']) {
+      const { r, calls } = await terminal(t, plan, (screen, text) => text === 'echo hello' ? `${screen}echo hel\nlo` : screen + text, { type })
+      assert.doesNotMatch(String(r.escalate?.reason), /did not show/, `${mode} ${type}`)
+      assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'], `${mode} ${type}`)
+    }
+  }
+})
+
 test('terminal confirmation preserves spaces and case before sending Return', async (t) => {
   for (const [mode, plan] of modes) {
     for (const type of ['echo hello', 'echo hello\n']) {

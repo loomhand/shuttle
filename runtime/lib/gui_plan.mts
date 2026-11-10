@@ -1105,7 +1105,7 @@ function unchanged(before: Map<string, Text> | null, after: Map<string, Text> | 
   return all.some(([, t]) => t.field) && all.every(([id, t]) => t.value !== undefined && before.get(id)?.value === t.value)
 }
 function shows(before: Map<string, Text> | null, after: Map<string, Text> | null, text: string, terminal = false) {
-  const squash = (v: string) => terminal ? v : v.replace(/\s+/g, '').toLowerCase()
+  const squash = (v: string) => terminal ? v.replace(/[\r\n]/g, '') : v.replace(/\s+/g, '').toLowerCase()
   const want = squash(text)
   const count = (v: string | undefined) => want ? squash(v ?? '').split(want).length - 1 : 0
   return !!before && !!after && [...after].some(([id, t]) => count(t.value) > count(before.get(id)?.value))
