@@ -286,6 +286,20 @@ test('typing an echoing terminal shows is confirmed', async (t) => {
   }
 })
 
+test('terminal confirmation preserves spaces and case before sending Return', async (t) => {
+  for (const [mode, plan] of modes) {
+    for (const type of ['echo hello', 'echo hello\n']) {
+      for (const observed of ['echohello', 'echo HELLO']) {
+        const { r, calls } = await terminal(t, plan, (screen) => screen + observed, { type })
+        assert.equal(r.ok, false, `${mode} ${type} ${observed}`)
+        assert.match(String(r.escalate?.reason), /did not show/)
+        assert.equal(calls.filter((c) => c.tool === 'desk_type').length, 1)
+        assert.ok(!calls.some((c) => c.tool === 'desk_key' || c.tool === 'desk_focus'), tools(calls).join('\n'))
+      }
+    }
+  }
+})
+
 test('typing a long terminal screen shows in part at its end stops the plan before its next key', async (t) => {
   for (const [mode, plan] of modes) {
     const { r, calls } = await terminal(t, plan, (screen, text) => screen + text.slice(0, 2), { screen: LONG })
