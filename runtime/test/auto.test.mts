@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { test, type TestContext } from 'node:test'
 
 import { daemon, notepad, user } from './daemon.mts'
@@ -20,6 +20,7 @@ const load = async (input: string): Promise<Lib['main']> => {
 }
 const background = await load('background')
 const auto = await load('auto')
+const foreground = await load('foreground')
 const modes = [['background', background], ['auto', auto]] as const
 
 function desktop(typed: (before: string, text: string) => string, note: boolean) {
@@ -48,13 +49,13 @@ async function run(t: TestContext, plan: Plan, typed: (before: string, text: str
   return { r, calls: d.calls, doc: d.doc() }
 }
 
-async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', extra = {} as Record<string, unknown> } = {}) {
-  const term: W = { id: 't', title: 'Terminal', role: 'window', pid: 7, active: false, app: 'Terminal' }
+async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', extra = {} as Record<string, unknown>, front = false } = {}) {
+  const term: W = { id: 't', title: 'Terminal', role: 'window', pid: 7, active: front, app: 'Terminal' }
   const node = () => ({ ref: 0, id: 'd', parent: -1, depth: 0, role: 'document', name: '', states: [], value: screen })
   const calls: Call[] = []; let late = ''
   await daemon(t, (c) => {
     calls.push(c)
-    if (c.tool === 'desk_windows') return JSON.stringify([user(), term])
+    if (c.tool === 'desk_windows') return JSON.stringify(front ? [{ ...user(), active: false }, term] : [user(), term])
     if (c.tool === 'desk_snapshot') { const out = JSON.stringify({ window: term, nodes: [{ ...node(), value: screen.slice(0, 200) }], truncated: false }); screen += late; late = ''; return out }
     if (c.tool === 'desk_read') return JSON.stringify({ ...node(), value: c.args.tail ? screen.slice(-READ) : screen.slice(0, READ), ...(screen.length > READ ? { truncated: true } : {}) })
     if (c.tool === 'desk_key') { screen += '\n$ '; late = prompt; return JSON.stringify({ ok: true, ...(key ? { unverified: key } : {}) }) }
@@ -308,6 +309,21 @@ test('a secret step never shows its text, and a password the terminal echoed sto
   }
 })
 
+test('a foreground secret step checks the terminal before its Return', async (t) => {
+  const keys = (calls: Call[]) => calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys)
+  const typed = (calls: Call[]) => calls.filter((c) => c.tool === 'desk_type').map((c) => c.args.text)
+  const up = await terminal(t, foreground, (screen) => screen, { type: 'example-pass\n', extra: { secret: true }, front: true })
+  assert.deepEqual(typed(up.calls), ['example-pass'], JSON.stringify(up.r))
+  assert.deepEqual(keys(up.calls), ['Return'], JSON.stringify(up.r))
+  for (const [shown, reason] of [[(screen: string, text: string) => screen + text, /^the password showed in "Terminal", so it was not submitted$/], [(screen: string) => `${screen}P: `, /^"Terminal" changed while the password was typed/]] as const) {
+    const { r, calls } = await terminal(t, foreground, shown, { type: 'example-pass\n', extra: { secret: true }, front: true })
+    assert.match(String(r.escalate?.reason), reason)
+    assert.deepEqual(keys(calls), [])
+    assert.deepEqual(typed(calls), ['example-pass'])
+    assert.ok(!JSON.stringify(r).includes('example-pass'), JSON.stringify(r))
+  }
+})
+
 test('a secret step that is not one password line, or whose secret is not a boolean, is refused', async (t) => {
   await daemon(t, () => '[]')
   for (const [step, why] of [
@@ -334,6 +350,9 @@ test('a secret step drops its intent wherever the step is shown or kept', async 
   assert.equal(kept.ok, true, JSON.stringify(kept))
   const chain = readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')
   assert.ok(chain.includes('"secret":true') && !chain.includes('example-pass'), chain)
+  const flows = readdirSync(process.env.SHUTTLE_FLOWS ?? '').filter((f) => f.endsWith('.json') && !f.startsWith('.'))
+  assert.ok(flows.length > 0, 'a passing plan saves its flow')
+  for (const f of flows) assert.ok(!readFileSync(`${process.env.SHUTTLE_FLOWS}/${f}`, 'utf8').includes('example-pass'), f)
   await daemon(t, () => '[]')
   const two = await auto({ steps: [{ app: 'Terminal' }, { type: 'example-pass', secret: true, intent: 'type "example-pass"', key: 'x' } as never] })
   assert.ok(!JSON.stringify(two).includes('example-pass'), JSON.stringify(two))

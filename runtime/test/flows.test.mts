@@ -149,7 +149,7 @@ test('saving a plan whose password step adds a Return runs it again', async (t) 
   const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: '', states: ['showing', 'focused', 'protected'] }
   const typed: unknown[] = []
   await daemon(t, ({ tool, args }) => {
-    if (tool === 'desk_type') typed.push(args.text)
+    if (tool === 'desk_type' || tool === 'desk_key') typed.push(args.text ?? args.keys)
     if (tool === 'desk_windows') return JSON.stringify([notepad])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field] })
     return '{"ok":true}'
@@ -159,7 +159,7 @@ test('saving a plan whose password step adds a Return runs it again', async (t) 
   typed.length = 0
   const saved = await main({ steps: [{ app: 'Notepad' }, { type: 'hunter7\n', focus: { secure: true } }], save: 'login7' })
   assert.notEqual(saved.ran, false, JSON.stringify(saved))
-  assert.deepEqual(typed, ['hunter7\n'])
+  assert.deepEqual(typed, ['hunter7', 'Return'])
 })
 
 test('find names the saved flow the model picks, and no flow under 0.6 or within 0.25 of the runner-up', async (t) => {
