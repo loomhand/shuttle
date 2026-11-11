@@ -62,7 +62,7 @@ async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text
     if (c.tool !== 'desk_type') return '{"ok":true}'
     const text = String(c.args.text)
     screen = typed(screen, text)
-    return JSON.stringify({ ok: true, chars: 3, terminal: true, ...(sure(text) ? {} : { unverified: TTY }) })
+    return JSON.stringify(front ? { ok: true, chars: 3 } : { ok: true, chars: 3, terminal: true, ...(sure(text) ? {} : { unverified: TTY }) })
   })
   const step = { type, ...extra }
   const steps = type.includes('\n') ? [{ app: 'Terminal' }, step] : [{ app: 'Terminal' }, step, { key: 'Return' }]
@@ -309,19 +309,20 @@ test('a secret step never shows its text, and a password the terminal echoed sto
   }
 })
 
-test('a foreground secret step checks the terminal before its Return', async (t) => {
+test('a foreground secret step reads the window back before its Return, as a foreground type reply names no terminal', async (t) => {
   const keys = (calls: Call[]) => calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys)
   const typed = (calls: Call[]) => calls.filter((c) => c.tool === 'desk_type').map((c) => c.args.text)
-  const up = await terminal(t, foreground, (screen) => screen, { type: 'example-pass\n', extra: { secret: true }, front: true })
-  assert.deepEqual(typed(up.calls), ['example-pass'], JSON.stringify(up.r))
-  assert.deepEqual(keys(up.calls), ['Return'], JSON.stringify(up.r))
-  for (const [shown, reason] of [[(screen: string, text: string) => screen + text, /^the password showed in "Terminal", so it was not submitted$/], [(screen: string) => `${screen}P: `, /^"Terminal" changed while the password was typed/]] as const) {
+  for (const shown of [(screen: string) => screen, (screen: string) => `${screen}P: `]) {
     const { r, calls } = await terminal(t, foreground, shown, { type: 'example-pass\n', extra: { secret: true }, front: true })
-    assert.match(String(r.escalate?.reason), reason)
-    assert.deepEqual(keys(calls), [])
+    assert.equal(r.ok, true, JSON.stringify(r))
     assert.deepEqual(typed(calls), ['example-pass'])
-    assert.ok(!JSON.stringify(r).includes('example-pass'), JSON.stringify(r))
+    assert.deepEqual(keys(calls), ['Return'])
   }
+  const { r, calls } = await terminal(t, foreground, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, front: true })
+  assert.match(String(r.escalate?.reason), /^the password showed in "Terminal", so it was not submitted$/)
+  assert.deepEqual(keys(calls), [])
+  assert.deepEqual(typed(calls), ['example-pass'])
+  assert.ok(!JSON.stringify(r).includes('example-pass'), JSON.stringify(r))
 })
 
 test('a secret step that is not one password line, or whose secret is not a boolean, is refused', async (t) => {

@@ -1254,11 +1254,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     let sent: desk.Sent | undefined
     if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(sent = await desk.typeText(line, at(w)), rec)
     if (w && secure(s) && sent?.terminal && !sent.unverified) throw echoed(w)
-    if (held && w && sent?.terminal && sent.unverified) {
-      const now = await texts(w)
-      if (shows(was, now, line, true)) throw echoed(w)
-      if (!unchanged(was, now)) throw new Surprise(changed(w, sent.unverified), await seen())
-    }
+    if (held && w && shows(was, await settled(w), line, true)) throw echoed(w)
     if (held) heard(await desk.key('Return', at(w)), rec)
     tick('act', t0)
     if (BG && rec.unverified && w && !sub && quiet !== undefined) rec.confirmed = !quiet
