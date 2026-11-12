@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **`gui_plan`: a `type` step with `focus` waits up to 1 s for the focus to arrive before it refuses.** The check read the focused element once, right after the app step, so a page or sheet that moved the focus a moment later stopped the step with "no focused element can be read now" or "is none" although the password field took the focus soon after (#374). The step now re-reads the focus every 100 ms for up to 1 s and types once it matches; it still types nothing and stops when it does not. A password step whose focused field is not a password field now says "is not one" instead of "is none".
+
 ## 0.1.49 - 2026-11-11
 
 - **`gui_plan`: a saved flow never keeps a secret step's `intent`.** A passing plan saves its flow, and the flow keeps the secret step's password as a parameter, but it kept the step's `intent` word for word, in the flow file and in the flows folder's git history. An intent that quoted the password saved it there. The stop reply and `.pending.json` already left the intent out.
