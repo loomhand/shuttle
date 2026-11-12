@@ -12,7 +12,7 @@ use desk_core::args::{
 };
 use desk_core::shot::{crop_png, png_size};
 use desk_core::text::{
-    MAX_FOUND, NAME_CHARS, Named, READ_CHARS, READ_TAIL, cut_read, matches, ms, one_line, quote,
+    MAX_FOUND, NAME_CHARS, Named, READ_TAIL, cut_read, matches, ms, one_line, quote,
 };
 use desk_core::window::{self, Window};
 use desk_core::wire::{OK, Output};
@@ -872,7 +872,7 @@ async fn read(android: &Android, a: ReadArgs) -> Result<String, String> {
 
 fn read_out(mut node: Node, app: &str, text: bool, tail: bool) -> Value {
     node.parent = -1;
-    let truncated = text && cut_read(&mut node.value, READ_CHARS, tail);
+    let truncated = text && cut_read(&mut node.value, tail);
     let mut out = node.json(0, app);
     if truncated {
         out["truncated"] = true.into();

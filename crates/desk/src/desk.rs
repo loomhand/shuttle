@@ -15,9 +15,7 @@ use desk_core::args::{
     ScrollArgs, ShotArgs, SnapArgs, StillArgs, TypeArgs, WaitArgs, WebArgs, WindowArgs, parse,
 };
 use desk_core::shot::{OFF_SCREEN, crop_png, rgb_png};
-use desk_core::text::{
-    MAX_FOUND, NAME_CHARS, READ_CHARS, READ_TAIL, clip, cut_read, matches, ms, quote,
-};
+use desk_core::text::{MAX_FOUND, NAME_CHARS, READ_CHARS, READ_TAIL, cut_read, matches, ms, quote};
 use desk_core::window::{self, TITLE_TIERS, title_matches};
 use desk_core::wire::{OK, Output};
 use serde_json::{Map, Value, json};
@@ -757,8 +755,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             tail: a.tail,
         };
         let (text, tail) = (a.text, a.tail);
-        let max = if text { READ_CHARS } else { NAME_CHARS };
-        let chars = max + 1;
+        let chars = if text { READ_CHARS + 1 } else { NAME_CHARS };
+        let id = a.id.clone();
         let (mut node, (url, dom_id)) = self
             .access
             .run(CALL_LIMIT, (), move |b| {
@@ -771,10 +769,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 Ok((node, web))
             })
             .await?;
-        let truncated = cut_read(&mut node.value, max, tail) | (text && node.truncated);
-        if !text && self.os == Os::Mac {
-            node.name = clip(std::mem::take(&mut node.name), NAME_CHARS, false);
-        }
+        let truncated = if text {
+            cut_read(&mut node.value, tail) | node.truncated
+        } else {
+            node.value
+                .as_ref()
+                .is_some_and(|v| v.chars().nth(NAME_CHARS - 1).is_some())
+                && self.preview_cut(id, extras).await?
+        };
         let mut out = node.into_json(0);
         if truncated {
             out["truncated"] = true.into();
@@ -786,6 +788,17 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             out["dom_id"] = dom_id.into();
         }
         Ok(out.to_string())
+    }
+
+    async fn preview_cut(&self, id: String, extras: Extras) -> Result<bool, String> {
+        self.access
+            .run(CALL_LIMIT, (), move |b| {
+                let node = b.node(&id, extras, NAME_CHARS + 1)?;
+                Ok(node
+                    .value
+                    .is_some_and(|v| v.chars().nth(NAME_CHARS).is_some()))
+            })
+            .await
     }
 
     async fn web(&self, a: WebArgs) -> Result<String, String> {
@@ -3032,8 +3045,8 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_read_without_text_cuts_a_long_name_on_macos_only() {
-        for (os, chars) in [(Os::Mac, NAME_CHARS), (Os::Linux, 100), (Os::Windows, 100)] {
+    async fn a_read_without_text_leaves_the_name_as_the_backend_reads_it() {
+        for (os, chars) in [(Os::Mac, 100), (Os::Linux, 100), (Os::Windows, 100)] {
             let desk = Desk::new(
                 || Ok(Scrollback),
                 Stack(Arc::default(), Mutex::new(json!({}))),
