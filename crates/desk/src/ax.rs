@@ -902,37 +902,6 @@ pub fn secure_keyboard_entry(wanted: impl Fn(&str) -> bool) -> Option<&'static s
     .map(|(app, ..)| *app)
 }
 
-fn first_on<T>(entries: &[T], covered: impl Fn(&T) -> bool, on: impl Fn(&T) -> bool) -> Option<&T> {
-    entries.iter().filter(|e| covered(e)).find(|e| on(e))
-}
-
-fn running_names(bundle: &str) -> Vec<String> {
-    objc2::rc::autoreleasepool(|_| {
-        NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(bundle))
-            .iter()
-            .filter_map(|a| a.localizedName())
-            .map(|n| n.to_string())
-            .collect()
-    })
-}
-
-fn preference_on(domain: &str, key: &str) -> bool {
-    let (domain, key) = (CFString::new(domain), CFString::new(key));
-    // SAFETY: both strings live across the calls, and the copied value is owned by `CFType` under the create rule.
-    let value = unsafe {
-        CFPreferencesAppSynchronize(domain.as_concrete_TypeRef());
-        let v = CFPreferencesCopyAppValue(key.as_concrete_TypeRef(), domain.as_concrete_TypeRef());
-        (!v.is_null()).then(|| CFType::wrap_under_create_rule(v))
-    };
-    value.is_some_and(|v| {
-        v.downcast::<CFBoolean>().map(bool::from).or_else(|| {
-            v.downcast::<CFNumber>()
-                .and_then(|n| n.to_i64())
-                .map(|n| n != 0)
-        }) == Some(true)
-    })
-}
-
 /// The process of the focused element, and whether typing goes to a password field.
 pub fn typing() -> (Option<u32>, bool) {
     let focused = attr(&system_wide(), "AXFocusedUIElement");
@@ -1015,6 +984,37 @@ pub fn bundle_stem(pid: i32) -> Option<String> {
         .ancestors()
         .find(|a| a.extension().is_some_and(|e| e == "app"))?;
     Some(bundle.file_stem()?.to_string_lossy().into_owned())
+}
+
+fn first_on<T>(entries: &[T], covered: impl Fn(&T) -> bool, on: impl Fn(&T) -> bool) -> Option<&T> {
+    entries.iter().filter(|e| covered(e)).find(|e| on(e))
+}
+
+fn running_names(bundle: &str) -> Vec<String> {
+    objc2::rc::autoreleasepool(|_| {
+        NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(bundle))
+            .iter()
+            .filter_map(|a| a.localizedName())
+            .map(|n| n.to_string())
+            .collect()
+    })
+}
+
+fn preference_on(domain: &str, key: &str) -> bool {
+    let (domain, key) = (CFString::new(domain), CFString::new(key));
+    // SAFETY: both strings live across the calls, and the copied value is owned by `CFType` under the create rule.
+    let value = unsafe {
+        CFPreferencesAppSynchronize(domain.as_concrete_TypeRef());
+        let v = CFPreferencesCopyAppValue(key.as_concrete_TypeRef(), domain.as_concrete_TypeRef());
+        (!v.is_null()).then(|| CFType::wrap_under_create_rule(v))
+    };
+    value.is_some_and(|v| {
+        v.downcast::<CFBoolean>().map(bool::from).or_else(|| {
+            v.downcast::<CFNumber>()
+                .and_then(|n| n.to_i64())
+                .map(|n| n != 0)
+        }) == Some(true)
+    })
 }
 
 /// Whether process `pid` is a Chromium or Electron app, whose bundle holds a framework with helper apps.
