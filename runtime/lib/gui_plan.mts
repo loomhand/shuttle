@@ -831,14 +831,23 @@ function told(g: Pick<Grounding, 'what' | 'check' | 'why' | 'cover'>) {
 }
 
 async function typingInto(want: Focus, w: Win | null) {
+  for (const end = Date.now() + OPENING; ; await sleep(100)) {
+    const miss = await focusMiss(want, w)
+    if (miss === null) return
+    if (!w || Date.now() > end) throw new Diverged(miss, await seen())
+  }
+}
+
+async function focusMiss(want: Focus, w: Win | null): Promise<string | null> {
   const said = want.role ? `${want.role} "${want.name ?? ''}"${want.frame ? ` in a ${want.frame}` : ''}` : 'a password field'
   let nodes: desk.El[] = []
   try { if (w) nodes = (await snapOf(w)).nodes } catch {}
   const f = nodes.filter((n) => n.depth > 0 && n.states.includes('focused')).at(-1)
-  if (!f || !w) throw new Diverged(`the recording typed into ${said}, and no focused element can be read now, so the text could go anywhere`, await seen())
-  if ((want.role && (f.role !== want.role || norm(f.name) !== norm(want.name ?? ''))) || (want.frame && w.role !== want.frame)) throw new Diverged(`the recording typed into ${said}, and the focus is on ${f.role} "${f.name}" in the ${w.role} "${w.title}" now`, await seen())
-  if (want.secure && !f.states.includes('protected')) throw new Diverged(`the recording typed into a password field, and the focused ${f.role} "${f.name}" in "${w.title}" is none, so the text would show`, await seen())
-  if (want.id && (await desk.read(f.id, { web: true })).dom_id !== want.id) throw new Diverged(`the recording typed into the element with DOM id "${want.id}", and the focused ${f.role} "${f.name}" in "${w.title}" has another`, await seen())
+  if (!f || !w) return `the recording typed into ${said}, and no focused element can be read now, so the text could go anywhere`
+  if ((want.role && (f.role !== want.role || norm(f.name) !== norm(want.name ?? ''))) || (want.frame && w.role !== want.frame)) return `the recording typed into ${said}, and the focus is on ${f.role} "${f.name}" in the ${w.role} "${w.title}" now`
+  if (want.secure && !f.states.includes('protected')) return `the recording typed into a password field, and the focused ${f.role} "${f.name}" in the ${w.role} "${w.title}" is not one, so the text would show`
+  if (want.id && (await desk.read(f.id, { web: true })).dom_id !== want.id) return `the recording typed into the element with DOM id "${want.id}", and the focused ${f.role} "${f.name}" in "${w.title}" has another`
+  return null
 }
 
 async function openPage(app: string, url: string, rec: Rec) {

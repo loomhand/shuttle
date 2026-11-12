@@ -6,14 +6,15 @@ import { main } from '../lib/gui_plan.mts'
 
 type Field = { role: string; name: string; states?: string[] } | null
 
-async function page(t: TestContext, front: { title: string; role: string }, focused: Field) {
+async function page(t: TestContext, front: { title: string; role: string }, focused: Field, late = 0) {
   const typed: string[] = []
+  let reads = 0
   const win = { id: '1/1', title: front.title, role: front.role, pid: process.pid, active: true, app: 'Browser' }
   await daemon(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') {
       const nodes = [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: front.role, name: front.title, states: ['showing', 'focused'] }]
-      if (focused) nodes.push({ ref: 1, id: '1/2', parent: 0, depth: 1, role: focused.role, name: focused.name, states: ['showing', 'focused', ...(focused.states ?? [])] })
+      if (focused && ++reads > late) nodes.push({ ref: 1, id: '1/2', parent: 0, depth: 1, role: focused.role, name: focused.name, states: ['showing', 'focused', ...(focused.states ?? [])] })
       return JSON.stringify({ window: win, truncated: false, nodes })
     }
     if (tool === 'desk_type') typed.push(String(args.text))
@@ -56,13 +57,20 @@ test('a type step whose recording read no focus either types without the check',
 test('a recorded password step types only into a focused password field', async (t) => {
   const typed = await page(t, { title: 'pw', role: 'window' }, { role: 'textbox', name: '' })
   const r = await main({ steps: [{ type: '{{password}}', focus: { ...user, secure: true } }], params: { password: 's3' } })
-  assert.match(String(r.error), /recording typed into a password field, and the focused textbox "" in "pw" is none/)
+  assert.match(String(r.error), /recording typed into a password field, and the focused textbox "" in the window "pw" is not one/)
   assert.deepEqual(typed, [])
 })
 
 test('a recorded password step types into a focused password field', async (t) => {
   const typed = await page(t, { title: 'pw', role: 'window' }, { role: 'textbox', name: '', states: ['protected'] })
   const r = await main({ steps: [{ type: '{{password}}', focus: { ...user, secure: true } }], params: { password: 's3' } })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(typed, ['s3'])
+})
+
+test('a password step waits for the focus to reach a password field before it types', async (t) => {
+  const typed = await page(t, { title: 'pw', role: 'window' }, { role: 'textbox', name: 'Password', states: ['protected'] }, 2)
+  const r = await main({ steps: [{ type: '{{password}}', focus: { secure: true } }], params: { password: 's3' } })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(typed, ['s3'])
 })
@@ -77,7 +85,7 @@ test('a password step whose recording read no field types into any focused passw
 test('a password step whose recording read no field stops where the focused field shows its text', async (t) => {
   const typed = await page(t, { title: 'pw', role: 'window' }, { role: 'textbox', name: 'User Name' })
   const r = await main({ steps: [{ type: '{{password}}', focus: { secure: true } }], params: { password: 's3' } })
-  assert.match(String(r.error), /recording typed into a password field, and the focused textbox "User Name" in "pw" is none/)
+  assert.match(String(r.error), /recording typed into a password field, and the focused textbox "User Name" in the window "pw" is not one/)
   assert.deepEqual(typed, [])
 })
 
