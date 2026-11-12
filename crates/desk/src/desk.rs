@@ -15,7 +15,9 @@ use desk_core::args::{
     ScrollArgs, ShotArgs, SnapArgs, StillArgs, TypeArgs, WaitArgs, WebArgs, WindowArgs, parse,
 };
 use desk_core::shot::{OFF_SCREEN, crop_png, rgb_png};
-use desk_core::text::{MAX_FOUND, NAME_CHARS, READ_CHARS, READ_TAIL, cut_read, matches, ms, quote};
+use desk_core::text::{
+    MAX_FOUND, NAME_CHARS, READ_CHARS, READ_TAIL, clip, cut_read, matches, ms, quote,
+};
 use desk_core::window::{self, TITLE_TIERS, title_matches};
 use desk_core::wire::{OK, Output};
 use serde_json::{Map, Value, json};
@@ -755,7 +757,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             tail: a.tail,
         };
         let (text, tail) = (a.text, a.tail);
-        let chars = if text { READ_CHARS + 1 } else { NAME_CHARS };
+        let max = if text { READ_CHARS } else { NAME_CHARS };
+        let chars = max + 1;
         let (mut node, (url, dom_id)) = self
             .access
             .run(CALL_LIMIT, (), move |b| {
@@ -768,7 +771,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 Ok((node, web))
             })
             .await?;
-        let truncated = text && (cut_read(&mut node.value, tail) | node.truncated);
+        let truncated = cut_read(&mut node.value, max, tail) | (text && node.truncated);
+        if !text {
+            node.name = clip(std::mem::take(&mut node.name), NAME_CHARS, false);
+        }
         let mut out = node.into_json(0);
         if truncated {
             out["truncated"] = true.into();
@@ -3023,6 +3029,25 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, READ_TAIL);
+    }
+
+    #[tokio::test]
+    async fn a_read_without_text_previews_eighty_characters_and_says_when_it_cut_them() {
+        let desk = Desk::new(
+            || Ok(Scrollback),
+            Stack(Arc::default(), Mutex::new(json!({}))),
+            Os::Mac,
+        );
+        for (id, want, cut) in [
+            ("edge", "b".repeat(NAME_CHARS), true),
+            ("preview", "c".repeat(NAME_CHARS), false),
+        ] {
+            let out = desk.run("desk_read", json!({"id": id})).await.unwrap();
+            let v: Value = serde_json::from_str(&out.text).unwrap();
+            assert_eq!(v["value"], want.as_str(), "{id}");
+            assert_eq!(v.get("truncated").is_some(), cut, "{id}");
+            assert_eq!(v["truncated"] == true, cut, "{id}");
+        }
     }
 
     #[tokio::test]
@@ -7822,6 +7847,7 @@ pub(crate) mod tests {
                 value: Some(clip(
                     match id {
                         "long" => format!("{}中🙂end", "a".repeat(READ_CHARS)),
+                        "preview" => "c".repeat(NAME_CHARS),
                         _ => "b".repeat(READ_CHARS),
                     },
                     chars,
