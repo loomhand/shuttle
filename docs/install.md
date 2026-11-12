@@ -55,7 +55,7 @@ Both installers download the archive and the release's `SHA256SUMS`, refuse an a
 | | macOS (`Shuttle.app`) | Linux and Windows (`shuttle/`) |
 |---|---|---|
 | `shuttle` | `Contents/MacOS/shuttle` | `shuttle`, `shuttle.exe` |
-| cua-driver | `Contents/MacOS/cua-driver`, `cua-cursor-theme` | `cua-driver`, `cua-cursor-theme`, `.exe` on Windows (Linux: and `wayland-helper/`) |
+| cua-driver | `Contents/MacOS/cua-driver`, `cua-cursor-theme` | `cua-driver`, `cua-cursor-theme`, `.exe` on Windows (Windows: and `cua-driver-uia.exe`; Linux: and `wayland-helper/`) |
 | Node.js 24 | `Contents/MacOS/node` | `node`, `node.exe` |
 | runtime (`.mts` sources and their stripped `.mjs`) | `Contents/Resources/runtime/` | `runtime/` |
 | Android UI server | | `android/shuttle-ui.jar` (Linux only) |
