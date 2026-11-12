@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.50 - 2026-11-12
 
 - **`gui_plan`: a `type` step with `focus` waits up to 1 s for the focus to arrive before it refuses.** The check read the focused element once, right before typing, so a page that moved the focus into the field a moment later stopped the step with "no focused element can be read now" or "is none" (#374). The step now re-reads the focus every 100 ms for up to 1 s and types once it matches; it still types nothing and stops when it does not, so a sheet that still holds the focus, such as Safari's "Save Password?", still stops the step. A password step whose focused field is not a password field now says "is not one" and names the role of its window or sheet, instead of "is none".
 - **Linux: a background click reaches its window.** Each driver call ran in a session of its own, and the driver takes a window click only after a read of that window in the same session, so every background `desk click`, element click, scroll at a point and drag was refused with `window_never_read` (#365). Reads of a window now share one session with the next input to a window, which ends it, so no session that sent input stays open; a background window action reuses only a read of its window made since the last input to a window, and reads the window first otherwise. Background keys and typing to a window wait for a window read in progress, since their input ends the session the read is in.
@@ -12,6 +12,7 @@
   - **Upstream, Linux:** setting a combo box that lists no options is refused as `option_not_found` (trycua/cua#7345). Background hotkeys, scrolls and menu opens into Qt windows either take effect or are refused (trycua/cua#7369, trycua/cua#7370, trycua/cua#7371).
   - **Fork patch, Linux:** removing the MPX master pairs is opt-in, so upstream's pooling stays the default; shuttle opts in (see above).
   - **Validation:** in the hardware rounds, shuttle's calls passed the same checks with this driver as with the previous one on a macOS guest, a Linux X11 guest and a Windows 11 guest. Foreground clicks took the same time: macOS p50 within 7 ms, Linux and Windows within 1 ms.
+- **Validation:** runtime and desk unit tests and CI on every platform. On a macOS x86_64 guest, the `focus` wait passed a page that focuses its password field 700 ms after load: 3 of 3 typed and submitted, where v0.1.49 stopped 3 of 3. The secret-step, off-Space, desk click, bring_to_front and drag cells matched v0.1.49. On a Linux X11 guest (XFCE), background clicks, scrolls and drags reached their window, as did the element click under xfwm4's decorations. Chrome kept every key typed after background input, with the bundled driver started by shuttle, and the foreground click gate matched v0.1.49. On a Windows 11 guest, every cell matched v0.1.49, including the hit-checked click and the tail reads.
 
 ## 0.1.49 - 2026-11-11
 
