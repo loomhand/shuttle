@@ -74,7 +74,7 @@ export async function main(p: Params): Promise<Draft> {
     return { app, ...(title ? { title: templ(title) } : {}), intent: `${verb} ${app}${title ? ` at "${title}"` : ''}` }
   }
   for (const [i, e] of events.entries()) {
-    if (input(e)) move(e)
+    if (e.kind === 'key' || e.kind === 'click' || (e.kind === 'password' && e.app && e.app !== here.app)) move(e)
     if (e.kind === 'key') {
       const mods = e.mods ?? []
       if (e.secret) { if (typed) flush(); if (!secret && e.focus) into = e.focus; secret = true; continue }

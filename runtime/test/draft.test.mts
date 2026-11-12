@@ -216,6 +216,20 @@ test('a recording that holds only a terminal password still opens its app before
   ])
 })
 
+test('a password field that a two-stage login page focuses in the same app opens no page again', async (t) => {
+  await daemon(t, () => '{"ok":true}')
+  const user = { role: 'textbox', name: 'Email', frame: 'window', window: 'Sign in', url: 'https://id.example/login' }
+  const pw = { role: 'textbox', name: 'Password', frame: 'window', window: 'Enter password', url: 'https://id.example/password', secure: true }
+  const events: Event[] = [
+    { t: 0, kind: 'key', text: 'a', mods: [], app: 'Safari', focus: user },
+    { t: 1, kind: 'key', code: 36, text: '\r', mods: [], app: 'Safari' },
+    { t: 2, kind: 'password', app: 'Safari', focus: pw },
+  ]
+  const d = await main({ recording: { id: 'rec-2stage', events } })
+  assert.deepEqual(d.steps.map(({ intent: _, ...s }) => Object.keys(s)[0]), ['app', 'type', 'key', 'type'])
+  assert.equal(d.steps.filter((s) => 'url' in s).length, 1, JSON.stringify(d.steps))
+})
+
 test('a password step whose focus was unread becomes a secret step when the next password event names a terminal', async (t) => {
   await daemon(t, () => '{"ok":true}')
   const events: Event[] = [
