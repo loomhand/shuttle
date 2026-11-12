@@ -489,6 +489,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+        if self.os == Os::Linux && args["session"] == WINDOW_SESSION && tool != "get_window_state" {
+            *lock(&self.read) = None;
+        }
         let out = self.driver.call(tool, args).await?;
         if INPUT_TOOLS.contains(&tool) {
             let _ = SENT.try_with(|n| n.set(n.get() + 1));
@@ -1606,7 +1609,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             cover = self.cover(&req, w.pid).await?;
         }
         let cached = lock(&self.read)
-            .filter(|r| self.os != Os::Linux && (r.pid, r.id, r.bounds) == (w.pid, w.id, w.bounds))
+            .filter(|r| (r.pid, r.id, r.bounds) == (w.pid, w.id, w.bounds))
             .map(|r| r.k);
         let k = match cached {
             Some(k) => Some(k),
@@ -1853,10 +1856,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let scale = self.scale().await?;
         let under = Under::of(w, (x / scale, y / scale)).ok_or(BACKGROUND_TARGET)?;
         let cached = lock(&self.read)
-            .filter(|r| {
-                self.os != Os::Linux
-                    && (r.pid, r.id, r.bounds) == (under.pid, under.id, under.bounds)
-            })
+            .filter(|r| (r.pid, r.id, r.bounds) == (under.pid, under.id, under.bounds))
             .map(|r| r.k);
         let (kx, ky) = match cached {
             Some(k) => k,
@@ -4379,23 +4379,57 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn on_linux_a_background_element_click_allows_the_window_manager_s_decorations() {
-        for (os, clicks) in [(Os::Linux, 1), (Os::Mac, 0)] {
+        fn decorated() -> Result<Fake, String> {
+            let mut f = notepad();
+            f.add("w", None, "window", &["showing"], Some([-5, -29, 810, 634]));
+            Ok(f)
+        }
+        for (os, twin, clicked) in [
+            (Os::Linux, 900.0, true),
+            (Os::Mac, 900.0, false),
+            (Os::Linux, 0.0, false),
+        ] {
             let calls = Arc::new(Mutex::new(Vec::new()));
-            let desk =
-                Desk::new(|| Ok(notepad()), Decorated(Arc::clone(&calls)), os).background(true);
+            let twins = Twins(Arc::clone(&calls), twin, "Untitled - Notepad", 0.0);
+            let desk = Desk::new(decorated, twins, os).background(true);
             let done = desk
                 .run("desk_act", json!({"id": "ok", "action": "click"}))
                 .await;
-            let got = sent(&calls, "click");
-            assert_eq!(got.len(), clicks, "{os:?} {done:?} {got:?}");
-            if clicks == 0 {
-                assert!(
-                    done.unwrap_err().contains("own window is ambiguous"),
-                    "{os:?}"
-                );
-            } else {
-                assert_eq!(got[0]["window_id"], 1, "{got:?}");
+            let got: Vec<Value> = sent(&calls, "click")
+                .iter()
+                .map(|c| c["window_id"].clone())
+                .collect();
+            assert_eq!(done.is_ok(), clicked, "{os:?} {twin} {done:?}");
+            assert_eq!(
+                got,
+                if clicked { vec![json!(1)] } else { vec![] },
+                "{os:?} {twin}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn on_linux_a_window_input_drops_the_read_its_driver_session_held() {
+        for (os, reads) in [(Os::Linux, 3), (Os::Mac, 1)] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(notepad()), Behind(Arc::clone(&calls)), os).background(true);
+            for _ in 0..2 {
+                desk.run("desk_click", json!({"x": 300.0, "y": 250.0, "pid": 4}))
+                    .await
+                    .unwrap();
             }
+            desk.run(
+                "desk_drag",
+                json!({"x": 200.0, "y": 100.0, "to_x": 300.0, "to_y": 100.0, "pid": 4}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                sent(&calls, "get_window_state").len(),
+                reads,
+                "{os:?} {:?}",
+                order(&calls)
+            );
         }
     }
 
@@ -6941,26 +6975,6 @@ pub(crate) mod tests {
                 "get_window_state" => json!({"structuredContent": {
                     "screenshot_width": 800, "screenshot_height": 600,
                     "window_bounds": {"width": 800.0, "height": 600.0}
-                }}),
-                _ => json!({}),
-            })
-        }
-    }
-
-    struct Decorated(Arc<Mutex<Vec<(String, Value)>>>);
-
-    impl Input for Decorated {
-        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
-            self.0.lock().unwrap().push((tool.to_owned(), args));
-            Ok(match tool {
-                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
-                "list_windows" => json!({"structuredContent": {"windows": [
-                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "bounds": {"x": 5.0, "y": 29.0, "width": 790.0, "height": 566.0}},
-                    {"pid": 4, "window_id": 3, "layer": 0, "z_index": 2, "title": "Untitled - Notepad", "bounds": {"x": 900.0, "y": 0.0, "width": 800.0, "height": 600.0}}
-                ]}}),
-                "get_window_state" => json!({"structuredContent": {
-                    "screenshot_width": 790, "screenshot_height": 566,
-                    "window_bounds": {"width": 790.0, "height": 566.0}
                 }}),
                 _ => json!({}),
             })

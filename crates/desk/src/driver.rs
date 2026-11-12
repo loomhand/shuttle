@@ -65,7 +65,7 @@ pub struct Driver {
     endpoint: String,
     started: [AtomicBool; 3],
     calls: AtomicU64,
-    window: AtomicU64,
+    window_n: AtomicU64,
     last_click: Mutex<Option<(Instant, f64, f64)>>,
     last_input: std::sync::Mutex<Option<std::time::Instant>>,
 }
@@ -76,7 +76,7 @@ impl Driver {
             endpoint,
             started: Default::default(),
             calls: AtomicU64::new(0),
-            window: AtomicU64::new(0),
+            window_n: AtomicU64::new(0),
             last_click: Mutex::new(None),
             last_input: std::sync::Mutex::new(None),
         }
@@ -237,21 +237,12 @@ impl Input for Driver {
             let window = args["session"] == WINDOW_SESSION;
             let read = window && tool == "get_window_state";
             // a session keeps its capture scale and a master keyboard that Chrome's core input loses to
-            args["session"] = if window {
-                let n = if read {
-                    self.window.load(Ordering::Relaxed)
-                } else {
-                    self.window.fetch_add(1, Ordering::Relaxed)
-                };
-                format!("desk-{}-window-{n}", std::process::id())
-            } else {
-                format!(
-                    "desk-{}-{}",
-                    std::process::id(),
-                    self.calls.fetch_add(1, Ordering::Relaxed)
-                )
-            }
-            .into();
+            let (kind, n) = match (window, read) {
+                (true, true) => ("window-", self.window_n.load(Ordering::Relaxed)),
+                (true, false) => ("window-", self.window_n.fetch_add(1, Ordering::Relaxed)),
+                _ => ("", self.calls.fetch_add(1, Ordering::Relaxed)),
+            };
+            args["session"] = format!("desk-{}-{kind}{n}", std::process::id()).into();
             let done = match point {
                 Some(point) => self.spaced(point, self.send(tool, &args)).await,
                 None => self.send(tool, &args).await,
