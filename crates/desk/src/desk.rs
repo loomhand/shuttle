@@ -1148,6 +1148,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if locked {
             req["locked_input"] = true.into();
         }
+        let _session = match to {
+            Some(_) if self.os == Os::Linux => Some(self.session.lock().await),
+            _ => None,
+        };
         let out = self.call(tool, req).await.map_err(|e| {
             if locked && e.contains("locked_input") {
                 format!("{tool}: {LOCKED_INPUT_UNSUPPORTED}")
@@ -4384,14 +4388,27 @@ pub(crate) mod tests {
             f.add("w", None, "window", &["showing"], Some([-5, -29, 810, 634]));
             Ok(f)
         }
-        for (os, twin, clicked) in [
-            (Os::Linux, 900.0, true),
-            (Os::Mac, 900.0, false),
-            (Os::Linux, 0.0, false),
-        ] {
+        fn too_wide() -> Result<Fake, String> {
+            let mut f = notepad();
+            f.add(
+                "w",
+                None,
+                "window",
+                &["showing"],
+                Some([-30, -29, 860, 634]),
+            );
+            Ok(f)
+        }
+        let cases = [
+            (Os::Linux, decorated as fn() -> _, 900.0, true),
+            (Os::Mac, decorated, 900.0, false),
+            (Os::Linux, decorated, 0.0, false),
+            (Os::Linux, too_wide, 900.0, false),
+        ];
+        for (os, fake, twin, clicked) in cases {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let twins = Twins(Arc::clone(&calls), twin, "Untitled - Notepad", 0.0);
-            let desk = Desk::new(decorated, twins, os).background(true);
+            let desk = Desk::new(fake, twins, os).background(true);
             let done = desk
                 .run("desk_act", json!({"id": "ok", "action": "click"}))
                 .await;
@@ -4405,6 +4422,40 @@ pub(crate) mod tests {
                 if clicked { vec![json!(1)] } else { vec![] },
                 "{os:?} {twin}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn on_linux_a_background_type_waits_for_a_window_shot_s_read() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(notepad()),
+            SlowRead(Behind(Arc::clone(&calls))),
+            Os::Linux,
+        )
+        .background(true);
+        let (_, typed) = tokio::join!(
+            desk.run("desk_shot", json!({"window": "Untitled - Notepad"})),
+            async {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                desk.run("desk_type", json!({"text": "x", "pid": 4})).await
+            }
+        );
+        typed.unwrap();
+        let tools: Vec<String> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(t, _)| t.clone())
+            .collect();
+        let mut open = 0;
+        for tool in &tools {
+            match tool.as_str() {
+                "get_window_state" => open += 1,
+                "read_done" => open -= 1,
+                "type_text" => assert_eq!(open, 0, "{tools:?}"),
+                _ => {}
+            }
         }
     }
 
@@ -6978,6 +7029,23 @@ pub(crate) mod tests {
                 }}),
                 _ => json!({}),
             })
+        }
+    }
+
+    struct SlowRead(Behind);
+
+    impl Input for SlowRead {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let out = self.0.call(tool, args).await;
+            if tool == "get_window_state" {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                self.0
+                    .0
+                    .lock()
+                    .unwrap()
+                    .push(("read_done".to_owned(), json!({})));
+            }
+            out
         }
     }
 

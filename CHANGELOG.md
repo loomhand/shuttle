@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Linux: a background click reaches its window.** Each driver call ran in a session of its own, and the driver takes a window click only after a read of that window in the same session, so every background `desk click`, element click, scroll at a point and drag was refused with `window_never_read` (#365). Reads of a window now share one session with the next input to a window, which ends it, so no session that sent input stays open; a background window action reads its window first instead of reusing the last read's scale.
+- **Linux: a background click reaches its window.** Each driver call ran in a session of its own, and the driver takes a window click only after a read of that window in the same session, so every background `desk click`, element click, scroll at a point and drag was refused with `window_never_read` (#365). Reads of a window now share one session with the next input to a window, which ends it, so no session that sent input stays open; a background window action reuses only a read of its window made since the last input to a window, and reads the window first otherwise. Background keys and typing to a window wait for a window read in progress, since their input ends the session the read is in.
 - **Linux: a background element click allows the window manager's decorations.** The element's frame had to match its window's bounds within 2 px, but under a window manager that draws the title bar and border, such as xfwm4, the frame holds them and the bounds do not, so the click was refused as two windows (#366). A window whose frame matches exactly still wins; otherwise a frame up to 48 px larger at the top and 16 px at the other sides matches, and two such windows are still refused.
 
 ## 0.1.49 - 2026-11-11
