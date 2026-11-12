@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 
 import { daemon, gray, notepad, root, user } from './daemon.mts'
 import type { Call, Reply, W } from './daemon.mts'
@@ -265,18 +265,22 @@ test('an untitled macOS popup of the app, such as AutoFill, is never taken for t
 })
 
 test('a background password reads back as its mask characters and counts as typed', async (t) => {
+  for (const type of ['{{password}}', '{{password}}\n']) await masks(t, type)
+})
+
+async function masks(t: TestContext, type: string) {
   let value = ''
   const field = { ref: 1, id: 'p', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'focused', 'protected'] }
   const d = desktop([user(), notepad()], ({ tool, args }) => {
     if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes: [{ ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: notepad().title, states: [] }, { ...field, value }], truncated: false })
-    if (tool === 'desk_type') { value += '•'.repeat([...String(args.text)].length); return JSON.stringify({ ok: true, chars: 7, unverified: 'unverifiable: Posted via CGEvent.' }) }
+    if (tool === 'desk_type') { value += '•'.repeat([...String(args.text).replace(/\n/g, '')].length); return JSON.stringify({ ok: true, chars: 7, unverified: 'unverifiable: Posted via CGEvent.' }) }
     return undefined
   })
   await daemon(t, d.reply)
-  const r = await main({ steps: [{ app: 'Notepad' }, { type: '{{password}}', focus: { secure: true } }], params: { password: 'hunter2' } })
-  assert.equal(r.ok, true, JSON.stringify(r))
+  const r = await main({ steps: [{ app: 'Notepad' }, { type, focus: { secure: true } }], params: { password: 'hunter2' } })
+  assert.equal(r.ok, true, `${JSON.stringify(type)} ${JSON.stringify(r)}`)
   assert.ok(!JSON.stringify(r).includes('hunter2'), JSON.stringify(r))
-})
+}
 
 test('when the plan window is gone a window of the app with the same title never takes its place', async (t) => {
   const ws = [user(), notepad()]
