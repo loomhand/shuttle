@@ -1809,6 +1809,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let Some((pid, window_id)) = window else {
             return Ok(());
         };
+        if self.os == Os::Mac
+            && self.listed().await?.iter().any(|f| {
+                f.active
+                    && f.pid.map(i64::from) == Some(pid)
+                    && f.number.map(i64::from) == Some(window_id)
+            })
+        {
+            return Ok(());
+        }
         if let Err(e) = self
             .call(
                 "bring_to_front",
@@ -2922,6 +2931,33 @@ pub(crate) mod tests {
                 assert_eq!(sent(&calls, "bring_to_front")[0]["pid"], 4);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn a_macos_key_raises_its_window_only_when_it_is_not_already_active() {
+        fn listed(active: bool) -> Stub {
+            Stub {
+                frames: vec![Frame {
+                    number: Some(1),
+                    ..frame("w", "Untitled - Notepad", 4, active, Some("Notepad"))
+                }],
+                ..Stub::default()
+            }
+        }
+        async fn raises(stub: fn() -> Result<Stub, String>) -> usize {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(stub, Behind(Arc::clone(&calls)), Os::Mac);
+            desk.run(
+                "desk_key",
+                json!({"keys": "cmd+0", "window": "Untitled - Notepad"}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(sent(&calls, "hotkey").len(), 1);
+            sent(&calls, "bring_to_front").len()
+        }
+        assert_eq!(raises(|| Ok(listed(true))).await, 0);
+        assert_eq!(raises(|| Ok(listed(false))).await, 1);
     }
 
     #[tokio::test]
