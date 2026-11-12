@@ -86,10 +86,12 @@ pub fn clip(mut s: String, max: usize, tail: bool) -> String {
     s
 }
 
-pub fn cut_read(value: &mut Option<String>, max: usize, tail: bool) -> bool {
-    let cut = value.as_ref().is_some_and(|v| v.chars().nth(max).is_some());
+pub fn cut_read(value: &mut Option<String>, tail: bool) -> bool {
+    let cut = value
+        .as_ref()
+        .is_some_and(|v| v.chars().nth(READ_CHARS).is_some());
     if cut {
-        *value = value.take().map(|v| clip(v, max, tail));
+        *value = value.take().map(|v| clip(v, READ_CHARS, tail));
     }
     cut
 }
