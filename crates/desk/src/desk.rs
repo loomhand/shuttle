@@ -1810,14 +1810,16 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return Ok(());
         };
         if self.os == Os::Mac
-            && self.listed().await.is_ok_and(|frames| {
-                frames.iter().any(|f| {
-                    f.active
-                        && !f.stale
-                        && f.pid.map(i64::from) == Some(pid)
-                        && f.number.map(i64::from) == Some(window_id)
+            && let Ok(app) = u32::try_from(pid)
+            && self
+                .access
+                .run(CALL_LIMIT, (), move |b| b.frames_of(app))
+                .await
+                .is_ok_and(|frames| {
+                    frames
+                        .iter()
+                        .any(|f| f.active && !f.stale && f.number.map(i64::from) == Some(window_id))
                 })
-            })
         {
             return Ok(());
         }
