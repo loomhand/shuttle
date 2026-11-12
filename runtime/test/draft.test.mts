@@ -232,6 +232,7 @@ test('only a password step whose focus was unread becomes a secret step when the
   const unread: Event[] = [
     { t: 0, kind: 'password', app: 'Terminal', focus: null },
     { t: 1, kind: 'password', app: 'Terminal', focus: tty },
+    { t: 2, kind: 'password', app: 'Terminal', focus: tty },
   ]
   const a = await main({ recording: { id: 'rec-tty2', events: unread } })
   assert.deepEqual(a.steps.filter((s) => 'type' in s).map(({ intent: _, ...s }) => s), [{ type: '{{password}}\n', secret: true, focus: tty }])

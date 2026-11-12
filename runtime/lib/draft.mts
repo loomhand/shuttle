@@ -92,7 +92,7 @@ export async function main(p: Params): Promise<Draft> {
     if (e.kind === 'password') {
       const last = draft.steps.at(-1)
       if (!filled) password(e.focus)
-      else if (last && e.focus && !e.focus.secure && last === unread) Object.assign(last, onPage(e.focus, e.focus), { secret: true, type: `${last.type}\n` })
+      else if (last && e.focus && !e.focus.secure && last === unread) { Object.assign(last, onPage(e.focus, e.focus), { secret: true, type: `${last.type}\n` }); unread = undefined }
       else if (last && e.focus && !(last.focus as Partial<Field> | undefined)?.role) Object.assign(last, onPage(e.focus, { ...e.focus, secure: true }))
       filled = true
     }
