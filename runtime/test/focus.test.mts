@@ -107,7 +107,7 @@ test('a password typed into a dialog is not read back and never shows in the res
 
 test('a drafted secret step types only into the element the recording typed it into', async (t) => {
   const shell = { role: 'textbox', name: 'shell', frame: 'window' }
-  const step = { type: '{{password}}', secret: true, focus: shell }
+  const step = { type: '{{password}}\n', secret: true, focus: shell }
   const typed = await page(t, { title: 'Terminal', role: 'window' }, { role: 'textbox', name: 'shell' })
   const ok = await main({ steps: [step], params: { password: 's3' } })
   assert.equal(ok.ok, true, JSON.stringify(ok))
@@ -115,7 +115,7 @@ test('a drafted secret step types only into the element the recording typed it i
 })
 
 test('a drafted secret step stops, and types nothing, where another element has the focus', async (t) => {
-  const step = { type: '{{password}}', secret: true, focus: { role: 'textbox', name: 'shell', frame: 'window' } }
+  const step = { type: '{{password}}\n', secret: true, focus: { role: 'textbox', name: 'shell', frame: 'window' } }
   const typed = await page(t, { title: 'Notes', role: 'window' }, { role: 'textbox', name: 'Body' })
   const r = await main({ steps: [step], params: { password: 's3' } })
   assert.equal(r.ok, false, JSON.stringify(r))

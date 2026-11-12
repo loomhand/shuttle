@@ -43,7 +43,7 @@ export async function main(p: Params): Promise<Draft> {
     const name = `password${secrets ? `_${secrets + 1}` : ''}`; secrets += 1
     params[name] = { secret: true }
     const said = name.replace('_', ' ')
-    if (f && !f.secure) draft.steps.push({ type: `{{${name}}}`, secret: true, ...onPage(f, f), intent: `type the ${said} (not into a password field, such as at a terminal prompt: not recorded, pass it as ${name})` })
+    if (f && !f.secure) draft.steps.push({ type: `{{${name}}}\n`, secret: true, ...onPage(f, f), intent: `type the ${said} and Return (not into a password field, such as at a terminal prompt: neither is recorded, pass it as ${name})` })
     else draft.steps.push({ type: `{{${name}}}`, ...onPage(f ?? {}, { ...f, secure: true }), intent: `type the ${said} (a password field: not recorded, pass it as ${name})` })
     unread = f ? undefined : draft.steps.at(-1)
   }
@@ -92,7 +92,7 @@ export async function main(p: Params): Promise<Draft> {
     if (e.kind === 'password') {
       const last = draft.steps.at(-1)
       if (!filled) password(e.focus)
-      else if (last && e.focus && !e.focus.secure && last === unread) Object.assign(last, onPage(e.focus, e.focus), { secret: true })
+      else if (last && e.focus && !e.focus.secure && last === unread) Object.assign(last, onPage(e.focus, e.focus), { secret: true, type: `${last.type}\n` })
       else if (last && e.focus && !(last.focus as Partial<Field> | undefined)?.role) Object.assign(last, onPage(e.focus, { ...e.focus, secure: true }))
       filled = true
     }
