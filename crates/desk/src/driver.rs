@@ -630,7 +630,8 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn on_linux_each_call_runs_in_a_session_of_its_own_and_ends_it() {
+    async fn on_linux_each_call_outside_the_window_session_runs_in_a_session_of_its_own_and_ends_it()
+     {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("cua.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
