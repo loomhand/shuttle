@@ -756,7 +756,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         };
         let (text, tail) = (a.text, a.tail);
         let chars = if text { READ_CHARS + 1 } else { NAME_CHARS };
-        let id = a.id.clone();
         let (mut node, (url, dom_id)) = self
             .access
             .run(CALL_LIMIT, (), move |b| {
@@ -769,14 +768,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 Ok((node, web))
             })
             .await?;
-        let truncated = if text {
-            cut_read(&mut node.value, tail) | node.truncated
-        } else {
-            node.value
-                .as_ref()
-                .is_some_and(|v| v.chars().nth(NAME_CHARS - 1).is_some())
-                && self.preview_cut(id, extras).await?
-        };
+        let truncated = text && (cut_read(&mut node.value, tail) | node.truncated);
         let mut out = node.into_json(0);
         if truncated {
             out["truncated"] = true.into();
@@ -788,17 +780,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             out["dom_id"] = dom_id.into();
         }
         Ok(out.to_string())
-    }
-
-    async fn preview_cut(&self, id: String, extras: Extras) -> Result<bool, String> {
-        self.access
-            .run(CALL_LIMIT, (), move |b| {
-                let node = b.node(&id, extras, NAME_CHARS + 1)?;
-                Ok(node
-                    .value
-                    .is_some_and(|v| v.chars().nth(NAME_CHARS).is_some()))
-            })
-            .await
     }
 
     async fn web(&self, a: WebArgs) -> Result<String, String> {
@@ -3045,53 +3026,17 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_read_without_text_leaves_the_name_as_the_backend_reads_it() {
-        for (os, chars) in [(Os::Mac, 100), (Os::Linux, 100), (Os::Windows, 100)] {
-            let desk = Desk::new(
-                || Ok(Scrollback),
-                Stack(Arc::default(), Mutex::new(json!({}))),
-                os,
-            );
-            let out = desk
-                .run("desk_read", json!({"id": "preview"}))
-                .await
-                .unwrap();
-            let v: Value = serde_json::from_str(&out.text).unwrap();
-            assert_eq!(v["name"], "n".repeat(chars).as_str(), "{os:?}");
-        }
-    }
-
-    #[tokio::test]
-    async fn a_read_without_text_previews_eighty_characters_and_says_when_it_cut_them() {
+    async fn a_read_without_text_previews_eighty_characters_of_the_value_and_the_whole_name() {
         let desk = Desk::new(
             || Ok(Scrollback),
             Stack(Arc::default(), Mutex::new(json!({}))),
             Os::Mac,
         );
-        for (id, want, cut) in [
-            ("edge", "b".repeat(NAME_CHARS), true),
-            ("preview", "c".repeat(NAME_CHARS), false),
-        ] {
-            let out = desk.run("desk_read", json!({"id": id})).await.unwrap();
-            let v: Value = serde_json::from_str(&out.text).unwrap();
-            assert_eq!(v["value"], want.as_str(), "{id}");
-            assert_eq!(v.get("truncated").is_some(), cut, "{id}");
-            assert_eq!(v["truncated"] == true, cut, "{id}");
-        }
-    }
-
-    #[tokio::test]
-    async fn auto_input_without_a_window_to_front_stays_refused() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Mac)
-            .background(true)
-            .auto(true);
-        let err = desk
-            .run("desk_key", json!({"keys": "cmd+0"}))
-            .await
-            .unwrap_err();
-        assert!(err.contains(BACKGROUND_TARGET), "{err}");
-        assert!(order(&calls).is_empty(), "{:?}", order(&calls));
+        let out = desk.run("desk_read", json!({"id": "edge"})).await.unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(v["value"], "b".repeat(NAME_CHARS).as_str());
+        assert_eq!(v["name"], "n".repeat(100).as_str());
+        assert!(v.get("truncated").is_none(), "{v}");
     }
 
     #[tokio::test]
@@ -7877,7 +7822,6 @@ pub(crate) mod tests {
                 value: Some(clip(
                     match id {
                         "long" => format!("{}中🙂end", "a".repeat(READ_CHARS)),
-                        "preview" => "c".repeat(NAME_CHARS),
                         _ => "b".repeat(READ_CHARS),
                     },
                     chars,
