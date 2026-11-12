@@ -963,7 +963,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn secure_keyboard_entry_refuses_a_recording_only_when_the_recording_covers_that_app() {
+    fn a_recording_covers_every_app_when_it_names_none_and_otherwise_only_the_apps_it_names() {
         assert!(covers(&[], "Terminal"));
         assert!(covers(&["terminal".to_owned()], "Terminal"));
         assert!(!covers(&["Safari".to_owned()], "Terminal"));
