@@ -891,10 +891,11 @@ pub fn secure_input() -> bool {
     unsafe { IsSecureEventInputEnabled() }
 }
 
-/// The terminal app whose Secure Keyboard Entry setting is on, which hides every key typed in it from an event tap.
-pub fn secure_keyboard_entry() -> Option<&'static str> {
+/// The first terminal app that `wanted` accepts whose Secure Keyboard Entry setting is on, which hides every key typed in it from an event tap.
+pub fn secure_keyboard_entry(wanted: impl Fn(&str) -> bool) -> Option<&'static str> {
     SECURE_ENTRY
         .iter()
+        .filter(|(app, ..)| wanted(app))
         .find(|(_, domain, key)| {
             let (domain, key) = (CFString::new(domain), CFString::new(key));
             // SAFETY: both strings live across the calls, and the copied value is owned by `CFType` under the create rule.

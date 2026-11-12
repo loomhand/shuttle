@@ -441,7 +441,7 @@ fn listen(
         tap::ask();
         return Err(INPUT_MONITORING.to_owned());
     }
-    if let Some(app) = shuttle_desk::ax::secure_keyboard_entry().filter(|a| covers(apps, a)) {
+    if let Some(app) = shuttle_desk::ax::secure_keyboard_entry(|a| covers(apps, a)) {
         return Err(hidden(app));
     }
     Tap::start(tx, acting)
