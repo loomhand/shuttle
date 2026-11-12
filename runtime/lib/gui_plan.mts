@@ -1115,6 +1115,7 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
     if (!shown && !unchanged(base, now)) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing line ${i + 1} of ${n}${i > 1 ? `, after the ${i} lines before it and their Returns were sent` : i ? ', after the line before it and its Return were sent' : ''}: ${r.unverified}`, await seen())
     quiet ||= !shown
   }
+  if (quiet && secure(s) && text.endsWith('\n') && moved(base, await settled(w))) return false
   return quiet
 }
 async function settled(w: Win) {
@@ -1126,6 +1127,9 @@ function unchanged(before: Map<string, Text> | null, after: Map<string, Text> | 
   if (!before || !after || before.size !== after.size) return false
   const all = [...after]
   return all.some(([, t]) => t.field) && all.every(([id, t]) => t.value !== undefined && before.get(id)?.value === t.value)
+}
+function moved(before: Map<string, Text> | null, after: Map<string, Text> | null) {
+  return !!before && !!after && [...after].some(([id, t]) => t.value !== undefined && before.get(id)?.value !== undefined && before.get(id)?.value !== t.value)
 }
 function shows(before: Map<string, Text> | null, after: Map<string, Text> | null, text: string, terminal = false) {
   const squash = (v: string) => terminal ? v.replace(/[\r\n]/g, '') : v.replace(/\s+/g, '').toLowerCase()

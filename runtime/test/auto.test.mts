@@ -309,6 +309,15 @@ test('a secret step never shows its text, and a password the terminal echoed sto
   }
 })
 
+test('a background secret password line counts as landed when the terminal moves after its Return', async (t) => {
+  const { r, calls } = await terminal(t, background, (screen) => screen, { type: 'example-pass\n', extra: { secret: true } })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.unverified, undefined, JSON.stringify(r))
+  assert.deepEqual(calls.filter((c) => c.tool === 'desk_type').map((c) => c.args.text), ['example-pass'])
+  assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'])
+  assert.ok(!JSON.stringify(r).includes('example-pass'), JSON.stringify(r))
+})
+
 test('a foreground secret step reads the window back before its Return, as a foreground type reply names no terminal', async (t) => {
   const keys = (calls: Call[]) => calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys)
   const typed = (calls: Call[]) => calls.filter((c) => c.tool === 'desk_type').map((c) => c.args.text)
