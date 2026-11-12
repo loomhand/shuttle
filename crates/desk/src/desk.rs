@@ -1056,15 +1056,22 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 }
                 let mut run = None;
                 for (at, c) in line.char_indices() {
-                    let Some(keys) = keystroke(c).filter(|k| k.len() == 1) else {
+                    let key = keystroke(c).filter(|k| k.len() == 1);
+                    if key.is_none() && !matches!(c, '\t' | '\r') {
                         run.get_or_insert(at);
                         continue;
-                    };
+                    }
                     if let Some(from) = run.take() {
                         let req = json!({"text": &line[from..at], "literal": true});
                         self.send("type_text", req, to, &mut note).await?;
                     }
-                    let (tool, req) = key_request(keys);
+                    let (tool, req) = match key {
+                        Some(keys) => key_request(keys),
+                        None => (
+                            "type_text",
+                            json!({"text": &line[at..at + c.len_utf8()], "literal": true}),
+                        ),
+                    };
                     self.send(tool, req, to, &mut note).await?;
                 }
                 if let Some(from) = run {
@@ -2943,7 +2950,7 @@ pub(crate) mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk =
             Desk::new(|| Ok(notepad()), Behind(Arc::clone(&calls)), Os::Windows).background(true);
-        desk.run("desk_type", json!({"text": "aB!@c€D", "pid": 4}))
+        desk.run("desk_type", json!({"text": "aB!@c€D\tE\rF", "pid": 4}))
             .await
             .unwrap();
         let seq: Vec<String> = calls
@@ -2957,7 +2964,19 @@ pub(crate) mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(seq, ["press a", "type B!@", "press c", "type €D"]);
+        assert_eq!(
+            seq,
+            [
+                "press a",
+                "type B!@",
+                "press c",
+                "type €D",
+                "type \t",
+                "type E",
+                "type \r",
+                "type F"
+            ]
+        );
     }
 
     #[tokio::test]
