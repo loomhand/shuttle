@@ -57,7 +57,7 @@ test('a type step whose recording read no focus either types without the check',
 test('a recorded password step types only into a focused password field', async (t) => {
   const typed = await page(t, { title: 'pw', role: 'window' }, { role: 'textbox', name: '' })
   const r = await main({ steps: [{ type: '{{password}}', focus: { ...user, secure: true } }], params: { password: 's3' } })
-  assert.match(String(r.error), /recording typed into a password field, and the focused textbox "" in "pw" is not one/)
+  assert.match(String(r.error), /recording typed into a password field, and the focused textbox "" in the window "pw" is not one/)
   assert.deepEqual(typed, [])
 })
 
@@ -85,7 +85,7 @@ test('a password step whose recording read no field types into any focused passw
 test('a password step whose recording read no field stops where the focused field shows its text', async (t) => {
   const typed = await page(t, { title: 'pw', role: 'window' }, { role: 'textbox', name: 'User Name' })
   const r = await main({ steps: [{ type: '{{password}}', focus: { secure: true } }], params: { password: 's3' } })
-  assert.match(String(r.error), /recording typed into a password field, and the focused textbox "User Name" in "pw" is not one/)
+  assert.match(String(r.error), /recording typed into a password field, and the focused textbox "User Name" in the window "pw" is not one/)
   assert.deepEqual(typed, [])
 })
 
