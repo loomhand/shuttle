@@ -200,6 +200,22 @@ test('a password typed outside a password field, as at a terminal prompt, become
   ])
 })
 
+test('a recording that holds only a terminal password still opens its app before the secret step', async (t) => {
+  await daemon(t, () => '{"ok":true}')
+  const tty = { role: 'textbox', name: 'shell', frame: 'window' }
+  const events: Event[] = [
+    { t: 0, kind: 'password', app: 'Terminal', focus: tty },
+    { t: 1, kind: 'password', app: 'iTerm2', focus: tty },
+  ]
+  const d = await main({ recording: { id: 'rec-tty3', events } })
+  assert.deepEqual(d.steps.map(({ intent: _, ...s }) => s), [
+    { app: 'Terminal' },
+    { type: '{{password}}', secret: true },
+    { app: 'iTerm2' },
+    { type: '{{password_2}}', secret: true },
+  ])
+})
+
 test('a password step whose focus was unread becomes a secret step when the next password event names a terminal', async (t) => {
   await daemon(t, () => '{"ok":true}')
   const events: Event[] = [
