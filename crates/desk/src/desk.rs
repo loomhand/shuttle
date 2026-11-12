@@ -1812,6 +1812,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if self.os == Os::Mac
             && self.listed().await?.iter().any(|f| {
                 f.active
+                    && !f.stale
                     && f.pid.map(i64::from) == Some(pid)
                     && f.number.map(i64::from) == Some(window_id)
             })
@@ -2958,6 +2959,12 @@ pub(crate) mod tests {
         }
         assert_eq!(raises(|| Ok(listed(true))).await, 0);
         assert_eq!(raises(|| Ok(listed(false))).await, 1);
+        let stale = || {
+            let mut s = listed(true);
+            s.frames[0].stale = true;
+            Ok(s)
+        };
+        assert_eq!(raises(stale).await, 1);
     }
 
     #[tokio::test]
