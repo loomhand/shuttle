@@ -410,9 +410,9 @@ function targetIn(ws: Win[]): Win | null {
   // on macOS the one new ownerless dialog of the target's app belongs to the target
   function belongs(x: Win) {
     if (x.owner !== undefined) return mine.has(x.owner)
-    if (OS !== 'darwin' || x.pid !== t.pid || x.role === 'window') return false
+    if (OS !== 'darwin' || x.pid !== t.pid || x.role !== 'dialog') return false
     if (adopted.has(x.id)) return true
-    const fresh = ws.filter((y) => y.owner === undefined && y.pid === t.pid && y.role !== 'window' && !targetSince.has(y.id) && !adopted.has(y.id))
+    const fresh = ws.filter((y) => y.owner === undefined && y.pid === t.pid && y.role === 'dialog' && !targetSince.has(y.id) && !adopted.has(y.id))
     if (fresh.length > 1) { doubt = `${fresh.length} dialogs of the app opened with no owner the OS names, and background gui_plan never guesses which one belongs to the plan's window`; return false }
     if (fresh[0]?.id !== x.id) return false
     adopted.add(x.id); return true
@@ -1135,6 +1135,10 @@ function unchanged(before: Map<string, Text> | null, after: Map<string, Text> | 
 function moved(before: Map<string, Text> | null, after: Map<string, Text> | null) {
   return !!before && !!after && [...after].some(([id, t]) => t.value !== undefined && before.get(id)?.value !== undefined && before.get(id)?.value !== t.value)
 }
+function masked(before: Map<string, Text> | null, after: Map<string, Text> | null, text: string) {
+  const dots = (v: string | undefined) => v === undefined ? -1 : /^[•●*]*$/u.test(v) ? [...v].length : -1
+  return !!before && !!after && [...after].some(([id, t]) => t.field && dots(t.value) > 0 && dots(t.value) - Math.max(dots(before.get(id)?.value ?? ''), 0) === [...text].length)
+}
 function shows(before: Map<string, Text> | null, after: Map<string, Text> | null, text: string, terminal = false) {
   const squash = (v: string) => terminal ? v.replace(/[\r\n]/g, '') : v.replace(/\s+/g, '').toLowerCase()
   const want = terminal ? squash(text).trimEnd() || squash(text) : squash(text)
@@ -1276,7 +1280,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     tick('act', t0)
     if (BG && rec.unverified && w && !sub && quiet !== undefined) rec.confirmed = !quiet
     else if (BG && rec.unverified && w && !sub) {
-      const now = await texts(w); const tty = rec.unverified.includes(TERMINAL); const shown = shows(was, now, s.type, tty)
+      const now = await texts(w); const tty = rec.unverified.includes(TERMINAL); const shown = shows(was, now, s.type, tty) || (!tty && secure(s) && masked(was, now, s.type))
       if (tty && secure(s) && shown) throw echoed(w)
       if (AUTO && !tty && !secure(s) && !shown && unchanged(was, now) && whole(was) && whole(now) && !taken(await desk.windows())) {
         await desk.focus(w.title, w.pid)
@@ -1323,7 +1327,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (w && !s.window && !isDialog(o)) {
       let d: Win | null = null; for (const x of others) if (isDialog(await outline(x))) { d = x; break }
       const pid = w.pid
-      if (BG && !d && OS === 'darwin' && ws.some((x) => x.pid === pid && x.owner === undefined && x.role !== 'window' && !adopted.has(x.id))) throw new Surprise(`a dialog of "${w.title}"'s app has no owner the OS names, and background close never guesses whether it belongs to the plan's window: name it with {close: true, window}`, await seen())
+      if (BG && !d && OS === 'darwin' && ws.some((x) => x.pid === pid && x.owner === undefined && x.role === 'dialog' && !adopted.has(x.id))) throw new Surprise(`a dialog of "${w.title}"'s app has no owner the OS names, and background close never guesses whether it belongs to the plan's window: name it with {close: true, window}`, await seen())
       w = d
     }
     if (!w) { rec.noop = true; tick('act', t0); return }
