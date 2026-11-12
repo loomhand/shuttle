@@ -82,7 +82,7 @@ impl Tap {
                         let (pid, _) = ax::typing();
                         let _ = (*seen).tx.send(Input::Password {
                             pid,
-                            focus: focused(true),
+                            focus: focused(),
                         });
                     }
                     secure = now;
@@ -190,7 +190,7 @@ extern "C" fn heard(
     event
 }
 
-fn focused(secret: bool) -> Option<Field> {
+fn focused() -> Option<Field> {
     ax::focused().map(|f| {
         let (url, id) = f
             .page
@@ -201,7 +201,7 @@ fn focused(secret: bool) -> Option<Field> {
             name: f.name,
             frame: f.frame,
             window: f.window,
-            secure: f.secure || secret,
+            secure: f.secure,
             url,
             id,
         }
@@ -242,7 +242,7 @@ fn read(e: &Event, kind: u32, seen: &Seen) -> Option<Input> {
         KEY_DOWN => {
             let (pid, secret) = ax::typing();
             let read = seen.fresh.get();
-            let focus = if read { focused(secret) } else { None };
+            let focus = if read { focused() } else { None };
             let text = if secret { String::new() } else { e.text() };
             let plain = !text.is_empty()
                 && !text.chars().any(char::is_control)
