@@ -84,6 +84,7 @@ const WAIT_POLL: Duration = Duration::from_millis(10);
 const WAIT_CHECK: Duration = Duration::from_millis(100);
 
 const FRAME_BORDER: f64 = 16.0;
+const TITLE_BAR: f64 = 48.0;
 
 const OTHER_DISPLAY: &str =
     "; name the window with `window` to capture a window on another display";
@@ -488,6 +489,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+        if self.os == Os::Linux && args["session"] == WINDOW_SESSION && tool != "get_window_state" {
+            *lock(&self.read) = None;
+        }
         let out = self.driver.call(tool, args).await?;
         if INPUT_TOOLS.contains(&tool) {
             let _ = SENT.try_with(|n| n.set(n.get() + 1));
@@ -1144,6 +1148,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if locked {
             req["locked_input"] = true.into();
         }
+        let _session = match to {
+            Some(_) if self.os == Os::Linux => Some(self.session.lock().await),
+            _ => None,
+        };
         let out = self.call(tool, req).await.map_err(|e| {
             if locked && e.contains("locked_input") {
                 format!("{tool}: {LOCKED_INPUT_UNSUPPORTED}")
@@ -1327,26 +1335,35 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 && title_matches(tier, w["title"].as_str().unwrap_or_default(), &title)
         };
         let tier = (0..TITLE_TIERS).find(|&t| windows.iter().any(|w| titled(w, t)));
-        let mut same: Vec<Value> = match tier {
+        let same: Vec<Value> = match tier {
             Some(t) => windows.into_iter().filter(|w| titled(w, t)).collect(),
             None if picked["pid"].as_u64() == Some(u64::from(pid)) => vec![picked],
             None => Vec::new(),
         };
-        let border = if self.os == Os::Windows {
-            FRAME_BORDER
-        } else {
-            2.0
+        let tiers: &[[f64; 4]] = match self.os {
+            Os::Windows => &[[FRAME_BORDER; 4]],
+            Os::Linux => &[
+                [2.0; 4],
+                [FRAME_BORDER, TITLE_BAR, FRAME_BORDER, FRAME_BORDER],
+            ],
+            Os::Mac => &[[2.0; 4]],
         };
-        same.retain(|w| {
+        let fits = |w: &Value, border: [f64; 4]| {
             let [x, y, width, height] = bounds(w);
             frame.is_some_and(|[l, t, fw, fh]| {
                 let [l, t, r, b] = [l, t, l + fw, t + fh].map(|v| f64::from(v) / scale);
                 [x - l, y - t, r - x - width, b - y - height]
                     .iter()
-                    .all(|d| (-2.0..=border).contains(d))
+                    .zip(border)
+                    .all(|(d, most)| (-2.0..=most).contains(d))
             })
-        });
-        match same.as_slice() {
+        };
+        let fit: Vec<&Value> = tiers
+            .iter()
+            .map(|&t| same.iter().filter(|w| fits(w, t)).collect::<Vec<_>>())
+            .find(|m| !m.is_empty())
+            .unwrap_or_default();
+        match fit.as_slice() {
             [w] => self.click_in(req, w, point).await,
             _ => Err(BACKGROUND_TWINS.to_owned()),
         }
@@ -4365,6 +4382,109 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn on_linux_a_background_element_click_allows_the_window_manager_s_decorations() {
+        fn decorated() -> Result<Fake, String> {
+            let mut f = notepad();
+            f.add("w", None, "window", &["showing"], Some([-5, -29, 810, 634]));
+            Ok(f)
+        }
+        fn too_wide() -> Result<Fake, String> {
+            let mut f = notepad();
+            f.add(
+                "w",
+                None,
+                "window",
+                &["showing"],
+                Some([-30, -29, 860, 634]),
+            );
+            Ok(f)
+        }
+        let cases = [
+            (Os::Linux, decorated as fn() -> _, 900.0, true),
+            (Os::Mac, decorated, 900.0, false),
+            (Os::Linux, decorated, 0.0, false),
+            (Os::Linux, too_wide, 900.0, false),
+        ];
+        for (os, fake, twin, clicked) in cases {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let twins = Twins(Arc::clone(&calls), twin, "Untitled - Notepad", 0.0);
+            let desk = Desk::new(fake, twins, os).background(true);
+            let done = desk
+                .run("desk_act", json!({"id": "ok", "action": "click"}))
+                .await;
+            let got: Vec<Value> = sent(&calls, "click")
+                .iter()
+                .map(|c| c["window_id"].clone())
+                .collect();
+            assert_eq!(done.is_ok(), clicked, "{os:?} {twin} {done:?}");
+            assert_eq!(
+                got,
+                if clicked { vec![json!(1)] } else { vec![] },
+                "{os:?} {twin}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn on_linux_a_background_type_waits_for_a_window_shot_s_read() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(notepad()),
+            SlowRead(Behind(Arc::clone(&calls))),
+            Os::Linux,
+        )
+        .background(true);
+        let (_, typed) = tokio::join!(
+            desk.run("desk_shot", json!({"window": "Untitled - Notepad"})),
+            async {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                desk.run("desk_type", json!({"text": "x", "pid": 4})).await
+            }
+        );
+        typed.unwrap();
+        let tools: Vec<String> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(t, _)| t.clone())
+            .collect();
+        let mut open = 0;
+        for tool in &tools {
+            match tool.as_str() {
+                "get_window_state" => open += 1,
+                "read_done" => open -= 1,
+                "type_text" => assert_eq!(open, 0, "{tools:?}"),
+                _ => {}
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn on_linux_a_window_input_drops_the_read_its_driver_session_held() {
+        for (os, reads) in [(Os::Linux, 3), (Os::Mac, 1)] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(notepad()), Behind(Arc::clone(&calls)), os).background(true);
+            for _ in 0..2 {
+                desk.run("desk_click", json!({"x": 300.0, "y": 250.0, "pid": 4}))
+                    .await
+                    .unwrap();
+            }
+            desk.run(
+                "desk_drag",
+                json!({"x": 200.0, "y": 100.0, "to_x": 300.0, "to_y": 100.0, "pid": 4}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                sent(&calls, "get_window_state").len(),
+                reads,
+                "{os:?} {:?}",
+                order(&calls)
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn a_background_element_click_picks_its_window_by_frame_over_a_title_twin_on_another_space()
      {
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -6909,6 +7029,23 @@ pub(crate) mod tests {
                 }}),
                 _ => json!({}),
             })
+        }
+    }
+
+    struct SlowRead(Behind);
+
+    impl Input for SlowRead {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let out = self.0.call(tool, args).await;
+            if tool == "get_window_state" {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                self.0
+                    .0
+                    .lock()
+                    .unwrap()
+                    .push(("read_done".to_owned(), json!({})));
+            }
+            out
         }
     }
 

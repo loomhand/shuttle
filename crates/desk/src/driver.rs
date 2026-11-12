@@ -59,12 +59,13 @@ pub trait Input {
     fn call(&self, tool: &str, args: Value) -> impl Future<Output = Result<Value, String>> + Send;
 }
 
-/// A client of the cua-driver daemon at `endpoint`, in a desktop session, or the window session a call names; on Linux each call runs in a session of its own.
+/// A client of the cua-driver daemon at `endpoint`, in a desktop session, or the window session a call names; on Linux each call runs in a session of its own, except window reads, whose session the next window input shares and ends.
 #[derive(Debug)]
 pub struct Driver {
     endpoint: String,
     started: [AtomicBool; 3],
     calls: AtomicU64,
+    window_n: AtomicU64,
     last_click: Mutex<Option<(Instant, f64, f64)>>,
     last_input: std::sync::Mutex<Option<std::time::Instant>>,
 }
@@ -75,6 +76,7 @@ impl Driver {
             endpoint,
             started: Default::default(),
             calls: AtomicU64::new(0),
+            window_n: AtomicU64::new(0),
             last_click: Mutex::new(None),
             last_input: std::sync::Mutex::new(None),
         }
@@ -232,18 +234,20 @@ impl Input for Driver {
             .then(|| args["x"].as_f64().zip(args["y"].as_f64()))
             .flatten();
         if cfg!(target_os = "linux") {
+            let window = args["session"] == WINDOW_SESSION;
+            let read = window && tool == "get_window_state";
             // a session keeps its capture scale and a master keyboard that Chrome's core input loses to
-            args["session"] = format!(
-                "desk-{}-{}",
-                std::process::id(),
-                self.calls.fetch_add(1, Ordering::Relaxed)
-            )
-            .into();
+            let (kind, n) = match (window, read) {
+                (true, true) => ("window-", self.window_n.load(Ordering::Relaxed)),
+                (true, false) => ("window-", self.window_n.fetch_add(1, Ordering::Relaxed)),
+                _ => ("", self.calls.fetch_add(1, Ordering::Relaxed)),
+            };
+            args["session"] = format!("desk-{}-{kind}{n}", std::process::id()).into();
             let done = match point {
                 Some(point) => self.spaced(point, self.send(tool, &args)).await,
                 None => self.send(tool, &args).await,
             };
-            if !done.as_ref().is_err_and(|e| e.starts_with(CONNECT_FAILED)) {
+            if !read && !done.as_ref().is_err_and(|e| e.starts_with(CONNECT_FAILED)) {
                 let _ = self
                     .send("end_session", &json!({"session": args["session"]}))
                     .await;
@@ -656,6 +660,75 @@ mod tests {
         assert_eq!(sessions[0], sessions[1]);
         assert_eq!(sessions[2], sessions[3]);
         assert_ne!(sessions[0], sessions[2]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn on_linux_window_reads_share_the_session_of_the_next_window_input_which_ends_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let daemon = tokio::spawn(async move {
+            let (mut lines, mut ended) = (Vec::new(), std::collections::HashSet::new());
+            for _ in 0..9 {
+                let (s, _) = listener.accept().await.unwrap();
+                let mut s = BufReader::new(s);
+                let mut line = String::new();
+                s.read_line(&mut line).await.unwrap();
+                let l: Value = serde_json::from_str(&line).unwrap();
+                let session = l["args"]["session"].to_string();
+                let reply = if ended.contains(&session) {
+                    "{\"ok\":false,\"error\":\"session has ended\"}\n"
+                } else {
+                    "{\"ok\":true,\"result\":{\"structuredContent\":{}}}\n"
+                };
+                if l["name"] == "end_session" {
+                    ended.insert(session);
+                }
+                s.get_mut().write_all(reply.as_bytes()).await.unwrap();
+                lines.push(l);
+            }
+            lines
+        });
+        let d = Driver::new(socket.to_string_lossy().into_owned());
+        let read = json!({"session": WINDOW_SESSION, "pid": 4, "window_id": 9});
+        let click =
+            json!({"session": WINDOW_SESSION, "pid": 4, "window_id": 9, "x": 5.0, "y": 5.0});
+        for _ in 0..2 {
+            d.call("get_window_state", read.clone()).await.unwrap();
+            d.call("click", click.clone()).await.unwrap();
+        }
+        d.call("get_window_state", read).await.unwrap();
+        d.call("get_window_state", json!({"pid": 4, "window_id": 9}))
+            .await
+            .unwrap();
+        let lines = daemon.await.unwrap();
+        let calls: Vec<(&str, &str)> = lines
+            .iter()
+            .map(|l| {
+                (
+                    l["name"].as_str().unwrap(),
+                    l["args"]["session"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        let window = |n: u32| format!("desk-{}-window-{n}", std::process::id());
+        let (w0, w1, w2) = (window(0), window(1), window(2));
+        assert_eq!(
+            calls[..7],
+            [
+                ("get_window_state", w0.as_str()),
+                ("click", &w0),
+                ("end_session", &w0),
+                ("get_window_state", &w1),
+                ("click", &w1),
+                ("end_session", &w1),
+                ("get_window_state", &w2),
+            ]
+        );
+        assert_eq!(calls[7].0, "get_window_state");
+        assert!(!calls[7].1.contains("window"), "{calls:?}");
+        assert_eq!(calls[8], ("end_session", calls[7].1));
     }
 
     #[cfg(target_os = "linux")]
