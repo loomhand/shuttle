@@ -65,6 +65,7 @@ pub struct Driver {
     endpoint: String,
     started: [AtomicBool; 3],
     calls: AtomicU64,
+    window: AtomicU64,
     last_click: Mutex<Option<(Instant, f64, f64)>>,
     last_input: std::sync::Mutex<Option<std::time::Instant>>,
 }
@@ -75,6 +76,7 @@ impl Driver {
             endpoint,
             started: Default::default(),
             calls: AtomicU64::new(0),
+            window: AtomicU64::new(0),
             last_click: Mutex::new(None),
             last_input: std::sync::Mutex::new(None),
         }
@@ -236,7 +238,12 @@ impl Input for Driver {
             let read = window && tool == "get_window_state";
             // a session keeps its capture scale and a master keyboard that Chrome's core input loses to
             args["session"] = if window {
-                format!("desk-{}-window", std::process::id())
+                let n = if read {
+                    self.window.load(Ordering::Relaxed)
+                } else {
+                    self.window.fetch_add(1, Ordering::Relaxed)
+                };
+                format!("desk-{}-window-{n}", std::process::id())
             } else {
                 format!(
                     "desk-{}-{}",
@@ -670,50 +677,67 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("cua.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let ok = b"{\"ok\":true,\"result\":{\"structuredContent\":{}}}\n";
         let daemon = tokio::spawn(async move {
-            let mut lines = Vec::new();
-            for _ in 0..6 {
+            let (mut lines, mut ended) = (Vec::new(), std::collections::HashSet::new());
+            for _ in 0..9 {
                 let (s, _) = listener.accept().await.unwrap();
                 let mut s = BufReader::new(s);
                 let mut line = String::new();
                 s.read_line(&mut line).await.unwrap();
-                s.get_mut().write_all(ok).await.unwrap();
-                lines.push(serde_json::from_str::<Value>(&line).unwrap());
+                let l: Value = serde_json::from_str(&line).unwrap();
+                let session = l["args"]["session"].to_string();
+                let reply = if ended.contains(&session) {
+                    "{\"ok\":false,\"error\":\"session has ended\"}\n"
+                } else {
+                    "{\"ok\":true,\"result\":{\"structuredContent\":{}}}\n"
+                };
+                if l["name"] == "end_session" {
+                    ended.insert(session);
+                }
+                s.get_mut().write_all(reply.as_bytes()).await.unwrap();
+                lines.push(l);
             }
             lines
         });
         let d = Driver::new(socket.to_string_lossy().into_owned());
         let read = json!({"session": WINDOW_SESSION, "pid": 4, "window_id": 9});
-        d.call("get_window_state", read.clone()).await.unwrap();
+        let click =
+            json!({"session": WINDOW_SESSION, "pid": 4, "window_id": 9, "x": 5.0, "y": 5.0});
+        for _ in 0..2 {
+            d.call("get_window_state", read.clone()).await.unwrap();
+            d.call("click", click.clone()).await.unwrap();
+        }
         d.call("get_window_state", read).await.unwrap();
-        d.call(
-            "click",
-            json!({"session": WINDOW_SESSION, "pid": 4, "window_id": 9, "x": 5.0, "y": 5.0}),
-        )
-        .await
-        .unwrap();
         d.call("get_window_state", json!({"pid": 4, "window_id": 9}))
             .await
             .unwrap();
         let lines = daemon.await.unwrap();
-        let calls: Vec<(&Value, &Value)> = lines
+        let calls: Vec<(&str, &str)> = lines
             .iter()
-            .map(|l| (&l["name"], &l["args"]["session"]))
+            .map(|l| {
+                (
+                    l["name"].as_str().unwrap(),
+                    l["args"]["session"].as_str().unwrap(),
+                )
+            })
             .collect();
-        let window = json!(format!("desk-{}-window", std::process::id()));
+        let window = |n: u32| format!("desk-{}-window-{n}", std::process::id());
+        let (w0, w1, w2) = (window(0), window(1), window(2));
         assert_eq!(
-            calls[..4],
+            calls[..7],
             [
-                (&json!("get_window_state"), &window),
-                (&json!("get_window_state"), &window),
-                (&json!("click"), &window),
-                (&json!("end_session"), &window),
+                ("get_window_state", w0.as_str()),
+                ("click", &w0),
+                ("end_session", &w0),
+                ("get_window_state", &w1),
+                ("click", &w1),
+                ("end_session", &w1),
+                ("get_window_state", &w2),
             ]
         );
-        assert_eq!(calls[4].0, "get_window_state");
-        assert_ne!(calls[4].1, &window);
-        assert_eq!(calls[5], (&json!("end_session"), calls[4].1));
+        assert_eq!(calls[7].0, "get_window_state");
+        assert!(!calls[7].1.contains("window"), "{calls:?}");
+        assert_eq!(calls[8], ("end_session", calls[7].1));
     }
 
     #[cfg(target_os = "linux")]
