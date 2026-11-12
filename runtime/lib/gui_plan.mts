@@ -1117,6 +1117,7 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
   }
   if (quiet && secure(s) && text.endsWith('\n')) {
     const after = await settled(w)
+    if (shows(base, after, raw[k] ?? '', true)) throw new Surprise(`the password showed in "${w.title}" after its Return was sent`, { window: w.title })
     if (moved(base, after)) return false
   }
   return quiet

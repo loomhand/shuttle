@@ -331,6 +331,14 @@ test('a background secret password line stays unconfirmed, with no outline, when
   }
 })
 
+test('a background secret password line that shows only after its Return stops instead of counting as landed', async (t) => {
+  const { r } = await terminal(t, background, (screen) => screen, { type: 'example-pass\n', extra: { secret: true }, answer: (s: string) => `${s}example-pass\n$ ` })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, 'the password showed in "Terminal" after its Return was sent')
+  assert.equal(r.escalate?.outline, undefined)
+  assert.ok(!JSON.stringify(r).includes('example-pass'), JSON.stringify(r))
+})
+
 test('a foreground secret step reads the window back before its Return, as a foreground type reply names no terminal', async (t) => {
   const keys = (calls: Call[]) => calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys)
   const typed = (calls: Call[]) => calls.filter((c) => c.tool === 'desk_type').map((c) => c.args.text)
