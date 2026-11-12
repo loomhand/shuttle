@@ -1810,11 +1810,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return Ok(());
         };
         if self.os == Os::Mac
-            && self.listed().await?.iter().any(|f| {
-                f.active
-                    && !f.stale
-                    && f.pid.map(i64::from) == Some(pid)
-                    && f.number.map(i64::from) == Some(window_id)
+            && self.listed().await.is_ok_and(|frames| {
+                frames.iter().any(|f| {
+                    f.active
+                        && !f.stale
+                        && f.pid.map(i64::from) == Some(pid)
+                        && f.number.map(i64::from) == Some(window_id)
+                })
             })
         {
             return Ok(());
