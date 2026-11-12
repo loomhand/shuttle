@@ -902,7 +902,6 @@ pub fn secure_keyboard_entry(wanted: impl Fn(&str) -> bool) -> Option<&'static s
     .map(|(app, ..)| *app)
 }
 
-/// The first entry `covered` accepts whose setting `on` reads as on; `on` runs for covered entries only.
 fn first_on<T>(entries: &[T], covered: impl Fn(&T) -> bool, on: impl Fn(&T) -> bool) -> Option<&T> {
     entries.iter().filter(|e| covered(e)).find(|e| on(e))
 }
