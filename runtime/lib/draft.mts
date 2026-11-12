@@ -41,7 +41,9 @@ export async function main(p: Params): Promise<Draft> {
   const password = (f?: Field | null) => {
     const name = `password${secrets ? `_${secrets + 1}` : ''}`; secrets += 1
     params[name] = { secret: true }
-    draft.steps.push({ type: `{{${name}}}`, ...onPage(f ?? {}, { ...f, secure: true }), intent: `type the ${name.replace('_', ' ')} (a password field: not recorded, pass it as ${name})` })
+    const said = name.replace('_', ' ')
+    if (f && !f.secure) draft.steps.push({ type: `{{${name}}}`, secret: true, intent: `type the ${said} (not into a password field, such as at a terminal prompt: not recorded, pass it as ${name})` })
+    else draft.steps.push({ type: `{{${name}}}`, ...onPage(f ?? {}, { ...f, secure: true }), intent: `type the ${said} (a password field: not recorded, pass it as ${name})` })
   }
   const flush = () => {
     if (secret) {
@@ -87,7 +89,10 @@ export async function main(p: Params): Promise<Draft> {
     if (e.kind === 'password') {
       const last = draft.steps.at(-1)
       if (!filled) password(e.focus)
-      else if (last && e.focus && !(last.focus as Partial<Field> | undefined)?.role) Object.assign(last, onPage(e.focus, { ...e.focus, secure: true }))
+      else if (last && e.focus && !(last.focus as Partial<Field> | undefined)?.role) {
+        if (e.focus.secure) Object.assign(last, onPage(e.focus, { ...e.focus, secure: true }))
+        else if (last.type !== undefined && !last.secret) { delete last.focus; delete last.web; last.secret = true }
+      }
       filled = true
     }
     else if (e.kind === 'skipped') draft.gaps.push(draft.steps.length)

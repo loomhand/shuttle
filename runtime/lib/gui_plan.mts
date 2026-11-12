@@ -1094,19 +1094,19 @@ async function texts(w: Win): Promise<Map<string, Text> | null> {
 function whole(t: Map<string, Text> | null) { return !!t && [...t.values()].every((x) => !x.cut) }
 async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | null, rec: Rec) {
   const raw = text.split('\n'); const lines = raw.map((l) => l.replace(/\r$/, '')); const k = lines.findIndex(Boolean)
-  if (k < 0) { heard(await desk.typeText(text, at(w)), rec); return undefined }
+  if (k < 0) { heard(await desk.typeText(text, at(w), secure(s)), rec); return undefined }
   let base = was
   if (k > 0) { heard(await desk.typeText('\n'.repeat(k), at(w)), rec); base = await settled(w) }
-  const first = await desk.typeText(raw[k] ?? '', at(w)); heard(first, rec)
+  const first = await desk.typeText(raw[k] ?? '', at(w), secure(s)); heard(first, rec)
   if (!first.terminal) {
-    if (k + 1 < raw.length) heard(await desk.typeText(`\n${raw.slice(k + 1).join('\n')}`, at(w)), rec)
+    if (k + 1 < raw.length) heard(await desk.typeText(`\n${raw.slice(k + 1).join('\n')}`, at(w), secure(s)), rec)
     return undefined
   }
   const n = lines.length - (text.endsWith('\n') ? 1 : 0); let quiet = false
   for (const [i, line] of lines.entries()) {
     if (i < k) continue
     if (i > k) { heard(await desk.key('Return', at(w)), rec); if (!line) continue; base = await settled(w) }
-    const r = i > k ? await desk.typeText(raw[i] ?? '', at(w)) : first
+    const r = i > k ? await desk.typeText(raw[i] ?? '', at(w), secure(s)) : first
     if (i > k) heard(r, rec)
     if (!r.unverified?.includes(TERMINAL)) { if (secure(s) && !r.unverified) throw echoed(w); continue }
     const now = await texts(w); const shown = shows(base, now, line, true)
@@ -1261,7 +1261,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine(w)
     const text = sub ? s.type.slice(0, -1) : s.type; const line = held ? text.slice(0, -1) : text; let quiet: boolean | undefined
     let sent: desk.Sent | undefined
-    if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(sent = await desk.typeText(line, at(w)), rec)
+    if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(sent = await desk.typeText(line, at(w), secure(s)), rec)
     if (w && secure(s) && sent?.terminal && !sent.unverified) throw echoed(w)
     if (held && w && shows(was, await settled(w), line, true)) throw echoed(w)
     if (held) heard(await desk.key('Return', at(w)), rec)

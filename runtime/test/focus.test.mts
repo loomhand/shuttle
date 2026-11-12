@@ -104,3 +104,17 @@ test('a password typed into a dialog is not read back and never shows in the res
   assert.deepEqual(typed, ['hunter2'])
   assert.ok(!JSON.stringify(r).includes('hunter2'), JSON.stringify(r))
 })
+
+test('a secret or password-field type step marks its type call secret, and a plain one does not', async (t) => {
+  const win = { id: '1/1', title: 'pw', role: 'window', pid: process.pid, active: true, app: 'Browser' }
+  const sent: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: 'pw', states: ['showing', 'focused'] }, { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'focused', 'protected'] }] })
+    if (tool === 'desk_type') sent.push(args.secret)
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ type: '{{password}}', focus: { secure: true } }, { type: '{{pin}}', secret: true }, { type: 'bob' }], params: { password: 's3', pin: '42' } })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(sent, [true, true, undefined])
+})

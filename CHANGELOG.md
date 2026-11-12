@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Recording: a password typed outside a password field is drafted as a secret step.** When macOS turned on secure input while the focus was not on a password field, as at a terminal's `sudo` or `read -s` prompt, the draft still wrote a password-field step, `{type: "{{password}}", focus: {…, secure: true}}`, and its replay stopped because a terminal is not a password field (#363). The recording now marks `focus.secure` only for a real password field. The draft writes such a password as `{type: "{{password}}", secret: true}`, which replays without the password-field check.
+- **The confirm dialog does not show a password.** With `confirm = "every"`, the dialog quoted the text of every `type` call, including a secret step's or a password field's. gui_plan now marks those calls `secret`, and the dialog says "the password" instead (#363).
+
 ## 0.1.50 - 2026-11-12
 
 - **`gui_plan`: a `type` step with `focus` waits up to 1 s for the focus to arrive before it refuses.** The check read the focused element once, right before typing, so a page that moved the focus into the field a moment later stopped the step with "no focused element can be read now" or "is none" (#374). The step now re-reads the focus every 100 ms for up to 1 s and types once it matches; it still types nothing and stops when it does not, so a sheet that still holds the focus, such as Safari's "Save Password?", still stops the step. A password step whose focused field is not a password field now says "is not one" and names the role of its window or sheet, instead of "is none".

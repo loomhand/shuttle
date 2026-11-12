@@ -178,6 +178,40 @@ test('every password step asks for a password field, the one the recording read 
   ])
 })
 
+test('a password typed outside a password field, as at a terminal prompt, becomes a secret step with no password-field check', async (t) => {
+  await daemon(t, () => '{"ok":true}')
+  const tty = { role: 'textbox', name: 'shell', frame: 'window' }
+  const pw = { role: 'textbox', name: 'Password', frame: 'window', secure: true }
+  const events: Event[] = [
+    { t: 0, kind: 'password', app: 'Terminal', focus: tty },
+    { t: 1, kind: 'key', secret: true, app: 'Terminal', focus: tty },
+    { t: 2, kind: 'key', code: 36, text: '\r', mods: [], app: 'Terminal' },
+    { t: 3, kind: 'password', app: 'Safari', focus: pw },
+    { t: 4, kind: 'key', secret: true, app: 'Safari', focus: pw },
+    { t: 5, kind: 'key', code: 36, text: '\r', mods: [], app: 'Safari' },
+    { t: 6, kind: 'key', secret: true, app: 'Terminal', focus: tty },
+    { t: 7, kind: 'key', code: 36, text: '\r', mods: [], app: 'Terminal' },
+  ]
+  const d = await main({ recording: { id: 'rec-tty', events } })
+  assert.deepEqual(d.steps.filter((s) => 'type' in s).map(({ type, focus, secret }) => ({ type, focus, secret })), [
+    { type: '{{password}}', focus: undefined, secret: true },
+    { type: '{{password_2}}', focus: pw, secret: undefined },
+    { type: '{{password_3}}', focus: undefined, secret: true },
+  ])
+})
+
+test('a password step whose focus was unread becomes a secret step when the next password event names a terminal', async (t) => {
+  await daemon(t, () => '{"ok":true}')
+  const events: Event[] = [
+    { t: 0, kind: 'password', app: 'Terminal', focus: null },
+    { t: 1, kind: 'password', app: 'Terminal', focus: { role: 'textbox', name: 'shell', frame: 'window' } },
+  ]
+  const d = await main({ recording: { id: 'rec-tty2', events } })
+  assert.deepEqual(d.steps.filter((s) => 'type' in s).map(({ type, focus, secret }) => ({ type, focus, secret })), [
+    { type: '{{password}}', focus: undefined, secret: true },
+  ])
+})
+
 test('input that moves to another app or another window of the app first switches there', async (t) => {
   await daemon(t, () => '{"ok":true}')
   const at = (t: number, app: string, title: string) => ({ t, kind: 'click' as const, x: 10, y: 10, app, element: { role: 'button', name: 'OK' }, root: false, window: win(title) })
