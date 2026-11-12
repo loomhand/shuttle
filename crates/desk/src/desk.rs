@@ -1056,8 +1056,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 }
                 for (at, c) in line.char_indices() {
                     let (tool, req) = match keystroke(c) {
-                        Some(keys) => key_request(keys),
-                        None => (
+                        Some(keys) if keys.len() == 1 => key_request(keys),
+                        _ => (
                             "type_text",
                             json!({"text": &line[at..at + c.len_utf8()], "literal": true}),
                         ),
@@ -2908,6 +2908,27 @@ pub(crate) mod tests {
                 assert_eq!(sent(&calls, "bring_to_front")[0]["pid"], 4);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn a_windows_background_type_sends_a_shifted_character_as_text_not_a_shift_hotkey() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk =
+            Desk::new(|| Ok(notepad()), Behind(Arc::clone(&calls)), Os::Windows).background(true);
+        desk.run("desk_type", json!({"text": "aB!", "pid": 4}))
+            .await
+            .unwrap();
+        assert!(sent(&calls, "hotkey").is_empty(), "{:?}", order(&calls));
+        let keys: Vec<Value> = sent(&calls, "press_key")
+            .into_iter()
+            .map(|r| r["key"].clone())
+            .collect();
+        let texts: Vec<Value> = sent(&calls, "type_text")
+            .into_iter()
+            .map(|r| r["text"].clone())
+            .collect();
+        assert_eq!(keys, [json!("a")]);
+        assert_eq!(texts, [json!("B"), json!("!")]);
     }
 
     #[tokio::test]
