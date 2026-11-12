@@ -81,6 +81,11 @@ const FRAME_ATTRS: [&str; 6] = [
     "AXSize",
 ];
 
+const SECURE_ENTRY: [(&str, &str, &str); 2] = [
+    ("Terminal", "com.apple.Terminal", "SecureKeyboardEntry"),
+    ("iTerm2", "com.googlecode.iterm2", "Secure Input"),
+];
+
 static PROMPTED: AtomicBool = AtomicBool::new(false);
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static HANG: Mutex<Hang> = Mutex::new(Hang {
@@ -813,6 +818,12 @@ unsafe extern "C" {
     fn proc_pidpath(pid: i32, buffer: *mut c_void, size: u32) -> i32;
 }
 
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFPreferencesAppSynchronize(app: CFStringRef) -> bool;
+    fn CFPreferencesCopyAppValue(key: CFStringRef, app: CFStringRef) -> CFTypeRef;
+}
+
 #[link(name = "Carbon", kind = "framework")]
 unsafe extern "C" {
     fn IsSecureEventInputEnabled() -> bool;
@@ -878,6 +889,32 @@ pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
 pub fn secure_input() -> bool {
     // SAFETY: the call only reads the session's secure input state.
     unsafe { IsSecureEventInputEnabled() }
+}
+
+/// The terminal app whose Secure Keyboard Entry setting is on, which hides every key typed in it from an event tap.
+pub fn secure_keyboard_entry() -> Option<&'static str> {
+    SECURE_ENTRY
+        .iter()
+        .find(|(_, domain, key)| {
+            let (domain, key) = (CFString::new(domain), CFString::new(key));
+            // SAFETY: both strings live across the calls, and the copied value is owned by `CFType` under the create rule.
+            let value = unsafe {
+                CFPreferencesAppSynchronize(domain.as_concrete_TypeRef());
+                let v = CFPreferencesCopyAppValue(
+                    key.as_concrete_TypeRef(),
+                    domain.as_concrete_TypeRef(),
+                );
+                (!v.is_null()).then(|| CFType::wrap_under_create_rule(v))
+            };
+            value.is_some_and(|v| {
+                v.downcast::<CFBoolean>().map(bool::from).or_else(|| {
+                    v.downcast::<CFNumber>()
+                        .and_then(|n| n.to_i64())
+                        .map(|n| n != 0)
+                }) == Some(true)
+            })
+        })
+        .map(|(app, ..)| *app)
 }
 
 /// The process of the focused element, and whether typing goes to a password field.

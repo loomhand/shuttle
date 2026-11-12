@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Recording: a recording does not start while a terminal's Secure Keyboard Entry is on.** With Terminal's or iTerm2's Secure Keyboard Entry on, macOS hides every key typed in that terminal from the recorder, and turns on secure input whenever the terminal comes to the front. So a recording held none of the commands typed there, and its draft held a password step that no password produced. `record_start` now fails with a reason that names the terminal and says how to turn the setting off, unless the recording names its apps and leaves that terminal out.
 - **Recording: a password typed outside a password field is drafted as a secret step.** When macOS turned on secure input while the focus was not on a password field, as at a terminal's `sudo` or `read -s` prompt, the draft still wrote a password-field step, `{type: "{{password}}", focus: {…, secure: true}}`, and its replay stopped because a terminal is not a password field (#363). The recording now marks `focus.secure` only for a real password field. The draft writes such a password as `{type: "{{password}}\n", secret: true, focus: {role, name, frame}}`, which replays only where that same element has the focus, and sends the Return the recorder could not see. A password event now also opens its app, so a recording that holds only the password replays in its app.
 
 ## 0.1.50 - 2026-11-12
