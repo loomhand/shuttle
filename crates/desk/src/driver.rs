@@ -59,7 +59,7 @@ pub trait Input {
     fn call(&self, tool: &str, args: Value) -> impl Future<Output = Result<Value, String>> + Send;
 }
 
-/// A client of the cua-driver daemon at `endpoint`, in a desktop session, or the window session a call names; on Linux each call runs in a session of its own.
+/// A client of the cua-driver daemon at `endpoint`, in a desktop session, or the window session a call names; on Linux each call runs in a session of its own, except window reads, whose session the next window input shares and ends.
 #[derive(Debug)]
 pub struct Driver {
     endpoint: String,
@@ -232,18 +232,24 @@ impl Input for Driver {
             .then(|| args["x"].as_f64().zip(args["y"].as_f64()))
             .flatten();
         if cfg!(target_os = "linux") {
+            let window = args["session"] == WINDOW_SESSION;
+            let read = window && tool == "get_window_state";
             // a session keeps its capture scale and a master keyboard that Chrome's core input loses to
-            args["session"] = format!(
-                "desk-{}-{}",
-                std::process::id(),
-                self.calls.fetch_add(1, Ordering::Relaxed)
-            )
+            args["session"] = if window {
+                format!("desk-{}-window", std::process::id())
+            } else {
+                format!(
+                    "desk-{}-{}",
+                    std::process::id(),
+                    self.calls.fetch_add(1, Ordering::Relaxed)
+                )
+            }
             .into();
             let done = match point {
                 Some(point) => self.spaced(point, self.send(tool, &args)).await,
                 None => self.send(tool, &args).await,
             };
-            if !done.as_ref().is_err_and(|e| e.starts_with(CONNECT_FAILED)) {
+            if !read && !done.as_ref().is_err_and(|e| e.starts_with(CONNECT_FAILED)) {
                 let _ = self
                     .send("end_session", &json!({"session": args["session"]}))
                     .await;
@@ -656,6 +662,58 @@ mod tests {
         assert_eq!(sessions[0], sessions[1]);
         assert_eq!(sessions[2], sessions[3]);
         assert_ne!(sessions[0], sessions[2]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn on_linux_window_reads_share_the_session_of_the_next_window_input_which_ends_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let ok = b"{\"ok\":true,\"result\":{\"structuredContent\":{}}}\n";
+        let daemon = tokio::spawn(async move {
+            let mut lines = Vec::new();
+            for _ in 0..6 {
+                let (s, _) = listener.accept().await.unwrap();
+                let mut s = BufReader::new(s);
+                let mut line = String::new();
+                s.read_line(&mut line).await.unwrap();
+                s.get_mut().write_all(ok).await.unwrap();
+                lines.push(serde_json::from_str::<Value>(&line).unwrap());
+            }
+            lines
+        });
+        let d = Driver::new(socket.to_string_lossy().into_owned());
+        let read = json!({"session": WINDOW_SESSION, "pid": 4, "window_id": 9});
+        d.call("get_window_state", read.clone()).await.unwrap();
+        d.call("get_window_state", read).await.unwrap();
+        d.call(
+            "click",
+            json!({"session": WINDOW_SESSION, "pid": 4, "window_id": 9, "x": 5.0, "y": 5.0}),
+        )
+        .await
+        .unwrap();
+        d.call("get_window_state", json!({"pid": 4, "window_id": 9}))
+            .await
+            .unwrap();
+        let lines = daemon.await.unwrap();
+        let calls: Vec<(&Value, &Value)> = lines
+            .iter()
+            .map(|l| (&l["name"], &l["args"]["session"]))
+            .collect();
+        let window = json!(format!("desk-{}-window", std::process::id()));
+        assert_eq!(
+            calls[..4],
+            [
+                (&json!("get_window_state"), &window),
+                (&json!("get_window_state"), &window),
+                (&json!("click"), &window),
+                (&json!("end_session"), &window),
+            ]
+        );
+        assert_eq!(calls[4].0, "get_window_state");
+        assert_ne!(calls[4].1, &window);
+        assert_eq!(calls[5], (&json!("end_session"), calls[4].1));
     }
 
     #[cfg(target_os = "linux")]

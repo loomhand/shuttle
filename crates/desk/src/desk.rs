@@ -84,6 +84,7 @@ const WAIT_POLL: Duration = Duration::from_millis(10);
 const WAIT_CHECK: Duration = Duration::from_millis(100);
 
 const FRAME_BORDER: f64 = 16.0;
+const TITLE_BAR: f64 = 48.0;
 
 const OTHER_DISPLAY: &str =
     "; name the window with `window` to capture a window on another display";
@@ -1327,26 +1328,35 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 && title_matches(tier, w["title"].as_str().unwrap_or_default(), &title)
         };
         let tier = (0..TITLE_TIERS).find(|&t| windows.iter().any(|w| titled(w, t)));
-        let mut same: Vec<Value> = match tier {
+        let same: Vec<Value> = match tier {
             Some(t) => windows.into_iter().filter(|w| titled(w, t)).collect(),
             None if picked["pid"].as_u64() == Some(u64::from(pid)) => vec![picked],
             None => Vec::new(),
         };
-        let border = if self.os == Os::Windows {
-            FRAME_BORDER
-        } else {
-            2.0
+        let tiers: &[[f64; 4]] = match self.os {
+            Os::Windows => &[[FRAME_BORDER; 4]],
+            Os::Linux => &[
+                [2.0; 4],
+                [FRAME_BORDER, TITLE_BAR, FRAME_BORDER, FRAME_BORDER],
+            ],
+            Os::Mac => &[[2.0; 4]],
         };
-        same.retain(|w| {
+        let fits = |w: &Value, border: [f64; 4]| {
             let [x, y, width, height] = bounds(w);
             frame.is_some_and(|[l, t, fw, fh]| {
                 let [l, t, r, b] = [l, t, l + fw, t + fh].map(|v| f64::from(v) / scale);
                 [x - l, y - t, r - x - width, b - y - height]
                     .iter()
-                    .all(|d| (-2.0..=border).contains(d))
+                    .zip(border)
+                    .all(|(d, most)| (-2.0..=most).contains(d))
             })
-        });
-        match same.as_slice() {
+        };
+        let fit: Vec<&Value> = tiers
+            .iter()
+            .map(|&t| same.iter().filter(|w| fits(w, t)).collect::<Vec<_>>())
+            .find(|m| !m.is_empty())
+            .unwrap_or_default();
+        match fit.as_slice() {
             [w] => self.click_in(req, w, point).await,
             _ => Err(BACKGROUND_TWINS.to_owned()),
         }
@@ -1596,7 +1606,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             cover = self.cover(&req, w.pid).await?;
         }
         let cached = lock(&self.read)
-            .filter(|r| (r.pid, r.id, r.bounds) == (w.pid, w.id, w.bounds))
+            .filter(|r| self.os != Os::Linux && (r.pid, r.id, r.bounds) == (w.pid, w.id, w.bounds))
             .map(|r| r.k);
         let k = match cached {
             Some(k) => Some(k),
@@ -1843,7 +1853,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let scale = self.scale().await?;
         let under = Under::of(w, (x / scale, y / scale)).ok_or(BACKGROUND_TARGET)?;
         let cached = lock(&self.read)
-            .filter(|r| (r.pid, r.id, r.bounds) == (under.pid, under.id, under.bounds))
+            .filter(|r| {
+                self.os != Os::Linux
+                    && (r.pid, r.id, r.bounds) == (under.pid, under.id, under.bounds)
+            })
             .map(|r| r.k);
         let (kx, ky) = match cached {
             Some(k) => k,
@@ -4362,6 +4375,28 @@ pub(crate) mod tests {
         click_one_of_twins("Untitled - Notepad", || Ok(notepad())).await;
         click_one_of_twins("", untitled).await;
         click_one_of_twins("Untitled - Notepad (2)", || Ok(notepad())).await;
+    }
+
+    #[tokio::test]
+    async fn on_linux_a_background_element_click_allows_the_window_manager_s_decorations() {
+        for (os, clicks) in [(Os::Linux, 1), (Os::Mac, 0)] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk =
+                Desk::new(|| Ok(notepad()), Decorated(Arc::clone(&calls)), os).background(true);
+            let done = desk
+                .run("desk_act", json!({"id": "ok", "action": "click"}))
+                .await;
+            let got = sent(&calls, "click");
+            assert_eq!(got.len(), clicks, "{os:?} {done:?} {got:?}");
+            if clicks == 0 {
+                assert!(
+                    done.unwrap_err().contains("own window is ambiguous"),
+                    "{os:?}"
+                );
+            } else {
+                assert_eq!(got[0]["window_id"], 1, "{got:?}");
+            }
+        }
     }
 
     #[tokio::test]
@@ -6906,6 +6941,26 @@ pub(crate) mod tests {
                 "get_window_state" => json!({"structuredContent": {
                     "screenshot_width": 800, "screenshot_height": 600,
                     "window_bounds": {"width": 800.0, "height": 600.0}
+                }}),
+                _ => json!({}),
+            })
+        }
+    }
+
+    struct Decorated(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for Decorated {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "bounds": {"x": 5.0, "y": 29.0, "width": 790.0, "height": 566.0}},
+                    {"pid": 4, "window_id": 3, "layer": 0, "z_index": 2, "title": "Untitled - Notepad", "bounds": {"x": 900.0, "y": 0.0, "width": 800.0, "height": 600.0}}
+                ]}}),
+                "get_window_state" => json!({"structuredContent": {
+                    "screenshot_width": 790, "screenshot_height": 566,
+                    "window_bounds": {"width": 790.0, "height": 566.0}
                 }}),
                 _ => json!({}),
             })
