@@ -18,7 +18,8 @@ use core_foundation::number::CFNumber;
 use core_foundation::string::{CFString, CFStringRef};
 use core_foundation::url::CFURL;
 use desk_core::text::clip;
-use objc2_app_kit::NSWorkspace;
+use objc2_app_kit::{NSRunningApplication, NSWorkspace};
+use objc2_foundation::NSString;
 
 use crate::ax_roles::{self, Facts, Kind};
 use crate::keys::ax_combo;
@@ -79,6 +80,11 @@ const FRAME_ATTRS: [&str; 6] = [
     "AXChildren",
     "AXPosition",
     "AXSize",
+];
+
+const SECURE_ENTRY: [(&str, &str, &str); 2] = [
+    ("Terminal", "com.apple.Terminal", "SecureKeyboardEntry"),
+    ("iTerm2", "com.googlecode.iterm2", "Secure Input"),
 ];
 
 static PROMPTED: AtomicBool = AtomicBool::new(false);
@@ -813,6 +819,12 @@ unsafe extern "C" {
     fn proc_pidpath(pid: i32, buffer: *mut c_void, size: u32) -> i32;
 }
 
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFPreferencesAppSynchronize(app: CFStringRef) -> bool;
+    fn CFPreferencesCopyAppValue(key: CFStringRef, app: CFStringRef) -> CFTypeRef;
+}
+
 #[link(name = "Carbon", kind = "framework")]
 unsafe extern "C" {
     fn IsSecureEventInputEnabled() -> bool;
@@ -878,6 +890,47 @@ pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
 pub fn secure_input() -> bool {
     // SAFETY: the call only reads the session's secure input state.
     unsafe { IsSecureEventInputEnabled() }
+}
+
+/// The first terminal app whose Secure Keyboard Entry setting is on, which hides every key typed in it from an event tap, among those `wanted` accepts by its English name or the localized name of a running copy.
+pub fn secure_keyboard_entry(wanted: impl Fn(&str) -> bool) -> Option<&'static str> {
+    first_on(
+        &SECURE_ENTRY,
+        |(app, domain, _)| wanted(app) || running_names(domain).iter().any(|n| wanted(n)),
+        |(_, domain, key)| preference_on(domain, key),
+    )
+    .map(|(app, ..)| *app)
+}
+
+fn first_on<T>(entries: &[T], covered: impl Fn(&T) -> bool, on: impl Fn(&T) -> bool) -> Option<&T> {
+    entries.iter().filter(|e| covered(e)).find(|e| on(e))
+}
+
+fn running_names(bundle: &str) -> Vec<String> {
+    objc2::rc::autoreleasepool(|_| {
+        NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(bundle))
+            .iter()
+            .filter_map(|a| a.localizedName())
+            .map(|n| n.to_string())
+            .collect()
+    })
+}
+
+fn preference_on(domain: &str, key: &str) -> bool {
+    let (domain, key) = (CFString::new(domain), CFString::new(key));
+    // SAFETY: both strings live across the calls, and the copied value is owned by `CFType` under the create rule.
+    let value = unsafe {
+        CFPreferencesAppSynchronize(domain.as_concrete_TypeRef());
+        let v = CFPreferencesCopyAppValue(key.as_concrete_TypeRef(), domain.as_concrete_TypeRef());
+        (!v.is_null()).then(|| CFType::wrap_under_create_rule(v))
+    };
+    value.is_some_and(|v| {
+        v.downcast::<CFBoolean>().map(bool::from).or_else(|| {
+            v.downcast::<CFNumber>()
+                .and_then(|n| n.to_i64())
+                .map(|n| n != 0)
+        }) == Some(true)
+    })
 }
 
 /// The process of the focused element, and whether typing goes to a password field.
@@ -1566,6 +1619,32 @@ fn text(v: &CFType, chars: usize, tail: bool) -> String {
 mod tests {
     use super::*;
     use crate::model::MAX_IDS;
+
+    #[test]
+    fn secure_keyboard_entry_looks_only_at_covered_terminals_by_english_or_localized_name() {
+        let entries = [("Terminal", ["终端"], true), ("iTerm2", ["iTerm2"], true)];
+        let pick = |apps: &[&str]| {
+            let read = std::cell::Cell::new(0);
+            let hit = first_on(
+                &entries,
+                |(app, names, _)| {
+                    apps.is_empty()
+                        || apps
+                            .iter()
+                            .any(|a| a.eq_ignore_ascii_case(app) || names.contains(a))
+                },
+                |(_, _, on)| {
+                    read.set(read.get() + 1);
+                    *on
+                },
+            );
+            (hit.map(|(app, ..)| *app), read.get())
+        };
+        assert_eq!(pick(&[]), (Some("Terminal"), 1));
+        assert_eq!(pick(&["iTerm2"]), (Some("iTerm2"), 1));
+        assert_eq!(pick(&["终端"]), (Some("Terminal"), 1));
+        assert_eq!(pick(&["Safari"]), (None, 0));
+    }
 
     #[test]
     fn ids_of_a_walk_that_crosses_the_cap_resolve_and_the_next_walk_keeps_only_window_ids() {

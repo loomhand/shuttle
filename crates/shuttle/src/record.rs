@@ -149,7 +149,7 @@ impl Recorder {
             return Err(RECORDING.to_owned());
         }
         let (notes, inputs) = unbounded_channel();
-        let tap = listen(notes.clone(), Arc::clone(&self.acting))?;
+        let tap = listen(notes.clone(), Arc::clone(&self.acting), &apps)?;
         let id = format!("rec-{}", now_ms());
         let path = self.path(&id);
         let (done, made) = oneshot::channel();
@@ -432,17 +432,40 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
 }
 
 #[cfg(target_os = "macos")]
-fn listen(tx: UnboundedSender<Input>, acting: Arc<AtomicUsize>) -> Result<Listening, String> {
+fn listen(
+    tx: UnboundedSender<Input>,
+    acting: Arc<AtomicUsize>,
+    apps: &[String],
+) -> Result<Listening, String> {
     if !tap::allowed() {
         tap::ask();
         return Err(INPUT_MONITORING.to_owned());
+    }
+    if let Some(app) = shuttle_desk::ax::secure_keyboard_entry(|a| covers(apps, a)) {
+        return Err(hidden(app));
     }
     Tap::start(tx, acting)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn listen(_: UnboundedSender<Input>, _: Arc<AtomicUsize>) -> Result<Listening, String> {
+fn listen(
+    _: UnboundedSender<Input>,
+    _: Arc<AtomicUsize>,
+    _: &[String],
+) -> Result<Listening, String> {
     Err(OTHER_OS.to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn covers(apps: &[String], app: &str) -> bool {
+    apps.is_empty() || apps.iter().any(|a| a.eq_ignore_ascii_case(app))
+}
+
+#[cfg(target_os = "macos")]
+fn hidden(app: &str) -> String {
+    format!(
+        "{app}'s Secure Keyboard Entry is on, which hides every key typed in {app} from the recorder: turn it off in the {app} menu, or name the apps to record without {app}, then start again"
+    )
 }
 
 fn rooted(found: &Value) -> bool {
@@ -936,6 +959,15 @@ mod tests {
             assert!(!kept(Some(app), None, &[]), "{app}");
         }
         assert!(kept(Some("TextEdit"), None, &[]));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_recording_covers_every_app_when_it_names_none_and_otherwise_only_the_apps_it_names() {
+        assert!(covers(&[], "Terminal"));
+        assert!(covers(&["terminal".to_owned()], "Terminal"));
+        assert!(!covers(&["Safari".to_owned()], "Terminal"));
+        assert!(hidden("Terminal").starts_with("Terminal's Secure Keyboard Entry is on"));
     }
 
     #[tokio::test]
