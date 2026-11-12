@@ -72,7 +72,7 @@ windows-*)
 	dir="$stage/$NAME"
 	mkdir -p "$dir"
 	cp "$BIN.exe" "$dir/$NAME.exe"
-	cp "$cua/cua-driver.exe" "$cua/cua-driver-uia.exe" "$cua/cua-cursor-theme.exe" "$node/node.exe" "$dir/"
+	cp "$cua/cua-driver.exe" "$cua/cua-cursor-theme.exe" "$node/node.exe" "$dir/"
 	runtime "$node/node.exe" "$dir/runtime"
 	licenses "$dir/licenses" "$node" "$cua"
 	(cd "$stage" && 7z a -tzip -bso0 "$archive.zip" "$NAME")

@@ -772,7 +772,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             })
             .await?;
         let truncated = cut_read(&mut node.value, max, tail) | (text && node.truncated);
-        if !text {
+        if !text && self.os == Os::Mac {
             node.name = clip(std::mem::take(&mut node.name), NAME_CHARS, false);
         }
         let mut out = node.into_json(0);
@@ -3029,6 +3029,23 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, READ_TAIL);
+    }
+
+    #[tokio::test]
+    async fn a_read_without_text_cuts_a_long_name_on_macos_only() {
+        for (os, chars) in [(Os::Mac, NAME_CHARS), (Os::Linux, 100), (Os::Windows, 100)] {
+            let desk = Desk::new(
+                || Ok(Scrollback),
+                Stack(Arc::default(), Mutex::new(json!({}))),
+                os,
+            );
+            let out = desk
+                .run("desk_read", json!({"id": "preview"}))
+                .await
+                .unwrap();
+            let v: Value = serde_json::from_str(&out.text).unwrap();
+            assert_eq!(v["name"], "n".repeat(chars).as_str(), "{os:?}");
+        }
     }
 
     #[tokio::test]
@@ -7853,6 +7870,7 @@ pub(crate) mod tests {
                     chars,
                     extras.tail,
                 )),
+                name: "n".repeat(100),
                 ..Node::default()
             })
         }
