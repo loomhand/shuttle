@@ -1054,15 +1054,22 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     }
                     return Ok(());
                 }
+                let mut run = None;
                 for (at, c) in line.char_indices() {
-                    let (tool, req) = match keystroke(c) {
-                        Some(keys) if keys.len() == 1 => key_request(keys),
-                        _ => (
-                            "type_text",
-                            json!({"text": &line[at..at + c.len_utf8()], "literal": true}),
-                        ),
+                    let Some(keys) = keystroke(c).filter(|k| k.len() == 1) else {
+                        run.get_or_insert(at);
+                        continue;
                     };
+                    if let Some(from) = run.take() {
+                        let req = json!({"text": &line[from..at], "literal": true});
+                        self.send("type_text", req, to, &mut note).await?;
+                    }
+                    let (tool, req) = key_request(keys);
                     self.send(tool, req, to, &mut note).await?;
+                }
+                if let Some(from) = run {
+                    let req = json!({"text": &line[from..], "literal": true});
+                    self.send("type_text", req, to, &mut note).await?;
                 }
                 Ok(())
             }
@@ -2928,7 +2935,29 @@ pub(crate) mod tests {
             .map(|r| r["text"].clone())
             .collect();
         assert_eq!(keys, [json!("a")]);
-        assert_eq!(texts, [json!("B"), json!("!")]);
+        assert_eq!(texts, [json!("B!")]);
+    }
+
+    #[tokio::test]
+    async fn a_windows_background_type_sends_each_run_without_a_single_key_as_one_text() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk =
+            Desk::new(|| Ok(notepad()), Behind(Arc::clone(&calls)), Os::Windows).background(true);
+        desk.run("desk_type", json!({"text": "aB!@c€D", "pid": 4}))
+            .await
+            .unwrap();
+        let seq: Vec<String> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(t, a)| match t.as_str() {
+                "press_key" => Some(format!("press {}", a["key"].as_str().unwrap_or_default())),
+                "type_text" => Some(format!("type {}", a["text"].as_str().unwrap_or_default())),
+                "hotkey" => Some("hotkey".to_owned()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(seq, ["press a", "type B!@", "press c", "type €D"]);
     }
 
     #[tokio::test]
