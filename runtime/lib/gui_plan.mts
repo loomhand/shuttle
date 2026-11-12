@@ -266,7 +266,7 @@ async function perform(p: Params): Promise<Result> {
     const theft = BG ? taken(ws) : null
     const open = recs.find((r) => r?.unverified && !r.confirmed)
     if (theft) { escalate = { step: plan.length - 1, reason: theft, ...(await seen()) }; done = plan.length - 1 }
-    else if (open) { escalate = { step: open.i, reason: `step ${open.i} (${open.op}) was sent but not confirmed, and no later step read its effect, so the plan cannot say it landed: ${open.unverified}`, ...(await seen()) }; done = open.i }
+    else if (open) { const { outline, ...shown } = await seen(); escalate = { step: open.i, reason: `step ${open.i} (${open.op}) was sent but not confirmed, and no later step read its effect, so the plan cannot say it landed: ${open.unverified}`, ...shown, ...(secure(plan[open.i] ?? {}) ? {} : { outline }) }; done = open.i }
     else if (f && blocked(o) && recs.at(-1)?.how !== 'wm') { escalate = { step: plan.length, reason: unanswered(f.title), ...(await seen()) }; done = plan.length }
     else if (f && (isAlert(o) || left)) { escalate = { step: plan.length, reason: `the plan ended with "${f.title || o.split('\n')[0]}" still in front`, ...(await seen()) }; done = plan.length }
     opened = !!f && !startTitles.has(f.title) && isDialog(o)
@@ -1115,6 +1115,11 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
     if (!shown && !unchanged(base, now)) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing line ${i + 1} of ${n}${i > 1 ? `, after the ${i} lines before it and their Returns were sent` : i ? ', after the line before it and its Return were sent' : ''}: ${r.unverified}`, await seen())
     quiet ||= !shown
   }
+  if (quiet && secure(s) && text.endsWith('\n')) {
+    const after = await settled(w)
+    if (shows(base, after, raw[k] ?? '', true)) throw new Surprise(`the password showed in "${w.title}" after its Return was sent`, { window: w.title })
+    if (moved(base, after)) return false
+  }
   return quiet
 }
 async function settled(w: Win) {
@@ -1126,6 +1131,9 @@ function unchanged(before: Map<string, Text> | null, after: Map<string, Text> | 
   if (!before || !after || before.size !== after.size) return false
   const all = [...after]
   return all.some(([, t]) => t.field) && all.every(([id, t]) => t.value !== undefined && before.get(id)?.value === t.value)
+}
+function moved(before: Map<string, Text> | null, after: Map<string, Text> | null) {
+  return !!before && !!after && [...after].some(([id, t]) => t.value !== undefined && before.get(id)?.value !== undefined && before.get(id)?.value !== t.value)
 }
 function shows(before: Map<string, Text> | null, after: Map<string, Text> | null, text: string, terminal = false) {
   const squash = (v: string) => terminal ? v.replace(/[\r\n]/g, '') : v.replace(/\s+/g, '').toLowerCase()

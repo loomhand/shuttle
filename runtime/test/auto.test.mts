@@ -49,16 +49,17 @@ async function run(t: TestContext, plan: Plan, typed: (before: string, text: str
   return { r, calls: d.calls, doc: d.doc() }
 }
 
-async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', extra = {} as Record<string, unknown>, front = false } = {}) {
+async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', extra = {} as Record<string, unknown>, front = false, answer = (s: string) => `${s}\n$ `, blind = false } = {}) {
   const term: W = { id: 't', title: 'Terminal', role: 'window', pid: 7, active: front, app: 'Terminal' }
   const node = () => ({ ref: 0, id: 'd', parent: -1, depth: 0, role: 'document', name: '', states: [], value: screen })
-  const calls: Call[] = []; let late = ''
+  const calls: Call[] = []; let late = ''; let keyed = false
   await daemon(t, (c) => {
     calls.push(c)
     if (c.tool === 'desk_windows') return JSON.stringify(front ? [{ ...user(), active: false }, term] : [user(), term])
+    if (blind && keyed && (c.tool === 'desk_snapshot' || c.tool === 'desk_read')) throw new Error('the window answers no accessibility calls')
     if (c.tool === 'desk_snapshot') { const out = JSON.stringify({ window: term, nodes: [{ ...node(), value: screen.slice(0, 200) }], truncated: false }); screen += late; late = ''; return out }
     if (c.tool === 'desk_read') return JSON.stringify({ ...node(), value: c.args.tail ? screen.slice(-READ) : screen.slice(0, READ), ...(screen.length > READ ? { truncated: true } : {}) })
-    if (c.tool === 'desk_key') { screen += '\n$ '; late = prompt; return JSON.stringify({ ok: true, ...(key ? { unverified: key } : {}) }) }
+    if (c.tool === 'desk_key') { screen = answer(screen); late = prompt; keyed = true; return JSON.stringify({ ok: true, ...(key ? { unverified: key } : {}) }) }
     if (c.tool !== 'desk_type') return '{"ok":true}'
     const text = String(c.args.text)
     screen = typed(screen, text)
@@ -307,6 +308,35 @@ test('a secret step never shows its text, and a password the terminal echoed sto
     }
     assert.equal(kept(), false, mode)
   }
+})
+
+test('a background secret password line counts as landed when the terminal moves after its Return', async (t) => {
+  for (const [mode, plan] of modes) {
+    const { r, calls } = await terminal(t, plan, (screen) => screen, { type: 'example-pass\n', extra: { secret: true } })
+    assert.equal(r.ok, true, `${mode} ${JSON.stringify(r)}`)
+    assert.equal(r.unverified, undefined, mode)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_type').map((c) => c.args.text), ['example-pass'], mode)
+    assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), ['Return'], mode)
+    assert.ok(!JSON.stringify(r).includes('example-pass'), mode)
+  }
+})
+
+test('a background secret password line stays unconfirmed, with no outline, when the terminal does not move or cannot be read after its Return', async (t) => {
+  for (const opts of [{ answer: (s: string) => s }, { blind: true }]) {
+    const { r } = await terminal(t, background, (screen) => screen, { type: 'example-pass\n', extra: { secret: true }, ...opts })
+    assert.equal(r.ok, false, JSON.stringify(r))
+    assert.match(String(r.escalate?.reason), /was sent but not confirmed/, JSON.stringify(opts))
+    assert.equal(r.escalate?.outline, undefined, JSON.stringify(r.escalate))
+    assert.ok(!JSON.stringify(r).includes('example-pass'), JSON.stringify(r))
+  }
+})
+
+test('a background secret password line that shows only after its Return stops instead of counting as landed', async (t) => {
+  const { r } = await terminal(t, background, (screen) => screen, { type: 'example-pass\n', extra: { secret: true }, answer: (s: string) => `${s}example-pass\n$ ` })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, 'the password showed in "Terminal" after its Return was sent')
+  assert.equal(r.escalate?.outline, undefined)
+  assert.ok(!JSON.stringify(r).includes('example-pass'), JSON.stringify(r))
 })
 
 test('a foreground secret step reads the window back before its Return, as a foreground type reply names no terminal', async (t) => {
