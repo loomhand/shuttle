@@ -105,16 +105,21 @@ test('a password typed into a dialog is not read back and never shows in the res
   assert.ok(!JSON.stringify(r).includes('hunter2'), JSON.stringify(r))
 })
 
-test('a secret or password-field type step marks its type call secret, and a plain one does not', async (t) => {
-  const win = { id: '1/1', title: 'pw', role: 'window', pid: process.pid, active: true, app: 'Browser' }
-  const sent: unknown[] = []
-  await daemon(t, ({ tool, args }) => {
-    if (tool === 'desk_windows') return JSON.stringify([win])
-    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: 'pw', states: ['showing', 'focused'] }, { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'focused', 'protected'] }] })
-    if (tool === 'desk_type') sent.push(args.secret)
-    return '{"ok":true}'
-  })
-  const r = await main({ steps: [{ type: '{{password}}', focus: { secure: true } }, { type: '{{pin}}', secret: true }, { type: 'bob' }], params: { password: 's3', pin: '42' } })
-  assert.equal(r.ok, true, JSON.stringify(r))
-  assert.deepEqual(sent, [true, true, undefined])
+test('a drafted secret step types only into the element the recording typed it into', async (t) => {
+  const shell = { role: 'textbox', name: 'shell', frame: 'window' }
+  const step = { type: '{{password}}', secret: true, focus: shell }
+  const typed = await page(t, { title: 'Terminal', role: 'window' }, { role: 'textbox', name: 'shell' })
+  const ok = await main({ steps: [step], params: { password: 's3' } })
+  assert.equal(ok.ok, true, JSON.stringify(ok))
+  assert.deepEqual(typed, ['s3'])
+})
+
+test('a drafted secret step stops, and types nothing, where another element has the focus', async (t) => {
+  const step = { type: '{{password}}', secret: true, focus: { role: 'textbox', name: 'shell', frame: 'window' } }
+  const typed = await page(t, { title: 'Notes', role: 'window' }, { role: 'textbox', name: 'Body' })
+  const r = await main({ steps: [step], params: { password: 's3' } })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(String(r.error), /the focus is on textbox "Body"/)
+  assert.ok(!JSON.stringify(r).includes('s3'), JSON.stringify(r))
+  assert.deepEqual(typed, [])
 })

@@ -52,7 +52,7 @@ export const press = async (id: string): Promise<{ ok: boolean; how: string; unv
 export const act = async (id: string, action: 'click' | 'action' | 'select' | 'focus'): Promise<{ ok: boolean; input?: 'foreground' }> => ran(await call('act', { id, action }))
 export const at = (x: number, y: number, window?: string, pid?: number | null): Promise<{ found: El | null; path?: { id: string; role: string; name: string }[]; pid?: number | null; covered?: { title: string; pid: number | null } }> => call('at', { x: Math.round(x), y: Math.round(y), window, pid: pid ?? undefined })
 export const key = async (keys: string, to: Target = {}): Promise<Sent> => ran(await call('key', { keys, ...target(to) }))
-export const typeText = async (text: string, to: Target = {}, secret = false): Promise<Sent> => ran(await call('type', { text, ...target(to), ...(secret ? { secret } : {}) }))
+export const typeText = async (text: string, to: Target = {}): Promise<Sent> => ran(await call('type', { text, ...target(to) }))
 export const click = async (x: number, y: number, o: { button?: string; count?: number; modifiers?: string[] } & Target = {}): Promise<Sent> => ran(await call('click', { x, y, ...o, pid: o.pid ?? undefined }))
 export const focus = (window: string, pid?: number | null): Promise<{ ok: boolean; title: string; pid: number | null; path?: string; front?: number | null }> => call('focus', { window, pid: pid ?? undefined })
 export const close = (window: string, pid?: number | null): Promise<unknown> => call('close', { window, pid: pid ?? undefined })

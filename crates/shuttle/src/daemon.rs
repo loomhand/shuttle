@@ -511,11 +511,7 @@ fn question(call: &Call, background: bool) -> String {
         "type" => format!(
             "type into {}: {}",
             named(a).unwrap_or_else(|| "the focused window".to_owned()),
-            if a["secret"] == true {
-                "the password".to_owned()
-            } else {
-                quoted(&a["text"], PREVIEW_CHARS)
-            }
+            quoted(&a["text"], PREVIEW_CHARS)
         ),
         "computer_act" => match a["actions"].as_array() {
             Some(list) => steps(list),
@@ -853,13 +849,6 @@ mod tests {
         assert_eq!(
             q("desk_type", json!({"text": "x"})),
             "Allow shuttle to type into the focused window: \"x\"?"
-        );
-        assert_eq!(
-            q(
-                "desk_type",
-                json!({"text": "hunter2", "window": "Terminal", "secret": true})
-            ),
-            "Allow shuttle to type into window \"Terminal\": the password?"
         );
         assert_eq!(
             q(

@@ -178,25 +178,24 @@ test('every password step asks for a password field, the one the recording read 
   ])
 })
 
-test('a password typed outside a password field, as at a terminal prompt, becomes a secret step with no password-field check', async (t) => {
+test('a password typed outside a password field, as at a terminal prompt, becomes a secret step that keeps the element it went to', async (t) => {
   await daemon(t, () => '{"ok":true}')
   const tty = { role: 'textbox', name: 'shell', frame: 'window' }
   const pw = { role: 'textbox', name: 'Password', frame: 'window', secure: true }
   const events: Event[] = [
     { t: 0, kind: 'password', app: 'Terminal', focus: tty },
-    { t: 1, kind: 'key', secret: true, app: 'Terminal', focus: tty },
+    { t: 1, kind: 'key', secret: true, app: 'Terminal' },
     { t: 2, kind: 'key', code: 36, text: '\r', mods: [], app: 'Terminal' },
     { t: 3, kind: 'password', app: 'Safari', focus: pw },
-    { t: 4, kind: 'key', secret: true, app: 'Safari', focus: pw },
-    { t: 5, kind: 'key', code: 36, text: '\r', mods: [], app: 'Safari' },
-    { t: 6, kind: 'key', secret: true, app: 'Terminal', focus: tty },
-    { t: 7, kind: 'key', code: 36, text: '\r', mods: [], app: 'Terminal' },
+    { t: 4, kind: 'key', secret: true, app: 'Safari' },
   ]
   const d = await main({ recording: { id: 'rec-tty', events } })
-  assert.deepEqual(d.steps.filter((s) => 'type' in s).map(({ type, focus, secret }) => ({ type, focus, secret })), [
-    { type: '{{password}}', focus: undefined, secret: true },
-    { type: '{{password_2}}', focus: pw, secret: undefined },
-    { type: '{{password_3}}', focus: undefined, secret: true },
+  assert.deepEqual(d.steps.map(({ intent: _, ...s }) => s), [
+    { app: 'Terminal' },
+    { type: '{{password}}', secret: true, focus: tty },
+    { key: 'return' },
+    { app: 'Safari' },
+    { type: '{{password_2}}', focus: pw },
   ])
 })
 
@@ -210,9 +209,9 @@ test('a recording that holds only a terminal password still opens its app before
   const d = await main({ recording: { id: 'rec-tty3', events } })
   assert.deepEqual(d.steps.map(({ intent: _, ...s }) => s), [
     { app: 'Terminal' },
-    { type: '{{password}}', secret: true },
+    { type: '{{password}}', secret: true, focus: tty },
     { app: 'iTerm2' },
-    { type: '{{password_2}}', secret: true },
+    { type: '{{password_2}}', secret: true, focus: tty },
   ])
 })
 
@@ -221,7 +220,7 @@ test('a password field that a two-stage login page focuses in the same app opens
   const user = { role: 'textbox', name: 'Email', frame: 'window', window: 'Sign in', url: 'https://id.example/login' }
   const pw = { role: 'textbox', name: 'Password', frame: 'window', window: 'Enter password', url: 'https://id.example/password', secure: true }
   const events: Event[] = [
-    { t: 0, kind: 'key', text: 'a', mods: [], app: 'Safari', focus: user },
+    { t: 0, kind: 'key', code: 0, text: 'a', mods: [], app: 'Safari', focus: user },
     { t: 1, kind: 'key', code: 36, text: '\r', mods: [], app: 'Safari' },
     { t: 2, kind: 'password', app: 'Safari', focus: pw },
   ]
@@ -230,16 +229,23 @@ test('a password field that a two-stage login page focuses in the same app opens
   assert.equal(d.steps.filter((s) => 'url' in s).length, 1, JSON.stringify(d.steps))
 })
 
-test('a password step whose focus was unread becomes a secret step when the next password event names a terminal', async (t) => {
+test('only a password step whose focus was unread becomes a secret step when the next password event names another element', async (t) => {
   await daemon(t, () => '{"ok":true}')
-  const events: Event[] = [
+  const tty = { role: 'textbox', name: 'shell', frame: 'window' }
+  const unread: Event[] = [
     { t: 0, kind: 'password', app: 'Terminal', focus: null },
-    { t: 1, kind: 'password', app: 'Terminal', focus: { role: 'textbox', name: 'shell', frame: 'window' } },
+    { t: 1, kind: 'password', app: 'Terminal', focus: tty },
   ]
-  const d = await main({ recording: { id: 'rec-tty2', events } })
-  assert.deepEqual(d.steps.filter((s) => 'type' in s).map(({ type, focus, secret }) => ({ type, focus, secret })), [
-    { type: '{{password}}', focus: undefined, secret: true },
-  ])
+  const a = await main({ recording: { id: 'rec-tty2', events: unread } })
+  assert.deepEqual(a.steps.filter((s) => 'type' in s).map(({ intent: _, ...s }) => s), [{ type: '{{password}}', secret: true, focus: tty }])
+  const pw = { role: 'textbox', name: 'PIN', frame: 'window', secure: true }
+  const proven: Event[] = [
+    { t: 0, kind: 'click', x: 85, y: 194, app: 'Safari', element: { role: 'textbox', name: 'PIN' }, root: false, secret: true, window: win('pw'), crop },
+    { t: 1, kind: 'password', app: 'Safari', focus: pw },
+    { t: 2, kind: 'password', app: 'Safari', focus: { role: 'textbox', name: 'Notes', frame: 'window' } },
+  ]
+  const b = await main({ recording: { id: 'rec-pin', events: proven } })
+  assert.deepEqual(b.steps.filter((s) => 'type' in s).map(({ type, focus, secret }) => ({ type, focus, secret })), [{ type: '{{password}}', focus: pw, secret: undefined }])
 })
 
 test('input that moves to another app or another window of the app first switches there', async (t) => {

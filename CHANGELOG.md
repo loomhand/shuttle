@@ -2,8 +2,7 @@
 
 ## Unreleased
 
-- **Recording: a password typed outside a password field is drafted as a secret step.** When macOS turned on secure input while the focus was not on a password field, as at a terminal's `sudo` or `read -s` prompt, the draft still wrote a password-field step, `{type: "{{password}}", focus: {…, secure: true}}`, and its replay stopped because a terminal is not a password field (#363). The recording now marks `focus.secure` only for a real password field. The draft writes such a password as `{type: "{{password}}", secret: true}`, which replays without the password-field check.
-- **The confirm dialog does not show a password.** With `confirm = "every"`, the dialog quoted the text of every `type` call, including a secret step's or a password field's. gui_plan now marks those calls `secret`, and the dialog says "the password" instead (#363).
+- **Recording: a password typed outside a password field is drafted as a secret step.** When macOS turned on secure input while the focus was not on a password field, as at a terminal's `sudo` or `read -s` prompt, the draft still wrote a password-field step, `{type: "{{password}}", focus: {…, secure: true}}`, and its replay stopped because a terminal is not a password field (#363). The recording now marks `focus.secure` only for a real password field. The draft writes such a password as `{type: "{{password}}", secret: true, focus: {role, name, frame}}`, which replays only where that same element has the focus. A password event now also opens its app, so a recording that holds only the password replays in its app.
 
 ## 0.1.50 - 2026-11-12
 
