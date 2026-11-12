@@ -18,6 +18,7 @@ const DRIVER_EMBEDDED: &str = "CUA_DRIVER_EMBEDDED";
 const CONSENT_ALERT: &str = "CUA_DRIVER_ALLOW_CAPTURE_CONSENT_ALERT";
 const WINDOW_WATCH: &str = "CUA_DRIVER_WINDOW_CHANGE_TIMEOUT_MS";
 const WINDOW_WATCH_MS: &str = "50";
+const REMOVE_MASTERS: &str = "CUA_DRIVER_RS_REMOVE_MPX_MASTERS";
 const GLIDE_MS: &str = "1";
 const LISTEN_WAIT: Duration = Duration::from_secs(10);
 const STOP_WAIT: Duration = Duration::from_secs(3);
@@ -98,6 +99,7 @@ impl Proc {
             .envs(self.embedded.then_some((DRIVER_EMBEDDED, "1")))
             .envs(self.watch.then_some((WINDOW_WATCH, WINDOW_WATCH_MS)))
             .envs((!self.embedded && cfg!(target_os = "macos")).then_some((CONSENT_ALERT, "1")))
+            .envs(cfg!(target_os = "linux").then_some((REMOVE_MASTERS, "1")))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -252,6 +254,7 @@ if os.environ.get("CUA_DRIVER_EMBEDDED") == "1" and os.path.exists(args["--socke
 open(args["--socket"] + ".env", "w").write(os.environ.get("CUA_DRIVER_EMBEDDED", ""))
 open(args["--socket"] + ".watch", "w").write(os.environ.get("CUA_DRIVER_WINDOW_CHANGE_TIMEOUT_MS", ""))
 open(args["--socket"] + ".consent", "w").write(os.environ.get("CUA_DRIVER_ALLOW_CAPTURE_CONSENT_ALERT", ""))
+open(args["--socket"] + ".masters", "w").write(os.environ.get("CUA_DRIVER_RS_REMOVE_MPX_MASTERS", ""))
 if os.path.exists(args["--socket"]):
     os.remove(args["--socket"])
 s = socket.socket(socket.AF_UNIX)
@@ -386,6 +389,25 @@ while True:
                 std::fs::read_to_string(format!("{endpoint}.consent")).unwrap_or_default();
             driver.stop().await;
             assert_eq!(consent, want, "embedded {embedded}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_linux_driver_removes_its_mpx_masters_whether_shuttle_owns_it_or_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake(dir.path(), FAKE).unwrap();
+        let want = if cfg!(target_os = "linux") { "1" } else { "" };
+        for embedded in [false, true] {
+            let sock = dir.path().join(format!("{embedded}.sock"));
+            let endpoint = endpoint(&sock.to_string_lossy());
+            let driver = Bundled::start(&exe, &endpoint, true, embedded, false)
+                .await
+                .unwrap()
+                .unwrap();
+            let masters =
+                std::fs::read_to_string(format!("{endpoint}.masters")).unwrap_or_default();
+            driver.stop().await;
+            assert_eq!(masters, want, "embedded {embedded}");
         }
     }
 
