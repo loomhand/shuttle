@@ -1083,9 +1083,9 @@ async function typedInto(w: Win, text: string): Promise<{ fp?: Fp; kept?: Kept }
 async function texts(w: Win): Promise<Map<string, Text> | null> {
   try {
     const slot = pool(READS_AT_ONCE)
-    const nodes = parse(await snapOf(w)); const bare = !nodes.some((n) => n.role === 'document' || FIELD_ROLES.has(n.role))
+    const nodes = parse(await snapOf(w)); const textual = (n: Node) => n.role === 'document' || n.role === 'terminal' || FIELD_ROLES.has(n.role); const bare = !nodes.some(textual)
     const all = await Promise.all(nodes.map(async (n): Promise<[string, Text][]> => {
-      const field = n.role === 'document' || FIELD_ROLES.has(n.role)
+      const field = textual(n)
       if (n.value && !(field && n.value.length >= VALUE_CHARS)) return [[n.id, { value: n.value, field }]]
       if (!field && !(bare && n.role === 'text' && n.focused)) return []
       const r = await slot(() => desk.read(n.id, { text: true, tail: true })).catch(() => null)
