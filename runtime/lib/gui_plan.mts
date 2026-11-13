@@ -1099,7 +1099,10 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
   if (k > 0) { heard(await desk.typeText('\n'.repeat(k), at(w)), rec); base = await settled(w) }
   const first = await desk.typeText(raw[k] ?? '', at(w)); heard(first, rec)
   if (!first.terminal) {
-    if (k + 1 < raw.length) heard(await desk.typeText(`\n${raw.slice(k + 1).join('\n')}`, at(w)), rec)
+    if (k + 1 < raw.length) {
+      if (secure(s) && shows(base, await settled(w), raw[k] ?? '', true)) throw echoed(w)
+      heard(await desk.typeText(`\n${raw.slice(k + 1).join('\n')}`, at(w)), rec)
+    }
     return undefined
   }
   const n = lines.length - (text.endsWith('\n') ? 1 : 0); let quiet = false
