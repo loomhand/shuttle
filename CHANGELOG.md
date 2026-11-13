@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **`gui_plan`: on Linux, a secret line is read back from the terminal before its Return.** A Linux terminal such as xfce4-terminal is an AT-SPI `terminal` node, which carries no value in a snapshot, so the read-back before a secret line's Return read nothing. At an echoing prompt the password showed, the Return was sent, and the plan answered `ok: true`, since v0.1.49. Now a `terminal` node's text is read back like a text field's, and the step stops with "the password showed" before its Return.
+
 ## 0.1.51 - 2026-11-13
 
 - **`gui_plan`: a background secret line is read back before its Return where the reply names no terminal.** The checks that stop a password a terminal showed ran only when the desk's reply named a terminal, which a Windows background type never does, so a background secret line ending in a line break went to the window with its Return and no check: an echoing shell could run the password (#389). Now such a line is typed alone, the window is read back, and the Return is sent only when the password does not show there. In a window with no text field, such as Windows Terminal, whose terminal is a text element, the read-back also reads the focused text element the keys went to. A password that shows only after its Return stops the step too. An ordinary background `type` into Windows Terminal while it is the active window now confirms when its text shows in the terminal, where it stopped with "did not show" before.
