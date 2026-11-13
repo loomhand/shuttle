@@ -536,17 +536,17 @@ async function selectLine(w: Win | null) { if (OS === 'darwin') await desk.key(S
 async function echoed(w: Win, line: string, base: Map<string, Text> | null) {
   let left = 'and it could not be erased: clear it by hand'
   try {
-    const front = BG ? w : desk.front(await desk.windows())
-    if (front?.id === w.id && front.pid === w.pid) {
-      for (const _ of line.replace(/[\r\n]+$/, '')) await desk.key('backspace', at(w))
-      const after = base ? await settled(w) : null
-      const read = !!after && after.size > 0 && [...after.values()].every((t) => t.value !== undefined)
-      left = !read ? 'Backspace was sent over it, unchecked' : shows(base, after, line, true) ? left : 'and it was erased'
-    }
+    const mine = async () => { if (BG) return true; const f = desk.front(await desk.windows()); return f?.id === w.id && f.pid === w.pid }
+    let sent = true
+    for (const _ of line.replace(/[\r\n]+$/, '')) { if (!await mine()) { sent = false; break } await desk.key('backspace', at(w)) }
+    const after = sent && base ? await settled(w) : null
+    const read = !!after && after.size > 0 && [...after.values()].every((t) => t.value !== undefined)
+    const back = read && [...after].every(([id, t]) => (t.value ?? '').trimEnd() === (base?.get(id)?.value ?? '').trimEnd())
+    if (sent) left = !read ? 'Backspace was sent over it, unchecked' : back ? 'and it was erased' : left
   } catch {}
   return new Surprise(`the password showed in "${w.title}", so it was not submitted, ${left}`, { window: w.title })
 }
-function late(w: Win) { return new Surprise(`the password showed in "${w.title}" after its Return was sent; clear the terminal (for example \`clear\`) before any screenshot`, { window: w.title }) }
+function late(w: Win) { return new Surprise(`the password showed in "${w.title}" after its Return was sent; clear it (in a terminal, for example \`clear\`) before any screenshot`, { window: w.title }) }
 function changed(w: Win, note: string) { return `"${w.title}" changed while the password was typed, and nothing showed that a prompt took it, so it was not submitted: ${note}` }
 
 function frozen(w: Win, i: number, prev: Step | undefined) { return `"${w.title}" stopped answering accessibility${prev ? ` after step ${i - 1} ${JSON.stringify(unrecorded(prev))}` : ''}: its app is busy or hung; wait and continue from step ${i}, or close it` }
