@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **`gui_plan`: on Linux, a secret line is read back from the terminal before its Return.** A Linux terminal such as xfce4-terminal is an AT-SPI `terminal` node, which carries no value in a snapshot, so the read-back before a secret line's Return read nothing. At an echoing prompt the password showed, the Return was sent, and the plan answered `ok: true` (v0.1.50 and v0.1.51 too). Now a `terminal` node's text is read back like a text field's, and the step stops with "the password showed" before its Return.
+- **`gui_plan`: on Linux, a secret line is read back from the terminal before its Return.** A Linux terminal such as xfce4-terminal is an AT-SPI `terminal` node, which carries no value in a snapshot, so the read-back before a secret line's Return read nothing. At an echoing prompt the password showed, the Return was sent, and the plan answered `ok: true`, since v0.1.49. Now a `terminal` node's text is read back like a text field's, and the step stops with "the password showed" before its Return.
 
 ## 0.1.51 - 2026-11-13
 
