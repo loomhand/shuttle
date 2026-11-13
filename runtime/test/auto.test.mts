@@ -346,6 +346,12 @@ test('a background secret password line that shows only after its Return stops i
   assert.ok(!JSON.stringify(r).includes('example-pass'), JSON.stringify(r))
 })
 
+test('typing a Windows Terminal does not change is never typed again in the foreground, as its terminal text counts as no field', async (t) => {
+  const { calls } = await terminal(t, auto, (screen) => screen, { type: 'j', named: false, role: 'text' })
+  assert.ok(!calls.some((c) => c.tool === 'desk_focus'), JSON.stringify(calls.map((c) => c.tool)))
+  assert.equal(calls.filter((c) => c.tool === 'desk_type').length, 1)
+})
+
 test('a background secret line whose reply names no terminal, as on Windows, stops before its Return when the password shows', async (t) => {
   for (const role of ['document', 'text']) await unnamed(t, role)
 })
