@@ -42,11 +42,11 @@ export async function main(p: Params): Promise<Draft> {
   const password = (f?: Field | null) => {
     const name = `password${secrets ? `_${secrets + 1}` : ''}`; secrets += 1
     params[name] = { secret: true }
-    const said = name.replace('_', ' ')
-    if (f && !f.secure) draft.steps.push({ type: `{{${name}}}\n`, secret: true, ...onPage(f, f), intent: `type the ${said} and Return (not into a password field, such as at a terminal prompt: neither is recorded, pass it as ${name})` })
-    else draft.steps.push({ type: `{{${name}}}`, ...onPage(f ?? {}, { ...f, secure: true }), intent: `type the ${said} (a password field: not recorded, pass it as ${name})` })
+    if (f && !f.secure) draft.steps.push({ type: `{{${name}}}\n`, secret: true, ...onPage(f, f), intent: atPrompt(name) })
+    else draft.steps.push({ type: `{{${name}}}`, ...onPage(f ?? {}, { ...f, secure: true }), intent: `type the ${name.replace('_', ' ')} (a password field: not recorded, pass it as ${name})` })
     unread = f ? undefined : draft.steps.at(-1)
   }
+  const atPrompt = (name: string) => `type the ${name.replace('_', ' ')} and Return (not into a password field, such as at a terminal prompt: neither is recorded, pass it as ${name})`
   const flush = () => {
     if (secret) {
       if (!filled) password(into)
@@ -59,7 +59,8 @@ export async function main(p: Params): Promise<Draft> {
   const input = (e: Event) => e.kind === 'click' || e.kind === 'key' || e.kind === 'password'
   const first = events.find(input)
   const app = events.find((e) => input(e) && e.app)?.app
-  const opened = first ? windowOf(first) : undefined
+  const prompt = (e: Event) => e.kind === 'password' && !!e.focus && !e.focus.secure
+  const opened = first && !prompt(first) ? windowOf(first) : undefined
   if (app) draft.steps.push(at(app, first ? pageOf(first) : undefined, opened, 'open'))
   let here = { app, window: opened }
   const move = (e: Event) => {
@@ -68,7 +69,7 @@ export async function main(p: Params): Promise<Draft> {
     if (e.app === here.app && (!w || !here.window || w === here.window)) { here.window = w || here.window; return }
     flush(); filled = false
     here = { app: e.app, window: w }
-    draft.steps.push(at(e.app, pageOf(e), w, 'switch to'))
+    draft.steps.push(at(e.app, pageOf(e), prompt(e) ? undefined : w, 'switch to'))
   }
   // a step into a web page opens its address, which needs no tab of that title to exist
   function at(app: string, page: string | undefined, title: string | undefined, verb: string): Step {
@@ -92,7 +93,7 @@ export async function main(p: Params): Promise<Draft> {
     if (e.kind === 'password') {
       const last = draft.steps.at(-1)
       if (!filled) password(e.focus)
-      else if (last && e.focus && !e.focus.secure && last === unread) { Object.assign(last, onPage(e.focus, e.focus), { secret: true, type: `${last.type}\n` }); unread = undefined }
+      else if (last && e.focus && !e.focus.secure && last === unread) { Object.assign(last, onPage(e.focus, e.focus), { secret: true, type: `${last.type}\n`, intent: atPrompt(String(last.type).slice(2, -2)) }); unread = undefined }
       else if (last && e.focus && !(last.focus as Partial<Field> | undefined)?.role) Object.assign(last, onPage(e.focus, { ...e.focus, secure: true }))
       filled = true
     }

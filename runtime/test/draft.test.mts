@@ -212,6 +212,18 @@ test('a recording that holds only a terminal password still opens its app before
   ])
 })
 
+test('a step that a terminal password event opens or switches to names no window, since the title holds the running command', async (t) => {
+  await daemon(t, () => '{"ok":true}')
+  const tty = (window: string) => ({ role: 'textbox', name: 'shell', frame: 'window', window })
+  const events: Event[] = [
+    { t: 0, kind: 'password', app: 'Terminal', focus: tty('user — sudo — 80×24') },
+    { t: 1, kind: 'key', code: 0, text: 'a', mods: [], app: 'TextEdit', focus: { role: 'textbox', name: 'Body', frame: 'window', window: 'Notes' } },
+    { t: 2, kind: 'password', app: 'iTerm2', focus: tty('ssh host') },
+  ]
+  const d = await main({ recording: { id: 'rec-title', events } })
+  assert.deepEqual(d.steps.filter((s) => 'app' in s).map(({ intent: _, ...s }) => s), [{ app: 'Terminal' }, { app: 'TextEdit', title: 'Notes' }, { app: 'iTerm2' }])
+})
+
 test('a password field that a two-stage login page focuses in the same app opens no page again', async (t) => {
   await daemon(t, () => '{"ok":true}')
   const user = { role: 'textbox', name: 'Email', frame: 'window', window: 'Sign in', url: 'https://id.example/login' }
@@ -236,6 +248,7 @@ test('only a password step whose focus was unread becomes a secret step when the
   ]
   const a = await main({ recording: { id: 'rec-tty2', events: unread } })
   assert.deepEqual(a.steps.filter((s) => 'type' in s).map(({ intent: _, ...s }) => s), [{ type: '{{password}}\n', secret: true, focus: tty }])
+  assert.equal(a.steps.find((s) => 'type' in s)?.intent, 'type the password and Return (not into a password field, such as at a terminal prompt: neither is recorded, pass it as password)')
   const pw = { role: 'textbox', name: 'PIN', frame: 'window', secure: true }
   const proven: Event[] = [
     { t: 0, kind: 'click', x: 85, y: 194, app: 'Safari', element: { role: 'textbox', name: 'PIN' }, root: false, secret: true, window: win('pw'), crop },
