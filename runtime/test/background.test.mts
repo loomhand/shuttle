@@ -70,14 +70,14 @@ test('a password the window does not show after typing escalates without the pas
   const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'focused', 'protected'], value: '' }
   const d = desktop([user(), notepad()], ({ tool, args }) => {
     if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad().title, states: ['showing'] }, field] })
-    if (tool === 'desk_type') return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: 'unverifiable: posted' })
+    if (tool === 'desk_type') return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: `unverifiable: Sent ${String(args.text).length} char(s), first h, via PostMessage` })
     return undefined
   })
   await daemon(t, d.reply)
   const r = await main({ steps: [{ app: 'Notepad' }, { type: '{{password}}', focus: { secure: true } }], params: { password: 'hunter2' } })
   assert.equal(r.ok, false)
-  assert.match(String(r.escalate?.reason), /^the password did not show in "Untitled - Notepad" after typing: unverifiable: posted$/)
-  assert.ok(!JSON.stringify(r).includes('hunter2'), JSON.stringify(r))
+  assert.equal(r.escalate?.reason, 'the password did not show in "Untitled - Notepad" after typing: unverifiable: the password was sent and the target did not confirm it; do not type it again')
+  assert.ok(!JSON.stringify(r).includes('hunter2') && !JSON.stringify(r).includes('7 char') && !JSON.stringify(r).includes('first h'), JSON.stringify(r))
 })
 
 test('a background type reads the unvalued fields of its window four at a time', async (t) => {
