@@ -533,7 +533,11 @@ function modalBlocks(m: Win) { return `modal dialog "${m.title}" is open but ${m
 function blocked(o: string) { return /AT-SPI peer \S+ is not responding|no accessibility answer within/.test(o) }
 function isChooser(o: string) { return isDialog(o) && CHOOSER.test(o) }
 async function selectLine(w: Win | null) { if (OS === 'darwin') await desk.key(SELECT_ALL, at(w)); else { await desk.key('home', at(w)); await desk.key('shift+end', at(w)) } }
-function echoed(w: Win) { return new Surprise(`the password showed in "${w.title}", so it was not submitted`, { window: w.title }) }
+async function echoed(w: Win, line: string, base: Map<string, Text> | null) {
+  for (const _ of line.replace(/\r?\n$/, '')) await desk.key('backspace', at(w))
+  const left = !base ? 'Backspace was sent over it, unchecked' : shows(base, await settled(w), line, true) ? 'and it could not be erased: clear it by hand' : 'and it was erased'
+  return new Surprise(`the password showed in "${w.title}", so it was not submitted, ${left}`, { window: w.title })
+}
 function late(w: Win) { return new Surprise(`the password showed in "${w.title}" after its Return was sent`, { window: w.title }) }
 function changed(w: Win, note: string) { return `"${w.title}" changed while the password was typed, and nothing showed that a prompt took it, so it was not submitted: ${note}` }
 
@@ -1103,7 +1107,7 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
   const first = await desk.typeText(raw[k] ?? '', at(w)); heard(first, rec, s)
   if (!first.terminal) {
     if (k + 1 < raw.length) {
-      if (secure(s) && shows(base, await settled(w), raw[k] ?? '', true)) throw echoed(w)
+      if (secure(s) && shows(base, await settled(w), raw[k] ?? '', true)) throw await echoed(w, raw[k] ?? '', base)
       heard(await desk.typeText(`\n${raw.slice(k + 1).join('\n')}`, at(w)), rec, s)
       if (secure(s) && shows(base, await settled(w), raw[k] ?? '', true)) throw late(w)
     }
@@ -1115,9 +1119,9 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
     if (i > k) { heard(await desk.key('Return', at(w)), rec, s); if (!line) continue; base = await settled(w) }
     const r = i > k ? await desk.typeText(raw[i] ?? '', at(w)) : first
     if (i > k) heard(r, rec, s)
-    if (!r.unverified?.includes(TERMINAL)) { if (secure(s) && !r.unverified) throw echoed(w); continue }
+    if (!r.unverified?.includes(TERMINAL)) { if (secure(s) && !r.unverified) throw await echoed(w, raw[i] ?? '', base); continue }
     const now = await texts(w); const shown = shows(base, now, line, true)
-    if (secure(s) && shown) throw echoed(w)
+    if (secure(s) && shown) throw await echoed(w, raw[i] ?? '', base)
     if (secure(s) && !unchanged(base, now)) throw new Surprise(changed(w, hush(r.unverified)), await seen())
     if (!shown && !unchanged(base, now)) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing line ${i + 1} of ${n}${i > 1 ? `, after the ${i} lines before it and their Returns were sent` : i ? ', after the line before it and its Return were sent' : ''}: ${r.unverified}`, await seen())
     quiet ||= !shown
@@ -1281,14 +1285,14 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const text = sub ? s.type.slice(0, -1) : s.type; const line = held ? text.slice(0, -1) : text; let quiet: boolean | undefined
     let sent: desk.Sent | undefined
     if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(sent = await desk.typeText(line, at(w)), rec, s)
-    if (w && secure(s) && sent?.terminal && !sent.unverified) throw echoed(w)
-    if (held && w && shows(was, await settled(w), line, true)) throw echoed(w)
+    if (w && secure(s) && sent?.terminal && !sent.unverified) throw await echoed(w, line, was)
+    if (held && w && shows(was, await settled(w), line, true)) throw await echoed(w, line, was)
     if (held) heard(await desk.key('Return', at(w)), rec, s)
     tick('act', t0)
     if (BG && rec.unverified && w && !sub && quiet !== undefined) rec.confirmed = !quiet
     else if (BG && rec.unverified && w && !sub) {
       const now = await texts(w); const tty = rec.unverified.includes(TERMINAL); const shown = shows(was, now, s.type, tty) || (!tty && secure(s) && masked(was, now, s.type.replace(/\n/g, '')))
-      if (tty && secure(s) && shown) throw echoed(w)
+      if (tty && secure(s) && shown) throw await echoed(w, s.type, was)
       if (AUTO && !tty && !secure(s) && !shown && unchanged(was, now) && whole(was) && whole(now) && !taken(await desk.windows())) {
         await desk.focus(w.title, w.pid)
         await desk.typeText(s.type, FG)

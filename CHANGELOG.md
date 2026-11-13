@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **`gui_plan`: a password that showed is erased before the step stops.** A secret line stopped because "the password showed" left the password on the screen, where the next screenshot or snapshot carried it to the model. Now the step first sends one Backspace per typed character, reads the window back, and says "and it was erased", or "it could not be erased: clear it by hand" when it still shows. A password that shows only after its Return was already submitted, and is left as it is.
+
 ## 0.1.52 - 2026-11-13
 
 - **`gui_plan`: on Linux, a secret line is read back from the terminal before its Return.** A Linux terminal such as xfce4-terminal is an AT-SPI `terminal` node, which carries no value in a snapshot, so the read-back before a secret line's Return read nothing. At an echoing prompt the password showed, the Return was sent, and the plan answered `ok: true`, since v0.1.49. Now a `terminal` node's text is read back like a text field's, and the step stops with "the password showed" before its Return.
