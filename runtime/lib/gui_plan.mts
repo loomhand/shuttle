@@ -534,6 +534,7 @@ function blocked(o: string) { return /AT-SPI peer \S+ is not responding|no acces
 function isChooser(o: string) { return isDialog(o) && CHOOSER.test(o) }
 async function selectLine(w: Win | null) { if (OS === 'darwin') await desk.key(SELECT_ALL, at(w)); else { await desk.key('home', at(w)); await desk.key('shift+end', at(w)) } }
 function echoed(w: Win) { return new Surprise(`the password showed in "${w.title}", so it was not submitted`, { window: w.title }) }
+function late(w: Win) { return new Surprise(`the password showed in "${w.title}" after its Return was sent`, { window: w.title }) }
 function changed(w: Win, note: string) { return `"${w.title}" changed while the password was typed, and nothing showed that a prompt took it, so it was not submitted: ${note}` }
 
 function frozen(w: Win, i: number, prev: Step | undefined) { return `"${w.title}" stopped answering accessibility${prev ? ` after step ${i - 1} ${JSON.stringify(unrecorded(prev))}` : ''}: its app is busy or hung; wait and continue from step ${i}, or close it` }
@@ -1104,6 +1105,7 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
     if (k + 1 < raw.length) {
       if (secure(s) && shows(base, await settled(w), raw[k] ?? '', true)) throw echoed(w)
       heard(await desk.typeText(`\n${raw.slice(k + 1).join('\n')}`, at(w)), rec, s)
+      if (secure(s) && shows(base, await settled(w), raw[k] ?? '', true)) throw late(w)
     }
     return undefined
   }
@@ -1117,12 +1119,12 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
     const now = await texts(w); const shown = shows(base, now, line, true)
     if (secure(s) && shown) throw echoed(w)
     if (secure(s) && !unchanged(base, now)) throw new Surprise(changed(w, hush(r.unverified)), await seen())
-    if (!shown && !unchanged(base, now)) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing line ${i + 1} of ${n}${i > 1 ? `, after the ${i} lines before it and their Returns were sent` : i ? ', after the line before it and its Return were sent' : ''}: ${secure(s) ? hush(r.unverified) : r.unverified}`, await seen())
+    if (!shown && !unchanged(base, now)) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing line ${i + 1} of ${n}${i > 1 ? `, after the ${i} lines before it and their Returns were sent` : i ? ', after the line before it and its Return were sent' : ''}: ${r.unverified}`, await seen())
     quiet ||= !shown
   }
   if (quiet && secure(s) && text.endsWith('\n')) {
     const after = await settled(w)
-    if (shows(base, after, raw[k] ?? '', true)) throw new Surprise(`the password showed in "${w.title}" after its Return was sent`, { window: w.title })
+    if (shows(base, after, raw[k] ?? '', true)) throw late(w)
     if (moved(base, after)) return false
   }
   return quiet
