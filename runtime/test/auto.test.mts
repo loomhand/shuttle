@@ -346,6 +346,15 @@ test('a background secret password line that shows only after its Return stops i
   assert.ok(!JSON.stringify(r).includes('example-pass'), JSON.stringify(r))
 })
 
+test('a background secret line whose reply names no terminal stops when the password shows only after its Return', async (t) => {
+  const typed = (screen: string, text: string) => text.startsWith('\n') ? `${screen}example-pass\n$ ` : screen
+  const { r } = await terminal(t, background, typed, { type: 'example-pass\n', extra: { secret: true }, named: false })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, 'the password showed in "Terminal" after its Return was sent')
+  assert.equal(r.escalate?.outline, undefined)
+  assert.ok(!JSON.stringify(r).includes('example-pass'), JSON.stringify(r))
+})
+
 test('typing a Windows Terminal does not change is never typed again in the foreground, as its terminal text counts as no field', async (t) => {
   const { calls } = await terminal(t, auto, (screen) => screen, { type: 'j', named: false, role: 'text' })
   assert.ok(!calls.some((c) => c.tool === 'desk_focus'), JSON.stringify(calls.map((c) => c.tool)))

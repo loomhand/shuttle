@@ -2,7 +2,6 @@
 
 use serde_json::{Value, json};
 
-const SHIFTED: &str = "!@#$%^&*()_+:\"<>?~{}|";
 const BASE: &str = "1234567890-=;',./`[]\\";
 const KEYS: [&str; 20] = [
     "return",
@@ -149,21 +148,12 @@ pub fn ax_combo(cmd_char: &str, modifiers: i64) -> Option<String> {
     Some(combo.join("+"))
 }
 
-/// The US-layout keys that type `c`, shift first for a shifted character; none for a character Windows types as Unicode.
-pub fn keystroke(c: char) -> Option<Vec<String>> {
+/// The US-layout key that types `c` with no modifier; none for a character that takes Shift or is not on that layout.
+pub fn keystroke(c: char) -> Option<String> {
     match c {
-        'a'..='z' | '0'..='9' => Some(vec![c.to_string()]),
-        ' ' => Some(vec!["space".to_owned()]),
-        'A'..='Z' => Some(vec!["shift".to_owned(), c.to_ascii_lowercase().to_string()]),
-        _ => {
-            if let Some(i) = SHIFTED.find(c) {
-                return BASE[i..]
-                    .chars()
-                    .next()
-                    .map(|k| vec!["shift".to_owned(), k.to_string()]);
-            }
-            BASE.contains(c).then(|| vec![c.to_string()])
-        }
+        'a'..='z' | '0'..='9' => Some(c.to_string()),
+        ' ' => Some("space".to_owned()),
+        _ => BASE.contains(c).then(|| c.to_string()),
     }
 }
 
@@ -378,16 +368,15 @@ mod tests {
     }
 
     #[test]
-    fn windows_characters_map_to_us_layout_keys() {
-        let k = |c| keystroke(c).map(|v| v.join("+"));
+    fn a_windows_character_maps_to_its_unshifted_us_layout_key_or_none() {
+        let k = keystroke;
         assert_eq!(k('a').as_deref(), Some("a"));
-        assert_eq!(k('Q').as_deref(), Some("shift+q"));
+        assert_eq!(k('7').as_deref(), Some("7"));
         assert_eq!(k(' ').as_deref(), Some("space"));
-        assert_eq!(k('!').as_deref(), Some("shift+1"));
-        assert_eq!(k(':').as_deref(), Some("shift+;"));
-        assert_eq!(k('|').as_deref(), Some("shift+\\"));
         assert_eq!(k('/').as_deref(), Some("/"));
         assert_eq!(k('\\').as_deref(), Some("\\"));
-        assert_eq!(k('é'), None);
+        for shifted in ['Q', '!', ':', '|', 'é'] {
+            assert_eq!(k(shifted), None, "{shifted}");
+        }
     }
 }

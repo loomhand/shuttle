@@ -1056,7 +1056,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 }
                 let mut run = None;
                 for (at, c) in line.char_indices() {
-                    let key = keystroke(c).filter(|k| k.len() == 1);
+                    let key = keystroke(c);
                     if key.is_none() && !matches!(c, '\t' | '\r') {
                         run.get_or_insert(at);
                         continue;
@@ -1066,7 +1066,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         self.send("type_text", req, to, &mut note).await?;
                     }
                     let (tool, req) = match key {
-                        Some(keys) => key_request(keys),
+                        Some(key) => key_request(vec![key]),
                         None => (
                             "type_text",
                             json!({"text": &line[at..at + c.len_utf8()], "literal": true}),

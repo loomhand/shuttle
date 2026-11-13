@@ -39,6 +39,7 @@ export async function main(p: Params): Promise<Draft> {
   // a recording that read no focus checks none on replay
   const focus = (f: Field | null | undefined) => f === null ? { focus: 'unverified' } : f ? onPage(f, f) : {}
   const onPage = (f: Partial<Field>, to: Partial<Field>) => { const { url: _url, window: _window, ...field } = to; return { focus: field, ...(f.url ? { web: { url: templ(f.url) } } : {}) } }
+  const atPrompt = (name: string) => `type the ${name.replace('_', ' ')} and Return (not into a password field, such as at a terminal prompt: neither is recorded, pass it as ${name})`
   const password = (f?: Field | null) => {
     const name = `password${secrets ? `_${secrets + 1}` : ''}`; secrets += 1
     params[name] = { secret: true }
@@ -46,7 +47,6 @@ export async function main(p: Params): Promise<Draft> {
     else draft.steps.push({ type: `{{${name}}}`, ...onPage(f ?? {}, { ...f, secure: true }), intent: `type the ${name.replace('_', ' ')} (a password field: not recorded, pass it as ${name})` })
     unread = f ? undefined : draft.steps.at(-1)
   }
-  const atPrompt = (name: string) => `type the ${name.replace('_', ' ')} and Return (not into a password field, such as at a terminal prompt: neither is recorded, pass it as ${name})`
   const flush = () => {
     if (secret) {
       if (!filled) password(into)
