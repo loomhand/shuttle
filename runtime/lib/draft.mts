@@ -59,8 +59,7 @@ export async function main(p: Params): Promise<Draft> {
   const input = (e: Event) => e.kind === 'click' || e.kind === 'key' || e.kind === 'password'
   const first = events.find(input)
   const app = events.find((e) => input(e) && e.app)?.app
-  const prompt = (e: Event) => e.kind === 'password' && !!e.focus && !e.focus.secure
-  const opened = first && !prompt(first) ? windowOf(first) : undefined
+  const opened = first ? windowOf(first) : undefined
   if (app) draft.steps.push(at(app, first ? pageOf(first) : undefined, opened, 'open'))
   let here = { app, window: opened }
   const move = (e: Event) => {
@@ -69,7 +68,7 @@ export async function main(p: Params): Promise<Draft> {
     if (e.app === here.app && (!w || !here.window || w === here.window)) { here.window = w || here.window; return }
     flush(); filled = false
     here = { app: e.app, window: w }
-    draft.steps.push(at(e.app, pageOf(e), prompt(e) ? undefined : w, 'switch to'))
+    draft.steps.push(at(e.app, pageOf(e), w, 'switch to'))
   }
   // a step into a web page opens its address, which needs no tab of that title to exist
   function at(app: string, page: string | undefined, title: string | undefined, verb: string): Step {
