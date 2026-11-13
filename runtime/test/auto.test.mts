@@ -49,20 +49,23 @@ async function run(t: TestContext, plan: Plan, typed: (before: string, text: str
   return { r, calls: d.calls, doc: d.doc() }
 }
 
-async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', extra = {} as Record<string, unknown>, front = false, answer = (s: string) => `${s}\n$ `, blind = false, named = true, role = 'document' } = {}) {
+async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', extra = {} as Record<string, unknown>, front = false, answer = (s: string) => `${s}\n$ `, blind = false, named = true, role = 'document', erases = true, eraseFails = false, eraseBlinds = false, readBlinds = false, steal = false, stealMid = false, eraseLimit = Infinity } = {}) {
   const term: W = { id: 't', title: 'Terminal', role: 'window', pid: 7, active: front, app: 'Terminal' }
   const bare = role === 'text' || role === 'terminal'
   const node = () => ({ ref: 0, id: 'd', parent: -1, depth: 0, role, name: role === 'text' ? 'Command Prompt' : '', states: role === 'text' ? ['focused'] : [], ...(bare ? {} : { value: screen }) })
-  const calls: Call[] = []; let late = ''; let keyed = false
+  const calls: Call[] = []; let late = ''; let keyed = false; let erased = false; let typed1 = false; let backs = 0
   await daemon(t, (c) => {
     calls.push(c)
-    if (c.tool === 'desk_windows') return JSON.stringify(front ? [{ ...user(), active: false }, term] : [user(), term])
-    if (blind && keyed && (c.tool === 'desk_snapshot' || c.tool === 'desk_read')) throw new Error('the window answers no accessibility calls')
+    if (c.tool === 'desk_windows') return JSON.stringify(front && !(steal && typed1) && !(stealMid && backs > 0) ? [{ ...user(), active: false }, term] : front ? [user(), { ...term, active: false }] : [user(), term])
+    if (((blind && keyed) || (eraseBlinds && erased)) && (c.tool === 'desk_snapshot' || c.tool === 'desk_read')) throw new Error('the window answers no accessibility calls')
+    if (readBlinds && erased && c.tool === 'desk_read') throw new Error('the node answers no text')
     if (c.tool === 'desk_snapshot') { const out = JSON.stringify({ window: term, nodes: [{ ...node(), ...(bare ? {} : { value: screen.slice(0, 200) }) }], truncated: false }); screen += late; late = ''; return out }
     if (c.tool === 'desk_read') return JSON.stringify({ ...node(), value: c.args.tail ? screen.slice(-READ) : screen.slice(0, READ), ...(screen.length > READ ? { truncated: true } : {}) })
+    if (c.tool === 'desk_key' && c.args.keys === 'backspace') { if (eraseFails) throw new Error('bring_to_front: refused'); erased = true; backs += 1; if (erases && backs <= eraseLimit) screen = screen.slice(0, -1); return '{"ok":true}' }
     if (c.tool === 'desk_key') { screen = answer(screen); late = prompt; keyed = true; return JSON.stringify({ ok: true, ...(key ? { unverified: key } : {}) }) }
     if (c.tool !== 'desk_type') return '{"ok":true}'
     const text = String(c.args.text)
+    typed1 = true
     screen = typed(screen, text)
     return JSON.stringify(front ? { ok: true, chars: 3 } : named ? { ok: true, chars: 3, terminal: true, ...(sure(text) ? {} : { unverified: TTY }) } : { ok: true, chars: 3, unverified: 'unverifiable: Sent 3 char(s) via PostMessage (not verified).' })
   })
@@ -302,8 +305,8 @@ test('a secret step never shows its text, and a password the terminal echoed sto
       assert.ok(hidden(part.r), `${mode} ${JSON.stringify(type)} ${JSON.stringify(part.r)}`)
       for (const sure of [(_: string) => false, (x: string) => x === 'example-pass']) {
         const echo = await terminal(t, plan, (screen, text) => screen + text, { type, extra: { secret: true }, sure })
-        assert.match(String(echo.r.escalate?.reason), /^the password showed in "Terminal", so it was not submitted$/, `${mode} ${JSON.stringify(type)}`)
-        assert.deepEqual(echo.calls.filter((c) => c.tool === 'desk_key'), [], `${mode} ${JSON.stringify(type)}`)
+        assert.match(String(echo.r.escalate?.reason), /^the password showed in "Terminal", so it was not submitted, and it was erased$/, `${mode} ${JSON.stringify(type)}`)
+        assert.deepEqual(echo.calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), Array(12).fill('backspace'), `${mode} ${JSON.stringify(type)}`)
         assert.ok(hidden(echo.r), `${mode} ${JSON.stringify(type)}`)
       }
     }
@@ -342,7 +345,7 @@ test('an unconfirmed secret step reports a fixed note that gives neither the pas
 test('a background secret password line that shows only after its Return stops instead of counting as landed', async (t) => {
   const { r } = await terminal(t, background, (screen) => screen, { type: 'example-pass\n', extra: { secret: true }, answer: (s: string) => `${s}example-pass\n$ ` })
   assert.equal(r.ok, false, JSON.stringify(r))
-  assert.equal(r.escalate?.reason, 'the password showed in "Terminal" after its Return was sent')
+  assert.equal(r.escalate?.reason, 'the password showed in "Terminal" after its Return was sent; clear it (in a terminal, for example `clear`) before any screenshot')
   assert.equal(r.escalate?.outline, undefined)
   assert.ok(!JSON.stringify(r).includes('example-pass'), JSON.stringify(r))
 })
@@ -351,7 +354,7 @@ test('a background secret line whose reply names no terminal stops when the pass
   const typed = (screen: string, text: string) => text.startsWith('\n') ? `${screen}example-pass\n$ ` : screen
   const { r } = await terminal(t, background, typed, { type: 'example-pass\n', extra: { secret: true }, named: false })
   assert.equal(r.ok, false, JSON.stringify(r))
-  assert.equal(r.escalate?.reason, 'the password showed in "Terminal" after its Return was sent')
+  assert.equal(r.escalate?.reason, 'the password showed in "Terminal" after its Return was sent; clear it (in a terminal, for example `clear`) before any screenshot')
   assert.equal(r.escalate?.outline, undefined)
   assert.ok(!JSON.stringify(r).includes('example-pass'), JSON.stringify(r))
 })
@@ -367,9 +370,9 @@ test('a background secret line whose reply names no terminal, as on Windows, sto
 })
 
 async function unnamed(t: TestContext, role: string) {
-  const keys = (calls: Call[]) => calls.filter((c) => c.tool === 'desk_key' || (c.tool === 'desk_type' && String(c.args.text).startsWith('\n')))
+  const keys = (calls: Call[]) => calls.filter((c) => (c.tool === 'desk_key' && c.args.keys !== 'backspace') || (c.tool === 'desk_type' && String(c.args.text).startsWith('\n')))
   const echo = await terminal(t, background, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, named: false, role })
-  assert.equal(echo.r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted')
+  assert.equal(echo.r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it was erased')
   assert.deepEqual(keys(echo.calls), [])
   assert.ok(!JSON.stringify(echo.r).includes('example-pass'), JSON.stringify(echo.r))
   const quiet = await terminal(t, background, (screen, text) => text === 'example-pass' ? screen : screen + text, { type: 'example-pass\n', extra: { secret: true }, named: false, role })
@@ -380,12 +383,44 @@ async function unnamed(t: TestContext, role: string) {
 test('a foreground secret step reads a valueless terminal node back, as xfce4-terminal shows one, and stops before its Return when the password shows', async (t) => {
   const keys = (calls: Call[]) => calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys)
   const echo = await terminal(t, foreground, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, front: true, role: 'terminal' })
-  assert.equal(echo.r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted')
-  assert.deepEqual(keys(echo.calls), [])
+  assert.equal(echo.r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it was erased')
+  assert.deepEqual(keys(echo.calls), Array(12).fill('backspace'))
   assert.ok(!JSON.stringify(echo.r).includes('example-pass'), JSON.stringify(echo.r))
   const quiet = await terminal(t, foreground, (screen) => screen, { type: 'example-pass\n', extra: { secret: true }, front: true, role: 'terminal' })
   assert.equal(quiet.r.ok, true, JSON.stringify(quiet.r))
   assert.deepEqual(keys(quiet.calls), ['Return'])
+})
+
+test('a shown password still stops with the secret reason when Backspace fails or the window cannot be read back', async (t) => {
+  const failed = await terminal(t, foreground, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, front: true, eraseFails: true })
+  assert.equal(failed.r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it could not be erased: clear it by hand')
+  assert.equal(failed.r.escalate?.outline, undefined)
+  assert.ok(!JSON.stringify(failed.r).includes('example-pass'), JSON.stringify(failed.r))
+  const blind = await terminal(t, foreground, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, front: true, eraseBlinds: true })
+  assert.equal(blind.r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, Backspace was sent over it, unchecked')
+  assert.ok(!JSON.stringify(blind.r).includes('example-pass'), JSON.stringify(blind.r))
+})
+
+test('a shown password is erased only in its own front window, by the characters typed, and called erased only on a full read-back', async (t) => {
+  const back = (calls: Call[]) => calls.filter((c) => c.tool === 'desk_key' && c.args.keys === 'backspace').length
+  const stolen = await terminal(t, foreground, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, front: true, steal: true })
+  assert.equal(stolen.r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it could not be erased: clear it by hand')
+  assert.equal(back(stolen.calls), 0)
+  const crlf = await terminal(t, foreground, (screen, text) => screen + text.replace(/\r$/, ''), { type: 'example-pass\r\n', extra: { secret: true }, front: true })
+  assert.equal(back(crlf.calls), 12)
+  const mid = await terminal(t, foreground, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, front: true, stealMid: true })
+  assert.equal(back(mid.calls), 1)
+  assert.equal(mid.r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it could not be erased: clear it by hand')
+  const part = await terminal(t, foreground, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, front: true, eraseLimit: 5 })
+  assert.equal(part.r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it could not be erased: clear it by hand')
+  const unread = await terminal(t, foreground, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, front: true, role: 'terminal', readBlinds: true })
+  assert.equal(unread.r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, Backspace was sent over it, unchecked')
+})
+
+test('a shown password that Backspace does not erase is reported as still on screen', async (t) => {
+  const { r } = await terminal(t, foreground, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, front: true, erases: false })
+  assert.equal(r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it could not be erased: clear it by hand')
+  assert.ok(!JSON.stringify(r).includes('example-pass'), JSON.stringify(r))
 })
 
 test('a foreground secret step reads the window back before its Return, as a foreground type reply names no terminal', async (t) => {
@@ -398,8 +433,8 @@ test('a foreground secret step reads the window back before its Return, as a for
     assert.deepEqual(keys(calls), ['Return'])
   }
   const { r, calls } = await terminal(t, foreground, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, front: true })
-  assert.match(String(r.escalate?.reason), /^the password showed in "Terminal", so it was not submitted$/)
-  assert.deepEqual(keys(calls), [])
+  assert.match(String(r.escalate?.reason), /^the password showed in "Terminal", so it was not submitted, and it was erased$/)
+  assert.deepEqual(keys(calls), Array(12).fill('backspace'))
   assert.deepEqual(typed(calls), ['example-pass'])
   assert.ok(!JSON.stringify(r).includes('example-pass'), JSON.stringify(r))
 })
