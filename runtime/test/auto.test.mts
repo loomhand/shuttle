@@ -331,6 +331,13 @@ test('a background secret password line stays unconfirmed, with no outline, when
   }
 })
 
+test('an unconfirmed secret step reports a fixed note that gives neither the password\'s length nor its keys', async (t) => {
+  const { r } = await terminal(t, background, (screen) => screen, { type: 'example-pass\n', extra: { secret: true }, answer: (s: string) => s })
+  const notes = JSON.stringify([r.escalate?.reason, r.unverified])
+  assert.ok(notes.includes('the password was sent and the target did not confirm it (terminal emulator)'), notes)
+  assert.ok(!notes.includes('char(s)') && !notes.includes('example-pass'), notes)
+})
+
 test('a background secret password line that shows only after its Return stops instead of counting as landed', async (t) => {
   const { r } = await terminal(t, background, (screen) => screen, { type: 'example-pass\n', extra: { secret: true }, answer: (s: string) => `${s}example-pass\n$ ` })
   assert.equal(r.ok, false, JSON.stringify(r))
