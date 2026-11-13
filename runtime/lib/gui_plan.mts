@@ -534,11 +534,15 @@ function blocked(o: string) { return /AT-SPI peer \S+ is not responding|no acces
 function isChooser(o: string) { return isDialog(o) && CHOOSER.test(o) }
 async function selectLine(w: Win | null) { if (OS === 'darwin') await desk.key(SELECT_ALL, at(w)); else { await desk.key('home', at(w)); await desk.key('shift+end', at(w)) } }
 async function echoed(w: Win, line: string, base: Map<string, Text> | null) {
-  for (const _ of line.replace(/\r?\n$/, '')) await desk.key('backspace', at(w))
-  const left = !base ? 'Backspace was sent over it, unchecked' : shows(base, await settled(w), line, true) ? 'and it could not be erased: clear it by hand' : 'and it was erased'
+  let left = 'and it could not be erased: clear it by hand'
+  try {
+    for (const _ of line.replace(/\r?\n$/, '')) await desk.key('backspace', at(w))
+    const after = base ? await settled(w) : null
+    left = !after ? 'Backspace was sent over it, unchecked' : shows(base, after, line, true) ? left : 'and it was erased'
+  } catch {}
   return new Surprise(`the password showed in "${w.title}", so it was not submitted, ${left}`, { window: w.title })
 }
-function late(w: Win) { return new Surprise(`the password showed in "${w.title}" after its Return was sent`, { window: w.title }) }
+function late(w: Win) { return new Surprise(`the password showed in "${w.title}" after its Return was sent; clear the terminal (for example \`clear\`) before any screenshot`, { window: w.title }) }
 function changed(w: Win, note: string) { return `"${w.title}" changed while the password was typed, and nothing showed that a prompt took it, so it was not submitted: ${note}` }
 
 function frozen(w: Win, i: number, prev: Step | undefined) { return `"${w.title}" stopped answering accessibility${prev ? ` after step ${i - 1} ${JSON.stringify(unrecorded(prev))}` : ''}: its app is busy or hung; wait and continue from step ${i}, or close it` }
