@@ -42,11 +42,11 @@ export async function main(p: Params): Promise<Draft> {
   const password = (f?: Field | null) => {
     const name = `password${secrets ? `_${secrets + 1}` : ''}`; secrets += 1
     params[name] = { secret: true }
-    const said = name.replace('_', ' ')
-    if (f && !f.secure) draft.steps.push({ type: `{{${name}}}\n`, secret: true, ...onPage(f, f), intent: `type the ${said} and Return (not into a password field, such as at a terminal prompt: neither is recorded, pass it as ${name})` })
-    else draft.steps.push({ type: `{{${name}}}`, ...onPage(f ?? {}, { ...f, secure: true }), intent: `type the ${said} (a password field: not recorded, pass it as ${name})` })
+    if (f && !f.secure) draft.steps.push({ type: `{{${name}}}\n`, secret: true, ...onPage(f, f), intent: atPrompt(name) })
+    else draft.steps.push({ type: `{{${name}}}`, ...onPage(f ?? {}, { ...f, secure: true }), intent: `type the ${name.replace('_', ' ')} (a password field: not recorded, pass it as ${name})` })
     unread = f ? undefined : draft.steps.at(-1)
   }
+  const atPrompt = (name: string) => `type the ${name.replace('_', ' ')} and Return (not into a password field, such as at a terminal prompt: neither is recorded, pass it as ${name})`
   const flush = () => {
     if (secret) {
       if (!filled) password(into)
@@ -92,7 +92,7 @@ export async function main(p: Params): Promise<Draft> {
     if (e.kind === 'password') {
       const last = draft.steps.at(-1)
       if (!filled) password(e.focus)
-      else if (last && e.focus && !e.focus.secure && last === unread) { Object.assign(last, onPage(e.focus, e.focus), { secret: true, type: `${last.type}\n` }); unread = undefined }
+      else if (last && e.focus && !e.focus.secure && last === unread) { Object.assign(last, onPage(e.focus, e.focus), { secret: true, type: `${last.type}\n`, intent: atPrompt(String(last.type).slice(2, -2)) }); unread = undefined }
       else if (last && e.focus && !(last.focus as Partial<Field> | undefined)?.role) Object.assign(last, onPage(e.focus, { ...e.focus, secure: true }))
       filled = true
     }
