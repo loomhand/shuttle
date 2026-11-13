@@ -1082,10 +1082,11 @@ async function typedInto(w: Win, text: string): Promise<{ fp?: Fp; kept?: Kept }
 async function texts(w: Win): Promise<Map<string, Text> | null> {
   try {
     const slot = pool(READS_AT_ONCE)
-    const all = await Promise.all(parse(await snapOf(w)).map(async (n): Promise<[string, Text][]> => {
+    const nodes = parse(await snapOf(w)); const bare = !nodes.some((n) => n.role === 'document' || FIELD_ROLES.has(n.role))
+    const all = await Promise.all(nodes.map(async (n): Promise<[string, Text][]> => {
       const field = n.role === 'document' || FIELD_ROLES.has(n.role)
       if (n.value && !(field && n.value.length >= VALUE_CHARS)) return [[n.id, { value: n.value, field }]]
-      if (!field) return []
+      if (!field && !(bare && n.role === 'text' && n.focused)) return []
       const r = await slot(() => desk.read(n.id, { text: true, tail: true })).catch(() => null)
       return [[n.id, { value: r?.value, field, cut: r?.truncated }]]
     }))
@@ -1100,7 +1101,10 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
   if (k > 0) { heard(await desk.typeText('\n'.repeat(k), at(w)), rec, s); base = await settled(w) }
   const first = await desk.typeText(raw[k] ?? '', at(w)); heard(first, rec, s)
   if (!first.terminal) {
-    if (k + 1 < raw.length) heard(await desk.typeText(`\n${raw.slice(k + 1).join('\n')}`, at(w)), rec, s)
+    if (k + 1 < raw.length) {
+      if (secure(s) && shows(base, await settled(w), raw[k] ?? '', true)) throw echoed(w)
+      heard(await desk.typeText(`\n${raw.slice(k + 1).join('\n')}`, at(w)), rec, s)
+    }
     return undefined
   }
   const n = lines.length - (text.endsWith('\n') ? 1 : 0); let quiet = false
