@@ -456,7 +456,6 @@ fn listen(
     Err(OTHER_OS.to_owned())
 }
 
-#[cfg(target_os = "macos")]
 fn covers(apps: &[String], app: &str) -> bool {
     apps.is_empty() || apps.iter().any(|a| a.eq_ignore_ascii_case(app))
 }
@@ -510,7 +509,7 @@ fn kept(app: Option<&str>, pid: Option<u64>, apps: &[String]) -> bool {
     let Some(app) = app else {
         return apps.is_empty();
     };
-    !blocked(app, pid) && (apps.is_empty() || apps.iter().any(|a| a.eq_ignore_ascii_case(app)))
+    !blocked(app, pid) && covers(apps, app)
 }
 
 fn blocked(app: &str, pid: Option<u64>) -> bool {

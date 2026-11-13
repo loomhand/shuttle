@@ -23,7 +23,7 @@ The desk verbs on macOS, Windows and Linux (X11): `desk_windows`, `desk_unanswer
 | `computer.rs`, `volatile.rs` | The computer verbs, on cua-driver captures off Linux and MIT-SHM on Linux, and the Linux sampler of the screen blocks that change while no action runs, which their settle ignores |
 | `worker.rs` | The backend's own thread; a call past its limit leaves that thread behind and starts a fresh one |
 | `driver.rs` | cua-driver client (line JSON over its socket or named pipe) for input, window focus, launch and capture |
-| `keys.rs` | The key vocabulary, one alias table for every OS (the logo key is `cmd` on macOS, `win` on Windows, `super` on Linux; a name no driver knows fails), the UIA and AX shortcut forms, and the keystroke of each typed character on Windows |
+| `keys.rs` | The key vocabulary, one alias table for every OS (the logo key is `cmd` on macOS, `win` on Windows, `super` on Linux; a name no driver knows fails), the UIA and AX shortcut forms, and the unshifted US-layout key a Windows background type sends for a character |
 | `pipesec.rs` | Windows: who may open the daemon's pipe, whether a pipe's client runs as this user, and whether a pipe belongs to the user its name carries or to Administrators |
 | `server.rs` | The endpoint (socket or pipe, one daemon per endpoint), the `Handler` trait, `serve`, `call` and `native`, which picks this OS's backend |
 

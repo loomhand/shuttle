@@ -467,7 +467,7 @@ function traced(i: number, rec: Rec, s: Step, escalated: boolean): Trace {
   }
 }
 
-function heard(r: desk.Sent, rec: Rec, s?: Step) { if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = s && secure(s) ? hush(r.unverified) : r.unverified }
+function heard(r: desk.Sent, rec: Rec, s: Step) { if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
 function hush(note: string) { return `unverifiable: the password was sent and the target did not confirm it${note.includes(TERMINAL) ? ` (${TERMINAL})` : ''}; do not type it again` }
 async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
   let ws = seed ?? await desk.windows()
@@ -1317,7 +1317,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const o = /^(enter|return)$/i.test(s.key) && w ? await filled(w, kept) : ''
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     if (w && isChooser(o)) { rec.submit = true; await submit(w, true); return }
-    const t0 = Date.now(); heard(await desk.key(s.key, at(w)), rec); tick('act', t0)
+    const t0 = Date.now(); heard(await desk.key(s.key, at(w)), rec, s); tick('act', t0)
     pressed = w && /\b(ctrl|control|alt|cmd|command|meta|super)\+|^f\d+$/i.test(s.key) ? { title: w.title, at: Date.now() } : null
     if (w && isDialog(o) && await closed(w.title, w.pid)) rec.submit = true
     return
