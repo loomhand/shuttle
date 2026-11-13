@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.52 - 2026-11-13
 
 - **`gui_plan`: on Linux, a secret line is read back from the terminal before its Return.** A Linux terminal such as xfce4-terminal is an AT-SPI `terminal` node, which carries no value in a snapshot, so the read-back before a secret line's Return read nothing. At an echoing prompt the password showed, the Return was sent, and the plan answered `ok: true`, since v0.1.49. Now a `terminal` node's text is read back like a text field's, and the step stops with "the password showed" before its Return.
+- **Validation:** runtime unit tests and CI on every platform. On a Linux X11 guest with xfce4-terminal (XFCE), foreground: at an echoing `read -p` prompt a secret line stopped before its Return 13 of 13, including 6 under CPU load and 2 after 20,000 lines of scrollback, where v0.1.51 sent the Return and the shell ran the password 2 of 2; at a `read -s` prompt it landed with one Return 5 of 5; no result or log held the password. macOS and Windows behaviour is unchanged.
 
 ## 0.1.51 - 2026-11-13
 
