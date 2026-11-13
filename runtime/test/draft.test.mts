@@ -236,6 +236,7 @@ test('only a password step whose focus was unread becomes a secret step when the
   ]
   const a = await main({ recording: { id: 'rec-tty2', events: unread } })
   assert.deepEqual(a.steps.filter((s) => 'type' in s).map(({ intent: _, ...s }) => s), [{ type: '{{password}}\n', secret: true, focus: tty }])
+  assert.equal(a.steps.find((s) => 'type' in s)?.intent, 'type the password and Return (not into a password field, such as at a terminal prompt: neither is recorded, pass it as password)')
   const pw = { role: 'textbox', name: 'PIN', frame: 'window', secure: true }
   const proven: Event[] = [
     { t: 0, kind: 'click', x: 85, y: 194, app: 'Safari', element: { role: 'textbox', name: 'PIN' }, root: false, secret: true, window: win('pw'), crop },
