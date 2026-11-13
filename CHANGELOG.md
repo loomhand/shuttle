@@ -1,8 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.1.53 - 2026-11-13
 
 - **`gui_plan`: a password that showed is erased before the step stops.** A secret line stopped because "the password showed" left the password on the screen, where the next screenshot or snapshot carried it to the model. Now the step first sends one Backspace per typed character to that window, only while it is still the one in front under foreground input, reads the window back, and says "and it was erased" only when every element reads as it did before the password. It says "it could not be erased: clear it by hand" when anything is left, another window came to the front, or Backspace could not be sent, and "Backspace was sent over it, unchecked" when the window could not be read back. The stop is reported in every case. A password that shows only after its Return was already submitted; that stop now also asks to clear it before any screenshot.
+- **Known limitation:** a password that a terminal wrapped onto a second row keeps its first-row part on screen, since the terminal's erase does not cross the row; the stop says "could not be erased: clear it by hand".
+- **Validation:** runtime unit tests and CI on every platform. At an echoing prompt, against v0.1.52:
+  - on a Linux X11 guest with xfce4-terminal, foreground: erased 3 of 3 with one Backspace per character and no Return; a 34-character password wrapped in an 80-column terminal stopped with "could not be erased: clear it by hand" 1 of 1; v0.1.52 left the password on screen 1 of 1;
+  - on a Windows 11 guest, background input, cmd and Windows Terminal in front: erased 8 of 8 with one Backspace per character; v0.1.52 left the password on screen 2 of 2; the erase adds about 0.3 s to the stop in cmd and 0.7 s in Windows Terminal;
+  - on a macOS x86_64 guest, Terminal with background input: erased 3 of 3, one Backspace per character, about 5.4 s for a 12-character password (about 0.4 s per character); v0.1.52 left the password on screen 1 of 1;
+  - no result or log held the password.
 
 ## 0.1.52 - 2026-11-13
 
