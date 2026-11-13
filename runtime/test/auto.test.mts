@@ -51,7 +51,7 @@ async function run(t: TestContext, plan: Plan, typed: (before: string, text: str
 
 async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', extra = {} as Record<string, unknown>, front = false, answer = (s: string) => `${s}\n$ `, blind = false, named = true, role = 'document' } = {}) {
   const term: W = { id: 't', title: 'Terminal', role: 'window', pid: 7, active: front, app: 'Terminal' }
-  const node = () => ({ ref: 0, id: 'd', parent: -1, depth: 0, role, name: role === 'text' ? 'Command Prompt' : '', states: [], ...(role === 'text' ? {} : { value: screen }) })
+  const node = () => ({ ref: 0, id: 'd', parent: -1, depth: 0, role, name: role === 'text' ? 'Command Prompt' : '', states: role === 'text' ? ['focused'] : [], ...(role === 'text' ? {} : { value: screen }) })
   const calls: Call[] = []; let late = ''; let keyed = false
   await daemon(t, (c) => {
     calls.push(c)

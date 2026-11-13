@@ -80,6 +80,14 @@ test('a password the window does not show after typing escalates without the pas
   assert.ok(!JSON.stringify(r).includes('hunter2'), JSON.stringify(r))
 })
 
+test('a window with no text field reads no unfocused label back, so its read-back is what it was', async (t) => {
+  const labels = [1, 2, 3].map((k) => ({ ref: k, id: `1/${k + 1}`, parent: 0, depth: 1, role: 'text', name: `Label ${k}`, states: ['showing'] }))
+  const d = desktop([user(), notepad()], ({ tool }) => tool === 'desk_snapshot' ? JSON.stringify({ window: notepad(), truncated: false, nodes: [root('window', notepad().title), ...labels] }) : undefined)
+  await daemon(t, d.reply)
+  await main({ steps: [{ app: 'Notepad' }, { type: 'hi' }] })
+  assert.deepEqual(sent(d.calls, 'desk_read'), [])
+})
+
 test('a background type reads the unvalued fields of its window four at a time', async (t) => {
   const fields = Array.from({ length: 40 }, (_, k) => ({ ref: k + 1, id: `1/${k + 2}`, parent: 0, depth: 1, role: 'textbox', name: `Field ${k}`, states: ['showing'] }))
   const d = desktop([user(), notepad()], ({ tool }) => tool === 'desk_snapshot' ? JSON.stringify({ window: notepad(), truncated: false, nodes: [root('window', notepad().title), ...fields] }) : undefined)
