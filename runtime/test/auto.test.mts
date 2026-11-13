@@ -49,21 +49,23 @@ async function run(t: TestContext, plan: Plan, typed: (before: string, text: str
   return { r, calls: d.calls, doc: d.doc() }
 }
 
-async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', extra = {} as Record<string, unknown>, front = false, answer = (s: string) => `${s}\n$ `, blind = false, named = true, role = 'document', erases = true, eraseFails = false, eraseBlinds = false } = {}) {
+async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', extra = {} as Record<string, unknown>, front = false, answer = (s: string) => `${s}\n$ `, blind = false, named = true, role = 'document', erases = true, eraseFails = false, eraseBlinds = false, readBlinds = false, steal = false } = {}) {
   const term: W = { id: 't', title: 'Terminal', role: 'window', pid: 7, active: front, app: 'Terminal' }
   const bare = role === 'text' || role === 'terminal'
   const node = () => ({ ref: 0, id: 'd', parent: -1, depth: 0, role, name: role === 'text' ? 'Command Prompt' : '', states: role === 'text' ? ['focused'] : [], ...(bare ? {} : { value: screen }) })
-  const calls: Call[] = []; let late = ''; let keyed = false; let erased = false
+  const calls: Call[] = []; let late = ''; let keyed = false; let erased = false; let typed1 = false
   await daemon(t, (c) => {
     calls.push(c)
-    if (c.tool === 'desk_windows') return JSON.stringify(front ? [{ ...user(), active: false }, term] : [user(), term])
+    if (c.tool === 'desk_windows') return JSON.stringify(front && !(steal && typed1) ? [{ ...user(), active: false }, term] : front ? [user(), { ...term, active: false }] : [user(), term])
     if (((blind && keyed) || (eraseBlinds && erased)) && (c.tool === 'desk_snapshot' || c.tool === 'desk_read')) throw new Error('the window answers no accessibility calls')
+    if (readBlinds && erased && c.tool === 'desk_read') throw new Error('the node answers no text')
     if (c.tool === 'desk_snapshot') { const out = JSON.stringify({ window: term, nodes: [{ ...node(), ...(bare ? {} : { value: screen.slice(0, 200) }) }], truncated: false }); screen += late; late = ''; return out }
     if (c.tool === 'desk_read') return JSON.stringify({ ...node(), value: c.args.tail ? screen.slice(-READ) : screen.slice(0, READ), ...(screen.length > READ ? { truncated: true } : {}) })
     if (c.tool === 'desk_key' && c.args.keys === 'backspace') { if (eraseFails) throw new Error('bring_to_front: refused'); erased = true; if (erases) screen = screen.slice(0, -1); return '{"ok":true}' }
     if (c.tool === 'desk_key') { screen = answer(screen); late = prompt; keyed = true; return JSON.stringify({ ok: true, ...(key ? { unverified: key } : {}) }) }
     if (c.tool !== 'desk_type') return '{"ok":true}'
     const text = String(c.args.text)
+    typed1 = true
     screen = typed(screen, text)
     return JSON.stringify(front ? { ok: true, chars: 3 } : named ? { ok: true, chars: 3, terminal: true, ...(sure(text) ? {} : { unverified: TTY }) } : { ok: true, chars: 3, unverified: 'unverifiable: Sent 3 char(s) via PostMessage (not verified).' })
   })
@@ -397,6 +399,17 @@ test('a shown password still stops with the secret reason when Backspace fails o
   const blind = await terminal(t, foreground, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, front: true, eraseBlinds: true })
   assert.equal(blind.r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, Backspace was sent over it, unchecked')
   assert.ok(!JSON.stringify(blind.r).includes('example-pass'), JSON.stringify(blind.r))
+})
+
+test('a shown password is erased only in its own front window, by the characters typed, and called erased only on a full read-back', async (t) => {
+  const back = (calls: Call[]) => calls.filter((c) => c.tool === 'desk_key' && c.args.keys === 'backspace').length
+  const stolen = await terminal(t, foreground, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, front: true, steal: true })
+  assert.equal(stolen.r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it could not be erased: clear it by hand')
+  assert.equal(back(stolen.calls), 0)
+  const crlf = await terminal(t, foreground, (screen, text) => screen + text.replace(/\r$/, ''), { type: 'example-pass\r\n', extra: { secret: true }, front: true })
+  assert.equal(back(crlf.calls), 12)
+  const unread = await terminal(t, foreground, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, front: true, role: 'terminal', readBlinds: true })
+  assert.equal(unread.r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, Backspace was sent over it, unchecked')
 })
 
 test('a shown password that Backspace does not erase is reported as still on screen', async (t) => {

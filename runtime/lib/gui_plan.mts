@@ -536,9 +536,13 @@ async function selectLine(w: Win | null) { if (OS === 'darwin') await desk.key(S
 async function echoed(w: Win, line: string, base: Map<string, Text> | null) {
   let left = 'and it could not be erased: clear it by hand'
   try {
-    for (const _ of line.replace(/\r?\n$/, '')) await desk.key('backspace', at(w))
-    const after = base ? await settled(w) : null
-    left = !after ? 'Backspace was sent over it, unchecked' : shows(base, after, line, true) ? left : 'and it was erased'
+    const front = BG ? w : desk.front(await desk.windows())
+    if (front?.id === w.id && front.pid === w.pid) {
+      for (const _ of line.replace(/[\r\n]+$/, '')) await desk.key('backspace', at(w))
+      const after = base ? await settled(w) : null
+      const read = !!after && after.size > 0 && [...after.values()].every((t) => t.value !== undefined)
+      left = !read ? 'Backspace was sent over it, unchecked' : shows(base, after, line, true) ? left : 'and it was erased'
+    }
   } catch {}
   return new Surprise(`the password showed in "${w.title}", so it was not submitted, ${left}`, { window: w.title })
 }

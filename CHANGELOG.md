@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **`gui_plan`: a password that showed is erased before the step stops.** A secret line stopped because "the password showed" left the password on the screen, where the next screenshot or snapshot carried it to the model. Now the step first sends one Backspace per typed character, reads the window back, and says "and it was erased"; it says "it could not be erased: clear it by hand" when it still shows or Backspace could not be sent, and "Backspace was sent over it, unchecked" when the window could not be read back. The stop is reported in every case. A password that shows only after its Return was already submitted; that stop now also asks to clear the terminal before any screenshot.
+- **`gui_plan`: a password that showed is erased before the step stops.** A secret line stopped because "the password showed" left the password on the screen, where the next screenshot or snapshot carried it to the model. Now the step first sends one Backspace per typed character to that window, only while it is still the one in front under foreground input, reads the window back, and says "and it was erased"; it says "it could not be erased: clear it by hand" when it still shows or Backspace could not be sent, and "Backspace was sent over it, unchecked" when the window could not be read back. The stop is reported in every case. A password that shows only after its Return was already submitted; that stop now also asks to clear the terminal before any screenshot.
 
 ## 0.1.52 - 2026-11-13
 
