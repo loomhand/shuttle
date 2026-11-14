@@ -1112,6 +1112,9 @@ async function texts(w: Win): Promise<Map<string, Text> | null> {
     return new Map(all.flat())
   } catch { return null }
 }
+async function hides(w: Win, read: Map<string, Text> | null) {
+  try { return !!read && (await snapOf(w)).nodes.some((n) => n.states.includes('protected') && n.states.includes('focused') && n.value === undefined && read.has(n.id) && read.get(n.id)?.value === undefined) } catch { return false }
+}
 function whole(t: Map<string, Text> | null) { return !!t && [...t.values()].every((x) => !x.cut) }
 async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | null, rec: Rec) {
   const raw = text.split('\n'); const lines = raw.map((l) => l.replace(/\r$/, '')); const k = lines.findIndex(Boolean)
@@ -1307,13 +1310,14 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     else if (BG && rec.unverified && w && !sub) {
       const now = await texts(w); const tty = rec.unverified.includes(TERMINAL); const shown = shows(was, now, s.type, tty) || (!tty && secure(s) && masked(was, now, s.type.replace(/\n/g, '')))
       if (tty && secure(s) && shown) throw await echoed(w, s.type, now)
+      const sealed = OS === 'win32' && !shown && !tty && secure(s) && !!was && !!now && [...now].every(([id, t]) => t.value === was.get(id)?.value) && await hides(w, now)
       if (AUTO && !tty && !secure(s) && !shown && unchanged(was, now) && whole(was) && whole(now) && !taken(await desk.windows())) {
         await desk.focus(w.title, w.pid)
         await desk.typeText(s.type, FG)
         rec.how = 'foreground'; rec.unverified = undefined; fronted = true; BG = false
       } else if (tty && secure(s) && !unchanged(was, now)) throw new Surprise(changed(w, rec.unverified), await seen())
-      else if (!shown && !(tty && unchanged(was, now))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
-      rec.confirmed = shown || !tty
+      else if (!shown && !sealed && !(tty && unchanged(was, now))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
+      rec.confirmed = shown || (!tty && !sealed)
     }
     const blank = recording && first && !chooser && w ? await typedInto(w, s.type) : null
     if (blank) rec.blank = blank.fp

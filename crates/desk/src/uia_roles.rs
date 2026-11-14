@@ -20,6 +20,7 @@ pub struct Facts {
     pub focused: bool,
     pub focusable: bool,
     pub offscreen: bool,
+    pub password: bool,
     pub modal: bool,
     pub read_only: Option<bool>,
     pub toggle: Option<i32>,
@@ -99,7 +100,7 @@ pub fn states(role: &str, f: Facts) -> Vec<&'static str> {
         shown: !f.offscreen,
         read_only: f.read_only == Some(true),
         disabled: !f.enabled,
-        ..States::default()
+        protected: f.password,
     })
 }
 
@@ -163,5 +164,16 @@ mod tests {
             ..Facts::default()
         };
         assert_eq!(states("textbox", off), ["editable", "showing", "disabled"]);
+    }
+
+    #[test]
+    fn a_password_box_is_protected() {
+        let pw = Facts {
+            enabled: true,
+            offscreen: true,
+            password: true,
+            ..Facts::default()
+        };
+        assert_eq!(states("textbox", pw), ["protected"]);
     }
 }
