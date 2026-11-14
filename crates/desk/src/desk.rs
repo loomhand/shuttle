@@ -109,6 +109,17 @@ const MASK_TRIES: usize = 3;
 const WINDOWS_MOVING: &str = "the windows kept changing while the screenshot was taken, so it could not be masked to the app allowlist; take it again";
 
 const EFFECTS: [&str; 4] = ["confirmed", "unverifiable", "partial", "suspected_noop"];
+const REPORT_TOOLS: [&str; 9] = [
+    "click",
+    "double_click",
+    "right_click",
+    "drag",
+    "scroll",
+    "type_text",
+    "press_key",
+    "hotkey",
+    "set_value",
+];
 
 const SCROLL_POINT: &str = "scroll needs both x and y, or neither";
 const SCROLL_AMOUNT: u32 = 3;
@@ -508,7 +519,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.background && !FOREGROUND.try_with(|f| *f).unwrap_or(false)
     }
 
-    async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+    async fn call(&self, tool: &str, mut args: Value) -> Result<Value, String> {
+        if self.os == Os::Mac
+            && args["delivery_mode"] == "background"
+            && REPORT_TOOLS.contains(&tool)
+        {
+            args["post_action_wait"] = "none".into();
+        }
         if self.os == Os::Linux && args["session"] == WINDOW_SESSION && tool != "get_window_state" {
             *lock(&self.read) = None;
         }
@@ -1015,11 +1032,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     times - left - 1
                 ));
             }
-            let mut req = req.clone();
-            if left > 0 && self.os == Os::Mac && to.is_some() {
-                req["post_action_wait"] = "none".into();
-            }
-            self.send(tool, req, to, &mut note).await?;
+            self.send(tool, req.clone(), to, &mut note).await?;
         }
         Ok(ok_with(note))
     }
@@ -4201,7 +4214,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_repeated_macos_background_key_waits_for_window_changes_after_its_last_press_only() {
+    async fn macos_background_input_never_waits_for_the_driver_s_window_change_report() {
         for background in [true, false] {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let desk =
@@ -4217,7 +4230,7 @@ pub(crate) mod tests {
                 .map(|a| a.get("post_action_wait").cloned())
                 .collect();
             let skip = background.then(|| json!("none"));
-            assert_eq!(waits, [skip.clone(), skip, None], "{background}");
+            assert_eq!(waits, [skip.clone(), skip.clone(), skip], "{background}");
         }
     }
 
