@@ -108,3 +108,73 @@ test('a verify that names a role reads an element of that role outside the contr
   const unnamed = await main({ steps: [{ verify: 'Body', value: 'hello' }] })
   assert.match(unnamed.escalate?.reason ?? '', /no element matches "Body"/)
 })
+
+test('a verify with timeout_ms waits for a label that shows late, and one without it stops at once as before', async (t) => {
+  const label = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'text', name: 'Saved', states: ['showing'], bounds: [10, 10, 100, 20] }
+  let since = Date.now()
+  let snaps = 0
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') { snaps++; return JSON.stringify({ window: win, truncated: false, nodes: Date.now() - since >= 1000 ? [root, label] : [root] }) }
+    return '{"ok":true}'
+  })
+  const waited = await main({ steps: [{ verify: 'Saved', role: 'text', timeout_ms: 3000 }] })
+  assert.equal(waited.ok, true, JSON.stringify(waited))
+  assert.ok((waited.ms ?? 0) >= 1000 && (waited.ms ?? 0) < 3000, JSON.stringify(waited))
+  assert.ok(snaps <= 16, String(snaps))
+  since = Date.now()
+  const once = await main({ steps: [{ verify: 'Saved', role: 'text' }] })
+  assert.equal(once.ok, false, JSON.stringify(once))
+  assert.match(once.escalate?.reason ?? '', /^verify: no element matches "Saved"/)
+  assert.ok((once.ms ?? 0) < 1000, JSON.stringify(once))
+})
+
+test('a verify with gone passes once its element goes, and stops naming it when it stays past timeout_ms', async (t) => {
+  const label = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'text', name: 'Saving', states: ['showing'], bounds: [10, 10, 100, 20] }
+  let until = Infinity
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: Date.now() < until ? [root, label] : [root] })
+    return '{"ok":true}'
+  })
+  const stays = await main({ steps: [{ verify: 'Saving', role: 'text', gone: true, timeout_ms: 500 }] })
+  assert.equal(stays.ok, false, JSON.stringify(stays))
+  assert.match(stays.escalate?.reason ?? '', /^verify: "Saving" is still there/)
+  assert.ok((stays.ms ?? 0) >= 500, JSON.stringify(stays))
+  until = Date.now() + 400
+  const goes = await main({ steps: [{ verify: 'Saving', role: 'text', gone: true, timeout_ms: 3000 }] })
+  assert.equal(goes.ok, true, JSON.stringify(goes))
+})
+
+test('a verify with gone counts a shown element without bounds as still there', async (t) => {
+  const button = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'Show', states: ['showing'], bounds: [10, 10, 60, 20] }
+  const label = { ref: 2, id: '1/3', parent: 0, depth: 1, role: 'text', name: 'Done', states: ['showing'] }
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root, button, label] })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ verify: 'Done', gone: true, timeout_ms: 300 }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /^verify: "Done" is still there/)
+})
+
+test('a waiting verify asks no model until its last read, and one that had to wait confirms the step before it', async (t) => {
+  const button = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'Show', states: ['showing'], bounds: [10, 10, 60, 20] }
+  const label = { ref: 2, id: '1/3', parent: 0, depth: 1, role: 'text', name: 'Done', states: ['showing'], bounds: [10, 40, 60, 20] }
+  let shown = Infinity; let asked = 0
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: Date.now() >= shown ? [root, button, label] : [root, button] })
+    if (tool === 'desk_click' || tool === 'desk_press' || tool === 'desk_act') { shown = Date.now() + 600; return JSON.stringify({ ok: true, unverified: 'unverifiable: posted click' }) }
+    if (tool.startsWith('model_')) { asked++; throw new Error('model offline') }
+    return '{"ok":true}'
+  })
+  process.env.SHUTTLE_INPUT = 'background'
+  const mode = 'verify-bg'
+  const background = ((await import(`../lib/gui_plan.mts?${mode}`)) as { main: typeof main }).main
+  delete process.env.SHUTTLE_INPUT
+  const r = await background({ steps: [{ wait: 'Format' }, { click: 'Show' }, { verify: 'Done', role: 'text', timeout_ms: 3000 }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(asked, 0)
+})
