@@ -825,7 +825,7 @@ test('a background password stops with did not show when a box that hides its va
   }
 })
 
-test('a foreground key the driver suspects changed nothing carries a caveat, and a background one keeps its own note', async (t) => {
+test('a foreground key the driver suspects changed nothing carries a caveat, and a background one carries none', async (t) => {
   await daemon(t, (c) => {
     if (c.tool === 'desk_windows') return JSON.stringify([{ ...user(), active: false }, { ...notepad(), active: true }])
     if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes: [], truncated: false })

@@ -118,6 +118,7 @@ test('a verify with timeout_ms waits for a label that shows late, and one withou
     if (tool === 'desk_snapshot') { snaps++; return JSON.stringify({ window: win, truncated: false, nodes: Date.now() - since >= 1000 ? [root, label] : [root] }) }
     return '{"ok":true}'
   })
+  since = Date.now()
   const waited = await main({ steps: [{ verify: 'Saved', role: 'text', timeout_ms: 3000 }] })
   assert.equal(waited.ok, true, JSON.stringify(waited))
   assert.ok((waited.ms ?? 0) >= 1000 && (waited.ms ?? 0) < 3000, JSON.stringify(waited))

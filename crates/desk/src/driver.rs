@@ -33,6 +33,7 @@ pub(crate) const INPUT_TOOLS: [&str; 9] = [
 ];
 
 const NEXT_HINT: &str = "\nNext: ";
+const DEFERRED_NOTE: &str = "\n\n\u{23ed}\u{fe0f} Window changes not observed";
 const DEFAULT_PIPE: &str = r"\\.\pipe\cua-driver";
 const CONNECT_FAILED: &str = "connect cua-driver";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -341,7 +342,16 @@ fn result(tool: &str, reply: &str) -> Result<Value, String> {
             v["error"].as_str().unwrap_or("cua-driver call failed")
         ));
     }
-    let out = v["result"].take();
+    let mut out = v["result"].take();
+    for c in out["content"].as_array_mut().into_iter().flatten() {
+        if let Some(cut) = c["text"]
+            .as_str()
+            .and_then(|t| t.split_once(DEFERRED_NOTE))
+            .map(|(t, _)| t.to_owned())
+        {
+            c["text"] = cut.into();
+        }
+    }
     if out["isError"] == true {
         let text = text_of(&out);
         let text = text.split_once(NEXT_HINT).map_or(text.as_str(), |(t, _)| t);
@@ -503,6 +513,11 @@ mod tests {
             r#"{"ok":true,"result":{"isError":true,"content":[{"type":"text","text":"off screen\nNext: call set_value with element_token s0000002a:4"}]}}"#,
         );
         assert_eq!(hinted.unwrap_err(), "click: off screen");
+        let deferred = result(
+            "press_key",
+            "{\"ok\":true,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Pressed end on pid 7.\\n\\n\\u23ed\\ufe0f Window changes not observed: post_action_wait none returned without waiting.\"}]}}",
+        );
+        assert_eq!(text_of(&deferred.unwrap()), "Pressed end on pid 7.");
         let unread = result(
             "click",
             r#"{"ok":true,"result":{"isError":true,"content":[{"type":"text","text":"No screenshot of window 491"}],"structuredContent":{"code":"screenshot_context_missing","reason":"window_never_read"}}}"#,

@@ -994,7 +994,7 @@ impl Computer {
             still = changed && since.elapsed() >= hold;
         }
         drop(paused);
-        if quiet && probe.is_none() && self.shm(|g| g.overlay_shown()).is_none_or(|shown| shown) {
+        if quiet && (probe.is_some() || self.shm(|g| g.overlay_shown()).is_none_or(|shown| shown)) {
             quiet = false;
         }
         let note = if quiet {
@@ -3794,8 +3794,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_action_says_the_screen_did_not_change_only_when_no_poll_differed() {
-        for (dark_at, quiet) in [(0..0, true), (2..usize::MAX, false), (2..3, false)] {
+    async fn a_thumbnail_probe_never_claims_the_screen_did_not_change() {
+        for dark_at in [0..0, 2..usize::MAX, 2..3] {
             let dir = tempfile::tempdir().unwrap();
             let socket = endpoint(dir.path());
             let listener = Fake::bind(&socket).unwrap();
@@ -3825,9 +3825,8 @@ mod tests {
                 .await
                 .unwrap();
             assert!(!out.is_error, "{}", out.text);
-            assert_eq!(
-                out.text.contains("\nthe screen did not change in 600 ms"),
-                quiet,
+            assert!(
+                !out.text.contains("the screen did not change"),
                 "{}",
                 out.text
             );

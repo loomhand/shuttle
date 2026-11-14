@@ -109,10 +109,8 @@ const MASK_TRIES: usize = 3;
 const WINDOWS_MOVING: &str = "the windows kept changing while the screenshot was taken, so it could not be masked to the app allowlist; take it again";
 
 const EFFECTS: [&str; 4] = ["confirmed", "unverifiable", "partial", "suspected_noop"];
-const REPORT_TOOLS: [&str; 8] = [
+const REPORT_TOOLS: [&str; 6] = [
     "click",
-    "double_click",
-    "right_click",
     "drag",
     "scroll",
     "type_text",
@@ -2814,8 +2812,9 @@ fn weakest(seen: &mut Option<Value>, out: &Value) {
         return;
     }
     let mut v = json!({ "effect": effect });
-    if c["escalation"].is_object() {
-        v["escalation"] = c["escalation"].clone();
+    let escalation = &c["escalation"];
+    if escalation.is_object() {
+        v["escalation"] = json!({"reason": escalation["reason"], "target": escalation["target"]});
     }
     *seen = Some(v);
 }
@@ -7591,9 +7590,9 @@ pub(crate) mod tests {
         }
     }
 
-    struct Focus(bool);
-
     type OpenFocus = fn() -> Result<Focus, String>;
+
+    struct Focus(bool);
 
     impl Access for Focus {
         fn foreground(&mut self) -> Option<i64> {
