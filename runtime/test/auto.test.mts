@@ -790,3 +790,37 @@ test('a background erase of a password longer than one repeat goes in calls of a
   assert.equal(r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it was erased')
   assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.repeat), [256, long.length - 256])
 })
+
+async function passwordBox(t: TestContext, field: Record<string, unknown>, then: Record<string, unknown>[], landed = '') {
+  const user8: Record<string, unknown> = { ref: 3, id: 'u', parent: 0, depth: 1, role: 'textbox', name: 'user', states: ['focusable', 'showing'] }
+  const nodes: Record<string, unknown>[] = [{ ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: notepad().title, states: [] }, user8, field, { ref: 2, id: 'b', parent: 0, depth: 1, role: 'button', name: 'Sign in', states: ['showing'], bounds: [10, 10, 20, 20] }]
+  await daemon(t, (c) => {
+    if (c.tool === 'desk_windows') return JSON.stringify([user(), notepad()])
+    if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes, truncated: false })
+    if (c.tool === 'desk_read') return JSON.stringify(nodes.find((n) => n.id === c.args.id) ?? {})
+    if (c.tool === 'desk_type') { if (landed) user8.value = landed; return JSON.stringify({ ok: true, chars: 12, unverified: 'unverifiable: Sent 12 char(s) via PostMessage (not verified).' }) }
+    return '{"ok":true}'
+  })
+  return background({ steps: [{ app: 'Notepad' }, { type: 'example-pass\n', secret: true }, ...then] })
+}
+
+test('a Windows background password into a focused box that hides its value is left for a later step to confirm, not failed', { skip: process.platform !== 'win32' }, async (t) => {
+  const box = { ref: 1, id: 'p', parent: 0, depth: 1, role: 'textbox', name: 'pw', states: ['focusable', 'focused', 'showing', 'protected'] }
+  const left = await passwordBox(t, box, [])
+  assert.equal(left.ok, false, JSON.stringify(left))
+  assert.match(String(left.escalate?.reason), /^step 1 \(type\) was sent but not confirmed, and no later step read its effect/)
+  const confirmed = await passwordBox(t, box, [{ verify: 'Sign in', enabled: true }])
+  assert.equal(confirmed.ok, true, JSON.stringify(confirmed))
+  for (const r of [left, confirmed]) assert.ok(!JSON.stringify(r).includes('example-pass'), JSON.stringify(r))
+})
+
+test('a background password stops with did not show when a box that hides its value is not focused, another field changed, or the box is not a password box', async (t) => {
+  const box = { ref: 1, id: 'p', parent: 0, depth: 1, role: 'textbox', name: 'pw', states: ['focusable', 'focused', 'showing', 'protected'] }
+  const cases: [Record<string, unknown>, string][] = [[{ ...box, states: ['focusable', 'showing', 'protected'] }, ''], [box, 'example-'], [{ ...box, states: ['focusable', 'focused', 'showing'] }, '']]
+  for (const [field, landed] of process.platform === 'win32' ? cases : [...cases, [box, ''] as [Record<string, unknown>, string]]) {
+    const r = await passwordBox(t, field, [], landed)
+    assert.equal(r.ok, false, JSON.stringify(r))
+    assert.match(String(r.escalate?.reason), /did not show/, `${JSON.stringify(field)} ${landed}`)
+    assert.ok(!JSON.stringify(r).includes('example-pass') && !JSON.stringify(r).includes('example-'), JSON.stringify(r))
+  }
+})
