@@ -115,6 +115,7 @@ const CHOOSER_BY_OS: Partial<Record<NodeJS.Platform, RegExp>> = { linux: /File C
 const CHOOSER = CHOOSER_BY_OS[OS] ?? /(?!)/
 const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
 const ACTION_ONLY = 'an accessibility action ran, and on Linux its success does not show its effect; no later step read it back'
+const NOOP = 'the input was sent, and the driver saw nothing change where it expected a change; no later step read its effect'
 const TOGGLE_UNREAD = 'the menu toggle was pressed, and its state after the press could not be read; no later step read it back'
 const SHORTCUT_VERBS: Record<string, string> = { 'ctrl+n': 'new', 'ctrl+s': 'save', 'ctrl+shift+s': 'save as', 'ctrl+o': 'open' }
 const known = new Set<string>()
@@ -475,7 +476,7 @@ function traced(i: number, rec: Rec, s: Step, escalated: boolean): Trace {
   }
 }
 
-function heard(r: desk.Sent, rec: Rec, s: Step) { if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
+function heard(r: desk.Sent, rec: Rec, s: Step) { if (!BG && r.effect === 'suspected_noop') rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
 function hush(note: string) { return `unverifiable: the password was sent and the target did not confirm it${note.includes(TERMINAL) ? ` (${TERMINAL})` : ''}; do not type it again` }
 async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
   let ws = seed ?? await desk.windows()

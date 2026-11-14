@@ -32,6 +32,7 @@ pub(crate) const INPUT_TOOLS: [&str; 9] = [
     "hotkey",
 ];
 
+const NEXT_HINT: &str = "\nNext: ";
 const DEFAULT_PIPE: &str = r"\\.\pipe\cua-driver";
 const CONNECT_FAILED: &str = "connect cua-driver";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -329,9 +330,11 @@ fn result(tool: &str, reply: &str) -> Result<Value, String> {
     }
     let out = v["result"].take();
     if out["isError"] == true {
+        let text = text_of(&out);
+        let text = text.split_once(NEXT_HINT).map_or(text.as_str(), |(t, _)| t);
         let mut e = match out["structuredContent"]["reason"].as_str() {
-            Some(reason) => format!("{tool}: {reason}: {}", text_of(&out)),
-            None => format!("{tool}: {}", text_of(&out)),
+            Some(reason) => format!("{tool}: {reason}: {text}"),
+            None => format!("{tool}: {text}"),
         };
         if let Some(id) = out["structuredContent"]["actual_foreground_window_id"].as_u64() {
             let _ = write!(e, "{ACTUAL_FRONT}{id}");
@@ -457,6 +460,11 @@ mod tests {
             r#"{"ok":true,"result":{"isError":true,"content":[{"type":"text","text":"off screen"}]}}"#,
         );
         assert_eq!(failed.unwrap_err(), "click: off screen");
+        let hinted = result(
+            "click",
+            r#"{"ok":true,"result":{"isError":true,"content":[{"type":"text","text":"off screen\nNext: call set_value with element_token s0000002a:4"}]}}"#,
+        );
+        assert_eq!(hinted.unwrap_err(), "click: off screen");
         let unread = result(
             "click",
             r#"{"ok":true,"result":{"isError":true,"content":[{"type":"text","text":"No screenshot of window 491"}],"structuredContent":{"code":"screenshot_context_missing","reason":"window_never_read"}}}"#,

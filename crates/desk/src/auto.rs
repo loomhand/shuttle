@@ -34,6 +34,7 @@ const CLASS_KIND: &str = "on this event kind (";
 const XAML_HOTKEY: &str = "could not find a UIA AcceleratorKey";
 const MAC_HIDDEN: &str = "is minimized or its application is hidden";
 const MAC_OFF_SPACE: &str = "is not among the process's current AXWindows";
+const MAC_OCCLUDED: &str = "Background pointer press refused at screen";
 
 /// Whether error `e` of background `tool` on `os` came before anything was delivered, so the foreground may run it once.
 pub(crate) fn pre_send(tool: &str, os: Os, args: &Value, e: &str) -> bool {
@@ -48,7 +49,8 @@ pub(crate) fn pre_send(tool: &str, os: Os, args: &Value, e: &str) -> bool {
         return !double && class_only(e);
     }
     e.contains(XAML_HOTKEY)
-        || (os == Os::Mac && (e.contains(MAC_HIDDEN) || e.contains(MAC_OFF_SPACE)))
+        || (os == Os::Mac
+            && (e.contains(MAC_HIDDEN) || e.contains(MAC_OFF_SPACE) || e.contains(MAC_OCCLUDED)))
 }
 
 fn class_only(e: &str) -> bool {
@@ -92,6 +94,11 @@ mod tests {
                 "desk_key",
                 Os::Mac,
                 "press_key: window 7 is not among the process's current AXWindows (another Space, or its AX surface is unresolved); background input is refused so a sibling window cannot receive it. Observation (capture/list_windows) remains available",
+            ),
+            (
+                "desk_click",
+                Os::Mac,
+                "click: Background pointer press refused at screen (412, 300): window 81 of pid 7 is drawn over window 80 there",
             ),
         ] {
             assert!(pre_send(tool, os, &none, e), "{tool} {e}");
