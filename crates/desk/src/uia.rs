@@ -18,7 +18,7 @@ use windows::Win32::System::Ole::{
 use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
-use windows::Win32::System::Variant::{VT_BOOL, VT_BSTR, VT_I4, VT_R8, VariantClear};
+use windows::Win32::System::Variant::{VARIANT, VT_BOOL, VT_BSTR, VT_I4, VT_R8, VariantClear};
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
@@ -307,6 +307,25 @@ impl Uia {
 }
 
 impl Access for Uia {
+    fn foreground(&mut self) -> Option<i64> {
+        Some(foreground().0 as i64)
+    }
+
+    fn focus_within(&mut self, window: i64) -> Option<bool> {
+        // SAFETY: `self.auto` is a live IUIAutomation of this thread; a stale handle fails, and FindFirst finding nothing is an error.
+        unsafe {
+            let el = self
+                .auto
+                .ElementFromHandle(HWND(window as *mut core::ffi::c_void))
+                .ok()?;
+            let focused = self
+                .auto
+                .CreatePropertyCondition(UIA_HasKeyboardFocusPropertyId, &VARIANT::from(true))
+                .ok()?;
+            Some(el.FindFirst(TreeScope_Descendants, &focused).is_ok())
+        }
+    }
+
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
         let front = foreground();
         let (shown, roots) = self.roots();
