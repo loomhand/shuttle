@@ -547,7 +547,7 @@ async function echoed(w: Win, line: string, shown: Map<string, Text> | null) {
     const after = sent && before ? await settled(w) : null
     const read = !!after && after.size > 0 && [...after.values()].every((t) => t.value !== undefined)
     const same = (a: string, b: string, part: boolean) => a === b || (part && (a.endsWith(b) || b.endsWith(a)))
-    const back = read && [...after].every(([id, t]) => { const was = before?.get(id); return same(flat(t.value).trimEnd(), cut(flat(was?.value)).trimEnd(), !!(t.cut || was?.cut)) })
+    const back = read && [...after].every(([id, t]) => { const was = before?.get(id); return same(flat(t.value).trimEnd(), cut(flat(was?.value)).trimEnd(), !!was && !!(t.cut || was.cut)) })
     if (sent) left = !read ? 'Backspace was sent over it, unchecked' : back ? 'and it was erased' : left
   } catch {}
   return new Surprise(`the password showed in "${w.title}", so it was not submitted, ${left}`, { window: w.title })
