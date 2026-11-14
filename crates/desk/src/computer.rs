@@ -983,6 +983,9 @@ impl Computer {
             still = changed && since.elapsed() >= hold;
         }
         drop(paused);
+        if quiet && probe.is_none() && self.shm(|g| g.overlay_shown()).is_none_or(|shown| shown) {
+            quiet = false;
+        }
         let note = if quiet {
             format!("; the screen did not change in {} ms", wait.as_millis())
         } else {
