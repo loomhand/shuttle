@@ -62,7 +62,7 @@ pub(crate) const BACKGROUND_NO_WINDOW: &str = "background input: no window under
 pub(crate) const BACKGROUND_ELEMENT: &str = "background input: the element's own window could not be found, and background input never clicks a window that covers it";
 pub(crate) const BACKGROUND_TWINS: &str = "background input: the element's own window is ambiguous (same or no title, and no single frame match), and background input never guesses which window to click";
 pub(crate) const BACKGROUND_UIA: &str = "background input: on Windows UI Automation focuses, selects or runs an element only by bringing its window to the front; click it in its window, or use input = \"foreground\"";
-pub(crate) const BACKGROUND_TERMINAL: &str = "background input: Windows Terminal drops every key while another window is in front, and background input never brings a window to the front; bring it to the front, or use input = \"foreground\"";
+pub(crate) const BACKGROUND_TERMINAL: &str = "background input: Windows Terminal drops every key while another window is in front and its terminal holds no keyboard focus, and background input never brings a window to the front; bring it to the front, or use input = \"foreground\"";
 pub(crate) const CALL_LIMIT: Duration = Duration::from_secs(3);
 pub(crate) const BUSY: &str = "desk busy: a previous action is still running";
 #[cfg(target_os = "linux")]
@@ -1745,18 +1745,22 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return Ok(None);
         }
         let (to, w) = self.background_window(window, pid).await?;
-        if self.os == Os::Windows && is_windows_terminal(&w) && !self.in_front(&w).await? {
+        if self.os == Os::Windows && is_windows_terminal(&w) && !self.takes_keys(&w).await? {
             return Err(BACKGROUND_TERMINAL.to_owned());
         }
         Ok(Some(to))
     }
 
-    async fn in_front(&self, w: &Value) -> Result<bool, String> {
-        let front = self
-            .access
-            .run(CALL_LIMIT, (), |b| Ok(b.foreground()))
-            .await?;
-        Ok(front.is_none_or(|h| w["window_id"].as_i64() == Some(h)))
+    /// Whether Windows Terminal window `w` takes background keys: it is the foreground window, or its terminal holds the keyboard focus.
+    async fn takes_keys(&self, w: &Value) -> Result<bool, String> {
+        let Some(id) = w["window_id"].as_i64() else {
+            return Ok(true);
+        };
+        self.access
+            .run(CALL_LIMIT, (), move |b| {
+                Ok(b.foreground().is_none_or(|h| h == id) || b.focus_within(id) == Some(true))
+            })
+            .await
     }
 
     async fn raised_window(
@@ -3013,7 +3017,8 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn windows_terminal_behind_another_window_takes_no_background_keys_and_nothing_is_sent() {
+    async fn windows_terminal_behind_another_window_without_the_keyboard_focus_takes_no_background_keys_and_nothing_is_sent()
+     {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(
             || Ok(Apps),
@@ -3033,6 +3038,18 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(sent(&calls, "press_key").len(), 1);
+        let opens: [(OpenFocus, bool); 2] =
+            [(|| Ok(Focus(false)), false), (|| Ok(Focus(true)), true)];
+        for (open, focused) in opens {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(open, Terminals(Behind(Arc::clone(&calls))), Os::Windows)
+                .background(true);
+            let out = desk
+                .run("desk_key", json!({"keys": "return", "pid": 8}))
+                .await;
+            assert_eq!(out.is_ok(), focused, "{out:?}");
+            assert_eq!(sent(&calls, "press_key").len(), usize::from(focused));
+        }
     }
 
     #[tokio::test]
@@ -7328,6 +7345,48 @@ pub(crate) mod tests {
                 "press_key" => json!({"structuredContent": {"effect": "confirmed"}}),
                 _ => json!({}),
             })
+        }
+    }
+
+    struct Focus(bool);
+
+    type OpenFocus = fn() -> Result<Focus, String>;
+
+    impl Access for Focus {
+        fn foreground(&mut self) -> Option<i64> {
+            Apps.foreground()
+        }
+
+        fn focus_within(&mut self, window: i64) -> Option<bool> {
+            Some(self.0 && window == 2)
+        }
+
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            Apps.frames()
+        }
+
+        fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
+            Apps.tree(frame, extras)
+        }
+
+        fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String> {
+            Apps.node(id, extras, chars)
+        }
+
+        fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
+            Apps.ancestors(id)
+        }
+
+        fn at(&mut self, window: &str, x: i32, y: i32) -> Result<Option<String>, String> {
+            Apps.at(window, x, y)
+        }
+
+        fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
+            Apps.act(id, act)
+        }
+
+        fn close(&mut self, frame: &Frame) -> Result<(), String> {
+            Apps.close(frame)
         }
     }
 

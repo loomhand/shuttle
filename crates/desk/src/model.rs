@@ -372,6 +372,10 @@ pub trait Access {
     fn foreground(&mut self) -> Option<i64> {
         None
     }
+    /// Whether an element inside the window with native handle `window` holds the keyboard focus; none when the backend cannot tell.
+    fn focus_within(&mut self, _window: i64) -> Option<bool> {
+        None
+    }
 }
 
 /// Whether a caller can act on a node of `role`.
