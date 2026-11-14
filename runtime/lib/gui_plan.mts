@@ -17,7 +17,7 @@ type Step = {
   app?: string; title?: string; menu?: string; click?: string; check?: string; on?: boolean; set?: string; value?: string
   type?: string; key?: string; wait?: string; expect?: string; verify?: string; close?: boolean; role?: string; window?: string
   timeout_ms?: number; enabled?: boolean; fp?: Fp; seen?: string; blank?: Fp; after?: string; recorded?: Recorded; focus?: Focus | 'unverified'
-  button?: string; count?: number; mods?: string[]; url?: string; web?: Web; intent?: string; secret?: boolean
+  button?: string; count?: number; mods?: string[]; url?: string; web?: Web; intent?: string; secret?: boolean; gone?: boolean
 }
 // frame is the role of the field's window or sheet
 type Focus = { role?: string; name?: string; frame?: string; secure?: boolean; id?: string }
@@ -31,7 +31,7 @@ type Node = { ref: number; id: string; depth: number; role: string; name: string
 type Hit = { n: Node; i: number; how: string; p?: number; margin?: number }
 type Flow = { name: string; named?: boolean; params: Record<string, string>; steps: Step[]; idempotent: boolean; saved_at: string; usage?: desk.Usage }
 type Chain = { at: number; window: string | null; pid: number | null; name?: string; named?: boolean; params: Record<string, string>; steps: Step[]; dirty: boolean; saved?: boolean; escalated?: boolean; usage?: desk.Usage }
-type Params = { steps?: Step[]; flow?: string; params?: Record<string, string>; save?: string; start?: number; find?: string; reindex?: boolean; locate?: { target: string; press?: boolean } }
+type Params = { steps?: Step[]; flow?: string; params?: Record<string, string>; save?: string; start?: number; find?: string; reindex?: boolean; locate?: { target: string; press?: boolean }; timeout_s?: number }
 type Rec = {
   i: number; op?: string; ms?: number; served?: unknown[]; how?: string; via?: string; window?: string; seen?: string; submit?: boolean
   blank?: Fp; fp?: Fp; was?: boolean | 'mixed' | null; now?: boolean; noop?: boolean; state?: string; opened?: number; path?: string[]; pick?: number[]
@@ -96,6 +96,10 @@ const READS_AT_ONCE = 4
 const BASE_SETTLE = 300
 const VALUE_CHARS = 200
 const MAX_REPEAT = 256
+const VERIFY_POLL = 200
+const RUN_S = 90
+const RUN_MAX_S = 110
+const RUN_SPARE = 3000
 const INERT_KEY = /^shift\+[^+]$/i
 const ARROW_KEY = /^(shift\+)?(arrow)?(up|down|left|right)$/i
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
@@ -137,6 +141,7 @@ let T: Record<string, number> = {}
 let stepWs: { ws: Win[]; at: number } | null = null
 let prior = new Set<string>()
 let settleWs: { ws: Win[]; at: number; calls: number } | null = null
+let deadline = 0
 
 export async function main(p: Params): Promise<Result> {
   return { ...(await perform(p)), usage: desk.usage }
@@ -158,11 +163,13 @@ async function perform(p: Params): Promise<Result> {
   recording = !flow && !!plan[0]?.app && !p.start
   lastSeen = ''
   const trace: Trace[] = []; const log: Record<string, unknown>[] = []
+  const limit = Math.min(p.timeout_s ?? RUN_S, RUN_MAX_S) * 1000
+  deadline = performance.timeOrigin + limit - RUN_SPARE
   const bad = plan.findIndex((s) => ops(s).length !== 1)
   if (bad >= 0) return { ok: false, done: 0, ms: 0, trace, escalate: { step: bad, plan_step: plan[bad] && unrecorded(plan[bad]), reason: `step ${bad} needs exactly one op of ${OPS.join(', ')}; nothing ran` } }
-  const loose = plan.findIndex((s) => malformed(s))
+  const loose = plan.findIndex((s) => malformed(s, limit))
   const looseStep = plan[loose]
-  if (looseStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: loose, plan_step: unrecorded(looseStep), reason: `step ${loose}: ${malformed(looseStep)}; nothing ran` } }
+  if (looseStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: loose, plan_step: unrecorded(looseStep), reason: `step ${loose}: ${malformed(looseStep, limit)}; nothing ran` } }
   if (p.save && !flow && !p.start && !idempotent(plan)) {
     const c = pending()
     const was = c?.steps.filter((s) => !s.close) ?? []; const now = plan.filter((s) => !s.close)
@@ -1392,15 +1399,27 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     return
   }
   if (s.verify) {
-    const hit = await resolve(nodes, s.verify, targetRole(s), undefined, 0.7, s.fp)
-    if (!hit) throw new Surprise(`verify: no element matches "${s.verify}"`, await seen())
-    rec.how = hit.how; rec.fp = fingerprint(nodes, hit)
-    const bad: string[] = []
-    if (s.value !== undefined) { let v = ''; let url: string | undefined; try { const r = await desk.read(hit.n.id); url = r.url; v = r.url ?? r.value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); v = hit.n.value }; if (url !== undefined ? url !== s.value : !holds(hit.n.role, v, s.value)) bad.push(`reads "${v}"`) }
-    if (s.enabled !== undefined && hit.n.disabled === s.enabled) bad.push(hit.n.disabled ? 'is disabled' : 'is enabled')
-    if (s.on !== undefined) { const c = (w.pid === null ? null : gtkToggle(w.pid, hit.n.name)) ?? (await checked(hit.n)) ?? await cropState(hit.n); rec.was = c; if (c !== s.on) bad.push(c === 'mixed' ? 'is mixed' : c ? 'is on' : 'is off') }
-    if (bad.length) throw new Surprise(`verify: "${hit.n.name || s.verify}" ${bad.join(', ')}`, await seen())
-    return
+    const want = s.verify
+    const miss = async (ask: boolean) => {
+      const hit = await resolve(nodes, want, targetRole(s), undefined, 0.7, s.fp, ask)
+      if (s.gone) return hit ? `verify: "${hit.n.name || want}" is still there` : ''
+      if (!hit) return `verify: no element matches "${want}"`
+      rec.how = hit.how; rec.fp = fingerprint(nodes, hit)
+      const bad: string[] = []
+      if (s.value !== undefined) { let v = ''; let url: string | undefined; try { const r = await desk.read(hit.n.id); url = r.url; v = r.url ?? r.value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); v = hit.n.value }; if (url !== undefined ? url !== s.value : !holds(hit.n.role, v, s.value)) bad.push(`reads "${v}"`) }
+      if (s.enabled !== undefined && hit.n.disabled === s.enabled) bad.push(hit.n.disabled ? 'is disabled' : 'is enabled')
+      if (s.on !== undefined) { const c = (w.pid === null ? null : gtkToggle(w.pid, hit.n.name)) ?? (await checked(hit.n)) ?? (ask ? await cropState(hit.n) : null); rec.was = c; if (c !== s.on) bad.push(c === 'mixed' ? 'is mixed' : c ? 'is on' : 'is off') }
+      return bad.length ? `verify: "${hit.n.name || want}" ${bad.join(', ')}` : ''
+    }
+    const end = Math.min(Date.now() + (s.timeout_ms ?? 0), deadline)
+    for (let first = true; ; first = false) {
+      const last = Date.now() >= end
+      const why = await miss(!s.gone && (first || last))
+      if (!why) return
+      if (last) throw new Surprise(why, await seen())
+      await sleep(Math.min(VERIFY_POLL, end - Date.now()))
+      nodes = s.web ? await onPage(s.web, w, undefined, read) : parse(await snapOf(w, read))
+    }
   }
   if (s.menu) {
     if (BG && OS === 'darwin' && !AUTO) throw new Surprise(`the macOS menu bar belongs to the front app, and an app behind it runs no menu entry: background gui_plan cannot run "${s.menu}" in "${w.title}"`, await seen())
@@ -1585,10 +1604,13 @@ function fill(s: Step, p: Record<string, string>): Step {
   return out
 }
 
-function malformed(s: Step) {
+function malformed(s: Step, limit: number) {
   const key = TEXTS.find((k) => s[k] !== undefined && typeof s[k] !== 'string' && (s[k] !== null || k === 'type'))
   if (key) return `${key} takes a string`
   if (s.secret !== undefined && typeof s.secret !== 'boolean') return 'secret takes true or false'
+  if (s.timeout_ms !== undefined && (!Number.isInteger(s.timeout_ms) || s.timeout_ms < 1 || s.timeout_ms > limit)) return `timeout_ms takes a whole number of milliseconds from 1 to ${limit}, the run's limit`
+  if (s.gone !== undefined && typeof s.gone !== 'boolean') return 'gone takes true or false'
+  if (s.gone && (s.value ?? s.on ?? s.enabled) !== undefined) return 'gone takes no value, on or enabled: the element it waits on is no longer there'
   if (s.secret === true && typeof s.type === 'string' && s.type.replace(/\n$/, '').includes('\n')) return 'a secret step holds only the password line; put the command in its own type step'
   return undefined
 }
