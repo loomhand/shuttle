@@ -305,8 +305,11 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
         "desk_at" => at(android, parse(args)?).await?,
         "desk_key" => {
             let a: KeyArgs = parse(args)?;
+            let times = a.times()?;
             in_front(android, a.window.as_deref(), a.pid).await?;
-            android.keys(&a.keys).await?;
+            for _ in 0..times {
+                android.keys(&a.keys).await?;
+            }
             OK.to_owned()
         }
         "desk_type" => {

@@ -14,6 +14,7 @@ const LONG = `${'$ ls\nREADME.md\n'.repeat(20)}$ `
 const READ = 64 << 10
 const HUGE = LONG.repeat(250)
 const tools = (calls: Call[]) => calls.map((c) => `${c.tool} ${JSON.stringify(c.args)}`)
+const pressed = (calls: Call[]) => calls.filter((c) => c.tool === 'desk_key').flatMap((c) => Array<unknown>(Number(c.args.repeat ?? 1)).fill(c.args.keys))
 const load = async (input: string): Promise<Lib['main']> => {
   process.env.SHUTTLE_INPUT = input
   return ((await import(`../lib/gui_plan.mts?${input}`)) as Lib).main
@@ -61,7 +62,7 @@ async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text
     if (readBlinds && erased && c.tool === 'desk_read') throw new Error('the node answers no text')
     if (c.tool === 'desk_snapshot') { const out = JSON.stringify({ window: term, nodes: [{ ...node(), ...(bare ? {} : { value: screen.slice(0, 200) }) }], truncated: false }); screen += late; late = ''; return out }
     if (c.tool === 'desk_read') return JSON.stringify({ ...node(), value: c.args.tail ? screen.slice(-READ) : screen.slice(0, READ), ...(screen.length > READ ? { truncated: true } : {}) })
-    if (c.tool === 'desk_key' && c.args.keys === 'backspace') { if (eraseFails) throw new Error('bring_to_front: refused'); erased = true; backs += 1; if (erases && backs <= eraseLimit) screen = screen.slice(0, -1); return '{"ok":true}' }
+    if (c.tool === 'desk_key' && c.args.keys === 'backspace') { if (eraseFails) throw new Error('bring_to_front: refused'); erased = true; for (let n = Number(c.args.repeat ?? 1); n > 0; n--) { backs += 1; if (erases && backs <= eraseLimit) screen = screen.slice(0, -1) } return '{"ok":true}' }
     if (c.tool === 'desk_key') { screen = answer(screen); late = prompt; keyed = true; return JSON.stringify({ ok: true, ...(key ? { unverified: key } : {}) }) }
     if (c.tool !== 'desk_type') return '{"ok":true}'
     const text = String(c.args.text)
@@ -306,7 +307,7 @@ test('a secret step never shows its text, and a password the terminal echoed sto
       for (const sure of [(_: string) => false, (x: string) => x === 'example-pass']) {
         const echo = await terminal(t, plan, (screen, text) => screen + text, { type, extra: { secret: true }, sure })
         assert.match(String(echo.r.escalate?.reason), /^the password showed in "Terminal", so it was not submitted, and it was erased$/, `${mode} ${JSON.stringify(type)}`)
-        assert.deepEqual(echo.calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.keys), Array(12).fill('backspace'), `${mode} ${JSON.stringify(type)}`)
+        assert.deepEqual(pressed(echo.calls), Array(12).fill('backspace'), `${mode} ${JSON.stringify(type)}`)
         assert.ok(hidden(echo.r), `${mode} ${JSON.stringify(type)}`)
       }
     }
@@ -391,6 +392,16 @@ test('a foreground secret step reads a valueless terminal node back, as xfce4-te
   assert.deepEqual(keys(quiet.calls), ['Return'])
 })
 
+test('a shown password counts as erased when text outside it, such as a prompt that showed after the base read, stays', async (t) => {
+  const late = (screen: string, text: string) => text.startsWith('example-pass') ? `${screen}pwB: ${text}` : screen + text
+  for (const [mode, plan, front] of [...modes.map(([m, p]) => [m, p, false] as const), ['foreground', foreground, true] as const]) {
+    const { r, calls } = await terminal(t, plan, late, { type: 'example-pass\n', extra: { secret: true }, front })
+    assert.equal(r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it was erased', mode)
+    assert.deepEqual(pressed(calls), Array(12).fill('backspace'), mode)
+    assert.equal(calls.filter((c) => c.tool === 'desk_key').length, front ? 12 : 1, mode)
+  }
+})
+
 test('a shown password still stops with the secret reason when Backspace fails or the window cannot be read back', async (t) => {
   const failed = await terminal(t, foreground, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, front: true, eraseFails: true })
   assert.equal(failed.r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it could not be erased: clear it by hand')
@@ -402,7 +413,7 @@ test('a shown password still stops with the secret reason when Backspace fails o
 })
 
 test('a shown password is erased only in its own front window, by the characters typed, and called erased only on a full read-back', async (t) => {
-  const back = (calls: Call[]) => calls.filter((c) => c.tool === 'desk_key' && c.args.keys === 'backspace').length
+  const back = (calls: Call[]) => pressed(calls).filter((k) => k === 'backspace').length
   const stolen = await terminal(t, foreground, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, front: true, steal: true })
   assert.equal(stolen.r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it could not be erased: clear it by hand')
   assert.equal(back(stolen.calls), 0)
