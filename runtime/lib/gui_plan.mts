@@ -1402,9 +1402,11 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.verify) {
     const want = s.verify
     const miss = async (ask: boolean) => {
+      if (s.gone) {
+        const kept = nodes.find((n) => n.shown && norm(n.name) === norm(want))
+        return kept ? `verify: "${kept.name}" is still there` : ''
+      }
       const hit = await resolve(nodes, want, targetRole(s), undefined, 0.7, s.fp, ask)
-      const kept = hit?.n ?? nodes.find((n) => n.shown && norm(n.name) === norm(want))
-      if (s.gone) return kept ? `verify: "${kept.name || want}" is still there` : ''
       if (!hit) return `verify: no element matches "${want}"`
       rec.how = hit.how; rec.fp = fingerprint(nodes, hit)
       const bad: string[] = []
@@ -1416,8 +1418,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const end = Math.min(Date.now() + (s.timeout_ms ?? 0), deadline)
     for (let first = true; ; first = false) {
       const last = Date.now() >= end
-      const why = await miss(!s.gone && last)
-      if (!why) { rec.waited = !first; return }
+      const why = await miss(last)
+      if (!why) { rec.waited = !first && (s.gone || rec.how === 'ax' || rec.how === 'fp'); return }
       if (last) throw new Surprise(why, await seen())
       await sleep(Math.min(VERIFY_POLL, end - Date.now()))
       nodes = s.web ? await onPage(s.web, w, undefined, read) : parse(await snapOf(w, read))

@@ -1029,7 +1029,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     times - left - 1
                 ));
             }
-            self.send(tool, req.clone(), to, &mut note).await?;
+            self.send(tool, req.clone(), to, &mut note)
+                .await
+                .map_err(|e| match times - left - 1 {
+                    0 => e,
+                    sent => format!("{e}; {sent} of {times} presses were sent before it"),
+                })?;
         }
         Ok(ok_with(note))
     }

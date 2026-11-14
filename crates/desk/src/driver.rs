@@ -59,6 +59,7 @@ const USER_EVENTS: [u32; 10] = [1, 3, 5, 6, 7, 10, 12, 22, 25, 27];
 #[cfg(test)]
 thread_local! {
     static USER_SINCE: std::cell::Cell<f64> = const { std::cell::Cell::new(f64::INFINITY) };
+    static USER_WINDOW: std::cell::Cell<Option<(i64, i64)>> = const { std::cell::Cell::new(None) };
 }
 
 /// The driver calls the desk makes: input, windows, launch and capture.
@@ -149,9 +150,17 @@ impl Driver {
         let foreground = INPUT_TOOLS.contains(&tool) && args["delivery_mode"] != "background";
         if foreground || tool == "bring_to_front" {
             let end = std::time::Instant::now() + IDLE_WAIT;
+            let mut front = None;
             loop {
                 let since = since_user_input();
                 if !user_busy(since, self.since_own_input()) {
+                    if let Some(front) = front
+                        && focused_window().await != front
+                    {
+                        return Err(format!(
+                            "{tool}: the front window changed or could not be read while waiting for the user to pause; nothing was sent"
+                        ));
+                    }
                     break;
                 }
                 if std::time::Instant::now() >= end {
@@ -159,6 +168,9 @@ impl Driver {
                         "{tool}: the user used the mouse or keyboard {since:.1} s ago, still after a {:.1} s wait for a pause, and foreground input would take them over; nothing was sent: try again once they stop",
                         IDLE_WAIT.as_secs_f64()
                     ));
+                }
+                if foreground && front.is_none() {
+                    front = Some(focused_window().await);
                 }
                 tokio::time::sleep(IDLE_POLL).await;
             }
@@ -384,6 +396,24 @@ fn user_busy(since: f64, own: Option<Duration>) -> bool {
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
+async fn focused_window() -> Option<(i64, i64)> {
+    tokio::task::spawn_blocking(crate::ax::focused_window)
+        .await
+        .ok()
+        .flatten()
+}
+
+#[cfg(all(not(target_os = "macos"), not(test)))]
+async fn focused_window() -> Option<(i64, i64)> {
+    None
+}
+
+#[cfg(test)]
+async fn focused_window() -> Option<(i64, i64)> {
+    USER_WINDOW.with(std::cell::Cell::get)
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
 fn since_user_input() -> f64 {
     USER_EVENTS
         .iter()
@@ -464,6 +494,44 @@ mod tests {
         assert!(!user_busy(0.15, Some(past)));
         assert!(user_busy(0.05, Some(past)));
         assert!(!user_busy(1.2, Some(USER_IDLE + past)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn foreground_input_that_waited_goes_only_to_the_window_in_front_when_the_wait_began() {
+        let driver = Driver::new("unused".into());
+        let (target, other) = (Some((7, 42)), Some((7, 43)));
+        for tool in [
+            "press_key",
+            "hotkey",
+            "type_text",
+            "click",
+            "bring_to_front",
+        ] {
+            for (before, after, waits) in [
+                (target, target, true),
+                (target, other, true),
+                (target, None, true),
+                (None, target, true),
+                (target, other, false),
+            ] {
+                USER_WINDOW.set(before);
+                user_input_since(if waits { 0.1 } else { f64::INFINITY });
+                let pause = tokio::spawn(async move {
+                    USER_WINDOW.set(after);
+                    user_input_since(f64::INFINITY);
+                });
+                let sent = driver.admit(tool, &json!({})).await;
+                let kept = !waits || before == after || tool == "bring_to_front";
+                assert_eq!(sent.is_ok(), kept, "{tool} {before:?} {after:?}: {sent:?}");
+                if !kept {
+                    assert!(sent.unwrap_err().ends_with(
+                        "changed or could not be read while waiting for the user to pause; nothing was sent"
+                    ));
+                }
+                pause.await.unwrap();
+            }
+        }
     }
 
     #[cfg(unix)]

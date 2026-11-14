@@ -306,9 +306,15 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
         "desk_key" => {
             let a: KeyArgs = parse(args)?;
             let times = a.times()?;
-            in_front(android, a.window.as_deref(), a.pid).await?;
-            for _ in 0..times {
-                android.keys(&a.keys).await?;
+            for sent in 0..times {
+                let partly = |e: String| match sent {
+                    0 => e,
+                    _ => format!("{e}; {sent} of {times} presses were sent before it"),
+                };
+                in_front(android, a.window.as_deref(), a.pid)
+                    .await
+                    .map_err(partly)?;
+                android.keys(&a.keys).await.map_err(partly)?;
             }
             OK.to_owned()
         }
