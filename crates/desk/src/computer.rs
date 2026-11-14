@@ -73,6 +73,9 @@ const POPUP_ROWS: [&str; 6] = [
 ];
 const PRESSED: [&str; 2] = ["push button", "menu item"];
 const FRONT_TARGET: &str = "exact target HWND 0x";
+const AFTER_CLICK: &str =
+    "or a verified same-process post-action window was not foreground after the click";
+const CLICK_TOOLS: [&str; 3] = ["click", "double_click", "right_click"];
 const FRONT_ACTUAL: &str = "actual foreground HWND 0x";
 const OWN_POPUP: &str = "sent; a window of the same app took the foreground after it, as a context menu's host does: confirm its effect in the screenshot";
 const HIT_REFUSALS: [&str; 3] = [
@@ -991,7 +994,7 @@ impl Computer {
             still = changed && since.elapsed() >= hold;
         }
         drop(paused);
-        if quiet && probe.is_none() && self.shm(|g| g.overlay_shown()).is_none_or(|shown| shown) {
+        if quiet && (probe.is_some() || self.shm(|g| g.overlay_shown()).is_none_or(|shown| shown)) {
             quiet = false;
         }
         let note = if quiet {
@@ -2579,6 +2582,12 @@ fn own_popup_front(e: &str) -> Option<String> {
 }
 
 fn front_pair(e: &str) -> Option<(i64, i64)> {
+    let click = e
+        .split_once(": ")
+        .is_some_and(|(tool, _)| CLICK_TOOLS.contains(&tool));
+    if !click || !e.contains(AFTER_CLICK) {
+        return None;
+    }
     let hex = |key: &str| {
         let at = e.find(key)? + key.len();
         let end = e[at..]
@@ -2586,9 +2595,7 @@ fn front_pair(e: &str) -> Option<(i64, i64)> {
             .map_or(e.len(), |n| at + n);
         i64::from_str_radix(&e[at..end], 16).ok()
     };
-    e.contains("foreground_unavailable")
-        .then(|| Some((hex(FRONT_TARGET)?, hex(FRONT_ACTUAL)?)))
-        .flatten()
+    Some((hex(FRONT_TARGET)?, hex(FRONT_ACTUAL)?))
 }
 
 #[cfg(windows)]
@@ -2610,22 +2617,28 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn a_foreground_refusal_names_the_target_and_the_window_that_took_the_front() {
-        let e = "click: foreground_unavailable: exact target HWND 0x100f2 or a verified same-process post-action window was not foreground after the click (actual foreground HWND 0x9029a)";
-        assert_eq!(front_pair(e), Some((0x100f2, 0x9029a)));
-        assert_eq!(
-            front_pair("click: hit_mismatch: exact target HWND 0x1 (actual foreground HWND 0x2)"),
-            None
-        );
-        assert_eq!(front_pair("click: foreground_unavailable: no window"), None);
-    }
     use crate::driver::CLICK_SPACING;
 
     const UNSUPPORTED: &str = "AX action failed: AXUIElementPerformAction(AXPress) returned -25206";
 
     type Clicks = std::sync::Arc<std::sync::Mutex<Vec<(f64, f64)>>>;
     type Landed = std::sync::Arc<std::sync::Mutex<Vec<Vec<f64>>>>;
+
+    #[test]
+    fn only_a_post_click_foreground_refusal_names_the_window_that_took_the_front() {
+        let e = "click: foreground_unavailable: exact target HWND 0x100f2 or a verified same-process post-action window was not foreground after the click (actual foreground HWND 0x9029a)";
+        assert_eq!(front_pair(e), Some((0x100f2, 0x9029a)));
+        for pre in [
+            "click: foreground_unavailable: Windows did not activate exact target HWND 0x100f2 (actual foreground HWND 0x9029a); no mouse input was sent",
+            "press_key: foreground_unavailable: did not confirm exact target HWND 0x100f2 for key within 500 ms (actual foreground HWND 0x9029a); no input was sent",
+            "type_text: foreground_unavailable: exact target HWND 0x100f2 owned window was not foreground while preparing type (actual foreground HWND 0x9029a); no input was sent",
+            "press_key: foreground_unavailable: exact target HWND 0x100f2 or a verified same-process post-action window was not foreground after the click (actual foreground HWND 0x9029a)",
+            "click: hit_mismatch: exact target HWND 0x1 (actual foreground HWND 0x2)",
+            "click: foreground_unavailable: no window",
+        ] {
+            assert_eq!(front_pair(pre), None, "{pre}");
+        }
+    }
 
     #[cfg(unix)]
     #[tokio::test]
@@ -3781,8 +3794,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_action_says_the_screen_did_not_change_only_when_no_poll_differed() {
-        for (dark_at, quiet) in [(0..0, true), (2..usize::MAX, false), (2..3, false)] {
+    async fn a_thumbnail_probe_never_claims_the_screen_did_not_change() {
+        for dark_at in [0..0, 2..usize::MAX, 2..3] {
             let dir = tempfile::tempdir().unwrap();
             let socket = endpoint(dir.path());
             let listener = Fake::bind(&socket).unwrap();
@@ -3812,9 +3825,8 @@ mod tests {
                 .await
                 .unwrap();
             assert!(!out.is_error, "{}", out.text);
-            assert_eq!(
-                out.text.contains("\nthe screen did not change in 600 ms"),
-                quiet,
+            assert!(
+                !out.text.contains("the screen did not change"),
                 "{}",
                 out.text
             );
