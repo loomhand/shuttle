@@ -21,6 +21,11 @@ pub struct SnapArgs {
     pub urls: bool,
     pub bounds: Option<bool>,
     pub max_chars: Option<usize>,
+    /// Whether the answer is the diff against the caller's last read of the window.
+    #[serde(default)]
+    pub since: bool,
+    #[serde(default)]
+    pub holder: String,
 }
 
 #[derive(Deserialize)]

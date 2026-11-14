@@ -159,6 +159,8 @@ impl<B: Access + 'static, D: Input + Send + Sync + 'static> Handler for Desk<B, 
                 return Output::error(format!("{}: args are not an object", call.tool));
             }
             args["holder"] = call.agent_id.into();
+        } else if call.tool == "desk_snapshot" && args["since"] == true {
+            args["holder"] = call.agent_id.into();
         }
         self.run(&call.tool, args)
             .await
