@@ -858,6 +858,18 @@ fn title_units(hwnd: HWND, buf: &mut [u16; TITLE_CHARS]) -> &[u16] {
     &buf[..usize::try_from(n).unwrap_or(0)]
 }
 
+/// Whether the windows `a` and `b` belong to one process.
+pub(crate) fn same_process(a: i64, b: i64) -> bool {
+    let pid = |w: i64| {
+        let mut pid = 0u32;
+        // SAFETY: GetWindowThreadProcessId takes any handle and writes the pid into a live u32; a stale handle writes nothing.
+        unsafe { GetWindowThreadProcessId(HWND(w as *mut core::ffi::c_void), Some(&raw mut pid)) };
+        pid
+    };
+    let (pa, pb) = (pid(a), pid(b));
+    pa != 0 && pa == pb
+}
+
 fn foreground() -> HWND {
     // SAFETY: GetForegroundWindow takes no arguments.
     unsafe { GetForegroundWindow() }
