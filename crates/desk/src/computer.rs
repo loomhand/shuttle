@@ -72,6 +72,9 @@ const POPUP_ROWS: [&str; 6] = [
     "option",
 ];
 const PRESSED: [&str; 2] = ["push button", "menu item"];
+const FRONT_TARGET: &str = "exact target HWND 0x";
+const FRONT_ACTUAL: &str = "actual foreground HWND 0x";
+const OWN_POPUP: &str = "sent; a window of the same app took the foreground after it, as a context menu's host does: confirm its effect in the screenshot";
 const HIT_REFUSALS: [&str; 3] = [
     "hit_mismatch",
     "foreground_unavailable",
@@ -437,6 +440,11 @@ impl Computer {
                 done => done,
             },
         };
+        if let Err(e) = &result
+            && let Some(note) = own_popup_front(e)
+        {
+            result = Ok(json!({"content": [{"type": "text", "text": note}]}));
+        }
         if let Some(typed) = typed
             && result.is_ok()
         {
@@ -2563,6 +2571,36 @@ fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
     v.as_deref().ok_or_else(|| format!("missing {name}"))
 }
 
+/// The note for a Windows click the driver calls `foreground_unavailable` because a window of the target's own process, such as Explorer's context-menu host, took the foreground after it.
+fn own_popup_front(e: &str) -> Option<String> {
+    let (target, actual) = front_pair(e)?;
+    let tool = e.split(':').next()?;
+    same_process(target, actual).then(|| format!("{tool} {OWN_POPUP}"))
+}
+
+fn front_pair(e: &str) -> Option<(i64, i64)> {
+    let hex = |key: &str| {
+        let at = e.find(key)? + key.len();
+        let end = e[at..]
+            .find(|c: char| !c.is_ascii_hexdigit())
+            .map_or(e.len(), |n| at + n);
+        i64::from_str_radix(&e[at..end], 16).ok()
+    };
+    e.contains("foreground_unavailable")
+        .then(|| Some((hex(FRONT_TARGET)?, hex(FRONT_ACTUAL)?)))
+        .flatten()
+}
+
+#[cfg(windows)]
+fn same_process(a: i64, b: i64) -> bool {
+    crate::uia::same_process(a, b)
+}
+
+#[cfg(not(windows))]
+fn same_process(_: i64, _: i64) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -2571,6 +2609,17 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     use super::*;
+
+    #[test]
+    fn a_foreground_refusal_names_the_target_and_the_window_that_took_the_front() {
+        let e = "click: foreground_unavailable: exact target HWND 0x100f2 or a verified same-process post-action window was not foreground after the click (actual foreground HWND 0x9029a)";
+        assert_eq!(front_pair(e), Some((0x100f2, 0x9029a)));
+        assert_eq!(
+            front_pair("click: hit_mismatch: exact target HWND 0x1 (actual foreground HWND 0x2)"),
+            None
+        );
+        assert_eq!(front_pair("click: foreground_unavailable: no window"), None);
+    }
     use crate::driver::CLICK_SPACING;
 
     const UNSUPPORTED: &str = "AX action failed: AXUIElementPerformAction(AXPress) returned -25206";
