@@ -3,7 +3,8 @@
 use serde_json::Value;
 
 use crate::desk::{
-    BACKGROUND_DESKTOP, BACKGROUND_ELEMENT, BACKGROUND_NO_WINDOW, BACKGROUND_TARGET, BACKGROUND_UIA,
+    BACKGROUND_DESKTOP, BACKGROUND_ELEMENT, BACKGROUND_NO_WINDOW, BACKGROUND_TARGET,
+    BACKGROUND_TERMINAL, BACKGROUND_UIA,
 };
 use crate::keys::Os;
 use crate::press::BACKGROUND_NO_POINT;
@@ -19,8 +20,9 @@ pub(crate) const VERBS: [&str; 7] = [
     "desk_act",
 ];
 
-const SHUTTLE: [&str; 6] = [
+const SHUTTLE: [&str; 7] = [
     BACKGROUND_TARGET,
+    BACKGROUND_TERMINAL,
     BACKGROUND_DESKTOP,
     BACKGROUND_NO_WINDOW,
     BACKGROUND_ELEMENT,
@@ -72,6 +74,7 @@ mod tests {
             ("desk_key", Os::Windows, BACKGROUND_TARGET),
             ("desk_click", Os::Mac, BACKGROUND_NO_WINDOW),
             ("desk_act", Os::Windows, BACKGROUND_UIA),
+            ("desk_type", Os::Windows, BACKGROUND_TERMINAL),
             ("desk_press", Os::Windows, BACKGROUND_NO_POINT),
             ("desk_press", Os::Windows, BACKGROUND_ELEMENT),
             ("desk_key", Os::Windows, REFUSED),
