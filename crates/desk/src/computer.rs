@@ -1833,7 +1833,7 @@ impl Computer {
     }
 
     async fn reply(&self, name: &str, args: &Value) -> Result<Value, String> {
-        let foreground = self.driver.admit(name, args)?;
+        let foreground = self.driver.admit(name, args).await?;
         let sent = self.driver.line(name, args, REQUEST_TIMEOUT).await;
         if foreground {
             self.driver.stamp();
@@ -2616,7 +2616,7 @@ mod tests {
             .await
             .unwrap();
         crate::driver::user_input_since(0.5);
-        cua.driver.admit("click", &json!({})).unwrap();
+        cua.driver.admit("click", &json!({})).await.unwrap();
         assert_eq!(lines.lock().unwrap().len(), 1);
     }
 

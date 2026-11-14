@@ -1,7 +1,7 @@
 //! The desk calls: snapshots and element actions through the OS backend; input, windows, launch and capture through cua-driver.
 
 use std::borrow::Cow;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -108,6 +108,8 @@ const UNSEEN_TYPED: &str = "the app may not repaint a window nobody sees, so the
 const MASK_TRIES: usize = 3;
 const WINDOWS_MOVING: &str = "the windows kept changing while the screenshot was taken, so it could not be masked to the app allowlist; take it again";
 
+const EFFECTS: [&str; 4] = ["confirmed", "unverifiable", "partial", "suspected_noop"];
+
 const SCROLL_POINT: &str = "scroll needs both x and y, or neither";
 const SCROLL_AMOUNT: u32 = 3;
 
@@ -148,6 +150,7 @@ const FOCUS_UNKNOWN: &str = "focus unverified: accessibility shows no focused te
 tokio::task_local! {
     static FOREGROUND: bool;
     static SENT: Cell<usize>;
+    static EFFECT: RefCell<Option<Value>>;
     static SCALE: Cell<Option<f64>>;
 }
 
@@ -239,7 +242,19 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     /// Runs desk call `tool`, a `desk_<verb>`; actions run one at a time, until their backend calls end, reads alongside them.
-    pub async fn run(&self, tool: &str, mut args: Value) -> Result<Output, String> {
+    pub async fn run(&self, tool: &str, args: Value) -> Result<Output, String> {
+        if !ACTIONS.contains(&tool) {
+            return self.run_one(tool, args).await;
+        }
+        EFFECT
+            .scope(RefCell::new(None), async {
+                let out = self.run_one(tool, args).await?;
+                Ok(EFFECT.with(|seen| with_effect(out, seen.borrow_mut().take())))
+            })
+            .await
+    }
+
+    async fn run_one(&self, tool: &str, mut args: Value) -> Result<Output, String> {
         if APP_INPUT.contains(&tool) {
             self.app_target(&mut args).await?;
         }
@@ -500,6 +515,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let out = self.driver.call(tool, args).await?;
         if INPUT_TOOLS.contains(&tool) {
             let _ = SENT.try_with(|n| n.set(n.get() + 1));
+            let _ = EFFECT.try_with(|seen| weakest(&mut seen.borrow_mut(), &out));
         }
         Ok(out)
     }
@@ -2772,6 +2788,36 @@ fn holds(n: &Node, (x, y): (f64, f64)) -> Option<bool> {
     Some(x >= l && x < l + w && y >= t && y < t + h)
 }
 
+fn weakest(seen: &mut Option<Value>, out: &Value) {
+    let c = &out["structuredContent"];
+    let Some(effect) = c["effect"].as_str() else {
+        return;
+    };
+    let rank = |e: &str| EFFECTS.iter().position(|&x| x == e).unwrap_or(1);
+    if seen
+        .as_ref()
+        .and_then(|s| s["effect"].as_str())
+        .is_some_and(|was| rank(was) >= rank(effect))
+    {
+        return;
+    }
+    let mut v = json!({ "effect": effect });
+    if c["escalation"].is_object() {
+        v["escalation"] = c["escalation"].clone();
+    }
+    *seen = Some(v);
+}
+
+fn with_effect(mut out: Output, effect: Option<Value>) -> Output {
+    if let Some(Value::Object(e)) = effect
+        && let Ok(Value::Object(mut v)) = serde_json::from_str::<Value>(&out.text)
+    {
+        v.extend(e);
+        out.text = Value::Object(v).to_string();
+    }
+    out
+}
+
 fn ok_with(unverified: Option<String>) -> String {
     match unverified {
         Some(note) => {
@@ -4521,7 +4567,8 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn background_input_the_driver_cannot_confirm_says_so_and_foreground_input_does_not() {
+    async fn every_input_result_carries_the_driver_effect_and_only_background_input_an_unverified_note()
+     {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let back = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Mac).background(true);
         let typed: Value = serde_json::from_str(
@@ -4536,12 +4583,13 @@ pub(crate) mod tests {
             typed["unverified"],
             "unverifiable: Sent 1 char(s) via PostMessage (not verified). (escalation: delivery_failed, to foreground)"
         );
+        assert_eq!(typed["effect"], "unverifiable");
         assert_eq!(
             back.run("desk_key", json!({"keys": "enter", "pid": 4}))
                 .await
                 .unwrap()
                 .text,
-            OK
+            json!({"ok": true, "effect": "confirmed"}).to_string()
         );
         let front = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Mac);
         let typed: Value = serde_json::from_str(
@@ -4552,7 +4600,10 @@ pub(crate) mod tests {
                 .text,
         )
         .unwrap();
-        assert_eq!(typed, json!({"ok": true, "chars": 1}));
+        assert_eq!(
+            typed,
+            json!({"ok": true, "chars": 1, "effect": "unverifiable", "escalation": {"reason": "delivery_failed", "target": "foreground"}})
+        );
     }
 
     #[tokio::test]
