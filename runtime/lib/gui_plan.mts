@@ -95,6 +95,7 @@ const DOM_READS = 60
 const READS_AT_ONCE = 4
 const BASE_SETTLE = 300
 const VALUE_CHARS = 200
+const MAX_REPEAT = 256
 const INERT_KEY = /^shift\+[^+]$/i
 const ARROW_KEY = /^(shift\+)?(arrow)?(up|down|left|right)$/i
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
@@ -541,11 +542,12 @@ async function echoed(w: Win, line: string, shown: Map<string, Text> | null) {
     const want = flat(typed).trimEnd() || flat(typed); const cut = (v: string) => { const i = v.lastIndexOf(want); return i < 0 ? v : v.slice(0, i) + v.slice(i + want.length) }
     const before = shown ?? await settled(w)
     let sent = true
-    if (BG) await desk.key('backspace', at(w), [...typed].length)
+    if (BG) for (let n = [...typed].length; n > 0; n -= MAX_REPEAT) await desk.key('backspace', at(w), Math.min(n, MAX_REPEAT))
     else for (const _ of typed) { if (!await mine()) { sent = false; break } await desk.key('backspace', at(w)) }
     const after = sent && before ? await settled(w) : null
     const read = !!after && after.size > 0 && [...after.values()].every((t) => t.value !== undefined)
-    const back = read && [...after].every(([id, t]) => flat(t.value).trimEnd() === cut(flat(before?.get(id)?.value)).trimEnd())
+    const same = (a: string, b: string, part: boolean) => a === b || (part && (a.endsWith(b) || b.endsWith(a)))
+    const back = read && [...after].every(([id, t]) => { const was = before?.get(id); return same(flat(t.value).trimEnd(), cut(flat(was?.value)).trimEnd(), !!(t.cut || was?.cut)) })
     if (sent) left = !read ? 'Backspace was sent over it, unchecked' : back ? 'and it was erased' : left
   } catch {}
   return new Surprise(`the password showed in "${w.title}", so it was not submitted, ${left}`, { window: w.title })

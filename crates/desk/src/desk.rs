@@ -979,6 +979,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.raise(raised).await?;
         let mut note = None;
         for left in (0..times).rev() {
+            if left + 1 < times
+                && let Some(w) = raised
+                && !self.fronted(w).await
+            {
+                return Err(format!(
+                    "{} of {times} presses were sent, then the window left the front, so the rest were not sent",
+                    times - left - 1
+                ));
+            }
             let mut req = req.clone();
             if left > 0 && self.os == Os::Mac && to.is_some() {
                 req["post_action_wait"] = "none".into();
@@ -1816,18 +1825,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let Some((pid, window_id)) = window else {
             return Ok(());
         };
-        if self.os == Os::Mac
-            && let Ok(app) = u32::try_from(pid)
-            && self
-                .access
-                .run(CALL_LIMIT, (), move |b| b.frames_of(app))
-                .await
-                .is_ok_and(|frames| {
-                    frames
-                        .iter()
-                        .any(|f| f.active && !f.stale && f.number.map(i64::from) == Some(window_id))
-                })
-        {
+        if self.os == Os::Mac && self.fronted((pid, window_id)).await {
             return Ok(());
         }
         if let Err(e) = self
@@ -1856,6 +1854,22 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             });
         }
         Ok(())
+    }
+
+    /// Whether window `(pid, window_id)` is in front: on macOS by its window number, elsewhere by an active window of its process.
+    async fn fronted(&self, (pid, window_id): (i64, i64)) -> bool {
+        let Ok(app) = u32::try_from(pid) else {
+            return false;
+        };
+        let mac = self.os == Os::Mac;
+        self.access
+            .run(CALL_LIMIT, (), move |b| b.frames_of(app))
+            .await
+            .is_ok_and(|frames| {
+                frames.iter().any(|f| {
+                    f.active && (!mac || (!f.stale && f.number.map(i64::from) == Some(window_id)))
+                })
+            })
     }
 
     async fn background_window(
@@ -4075,12 +4089,12 @@ pub(crate) mod tests {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let desk =
                 Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Mac).background(background);
-            desk.run(
-                "desk_key",
-                json!({"keys": "backspace", "pid": 4, "repeat": 3}),
-            )
-            .await
-            .unwrap();
+            let args = if background {
+                json!({"keys": "backspace", "pid": 4, "repeat": 3})
+            } else {
+                json!({"keys": "backspace", "repeat": 3})
+            };
+            desk.run("desk_key", args).await.unwrap();
             let waits: Vec<_> = sent(&calls, "press_key")
                 .iter()
                 .map(|a| a.get("post_action_wait").cloned())
@@ -4088,6 +4102,46 @@ pub(crate) mod tests {
             let skip = background.then(|| json!("none"));
             assert_eq!(waits, [skip.clone(), skip, None], "{background}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_repeated_key_sends_no_window_watch_choice_off_macos() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Windows).background(true);
+        desk.run(
+            "desk_key",
+            json!({"keys": "backspace", "pid": 4, "repeat": 3}),
+        )
+        .await
+        .unwrap();
+        let presses = sent(&calls, "press_key");
+        assert_eq!(presses.len(), 3);
+        assert!(presses.iter().all(|a| a.get("post_action_wait").is_none()));
+    }
+
+    #[tokio::test]
+    async fn a_repeated_foreground_key_stops_at_the_first_press_its_window_is_not_in_front_for() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Windows);
+        let err = desk
+            .run(
+                "desk_key",
+                json!({"keys": "backspace", "pid": 8, "repeat": 3}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "1 of 3 presses were sent, then the window left the front, so the rest were not sent"
+        );
+        assert_eq!(sent(&calls, "press_key").len(), 1);
+        desk.run(
+            "desk_key",
+            json!({"keys": "backspace", "pid": 4, "repeat": 3}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sent(&calls, "press_key").len(), 4);
     }
 
     #[tokio::test]

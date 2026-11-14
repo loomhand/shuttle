@@ -83,7 +83,6 @@ pub struct KeyArgs {
 }
 
 impl KeyArgs {
-    /// How many times the combination is pressed: `repeat`, checked against its bounds.
     pub fn times(&self) -> Result<u16, String> {
         let times = self.repeat.unwrap_or(1);
         if (1..=MAX_REPEAT).contains(&times) {
