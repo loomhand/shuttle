@@ -40,6 +40,11 @@ const CONNECT_WAIT: Duration = Duration::from_secs(10);
 const SESSION: &str = "desk";
 const CLICK_DISTANCE: f64 = 16.0;
 const USER_IDLE: Duration = Duration::from_secs(1);
+#[cfg(not(test))]
+const IDLE_WAIT: Duration = Duration::from_millis(1500);
+#[cfg(test)]
+const IDLE_WAIT: Duration = Duration::from_millis(60);
+const IDLE_POLL: Duration = Duration::from_millis(20);
 const OWN_INPUT_LAG: Duration = Duration::from_millis(600);
 #[cfg(windows)]
 const PER_TYPED_UNIT: Duration = Duration::from_secs(2);
@@ -139,14 +144,22 @@ impl Driver {
             .map_err(|_| format!("cua-driver {tool} timed out"))?
     }
 
-    pub(crate) fn admit(&self, tool: &str, args: &Value) -> Result<bool, String> {
+    pub(crate) async fn admit(&self, tool: &str, args: &Value) -> Result<bool, String> {
         let foreground = INPUT_TOOLS.contains(&tool) && args["delivery_mode"] != "background";
         if foreground || tool == "bring_to_front" {
-            let since = since_user_input();
-            if user_busy(since, self.since_own_input()) {
-                return Err(format!(
-                    "{tool}: the user used the mouse or keyboard {since:.1} s ago, and foreground input would take them over; nothing was sent: try again once they stop"
-                ));
+            let end = std::time::Instant::now() + IDLE_WAIT;
+            loop {
+                let since = since_user_input();
+                if !user_busy(since, self.since_own_input()) {
+                    break;
+                }
+                if std::time::Instant::now() >= end {
+                    return Err(format!(
+                        "{tool}: the user used the mouse or keyboard {since:.1} s ago, still after a {:.1} s wait for a pause, and foreground input would take them over; nothing was sent: try again once they stop",
+                        IDLE_WAIT.as_secs_f64()
+                    ));
+                }
+                tokio::time::sleep(IDLE_POLL).await;
             }
         }
         Ok(foreground)
@@ -255,7 +268,7 @@ impl Input for Driver {
             }
             return done;
         }
-        let foreground = self.admit(tool, &args)?;
+        let foreground = self.admit(tool, &args).await?;
         let done = match point {
             Some(point) => self.spaced(point, self.call_session(tool, args)).await,
             None => self.call_session(tool, args).await,
@@ -441,6 +454,31 @@ mod tests {
         assert!(!user_busy(0.15, Some(past)));
         assert!(user_busy(0.05, Some(past)));
         assert!(!user_busy(1.2, Some(USER_IDLE + past)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn foreground_input_waits_for_the_user_to_pause_and_refuses_only_when_they_do_not() {
+        let driver = Driver::new("unused".into());
+        user_input_since(0.2);
+        let err = driver.admit("click", &json!({})).await.unwrap_err();
+        assert!(
+            err.contains("still after a 0.1 s wait for a pause"),
+            "{err}"
+        );
+        assert!(
+            driver
+                .admit("click", &json!({"delivery_mode": "background"}))
+                .await
+                .is_ok()
+        );
+        let pause = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            user_input_since(f64::INFINITY);
+        });
+        user_input_since(0.2);
+        assert_eq!(driver.admit("click", &json!({})).await, Ok(true));
+        pause.await.unwrap();
     }
 
     #[test]
