@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Windows: a background password into a box that hides its value no longer fails the step (#400).** A WinForms text box with a password character exposes no value, so a background password step into it ended "the password did not show" though the form took the password. A Windows snapshot now marks such a box `protected`, as macOS does, and a background password step whose `protected` field exposes no value goes on unconfirmed: a later `wait`, `verify` or `expect` step confirms it, or the plan ends with the step sent but not confirmed. A password field that reads back empty still stops the step.
+
 ## 0.1.53 - 2026-11-13
 
 - **`gui_plan`: a password that showed is erased before the step stops.** A secret line stopped because "the password showed" left the password on the screen, where the next screenshot or snapshot carried it to the model. Now the step first sends one Backspace per typed character to that window, only while it is still the one in front under foreground input, reads the window back, and says "and it was erased" only when every element reads as it did before the password. It says "it could not be erased: clear it by hand" when anything is left, another window came to the front, or Backspace could not be sent, and "Backspace was sent over it, unchecked" when the window could not be read back. The stop is reported in every case. A password that shows only after its Return was already submitted; that stop now also asks to clear it before any screenshot.

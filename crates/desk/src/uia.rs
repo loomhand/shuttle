@@ -45,7 +45,7 @@ const TITLE_CHARS: usize = 512;
 const TAIL_LINES: i32 = 256;
 const TAIL_ROUNDS: u32 = 12;
 const ANSWER_MS: u32 = 500;
-const PROPS: [UIA_PROPERTY_ID; 24] = [
+const PROPS: [UIA_PROPERTY_ID; 25] = [
     UIA_ControlTypePropertyId,
     UIA_NamePropertyId,
     UIA_HelpTextPropertyId,
@@ -70,6 +70,7 @@ const PROPS: [UIA_PROPERTY_ID; 24] = [
     UIA_IsValuePatternAvailablePropertyId,
     UIA_IsRangeValuePatternAvailablePropertyId,
     UIA_IsWindowPatternAvailablePropertyId,
+    UIA_IsPasswordPropertyId,
 ];
 const TOP_PROPS: [UIA_PROPERTY_ID; 4] = [
     UIA_ControlTypePropertyId,
@@ -689,6 +690,7 @@ fn raw(el: &IUIAutomationElement, extras: Extras) -> Raw {
             focused: boolean(UIA_HasKeyboardFocusPropertyId).unwrap_or(false),
             focusable: boolean(UIA_IsKeyboardFocusablePropertyId).unwrap_or(false),
             offscreen: boolean(UIA_IsOffscreenPropertyId).unwrap_or(false),
+            password: boolean(UIA_IsPasswordPropertyId).unwrap_or(false),
             modal: window && boolean(UIA_WindowIsModalPropertyId).unwrap_or(false),
             read_only: values
                 .then(|| boolean(UIA_ValueIsReadOnlyPropertyId))

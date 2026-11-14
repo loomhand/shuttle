@@ -753,3 +753,26 @@ test('a step keeps the first note it heard unless a later one names a terminal',
   assert.equal(r.ok, false, JSON.stringify(r))
   assert.match(String(r.escalate?.reason), /did not show in "Untitled - Notepad" after typing: unverifiable: one$/)
 })
+
+test('a background password into a box that hides its value is left for a later step to confirm, not failed', async (t) => {
+  const box = { ref: 1, id: 'p', parent: 0, depth: 1, role: 'textbox', name: 'pw', states: ['focusable', 'focused', 'showing', 'protected'] }
+  const plain = { ...box, states: ['focusable', 'focused', 'showing'] }
+  for (const [field, then, ok] of [[box, [], false], [box, [{ verify: 'Sign in', enabled: true }], true], [plain, [], false]] as const) {
+    const nodes = [{ ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: notepad().title, states: [] }, field, { ref: 2, id: 'b', parent: 0, depth: 1, role: 'button', name: 'Sign in', states: ['showing'], bounds: [10, 10, 20, 20] }]
+    const calls: Call[] = []
+    await daemon(t, (c) => {
+      calls.push(c)
+      if (c.tool === 'desk_windows') return JSON.stringify([user(), notepad()])
+      if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes, truncated: false })
+      if (c.tool === 'desk_read') return JSON.stringify(nodes.find((n) => n.id === c.args.id) ?? {})
+      if (c.tool === 'desk_type') return JSON.stringify({ ok: true, chars: 12, unverified: 'unverifiable: Sent 12 char(s) via PostMessage (not verified).' })
+      return '{"ok":true}'
+    })
+    const r = await background({ steps: [{ app: 'Notepad' }, { type: 'example-pass\n', secret: true }, ...then] })
+    const what = `${field.states.join()} ${then.length}`
+    assert.equal(r.ok, ok, `${what} ${JSON.stringify(r)}`)
+    if (ok) continue
+    assert.match(String(r.escalate?.reason), field === box ? /^step 1 \(type\) was sent but not confirmed, and no later step read its effect/ : /did not show/, what)
+    assert.ok(!JSON.stringify(r).includes('example-pass'), what)
+  }
+})
