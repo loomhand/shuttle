@@ -871,7 +871,7 @@ impl Computer {
         }
     }
 
-    /// Waits until the screen differs from `before` and holds still; returns the window changes and the probe capture it held still on.
+    /// Waits until the screen differs from `before` and holds still; returns the window changes, or that no poll differed, and the probe capture it held still on.
     async fn settle(&self, before: Option<Before>, scale: f64) -> (String, Option<Value>) {
         let Some(Before {
             probe,
@@ -903,7 +903,7 @@ impl Computer {
         let mut deadline = base;
         let (mut last, mut since): (Option<Frame>, Instant) = (None, Instant::now());
         let (mut seen, mut focus, mut hold) = (windows.clone(), active, first_hold);
-        let (mut still, mut changed) = (false, false);
+        let (mut still, mut changed, mut quiet) = (false, false, true);
         let (mut shown, mut prev) = (Shown::default(), None::<Vec<u64>>);
         let mut capture = None;
         while !still && Instant::now() < deadline {
@@ -947,6 +947,7 @@ impl Computer {
             };
             let Some((frame, differs, now, now_focus)) = polled else {
                 tokio::time::sleep_until(deadline).await;
+                quiet = false;
                 break;
             };
             if now != seen || now_focus != focus {
@@ -957,6 +958,7 @@ impl Computer {
                 base = base.max((Instant::now() + SETTLE).min(start + COMMIT_SETTLE));
             }
             changed = differs;
+            quiet &= !differs;
             let moved = last.as_ref().is_none_or(|l| l.changes(&frame, &volatile));
             if let Frame::Blocks(blocks) = &frame {
                 if let Frame::Blocks(first) = &first {
@@ -981,15 +983,23 @@ impl Computer {
             still = changed && since.elapsed() >= hold;
         }
         drop(paused);
+        if quiet && probe.is_none() && self.shm(|g| g.overlay_shown()).is_none_or(|shown| shown) {
+            quiet = false;
+        }
+        let note = if quiet {
+            format!("; the screen did not change in {} ms", wait.as_millis())
+        } else {
+            String::new()
+        };
         if let Some(probe) = probe {
             self.end_own(probe).await;
-            return (String::new(), capture.filter(|_| still));
+            return (note, capture.filter(|_| still));
         }
         if seen == windows && focus == active {
-            return (String::new(), None);
+            return (note, None);
         }
         let report = self.shm(|g| Ok(self.window_report(g, &windows, &seen, active, focus, scale)));
-        (report.unwrap_or_default(), None)
+        (note + &report.unwrap_or_default(), None)
     }
 
     /// The session of `agent` when its call names none; once ended, it starts again on its next call (see [`Self::call`]).
@@ -3719,6 +3729,48 @@ mod tests {
         assert_eq!(*captures.lock().unwrap(), [DEFAULT_SESSION]);
         assert_eq!(cua.scale_of(DEFAULT_SESSION), 1.25);
         driver.abort();
+    }
+
+    #[tokio::test]
+    async fn an_action_says_the_screen_did_not_change_only_when_no_poll_differed() {
+        for (dark_at, quiet) in [(0..0, true), (2..usize::MAX, false), (2..3, false)] {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = endpoint(dir.path());
+            let listener = Fake::bind(&socket).unwrap();
+            let light = full_shot(1280, 16, 1280);
+            let mut dark = light.clone();
+            dark["result"]["content"][0]["data"] = png_of(1280, 16, &vec![0; 1280 * 16 * 4]).into();
+            let mut probes = 0;
+            let driver = tokio::spawn(listener.serve(move |req| {
+                let session = req["args"]["session"].as_str().unwrap_or_default();
+                match req["name"].as_str().unwrap_or_default() {
+                    "get_desktop_state" if session.starts_with("still-") => {
+                        probes += 1;
+                        if dark_at.contains(&probes) {
+                            dark.clone()
+                        } else {
+                            light.clone()
+                        }
+                    }
+                    "get_desktop_state" => light.clone(),
+                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+                }
+            }));
+            let cua = cua_on(&socket, Os::Windows);
+            cua.state(json!({})).await.unwrap();
+            let out = cua
+                .act(json!({"action": "click", "x": 10.0, "y": 10.0}))
+                .await
+                .unwrap();
+            assert!(!out.is_error, "{}", out.text);
+            assert_eq!(
+                out.text.contains("; the screen did not change in 600 ms"),
+                quiet,
+                "{}",
+                out.text
+            );
+            driver.abort();
+        }
     }
 
     #[tokio::test]
