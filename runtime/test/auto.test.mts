@@ -764,3 +764,27 @@ test('a step keeps the first note it heard unless a later one names a terminal',
   assert.equal(r.ok, false, JSON.stringify(r))
   assert.match(String(r.escalate?.reason), /did not show in "Untitled - Notepad" after typing: unverifiable: one$/)
 })
+
+test('a background or auto erase that leaves part of the password, or none of it, says it could not be erased', async (t) => {
+  for (const [mode, plan] of modes) {
+    for (const opts of [{ eraseLimit: 5 }, { erases: false }]) {
+      const { r } = await terminal(t, plan, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, ...opts })
+      assert.equal(r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it could not be erased: clear it by hand', `${mode} ${JSON.stringify(opts)}`)
+      assert.ok(!JSON.stringify(r).includes('example-pass'), mode)
+    }
+  }
+})
+
+test('a password erased from a terminal read only in its tail counts as erased', async (t) => {
+  for (const [mode, plan, front] of [...modes.map(([m, p]) => [m, p, false] as const), ['foreground', foreground, true] as const]) {
+    const { r } = await terminal(t, plan, (screen, text) => screen + text, { screen: HUGE, type: 'example-pass\n', extra: { secret: true }, front })
+    assert.equal(r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it was erased', mode)
+  }
+})
+
+test('a background erase of a password longer than one repeat goes in calls of at most 256 presses', async (t) => {
+  const long = `example-pass-${'0123456789'.repeat(30)}`
+  const { r, calls } = await terminal(t, background, (screen, text) => screen + text, { type: `${long}\n`, extra: { secret: true } })
+  assert.equal(r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it was erased')
+  assert.deepEqual(calls.filter((c) => c.tool === 'desk_key').map((c) => c.args.repeat), [256, long.length - 256])
+})
