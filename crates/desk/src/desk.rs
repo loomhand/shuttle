@@ -1914,7 +1914,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(())
     }
 
-    /// Whether window `(pid, window_id)` is in front: on macOS by its window number, elsewhere by an active window of its process.
+    /// Whether window `(pid, window_id)` is in front: on macOS by its window number or a focused sheet of it, elsewhere by an active window of its process.
     async fn fronted(&self, (pid, window_id): (i64, i64)) -> bool {
         let Ok(app) = u32::try_from(pid) else {
             return false;
@@ -1925,7 +1925,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .await
             .is_ok_and(|frames| {
                 frames.iter().any(|f| {
-                    f.active && (!mac || (!f.stale && f.number.map(i64::from) == Some(window_id)))
+                    f.active
+                        && (!mac
+                            || sheet_window(&frames, f).is_some_and(|w| {
+                                !w.stale && w.number.map(i64::from) == Some(window_id)
+                            }))
                 })
             })
     }
@@ -2713,6 +2717,14 @@ fn key_request(mut keys: Vec<String>) -> (&'static str, Value) {
     ("hotkey", req)
 }
 
+fn sheet_window<'a>(frames: &'a [Frame], f: &'a Frame) -> Option<&'a Frame> {
+    let mut at = f;
+    while let Some(owner) = &at.owner {
+        at = frames.iter().find(|w| &w.id == owner)?;
+    }
+    Some(at)
+}
+
 /// Whether `frames` hold driver window `w` as an unowned top-level window: by window number where frames carry one, else by title.
 fn lists_top_level(frames: &[Frame], w: &Value) -> bool {
     let pid = w["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
@@ -3068,6 +3080,24 @@ pub(crate) mod tests {
                 ..Stub::default()
             }
         }
+        fn sheets(owner: &str) -> Stub {
+            let mut s = listed(false);
+            s.frames.push(Frame {
+                number: Some(2),
+                ..frame("x", "Other", 4, false, Some("Notepad"))
+            });
+            s.frames.push(Frame {
+                role: "dialog",
+                owner: Some("w".into()),
+                ..frame("s", "save", 4, false, Some("Notepad"))
+            });
+            s.frames.push(Frame {
+                role: "dialog",
+                owner: Some(owner.into()),
+                ..frame("t", "replace", 4, true, Some("Notepad"))
+            });
+            s
+        }
         async fn raises(stub: fn() -> Result<Stub, String>) -> usize {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let desk = Desk::new(stub, Behind(Arc::clone(&calls)), Os::Mac);
@@ -3088,6 +3118,9 @@ pub(crate) mod tests {
             Ok(s)
         };
         assert_eq!(raises(stale).await, 1);
+        assert_eq!(raises(|| Ok(sheets("w"))).await, 0);
+        assert_eq!(raises(|| Ok(sheets("s"))).await, 0);
+        assert_eq!(raises(|| Ok(sheets("x"))).await, 1);
     }
 
     #[tokio::test]
