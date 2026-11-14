@@ -147,13 +147,15 @@ test('a verify with gone passes once its element goes, and stops naming it when 
   assert.equal(goes.ok, true, JSON.stringify(goes))
 })
 
-test('gone counts a shown element without bounds and ignores a hidden menu item', async (t) => {
+test('gone counts a shown element without bounds or past the name cap and ignores a hidden menu item', async (t) => {
   const button = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'Show', states: ['showing'], bounds: [10, 10, 60, 20] }
   const label = { ref: 2, id: '1/3', parent: 0, depth: 1, role: 'text', name: 'Done', states: ['showing'] }
   const hidden = { ...label, ref: 3, id: '1/4', role: 'menuitem', name: 'Save As', states: [] }
+  const long = { ...label, ref: 4, id: '1/5', name: `Upload ${'x'.repeat(90)} finished` }
+  const cut = { ...label, ref: 5, id: '1/6', name: `${'y'.repeat(78)}: z` }
   await daemon(t, ({ tool }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])
-    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root, button, label, hidden] })
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root, button, label, hidden, long, cut] })
     return '{"ok":true}'
   })
   const r = await main({ steps: [{ verify: 'Done', gone: true, timeout_ms: 300 }] })
@@ -161,6 +163,10 @@ test('gone counts a shown element without bounds and ignores a hidden menu item'
   assert.match(r.escalate?.reason ?? '', /^verify: "Done" is still there/)
   const gone = await main({ steps: [{ verify: 'Save As', gone: true }] })
   assert.equal(gone.ok, true, JSON.stringify(gone))
+  const kept = await main({ steps: [{ verify: long.name, gone: true }] })
+  assert.match(kept.escalate?.reason ?? '', /^verify: "Upload x+" is still there/, JSON.stringify(kept))
+  const colon = await main({ steps: [{ verify: cut.name, gone: true }] })
+  assert.match(colon.escalate?.reason ?? '', /is still there/, JSON.stringify(colon))
 })
 
 test('a waiting verify asks no model until its last read, and one that had to wait confirms the step before it', async (t) => {

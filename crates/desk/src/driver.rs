@@ -150,15 +150,15 @@ impl Driver {
         let foreground = INPUT_TOOLS.contains(&tool) && args["delivery_mode"] != "background";
         if foreground || tool == "bring_to_front" {
             let end = std::time::Instant::now() + IDLE_WAIT;
-            let mut front = None;
+            let mut front: Option<Option<(i64, i64)>> = None;
             loop {
                 let since = since_user_input();
                 if !user_busy(since, self.since_own_input()) {
                     if let Some(front) = front
-                        && focused_window().await != front
+                        && (front.is_none() || focused_window().await != front)
                     {
                         return Err(format!(
-                            "{tool}: the front window changed or could not be read while waiting for the user to pause; nothing was sent"
+                            "{tool}: the front window changed or could not be read while waiting for the user to pause; nothing was sent: try again once they stop"
                         ));
                     }
                     break;
@@ -513,6 +513,7 @@ mod tests {
                 (target, other, true),
                 (target, None, true),
                 (None, target, true),
+                (None, None, true),
                 (target, other, false),
             ] {
                 USER_WINDOW.set(before);
@@ -522,11 +523,12 @@ mod tests {
                     user_input_since(f64::INFINITY);
                 });
                 let sent = driver.admit(tool, &json!({})).await;
-                let kept = !waits || before == after || tool == "bring_to_front";
+                let kept =
+                    !waits || (before.is_some() && before == after) || tool == "bring_to_front";
                 assert_eq!(sent.is_ok(), kept, "{tool} {before:?} {after:?}: {sent:?}");
                 if !kept {
                     assert!(sent.unwrap_err().ends_with(
-                        "changed or could not be read while waiting for the user to pause; nothing was sent"
+                        "changed or could not be read while waiting for the user to pause; nothing was sent: try again once they stop"
                     ));
                 }
                 pause.await.unwrap();
@@ -538,6 +540,7 @@ mod tests {
     #[tokio::test]
     async fn foreground_input_waits_for_the_user_to_pause_and_refuses_only_when_they_do_not() {
         let driver = Driver::new("unused".into());
+        USER_WINDOW.set(Some((7, 42)));
         user_input_since(0.2);
         let err = driver.admit("click", &json!({})).await.unwrap_err();
         assert!(
