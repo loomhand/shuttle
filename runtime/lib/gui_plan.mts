@@ -1403,7 +1403,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const want = s.verify
     const miss = async (ask: boolean) => {
       if (s.gone) {
-        const kept = nodes.find((n) => n.shown && norm(n.name) === norm(want))
+        const kept = nodes.find((n) => n.shown && norm(n.name) === norm(want.slice(0, 80)))
         return kept ? `verify: "${kept.name}" is still there` : ''
       }
       const hit = await resolve(nodes, want, targetRole(s), undefined, 0.7, s.fp, ask)
