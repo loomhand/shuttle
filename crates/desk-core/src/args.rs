@@ -4,6 +4,8 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
+const MAX_REPEAT: u16 = 256;
+
 #[derive(Deserialize)]
 pub struct SnapArgs {
     pub window: Option<String>,
@@ -76,6 +78,20 @@ pub struct KeyArgs {
     /// The window that background input goes to, by title; foreground input brings it to the front first, except by title alone on Linux.
     pub window: Option<String>,
     pub pid: Option<u32>,
+    /// How many times the combination is pressed, 1 by default.
+    pub repeat: Option<u16>,
+}
+
+impl KeyArgs {
+    /// How many times the combination is pressed: `repeat`, checked against its bounds.
+    pub fn times(&self) -> Result<u16, String> {
+        let times = self.repeat.unwrap_or(1);
+        if (1..=MAX_REPEAT).contains(&times) {
+            Ok(times)
+        } else {
+            Err(format!("repeat is 1 to {MAX_REPEAT}"))
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -193,6 +209,21 @@ mod tests {
         assert_eq!(
             parse::<KeyArgs>(json!({"keys": "cmd+s"})).unwrap().keys,
             "cmd+s"
+        );
+    }
+
+    #[test]
+    fn a_key_repeats_from_1_to_256_times() {
+        let times = |args: Value| parse::<KeyArgs>(args).unwrap().times();
+        assert_eq!(times(json!({"keys": "backspace"})), Ok(1));
+        assert_eq!(times(json!({"keys": "backspace", "repeat": 256})), Ok(256));
+        assert_eq!(
+            times(json!({"keys": "backspace", "repeat": 0})),
+            Err("repeat is 1 to 256".to_owned())
+        );
+        assert_eq!(
+            times(json!({"keys": "backspace", "repeat": 257})),
+            Err("repeat is 1 to 256".to_owned())
         );
     }
 }
