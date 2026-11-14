@@ -969,6 +969,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn key(&self, a: KeyArgs) -> Result<String, String> {
+        let times = a.times()?;
         let (tool, mut req) = key_request(key_names(&a.keys, self.os)?);
         let to = self.target(a.window.as_deref(), a.pid).await?;
         if self.os == Os::Mac && to.is_none() {
@@ -977,7 +978,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let raised = self.raised_window(a.window.as_deref(), a.pid).await?;
         self.raise(raised).await?;
         let mut note = None;
-        self.send(tool, req, to, &mut note).await?;
+        for left in (0..times).rev() {
+            let mut req = req.clone();
+            if left > 0 && self.os == Os::Mac && to.is_some() {
+                req["post_action_wait"] = "none".into();
+            }
+            self.send(tool, req, to, &mut note).await?;
+        }
         Ok(ok_with(note))
     }
 
@@ -4060,6 +4067,27 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, format!("type_text: {LOCKED_INPUT_UNSUPPORTED}"));
+    }
+
+    #[tokio::test]
+    async fn a_repeated_macos_background_key_waits_for_window_changes_after_its_last_press_only() {
+        for background in [true, false] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk =
+                Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Mac).background(background);
+            desk.run(
+                "desk_key",
+                json!({"keys": "backspace", "pid": 4, "repeat": 3}),
+            )
+            .await
+            .unwrap();
+            let waits: Vec<_> = sent(&calls, "press_key")
+                .iter()
+                .map(|a| a.get("post_action_wait").cloned())
+                .collect();
+            let skip = background.then(|| json!("none"));
+            assert_eq!(waits, [skip.clone(), skip, None], "{background}");
+        }
     }
 
     #[tokio::test]
