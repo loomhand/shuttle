@@ -307,6 +307,10 @@ impl Uia {
 }
 
 impl Access for Uia {
+    fn foreground(&mut self) -> Option<i64> {
+        Some(foreground().0 as i64)
+    }
+
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
         let front = foreground();
         let (shown, roots) = self.roots();
