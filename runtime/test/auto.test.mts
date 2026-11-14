@@ -50,10 +50,10 @@ async function run(t: TestContext, plan: Plan, typed: (before: string, text: str
   return { r, calls: d.calls, doc: d.doc() }
 }
 
-async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', extra = {} as Record<string, unknown>, front = false, answer = (s: string) => `${s}\n$ `, blind = false, named = true, role = 'document', erases = true, eraseFails = false, eraseBlinds = false, readBlinds = false, steal = false, stealMid = false, eraseLimit = Infinity } = {}) {
+async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', extra = {} as Record<string, unknown>, front = false, answer = (s: string) => `${s}\n$ `, blind = false, named = true, role = 'document', erases = true, eraseFails = false, eraseBlinds = false, readBlinds = false, steal = false, stealMid = false, eraseLimit = Infinity, renumber = false } = {}) {
   const term: W = { id: 't', title: 'Terminal', role: 'window', pid: 7, active: front, app: 'Terminal' }
   const bare = role === 'text' || role === 'terminal'
-  const node = () => ({ ref: 0, id: 'd', parent: -1, depth: 0, role, name: role === 'text' ? 'Command Prompt' : '', states: role === 'text' ? ['focused'] : [], ...(bare ? {} : { value: screen }) })
+  const node = () => ({ ref: 0, id: renumber && erased ? 'd2' : 'd', parent: -1, depth: 0, role, name: role === 'text' ? 'Command Prompt' : '', states: role === 'text' ? ['focused'] : [], ...(bare ? {} : { value: screen }) })
   const calls: Call[] = []; let late = ''; let keyed = false; let erased = false; let typed1 = false; let backs = 0
   await daemon(t, (c) => {
     calls.push(c)
@@ -779,6 +779,8 @@ test('a password erased from a terminal read only in its tail counts as erased',
   for (const [mode, plan, front] of [...modes.map(([m, p]) => [m, p, false] as const), ['foreground', foreground, true] as const]) {
     const { r } = await terminal(t, plan, (screen, text) => screen + text, { screen: HUGE, type: 'example-pass\n', extra: { secret: true }, front })
     assert.equal(r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it was erased', mode)
+    const renamed = await terminal(t, plan, (screen, text) => screen + text, { screen: HUGE, type: 'example-pass\n', extra: { secret: true }, front, erases: false, renumber: true })
+    assert.equal(renamed.r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it could not be erased: clear it by hand', mode)
   }
 })
 
