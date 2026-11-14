@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Windows: background keys and typing to Windows Terminal behind another window are refused before anything is sent.** Windows Terminal drops every background key while another window is in front, the Return included, so a step typed into it there went nowhere and a secret step still sent its Return. Now `desk key` and `desk type` refuse such a window before sending a key; under `auto` input the action runs in the foreground instead. The check lists the windows once per call, only for a Windows Terminal target.
+- **Windows: background keys and typing to Windows Terminal behind another window are refused before anything is sent.** Windows Terminal drops every background key while another window is in front, the Return included, so a step typed into it there went nowhere and a secret step still sent its Return. Now `desk key` and `desk type` refuse such a window before sending a key; under `auto` input the action runs in the foreground instead. The check compares the target's window handle with the foreground window, one Win32 call, made only for a Windows Terminal target, so a second Windows Terminal window with the same title does not pass for it.
 
 ## 0.1.53 - 2026-11-13
 

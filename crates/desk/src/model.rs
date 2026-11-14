@@ -368,6 +368,10 @@ pub trait Access {
     fn unanswered(&mut self) -> Option<Frame> {
         None
     }
+    /// The native handle of the foreground window, where the backend has one (Windows).
+    fn foreground(&mut self) -> Option<i64> {
+        None
+    }
 }
 
 /// Whether a caller can act on a node of `role`.

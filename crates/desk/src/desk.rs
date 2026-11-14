@@ -1752,15 +1752,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn in_front(&self, w: &Value) -> Result<bool, String> {
-        let (pid, title) = (
-            w["pid"].as_u64(),
-            w["title"].as_str().unwrap_or_default().trim(),
-        );
-        Ok(self
-            .listed()
-            .await?
-            .iter()
-            .any(|f| f.active && f.pid.map(u64::from) == pid && f.title == title))
+        let front = self
+            .access
+            .run(CALL_LIMIT, (), |b| Ok(b.foreground()))
+            .await?;
+        Ok(front.is_none_or(|h| w["window_id"].as_i64() == Some(h)))
     }
 
     async fn raised_window(
@@ -8063,6 +8059,10 @@ pub(crate) mod tests {
     struct Apps;
 
     impl Access for Apps {
+        fn foreground(&mut self) -> Option<i64> {
+            Some(1)
+        }
+
         fn frames(&mut self) -> Result<Vec<Frame>, String> {
             Ok(vec![
                 frame("4/1", "Untitled - Notepad", 4, true, Some("Notepad.exe")),
