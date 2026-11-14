@@ -987,7 +987,7 @@ impl Computer {
             quiet = false;
         }
         let note = if quiet {
-            format!("; the screen did not change in {} ms", wait.as_millis())
+            format!("\nthe screen did not change in {} ms", wait.as_millis())
         } else {
             String::new()
         };
@@ -3764,7 +3764,7 @@ mod tests {
                 .unwrap();
             assert!(!out.is_error, "{}", out.text);
             assert_eq!(
-                out.text.contains("; the screen did not change in 600 ms"),
+                out.text.contains("\nthe screen did not change in 600 ms"),
                 quiet,
                 "{}",
                 out.text
