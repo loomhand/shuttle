@@ -24,8 +24,7 @@ use serde_json::{Map, Value, json};
 use crate::allow::{Allow, app_key, app_of};
 use crate::auto;
 use crate::driver::{
-    CAPTURE_SESSION, INPUT_TOOLS, Input, KEY_WINDOW, WINDOW_SESSION, background, desktop, image_of,
-    text_of,
+    CAPTURE_SESSION, INPUT_TOOLS, Input, WINDOW_SESSION, background, desktop, image_of, text_of,
 };
 use crate::keys::{Os, hid_plus, key_names, keystroke};
 use crate::lock;
@@ -1030,12 +1029,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     times - left - 1
                 ));
             }
-            KEY_WINDOW
-                .scope(raised, self.send(tool, req.clone(), to, &mut note))
+            self.send(tool, req.clone(), to, &mut note)
                 .await
                 .map_err(|e| match times - left - 1 {
                     0 => e,
-                    sent => format!("{e}; {sent} of {times} presses were sent before this one"),
+                    sent => format!("{e}; {sent} of {times} presses were sent before it"),
                 })?;
         }
         Ok(ok_with(note))
@@ -1064,7 +1062,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let mut terminal = false;
         let lines = text.split('\n').count();
         for (i, line) in text.split('\n').enumerate() {
-            let send_line = async {
+            let sent: Result<(), String> = async {
                 self.raise(raised).await?;
                 if i > 0 {
                     self.send("press_key", json!({"key": "return"}), to, &mut note)
@@ -1139,8 +1137,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     self.send("type_text", req, to, &mut note).await?;
                 }
                 Ok(())
-            };
-            let sent: Result<(), String> = KEY_WINDOW.scope(raised, send_line).await;
+            }
+            .await;
             sent.map_err(|e| match i {
                 0 => e,
                 _ => format!("{e}; {i} of {lines} lines were typed before it"),

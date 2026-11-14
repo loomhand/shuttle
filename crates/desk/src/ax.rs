@@ -986,6 +986,16 @@ pub fn bundle_stem(pid: i32) -> Option<String> {
     Some(bundle.file_stem()?.to_string_lossy().into_owned())
 }
 
+#[cfg(not(test))]
+pub(crate) fn focused_window() -> Option<(i64, i64)> {
+    let pid = i32::try_from(front_app()?).ok()?;
+    let mut window = attr(&application(pid), "AXFocusedWindow")?;
+    while string(attr(&window, "AXRole")) == "AXSheet" {
+        window = attr(&window, "AXParent")?;
+    }
+    Some((i64::from(pid), i64::from(number_of(&window)?)))
+}
+
 fn first_on<T>(entries: &[T], covered: impl Fn(&T) -> bool, on: impl Fn(&T) -> bool) -> Option<&T> {
     entries.iter().filter(|e| covered(e)).find(|e| on(e))
 }
@@ -1358,14 +1368,6 @@ fn front_app() -> Option<u32> {
         let app = NSWorkspace::sharedWorkspace().frontmostApplication()?;
         u32::try_from(app.processIdentifier()).ok()
     })
-}
-
-#[cfg(not(test))]
-pub(crate) fn front_window() -> Option<(i64, i64)> {
-    let pid = i32::try_from(front_app()?).ok()?;
-    let app = application(pid);
-    let window = attr(&app, "AXFocusedWindow")?;
-    Some((i64::from(pid), i64::from(number_of(&window)?)))
 }
 
 fn kept(last: &BTreeMap<i32, Vec<Frame>>, p: i32) -> Vec<Frame> {
