@@ -62,6 +62,7 @@ pub(crate) const BACKGROUND_NO_WINDOW: &str = "background input: no window under
 pub(crate) const BACKGROUND_ELEMENT: &str = "background input: the element's own window could not be found, and background input never clicks a window that covers it";
 pub(crate) const BACKGROUND_TWINS: &str = "background input: the element's own window is ambiguous (same or no title, and no single frame match), and background input never guesses which window to click";
 pub(crate) const BACKGROUND_UIA: &str = "background input: on Windows UI Automation focuses, selects or runs an element only by bringing its window to the front; click it in its window, or use input = \"foreground\"";
+pub(crate) const BACKGROUND_TERMINAL: &str = "background input: Windows Terminal drops every key while another window is in front, and background input never brings a window to the front; bring it to the front, or use input = \"foreground\"";
 pub(crate) const CALL_LIMIT: Duration = Duration::from_secs(3);
 pub(crate) const BUSY: &str = "desk busy: a previous action is still running";
 #[cfg(target_os = "linux")]
@@ -1743,7 +1744,23 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if !self.bg() {
             return Ok(None);
         }
-        Ok(Some(self.background_window(window, pid).await?.0))
+        let (to, w) = self.background_window(window, pid).await?;
+        if self.os == Os::Windows && is_windows_terminal(&w) && !self.in_front(&w).await? {
+            return Err(BACKGROUND_TERMINAL.to_owned());
+        }
+        Ok(Some(to))
+    }
+
+    async fn in_front(&self, w: &Value) -> Result<bool, String> {
+        let (pid, title) = (
+            w["pid"].as_u64(),
+            w["title"].as_str().unwrap_or_default().trim(),
+        );
+        Ok(self
+            .listed()
+            .await?
+            .iter()
+            .any(|f| f.active && f.pid.map(u64::from) == pid && f.title == title))
     }
 
     async fn raised_window(
@@ -2615,6 +2632,13 @@ fn at_lock(os: Os, e: String) -> String {
     }
 }
 
+fn is_windows_terminal(w: &Value) -> bool {
+    w["app_name"].as_str().is_some_and(|a| {
+        a.trim_end_matches(".exe")
+            .eq_ignore_ascii_case("WindowsTerminal")
+    })
+}
+
 fn key_request(mut keys: Vec<String>) -> (&'static str, Value) {
     let mut req = json!({});
     if keys.len() == 1
@@ -2990,6 +3014,29 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(keys, [json!("a")]);
         assert_eq!(texts, [json!("B!")]);
+    }
+
+    #[tokio::test]
+    async fn windows_terminal_behind_another_window_takes_no_background_keys_and_nothing_is_sent() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(Apps),
+            Terminals(Behind(Arc::clone(&calls))),
+            Os::Windows,
+        )
+        .background(true);
+        for (verb, args) in [
+            ("desk_key", json!({"keys": "return", "pid": 8})),
+            ("desk_type", json!({"text": "ab", "pid": 8})),
+        ] {
+            let err = desk.run(verb, args).await.unwrap_err();
+            assert_eq!(err, BACKGROUND_TERMINAL, "{verb}");
+        }
+        assert!(sent(&calls, "press_key").is_empty() && sent(&calls, "type_text").is_empty());
+        desk.run("desk_key", json!({"keys": "return", "pid": 4}))
+            .await
+            .unwrap();
+        assert_eq!(sent(&calls, "press_key").len(), 1);
     }
 
     #[tokio::test]
@@ -7285,6 +7332,20 @@ pub(crate) mod tests {
                 "press_key" => json!({"structuredContent": {"effect": "confirmed"}}),
                 _ => json!({}),
             })
+        }
+    }
+
+    struct Terminals(Behind);
+
+    impl Input for Terminals {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let mut out = self.0.call(tool, args).await?;
+            if let Some(ws) = out["structuredContent"]["windows"].as_array_mut() {
+                for w in ws {
+                    w["app_name"] = "WindowsTerminal.exe".into();
+                }
+            }
+            Ok(out)
         }
     }
 
