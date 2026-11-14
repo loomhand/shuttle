@@ -1914,7 +1914,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(())
     }
 
-    /// Whether window `(pid, window_id)` is in front: on macOS by its window number, elsewhere by an active window of its process.
+    /// Whether window `(pid, window_id)` is in front: on macOS by its window number or a focused sheet of it, elsewhere by an active window of its process.
     async fn fronted(&self, (pid, window_id): (i64, i64)) -> bool {
         let Ok(app) = u32::try_from(pid) else {
             return false;
@@ -2717,18 +2717,15 @@ fn key_request(mut keys: Vec<String>) -> (&'static str, Value) {
     ("hotkey", req)
 }
 
-/// Whether `frames` hold driver window `w` as an unowned top-level window: by window number where frames carry one, else by title.
 fn sheet_window<'a>(frames: &'a [Frame], f: &'a Frame) -> Option<&'a Frame> {
     let mut at = f;
-    for _ in 0..frames.len() {
-        let Some(owner) = at.owner.as_ref().filter(|_| at.role == "dialog") else {
-            break;
-        };
+    while let Some(owner) = &at.owner {
         at = frames.iter().find(|w| &w.id == owner)?;
     }
     Some(at)
 }
 
+/// Whether `frames` hold driver window `w` as an unowned top-level window: by window number where frames carry one, else by title.
 fn lists_top_level(frames: &[Frame], w: &Value) -> bool {
     let pid = w["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
     let number = w["window_id"].as_u64().and_then(|n| u32::try_from(n).ok());
