@@ -158,7 +158,7 @@ impl Driver {
                         && (front.is_none() || focused_window().await != front)
                     {
                         return Err(format!(
-                            "{tool}: the front window changed or could not be read while waiting for the user to pause; nothing was sent"
+                            "{tool}: the front window changed or could not be read while waiting for the user to pause; nothing was sent: try again once they stop"
                         ));
                     }
                     break;
@@ -528,7 +528,7 @@ mod tests {
                 assert_eq!(sent.is_ok(), kept, "{tool} {before:?} {after:?}: {sent:?}");
                 if !kept {
                     assert!(sent.unwrap_err().ends_with(
-                        "changed or could not be read while waiting for the user to pause; nothing was sent"
+                        "changed or could not be read while waiting for the user to pause; nothing was sent: try again once they stop"
                     ));
                 }
                 pause.await.unwrap();

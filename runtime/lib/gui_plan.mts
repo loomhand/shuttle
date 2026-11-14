@@ -95,6 +95,7 @@ const DOM_READS = 60
 const READS_AT_ONCE = 4
 const BASE_SETTLE = 300
 const VALUE_CHARS = 200
+const NAME_CUT = 80
 const MAX_REPEAT = 256
 const VERIFY_POLL = 200
 const RUN_S = 90
@@ -388,7 +389,7 @@ function parse(snap: desk.Snap): Node[] {
     const w = wraps(n); return w.find((a) => a.name.trim())?.name || w.find((a) => a.description?.trim())?.description || ''
   }
   return snap.nodes.map((n) => ({
-    ref: n.ref, id: n.id, depth: n.depth, role: n.role, name: called(n).slice(0, 80).trim(), value: n.value ?? '', disabled: n.states.includes('disabled'), parent: n.parent,
+    ref: n.ref, id: n.id, depth: n.depth, role: n.role, name: called(n).slice(0, NAME_CUT).trim(), value: n.value ?? '', disabled: n.states.includes('disabled'), parent: n.parent,
     shortcut: n.shortcut ?? '', checked: n.states.includes('checked') || n.states.includes('pressed'), shown: n.states.includes('showing'), focused: n.states.includes('focused'), bounds: n.bounds,
   }))
 }
@@ -1403,7 +1404,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const want = s.verify
     const miss = async (ask: boolean) => {
       if (s.gone) {
-        const kept = nodes.find((n) => n.shown && norm(n.name) === norm(want.slice(0, 80)))
+        const kept = nodes.find((n) => n.shown && norm(n.name) === norm(want.slice(0, NAME_CUT).trim()))
         return kept ? `verify: "${kept.name}" is still there` : ''
       }
       const hit = await resolve(nodes, want, targetRole(s), undefined, 0.7, s.fp, ask)
