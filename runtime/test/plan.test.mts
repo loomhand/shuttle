@@ -133,3 +133,22 @@ test('a step whose only op is empty is malformed and makes no desk call', async 
   }
   assert.deepEqual(calls, [])
 })
+
+test('a timeout_ms past the run, or a gone that is no boolean or comes with a state, is refused and makes no desk call', async (t) => {
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => { calls.push(tool); return '[]' })
+  for (const [step, why, timeout_s] of [
+    [{ verify: 'Saved', timeout_ms: 0 }, /^step 0: timeout_ms takes a whole number of milliseconds from 1 to 90000,/, undefined],
+    [{ verify: 'Saved', timeout_ms: 1.5 }, /^step 0: timeout_ms takes/, undefined],
+    [{ verify: 'Saved', timeout_ms: 20000 }, /^step 0: timeout_ms takes a whole number of milliseconds from 1 to 10000,/, 10],
+    [{ verify: 'Saved', timeout_ms: 200000 }, /from 1 to 110000,/, 300],
+    [{ verify: 'Saved', gone: 'yes' }, /^step 0: gone takes true or false/, undefined],
+    [{ verify: 'Saved', gone: true, value: 'x' }, /^step 0: gone takes no value, on or enabled/, undefined],
+    [{ verify: 'Saved', gone: true, enabled: false }, /^step 0: gone takes no value, on or enabled/, undefined],
+  ] as const) {
+    const r = await main({ steps: [step as never], timeout_s })
+    assert.equal(r.done, 0, JSON.stringify(step))
+    assert.match(r.escalate?.reason ?? '', why, JSON.stringify(step))
+  }
+  assert.deepEqual(calls, [])
+})
