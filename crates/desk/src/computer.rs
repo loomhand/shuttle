@@ -1248,17 +1248,16 @@ impl Computer {
             a.action.as_str(),
             "click" | "double_click" | "right_click" | "triple_click"
         );
-        let pixel = match a.element {
-            Some(index) if clicks && !a.foreground => {
-                match self.element_pixel(session, index, false).await {
-                    None if presses(a) => match self.open_menus(session, index).await {
-                        None => self.hidden_press(session, index).await?,
-                        pixel => pixel,
-                    },
+        let pixel = if clicks && let Some((index, _)) = self.pixel_target(session, a).await {
+            match self.element_pixel(session, index, false).await {
+                None if presses(a) => match self.open_menus(session, index).await {
+                    None => self.hidden_press(session, index).await?,
                     pixel => pixel,
-                }
+                },
+                pixel => pixel,
             }
-            _ => None,
+        } else {
+            None
         };
         let mut req = json!({});
         let tool = match a.action.as_str() {
@@ -1493,19 +1492,19 @@ impl Computer {
             .unwrap_or(!cfg!(target_os = "linux"))
     }
 
+    async fn pixel_target(&self, session: &str, a: &ActArgs) -> Option<(i64, bool)> {
+        let index = a.element.filter(|_| !a.foreground)?;
+        let last = self.last.lock().await;
+        let element = last.get(session)?.elements.get(&index)?;
+        (!element.disabled).then_some((index, element.web))
+    }
+
     /// Whether `a` types into a web page element of `session`'s snapshot that a pixel click can focus.
     async fn web_pixel(&self, session: &str, a: &ActArgs) -> bool {
-        let Some(index) = a.element.filter(|_| !a.foreground) else {
+        let Some((index, true)) = self.pixel_target(session, a).await else {
             return false;
         };
-        let web = self
-            .last
-            .lock()
-            .await
-            .get(session)
-            .and_then(|s| s.elements.get(&index))
-            .is_some_and(|e| e.web);
-        web && self.element_pixel(session, index, false).await.is_some()
+        self.element_pixel(session, index, false).await.is_some()
     }
 
     /// The point where a pixel click reaches element `index` of `session`'s snapshot, skipping the driver's 270 ms click; none unless the element still looks as in the snapshot.
@@ -1939,6 +1938,7 @@ struct Element {
     role: String,
     label: String,
     parent: Option<i64>,
+    disabled: bool,
     /// The screen rectangle `[x, y, w, h]`.
     frame: Option<[f64; 4]>,
     /// Inside a web page, whose fields only take typing after a click.
@@ -2232,12 +2232,14 @@ fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
             .iter()
             .all(Option::is_some)
             .then(|| frame.map(Option::unwrap_or_default));
+        let disabled = e["enabled"] == false;
         if let Some(t) = e["element_token"].as_str() {
             let element = Element {
                 token: t.to_owned(),
                 role: e["role"].as_str().unwrap_or_default().to_owned(),
                 label: e["label"].as_str().unwrap_or_default().to_owned(),
                 parent: e["parent_index"].as_i64(),
+                disabled,
                 frame,
                 web: e["in_web_content"] == true,
             };
@@ -2269,7 +2271,7 @@ fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
                 (y + h / 2.0) / scale
             );
         }
-        if e["enabled"] == false {
+        if disabled {
             tree.push_str(" disabled");
         }
         tree.push('\n');
@@ -3300,6 +3302,38 @@ mod tests {
         ]}}));
         let got: Vec<_> = listed.iter().map(|w| (w.pid, w.x, w.y, w.w, w.h)).collect();
         assert_eq!(got, [(7, 180, 97, 920, 436), (8, 57, 52, 950, 538)]);
+    }
+
+    #[tokio::test]
+    async fn a_disabled_index_keeps_its_token_and_a_refused_click_stops_typing() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = Arc::default();
+        let driver = press_driver(&socket, &calls, "element disabled", "entry", "");
+        let cua = cua(&socket);
+        let state = cua.state(json!({"pid": 7, "session": "s"})).await.unwrap();
+        assert!(state.text.contains(" disabled"), "{}", state.text);
+        let args = json!({"action": "type", "text": "中", "element": 0, "session": "s"});
+        assert!(
+            cua.pixel_target("s", &parse(args.clone()).unwrap())
+                .await
+                .is_none()
+        );
+        let out = cua.act(args).await.unwrap();
+        assert!(
+            out.is_error && out.text.contains("element disabled"),
+            "{}",
+            out.text
+        );
+        assert!(types(&calls).is_empty());
+        assert!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| c["name"] == "click" && c["args"]["element_token"] == "t0")
+        );
+        driver.abort();
     }
 
     #[tokio::test]
@@ -4875,7 +4909,7 @@ mod tests {
                         } else {
                             json!(9)
                         };
-                        json!({"ok": true, "result": {"structuredContent": {"window_id": window, "elements": [{"element_index": 0, "element_token": "t0", "role": role, "label": "", "frame": {"x": 100.0, "y": 100.0, "w": 200.0, "h": 40.0}}]}}})
+                        json!({"ok": true, "result": {"structuredContent": {"window_id": window, "elements": [{"element_index": 0, "element_token": "t0", "role": role, "label": "", "enabled": refusal != "element disabled", "frame": {"x": 100.0, "y": 100.0, "w": 200.0, "h": 40.0}}]}}})
                     }
                     "click" if req["args"]["verify_hit"] == true => match hit {
                         "" => {

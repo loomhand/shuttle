@@ -1360,6 +1360,14 @@ fn front_app() -> Option<u32> {
     })
 }
 
+#[cfg(not(test))]
+pub(crate) fn front_window() -> Option<(i64, i64)> {
+    let pid = i32::try_from(front_app()?).ok()?;
+    let app = application(pid);
+    let window = attr(&app, "AXFocusedWindow")?;
+    Some((i64::from(pid), i64::from(number_of(&window)?)))
+}
+
 fn kept(last: &BTreeMap<i32, Vec<Frame>>, p: i32) -> Vec<Frame> {
     last.get(&p)
         .into_iter()

@@ -56,9 +56,14 @@ const HID_SYSTEM_STATE: i32 = 1;
 #[cfg(all(target_os = "macos", not(test)))]
 const USER_EVENTS: [u32; 10] = [1, 3, 5, 6, 7, 10, 12, 22, 25, 27];
 
+tokio::task_local! {
+    pub(crate) static KEY_WINDOW: Option<(i64, i64)>;
+}
+
 #[cfg(test)]
 thread_local! {
     static USER_SINCE: std::cell::Cell<f64> = const { std::cell::Cell::new(f64::INFINITY) };
+    static USER_WINDOW: std::cell::Cell<Option<(i64, i64)>> = const { std::cell::Cell::new(None) };
 }
 
 /// The driver calls the desk makes: input, windows, launch and capture.
@@ -149,9 +154,19 @@ impl Driver {
         let foreground = INPUT_TOOLS.contains(&tool) && args["delivery_mode"] != "background";
         if foreground || tool == "bring_to_front" {
             let end = std::time::Instant::now() + IDLE_WAIT;
+            let mut waited = false;
             loop {
                 let since = since_user_input();
                 if !user_busy(since, self.since_own_input()) {
+                    if waited
+                        && foreground
+                        && let Some(w) = KEY_WINDOW.try_with(|w| *w).ok().flatten()
+                        && front_window().await != Some(w)
+                    {
+                        return Err(format!(
+                            "{tool}: the target window is no longer confirmed in front after waiting for the user; this input was not sent"
+                        ));
+                    }
                     break;
                 }
                 if std::time::Instant::now() >= end {
@@ -160,6 +175,7 @@ impl Driver {
                         IDLE_WAIT.as_secs_f64()
                     ));
                 }
+                waited = true;
                 tokio::time::sleep(IDLE_POLL).await;
             }
         }
@@ -384,6 +400,24 @@ fn user_busy(since: f64, own: Option<Duration>) -> bool {
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
+async fn front_window() -> Option<(i64, i64)> {
+    tokio::task::spawn_blocking(crate::ax::front_window)
+        .await
+        .ok()
+        .flatten()
+}
+
+#[cfg(all(not(target_os = "macos"), not(test)))]
+async fn front_window() -> Option<(i64, i64)> {
+    None
+}
+
+#[cfg(test)]
+async fn front_window() -> Option<(i64, i64)> {
+    USER_WINDOW.with(std::cell::Cell::get)
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
 fn since_user_input() -> f64 {
     USER_EVENTS
         .iter()
@@ -464,6 +498,31 @@ mod tests {
         assert!(!user_busy(0.15, Some(past)));
         assert!(user_busy(0.05, Some(past)));
         assert!(!user_busy(1.2, Some(USER_IDLE + past)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_named_key_or_line_keeps_its_window_when_the_user_pauses() {
+        let driver = Driver::new("unused".into());
+        let target = (7, 42);
+        for tool in ["press_key", "hotkey", "type_text"] {
+            for actual in [Some(target), Some((7, 43)), None] {
+                user_input_since(0.1);
+                USER_WINDOW.set(Some(target));
+                let pause = tokio::spawn(async move {
+                    USER_WINDOW.set(actual);
+                    user_input_since(f64::INFINITY);
+                });
+                let sent = KEY_WINDOW
+                    .scope(
+                        Some(target),
+                        driver.admit(tool, &json!({"scope": "desktop"})),
+                    )
+                    .await;
+                assert_eq!(sent.is_ok(), actual == Some(target), "{tool}: {sent:?}");
+                pause.await.unwrap();
+            }
+        }
     }
 
     #[cfg(unix)]
