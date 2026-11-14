@@ -1304,7 +1304,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     else if (BG && rec.unverified && w && !sub) {
       const now = await texts(w); const tty = rec.unverified.includes(TERMINAL); const shown = shows(was, now, s.type, tty) || (!tty && secure(s) && masked(was, now, s.type.replace(/\n/g, '')))
       if (tty && secure(s) && shown) throw await echoed(w, s.type, was)
-      const sealed = OS === 'win32' && !shown && !tty && secure(s) && !moved(was, now) && await hides(w, now)
+      const sealed = OS === 'win32' && !shown && !tty && secure(s) && !!was && !!now && [...now].every(([id, t]) => t.value === was.get(id)?.value) && await hides(w, now)
       if (AUTO && !tty && !secure(s) && !shown && unchanged(was, now) && whole(was) && whole(now) && !taken(await desk.windows())) {
         await desk.focus(w.title, w.pid)
         await desk.typeText(s.type, FG)

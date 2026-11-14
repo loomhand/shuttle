@@ -755,13 +755,13 @@ test('a step keeps the first note it heard unless a later one names a terminal',
 })
 
 async function passwordBox(t: TestContext, field: Record<string, unknown>, then: Record<string, unknown>[], landed = '') {
-  const user8 = { ref: 3, id: 'u', parent: 0, depth: 1, role: 'textbox', name: 'user', states: ['focusable', 'showing'], value: '' }
+  const user8: Record<string, unknown> = { ref: 3, id: 'u', parent: 0, depth: 1, role: 'textbox', name: 'user', states: ['focusable', 'showing'] }
   const nodes: Record<string, unknown>[] = [{ ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: notepad().title, states: [] }, user8, field, { ref: 2, id: 'b', parent: 0, depth: 1, role: 'button', name: 'Sign in', states: ['showing'], bounds: [10, 10, 20, 20] }]
   await daemon(t, (c) => {
     if (c.tool === 'desk_windows') return JSON.stringify([user(), notepad()])
     if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes, truncated: false })
     if (c.tool === 'desk_read') return JSON.stringify(nodes.find((n) => n.id === c.args.id) ?? {})
-    if (c.tool === 'desk_type') { user8.value = landed; return JSON.stringify({ ok: true, chars: 12, unverified: 'unverifiable: Sent 12 char(s) via PostMessage (not verified).' }) }
+    if (c.tool === 'desk_type') { if (landed) user8.value = landed; return JSON.stringify({ ok: true, chars: 12, unverified: 'unverifiable: Sent 12 char(s) via PostMessage (not verified).' }) }
     return '{"ok":true}'
   })
   return background({ steps: [{ app: 'Notepad' }, { type: 'example-pass\n', secret: true }, ...then] })
