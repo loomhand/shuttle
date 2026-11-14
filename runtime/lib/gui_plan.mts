@@ -1608,7 +1608,7 @@ function malformed(s: Step, limit: number) {
   const key = TEXTS.find((k) => s[k] !== undefined && typeof s[k] !== 'string' && (s[k] !== null || k === 'type'))
   if (key) return `${key} takes a string`
   if (s.secret !== undefined && typeof s.secret !== 'boolean') return 'secret takes true or false'
-  if (s.timeout_ms !== undefined && (!Number.isInteger(s.timeout_ms) || s.timeout_ms < 1 || s.timeout_ms > limit)) return `timeout_ms takes a whole number of milliseconds from 1 to ${limit}, the run's limit`
+  if (s.verify !== undefined && s.timeout_ms !== undefined && (!Number.isInteger(s.timeout_ms) || s.timeout_ms < 1 || s.timeout_ms > limit)) return `timeout_ms takes a whole number of milliseconds from 1 to ${limit}, the run's limit`
   if (s.gone !== undefined && typeof s.gone !== 'boolean') return 'gone takes true or false'
   if (s.gone && (s.value ?? s.on ?? s.enabled) !== undefined) return 'gone takes no value, on or enabled: the element it waits on is no longer there'
   if (s.secret === true && typeof s.type === 'string' && s.type.replace(/\n$/, '').includes('\n')) return 'a secret step holds only the password line; put the command in its own type step'
