@@ -109,7 +109,7 @@ const MASK_TRIES: usize = 3;
 const WINDOWS_MOVING: &str = "the windows kept changing while the screenshot was taken, so it could not be masked to the app allowlist; take it again";
 
 const EFFECTS: [&str; 4] = ["confirmed", "unverifiable", "partial", "suspected_noop"];
-const REPORT_TOOLS: [&str; 9] = [
+const REPORT_TOOLS: [&str; 8] = [
     "click",
     "double_click",
     "right_click",
@@ -118,7 +118,6 @@ const REPORT_TOOLS: [&str; 9] = [
     "type_text",
     "press_key",
     "hotkey",
-    "set_value",
 ];
 
 const SCROLL_POINT: &str = "scroll needs both x and y, or neither";
