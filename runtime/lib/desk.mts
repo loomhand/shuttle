@@ -17,7 +17,7 @@ export type Size = { left?: number; top?: number; width: number; height: number 
 /** The window background input goes to, by title or process; required with `[desk] input = "background"`. */
 export type Target = { window?: string; pid?: number | null; app?: string; delivery_mode?: 'foreground' }
 /** Background input the driver could not confirm carries `unverified`. */
-export type Sent = { ok: boolean; chars?: number; unverified?: string; input?: 'foreground'; terminal?: boolean }
+export type Sent = { ok: boolean; chars?: number; unverified?: string; input?: 'foreground'; terminal?: boolean; effect?: string }
 type Output = { text: string; is_error: boolean; image_b64?: string }
 type Metered = { usage: { model: string; input_tokens: number; output_tokens: number; cached_tokens: number } }
 type Decided = Metered & { answers: Record<string, Judgment>; served: Omit<Served, 'image'> }
