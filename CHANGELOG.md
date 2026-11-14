@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Windows: a background password into a box that hides its value no longer fails the step (#400).** A WinForms text box with a password character exposes no value, so a background password step into it ended "the password did not show" though the form took the password. A Windows snapshot now marks such a box `protected`, as macOS does, and a background password step whose `protected` field exposes no value goes on unconfirmed: a later `wait`, `verify` or `expect` step confirms it, or the plan ends with the step sent but not confirmed. A password field that reads back empty still stops the step.
+- **Windows: a background password into a box that hides its value no longer fails the step (#400).** A WinForms text box with a password character exposes no value, so a background password step into it ended "the password did not show" though the form took the password. A Windows snapshot now marks such a box `protected`, as macOS does. On Windows, a background password step that did not show, whose window holds a focused `protected` field exposing no value and no other field that changed, goes on unconfirmed: a later `wait`, `verify` or `expect` step confirms it, or the plan ends with the step sent but not confirmed. Such a box exposes no value whether it is empty or not, so this covers a password that never landed too, which only the later step can tell apart. A changed field next to it, an unfocused box, a field that is not a password field, and macOS, whose password fields show their mask, still stop the step with "did not show".
 
 ## 0.1.53 - 2026-11-13
 
