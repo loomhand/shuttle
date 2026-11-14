@@ -33,7 +33,7 @@ type Flow = { name: string; named?: boolean; params: Record<string, string>; ste
 type Chain = { at: number; window: string | null; pid: number | null; name?: string; named?: boolean; params: Record<string, string>; steps: Step[]; dirty: boolean; saved?: boolean; escalated?: boolean; usage?: desk.Usage }
 type Params = { steps?: Step[]; flow?: string; params?: Record<string, string>; save?: string; start?: number; find?: string; reindex?: boolean; locate?: { target: string; press?: boolean }; timeout_s?: number }
 type Rec = {
-  i: number; op?: string; ms?: number; served?: unknown[]; how?: string; via?: string; window?: string; seen?: string; submit?: boolean
+  i: number; op?: string; ms?: number; served?: unknown[]; how?: string; via?: string; window?: string; seen?: string; submit?: boolean; waited?: boolean
   blank?: Fp; fp?: Fp; was?: boolean | 'mixed' | null; now?: boolean; noop?: boolean; state?: string; opened?: number; path?: string[]; pick?: number[]
   focused?: string; p?: number; p_zoom?: number | null; p_full?: number | null; verdict?: Vision; ground_hit?: string; checked?: string; value?: string; ref?: string; unsaved?: boolean
   unverified?: string; caveat?: string; confirmed?: boolean; fg?: boolean
@@ -237,7 +237,7 @@ async function perform(p: Params): Promise<Result> {
       if (actioned && !s.after) rec.caveat = ACTION_ONLY
       if (desk.foreground.runs + foreground.steps > runs) { rec.fg = true; fronted = true; BG = false; settleWs = null }
       const before = recs[i - 1]
-      if (before && (s.expect || (s.verify && (s.value ?? s.on ?? s.enabled) !== undefined) || (s.wait && rec.seen !== tops[i - 1]))) before.confirmed = true
+      if (before && (s.expect || (s.verify && ((s.value ?? s.on ?? s.enabled) !== undefined || rec.waited)) || (s.wait && rec.seen !== tops[i - 1]))) before.confirmed = true
     } catch (e: unknown) {
       const sp = e instanceof Surprise ? e : new Surprise(e instanceof Error ? e.message : String(e), await seen())
       if (sp.late && sp.seen.outline === undefined && sp.reason !== NO_FRONT) sp.seen = await seen()
@@ -1402,7 +1402,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const want = s.verify
     const miss = async (ask: boolean) => {
       const hit = await resolve(nodes, want, targetRole(s), undefined, 0.7, s.fp, ask)
-      if (s.gone) return hit ? `verify: "${hit.n.name || want}" is still there` : ''
+      const kept = hit?.n ?? nodes.find((n) => n.shown && norm(n.name) === norm(want))
+      if (s.gone) return kept ? `verify: "${kept.name || want}" is still there` : ''
       if (!hit) return `verify: no element matches "${want}"`
       rec.how = hit.how; rec.fp = fingerprint(nodes, hit)
       const bad: string[] = []
@@ -1414,8 +1415,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const end = Math.min(Date.now() + (s.timeout_ms ?? 0), deadline)
     for (let first = true; ; first = false) {
       const last = Date.now() >= end
-      const why = await miss(!s.gone && (first || last))
-      if (!why) return
+      const why = await miss(!s.gone && last)
+      if (!why) { rec.waited = !first; return }
       if (last) throw new Surprise(why, await seen())
       await sleep(Math.min(VERIFY_POLL, end - Date.now()))
       nodes = s.web ? await onPage(s.web, w, undefined, read) : parse(await snapOf(w, read))
