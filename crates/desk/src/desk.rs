@@ -14,6 +14,7 @@ use desk_core::args::{
     ActArgs, AtArgs, ClickArgs, DragArgs, FindArgs, Focus, IdArgs, KeyArgs, LaunchArgs, ReadArgs,
     ScrollArgs, ShotArgs, SnapArgs, StillArgs, TypeArgs, WaitArgs, WebArgs, WindowArgs, parse,
 };
+use desk_core::diff::{Baselines, SINCE_TEXT};
 use desk_core::shot::{OFF_SCREEN, crop_png, rgb_png};
 use desk_core::text::{MAX_FOUND, NAME_CHARS, READ_CHARS, READ_TAIL, cut_read, matches, ms, quote};
 use desk_core::window::{self, TITLE_TIERS, title_matches};
@@ -171,6 +172,7 @@ pub struct Desk<B, D> {
     unseen: std::sync::Mutex<HashMap<(i64, i64), Unseen>>,
     clicked: std::sync::Mutex<Option<Clicked>>,
     webs: std::sync::Mutex<HashMap<u32, Held>>,
+    bases: std::sync::Mutex<Baselines>,
     typer: Typer,
     #[cfg(test)]
     skew: Arc<std::sync::atomic::AtomicU64>,
@@ -195,6 +197,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             unseen: std::sync::Mutex::new(HashMap::new()),
             clicked: std::sync::Mutex::new(None),
             webs: std::sync::Mutex::new(HashMap::new()),
+            bases: std::sync::Mutex::new(Baselines::default()),
             typer: TYPER,
             #[cfg(test)]
             skew: Arc::default(),
@@ -273,6 +276,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     pub fn release(&self, holder: &str) {
+        lock(&self.bases).release(holder);
         let pids: Vec<u32> = lock(&self.webs).keys().copied().collect();
         for pid in pids.into_iter().filter(|&p| self.release_one(p, holder)) {
             self.access.post(move |b| drop(b.web(pid, false)));
@@ -655,6 +659,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn snapshot(&self, a: SnapArgs) -> Result<String, String> {
+        if a.since && a.text {
+            return Err(SINCE_TEXT.to_owned());
+        }
         let started = Instant::now();
         let extras = Extras {
             values: true,
@@ -701,12 +708,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if a.text {
             out["text"] = outline(&tree.nodes, a.max_chars.unwrap_or(NAME_CHARS)).into();
         } else {
-            out["nodes"] = tree
+            let nodes = tree
                 .nodes
                 .into_iter()
                 .enumerate()
-                .map(|(i, n)| n.into_json(i))
-                .collect();
+                .map(|(i, n)| n.into_json(i));
+            if a.since {
+                return lock(&self.bases).answer(&a.holder, &tree.frame.id, &out, nodes.collect());
+            }
+            out["nodes"] = nodes.collect();
         }
         Ok(out.to_string())
     }
@@ -2809,9 +2819,11 @@ pub(crate) mod tests {
     use std::sync::{Mutex, OnceLock};
 
     use desk_core::text::clip;
+    use desk_core::wire::Call;
 
     use super::*;
     use crate::model::{MAX_IDS, Tree, evict_ids, lookup};
+    use crate::server::Handler;
 
     const PID_CALLS: [(&str, &str); 4] = [
         ("desk_snapshot", r#"{"pid": 4}"#),
@@ -5353,6 +5365,93 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(urls, [false, true, false, false, true, true]);
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_since_the_callers_last_read_answers_only_what_changed() {
+        let desk = Desk::new(|| Ok(Grows(0)), Slow(Arc::default()), Os::Mac);
+        let snap = async |agent: &str, args: Value| {
+            let call = Call {
+                agent_id: agent.into(),
+                tool: "desk_snapshot".into(),
+                args,
+            };
+            desk.answer(call).await
+        };
+        let read = |out: Output| serde_json::from_str::<Value>(&out.text).unwrap();
+        let first = read(snap("a", json!({"since": true})).await);
+        assert_eq!(
+            (&first["diff"], first["nodes"].as_array().map(Vec::len)),
+            (&json!(false), Some(5))
+        );
+        let second = read(snap("a", json!({"since": true})).await);
+        assert_eq!(second["diff"], true);
+        assert_eq!(second["changed"][0]["value"], "aa");
+        assert_eq!(second["changed"].as_array().map(Vec::len), Some(1));
+        assert_eq!(read(snap("b", json!({"since": true})).await)["diff"], false);
+        let plain = read(snap("a", json!({})).await);
+        assert!(plain.get("diff").is_none() && plain["nodes"].is_array());
+        let text = snap("a", json!({"since": true, "text": true})).await;
+        assert_eq!((text.is_error, text.text.as_str()), (true, SINCE_TEXT));
+    }
+
+    struct Grows(usize);
+
+    impl Access for Grows {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            Ok(vec![frame(
+                "w",
+                "Untitled - Notepad",
+                4,
+                true,
+                Some("Notepad"),
+            )])
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            self.0 += 1;
+            let node = |role: &'static str, parent| Node {
+                id: role.into(),
+                parent,
+                role,
+                name: role.into(),
+                states: vec!["showing"],
+                ..Node::default()
+            };
+            let mut field = node("textbox", Some(0));
+            field.value = Some("a".repeat(self.0));
+            Ok(Tree {
+                frame: frame.clone(),
+                nodes: vec![
+                    node("window", None),
+                    node("toolbar", Some(0)),
+                    node("button", Some(1)),
+                    node("checkbox", Some(1)),
+                    field,
+                ],
+                ..Tree::default()
+            })
+        }
+
+        fn node(&mut self, _: &str, _: Extras, _: usize) -> Result<Node, String> {
+            Err("unused".into())
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Err("unused".into())
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Err("unused".into())
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Err("unused".into())
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Err("unused".into())
+        }
     }
 
     #[tokio::test]
