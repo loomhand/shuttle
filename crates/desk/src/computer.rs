@@ -666,6 +666,19 @@ impl Computer {
     /// Types text with non-ASCII characters or at a point, which a click focuses first, in the calls [`text_runs`] cuts.
     async fn type_mixed(&self, session: &str, a: &ActArgs, input: Turn) -> Result<Output, String> {
         let full = without_protocol_tail(required(&a.text, "text")?);
+        if let Some(index) = a.element {
+            let read = self.last.lock().await.get(session).map(|s| (s.pid, s.window_id));
+            if let Some((pid, window_id)) = read
+                && self
+                    .key_window(session)
+                    .await?
+                    .is_none_or(|(p, w)| p != pid || window_id.is_some_and(|id| id != w))
+            {
+                return Err(format!(
+                    "element {index} is in a window that is no longer in front, so nothing was clicked or typed: bring that window to the front and call computer_state again"
+                ));
+            }
+        }
         let before = self.before_input(Some(a)).await;
         let mut failure = None;
         if a.element.is_some() || (a.x.is_some() && a.y.is_some()) {
@@ -3337,6 +3350,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn text_for_an_element_whose_window_is_no_longer_in_front_is_neither_clicked_nor_typed() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = Arc::default();
+        let driver = press_driver(&socket, &calls, "", "entry", "behind");
+        let cua = cua(&socket);
+        cua.state(json!({"pid": 7, "session": "s"})).await.unwrap();
+        let err = cua
+            .act(json!({"action": "type", "text": "\u{4e2d}", "element": 0, "session": "s"}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("nothing was clicked or typed"), "{err}");
+        assert!(types(&calls).is_empty());
+        assert!(
+            !calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| c["name"] == "click"),
+            "{:?}",
+            calls.lock().unwrap()
+        );
+        driver.abort();
+    }
+
+    #[tokio::test]
     async fn an_element_without_the_press_action_gets_one_hit_checked_click() {
         let (out, clicks) = field("AXList", "click", UNSUPPORTED, "").await;
         assert!(!out.is_error, "{}", out.text);
@@ -4899,6 +4938,9 @@ mod tests {
                 let reply = match req["name"].as_str().unwrap_or_default() {
                     "list_windows" if hit == "windowless" => {
                         json!({"ok": true, "result": {"structuredContent": {"windows": []}}})
+                    }
+                    "list_windows" if hit == "behind" => {
+                        json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 8, "window_id": 3, "app_name": "Terminal", "title": "u", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 3}, {"pid": 7, "window_id": 9, "app_name": "TextEdit", "title": "t", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 2}]}}})
                     }
                     "list_windows" => {
                         json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "TextEdit", "title": "t", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 2}]}}})
