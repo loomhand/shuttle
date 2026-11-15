@@ -510,7 +510,7 @@ async function answered(w: Win, r: Reads, tree: Tree): Promise<Tree | null> {
   }
   return tree
 }
-function busy(w: Win) { return `"${w.title}" gave no answer to the accessibility read for ${BUSY_MS / 1000} s: its app is busy` }
+function busy(w: Win, since: number) { return `"${w.title}" gave no answer to the accessibility read for ${((Date.now() - since) / 1000).toFixed(1)} s: its app is busy` }
 function targetRole(s: Step) {
   if (s.verify !== undefined) return s.role ?? (s.value !== undefined ? FIELDS : s.on !== undefined ? `${TOGGLES}|menuitem` : undefined)
   return s.role ?? (s.check ? TOGGLES : s.set ? FIELDS : undefined)
@@ -1203,7 +1203,7 @@ async function holdsText(w: Win, fp: Fp) {
   const t0 = Date.now()
   try {
     const tree = await answered(w, {}, await readTree(w, {}))
-    if (!tree) throw new Surprise(busy(w), await seen())
+    if (!tree) throw new Surprise(busy(w, t0), await seen())
     const same = shownFields(tree.nodes, fp); const hit = same.length === 1 ? same[0] : same[fp.nth]
     return !!hit && !!hit.n.value.trim()
   } catch (e: unknown) { if (e instanceof Surprise) throw e; return false } finally { tick('blank', t0) }
@@ -1410,13 +1410,14 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   }
   if (s.web) tree = await onPage(s.web, w, tree, read)
   if (s.expect) {
-    const got = await answered(w, read, tree)
+    const t1 = Date.now(); const got = await answered(w, read, tree)
     if (got) {
       const d = await decide({ window_title: w.title, contents: render(got.nodes, 60, false, 4000) }, { ok: desk.yes(s.expect) })
       rec.p = +prob(d.ok).toFixed(2)
       if (prob(d.ok) >= 0.5) return
       if (BG && !AUTO) throw new Surprise(`expectation not met in the window's tree: ${s.expect}; ${NO_PIXELS}`, await seen())
-    } else if (BG && !AUTO) throw new Surprise(`${busy(w)}; ${NO_PIXELS}`, await seen())
+    } else if (BG && !AUTO) throw new Surprise(`${busy(w, t1)}; ${NO_PIXELS}`, await seen())
+    else if (Date.now() >= deadline) throw new Surprise(busy(w, t1), await seen())
     if (BG) await front(w)
     const v = await vision(`You check the state of a computer screen.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot(), 'ok'); rec.verdict = v
     if (!v.ok) throw new Surprise(`expectation not met: ${s.expect} (${v.why})`, await seen())

@@ -99,7 +99,11 @@ test('an expect reads a window that answers with no element again, then checks t
   delete process.env.SHUTTLE_INPUT
   const busy = await background({ steps: [{ wait: 'Format' }, { expect: 'the error is gone' }] })
   assert.equal(busy.ok, false, JSON.stringify(busy))
-  assert.match(busy.escalate?.reason ?? '', /"Format" gave no answer to the accessibility read/)
+  assert.match(busy.escalate?.reason ?? '', /"Format" gave no answer to the accessibility read for 3\.\d s/)
+  assert.deepEqual([asked, looked], [0, 1])
+  const late = await main({ steps: [{ expect: 'the error is gone' }], timeout_s: 1 })
+  assert.equal(late.ok, false, JSON.stringify(late))
+  assert.match(late.escalate?.reason ?? '', /"Format" gave no answer to the accessibility read for 0\.\d s: its app is busy$/)
   assert.deepEqual([asked, looked], [0, 1])
   answersAt = Date.now() + 400
   const back = await main({ steps: [{ expect: 'the error is gone' }] })
