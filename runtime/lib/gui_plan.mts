@@ -1562,7 +1562,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const b = (await desk.read(hit.n.id)).bounds ?? hit.n.bounds
     if (!b) throw new Surprise(`${rec.ref} has no screen position for a ${s.button ?? ''} click`, await seen())
     const [x, y, into] = await inWindow(w, b[0] + b[2] / 2, b[1] + b[3] / 2)
-    const c = into === FG ? await placed(x, y, w, true) : null
+    const c = into === FG ? await placed(x, y, w) : null
     if (c?.check === 'covered-hit' || c?.check === 'foreign-hit') throw new Surprise(`the centre of ${rec.ref} is on ${told(c)}, so the click was not sent`, await seen())
     t0 = Date.now(); await desk.click(x, y, { ...pointer(s), ...into }); tick('act', t0)
     await settle(w.title); return
