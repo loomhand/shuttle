@@ -840,17 +840,21 @@ test('a foreground key the driver suspects changed nothing carries a caveat, and
 })
 
 test('a type the device reports did not show stops the step, and one it could not check carries a caveat', async (t) => {
-  let typed: boolean | null = false
+  let typed: boolean | null = false; let types = 0
   await daemon(t, (c) => {
     if (c.tool === 'desk_windows') return JSON.stringify([{ ...user(), active: false }, { ...notepad(), active: true }])
     if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes: [], truncated: false })
-    if (c.tool === 'desk_type') return JSON.stringify({ ok: true, chars: 3, typed })
+    if (c.tool === 'desk_type') { types++; return JSON.stringify({ ok: true, chars: 3, typed }) }
     return '{"ok":true}'
   })
   const lost = await foreground({ steps: [{ app: 'Notepad' }, { type: 'abc' }] })
   assert.equal(lost.ok, false, JSON.stringify(lost))
   assert.equal(lost.escalate?.step, 1, JSON.stringify(lost))
   assert.match(lost.escalate?.reason ?? '', /^"abc" did not show in the focused field/)
+  types = 0
+  const keyed = await foreground({ steps: [{ app: 'Notepad' }, { key: 'tab' }, { type: 'abc' }] })
+  assert.equal(keyed.escalate?.step, 2, JSON.stringify(keyed))
+  assert.equal(types, 1)
   typed = null
   const unchecked = await foreground({ steps: [{ app: 'Notepad' }, { type: 'abc' }] })
   assert.equal(unchecked.ok, true, JSON.stringify(unchecked))
