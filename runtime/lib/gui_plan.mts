@@ -1147,12 +1147,14 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
   const raw = text.split('\n'); const lines = raw.map((l) => l.replace(/\r$/, '')); const k = lines.findIndex(Boolean)
   if (k < 0) { heard(await desk.typeText(text, at(w)), rec, s, text); return undefined }
   let base = was
-  if (k > 0) { heard(await desk.typeText('\n'.repeat(k), at(w)), rec, s, '\n'.repeat(k)); base = await settled(w) }
-  const first = await desk.typeText(raw[k] ?? '', at(w)); heard(first, rec, s)
+  const all = lines.length
+  const sent = <T,>(p: Promise<T>, done: number, ret: boolean, from = done) => p.catch((e: unknown) => { throw cutShort(e, all, done, ret, from) })
+  if (k > 0) { heard(await sent(desk.typeText('\n'.repeat(k), at(w)), 0, false), rec, s, '\n'.repeat(k)); base = await settled(w) }
+  const first = await sent(desk.typeText(raw[k] ?? '', at(w)), k, k > 0); heard(first, rec, s)
   if (!first.terminal) {
     if (k + 1 < raw.length) {
       if (secure(s)) { const now = await settled(w); if (shows(base, now, raw[k] ?? '', true)) throw await echoed(w, raw[k] ?? '', now) }
-      heard(await desk.typeText(`\n${raw.slice(k + 1).join('\n')}`, at(w)), rec, s, `\n${raw.slice(k + 1).join('\n')}`)
+      heard(await sent(desk.typeText(`\n${raw.slice(k + 1).join('\n')}`, at(w)), k + 1, false, k), rec, s, `\n${raw.slice(k + 1).join('\n')}`)
       if (secure(s) && shows(base, await settled(w), raw[k] ?? '', true)) throw late(w)
     }
     return undefined
@@ -1160,8 +1162,8 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
   const n = lines.length - (text.endsWith('\n') ? 1 : 0); let quiet = false
   for (const [i, line] of lines.entries()) {
     if (i < k) continue
-    if (i > k) { heard(await desk.key('Return', at(w)), rec, s); if (!line) continue; base = await settled(w) }
-    const r = i > k ? await desk.typeText(raw[i] ?? '', at(w)) : first
+    if (i > k) { heard(await sent(desk.key('Return', at(w)), i, false), rec, s); if (!line) continue; base = await settled(w) }
+    const r = i > k ? await sent(desk.typeText(raw[i] ?? '', at(w)), i, true) : first
     if (i > k) heard(r, rec, s)
     if (!r.unverified?.includes(TERMINAL)) { if (secure(s) && !r.unverified) throw await echoed(w, raw[i] ?? '', null); continue }
     const now = await texts(w); const shown = shows(base, now, line, true)
@@ -1176,6 +1178,12 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
     if (moved(base, after)) return false
   }
   return quiet
+}
+function cutShort(e: unknown, n: number, done: number, ret: boolean, from: number) {
+  const m = e instanceof Error ? e.message : String(e)
+  const d = /^(\d+) of \d+ lines( and the Return after line \d+)? were typed, then this stopped the rest: /.exec(m)
+  const [i, r, why] = d ? [from + Number(d[1]), !!d[2], m.slice(d[0].length)] : [done, ret, m]
+  return i ? new Error(`${i} of ${n} lines${r ? ` and the Return after line ${i}` : ''} were typed, then this stopped the rest: ${why}`) : e
 }
 async function settled(w: Win) {
   let a = await texts(w)
@@ -1413,7 +1421,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.expect) {
     const t1 = Date.now(); const got = await answered(w, read, tree)
     if (got) {
-      const d = await decide({ window_title: w.title, contents: render(got.nodes, 60, false, 4000) }, { ok: desk.yes(s.expect) })
+      const d = await decide({ window_title: w.title, contents: `${render(got.nodes, 60, false, 4000)}${got.snap.truncated ? TREE_CUT : ''}` }, { ok: desk.yes(s.expect) })
       rec.p = +prob(d.ok).toFixed(2)
       if (prob(d.ok) >= 0.5) return
       if (BG && !AUTO) throw new Surprise(`expectation not met in the window's tree: ${s.expect}; ${NO_PIXELS}`, await seen())
@@ -1554,6 +1562,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const b = (await desk.read(hit.n.id)).bounds ?? hit.n.bounds
     if (!b) throw new Surprise(`${rec.ref} has no screen position for a ${s.button ?? ''} click`, await seen())
     const [x, y, into] = await inWindow(w, b[0] + b[2] / 2, b[1] + b[3] / 2)
+    const c = into === FG ? await placed(x, y, w, true) : null
+    if (c?.check === 'covered-hit' || c?.check === 'foreign-hit') throw new Surprise(`the centre of ${rec.ref} is on ${told(c)}, so the click was not sent`, await seen())
     t0 = Date.now(); await desk.click(x, y, { ...pointer(s), ...into }); tick('act', t0)
     await settle(w.title); return
   }

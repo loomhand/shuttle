@@ -308,3 +308,23 @@ test('a waiting verify whose misses came from truncated snapshots does not confi
   assert.equal(whole.ok, true, JSON.stringify(whole))
   assert.equal(whole.escalate, undefined, JSON.stringify(whole))
 })
+
+test('an expect on a cut tree tells the model the read stopped before the end of the window', async (t) => {
+  const asked: string[] = []
+  const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Size', states: ['showing'], bounds: [10, 10, 100, 20] }
+  let truncated = true
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated, nodes: [root, field] })
+    if (tool === 'model_decide') { asked.push(JSON.stringify(args)); return JSON.stringify({ answers: { ok: { probability: 0.9 } }, served: { model: 'm', build: null, id: null }, usage }) }
+    return '{"ok":true}'
+  })
+  for (const cut of [true, false]) {
+    truncated = cut
+    const r = await main({ steps: [{ expect: 'the error is gone' }] })
+    assert.equal(r.ok, true, JSON.stringify(r))
+  }
+  assert.equal(asked.length, 2)
+  assert.match(asked[0] ?? '', /this accessibility read stopped before the end of the window/)
+  assert.doesNotMatch(asked[1] ?? '', /this accessibility read stopped before the end of the window/)
+})

@@ -164,3 +164,27 @@ test('a recorded right click, double click or modifier click clicks the element 
   assert.deepEqual(clicks, [{ x: 120, y: 210, button: 'right', count: undefined, modifiers: undefined }, { x: 120, y: 210, button: undefined, count: 2, modifiers: ['cmd'] }])
   assert.equal(calls.some((c) => c.tool === 'desk_press'), false)
 })
+
+for (const [how, step] of [['right click', { button: 'right' }], ['double click', { count: 2 }], ['modifier click', { mods: ['cmd'] }]] as [string, { button?: string; count?: number; mods?: string[] }][]) test(`a foreground ${how} whose element centre another window covers is not sent`, async (t) => {
+  const win = { id: '1/1', title: 'Files', role: 'window', pid: process.pid, active: true, app: 'Finder', bounds: [0, 0, 800, 600] }
+  const file = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'report.txt', states: ['showing'], bounds: [100, 200, 40, 20] }
+  let under: () => unknown = () => ({})
+  const clicks: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win, { id: '9/1', title: 'Always on top', role: 'window', pid: 9, active: false, app: 'Pinned', bounds: [0, 0, 400, 400] }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: 'Files', states: ['showing'] }, file] })
+    if (tool === 'desk_read') return JSON.stringify(file)
+    if (tool === 'desk_at') return JSON.stringify(under())
+    if (tool === 'desk_click') clicks.push(args)
+    return '{"ok":true}'
+  })
+  const covered = () => ({ found: { ref: 0, id: '1/2', parent: -1, depth: 0, role: 'button', name: 'report.txt', states: [] }, path: [{ id: '1/1', role: 'window', name: 'Files' }], pid: process.pid, covered: { title: 'Always on top', pid: 9 } })
+  const foreign = () => ({ found: { ref: 0, id: '9/2', parent: -1, depth: 0, role: 'pane', name: 'Pinned', states: [] }, path: [{ id: '9/1', role: 'window', name: 'Always on top' }], pid: 9 })
+  for (const [cover, said] of [[covered, /under the window "Always on top", so the click was not sent/], [foreign, /which belongs to another process, so the click was not sent/]] as const) {
+    under = cover
+    const r = await main({ steps: [{ click: 'report.txt', ...step }] })
+    assert.equal(r.ok, false, `${how} ${JSON.stringify(r)}`)
+    assert.match(r.escalate?.reason ?? '', said, how)
+  }
+  assert.deepEqual(clicks, [])
+})
