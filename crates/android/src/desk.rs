@@ -310,7 +310,9 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
             for sent in 0..times {
                 let partly = |e: String| match sent {
                     0 => e,
-                    _ => format!("{e}; {sent} of {times} presses were sent before it"),
+                    _ => format!(
+                        "{sent} of {times} presses were sent, then this stopped the rest: {e}"
+                    ),
                 };
                 in_front(android, a.window.as_deref(), a.pid)
                     .await
