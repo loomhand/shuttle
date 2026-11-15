@@ -84,6 +84,7 @@ const WAIT_MAX: Duration = Duration::from_secs(5);
 const RAISE_WAIT: Duration = Duration::from_millis(500);
 const WAIT_POLL: Duration = Duration::from_millis(10);
 const WAIT_CHECK: Duration = Duration::from_millis(100);
+const RETURN_SETTLE: Duration = Duration::from_millis(100);
 
 const FRAME_BORDER: f64 = 16.0;
 const TITLE_BAR: f64 = 48.0;
@@ -1088,16 +1089,34 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let mut note = None;
         let mut terminal = false;
         let lines = text.split('\n').count();
+        let ended = text
+            .rsplit('\n')
+            .next()
+            .is_some_and(|l| l.trim_end_matches('\r').is_empty());
+        let watched = raised.filter(|_| lines > 2 || (lines == 2 && !ended));
+        let mut front = None;
+        let mut moved = None;
         for (i, line) in text.split('\n').enumerate() {
             let mut returned = false;
             let sent: Result<(), String> = async {
                 self.raise(raised).await?;
+                if i == 0
+                    && let Some(w) = watched
+                {
+                    front = self.front_frame(w).await;
+                }
+                let line = line.trim_end_matches('\r');
                 if i > 0 {
                     self.send("press_key", json!({"key": "return"}), to, &mut note)
                         .await?;
                     returned = true;
+                    if let (Some(w), Some(f), false) = (watched, &front, i + 1 == lines && ended) {
+                        moved = self.left_after_return(w, f).await;
+                        if moved.is_some() {
+                            return Err(String::new());
+                        }
+                    }
                 }
-                let line = line.trim_end_matches('\r');
                 if self.os == Os::Linux {
                     if line.is_empty()
                         || (to.is_none() && xtest(self.typer, line, turn.clone()).await?)
@@ -1170,6 +1189,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .await;
             sent.map_err(|e| match (i, returned) {
                 (0, _) => e,
+                (_, true) if let Some(why) = moved => format!(
+                    "{i} of {lines} lines and the Return after line {i} were typed, then {why}, so the rest were not sent"
+                ),
                 (_, true) => format!(
                     "{i} of {lines} lines and the Return after line {i} were typed, then this stopped the rest: {e}"
                 ),
@@ -1994,6 +2016,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             });
         }
         Ok(())
+    }
+
+    async fn left_after_return(&self, w: (i64, i64), front: &str) -> Option<&'static str> {
+        tokio::time::sleep(RETURN_SETTLE).await;
+        if self.os != Os::Mac {
+            return (!self.fronted(w).await).then_some("the window left the front");
+        }
+        match self.front_frame(w).await {
+            None => Some("the window left the front"),
+            Some(now) if now != front => Some("the frame in front of the window changed"),
+            _ => None,
+        }
     }
 
     async fn fronted(&self, w: (i64, i64)) -> bool {
@@ -3298,6 +3332,149 @@ pub(crate) mod tests {
         assert_eq!(
             err,
             "1 of 3 presses were sent, then the frame in front of the window changed, so the rest were not sent"
+        );
+        assert_eq!(sent(&calls, "press_key").len(), 1);
+    }
+
+    struct Returns(Behind, &'static std::sync::atomic::AtomicUsize);
+
+    impl Input for Returns {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            if tool == "press_key" {
+                self.1.fetch_add(1, Ordering::SeqCst);
+            }
+            self.0.call(tool, args).await
+        }
+    }
+
+    fn notepad_window(active: bool) -> Frame {
+        Frame {
+            number: Some(1),
+            ..frame("w", "Untitled - Notepad", 4, active, Some("Notepad"))
+        }
+    }
+
+    async fn typed_lines(
+        os: Os,
+        stub: fn() -> Result<Stub, String>,
+        returns: &'static std::sync::atomic::AtomicUsize,
+        text: &str,
+    ) -> (Result<Output, String>, Arc<Mutex<Vec<(String, Value)>>>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(stub, Returns(Behind(Arc::clone(&calls)), returns), os);
+        let args = if os == Os::Mac {
+            json!({"text": text, "window": "Untitled - Notepad"})
+        } else {
+            json!({"text": text, "pid": 4})
+        };
+        (desk.run("desk_type", args).await, calls)
+    }
+
+    #[tokio::test]
+    async fn a_macos_multi_line_type_stops_when_a_return_opens_a_sheet_on_its_window() {
+        static RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let opens = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                sheet_opened: Some(|| RETURNS.load(Ordering::SeqCst) > 0),
+                ..Stub::default()
+            })
+        };
+        let (got, calls) = typed_lines(Os::Mac, opens, &RETURNS, "a\nb").await;
+        assert_eq!(
+            got.unwrap_err(),
+            "1 of 2 lines and the Return after line 1 were typed, then the frame in front of the window changed, so the rest were not sent"
+        );
+        assert_eq!(sent(&calls, "type_text").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_macos_multi_line_type_into_a_sheet_stops_when_a_return_opens_another_sheet() {
+        static RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let stacked = || {
+            Ok(Stub {
+                frames: vec![
+                    notepad_window(false),
+                    Frame {
+                        role: "dialog",
+                        owner: Some("w".into()),
+                        ..frame("s1", "save", 4, true, Some("Notepad"))
+                    },
+                ],
+                sheet_opened: Some(|| RETURNS.load(Ordering::SeqCst) > 0),
+                ..Stub::default()
+            })
+        };
+        let (got, calls) = typed_lines(Os::Mac, stacked, &RETURNS, "name\nmore").await;
+        assert_eq!(
+            got.unwrap_err(),
+            "1 of 2 lines and the Return after line 1 were typed, then the frame in front of the window changed, so the rest were not sent"
+        );
+        assert_eq!(sent(&calls, "type_text").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_macos_multi_line_type_whose_window_is_not_seen_in_front_at_first_types_every_line() {
+        static RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let unnumbered = || {
+            Ok(Stub {
+                frames: vec![frame("w", "Untitled - Notepad", 4, true, Some("Notepad"))],
+                sheet_opened: Some(|| RETURNS.load(Ordering::SeqCst) > 0),
+                ..Stub::default()
+            })
+        };
+        let (got, calls) = typed_lines(Os::Mac, unnumbered, &RETURNS, "a\nb").await;
+        got.unwrap();
+        assert_eq!(sent(&calls, "type_text").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_type_whose_last_return_closes_its_window_is_not_checked_after_that_return() {
+        static RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let closes = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                unread: Some(|| RETURNS.load(Ordering::SeqCst) > 1),
+                ..Stub::default()
+            })
+        };
+        let (got, calls) = typed_lines(Os::Mac, closes, &RETURNS, "a\nreport\n").await;
+        got.unwrap();
+        assert_eq!(sent(&calls, "press_key").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_type_checks_its_window_after_a_return_that_a_blank_line_follows() {
+        static RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let leaves = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                unread: Some(|| RETURNS.load(Ordering::SeqCst) > 0),
+                ..Stub::default()
+            })
+        };
+        let (got, calls) = typed_lines(Os::Mac, leaves, &RETURNS, "a\n\nb").await;
+        assert_eq!(
+            got.unwrap_err(),
+            "1 of 3 lines and the Return after line 1 were typed, then the window left the front, so the rest were not sent"
+        );
+        assert_eq!(sent(&calls, "press_key").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_windows_multi_line_type_stops_when_another_app_takes_the_front_after_a_return() {
+        static RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let taken = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                unread: Some(|| RETURNS.load(Ordering::SeqCst) > 0),
+                ..Stub::default()
+            })
+        };
+        let (got, calls) = typed_lines(Os::Windows, taken, &RETURNS, "a\nb\nc").await;
+        assert_eq!(
+            got.unwrap_err(),
+            "1 of 3 lines and the Return after line 1 were typed, then the window left the front, so the rest were not sent"
         );
         assert_eq!(sent(&calls, "press_key").len(), 1);
     }
