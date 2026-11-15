@@ -139,14 +139,13 @@ impl Access for Spi {
         x: i32,
         y: i32,
     ) -> Result<Option<(String, Option<u32>)>, String> {
-        let Some(top) = self.shm(|g| g.client_at(x, y)).flatten() else {
-            return Ok(None);
-        };
-        if top.1 != frame.pid {
-            return Ok(Some(top));
-        }
-        let titles = self.shm(|g| g.titles(top.1)).unwrap_or_default();
-        Ok((!is_frame(frame, &top, &titles)).then_some(top))
+        let bounds = frame.bounds.or_else(|| {
+            let obj = Obj::parse(&frame.id).ok()?;
+            self.rt.block_on(self.atspi.extents(&obj)).ok()
+        });
+        Ok(self
+            .shm(|g| g.cover_at((x, y), bounds, frame.pid, &frame.title))
+            .flatten())
     }
 
     fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
@@ -294,13 +293,6 @@ fn twin_in<'a>(rects: &[(&'a str, [i32; 4])], frame: [i32; 4]) -> Option<&'a str
 /// Whether process `pid` owns none of the frames whose processes are `pids`.
 fn unlisted(mut pids: impl Iterator<Item = Option<u32>>, pid: u32) -> bool {
     pid != 0 && pids.all(|p| p != Some(pid))
-}
-
-/// Whether the X window `(title, pid)` is `frame`'s own: its process's only X window, or the one with that title among `titles`.
-fn is_frame(frame: &Frame, (title, pid): &(String, Option<u32>), titles: &[String]) -> bool {
-    *pid == frame.pid
-        && (titles.len() == 1
-            || (*title == frame.title && titles.iter().filter(|t| *t == title).count() == 1))
 }
 
 fn node(n: atspi::Node) -> Node {
@@ -542,48 +534,6 @@ mod tests {
         ];
         settle_active(&mut frames, Some(7), "", None);
         assert_eq!(actives(&frames), ["a.txt - Mousepad"]);
-    }
-
-    #[test]
-    fn only_another_x_window_covers_a_frame() {
-        let mousepad = window("a.txt - Mousepad", 7, true);
-        let titles = |t: &[&str]| t.iter().map(|&x| x.to_owned()).collect::<Vec<_>>();
-        let own = ("a.txt - Mousepad".to_owned(), Some(7));
-        assert!(is_frame(
-            &mousepad,
-            &own,
-            &titles(&["a.txt - Mousepad", "Save As"])
-        ));
-        for (other, of_pid) in [
-            (
-                ("tmp - Thunar".to_owned(), Some(9)),
-                titles(&["tmp - Thunar"]),
-            ),
-            (
-                ("Save As".to_owned(), Some(7)),
-                titles(&["a.txt - Mousepad", "Save As"]),
-            ),
-            (
-                ("a.txt - Mousepad".to_owned(), Some(8)),
-                titles(&["a.txt - Mousepad"]),
-            ),
-        ] {
-            assert!(!is_frame(&mousepad, &other, &of_pid), "{other:?}");
-        }
-    }
-
-    #[test]
-    fn a_process_s_only_x_window_is_its_frame_by_any_title_and_title_twins_are_not() {
-        let mousepad = window("a.txt - Mousepad", 7, true);
-        let renamed = ("*a.txt - Mousepad".to_owned(), Some(7));
-        assert!(is_frame(
-            &mousepad,
-            &renamed,
-            &["*a.txt - Mousepad".to_owned()]
-        ));
-        let twin = ("a.txt - Mousepad".to_owned(), Some(7));
-        let twins = ["a.txt - Mousepad".to_owned(), "a.txt - Mousepad".to_owned()];
-        assert!(!is_frame(&mousepad, &twin, &twins));
     }
 
     #[test]

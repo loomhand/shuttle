@@ -190,8 +190,10 @@ fn covered<B: Access>(b: &mut B, id: &str, window: &str, x: i32, y: i32) -> Opti
         bounds: node.bounds,
         ..Frame::default()
     };
-    let (title, over) = b.covering(&frame, x, y).ok().flatten()?;
-    (over != pid && (title.is_empty() || title != frame.title)).then_some(title)
+    b.covering(&frame, x, y)
+        .ok()
+        .flatten()
+        .map(|(title, _)| title)
 }
 
 #[cfg(test)]
@@ -258,14 +260,14 @@ mod tests {
     }
 
     #[test]
-    fn a_linux_element_its_own_process_or_title_covers_takes_a_click() {
+    fn a_linux_element_any_window_the_backend_finds_over_it_takes_no_click() {
         let mut f = notepad();
         for cover in [("Find - Notepad", Some(4)), ("w", Some(9)), ("w", None)] {
             f.covers = Some((cover.0.into(), cover.1));
-            assert_eq!(
-                hit_centre(&mut f, "ok", Os::Linux).unwrap(),
-                Some((140, 110)),
-                "{cover:?}"
+            let err = hit_centre(&mut f, "ok", Os::Linux).unwrap_err();
+            assert!(
+                err.starts_with(&format!("the window {:?} covers", cover.0)),
+                "{err}"
             );
         }
         f.covers = None;

@@ -1,18 +1,20 @@
 //! Desktop capture over MIT-SHM: the root window of the display read into one shared segment.
 
+use std::collections::{HashMap, HashSet};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use desk_core::window::{TITLE_TIERS, title_matches};
 use x11rb::connection::Connection;
-use x11rb::errors::ReplyError;
+use x11rb::errors::{ConnectionError, ReplyError};
 use x11rb::protocol::shape::{ConnectionExt as _, SK};
 use x11rb::protocol::shm::ConnectionExt as _;
 use x11rb::protocol::xinput::{ConnectionExt as _, DeviceType};
 use x11rb::protocol::xproto::{
     Atom, AtomEnum, ChangeWindowAttributesAux, ConnectionExt as _, EventMask, GetGeometryReply,
-    GetWindowAttributesReply, GrabMode, GrabStatus, ImageFormat, ImageOrder, MapState, Window,
-    WindowClass,
+    GetWindowAttributesReply, GrabMode, GrabStatus, ImageFormat, ImageOrder, MapState, Rectangle,
+    Window, WindowClass,
 };
 use x11rb::protocol::{ErrorKind, Event};
 use x11rb::rust_connection::RustConnection;
@@ -25,6 +27,7 @@ pub use crate::screen::{Placement, block_hashes, clip, visible};
 const OVERLAY_NAME: &[u8] = b"Cua.AgentCursorOverlay";
 const ALL_MASTERS: u16 = 1;
 const TITLE_CHUNKS: u32 = 16;
+const FRAME_MARGIN: i32 = 64;
 
 /// One X connection and one shared segment the size of the root window.
 pub struct Grabber {
@@ -50,6 +53,7 @@ pub struct Grabber {
     state_hidden: Atom,
     net_wm_type: Atom,
     type_dialog: Atom,
+    gtk_extents: Atom,
     shell: Mutex<Shell>,
     resized: AtomicBool,
 }
@@ -106,6 +110,7 @@ impl Grabber {
             net_workarea,
             type_dock,
             type_desktop,
+            gtk_extents,
         ] = [
             &b"_NET_WM_NAME"[..],
             b"UTF8_STRING",
@@ -122,6 +127,7 @@ impl Grabber {
             b"_NET_WORKAREA",
             b"_NET_WM_WINDOW_TYPE_DOCK",
             b"_NET_WM_WINDOW_TYPE_DESKTOP",
+            b"_GTK_FRAME_EXTENTS",
         ]
         .map(|name| {
             conn.intern_atom(false, name)
@@ -169,6 +175,7 @@ impl Grabber {
             state_hidden,
             net_wm_type,
             type_dialog,
+            gtk_extents,
             shell: Mutex::new(Shell::default()),
             resized: AtomicBool::new(false),
         };
@@ -526,29 +533,119 @@ impl Grabber {
         reply.value32()?.next()
     }
 
-    /// The title and process of the topmost managed window at the screen point `(x, y)`, past the desktop shell's windows.
-    pub fn client_at(&self, x: i32, y: i32) -> Result<Option<(String, Option<u32>)>, String> {
-        let shell = self.shell();
-        for w in self.clients()?.into_iter().rev() {
-            if shell.windows.contains(&w) {
-                continue;
-            }
-            if self.on_root(w).is_some_and(|[left, top, width, height]| {
-                (left..left + width).contains(&x) && (top..top + height).contains(&y)
-            }) {
-                return Ok(Some((self.title(w).unwrap_or_default(), self.pid(w))));
-            }
-        }
-        Ok(None)
+    /// The title and process of the window manager frame on top at the screen point `at` when it is not the frame of the window with accessibility `bounds`, process `pid` and name `title`; past the desktop shell's windows and the frames' shadows.
+    pub fn cover_at(
+        &self,
+        at: (i32, i32),
+        bounds: Option<[i32; 4]>,
+        pid: Option<u32>,
+        title: &str,
+    ) -> Result<Option<(String, Option<u32>)>, String> {
+        let shell = self.shell().windows.clone();
+        let tree = self
+            .conn
+            .query_tree(self.root)
+            .map_err(|e| format!("query tree: {e}"))?;
+        let stacking = self
+            .conn
+            .get_property(
+                false,
+                self.root,
+                self.net_stacking,
+                AtomEnum::WINDOW,
+                0,
+                1024,
+            )
+            .map_err(|e| format!("get _NET_CLIENT_LIST_STACKING: {e}"))?;
+        let children = tree
+            .reply()
+            .map_err(|e| format!("query tree: {e}"))?
+            .children;
+        let clients: Vec<Window> = stacking
+            .reply()
+            .map_err(|e| format!("get _NET_CLIENT_LIST_STACKING: {e}"))?
+            .value32()
+            .map(Iterator::collect)
+            .unwrap_or_default();
+        let reads = clients
+            .iter()
+            .map(|&c| {
+                let up = self.conn.query_tree(c)?;
+                let owner =
+                    self.conn
+                        .get_property(false, c, self.net_wm_pid, AtomEnum::CARDINAL, 0, 1)?;
+                let extents =
+                    self.conn
+                        .get_property(false, c, self.gtk_extents, AtomEnum::CARDINAL, 0, 4)?;
+                Ok((c, up, owner, extents))
+            })
+            .collect::<Result<Vec<_>, ConnectionError>>()
+            .map_err(|e| format!("read clients: {e}"))?;
+        let looks = children
+            .iter()
+            .map(|&w| {
+                Ok((
+                    w,
+                    self.conn.get_window_attributes(w)?,
+                    self.conn.get_geometry(w)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, ConnectionError>>()
+            .map_err(|e| format!("read frames: {e}"))?;
+        let clients = reads
+            .into_iter()
+            .map(|(c, up, owner, extents)| {
+                let up = up.reply().map_or(x11rb::NONE, |t| t.parent);
+                let owner = owner.reply().ok().and_then(|r| r.value32()?.next());
+                let extents = extents
+                    .reply()
+                    .ok()
+                    .and_then(|r| <[u32; 4]>::try_from(r.value32()?.collect::<Vec<_>>()).ok())
+                    .unwrap_or_default();
+                (c, up, owner, extents)
+            })
+            .collect();
+        let looks = looks
+            .into_iter()
+            .map(|(w, attrs, geometry)| (w, attrs.reply().ok().zip(geometry.reply().ok())))
+            .collect();
+        let parents = |ws: &[Window]| {
+            let asked: Vec<_> = ws.iter().map(|&w| self.conn.query_tree(w).ok()).collect();
+            asked
+                .into_iter()
+                .map(|c| {
+                    c.and_then(|c| c.reply().ok())
+                        .map_or(x11rb::NONE, |t| t.parent)
+                })
+                .collect()
+        };
+        let frames = stack(self.root, looks, clients, &shell, parents);
+        let name = |w| self.title(w).unwrap_or_default();
+        let inputs = self.inputs(&banded(&frames, at), at);
+        let takes = |f: &Framed, _| inputs.get(&f.id).copied().unwrap_or(true);
+        Ok(over(&frames, at, bounds, pid, title, name, takes).map(|f| (name(f.client), f.pid)))
     }
 
-    pub fn titles(&self, pid: Option<u32>) -> Result<Vec<String>, String> {
-        Ok(self
-            .clients()?
+    fn inputs(&self, frames: &[Window], (x, y): (i32, i32)) -> HashMap<Window, bool> {
+        let asked: Vec<_> = frames
+            .iter()
+            .map(|&w| {
+                let shape = self.conn.shape_get_rectangles(w, SK::INPUT).ok();
+                let origin = self.conn.translate_coordinates(w, self.root, 0, 0).ok();
+                (w, shape, origin)
+            })
+            .collect();
+        asked
             .into_iter()
-            .filter(|&w| self.pid(w) == pid)
-            .map(|w| self.title(w).unwrap_or_default())
-            .collect())
+            .map(|(w, shape, origin)| {
+                let shape = shape.and_then(|r| r.reply().ok());
+                let origin = origin.and_then(|r| r.reply().ok());
+                let rects = shape
+                    .zip(origin)
+                    .map(|(s, o)| rooted((o.dst_x, o.dst_y), &s.rectangles));
+                (w, in_shape(rects.as_deref(), x, y))
+            })
+            .collect()
     }
 
     /// The mapped children of the root with their geometry, past a cua-driver cursor overlay; the desktop shell's only with `shell`.
@@ -876,6 +973,15 @@ enum Cover {
     Under(Window),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Framed {
+    id: Window,
+    client: Window,
+    rect: [i32; 4],
+    input: [i32; 4],
+    pid: Option<u32>,
+}
+
 /// Which 16-pixel squares of a `width` by `height` screen, row-major, a dock rectangle of `docks` (`[x, y, w, h]`) overlaps.
 fn dock_mask(docks: &[[i32; 4]], (width, height): (usize, usize)) -> Vec<bool> {
     let columns = width.div_ceil(BLOCK);
@@ -915,6 +1021,164 @@ fn cover(
         .find(|p| p.drawn && !p.popup && p.contains(cx, cy))
         .filter(|p| p.id != frame && !opened(p.id))
         .map(|p| Cover::Under(p.id))
+}
+
+fn framed(
+    id: Window,
+    attrs: &GetWindowAttributesReply,
+    g: &GetGeometryReply,
+    client: Option<(Window, Option<u32>, [u32; 4])>,
+) -> Option<Framed> {
+    let (client, pid, [left, right, top, bottom]) = client?;
+    if attrs.map_state != MapState::VIEWABLE || attrs.override_redirect {
+        return None;
+    }
+    let rect = [g.x.into(), g.y.into(), g.width.into(), g.height.into()];
+    let [left, right, top, bottom] =
+        [left, right, top, bottom].map(|v| i32::try_from(v).unwrap_or(0));
+    let input = [
+        rect[0] + left,
+        rect[1] + top,
+        rect[2] - left - right,
+        rect[3] - top - bottom,
+    ];
+    Some(Framed {
+        id,
+        client,
+        rect,
+        input,
+        pid,
+    })
+}
+
+fn stack(
+    root: Window,
+    children: Vec<(Window, Option<(GetWindowAttributesReply, GetGeometryReply)>)>,
+    mut pending: Vec<(Window, Window, Option<u32>, [u32; 4])>,
+    shell: &[Window],
+    parents: impl Fn(&[Window]) -> Vec<Window>,
+) -> Vec<Framed> {
+    let tops: HashSet<Window> = children.iter().map(|(w, _)| *w).collect();
+    let mut managed = HashMap::new();
+    loop {
+        let mut deeper = Vec::new();
+        for (c, up, pid, extents) in pending {
+            if up == root {
+                managed.insert(c, (c, pid, extents));
+            } else if tops.contains(&up) {
+                managed.insert(up, (c, pid, extents));
+            } else if up != x11rb::NONE {
+                deeper.push((c, up, pid, extents));
+            }
+        }
+        if deeper.is_empty() {
+            break;
+        }
+        let ups = parents(&deeper.iter().map(|d| d.1).collect::<Vec<_>>());
+        pending = deeper
+            .into_iter()
+            .zip(ups)
+            .map(|((c, _, pid, extents), up)| (c, up, pid, extents))
+            .collect();
+    }
+    children
+        .into_iter()
+        .rev()
+        .filter(|(w, _)| !shell.contains(w))
+        .filter_map(|(w, read)| {
+            let (attrs, g) = read?;
+            framed(w, &attrs, &g, managed.get(&w).copied())
+        })
+        .collect()
+}
+
+fn over(
+    frames: &[Framed],
+    (x, y): (i32, i32),
+    bounds: Option<[i32; 4]>,
+    pid: Option<u32>,
+    title: &str,
+    name: impl Fn(Window) -> String,
+    takes: impl Fn(&Framed, (i32, i32)) -> bool,
+) -> Option<Framed> {
+    let hit = *frames
+        .iter()
+        .find(|f| holds(f.rect, x, y) && (holds(f.input, x, y) || takes(f, (x, y))))?;
+    let mut own: Vec<&Framed> = frames
+        .iter()
+        .filter(|f| bounds.is_some_and(|b| around(f.rect, b)))
+        .collect();
+    if own.is_empty() {
+        let t = name(hit.client);
+        return (hit.pid != pid && (t.is_empty() || t != title)).then_some(hit);
+    }
+    let of_pid: Vec<&Framed> = own
+        .iter()
+        .copied()
+        .filter(|f| pid.is_some() && f.pid == pid)
+        .collect();
+    if own.len() > 1 && !of_pid.is_empty() {
+        own = of_pid;
+    }
+    if own.len() > 1 {
+        let named: Vec<(&Framed, String)> = own.iter().map(|f| (*f, name(f.client))).collect();
+        if let Some(found) = (0..TITLE_TIERS)
+            .map(|tier| {
+                named
+                    .iter()
+                    .filter(|(_, t)| title_matches(tier, t, title))
+                    .map(|(f, _)| *f)
+                    .collect::<Vec<_>>()
+            })
+            .find(|m| !m.is_empty())
+        {
+            own = found;
+        }
+    }
+    match own[..] {
+        [one] if one.id == hit.id => None,
+        _ => Some(hit),
+    }
+}
+
+fn banded(frames: &[Framed], (x, y): (i32, i32)) -> Vec<Window> {
+    frames
+        .iter()
+        .filter(|f| holds(f.rect, x, y) && !holds(f.input, x, y))
+        .map(|f| f.id)
+        .collect()
+}
+
+fn rooted((ox, oy): (i16, i16), rects: &[Rectangle]) -> Vec<[i32; 4]> {
+    rects
+        .iter()
+        .map(|r| {
+            [
+                i32::from(ox) + i32::from(r.x),
+                i32::from(oy) + i32::from(r.y),
+                r.width.into(),
+                r.height.into(),
+            ]
+        })
+        .collect()
+}
+
+fn in_shape(rects: Option<&[[i32; 4]]>, x: i32, y: i32) -> bool {
+    rects.is_none_or(|rects| rects.is_empty() || rects.iter().any(|&r| holds(r, x, y)))
+}
+
+fn holds([left, top, w, h]: [i32; 4], x: i32, y: i32) -> bool {
+    (left..left + w).contains(&x) && (top..top + h).contains(&y)
+}
+
+fn around(frame: [i32; 4], bounds: [i32; 4]) -> bool {
+    let spare = [
+        bounds[0] - frame[0],
+        bounds[1] - frame[1],
+        frame[0] + frame[2] - bounds[0] - bounds[2],
+        frame[1] + frame[3] - bounds[1] - bounds[3],
+    ];
+    spare.iter().all(|s| (0..=FRAME_MARGIN).contains(s))
 }
 
 fn placement(
@@ -1216,6 +1480,601 @@ mod tests {
             ..attrs(true)
         };
         assert!(placement(8, &hidden, &screen, b"").is_none());
+    }
+
+    #[test]
+    fn a_frame_over_the_element_covers_it_whatever_its_process() {
+        let mousepad = frame(10, [100, 100, 600, 400], Some(7));
+        let element = Some([100, 128, 600, 372]);
+        let names = |w| match w {
+            10 => "a.txt - Mousepad".to_owned(),
+            11 => "tmp - Thunar".to_owned(),
+            _ => "Find".to_owned(),
+        };
+        let at = (300, 300);
+        for cover in [
+            frame(11, [250, 250, 300, 200], Some(9)),
+            frame(12, [250, 250, 300, 200], Some(7)),
+        ] {
+            let got = over(
+                &[cover, mousepad],
+                at,
+                element,
+                Some(7),
+                "a.txt - Mousepad",
+                names,
+            );
+            assert_eq!(got.map(|f| f.id), Some(cover.id));
+        }
+        assert_eq!(
+            over(
+                &[mousepad, frame(11, [250, 250, 300, 200], Some(9))],
+                at,
+                element,
+                Some(7),
+                "a.txt - Mousepad",
+                names
+            ),
+            None
+        );
+        assert_eq!(
+            over(
+                &[mousepad],
+                (900, 900),
+                element,
+                Some(7),
+                "a.txt - Mousepad",
+                names
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn the_title_bar_of_a_cascaded_window_covers_the_element_under_it() {
+        let a = frame(10, [100, 100, 600, 400], Some(7));
+        let b = frame(11, [130, 130, 600, 400], Some(7));
+        let element = Some([100, 128, 600, 372]);
+        let names = |w| {
+            if w == 10 {
+                "a".to_owned()
+            } else {
+                "b".to_owned()
+            }
+        };
+        let got = over(&[b, a], (300, 140), element, Some(7), "a", names);
+        assert_eq!(got.map(|f| f.id), Some(11));
+        let same = |_| "Untitled".to_owned();
+        let element = Some([130, 158, 600, 372]);
+        assert_eq!(
+            over(&[b, a], (300, 300), element, Some(7), "Untitled", same),
+            None
+        );
+    }
+
+    #[test]
+    fn a_lone_decorated_or_client_side_window_is_its_own_frame() {
+        let names = |_| "w".to_owned();
+        let decorated = frame(10, [100, 100, 600, 400], Some(7));
+        for bounds in [[100, 100, 600, 400], [104, 128, 592, 368]] {
+            assert_eq!(
+                over(&[decorated], (300, 300), Some(bounds), Some(7), "w", names),
+                None
+            );
+        }
+        let csd = Framed {
+            input: [140, 136, 520, 330],
+            ..frame(10, [100, 100, 600, 400], Some(7))
+        };
+        assert_eq!(
+            over(
+                &[csd],
+                (300, 300),
+                Some([140, 136, 520, 330]),
+                Some(7),
+                "w",
+                names
+            ),
+            None
+        );
+        let far = Some([100, 100, 600, 300]);
+        assert_eq!(
+            over(&[decorated], (300, 300), far, Some(7), "w", names),
+            None
+        );
+    }
+
+    #[test]
+    fn a_point_in_a_client_side_shadow_is_covered_only_where_the_shadows_input_shape_reaches() {
+        let names = |w| {
+            if w == 10 {
+                "a".to_owned()
+            } else {
+                "b".to_owned()
+            }
+        };
+        let a = frame(10, [100, 100, 600, 400], Some(7));
+        let b = Framed {
+            input: [700, 140, 400, 300],
+            ..frame(11, [660, 100, 480, 380], Some(9))
+        };
+        let element = Some([100, 100, 600, 400]);
+        let asked = std::cell::Cell::new(0);
+        let shape = |reach: bool| {
+            let asked = &asked;
+            move |f: &Framed, at| {
+                assert_eq!((f.id, at), (11, (692, 200)));
+                asked.set(asked.get() + 1);
+                reach
+            }
+        };
+        let got = super::over(
+            &[b, a],
+            (692, 200),
+            element,
+            Some(7),
+            "a",
+            names,
+            shape(true),
+        );
+        assert_eq!(got.map(|f| f.id), Some(11));
+        let got = super::over(
+            &[b, a],
+            (692, 200),
+            element,
+            Some(7),
+            "a",
+            names,
+            shape(false),
+        );
+        assert_eq!(got, None);
+        assert_eq!(asked.get(), 2);
+        let got = super::over(
+            &[b, a],
+            (720, 200),
+            element,
+            Some(7),
+            "a",
+            names,
+            shape(false),
+        );
+        assert_eq!(got.map(|f| f.id), Some(11));
+        let c = frame(12, [680, 150, 200, 200], Some(8));
+        let elsewhere = Some([100, 100, 500, 400]);
+        let got = super::over(
+            &[b, c, frame(10, [100, 100, 500, 400], Some(7))],
+            (692, 200),
+            elsewhere,
+            Some(7),
+            "a",
+            names,
+            shape(false),
+        );
+        assert_eq!(got.map(|f| f.id), Some(12));
+        assert_eq!(asked.get(), 3);
+        let got = super::over(
+            &[b, a],
+            (400, 200),
+            element,
+            Some(7),
+            "a",
+            names,
+            shape(false),
+        );
+        assert_eq!(got, None);
+        assert_eq!(asked.get(), 3);
+    }
+
+    #[test]
+    fn a_shadow_input_shape_holds_the_point_by_its_root_rectangles_and_an_unread_one_holds_it() {
+        let band = [[660, 100, 480, 12], [660, 100, 12, 380]];
+        assert!(in_shape(Some(&band), 665, 300));
+        assert!(!in_shape(Some(&band), 680, 300));
+        assert!(in_shape(Some(&[]), 680, 300));
+        assert!(in_shape(None, 680, 300));
+        let client = [Rectangle {
+            x: 2,
+            y: 3,
+            width: 10,
+            height: 380,
+        }];
+        assert_eq!(rooted((664, 120), &client), [[666, 123, 10, 380]]);
+        assert!(in_shape(Some(&rooted((664, 120), &client)), 670, 200));
+        assert!(!in_shape(Some(&rooted((664, 120), &client)), 662, 200));
+    }
+
+    #[test]
+    fn only_frames_whose_shadow_band_holds_the_point_have_their_input_shape_read() {
+        let a = frame(10, [100, 100, 600, 400], Some(7));
+        let b = Framed {
+            client: 31,
+            input: [700, 140, 400, 300],
+            ..frame(11, [660, 100, 480, 380], Some(9))
+        };
+        let c = Framed {
+            client: 32,
+            input: [690, 130, 200, 200],
+            ..frame(12, [650, 90, 260, 260], Some(8))
+        };
+        assert_eq!(banded(&[c, b, a], (680, 200)), [12, 11]);
+        assert!(banded(&[c, b, a], (720, 200)).is_empty());
+        assert!(banded(&[c, b, a], (400, 200)).is_empty());
+    }
+
+    #[test]
+    fn maximized_frames_tie_and_the_elements_process_then_its_title_settle_which_is_its_own() {
+        let full = [0, 27, 1280, 773];
+        let element = Some(full);
+        let names = |w| match w {
+            10 => "a.txt - Mousepad".to_owned(),
+            11 => "Downloads - Thunar".to_owned(),
+            12 => "b.txt - Mousepad".to_owned(),
+            _ => "a.txt - Mousepad".to_owned(),
+        };
+        let mousepad = frame(10, full, Some(7));
+        let namesake = frame(14, full, Some(9));
+        let thunar = frame(11, full, Some(9));
+        let at = (640, 400);
+        assert_eq!(
+            over(
+                &[mousepad, thunar],
+                at,
+                element,
+                Some(7),
+                "a.txt - Mousepad",
+                names
+            ),
+            None
+        );
+        assert_eq!(
+            over(
+                &[thunar, mousepad],
+                at,
+                element,
+                Some(7),
+                "a.txt - Mousepad",
+                names
+            )
+            .map(|f| f.id),
+            Some(11)
+        );
+        let second = frame(12, full, Some(7));
+        assert_eq!(
+            over(
+                &[second, mousepad],
+                at,
+                element,
+                Some(7),
+                "a.txt - Mousepad",
+                names
+            )
+            .map(|f| f.id),
+            Some(12)
+        );
+        assert_eq!(
+            over(
+                &[mousepad, second],
+                at,
+                element,
+                Some(7),
+                "a.txt - Mousepad",
+                names
+            ),
+            None
+        );
+        assert_eq!(
+            over(
+                &[mousepad, namesake],
+                (640, 400),
+                element,
+                Some(7),
+                "a.txt - Mousepad",
+                names
+            ),
+            None
+        );
+        let twin = frame(13, full, Some(7));
+        for stack in [[twin, mousepad], [mousepad, twin]] {
+            let got = over(&stack, at, element, Some(7), "a.txt - Mousepad", names);
+            assert_eq!(got.map(|f| f.id), Some(stack[0].id));
+        }
+    }
+
+    #[test]
+    fn a_window_whose_process_the_x_server_does_not_name_is_its_own_frame_by_place_then_title() {
+        let full = [0, 27, 1280, 773];
+        let names = |w| {
+            if w == 10 {
+                "Notes".to_owned()
+            } else {
+                "tmp - Thunar".to_owned()
+            }
+        };
+        let flatpak = frame(10, [100, 100, 600, 400], None);
+        assert_eq!(
+            over(
+                &[flatpak],
+                (300, 300),
+                Some([100, 100, 600, 400]),
+                Some(7),
+                "Notes",
+                names
+            ),
+            None
+        );
+        let flatpak = frame(10, full, Some(31));
+        let thunar = frame(11, full, Some(9));
+        assert_eq!(
+            over(
+                &[flatpak, thunar],
+                (640, 400),
+                Some(full),
+                Some(7),
+                "notes",
+                names
+            ),
+            None
+        );
+        assert_eq!(
+            over(
+                &[thunar, flatpak],
+                (640, 400),
+                Some(full),
+                Some(7),
+                "Notes",
+                names
+            )
+            .map(|f| f.id),
+            Some(11)
+        );
+    }
+
+    #[test]
+    fn with_no_frame_around_the_element_only_another_process_with_another_title_covers_it() {
+        let names = |w| match w {
+            11 => "tmp - Thunar".to_owned(),
+            12 => String::new(),
+            _ => "a.txt - Mousepad".to_owned(),
+        };
+        let popup = Some([300, 300, 200, 100]);
+        let at = (320, 320);
+        let under = |id, pid| [frame(id, [250, 250, 600, 400], pid)];
+        assert_eq!(
+            over(&under(11, Some(9)), at, popup, Some(7), "", names).map(|f| f.id),
+            Some(11)
+        );
+        assert_eq!(
+            over(&under(12, Some(9)), at, popup, Some(7), "x", names).map(|f| f.id),
+            Some(12)
+        );
+        assert_eq!(
+            over(&under(11, Some(7)), at, popup, Some(7), "", names),
+            None
+        );
+        assert_eq!(
+            over(
+                &under(13, Some(9)),
+                at,
+                None,
+                Some(7),
+                "a.txt - Mousepad",
+                names
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn an_override_redirect_or_unmanaged_root_child_is_no_frame_and_a_shadow_leaves_the_input() {
+        let attrs = |popup| GetWindowAttributesReply {
+            map_state: MapState::VIEWABLE,
+            override_redirect: popup,
+            class: WindowClass::INPUT_OUTPUT,
+            ..Default::default()
+        };
+        let screen = GetGeometryReply {
+            width: 1280,
+            height: 800,
+            ..Default::default()
+        };
+        let client = Some((70, Some(7), [0, 0, 0, 0]));
+        assert_eq!(framed(7, &attrs(true), &screen, client), None);
+        assert_eq!(framed(8, &attrs(false), &screen, None), None);
+        let hidden = GetWindowAttributesReply {
+            map_state: MapState::UNMAPPED,
+            ..attrs(false)
+        };
+        assert_eq!(framed(9, &hidden, &screen, client), None);
+        let g = GetGeometryReply {
+            x: 100,
+            y: 100,
+            width: 600,
+            height: 400,
+            ..Default::default()
+        };
+        let csd = framed(10, &attrs(false), &g, Some((80, None, [40, 40, 36, 34]))).unwrap();
+        assert_eq!(
+            (csd.client, csd.rect, csd.input, csd.pid),
+            (80, [100, 100, 600, 400], [140, 136, 520, 330], None)
+        );
+    }
+
+    #[test]
+    fn a_tie_is_settled_by_the_title_of_the_client_a_nested_frame_holds() {
+        let full = [0, 27, 1280, 773];
+        let names = |w| match w {
+            30 => "a.txt - Mousepad".to_owned(),
+            31 => "b.txt - Mousepad".to_owned(),
+            _ => String::new(),
+        };
+        let own = Framed {
+            client: 30,
+            ..frame(20, full, Some(7))
+        };
+        let second = Framed {
+            client: 31,
+            ..frame(21, full, Some(7))
+        };
+        let at = (640, 400);
+        assert_eq!(
+            over(
+                &[own, second],
+                at,
+                Some(full),
+                Some(7),
+                "a.txt - Mousepad",
+                names
+            ),
+            None
+        );
+        let got = over(
+            &[second, own],
+            at,
+            Some(full),
+            Some(7),
+            "a.txt - Mousepad",
+            names,
+        );
+        assert_eq!(got.map(|f| (f.id, f.client)), Some((21, 31)));
+    }
+
+    #[test]
+    fn a_tie_whose_x_titles_carry_the_app_name_is_settled_by_the_one_title_holding_the_window_name()
+    {
+        let full = [0, 27, 1280, 773];
+        let kate = |w| match w {
+            30 => "doc — Kate".to_owned(),
+            _ => "notes — Kate".to_owned(),
+        };
+        let own = Framed {
+            client: 30,
+            ..frame(20, full, Some(7))
+        };
+        let second = Framed {
+            client: 31,
+            ..frame(21, full, Some(7))
+        };
+        let at = (640, 400);
+        assert_eq!(
+            over(&[own, second], at, Some(full), Some(7), "doc", kate),
+            None
+        );
+        let got = over(&[second, own], at, Some(full), Some(7), "doc", kate);
+        assert_eq!(got.map(|f| f.id), Some(21));
+        let both = |w| match w {
+            30 => "doc — Kate".to_owned(),
+            _ => "doc 2 — Kate".to_owned(),
+        };
+        let got = over(&[own, second], at, Some(full), Some(7), "doc", both);
+        assert_eq!(got.map(|f| f.id), Some(20));
+    }
+
+    #[test]
+    fn a_frame_with_64_pixels_to_spare_is_the_elements_own_and_one_with_65_is_not() {
+        let names = |_| "Notes".to_owned();
+        let sandboxed = [frame(10, [0, 0, 600, 400], Some(31))];
+        let at = (300, 200);
+        let snug = Some([64, 64, 472, 272]);
+        assert_eq!(over(&sandboxed, at, snug, Some(7), "doc", names), None);
+        for loose in [
+            [65, 64, 471, 272],
+            [64, 65, 472, 271],
+            [64, 64, 471, 272],
+            [64, 64, 472, 271],
+        ] {
+            let got = over(&sandboxed, at, Some(loose), Some(7), "doc", names);
+            assert_eq!(got.map(|f| f.id), Some(10), "{loose:?}");
+        }
+    }
+
+    #[test]
+    fn an_untitled_window_or_one_of_an_element_with_no_process_covers_by_the_fallback_and_ties() {
+        let names = |w| match w {
+            11 => String::new(),
+            12 => "doc".to_owned(),
+            _ => "other".to_owned(),
+        };
+        let popup = Some([300, 300, 200, 100]);
+        let under = |id, pid| [frame(id, [250, 250, 600, 400], pid)];
+        let got = over(&under(11, Some(9)), (320, 320), popup, Some(7), "", names);
+        assert_eq!(got.map(|f| f.id), Some(11));
+        let got = over(&under(13, Some(9)), (320, 320), popup, None, "doc", names);
+        assert_eq!(got.map(|f| f.id), Some(13));
+        let full = [0, 27, 1280, 773];
+        let stack = [frame(13, full, None), frame(12, full, Some(9))];
+        let got = over(&stack, (640, 400), Some(full), None, "doc", names);
+        assert_eq!(got.map(|f| f.id), Some(13));
+    }
+
+    #[test]
+    fn the_root_children_become_frames_top_down_past_the_shell_with_nested_clients_found_per_level()
+    {
+        let attrs = GetWindowAttributesReply {
+            map_state: MapState::VIEWABLE,
+            class: WindowClass::INPUT_OUTPUT,
+            ..Default::default()
+        };
+        let g = GetGeometryReply {
+            width: 400,
+            height: 300,
+            ..Default::default()
+        };
+        let read = Some((attrs, g));
+        let children = [70, 51, 72, 73, 74]
+            .map(|w| (w, read))
+            .into_iter()
+            .chain([(75, None)])
+            .collect();
+        let none = [0; 4];
+        let clients = vec![
+            (50, 60, Some(5), none),
+            (51, 1, Some(6), none),
+            (52, 72, Some(7), none),
+            (53, x11rb::NONE, Some(8), none),
+            (55, 73, Some(9), none),
+            (57, 75, Some(4), none),
+        ];
+        let asked = std::cell::RefCell::new(Vec::new());
+        let parents = |ws: &[Window]| {
+            asked.borrow_mut().push(ws.to_vec());
+            ws.iter()
+                .map(|w| match w {
+                    60 => 61,
+                    61 => 70,
+                    _ => x11rb::NONE,
+                })
+                .collect()
+        };
+        let frames = stack(1, children, clients, &[73], parents);
+        let got: Vec<_> = frames.iter().map(|f| (f.id, f.client, f.pid)).collect();
+        assert_eq!(
+            got,
+            [(72, 52, Some(7)), (51, 51, Some(6)), (70, 50, Some(5))]
+        );
+        assert_eq!(asked.into_inner(), [vec![60], vec![61]]);
+    }
+
+    fn over(
+        frames: &[Framed],
+        at: (i32, i32),
+        bounds: Option<[i32; 4]>,
+        pid: Option<u32>,
+        title: &str,
+        name: impl Fn(Window) -> String,
+    ) -> Option<Framed> {
+        super::over(frames, at, bounds, pid, title, name, |f, at| {
+            panic!("no shape read expected for {} at {at:?}", f.id)
+        })
+    }
+
+    fn frame(id: Window, rect: [i32; 4], pid: Option<u32>) -> Framed {
+        Framed {
+            id,
+            client: id,
+            rect,
+            input: rect,
+            pid,
+        }
     }
 
     fn property(value: &[u8], offset: u32) -> Option<(Vec<u8>, u32)> {
