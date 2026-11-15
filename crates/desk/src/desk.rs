@@ -29,7 +29,7 @@ use crate::driver::{
 use crate::keys::{Os, hid_plus, key_names, keystroke};
 use crate::lock;
 use crate::model::{Access, Act, Capture, Extras, Frame, Node};
-use crate::press::{Press, plan_press};
+use crate::press::{Press, hit_centre, plan_press};
 use crate::still::{Frame as StillFrame, Watch};
 use crate::worker::{Cancel, Worker};
 
@@ -98,6 +98,7 @@ const WINDOW_NEVER_READ: &str = "window_never_read";
 
 const COVERED: &str = "covers the point, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
 const LAUNCH_FLAGS: &str = "the app allowlist admits no launch argument that starts with - (or / on Windows), since a flag can make an allowed app start another program";
+const ACT_CLICK_MISSED: &str = "a hit test at the element's center finds no part of it, as when it is hidden or another element covers it, so nothing was clicked: press it with desk press";
 const COVERED_NO_CLICK: &str = "another app's window covers the point and this window takes no click of its own, so nothing was clicked: bring the window to the front, then click again";
 const COVER_UNCHECKED_NO_CLICK: &str = "the point could not be checked for another app's window and this window takes no click of its own, so nothing was clicked: bring the window to the front, then click again";
 const COVER_UNKNOWN: &str = "the point could not be checked for another app's window on top, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
@@ -902,15 +903,22 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "focus" => Act::Focus,
             "click" => {
                 let id = a.id.clone();
-                let n = self
+                let (os, bg) = (self.os, self.bg());
+                let (x, y) = self
                     .access
                     .run(CALL_LIMIT, turn.clone(), move |b| {
-                        b.node(&id, Extras::BOUNDS, 0)
+                        if !bg {
+                            return hit_centre(b, &id, os)?.ok_or(ACT_CLICK_MISSED.to_owned());
+                        }
+                        let [x, y, w, h] = b
+                            .node(&id, Extras::BOUNDS, 0)?
+                            .bounds
+                            .ok_or("the element has no screen position")?;
+                        Ok((x + w / 2, y + h / 2))
                     })
                     .await?;
-                let [x, y, w, h] = n.bounds.ok_or("the element has no screen position")?;
                 let note = self
-                    .click_element(a.id, json!({"x": x + w / 2, "y": y + h / 2}), turn)
+                    .click_element(a.id, json!({"x": x, "y": y}), turn)
                     .await?;
                 return Ok(ok_with(note));
             }
@@ -1018,11 +1026,19 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
         let raised = self.raised_window(a.window.as_deref(), a.pid).await?;
         self.raise(raised).await?;
+        let front = match raised {
+            Some(w) if self.os == Os::Mac => self.front_frame(w).await,
+            _ => None,
+        };
         let mut note = None;
         for left in (0..times).rev() {
             if left + 1 < times
                 && let Some(w) = raised
-                && !self.fronted(w).await
+                && if self.os == Os::Mac {
+                    front.is_none() || self.front_frame(w).await != front
+                } else {
+                    !self.fronted(w).await
+                }
             {
                 return Err(format!(
                     "{} of {times} presses were sent, then the window left the front, so the rest were not sent",
@@ -1858,12 +1874,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
         self.raise(Some(to)).await?;
         let end = Instant::now() + RAISE_WAIT;
-        while Instant::now() < end
-            && self
-                .top_at(point)
-                .await?
-                .is_some_and(|w| key(&w) == key(&cover))
+        while self
+            .top_at(point)
+            .await?
+            .is_some_and(|w| key(&w) == key(&cover))
         {
+            if Instant::now() >= end {
+                return Err(format!(
+                    "the window {:?} still covers the point after {:?} came to the front; nothing was sent",
+                    cover["title"].as_str().unwrap_or_default(),
+                    w["title"].as_str().unwrap_or_default()
+                ));
+            }
             tokio::time::sleep(WAIT_POLL).await;
         }
         Ok(())
@@ -1916,24 +1938,29 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(())
     }
 
-    /// Whether window `(pid, window_id)` is in front: on macOS by its window number or a focused sheet of it, elsewhere by an active window of its process.
-    async fn fronted(&self, (pid, window_id): (i64, i64)) -> bool {
-        let Ok(app) = u32::try_from(pid) else {
-            return false;
-        };
+    async fn fronted(&self, w: (i64, i64)) -> bool {
+        self.front_frame(w).await.is_some()
+    }
+
+    /// The active frame that puts window `(pid, window_id)` in front: on macOS the window by its number or a focused sheet of it, elsewhere an active window of its process.
+    async fn front_frame(&self, (pid, window_id): (i64, i64)) -> Option<String> {
+        let app = u32::try_from(pid).ok()?;
         let mac = self.os == Os::Mac;
-        self.access
+        let frames = self
+            .access
             .run(CALL_LIMIT, (), move |b| b.frames_of(app))
             .await
-            .is_ok_and(|frames| {
-                frames.iter().any(|f| {
-                    f.active
-                        && (!mac
-                            || sheet_window(&frames, f).is_some_and(|w| {
-                                !w.stale && w.number.map(i64::from) == Some(window_id)
-                            }))
-                })
+            .ok()?;
+        frames
+            .iter()
+            .find(|f| {
+                f.active
+                    && (!mac
+                        || sheet_window(&frames, f).is_some_and(|w| {
+                            !w.stale && w.number.map(i64::from) == Some(window_id)
+                        }))
             })
+            .map(|f| f.id.clone())
     }
 
     async fn background_window(
@@ -3123,6 +3150,74 @@ pub(crate) mod tests {
         assert_eq!(raises(|| Ok(sheets("w"))).await, 0);
         assert_eq!(raises(|| Ok(sheets("s"))).await, 0);
         assert_eq!(raises(|| Ok(sheets("x"))).await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_repeated_macos_key_goes_on_into_a_sheet_that_was_in_front_when_it_began() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let held = || {
+            Ok(Stub {
+                frames: vec![
+                    Frame {
+                        number: Some(1),
+                        ..frame("w", "Untitled - Notepad", 4, false, Some("Notepad"))
+                    },
+                    Frame {
+                        role: "dialog",
+                        owner: Some("w".into()),
+                        ..frame("s", "save", 4, true, Some("Notepad"))
+                    },
+                ],
+                ..Stub::default()
+            })
+        };
+        let desk = Desk::new(held, Behind(Arc::clone(&calls)), Os::Mac);
+        desk.run(
+            "desk_key",
+            json!({"keys": "tab", "window": "Untitled - Notepad", "repeat": 3}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sent(&calls, "press_key").len(), 3);
+        assert!(sent(&calls, "bring_to_front").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_repeated_macos_key_stops_when_a_sheet_opens_on_its_window() {
+        static PRESSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        struct Counted(Behind);
+        impl Input for Counted {
+            async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+                if tool == "press_key" {
+                    PRESSES.fetch_add(1, Ordering::SeqCst);
+                }
+                self.0.call(tool, args).await
+            }
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let opens = || {
+            Ok(Stub {
+                frames: vec![Frame {
+                    number: Some(1),
+                    ..frame("w", "Untitled - Notepad", 4, true, Some("Notepad"))
+                }],
+                sheet_opened: Some(|| PRESSES.load(Ordering::SeqCst) > 0),
+                ..Stub::default()
+            })
+        };
+        let desk = Desk::new(opens, Counted(Behind(Arc::clone(&calls))), Os::Mac);
+        let err = desk
+            .run(
+                "desk_key",
+                json!({"keys": "tab", "window": "Untitled - Notepad", "repeat": 3}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "1 of 3 presses were sent, then the window left the front, so the rest were not sent"
+        );
+        assert_eq!(sent(&calls, "press_key").len(), 1);
     }
 
     #[tokio::test]
@@ -5077,6 +5172,46 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn pointer_input_a_window_still_covers_after_the_raise_is_refused_with_nothing_sent() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(Apps),
+            Topmost(BehindCover(
+                Behind(Arc::clone(&calls)),
+                AtomicBool::new(false),
+                (4, "Untitled - Notepad"),
+            )),
+            Os::Windows,
+        );
+        let named = json!({"window": "Inbox", "pid": 8});
+        for (tool, mut args) in [
+            ("desk_click", json!({"x": 300.0, "y": 250.0})),
+            (
+                "desk_scroll",
+                json!({"direction": "down", "x": 300.0, "y": 250.0}),
+            ),
+            (
+                "desk_drag",
+                json!({"x": 200.0, "y": 100.0, "to_x": 400.0, "to_y": 150.0}),
+            ),
+        ] {
+            args.as_object_mut()
+                .unwrap()
+                .extend(named.as_object().unwrap().clone());
+            let err = desk.run(tool, args).await.unwrap_err();
+            assert!(
+                err.contains("\"Untitled - Notepad\" still covers the point")
+                    && err.contains("nothing was sent"),
+                "{tool}: {err}"
+            );
+        }
+        assert_eq!(sent(&calls, "bring_to_front").len(), 3);
+        for tool in ["click", "scroll", "drag"] {
+            assert!(sent(&calls, tool).is_empty(), "{tool}: {:?}", order(&calls));
+        }
+    }
+
+    #[tokio::test]
     async fn a_same_app_window_on_top_is_raised_past_unless_the_desk_does_not_list_it() {
         for (cover, raised) in [
             ((8, "Other - Mail"), true),
@@ -6139,6 +6274,33 @@ pub(crate) mod tests {
                 "{os:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_foreground_element_click_goes_only_where_a_hit_test_finds_the_element() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let fake = || {
+            let mut f = notepad();
+            f.hits.insert((340, 110), "elsewhere".into());
+            f.add("elsewhere", None, "button", &["showing"], None);
+            Ok(f)
+        };
+        let desk = Desk::new(fake, Behind(Arc::clone(&calls)), Os::Windows);
+        let err = desk
+            .run("desk_act", json!({"id": "hidden", "action": "click"}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("nothing was clicked"), "{err}");
+        assert!(sent(&calls, "click").is_empty(), "{:?}", order(&calls));
+        desk.run("desk_act", json!({"id": "ok", "action": "click"}))
+            .await
+            .unwrap();
+        let clicks = sent(&calls, "click");
+        assert_eq!(clicks.len(), 1, "{clicks:?}");
+        assert_eq!(
+            (&clicks[0]["x"], &clicks[0]["y"]),
+            (&json!(140), &json!(110))
+        );
     }
 
     #[tokio::test]
@@ -7314,6 +7476,7 @@ pub(crate) mod tests {
         budgets: Vec<Duration>,
         shells: Vec<u32>,
         unanswered: Option<Frame>,
+        sheet_opened: Option<fn() -> bool>,
     }
 
     impl Stub {
@@ -7356,11 +7519,21 @@ pub(crate) mod tests {
         }
 
         fn frames_of(&mut self, pid: u32) -> Result<Vec<Frame>, String> {
-            let frames = if self.scoped {
+            let mut frames = if self.scoped {
                 self.frames.clone()
             } else {
                 self.frames()?
             };
+            if self.sheet_opened.is_some_and(|opened| opened()) {
+                for f in &mut frames {
+                    f.active = false;
+                }
+                frames.push(Frame {
+                    role: "dialog",
+                    owner: Some("w".into()),
+                    ..frame("s", "save", 4, true, Some("Notepad"))
+                });
+            }
             Ok(frames.into_iter().filter(|f| f.pid == Some(pid)).collect())
         }
 
@@ -7631,6 +7804,18 @@ pub(crate) mod tests {
                 return Err("press_key: nothing was sent".to_owned());
             }
             Ok(out)
+        }
+    }
+
+    struct Topmost(BehindCover);
+
+    impl Input for Topmost {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let out = self.0.call(tool, args).await;
+            if tool == "bring_to_front" {
+                self.0.1.store(false, Ordering::SeqCst);
+            }
+            out
         }
     }
 
@@ -8476,6 +8661,12 @@ pub(crate) mod tests {
                     bounds: Some([680, 190, 40, 20]),
                     ..Node::default()
                 }),
+                "4/1" => Ok(Node {
+                    id: id.into(),
+                    role: "window",
+                    states: vec!["showing"],
+                    ..Node::default()
+                }),
                 _ => Err(format!("no node {id}")),
             }
         }
@@ -8487,12 +8678,20 @@ pub(crate) mod tests {
             }))
         }
 
-        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
-            Ok(Vec::new())
+        fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
+            Ok(if id == "4/5" {
+                vec!["4/1".into()]
+            } else {
+                Vec::new()
+            })
         }
 
         fn at(&mut self, _: &str, x: i32, y: i32) -> Result<Option<String>, String> {
-            Ok(((x, y) == (5, 5)).then(|| "8/3".into()))
+            Ok(match (x, y) {
+                (5, 5) => Some("8/3".into()),
+                (700, 200) => Some("4/5".into()),
+                _ => None,
+            })
         }
 
         fn menu_at(&mut self, x: i32, y: i32) -> Result<Option<String>, String> {
