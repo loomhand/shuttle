@@ -949,13 +949,27 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 .and_then(|n| u32::try_from(n).ok());
         }
         let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
+        let uia = under && self.os == Os::Windows;
         self.access
             .run(CALL_LIMIT, (), move |b| {
                 b.evict();
+                let mut frames = frames(b, a.pid, &allow)?;
+                let window = a.window.as_deref();
+                if uia
+                    && !frames.iter().any(|f| {
+                        f.pid == a.pid
+                            && window.is_some_and(|w| {
+                                (0..TITLE_TIERS).any(|t| title_matches(t, &f.title, w))
+                            })
+                    })
+                    && let Some(p) = b.owner_at(a.x, a.y).ok().flatten()
+                {
+                    (a.window, a.pid) = (None, Some(p));
+                    frames = self::frames(b, a.pid, &allow)?;
+                }
                 if under && !allow.is_open() {
                     check_process(b, &allow, a.pid)?;
                 }
-                let frames = frames(b, a.pid, &allow)?;
                 if let Some(f) = number.and_then(|n| frames.iter().find(|f| f.number == Some(n))) {
                     a.window = Some(f.title.clone());
                 }
@@ -6030,6 +6044,28 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(err.starts_with("2 windows match the title"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_windows_at_under_a_window_uia_does_not_list_reads_the_hit_tests_window() {
+        let cloaked = || {
+            let mut f = notepad();
+            f.hits.insert((600, 100), "ok".into());
+            f.top = Some(4);
+            Ok(f)
+        };
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(cloaked, Behind(Arc::clone(&calls)), Os::Windows);
+        let out = desk
+            .run("desk_at", json!({"x": 600, "y": 100}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(
+            (&v["found"]["id"], &v["pid"]),
+            (&json!("ok"), &json!(4)),
+            "{v}"
+        );
     }
 
     #[tokio::test]
