@@ -64,10 +64,7 @@ pub(crate) fn plan_press<B: Access>(
         || node.role.starts_with("menu")
         || !b.pid_of(id).ok().flatten().is_some_and(libreoffice)
         || in_dialog(b, &chain);
-    if pixel
-        && let Some((x, y)) = reachable(b, id, &node, &chain, linux, background)
-        && !(linux && !background && covered(b, id, &chain, x, y).is_some())
-    {
+    if pixel && let Ok((x, y)) = reachable(b, id, &node, &chain, linux, background) {
         return Ok(Press::Click(x, y));
     }
     if uia_behind {
@@ -86,16 +83,20 @@ pub(crate) fn hit_centre<B: Access>(
 ) -> Result<Option<(i32, i32)>, String> {
     let node = b.node(id, Extras::BOUNDS, 0)?;
     let chain = b.ancestors(id)?;
-    let linux = os == Os::Linux;
-    let Some((x, y)) = reachable(b, id, &node, &chain, linux, false) else {
-        return Ok(None);
-    };
-    if linux && let Some(title) = covered(b, id, &chain, x, y) {
-        return Err(format!(
-            "the window {title:?} covers the element's center, so nothing was clicked: bring the element's window to the front, or press it with desk press"
-        ));
+    match reachable(b, id, &node, &chain, os == Os::Linux, false) {
+        Ok(point) => Ok(Some(point)),
+        Err(None) => Ok(None),
+        Err(Some(title)) => {
+            let cover = if title.is_empty() {
+                "another window".to_owned()
+            } else {
+                format!("the window {title:?}")
+            };
+            Err(format!(
+                "{cover} covers the element's center, so nothing was clicked: bring the element's window to the front, or press it with desk press"
+            ))
+        }
     }
-    Ok(Some((x, y)))
 }
 
 /// Whether process `pid` is LibreOffice, whose control extents can sit above the control.
@@ -140,14 +141,14 @@ fn reachable<B: Access>(
     chain: &[String],
     linux: bool,
     background: bool,
-) -> Option<(i32, i32)> {
-    let [x, y, w, h] = node.bounds?;
+) -> Result<(i32, i32), Option<String>> {
+    let [x, y, w, h] = node.bounds.ok_or(None)?;
     if !node.has("showing") || w <= 0 || h <= 0 {
-        return None;
+        return Err(None);
     }
     let (cx, cy) = (x + w / 2, y + h / 2);
     if node.role.starts_with("menu") {
-        return Some((cx, cy));
+        return Ok((cx, cy));
     }
     let inside = chain.iter().all(|a| match b.node(a, Extras::BOUNDS, 0) {
         Ok(n) => {
@@ -159,31 +160,38 @@ fn reachable<B: Access>(
         Err(_) => linux,
     });
     if !inside {
-        return None;
+        return Err(None);
     }
-    let window = chain.first()?;
-    let hit = b.at(window, cx, cy).ok()??;
+    let window = chain.first().ok_or(None)?;
+    let hit = b.at(window, cx, cy).ok().flatten().ok_or(None)?;
     let reaches = hit == id || chain.contains(&hit) || {
-        let above = b.ancestors(&hit).ok()?;
+        let above = b.ancestors(&hit).map_err(|_| None)?;
         above.iter().any(|a| a == id) || (background && above.first().unwrap_or(&hit) != window)
     };
-    reaches.then_some((cx, cy))
+    if !reaches {
+        return Err(None);
+    }
+    if linux
+        && !background
+        && let Some(cover) = covered(b, id, window, cx, cy)
+    {
+        return Err(Some(cover));
+    }
+    Ok((cx, cy))
 }
 
-fn covered<B: Access>(b: &mut B, id: &str, chain: &[String], x: i32, y: i32) -> Option<String> {
-    let window = chain.first()?;
+fn covered<B: Access>(b: &mut B, id: &str, window: &str, x: i32, y: i32) -> Option<String> {
     let node = b.node(window, Extras::BOUNDS, 0).ok()?;
+    let pid = b.pid_of(id).ok().flatten();
     let frame = Frame {
-        id: window.clone(),
+        id: window.to_owned(),
         title: node.name,
-        pid: b.pid_of(id).ok().flatten(),
+        pid,
         bounds: node.bounds,
         ..Frame::default()
     };
-    b.covering(&frame, x, y)
-        .ok()
-        .flatten()
-        .map(|(title, _)| title)
+    let (title, over) = b.covering(&frame, x, y).ok().flatten()?;
+    (over != pid && (title.is_empty() || title != frame.title)).then_some(title)
 }
 
 #[cfg(test)]
@@ -204,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn a_linux_element_another_window_covers_takes_no_click() {
+    fn a_linux_element_a_window_of_another_process_covers_takes_no_click() {
         let mut f = notepad();
         f.covers = Some(("Calculator".into(), Some(9)));
         let err = hit_centre(&mut f, "ok", Os::Linux).unwrap_err();
@@ -215,16 +223,33 @@ mod tests {
             Press::Acted(true)
         );
         assert_eq!(f.acts, [("ok".to_owned(), Act::Action)]);
-        f.covers = Some(("Find - Notepad".into(), Some(4)));
-        assert!(hit_centre(&mut f, "ok", Os::Linux).is_err());
+        assert_eq!(
+            plan_press(&mut f, "file", Os::Linux, false).unwrap(),
+            Press::Click(20, 10)
+        );
+        f.covers = Some((String::new(), Some(9)));
+        let err = hit_centre(&mut f, "ok", Os::Linux).unwrap_err();
+        assert!(err.starts_with("another window covers"), "{err}");
+        assert_eq!(
+            hit_centre(&mut f, "ok", Os::Windows).unwrap(),
+            Some((140, 110))
+        );
+    }
+
+    #[test]
+    fn a_linux_element_its_own_process_or_title_covers_takes_a_click() {
+        let mut f = notepad();
+        for cover in [("Find - Notepad", Some(4)), ("w", Some(9)), ("w", None)] {
+            f.covers = Some((cover.0.into(), cover.1));
+            assert_eq!(
+                hit_centre(&mut f, "ok", Os::Linux).unwrap(),
+                Some((140, 110)),
+                "{cover:?}"
+            );
+        }
         f.covers = None;
         assert_eq!(
             hit_centre(&mut f, "ok", Os::Linux).unwrap(),
-            Some((140, 110))
-        );
-        f.covers = Some(("Calculator".into(), Some(9)));
-        assert_eq!(
-            hit_centre(&mut f, "ok", Os::Windows).unwrap(),
             Some((140, 110))
         );
     }
@@ -287,7 +312,7 @@ mod tests {
         for background in [false, true] {
             assert_eq!(
                 reachable(&mut f, "ok", &node, &chain, false, background),
-                Some((140, 110))
+                Ok((140, 110))
             );
         }
         assert_eq!(f.ancestry, 0);

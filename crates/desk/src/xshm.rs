@@ -26,8 +26,6 @@ const OVERLAY_NAME: &[u8] = b"Cua.AgentCursorOverlay";
 const ALL_MASTERS: u16 = 1;
 const TITLE_CHUNKS: u32 = 16;
 
-pub type Client = (String, Option<u32>, [i32; 4], [i32; 4]);
-
 /// One X connection and one shared segment the size of the root window.
 pub struct Grabber {
     conn: RustConnection,
@@ -528,23 +526,20 @@ impl Grabber {
         reply.value32()?.next()
     }
 
-    /// The managed windows whose client area holds the screen point `(x, y)`, topmost first, past the desktop shell's: each one's title, process, client rectangle and window-manager frame rectangle on the root.
-    pub fn clients_at(&self, x: i32, y: i32) -> Result<Vec<Client>, String> {
+    /// The title and process of the topmost managed window at the screen point `(x, y)`, past the desktop shell's windows.
+    pub fn client_at(&self, x: i32, y: i32) -> Result<Option<(String, Option<u32>)>, String> {
         let shell = self.shell();
-        let mut at = Vec::new();
         for w in self.clients()?.into_iter().rev() {
             if shell.windows.contains(&w) {
                 continue;
             }
-            if let Some(rect @ [left, top, width, height]) = self.on_root(w)
-                && (left..left + width).contains(&x)
-                && (top..top + height).contains(&y)
-            {
-                let frame = self.on_root(self.top_level(w)?).unwrap_or(rect);
-                at.push((self.title(w).unwrap_or_default(), self.pid(w), rect, frame));
+            if self.on_root(w).is_some_and(|[left, top, width, height]| {
+                (left..left + width).contains(&x) && (top..top + height).contains(&y)
+            }) {
+                return Ok(Some((self.title(w).unwrap_or_default(), self.pid(w))));
             }
         }
-        Ok(at)
+        Ok(None)
     }
 
     pub fn titles(&self, pid: Option<u32>) -> Result<Vec<String>, String> {
