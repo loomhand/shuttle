@@ -437,6 +437,14 @@ impl Android {
             if line.is_empty() {
                 continue;
             }
+            if i > 0 {
+                check().await.map_err(|e| {
+                    format!(
+                        "{e}; {i} of {} lines and the Return after line {i} were typed before it",
+                        text.split('\n').count()
+                    )
+                })?;
+            }
             let shown = type_with(
                 line,
                 at.filter(|_| i == 0),
@@ -1866,7 +1874,7 @@ mod tests {
         let err = desk(
             &fake,
             "desk_type",
-            serde_json::json!({"text": "\n\n", "window": "Settings"}),
+            serde_json::json!({"text": "\nsecret", "window": "Settings"}),
         )
         .await
         .unwrap_err();
@@ -1875,10 +1883,13 @@ mod tests {
             "{err}"
         );
         assert!(
-            err.ends_with("; 2 of 3 lines were typed before it"),
+            err.ends_with("; 1 of 2 lines and the Return after line 1 were typed before it"),
             "{err}"
         );
-        assert_eq!(log(&fake, "requests").matches("key ").count(), 1);
+        let requests = log(&fake, "requests");
+        assert_eq!(requests.matches("key ").count(), 1);
+        assert_eq!(requests.matches("focus").count(), 0, "{requests}");
+        assert_eq!(requests.matches("paste").count(), 0, "{requests}");
     }
 
     #[cfg(unix)]
