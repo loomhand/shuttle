@@ -1085,7 +1085,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let mut front = None;
         let mut moved = None;
         let mut blind = false;
-        let mut end = None;
+        let mut left = ANSWER_WAIT;
         for (i, line) in text.split('\n').enumerate() {
             let mut returned = false;
             let sent: Result<(), String> = async {
@@ -1104,11 +1104,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         (watched, &front, blind || (i + 1 == lines && ended))
                     {
                         tokio::time::sleep(RETURN_SETTLE).await;
-                        let end = *end.get_or_insert_with(|| Instant::now() + ANSWER_WAIT);
+                        let mut since = None;
                         moved = loop {
                             match self.moved_from(w, Some(f)).await {
                                 Some(why) => break why,
-                                None if Instant::now() < end => {
+                                None if since.get_or_insert_with(Instant::now).elapsed() < left => {
                                     tokio::time::sleep(WAIT_CHECK).await;
                                 }
                                 None => {
@@ -1117,6 +1117,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                                 }
                             }
                         };
+                        left = left.saturating_sub(since.map_or(Duration::ZERO, |t| t.elapsed()));
                         if moved.is_some() {
                             return Err(String::new());
                         }
@@ -3621,6 +3622,32 @@ pub(crate) mod tests {
             "{:?}",
             began.elapsed()
         );
+    }
+
+    #[tokio::test]
+    async fn a_multi_line_type_keeps_its_answer_wait_for_a_busy_return_after_prompt_ones() {
+        static RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static STALE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let late = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                unanswering: Some(|| {
+                    RETURNS.load(Ordering::SeqCst) == 25
+                        && STALE.fetch_add(1, Ordering::SeqCst) == 0
+                }),
+                sheet_opened: Some(|| RETURNS.load(Ordering::SeqCst) >= 25),
+                ..Stub::default()
+            })
+        };
+        let text = ["x"; 27].join("\n");
+        let began = std::time::Instant::now();
+        let (got, calls) = typed_lines(Os::Mac, late, &RETURNS, &text).await;
+        assert!(began.elapsed() > ANSWER_WAIT, "{:?}", began.elapsed());
+        assert_eq!(
+            got.unwrap_err(),
+            "25 of 27 lines and the Return after line 25 were typed, then the frame in front of the window changed, so the rest were not sent"
+        );
+        assert_eq!(sent(&calls, "type_text").len(), 25);
     }
 
     #[tokio::test]
