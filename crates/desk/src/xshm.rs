@@ -622,28 +622,28 @@ impl Grabber {
         let frames = stack(self.root, looks, clients, &shell, parents);
         let name = |w| self.title(w).unwrap_or_default();
         let inputs = self.inputs(&banded(&frames, at), at);
-        let takes = |f: &Framed, _| inputs.get(&f.client).copied().unwrap_or(true);
+        let takes = |f: &Framed, _| inputs.get(&f.id).copied().unwrap_or(true);
         Ok(over(&frames, at, bounds, pid, title, name, takes).map(|f| (name(f.client), f.pid)))
     }
 
-    fn inputs(&self, clients: &[Window], (x, y): (i32, i32)) -> HashMap<Window, bool> {
-        let asked: Vec<_> = clients
+    fn inputs(&self, frames: &[Window], (x, y): (i32, i32)) -> HashMap<Window, bool> {
+        let asked: Vec<_> = frames
             .iter()
-            .map(|&c| {
-                let shape = self.conn.shape_get_rectangles(c, SK::INPUT).ok();
-                let origin = self.conn.translate_coordinates(c, self.root, 0, 0).ok();
-                (c, shape, origin)
+            .map(|&w| {
+                let shape = self.conn.shape_get_rectangles(w, SK::INPUT).ok();
+                let origin = self.conn.translate_coordinates(w, self.root, 0, 0).ok();
+                (w, shape, origin)
             })
             .collect();
         asked
             .into_iter()
-            .map(|(c, shape, origin)| {
+            .map(|(w, shape, origin)| {
                 let shape = shape.and_then(|r| r.reply().ok());
                 let origin = origin.and_then(|r| r.reply().ok());
                 let rects = shape
                     .zip(origin)
                     .map(|(s, o)| rooted((o.dst_x, o.dst_y), &s.rectangles));
-                (c, in_shape(rects.as_deref(), x, y))
+                (w, in_shape(rects.as_deref(), x, y))
             })
             .collect()
     }
@@ -1145,7 +1145,7 @@ fn banded(frames: &[Framed], (x, y): (i32, i32)) -> Vec<Window> {
     frames
         .iter()
         .filter(|f| holds(f.rect, x, y) && !holds(f.input, x, y))
-        .map(|f| f.client)
+        .map(|f| f.id)
         .collect()
 }
 
@@ -1603,7 +1603,7 @@ mod tests {
         let shape = |reach: bool| {
             let asked = &asked;
             move |f: &Framed, at| {
-                assert_eq!((f.client, at), (11, (692, 200)));
+                assert_eq!((f.id, at), (11, (692, 200)));
                 asked.set(asked.get() + 1);
                 reach
             }
@@ -1639,6 +1639,19 @@ mod tests {
             shape(false),
         );
         assert_eq!(got.map(|f| f.id), Some(11));
+        let c = frame(12, [680, 150, 200, 200], Some(8));
+        let elsewhere = Some([100, 100, 500, 400]);
+        let got = super::over(
+            &[b, c, frame(10, [100, 100, 500, 400], Some(7))],
+            (692, 200),
+            elsewhere,
+            Some(7),
+            "a",
+            names,
+            shape(false),
+        );
+        assert_eq!(got.map(|f| f.id), Some(12));
+        assert_eq!(asked.get(), 3);
         let got = super::over(
             &[b, a],
             (400, 200),
@@ -1649,7 +1662,7 @@ mod tests {
             shape(false),
         );
         assert_eq!(got, None);
-        assert_eq!(asked.get(), 2);
+        assert_eq!(asked.get(), 3);
     }
 
     #[test]
@@ -1683,7 +1696,7 @@ mod tests {
             input: [690, 130, 200, 200],
             ..frame(12, [650, 90, 260, 260], Some(8))
         };
-        assert_eq!(banded(&[c, b, a], (680, 200)), [32, 31]);
+        assert_eq!(banded(&[c, b, a], (680, 200)), [12, 11]);
         assert!(banded(&[c, b, a], (720, 200)).is_empty());
         assert!(banded(&[c, b, a], (400, 200)).is_empty());
     }
