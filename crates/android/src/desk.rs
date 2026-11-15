@@ -506,16 +506,25 @@ async fn tree(
     title: Option<&str>,
     pid: Option<u32>,
 ) -> Result<(Frame, Vec<Node>), String> {
+    let frame = picked(android, id, title, pid).await?;
+    let nodes = dumped(android, &frame).await?;
+    Ok((frame, nodes))
+}
+
+async fn picked(
+    android: &Android,
+    id: Option<&str>,
+    title: Option<&str>,
+    pid: Option<u32>,
+) -> Result<Frame, String> {
     let frames = frames(android).await?;
-    let frame = match id {
+    match id {
         Some(id) => frames
             .into_iter()
             .find(|f| f.id == id)
-            .ok_or_else(|| format!("no window {id}"))?,
-        None => window::pick(frames, title, pid)?,
-    };
-    let nodes = dumped(android, &frame).await?;
-    Ok((frame, nodes))
+            .ok_or_else(|| format!("no window {id}")),
+        None => window::pick(frames, title, pid),
+    }
 }
 
 /// The front window of package `app` with its nodes.
@@ -531,15 +540,19 @@ async fn app_tree(android: &Android, app: &str) -> Result<(Frame, Vec<Node>), St
 }
 
 async fn dumped(android: &Android, frame: &Frame) -> Result<Vec<Node>, String> {
-    let xml = android.tree(Some(&frame.id)).await?;
-    let raws = raws(&xml);
-    if raws.is_empty() {
-        return Err(format!(
+    match dump(android, frame).await? {
+        (nodes, true) => Ok(nodes),
+        (_, false) => Err(format!(
             "no accessibility answer from window {:?}: it closed or its app is busy; take a new snapshot",
             frame.title
-        ));
+        )),
     }
-    Ok(nodes(frame, &raws))
+}
+
+async fn dump(android: &Android, frame: &Frame) -> Result<(Vec<Node>, bool), String> {
+    let xml = android.tree(Some(&frame.id)).await?;
+    let raws = raws(&xml);
+    Ok((nodes(frame, &raws), !raws.is_empty()))
 }
 
 fn raws(xml: &str) -> Vec<Raw<'_>> {
@@ -815,11 +828,12 @@ fn role(r: &Raw<'_>) -> &'static str {
 
 async fn snapshot(android: &Android, a: SnapArgs) -> Result<String, String> {
     let started = Instant::now();
-    let (frame, nodes) = tree(android, a.id.as_deref(), a.window.as_deref(), a.pid).await?;
+    let frame = picked(android, a.id.as_deref(), a.window.as_deref(), a.pid).await?;
+    let (nodes, answered) = dump(android, &frame).await?;
     let mut out = json!({});
     out["window"] = frame.json();
     out["ms"] = ms(started.elapsed().as_micros());
-    out["truncated"] = false.into();
+    out["truncated"] = (!answered).into();
     if a.text {
         out["text"] = outline(&nodes, &frame.package, a.max_chars.unwrap_or(NAME_CHARS)).into();
     } else {

@@ -1927,10 +1927,19 @@ mod tests {
         let fake = Fake::new();
         fake.windows("");
         fake.put("dump.xml", "<hierarchy></hierarchy>");
-        let err = desk(
+        let cut = desk(
             &fake,
             "desk_snapshot",
             serde_json::json!({"window": "Settings"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(cut["truncated"], true, "{cut}");
+        assert_eq!(cut["nodes"].as_array().map(Vec::len), Some(1));
+        let err = desk(
+            &fake,
+            "desk_find",
+            serde_json::json!({"name": "OK", "window": "Settings"}),
         )
         .await
         .unwrap_err();
