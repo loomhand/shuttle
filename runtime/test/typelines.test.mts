@@ -68,3 +68,10 @@ test('a macOS foreground multi-line type into a sheet that took its window\'s ti
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(typed, [{ text: 'a\nb', window: 'Doc', pid: process.pid }])
 })
+
+test('a foreground multi-line type names its window past a dialog it owns that has its title', { skip: process.platform === 'linux' }, async (t) => {
+  const typed = await plan(t, false, false, [doc, { ...doc, id: '1/6', role: 'dialog', owner: '1/1', active: false }])
+  const r = await main({ steps: [{ type: 'a\nb' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(typed, [{ text: 'a\nb', window: 'Doc', pid: process.pid }])
+})

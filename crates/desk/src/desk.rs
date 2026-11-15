@@ -85,6 +85,7 @@ const RAISE_WAIT: Duration = Duration::from_millis(500);
 const WAIT_POLL: Duration = Duration::from_millis(10);
 const WAIT_CHECK: Duration = Duration::from_millis(100);
 const RETURN_SETTLE: Duration = Duration::from_millis(100);
+const ANSWER_WAIT: Duration = Duration::from_secs(2);
 
 const FRAME_BORDER: f64 = 16.0;
 const TITLE_BAR: f64 = 48.0;
@@ -1035,7 +1036,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         for left in (0..times).rev() {
             if left + 1 < times
                 && let Some(w) = raised
-                && let Some(why) = self.moved_from(w, front.as_deref()).await
+                && let Some(Some(why)) = self.moved_from(w, front.as_deref()).await
             {
                 return Err(format!(
                     "{} of {times} presses were sent, then {why}, so the rest were not sent",
@@ -1076,10 +1077,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let mut note = None;
         let mut terminal = false;
         let lines = text.split('\n').count();
-        let ended = text.ends_with('\n');
+        let ended = text
+            .rsplit('\n')
+            .next()
+            .is_some_and(|l| l.trim_end_matches('\r').is_empty());
         let watched = raised.filter(|_| lines > 2 || (lines == 2 && !ended));
         let mut front = None;
         let mut moved = None;
+        let mut blind = false;
         for (i, line) in text.split('\n').enumerate() {
             let mut returned = false;
             let sent: Result<(), String> = async {
@@ -1094,9 +1099,23 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     self.send("press_key", json!({"key": "return"}), to, &mut note)
                         .await?;
                     returned = true;
-                    if let (Some(w), Some(f), false) = (watched, &front, i + 1 == lines && ended) {
+                    if let (Some(w), Some(f), false) =
+                        (watched, &front, blind || (i + 1 == lines && ended))
+                    {
                         tokio::time::sleep(RETURN_SETTLE).await;
-                        moved = self.moved_from(w, Some(f)).await;
+                        let end = Instant::now() + ANSWER_WAIT;
+                        moved = loop {
+                            match self.moved_from(w, Some(f)).await {
+                                Some(why) => break why,
+                                None if Instant::now() < end => {
+                                    tokio::time::sleep(WAIT_CHECK).await;
+                                }
+                                None => {
+                                    blind = true;
+                                    break None;
+                                }
+                            }
+                        };
                         if moved.is_some() {
                             return Err(String::new());
                         }
@@ -2010,18 +2029,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
     }
 
-    async fn moved_from(&self, w: (i64, i64), front: Option<&str>) -> Option<&'static str> {
+    async fn moved_from(&self, w: (i64, i64), front: Option<&str>) -> Option<Option<&'static str>> {
         let Some((true, now)) = self.front_read(w).await else {
             return None;
         };
         if self.os != Os::Mac || front.is_none() {
-            return now.is_none().then_some("the window left the front");
+            return Some(now.is_none().then_some("the window left the front"));
         }
-        match now {
+        Some(match now {
             None => Some("the window left the front"),
             now if now.as_deref() != front => Some("the frame in front of the window changed"),
             _ => None,
-        }
+        })
     }
 
     async fn fronted(&self, w: (i64, i64)) -> bool {
@@ -3509,9 +3528,104 @@ pub(crate) mod tests {
                 ..Stub::default()
             })
         };
+        let began = std::time::Instant::now();
         let (got, calls) = typed_lines(Os::Mac, busy, &RETURNS, "a\nb\nc").await;
         got.unwrap();
         assert_eq!(sent(&calls, "type_text").len(), 3);
+        assert!(
+            began.elapsed() < Duration::from_millis(3500),
+            "{:?}",
+            began.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_macos_multi_line_type_stops_when_its_app_answers_late_with_a_sheet() {
+        static RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static STALE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let late = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                unanswering: Some(|| {
+                    RETURNS.load(Ordering::SeqCst) > 0 && STALE.fetch_add(1, Ordering::SeqCst) == 0
+                }),
+                sheet_opened: Some(|| RETURNS.load(Ordering::SeqCst) > 0),
+                ..Stub::default()
+            })
+        };
+        let (got, calls) = typed_lines(Os::Mac, late, &RETURNS, "a\nb").await;
+        assert_eq!(
+            got.unwrap_err(),
+            "1 of 2 lines and the Return after line 1 were typed, then the frame in front of the window changed, so the rest were not sent"
+        );
+        assert_eq!(sent(&calls, "type_text").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_multi_line_type_goes_on_when_the_read_after_a_return_fails() {
+        static RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let failing = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                failing: Some(|| RETURNS.load(Ordering::SeqCst) > 0),
+                ..Stub::default()
+            })
+        };
+        let (got, calls) = typed_lines(Os::Mac, failing, &RETURNS, "a\nb").await;
+        got.unwrap();
+        assert_eq!(sent(&calls, "type_text").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_macos_multi_line_type_counts_a_read_with_one_stale_frame_as_unanswered() {
+        static RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let partly = || {
+            Ok(Stub {
+                frames: vec![
+                    notepad_window(true),
+                    Frame {
+                        stale: true,
+                        ..frame("w2", "Other - Notepad", 4, false, Some("Notepad"))
+                    },
+                ],
+                sheet_opened: Some(|| RETURNS.load(Ordering::SeqCst) > 0),
+                ..Stub::default()
+            })
+        };
+        let (got, calls) = typed_lines(Os::Mac, partly, &RETURNS, "a\nb").await;
+        got.unwrap();
+        assert_eq!(sent(&calls, "type_text").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_windows_multi_line_type_goes_on_when_its_app_does_not_answer_after_a_return() {
+        static RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let busy = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                unanswering: Some(|| RETURNS.load(Ordering::SeqCst) > 0),
+                ..Stub::default()
+            })
+        };
+        let (got, calls) = typed_lines(Os::Windows, busy, &RETURNS, "a\nb\nc").await;
+        got.unwrap();
+        assert_eq!(sent(&calls, "press_key").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_type_whose_text_ends_in_a_line_break_and_a_carriage_return_leaves_that_return_unchecked()
+     {
+        static RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let closes = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                unread: Some(|| RETURNS.load(Ordering::SeqCst) > 0),
+                ..Stub::default()
+            })
+        };
+        let (got, calls) = typed_lines(Os::Mac, closes, &RETURNS, "report\n\r").await;
+        got.unwrap();
+        assert_eq!(sent(&calls, "press_key").len(), 1);
     }
 
     #[tokio::test]
@@ -7973,6 +8087,7 @@ pub(crate) mod tests {
         sheet_opened: Option<fn() -> bool>,
         unread: Option<fn() -> bool>,
         unanswering: Option<fn() -> bool>,
+        failing: Option<fn() -> bool>,
     }
 
     impl Stub {
@@ -8023,9 +8138,13 @@ pub(crate) mod tests {
             } else {
                 self.frames()?
             };
+            if self.failing.is_some_and(|failed| failed()) {
+                return Err("the read timed out".into());
+            }
             if self.unanswering.is_some_and(|hung| hung()) {
                 for f in &mut frames {
                     f.stale = true;
+                    f.active = false;
                 }
             }
             if self.sheet_opened.is_some_and(|opened| opened()) {
