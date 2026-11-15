@@ -1085,6 +1085,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let mut front = None;
         let mut moved = None;
         let mut blind = false;
+        let mut end = None;
         for (i, line) in text.split('\n').enumerate() {
             let mut returned = false;
             let sent: Result<(), String> = async {
@@ -1103,7 +1104,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         (watched, &front, blind || (i + 1 == lines && ended))
                     {
                         tokio::time::sleep(RETURN_SETTLE).await;
-                        let end = Instant::now() + ANSWER_WAIT;
+                        let end = *end.get_or_insert_with(|| Instant::now() + ANSWER_WAIT);
                         moved = loop {
                             match self.moved_from(w, Some(f)).await {
                                 Some(why) => break why,
@@ -3528,12 +3529,13 @@ pub(crate) mod tests {
                 ..Stub::default()
             })
         };
+        let text = ["x"; 20].join("\n");
         let began = std::time::Instant::now();
-        let (got, calls) = typed_lines(Os::Mac, busy, &RETURNS, "a\nb\nc").await;
+        let (got, calls) = typed_lines(Os::Mac, busy, &RETURNS, &text).await;
         got.unwrap();
-        assert_eq!(sent(&calls, "type_text").len(), 3);
+        assert_eq!(sent(&calls, "type_text").len(), 20);
         assert!(
-            began.elapsed() < Duration::from_millis(3500),
+            began.elapsed() < Duration::from_millis(3300),
             "{:?}",
             began.elapsed()
         );
@@ -3564,15 +3566,78 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_multi_line_type_goes_on_when_the_read_after_a_return_fails() {
         static RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let failing = || {
             Ok(Stub {
                 frames: vec![notepad_window(true)],
+                unread: Some(|| {
+                    READS.fetch_add(1, Ordering::SeqCst);
+                    false
+                }),
                 failing: Some(|| RETURNS.load(Ordering::SeqCst) > 0),
                 ..Stub::default()
             })
         };
+        let began = std::time::Instant::now();
         let (got, calls) = typed_lines(Os::Mac, failing, &RETURNS, "a\nb").await;
         got.unwrap();
+        assert_eq!(sent(&calls, "type_text").len(), 2);
+        let reads = READS.load(Ordering::SeqCst);
+        assert!((12..=26).contains(&reads), "{reads}");
+        let took = began.elapsed();
+        assert!(
+            took >= Duration::from_secs(2) && took < Duration::from_millis(3500),
+            "{took:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_multi_line_type_spends_one_answer_wait_per_call_on_an_app_late_after_every_return() {
+        static RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static SINCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static LATE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let late = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                unanswering: Some(|| {
+                    let r = RETURNS.load(Ordering::SeqCst);
+                    if r == 0 {
+                        return false;
+                    }
+                    if SINCE.swap(r, Ordering::SeqCst) != r {
+                        LATE.store(0, Ordering::SeqCst);
+                    }
+                    LATE.fetch_add(1, Ordering::SeqCst) < 10
+                }),
+                ..Stub::default()
+            })
+        };
+        let began = std::time::Instant::now();
+        let (got, calls) = typed_lines(Os::Mac, late, &RETURNS, "a\nb\nc\nd\ne\nf").await;
+        got.unwrap();
+        assert_eq!(sent(&calls, "type_text").len(), 6);
+        assert!(
+            began.elapsed() < Duration::from_millis(3500),
+            "{:?}",
+            began.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_multi_line_type_checks_every_return_and_not_only_the_first() {
+        static RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let second = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                sheet_opened: Some(|| RETURNS.load(Ordering::SeqCst) > 1),
+                ..Stub::default()
+            })
+        };
+        let (got, calls) = typed_lines(Os::Mac, second, &RETURNS, "a\nb\nc").await;
+        assert_eq!(
+            got.unwrap_err(),
+            "2 of 3 lines and the Return after line 2 were typed, then the frame in front of the window changed, so the rest were not sent"
+        );
         assert_eq!(sent(&calls, "type_text").len(), 2);
     }
 
