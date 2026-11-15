@@ -180,7 +180,7 @@ for (const [how, step] of [['right click', { button: 'right' }], ['double click'
   })
   const covered = () => ({ found: { ref: 0, id: '1/2', parent: -1, depth: 0, role: 'button', name: 'report.txt', states: [] }, path: [{ id: '1/1', role: 'window', name: 'Files' }], pid: process.pid, covered: { title: 'Always on top', pid: 9 } })
   const foreign = () => ({ found: { ref: 0, id: '9/2', parent: -1, depth: 0, role: 'pane', name: 'Pinned', states: [] }, path: [{ id: '9/1', role: 'window', name: 'Always on top' }], pid: 9 })
-  for (const [cover, said] of [[covered, /under the window "Always on top", so the click was not sent/], [foreign, /which belongs to another process, so the click was not sent/]] as const) {
+  for (const [cover, said] of [[covered, /under the window "Always on top", so the click was not sent/], [foreign, /which lies outside the plan window, so the click was not sent/]] as const) {
     under = cover
     const r = await main({ steps: [{ click: 'report.txt', ...step }] })
     assert.equal(r.ok, false, `${how} ${JSON.stringify(r)}`)
@@ -246,6 +246,6 @@ test('a foreground right click whose hit lands in a window of the same app that 
   })
   const r = await main({ steps: [{ click: 'report.txt', button: 'right' }] })
   assert.equal(r.ok, false, JSON.stringify(r))
-  assert.match(r.escalate?.reason ?? '', /^the centre of button "report\.txt" is on button "Apply" under window "Inspector".*, so the click was not sent/)
+  assert.equal(r.escalate?.reason, 'the centre of button "report.txt" is on button "Apply" under window "Inspector", which lies outside the plan window, so the click was not sent')
   assert.equal(clicks, 0)
 })
