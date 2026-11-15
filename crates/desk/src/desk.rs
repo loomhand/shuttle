@@ -6483,6 +6483,19 @@ pub(crate) mod tests {
             (&clicks[0]["x"], &clicks[0]["y"]),
             (&json!(140), &json!(110))
         );
+        let covered = || {
+            let mut f = notepad();
+            f.covers = Some(("Calculator".into(), Some(9)));
+            Ok(f)
+        };
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(covered, Behind(Arc::clone(&calls)), Os::Linux);
+        let err = desk
+            .run("desk_act", json!({"id": "ok", "action": "click"}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("nothing was clicked"), "{err}");
+        assert!(sent(&calls, "click").is_empty(), "{:?}", order(&calls));
     }
 
     #[tokio::test]
@@ -7400,7 +7413,7 @@ pub(crate) mod tests {
         pub(crate) hits: HashMap<(i32, i32), String>,
         pub(crate) acts: Vec<(String, Act)>,
         pub(crate) ancestry: usize,
-        covers: Option<(String, Option<u32>)>,
+        pub(crate) covers: Option<(String, Option<u32>)>,
         opened: bool,
         menus: Vec<bool>,
         urls: Vec<bool>,
@@ -7410,6 +7423,7 @@ pub(crate) mod tests {
         listed: Option<u32>,
         pub(crate) behind: bool,
         pub(crate) pid: Option<u32>,
+        pub(crate) listings: usize,
     }
 
     impl Fake {
@@ -7435,6 +7449,7 @@ pub(crate) mod tests {
 
     impl Access for Fake {
         fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            self.listings += 1;
             let title = if self.untitled {
                 ""
             } else {
