@@ -237,6 +237,27 @@ mod tests {
     }
 
     #[test]
+    fn an_untitled_window_of_another_process_covers_an_untitled_linux_window() {
+        let mut f = notepad();
+        f.add("", None, "window", &["showing"], Some([400, 400, 300, 200]));
+        f.add(
+            "go",
+            Some(""),
+            "button",
+            &["showing"],
+            Some([500, 500, 40, 20]),
+        );
+        f.hits.insert((520, 510), "go".into());
+        f.covers = Some((String::new(), Some(9)));
+        let err = hit_centre(&mut f, "go", Os::Linux).unwrap_err();
+        assert!(err.starts_with("another window covers"), "{err}");
+        assert_eq!(
+            plan_press(&mut f, "go", Os::Linux, false).unwrap(),
+            Press::Acted(true)
+        );
+    }
+
+    #[test]
     fn a_linux_element_its_own_process_or_title_covers_takes_a_click() {
         let mut f = notepad();
         for cover in [("Find - Notepad", Some(4)), ("w", Some(9)), ("w", None)] {
