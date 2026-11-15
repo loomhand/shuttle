@@ -1028,13 +1028,17 @@ async fn click(android: &Android, a: ClickArgs) -> Result<String, String> {
     Ok(OK.to_owned())
 }
 
-async fn in_front(android: &Android, window: Option<&str>, pid: Option<u32>) -> Result<(), String> {
+async fn in_front(
+    android: &Android,
+    window: Option<&str>,
+    pid: Option<u32>,
+) -> Result<Option<i64>, String> {
     if window.is_none() && pid.is_none() {
-        return Ok(());
+        return Ok(None);
     }
     let frame = window::pick(frames(android).await?, window, pid)?;
     if frame.active {
-        Ok(())
+        Ok(frame.id.parse().ok())
     } else {
         Err(format!(
             "{} is not in front, and input on a device reaches only the front window",

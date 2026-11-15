@@ -230,7 +230,7 @@ impl Android {
                     self.tap(p).await?;
                 }
                 let chars = text.chars().count();
-                match self.type_text(text, point, || async { Ok(()) }).await? {
+                match self.type_text(text, point, || async { Ok(None) }).await? {
                     Some(true) => format!("typed {chars} characters"),
                     Some(false) => {
                         format!("pasted {chars} characters; the field does not show them")
@@ -399,7 +399,7 @@ impl Android {
     ) -> Result<Option<bool>, String>
     where
         C: FnMut() -> Cf,
-        Cf: Future<Output = Result<(), String>>,
+        Cf: Future<Output = Result<Option<i64>, String>>,
     {
         let typed = self.type_lines(text, at, check).await;
         let mut slot = self.control.lock().await;
@@ -419,18 +419,22 @@ impl Android {
     ) -> Result<Option<bool>, String>
     where
         C: FnMut() -> Cf,
-        Cf: Future<Output = Result<(), String>>,
+        Cf: Future<Output = Result<Option<i64>, String>>,
     {
         let mut typed = Some(true);
+        let lines = text.split('\n').count();
         for (i, line) in text.split('\n').enumerate() {
             let partly = |e: String| match i {
                 0 => e,
+                _ => format!("{e}; {i} of {lines} lines were typed before it"),
+            };
+            let returned = |e: String| match i {
+                0 => e,
                 _ => format!(
-                    "{e}; {i} of {} lines were typed before it",
-                    text.split('\n').count()
+                    "{e}; {i} of {lines} lines and the Return after line {i} were typed before it"
                 ),
             };
-            check().await.map_err(partly)?;
+            let mut window = check().await.map_err(partly)?;
             if i > 0 {
                 self.keys("return").await.map_err(partly)?;
             }
@@ -438,16 +442,13 @@ impl Android {
                 continue;
             }
             if i > 0 {
-                check().await.map_err(|e| {
-                    format!(
-                        "{e}; {i} of {} lines and the Return after line {i} were typed before it",
-                        text.split('\n').count()
-                    )
-                })?;
+                window = check().await.map_err(returned)?;
             }
             let shown = type_with(
                 line,
                 at.filter(|_| i == 0),
+                window,
+                i == 0,
                 |live| async move {
                     let answer = self
                         .served(if live { "focus live" } else { "focus" })
@@ -457,7 +458,7 @@ impl Android {
                 || self.paste(line),
             )
             .await
-            .map_err(partly)?;
+            .map_err(returned)?;
             typed = match (typed, shown) {
                 (Some(false), _) | (_, Some(false)) => Some(false),
                 (None, _) | (_, None) => None,
@@ -933,6 +934,7 @@ struct Focus {
     editable: bool,
     password: bool,
     window: bool,
+    id: Option<i64>,
     bounds: [i32; 4],
     len: usize,
     hash: i32,
@@ -1092,6 +1094,8 @@ fn launcher(out: &str, app: &str) -> Option<String> {
 async fn type_with<F, Ff, P, Pf>(
     line: &str,
     at: Option<(i32, i32)>,
+    window: Option<i64>,
+    blind: bool,
     mut focus: F,
     mut paste: P,
 ) -> Result<Option<bool>, String>
@@ -1101,7 +1105,12 @@ where
     P: FnMut() -> Pf,
     Pf: Future<Output = Result<bool, String>>,
 {
-    let usable = |f: &Focus| f.editable && f.window && at.is_none_or(|p| f.holds(p));
+    let usable = |f: &Focus| {
+        f.editable
+            && f.window
+            && at.is_none_or(|p| f.holds(p))
+            && window.is_none_or(|w| f.id == Some(w))
+    };
     let start = tokio::time::Instant::now();
     let end = start + TYPE_WAIT;
     let before = loop {
@@ -1112,7 +1121,7 @@ where
             break Some((f, cached));
         }
         if tokio::time::Instant::now() >= end {
-            if let (Some((x, y)), Some(f)) = (at, cached)
+            if let (Some((x, y)), Some(f)) = (at, &cached)
                 && f.editable
                 && f.window
             {
@@ -1120,10 +1129,23 @@ where
                     "the field at ({x},{y}) has no input focus; another field does"
                 ));
             }
+            if let (Some(w), Some(f)) = (window, &cached)
+                && f.id != Some(w)
+            {
+                return Err(
+                    "the input focus is in another window than the named one, so the line was not pasted"
+                        .to_owned(),
+                );
+            }
             break None;
         }
         tokio::time::sleep(TYPE_FOCUS_POLL).await;
     };
+    if before.is_none() && !blind {
+        return Err(
+            "no field of the window holds the input focus, so the line was not pasted".to_owned(),
+        );
+    }
     let Some((before, cached)) = before.filter(|(f, _)| !f.password) else {
         return if paste().await? {
             Ok(None)
@@ -1894,6 +1916,36 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_line_after_a_return_goes_only_into_a_field_of_the_window_checked_in_front() {
+        let other = r#"{"editable":true,"password":false,"window":true,"id":9,"len":0,"hash":0,"tail":"","bounds":[0,0,720,100]}"#;
+        for (focus, want) in [
+            ("null", "no field of the window holds the input focus"),
+            (other, "the input focus is in another window"),
+        ] {
+            let fake = Fake::new();
+            fake.put("inject.answer", "true");
+            fake.windows("");
+            fake.put("focus.json", focus);
+            let err = desk(
+                &fake,
+                "desk_type",
+                serde_json::json!({"text": "\nsecret", "window": "Settings"}),
+            )
+            .await
+            .unwrap_err();
+            assert!(err.starts_with(want), "{err}");
+            assert!(
+                err.ends_with("; 1 of 2 lines and the Return after line 1 were typed before it"),
+                "{err}"
+            );
+            let requests = log(&fake, "requests");
+            assert_eq!(requests.matches("key ").count(), 1, "{requests}");
+            assert_eq!(requests.matches("paste").count(), 0, "{requests}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn focus_refuses_a_listed_window_that_is_not_in_front() {
         let fake = Fake::new();
         fake.windows("shade");
@@ -1971,7 +2023,7 @@ mod tests {
             let n = peer.read(&mut buf).await.unwrap();
             buf[..n].to_vec()
         });
-        let typed = android.type_text("", None, || async { Ok(()) }).await;
+        let typed = android.type_text("", None, || async { Ok(None) }).await;
         assert_eq!(typed, Ok(Some(true)));
         let sent = tokio::time::timeout(Duration::from_secs(5), device).await;
         assert_eq!(sent.unwrap().unwrap(), clipboard_message("", 1));
@@ -2185,6 +2237,8 @@ mod tests {
         let out = type_with(
             "abc",
             None,
+            None,
+            true,
             |_| {
                 let f = field(if pastes.get() < 2 { "" } else { "abc" });
                 async move { Ok(Some(f)) }
@@ -2206,6 +2260,8 @@ mod tests {
         let err = type_with(
             "abc",
             None,
+            None,
+            true,
             |_| async { Ok(Some(field(""))) },
             || {
                 pastes.set(pastes.get() + 1);
@@ -2224,6 +2280,8 @@ mod tests {
         let err = type_with(
             "abc",
             None,
+            None,
+            true,
             |_| {
                 reads.set(reads.get() + 1);
                 let text = if reads.get() > 2 { "other" } else { "" };
@@ -2242,6 +2300,8 @@ mod tests {
         let err = type_with(
             "abc",
             None,
+            None,
+            true,
             |_| async { Ok(Some(field(""))) },
             || {
                 pastes.set(pastes.get() + 1);
@@ -2302,6 +2362,8 @@ mod tests {
         let out = type_with(
             "abc",
             None,
+            None,
+            true,
             |_| {
                 let late = started.elapsed() >= Duration::from_millis(800);
                 let f = field(if pastes.get() > 0 && late { "abc" } else { "" });
@@ -2323,6 +2385,8 @@ mod tests {
         let out = type_with(
             "abc",
             None,
+            None,
+            true,
             |live| {
                 let f = match (live, pastes.get()) {
                     (false, _) => field("x"),
@@ -2347,6 +2411,8 @@ mod tests {
         let out = type_with(
             "abc",
             None,
+            None,
+            true,
             |live| {
                 let f = field(if live { "" } else { "abc" });
                 async move { Ok(Some(f)) }
@@ -2383,6 +2449,8 @@ mod tests {
         let password = type_with(
             "secret",
             None,
+            None,
+            true,
             |_| async {
                 Ok(Some(Focus {
                     password: true,
@@ -2398,9 +2466,16 @@ mod tests {
         .unwrap();
         assert_eq!((password, pastes.get()), (None, 1));
         let started = tokio::time::Instant::now();
-        let none = type_with("abc", None, |_| async { Ok(None) }, || async { Ok(true) })
-            .await
-            .unwrap();
+        let none = type_with(
+            "abc",
+            None,
+            None,
+            true,
+            |_| async { Ok(None) },
+            || async { Ok(true) },
+        )
+        .await
+        .unwrap();
         assert_eq!(none, None);
         assert!(started.elapsed() >= TYPE_WAIT);
     }
@@ -2419,6 +2494,8 @@ mod tests {
         let err = type_with(
             "abc",
             Some((360, 350)),
+            None,
+            true,
             |_| async { Ok(Some(field(""))) },
             || {
                 pastes.set(pastes.get() + 1);
@@ -2442,6 +2519,8 @@ mod tests {
         let out = type_with(
             "abc",
             Some((360, 350)),
+            None,
+            true,
             |_| async { Ok(None) },
             || {
                 pastes.set(pastes.get() + 1);
@@ -2466,7 +2545,7 @@ mod tests {
             let adb = dir.path().join("adb");
             script(
                 &adb,
-                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi;;\n*screencap*) if [ -f \"$DIR/screencap.fail\" ]; then exit 1; fi; cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo start >> \"$DIR/starts\"\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) if [ -f \"$DIR/after-input.json\" ]; then mv \"$DIR/after-input.json\" \"$DIR/windows.json\"; fi; a=$(head -n 1 \"$DIR/inject.answer\" 2>/dev/null); if [ -f \"$DIR/inject.answer\" ] && [ \"$(wc -l < \"$DIR/inject.answer\")\" -ge 1 ]; then tail -n +2 \"$DIR/inject.answer\" > \"$DIR/inject.next\"; mv \"$DIR/inject.next\" \"$DIR/inject.answer\"; fi; if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
+                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi;;\n*screencap*) if [ -f \"$DIR/screencap.fail\" ]; then exit 1; fi; cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo start >> \"$DIR/starts\"\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) if [ -f \"$DIR/after-input.json\" ]; then mv \"$DIR/after-input.json\" \"$DIR/windows.json\"; fi; a=$(head -n 1 \"$DIR/inject.answer\" 2>/dev/null); if [ -f \"$DIR/inject.answer\" ] && [ \"$(wc -l < \"$DIR/inject.answer\")\" -ge 1 ]; then tail -n +2 \"$DIR/inject.answer\" > \"$DIR/inject.next\"; mv \"$DIR/inject.next\" \"$DIR/inject.answer\"; fi; if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      focus*) cat \"$DIR/focus.json\" 2>/dev/null;;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
             );
             let android = android_at(adb);
             Self { dir, android }
@@ -2668,6 +2747,8 @@ mod tests {
         let out = type_with(
             line,
             at,
+            None,
+            true,
             |_| {
                 let text = match pastes.get() {
                     0 => before,
