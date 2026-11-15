@@ -1161,12 +1161,19 @@ where
                 return Err(NOT_INJECTED.to_owned());
             }
             match unchecked {
-                Some((field, _)) => {
+                Some((field, cached)) => {
                     let end = tokio::time::Instant::now() + TYPE_WAIT;
-                    while tokio::time::Instant::now() < end
-                        && focus(false).await?.is_none_or(|f| f.same_text(&field))
-                    {
-                        tokio::time::sleep(TYPE_FOCUS_POLL).await;
+                    while tokio::time::Instant::now() < end {
+                        match focus(false).await {
+                            Err(_) => break,
+                            Ok(Some(f))
+                                if !f.same_text(&field)
+                                    && cached.as_ref().is_none_or(|c| !f.same_text(c)) =>
+                            {
+                                break;
+                            }
+                            Ok(_) => tokio::time::sleep(TYPE_FOCUS_POLL).await,
+                        }
                     }
                 }
                 None => tokio::time::sleep(PASTE_SETTLE).await,
@@ -2343,6 +2350,65 @@ mod tests {
         .await;
         assert_eq!(blind, Ok(None));
         assert!(started.elapsed() >= TYPE_WAIT + PASTE_SETTLE);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unchecked_paste_waits_past_a_lagging_cached_read_and_ends_on_a_failed_one() {
+        let pastes = std::cell::Cell::new(0);
+        let after = std::cell::Cell::new(0);
+        let out = type_with(
+            "secret",
+            None,
+            None,
+            true,
+            |live| {
+                if pastes.get() > 0 {
+                    after.set(after.get() + 1);
+                }
+                let text = match (live, pastes.get(), after.get()) {
+                    (true, _, _) => "",
+                    (false, 0, _) => "old",
+                    (false, _, n) if n < 3 => "old",
+                    _ => "secret",
+                };
+                let f = Focus {
+                    password: true,
+                    ..field(text)
+                };
+                async move { Ok(Some(f)) }
+            },
+            || {
+                pastes.set(pastes.get() + 1);
+                async { Ok(true) }
+            },
+        )
+        .await;
+        assert_eq!((out, pastes.get()), (Ok(None), 1));
+        assert_eq!(after.get(), 3);
+        let pastes = std::cell::Cell::new(0);
+        let failed = type_with(
+            "secret",
+            None,
+            None,
+            true,
+            |_| {
+                let read = if pastes.get() == 0 {
+                    Ok(Some(Focus {
+                        password: true,
+                        ..field("")
+                    }))
+                } else {
+                    Err("decode focus: EOF".to_owned())
+                };
+                async move { read }
+            },
+            || {
+                pastes.set(pastes.get() + 1);
+                async { Ok(true) }
+            },
+        )
+        .await;
+        assert_eq!((failed, pastes.get()), (Ok(None), 1));
     }
 
     #[tokio::test(start_paused = true)]
