@@ -1423,7 +1423,6 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       if (s.value !== undefined) { let v = ''; let url: string | undefined; try { const r = await desk.read(hit.n.id); url = r.url; v = r.url ?? r.value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); v = hit.n.value }; if (url !== undefined ? url !== s.value : !holds(hit.n.role, v, s.value)) bad.push(`reads "${v}"`) }
       if (s.enabled !== undefined && hit.n.disabled === s.enabled) bad.push(hit.n.disabled ? 'is disabled' : 'is enabled')
       if (s.on !== undefined) { const c = (w.pid === null ? null : gtkToggle(w.pid, hit.n.name)) ?? (await checked(hit.n)) ?? (ask ? await cropState(hit.n) : null); rec.was = c; if (c !== s.on) bad.push(c === 'mixed' ? 'is mixed' : c ? 'is on' : 'is off') }
-      if (bad.length) observed = true
       return bad.length ? `verify: "${hit.n.name || want}" ${bad.join(', ')}` : ''
     }
     const end = Math.min(Date.now() + (s.timeout_ms ?? 0), deadline)
