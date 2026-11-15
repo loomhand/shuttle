@@ -1113,6 +1113,7 @@ where
     };
     let start = tokio::time::Instant::now();
     let end = start + TYPE_WAIT;
+    let mut last = None;
     let before = loop {
         let cached = focus(false).await?;
         if cached.as_ref().is_some_and(usable)
@@ -1130,20 +1131,26 @@ where
                 ));
             }
             if let (Some(w), Some(f)) = (window, &cached)
-                && f.id != Some(w)
+                && f.id.is_some_and(|id| id != w)
             {
                 return Err(
                     "the input focus is in another window than the named one, so the line was not pasted"
                         .to_owned(),
                 );
             }
+            last = cached;
             break None;
         }
         tokio::time::sleep(TYPE_FOCUS_POLL).await;
     };
-    if before.is_none() && !blind {
+    if before.is_none()
+        && !blind
+        && !last
+            .as_ref()
+            .is_some_and(|f| f.window && window.is_none_or(|w| f.id == Some(w)))
+    {
         return Err(
-            "no field of the window holds the input focus, so the line was not pasted".to_owned(),
+            "no element of the window holds the input focus, so the line was not pasted".to_owned(),
         );
     }
     let Some((before, cached)) = before.filter(|(f, _)| !f.password) else {
@@ -1919,7 +1926,7 @@ mod tests {
     async fn a_line_after_a_return_goes_only_into_a_field_of_the_window_checked_in_front() {
         let other = r#"{"editable":true,"password":false,"window":true,"id":9,"len":0,"hash":0,"tail":"","bounds":[0,0,720,100]}"#;
         for (focus, want) in [
-            ("null", "no field of the window holds the input focus"),
+            ("null", "no element of the window holds the input focus"),
             (other, "the input focus is in another window"),
         ] {
             let fake = Fake::new();
@@ -1942,6 +1949,35 @@ mod tests {
             assert_eq!(requests.matches("key ").count(), 1, "{requests}");
             assert_eq!(requests.matches("paste").count(), 0, "{requests}");
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_first_line_into_a_named_window_is_pasted_though_no_field_reports_the_focus() {
+        let fake = Fake::new();
+        fake.windows("");
+        fake.put("focus.json", "null");
+        let mut peer = controlled(&fake.android).await;
+        tokio::spawn(async move {
+            let mut head = [0u8; 14];
+            while peer.read_exact(&mut head).await.is_ok() {
+                let len = u32::from_be_bytes([head[10], head[11], head[12], head[13]]);
+                let mut text = vec![0u8; len as usize];
+                peer.read_exact(&mut text).await.unwrap();
+                let mut ack = vec![ACK_CLIPBOARD];
+                ack.extend_from_slice(&head[1..9]);
+                peer.write_all(&ack).await.unwrap();
+            }
+        });
+        let out = desk(
+            &fake,
+            "desk_type",
+            serde_json::json!({"text": "hi", "window": "Settings"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["typed"], Value::Null, "{out}");
+        assert_eq!(log(&fake, "requests").matches("paste").count(), 1);
     }
 
     #[cfg(unix)]
@@ -2255,6 +2291,78 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_line_after_a_return_goes_into_the_window_checked_in_front() {
+        let run = |focus: fn(usize) -> Option<Focus>, blind: bool| async move {
+            let pastes = std::cell::Cell::new(0);
+            let out = type_with(
+                "abc",
+                None,
+                Some(7),
+                blind,
+                |_| {
+                    let f = focus(pastes.get());
+                    async move { Ok(f) }
+                },
+                || {
+                    pastes.set(pastes.get() + 1);
+                    async { Ok(true) }
+                },
+            )
+            .await;
+            (out, pastes.get())
+        };
+        assert_eq!(
+            run(
+                |n| Some(Focus {
+                    id: Some(7),
+                    ..field(if n == 0 { "" } else { "abc" })
+                }),
+                false
+            )
+            .await,
+            (Ok(Some(true)), 1)
+        );
+        assert_eq!(
+            run(
+                |_| Some(Focus {
+                    editable: false,
+                    id: Some(7),
+                    ..field("")
+                }),
+                false
+            )
+            .await,
+            (Ok(None), 1)
+        );
+        assert_eq!(
+            run(
+                |_| Some(Focus {
+                    id: None,
+                    ..field("")
+                }),
+                true
+            )
+            .await,
+            (Ok(None), 1)
+        );
+        let (err, pastes) = run(
+            |_| {
+                Some(Focus {
+                    id: None,
+                    ..field("")
+                })
+            },
+            false,
+        )
+        .await;
+        assert!(
+            err.unwrap_err()
+                .starts_with("no element of the window holds the input focus")
+        );
+        assert_eq!(pastes, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn paste_keys_refused_until_the_deadline_fail_as_not_injected() {
         let pastes = std::cell::Cell::new(0);
         let err = type_with(
@@ -2545,7 +2653,7 @@ mod tests {
             let adb = dir.path().join("adb");
             script(
                 &adb,
-                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi;;\n*screencap*) if [ -f \"$DIR/screencap.fail\" ]; then exit 1; fi; cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo start >> \"$DIR/starts\"\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) if [ -f \"$DIR/after-input.json\" ]; then mv \"$DIR/after-input.json\" \"$DIR/windows.json\"; fi; a=$(head -n 1 \"$DIR/inject.answer\" 2>/dev/null); if [ -f \"$DIR/inject.answer\" ] && [ \"$(wc -l < \"$DIR/inject.answer\")\" -ge 1 ]; then tail -n +2 \"$DIR/inject.answer\" > \"$DIR/inject.next\"; mv \"$DIR/inject.next\" \"$DIR/inject.answer\"; fi; if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      focus*) cat \"$DIR/focus.json\" 2>/dev/null;;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
+                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi;;\n*screencap*) if [ -f \"$DIR/screencap.fail\" ]; then exit 1; fi; cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo start >> \"$DIR/starts\"\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) if [ -f \"$DIR/after-input.json\" ]; then mv \"$DIR/after-input.json\" \"$DIR/windows.json\"; fi; a=$(head -n 1 \"$DIR/inject.answer\" 2>/dev/null); if [ -f \"$DIR/inject.answer\" ] && [ \"$(wc -l < \"$DIR/inject.answer\")\" -ge 1 ]; then tail -n +2 \"$DIR/inject.answer\" > \"$DIR/inject.next\"; mv \"$DIR/inject.next\" \"$DIR/inject.answer\"; fi; if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      focus*) cat \"$DIR/focus.json\" 2>/dev/null;;\n      paste) printf true;;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
             );
             let android = android_at(adb);
             Self { dir, android }
@@ -2672,12 +2780,18 @@ mod tests {
 
     #[cfg(unix)]
     async fn session(adb: &str) -> (Android, TcpStream) {
+        let android = android_at(adb);
+        let peer = controlled(&android).await;
+        (android, peer)
+    }
+
+    #[cfg(unix)]
+    async fn controlled(android: &Android) -> TcpStream {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let stream = TcpStream::connect(listener.local_addr().unwrap())
             .await
             .unwrap();
         let (peer, _) = listener.accept().await.unwrap();
-        let android = android_at(adb);
         *android.control.lock().await = Some(Control {
             stream,
             sequence: 0,
@@ -2691,7 +2805,7 @@ mod tests {
                 remove: Command::new("true"),
             },
         });
-        (android, peer)
+        peer
     }
 
     #[cfg(unix)]
