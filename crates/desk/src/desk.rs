@@ -1087,42 +1087,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         };
         let mut note = None;
         let mut terminal = false;
-        let mut front = None;
         let lines = text.split('\n').count();
         for (i, line) in text.split('\n').enumerate() {
             let mut returned = false;
             let sent: Result<(), String> = async {
                 self.raise(raised).await?;
-                if i == 0
-                    && lines > 1
-                    && self.os == Os::Mac
-                    && let Some(w) = raised
-                {
-                    front = match self.front_frame(w).await {
-                        None => self.front_frame(w).await,
-                        found => found,
-                    };
-                }
                 if i > 0 {
                     self.send("press_key", json!({"key": "return"}), to, &mut note)
                         .await?;
                     returned = true;
-                    if let Some(w) = raised {
-                        let moved = if self.os == Os::Mac && front.is_some() {
-                            match self.front_frame(w).await {
-                                None => Some("the window left the front"),
-                                now if now != front => {
-                                    Some("the frame in front of the window changed")
-                                }
-                                _ => None,
-                            }
-                        } else {
-                            (!self.fronted(w).await).then_some("the window left the front")
-                        };
-                        if let Some(why) = moved {
-                            return Err(why.to_owned());
-                        }
-                    }
                 }
                 let line = line.trim_end_matches('\r');
                 if self.os == Os::Linux {
@@ -3329,137 +3302,6 @@ pub(crate) mod tests {
         assert_eq!(sent(&calls, "press_key").len(), 1);
     }
 
-    static TYPE_RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-    struct Returns(Behind);
-
-    impl Input for Returns {
-        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
-            if tool == "press_key" {
-                TYPE_RETURNS.fetch_add(1, Ordering::SeqCst);
-            }
-            self.0.call(tool, args).await
-        }
-    }
-
-    fn untitled(active: bool) -> Frame {
-        Frame {
-            number: Some(1),
-            ..frame("w", "Untitled - Notepad", 4, active, Some("Notepad"))
-        }
-    }
-
-    #[tokio::test]
-    async fn a_foreground_multi_line_type_stops_before_a_line_when_its_return_brings_another_frame_to_the_front()
-     {
-        for os in [Os::Mac, Os::Windows] {
-            TYPE_RETURNS.store(0, Ordering::SeqCst);
-            let calls = Arc::new(Mutex::new(Vec::new()));
-            let stub: fn() -> Result<Stub, String> = match os {
-                Os::Mac => || {
-                    Ok(Stub {
-                        frames: vec![untitled(true)],
-                        sheet_opened: Some(|| TYPE_RETURNS.load(Ordering::SeqCst) > 0),
-                        ..Stub::default()
-                    })
-                },
-                _ => || {
-                    Ok(Stub {
-                        frames: vec![untitled(true)],
-                        left: Some(|| TYPE_RETURNS.load(Ordering::SeqCst) > 0),
-                        ..Stub::default()
-                    })
-                },
-            };
-            let desk = Desk::new(stub, Returns(Behind(Arc::clone(&calls))), os);
-            let err = desk
-                .run(
-                    "desk_type",
-                    json!({"text": "ab\ncd\nef", "window": "Untitled - Notepad"}),
-                )
-                .await
-                .unwrap_err();
-            let why = match os {
-                Os::Mac => "the frame in front of the window changed",
-                _ => "the window left the front",
-            };
-            assert_eq!(
-                err,
-                format!(
-                    "1 of 3 lines and the Return after line 1 were typed, then this stopped the rest: {why}"
-                ),
-                "{os:?}"
-            );
-            assert_eq!(
-                sent(&calls, "press_key").len(),
-                1,
-                "{os:?} {:?}",
-                order(&calls)
-            );
-            let typed: Vec<String> = calls
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(t, _)| t == "type_text")
-                .map(|(_, a)| a["text"].as_str().unwrap_or_default().to_owned())
-                .collect();
-            assert!(
-                typed.iter().all(|t| !t.contains('c') && !t.contains('e')),
-                "{os:?} {typed:?}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn a_macos_multi_line_type_goes_on_into_a_sheet_that_was_in_front_when_it_began() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let held = || {
-            Ok(Stub {
-                frames: vec![
-                    untitled(false),
-                    Frame {
-                        role: "dialog",
-                        owner: Some("w".into()),
-                        ..frame("s", "save", 4, true, Some("Notepad"))
-                    },
-                ],
-                ..Stub::default()
-            })
-        };
-        let desk = Desk::new(held, Behind(Arc::clone(&calls)), Os::Mac);
-        desk.run(
-            "desk_type",
-            json!({"text": "ab\ncd", "window": "Untitled - Notepad"}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(sent(&calls, "press_key").len(), 1);
-        assert_eq!(sent(&calls, "type_text").len(), 2);
-        assert!(sent(&calls, "bring_to_front").is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_macos_multi_line_type_whose_front_reads_find_nothing_at_first_types_every_line() {
-        static READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let slow = || {
-            Ok(Stub {
-                frames: vec![untitled(true)],
-                unread: Some(|| READS.fetch_add(1, Ordering::SeqCst) < 3),
-                ..Stub::default()
-            })
-        };
-        let desk = Desk::new(slow, Behind(Arc::clone(&calls)), Os::Mac);
-        desk.run(
-            "desk_type",
-            json!({"text": "ab\ncd\nef", "window": "Untitled - Notepad"}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(sent(&calls, "press_key").len(), 2);
-        assert_eq!(sent(&calls, "type_text").len(), 3);
-    }
-
     #[tokio::test]
     async fn a_windows_background_type_sends_a_shifted_character_as_text_not_a_shift_hotkey() {
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -5026,7 +4868,7 @@ pub(crate) mod tests {
     async fn macos_typing_sets_the_driver_delay_for_foreground_basic_plane_text_and_background_chromium_apps()
      {
         for (os, background, pid, text, delay) in [
-            (Os::Mac, false, 4, "ab\u{4e2d}cd", Some(MAC_TYPE_DELAY_MS)),
+            (Os::Mac, false, 4, "ab\u{4e2d}\ncd", Some(MAC_TYPE_DELAY_MS)),
             (Os::Mac, true, 4, "ab\u{4e2d}\ncd", None),
             (Os::Mac, false, 4, "a\u{1f600}", None),
             (
@@ -5037,7 +4879,7 @@ pub(crate) mod tests {
                 Some(CHROMIUM_TYPE_DELAY_MS),
             ),
             (Os::Mac, true, 8, "a\u{1f600}", Some(CHROMIUM_TYPE_DELAY_MS)),
-            (Os::Mac, false, 8, "ab\u{4e2d}cd", Some(MAC_TYPE_DELAY_MS)),
+            (Os::Mac, false, 8, "ab\u{4e2d}\ncd", Some(MAC_TYPE_DELAY_MS)),
             (Os::Mac, false, 8, "a\u{1f600}", None),
             (Os::Windows, true, 8, "ab\u{4e2d}\ncd", None),
             (Os::Windows, false, 4, "ab\u{4e2d}\ncd", None),
@@ -7804,7 +7646,6 @@ pub(crate) mod tests {
         unanswered: Option<Frame>,
         sheet_opened: Option<fn() -> bool>,
         unread: Option<fn() -> bool>,
-        left: Option<fn() -> bool>,
     }
 
     impl Stub {
@@ -7855,11 +7696,6 @@ pub(crate) mod tests {
             } else {
                 self.frames()?
             };
-            if self.left.is_some_and(|left| left()) {
-                for f in &mut frames {
-                    f.active = false;
-                }
-            }
             if self.sheet_opened.is_some_and(|opened| opened()) {
                 for f in &mut frames {
                     f.active = false;
