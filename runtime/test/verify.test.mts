@@ -328,3 +328,24 @@ test('an expect on a cut tree tells the model the read stopped before the end of
   assert.match(asked[0] ?? '', /this accessibility read stopped before the end of the window/)
   assert.doesNotMatch(asked[1] ?? '', /this accessibility read stopped before the end of the window/)
 })
+
+test('an expect on a whole tree longer than the model is given tells the model only its start shows', async (t) => {
+  const asked: string[] = []
+  const rows = Array.from({ length: 120 }, (_, i) => ({ ref: i + 1, id: `1/${i + 2}`, parent: 0, depth: 1, role: 'textbox', name: `Field number ${i} with a long label`, states: ['showing'], bounds: [10, 10, 100, 20] }))
+  let many = true
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root, ...(many ? rows : rows.slice(0, 2))] })
+    if (tool === 'model_decide') { asked.push(JSON.stringify(args)); return JSON.stringify({ answers: { ok: { probability: 0.9 } }, served: { model: 'm', build: null, id: null }, usage }) }
+    return '{"ok":true}'
+  })
+  for (const long of [true, false]) {
+    many = long
+    const r = await main({ steps: [{ expect: 'the error is gone' }] })
+    assert.equal(r.ok, true, JSON.stringify(r))
+  }
+  assert.equal(asked.length, 2)
+  assert.match(asked[0] ?? '', /the outline shows only the start of the window/)
+  assert.doesNotMatch(asked[0] ?? '', /this accessibility read stopped before the end of the window/)
+  assert.doesNotMatch(asked[1] ?? '', /the outline shows only the start of the window/)
+})

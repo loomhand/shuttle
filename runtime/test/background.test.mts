@@ -318,6 +318,7 @@ test('a background click with a button, count or modifiers goes into the plan wi
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(sent(d.calls, 'desk_click'), [{ x: 440, y: 420, count: 2, window: 'Report', pid: 4 }])
   assert.deepEqual(sent(d.calls, 'desk_shot'), [{ window: 'Report', pid: 4 }])
+  assert.equal(d.calls.some((c) => c.tool === 'desk_at'), false)
 })
 
 test('a background click with a count takes the image scale from the window of its own app when another app has a window of that title', async (t) => {

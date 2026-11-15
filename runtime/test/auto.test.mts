@@ -736,6 +736,22 @@ test('a background type of several lines that a later desk call stops counts the
   }
 })
 
+test('a background type of several lines counts what went in when its first line or its rest fails with no count of its own, and passes on an error before anything went', async (t) => {
+  const fails = (text: string) => (c: Call) => c.tool === 'desk_type' && c.args.text === text ? { text: 'type_text: nothing was sent', error: true } : undefined
+  for (const [mode, plan] of modes) {
+    for (const [type, text, want] of [
+      ['\n\nfoo', 'foo', '2 of 3 lines and the Return after line 2 were typed, then this stopped the rest: type_text: nothing was sent'],
+      ['\nfoo\nbar', '\nbar', '2 of 3 lines were typed, then this stopped the rest: type_text: nothing was sent'],
+      ['foo\nbar', 'foo', 'type_text: nothing was sent'],
+    ] as const) {
+      const d = desktop((b, s) => b + s, false)
+      await daemon(t, (c) => fails(text)(c) ?? d.reply(c))
+      const r = await plan({ steps: [{ app: 'Notepad' }, { type }] })
+      assert.equal(r.escalate?.reason, want, `${mode} ${JSON.stringify(type)}`)
+    }
+  }
+})
+
 test('a terminal type that a later Return or line stops says how many lines of the step went in', async (t) => {
   for (const [mode, plan] of modes) {
     const line = await terminal(t, plan, (screen, text) => { if (text === 'pwd') throw new Error('type_text: nothing was sent'); return screen + text }, { type: 'ls\npwd\n', sure: () => true })

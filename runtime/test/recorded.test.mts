@@ -214,3 +214,20 @@ test('a foreground right click whose hit lands in its own window, on its root, o
     assert.equal(clicks, before + 1, how)
   }
 })
+
+test('a foreground right click on a menu entry is sent though its popup hangs over another window', async (t) => {
+  const win = { id: '1/1', title: 'Files', role: 'window', pid: process.pid, active: true, app: 'Finder', bounds: [0, 0, 800, 600] }
+  const entry = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'menuitem', name: 'Open Recent', states: ['showing'], bounds: [100, 200, 40, 20] }
+  let clicks = 0
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win, { id: '9/1', title: 'Always on top', role: 'window', pid: 9, active: false, app: 'Pinned', bounds: [0, 0, 400, 400] }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: 'Files', states: ['showing'] }, entry] })
+    if (tool === 'desk_read') return JSON.stringify(entry)
+    if (tool === 'desk_at') return JSON.stringify({ found: entry, path: [{ id: '1/1', role: 'window', name: 'Files' }], pid: process.pid, covered: { title: 'Always on top', pid: 9 } })
+    if (tool === 'desk_click') clicks += 1
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ click: 'Open Recent', button: 'right' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(clicks, 1)
+})
