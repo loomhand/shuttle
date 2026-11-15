@@ -1038,22 +1038,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         for left in (0..times).rev() {
             if left + 1 < times
                 && let Some(w) = raised
+                && let Some(why) = self.moved_from(w, front.as_deref()).await
             {
-                let moved = if self.os == Os::Mac && front.is_some() {
-                    match self.front_frame(w).await {
-                        None => Some("the window left the front"),
-                        now if now != front => Some("the frame in front of the window changed"),
-                        _ => None,
-                    }
-                } else {
-                    (!self.fronted(w).await).then_some("the window left the front")
-                };
-                if let Some(why) = moved {
-                    return Err(format!(
-                        "{} of {times} presses were sent, then {why}, so the rest were not sent",
-                        times - left - 1
-                    ));
-                }
+                return Err(format!(
+                    "{} of {times} presses were sent, then {why}, so the rest were not sent",
+                    times - left - 1
+                ));
             }
             self.send(tool, req.clone(), to, &mut note)
                 .await
@@ -1111,7 +1101,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         .await?;
                     returned = true;
                     if let (Some(w), Some(f), false) = (watched, &front, i + 1 == lines && ended) {
-                        moved = self.left_after_return(w, f).await;
+                        tokio::time::sleep(RETURN_SETTLE).await;
+                        moved = self.moved_from(w, Some(f)).await;
                         if moved.is_some() {
                             return Err(String::new());
                         }
@@ -2018,14 +2009,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(())
     }
 
-    async fn left_after_return(&self, w: (i64, i64), front: &str) -> Option<&'static str> {
-        tokio::time::sleep(RETURN_SETTLE).await;
-        if self.os != Os::Mac {
+    async fn moved_from(&self, w: (i64, i64), front: Option<&str>) -> Option<&'static str> {
+        if self.os != Os::Mac || front.is_none() {
             return (!self.fronted(w).await).then_some("the window left the front");
         }
         match self.front_frame(w).await {
             None => Some("the window left the front"),
-            Some(now) if now != front => Some("the frame in front of the window changed"),
+            now if now.as_deref() != front => Some("the frame in front of the window changed"),
             _ => None,
         }
     }
