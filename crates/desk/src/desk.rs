@@ -1083,13 +1083,28 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .next()
             .is_some_and(|l| l.trim_end_matches('\r').is_empty());
         let watched = raised.filter(|_| lines > 2 || (lines == 2 && !ended));
-        let mut front = None;
+        let mut front: Option<String> = None;
         let mut moved = None;
         let mut budget = ANSWER_WAIT;
         let mut blind = false;
+        let mut after_blank = false;
         for (i, line) in text.split('\n').enumerate() {
             let mut returned = false;
             let sent: Result<(), String> = async {
+                if i >= 2
+                    && !blind
+                    && !after_blank
+                    && let (Some(w), Some(f)) = (watched, &front)
+                {
+                    match self.answered_move(w, Some(f), &mut budget).await {
+                        Some(Some(why)) => {
+                            moved = Some(why);
+                            return Err(String::new());
+                        }
+                        Some(None) => {}
+                        None => blind = true,
+                    }
+                }
                 self.raise(raised).await?;
                 if i == 0
                     && let Some(w) = watched
@@ -1184,8 +1199,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 Ok(())
             }
             .await;
+            after_blank = line.trim_end_matches('\r').is_empty();
             sent.map_err(|e| match (i, returned) {
                 (0, _) => e,
+                (_, false) if let Some(why) = moved => format!(
+                    "{i} of {lines} lines were typed, then {why}, so the rest were not sent"
+                ),
                 (_, true) if let Some(why) = moved => format!(
                     "{i} of {lines} lines and the Return after line {i} were typed, then {why}, so the rest were not sent"
                 ),
@@ -3665,6 +3684,28 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_multi_line_type_stops_before_a_return_a_late_sheet_would_take() {
+        static RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static SEEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let late = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                sheet_opened: Some(|| {
+                    RETURNS.load(Ordering::SeqCst) >= 1 && SEEN.fetch_add(1, Ordering::SeqCst) >= 1
+                }),
+                ..Stub::default()
+            })
+        };
+        let (got, calls) = typed_lines(Os::Mac, late, &RETURNS, "a\nb\nc").await;
+        assert_eq!(
+            got.unwrap_err(),
+            "2 of 3 lines were typed, then the frame in front of the window changed, so the rest were not sent"
+        );
+        assert_eq!(sent(&calls, "press_key").len(), 1);
+        assert_eq!(sent(&calls, "type_text").len(), 2);
+    }
+
+    #[tokio::test]
     async fn a_multi_line_type_checks_every_return_and_not_only_the_first() {
         static RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let second = || {
@@ -3930,7 +3971,7 @@ pub(crate) mod tests {
             })
         };
         let mut reads = Vec::new();
-        for text in ["x", "x\n", "x\ny"] {
+        for text in ["x", "x\n", "x\ny", "a\nb\nc", "a\n\nb"] {
             READS.store(0, Ordering::SeqCst);
             typed_lines(Os::Mac, counted, &RETURNS, text)
                 .await
@@ -3938,7 +3979,7 @@ pub(crate) mod tests {
                 .unwrap();
             reads.push(READS.load(Ordering::SeqCst));
         }
-        assert_eq!(reads, [1, 2, 4]);
+        assert_eq!(reads, [1, 2, 4, 7, 6]);
     }
 
     #[tokio::test]
