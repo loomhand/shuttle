@@ -188,3 +188,29 @@ for (const [how, step] of [['right click', { button: 'right' }], ['double click'
   }
   assert.deepEqual(clicks, [])
 })
+
+test('a foreground right click whose hit lands in its own window, on its root, on no known process or nowhere readable is sent', async (t) => {
+  const win = { id: '1/1', title: 'Files', role: 'window', pid: process.pid, active: true, app: 'Finder', bounds: [0, 0, 800, 600] }
+  const file = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'report.txt', states: ['showing'], bounds: [100, 200, 40, 20] }
+  let under: () => unknown = () => ({})
+  let clicks = 0
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: 'Files', states: ['showing'] }, file] })
+    if (tool === 'desk_read') return JSON.stringify(file)
+    if (tool === 'desk_at') return JSON.stringify(under())
+    if (tool === 'desk_click') clicks += 1
+    return '{"ok":true}'
+  })
+  const inside = () => ({ found: { ref: 0, id: '1/2', parent: -1, depth: 0, role: 'button', name: 'report.txt', states: [] }, path: [{ id: '1/1', role: 'window', name: 'Files' }], pid: process.pid })
+  const rooted = () => ({ found: { ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: 'Files', states: [] }, path: [{ id: '1/1', role: 'window', name: 'Files' }], pid: process.pid })
+  const unknown = () => ({ found: { ref: 0, id: '5/2', parent: -1, depth: 0, role: 'button', name: 'report.txt', states: [] }, path: [], pid: null })
+  const failed = () => { throw new Error('desk at: the hit test failed') }
+  for (const [how, hit] of [['inside', inside], ['root', rooted], ['unknown pid', unknown], ['at error', failed]] as const) {
+    under = hit
+    const before = clicks
+    const r = await main({ steps: [{ click: 'report.txt', button: 'right' }] })
+    assert.equal(r.ok, true, `${how} ${JSON.stringify(r)}`)
+    assert.equal(clicks, before + 1, how)
+  }
+})
