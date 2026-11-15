@@ -3410,6 +3410,20 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(!err.contains("lines were typed"), "{err}");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(Apps),
+            FailPress(Behind(calls), std::sync::atomic::AtomicUsize::new(0)),
+            Os::Mac,
+        );
+        let err = desk
+            .run("desk_type", json!({"text": "a\nb\nc"}))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "2 of 3 lines were typed, then this stopped the rest: press_key: nothing was sent"
+        );
     }
 
     #[tokio::test]
