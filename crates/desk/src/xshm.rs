@@ -1831,9 +1831,15 @@ mod tests {
         let at = (300, 200);
         let snug = Some([64, 64, 472, 272]);
         assert_eq!(over(&sandboxed, at, snug, Some(7), "doc", names), None);
-        let loose = Some([65, 64, 471, 272]);
-        let got = over(&sandboxed, at, loose, Some(7), "doc", names);
-        assert_eq!(got.map(|f| f.id), Some(10));
+        for loose in [
+            [65, 64, 471, 272],
+            [64, 65, 472, 271],
+            [64, 64, 471, 272],
+            [64, 64, 472, 271],
+        ] {
+            let got = over(&sandboxed, at, Some(loose), Some(7), "doc", names);
+            assert_eq!(got.map(|f| f.id), Some(10), "{loose:?}");
+        }
     }
 
     #[test]
@@ -1881,14 +1887,15 @@ mod tests {
             (52, 72, Some(7), none),
             (53, x11rb::NONE, Some(8), none),
             (55, 73, Some(9), none),
+            (57, 75, Some(4), none),
         ];
         let asked = std::cell::RefCell::new(Vec::new());
         let parents = |ws: &[Window]| {
             asked.borrow_mut().push(ws.to_vec());
             ws.iter()
                 .map(|w| match w {
-                    60 => 70,
-                    70 | 72 => 1,
+                    60 => 61,
+                    61 => 70,
                     _ => x11rb::NONE,
                 })
                 .collect()
@@ -1899,7 +1906,7 @@ mod tests {
             got,
             [(72, 52, Some(7)), (51, 51, Some(6)), (70, 50, Some(5))]
         );
-        assert_eq!(asked.into_inner(), [vec![60]]);
+        assert_eq!(asked.into_inner(), [vec![60], vec![61]]);
     }
 
     fn frame(id: Window, rect: [i32; 4], pid: Option<u32>) -> Framed {
