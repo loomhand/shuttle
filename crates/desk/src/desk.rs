@@ -65,6 +65,8 @@ pub(crate) const BACKGROUND_TWINS: &str = "background input: the element's own w
 pub(crate) const BACKGROUND_UIA: &str = "background input: on Windows UI Automation focuses, selects or runs an element only by bringing its window to the front; click it in its window, or use input = \"foreground\"";
 pub(crate) const BACKGROUND_TERMINAL: &str = "background input: Windows Terminal drops every key while another window is in front and its terminal holds no keyboard focus, and background input never brings a window to the front; bring it to the front, or use input = \"foreground\"";
 pub(crate) const CALL_LIMIT: Duration = Duration::from_secs(3);
+pub(crate) const RAISE_WAIT: Duration = Duration::from_millis(500);
+pub(crate) const WAIT_POLL: Duration = Duration::from_millis(10);
 pub(crate) const BUSY: &str = "desk busy: a previous action is still running";
 #[cfg(target_os = "linux")]
 pub(crate) const TYPER: Typer = crate::xtest::type_mapped;
@@ -81,8 +83,6 @@ const APP_INPUT: [&str; 5] = [
 
 const TREE_LIMIT: Duration = Duration::from_secs(10);
 const WAIT_MAX: Duration = Duration::from_secs(5);
-const RAISE_WAIT: Duration = Duration::from_millis(500);
-const WAIT_POLL: Duration = Duration::from_millis(10);
 const WAIT_CHECK: Duration = Duration::from_millis(100);
 
 const FRAME_BORDER: f64 = 16.0;
@@ -949,13 +949,27 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 .and_then(|n| u32::try_from(n).ok());
         }
         let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
+        let uia = under && self.os == Os::Windows;
         self.access
             .run(CALL_LIMIT, (), move |b| {
                 b.evict();
+                let mut frames = frames(b, a.pid, &allow)?;
+                let window = a.window.as_deref();
+                if uia
+                    && !frames.iter().any(|f| {
+                        f.pid == a.pid
+                            && window.is_some_and(|w| {
+                                (0..TITLE_TIERS).any(|t| title_matches(t, &f.title, w))
+                            })
+                    })
+                    && let Some(p) = b.owner_at(a.x, a.y).ok().flatten()
+                {
+                    (a.window, a.pid) = (None, Some(p));
+                    frames = self::frames(b, a.pid, &allow)?;
+                }
                 if under && !allow.is_open() {
                     check_process(b, &allow, a.pid)?;
                 }
-                let frames = frames(b, a.pid, &allow)?;
                 if let Some(f) = number.and_then(|n| frames.iter().find(|f| f.number == Some(n))) {
                     a.window = Some(f.title.clone());
                 }
@@ -1961,39 +1975,40 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(!lists_top_level(&self.listed().await?, w))
     }
 
-    async fn raise(&self, window: Option<(i64, i64)>) -> Result<(), String> {
+    async fn raise(&self, window: Option<(i64, i64)>) -> Result<Value, String> {
         let Some((pid, window_id)) = window else {
-            return Ok(());
+            return Ok(Value::Null);
         };
         if self.os == Os::Mac && self.fronted((pid, window_id)).await {
-            return Ok(());
+            return Ok(Value::Null);
         }
-        if let Err(e) = self
+        let e = match self
             .call(
                 "bring_to_front",
                 json!({"pid": pid, "window_id": window_id}),
             )
             .await
         {
-            let front = match e
-                .rsplit_once(crate::driver::ACTUAL_FRONT)
-                .and_then(|(_, id)| id.trim().parse::<u64>().ok())
-            {
-                Some(id) => self
-                    .on_screen()
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .find(|w| w["window_id"].as_u64() == Some(id))
-                    .and_then(|w| w["title"].as_str().map(str::to_owned)),
-                None => None,
-            };
-            return Err(match front {
-                Some(title) => format!("{e}; the front window is {title:?}"),
-                None => e,
-            });
-        }
-        Ok(())
+            Ok(v) => return Ok(v),
+            Err(e) => e,
+        };
+        let front = match e
+            .rsplit_once(crate::driver::ACTUAL_FRONT)
+            .and_then(|(_, id)| id.trim().parse::<u64>().ok())
+        {
+            Some(id) => self
+                .on_screen()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .find(|w| w["window_id"].as_u64() == Some(id))
+                .and_then(|w| w["title"].as_str().map(str::to_owned)),
+            None => None,
+        };
+        Err(match front {
+            Some(title) => format!("{e}; the front window is {title:?}"),
+            None => e,
+        })
     }
 
     async fn fronted(&self, w: (i64, i64)) -> bool {
@@ -2190,12 +2205,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let window_id: i64 =
             w.id.parse()
                 .map_err(|_| format!("window id {:?} is not a number", w.id))?;
-        let mut v = self
-            .call(
-                "bring_to_front",
-                json!({"pid": w.pid, "window_id": window_id}),
-            )
-            .await?;
+        let pid = w
+            .pid
+            .ok_or_else(|| format!("window {:?} has no process", w.title))?;
+        let mut v = self.raise(Some((pid.into(), window_id))).await?;
         let mut out = Value::from_iter([
             ("ok", Value::from(true)),
             ("title", w.title.into()),
@@ -3208,6 +3221,57 @@ pub(crate) mod tests {
         assert_eq!(raises(|| Ok(sheets("w"))).await, 0);
         assert_eq!(raises(|| Ok(sheets("s"))).await, 0);
         assert_eq!(raises(|| Ok(sheets("x"))).await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_macos_focus_raises_only_a_window_whose_sheet_does_not_hold_the_focus() {
+        fn listed(sheet: bool) -> Stub {
+            let mut frames = vec![
+                Frame {
+                    number: Some(1),
+                    ..frame("w", "Untitled - Notepad", 4, false, Some("Notepad"))
+                },
+                Frame {
+                    number: Some(3),
+                    ..frame("f", "Find", 4, false, Some("Notepad"))
+                },
+            ];
+            if sheet {
+                frames.push(Frame {
+                    role: "dialog",
+                    owner: Some("w".into()),
+                    ..frame("s", "save", 4, true, Some("Notepad"))
+                });
+            }
+            Stub {
+                frames,
+                ..Stub::default()
+            }
+        }
+        async fn raised(stub: fn() -> Result<Stub, String>, window: &str) -> Vec<Value> {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(stub, Pathed(Wheel(Arc::clone(&calls))), Os::Mac);
+            let out = desk
+                .run("desk_focus", json!({"window": window}))
+                .await
+                .unwrap();
+            let v: Value = serde_json::from_str(&out.text).unwrap();
+            assert_eq!(v["ok"], true);
+            let raises = sent(&calls, "bring_to_front");
+            assert_eq!(v.get("path").is_some(), !raises.is_empty(), "{v}");
+            raises
+        }
+        let sheet = || Ok(listed(true));
+        assert!(raised(sheet, "Untitled - Notepad").await.is_empty());
+        let find = raised(sheet, "Find").await;
+        assert_eq!(find.len(), 1);
+        assert_eq!(find[0]["window_id"], 3);
+        assert_eq!(
+            raised(|| Ok(listed(false)), "Untitled - Notepad")
+                .await
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -5312,6 +5376,24 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn an_allowlisted_point_click_whose_hit_test_fails_sends_nothing() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let unhit = || {
+            let mut f = notepad();
+            f.unhit = true;
+            Ok(f)
+        };
+        let desk =
+            Desk::new(unhit, Behind(Arc::clone(&calls)), Os::Windows).allow(&["notepad".into()]);
+        let err = desk
+            .run("desk_click", json!({"x": 140.0, "y": 110.0}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("hit test at the point failed"), "{err}");
+        assert!(sent(&calls, "click").is_empty(), "{:?}", order(&calls));
+    }
+
+    #[tokio::test]
     async fn a_windows_cover_the_hit_test_passes_through_does_not_stop_pointer_input() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let through = || {
@@ -5980,6 +6062,91 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(err.starts_with("2 windows match the title"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_windows_at_under_a_window_uia_does_not_list_reads_the_hit_tests_window() {
+        let cloaked = || {
+            let mut f = notepad();
+            f.hits.insert((600, 100), "ok".into());
+            f.top = Some(4);
+            Ok(f)
+        };
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(cloaked, Behind(Arc::clone(&calls)), Os::Windows);
+        let out = desk
+            .run("desk_at", json!({"x": 600, "y": 100}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(
+            (&v["found"]["id"], &v["pid"]),
+            (&json!("ok"), &json!(4)),
+            "{v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_windows_at_under_a_cloaked_window_of_the_same_app_reads_its_visible_window() {
+        let cloaked = || {
+            let mut f = notepad();
+            f.hits.insert((600, 100), "ok".into());
+            f.top = Some(4);
+            Ok(f)
+        };
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(cloaked, SameApp(Behind(Arc::clone(&calls))), Os::Windows);
+        let out = desk
+            .run("desk_at", json!({"x": 600, "y": 100}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(
+            (&v["found"]["id"], &v["pid"]),
+            (&json!("ok"), &json!(4)),
+            "{v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_windows_at_under_a_window_uia_lists_reads_that_window_without_the_hit_test() {
+        let listed = || {
+            let mut f = notepad();
+            f.hits.insert((140, 110), "ok".into());
+            f.top = Some(9);
+            Ok(f)
+        };
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(listed, Behind(Arc::clone(&calls)), Os::Windows);
+        let out = desk
+            .run("desk_at", json!({"x": 140, "y": 110}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(
+            (&v["found"]["id"], &v["pid"]),
+            (&json!("ok"), &json!(4)),
+            "{v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn at_under_a_window_the_tree_does_not_list_has_no_hit_test_fallback_off_windows() {
+        for os in [Os::Mac, Os::Linux] {
+            let unlisted = || {
+                let mut f = notepad();
+                f.hits.insert((600, 100), "ok".into());
+                f.top = Some(4);
+                Ok(f)
+            };
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(unlisted, Behind(Arc::clone(&calls)), os);
+            let err = desk
+                .run("desk_at", json!({"x": 600, "y": 100}))
+                .await
+                .unwrap_err();
+            assert!(err.starts_with("no window \"Inbox\""), "{os:?}: {err}");
+        }
     }
 
     #[tokio::test]
@@ -7420,6 +7587,7 @@ pub(crate) mod tests {
         untitled: bool,
         top: Option<u32>,
         blind: bool,
+        unhit: bool,
         listed: Option<u32>,
         pub(crate) behind: bool,
         pub(crate) pid: Option<u32>,
@@ -7497,6 +7665,9 @@ pub(crate) mod tests {
         }
 
         fn pid_at(&mut self, _: i32, _: i32) -> Result<Option<u32>, String> {
+            if self.unhit {
+                return Err("the UI Automation hit test at the point failed".into());
+            }
             Ok(self.top)
         }
 
@@ -8017,6 +8188,24 @@ pub(crate) mod tests {
                 self.0.1.store(false, Ordering::SeqCst);
             }
             out
+        }
+    }
+
+    struct SameApp(Behind);
+
+    impl Input for SameApp {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let mut out = self.0.call(tool, args).await?;
+            for w in out["structuredContent"]["windows"]
+                .as_array_mut()
+                .into_iter()
+                .flatten()
+                .filter(|w| w["pid"] == 8)
+            {
+                w["pid"] = 4.into();
+                w["title"] = "Cloaked".into();
+            }
+            Ok(out)
         }
     }
 
@@ -9313,6 +9502,21 @@ pub(crate) mod tests {
                     {"window_id": 2, "title": "Report - Writer", "pid": 8}
                 ]}}),
                 _ => json!({}),
+            })
+        }
+    }
+
+    struct Pathed(Wheel);
+
+    impl Input for Pathed {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let out = self.0.call(tool, args).await?;
+            Ok(match tool {
+                "bring_to_front" => json!({"structuredContent": {
+                    "path": "activate",
+                    "observed": {"workspace_frontmost_pid": 4}
+                }}),
+                _ => out,
             })
         }
     }
