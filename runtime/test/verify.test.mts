@@ -224,3 +224,27 @@ test('a waiting verify asks no model until its last read, and one that had to wa
   assert.equal(went.ok, true, JSON.stringify(went))
   assert.equal(went.escalate, undefined, JSON.stringify(went))
 })
+
+test('a waiting verify whose misses came from truncated snapshots does not confirm the step before it', async (t) => {
+  const button = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'Show', states: ['showing'], bounds: [10, 10, 60, 20] }
+  const label = { ref: 2, id: '1/3', parent: 0, depth: 1, role: 'text', name: 'Done', states: ['showing'], bounds: [10, 40, 60, 20] }
+  let shown = Infinity; let cut = true
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') { const on = Date.now() >= shown; return JSON.stringify({ window: win, truncated: cut && !on, nodes: on ? [root, button, label] : [root, button] }) }
+    if (tool === 'desk_click' || tool === 'desk_press' || tool === 'desk_act') { shown = Date.now() + 600; return JSON.stringify({ ok: true, unverified: 'unverifiable: posted click' }) }
+    return '{"ok":true}'
+  })
+  process.env.SHUTTLE_INPUT = 'background'
+  const mode = 'verify-cut'
+  const background = ((await import(`../lib/gui_plan.mts?${mode}`)) as { main: typeof main }).main
+  delete process.env.SHUTTLE_INPUT
+  const plan = { steps: [{ wait: 'Format' }, { click: 'Show' }, { verify: 'Done', role: 'text', timeout_ms: 3000 }] }
+  const r = await background(plan)
+  assert.equal(r.escalate?.step, 1, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /sent but not confirmed/, JSON.stringify(r))
+  cut = false; shown = Infinity
+  const whole = await background(plan)
+  assert.equal(whole.ok, true, JSON.stringify(whole))
+  assert.equal(whole.escalate, undefined, JSON.stringify(whole))
+})

@@ -118,6 +118,7 @@ const CHOOSER = CHOOSER_BY_OS[OS] ?? /(?!)/
 const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
 const ACTION_ONLY = 'an accessibility action ran, and on Linux its success does not show its effect; no later step read it back'
 const NOOP = 'the input was sent, and the driver saw nothing change where it expected a change; no later step read its effect'
+const UNCHECKED = 'the text was sent, and the device did not check that it showed, as for a web view or a field that changes what is typed; no later step read it back'
 const TOGGLE_UNREAD = 'the menu toggle was pressed, and its state after the press could not be read; no later step read it back'
 const SHORTCUT_VERBS: Record<string, string> = { 'ctrl+n': 'new', 'ctrl+s': 'save', 'ctrl+shift+s': 'save as', 'ctrl+o': 'open' }
 const known = new Set<string>()
@@ -478,7 +479,7 @@ function traced(i: number, rec: Rec, s: Step, escalated: boolean): Trace {
   }
 }
 
-function heard(r: desk.Sent, rec: Rec, s: Step) { if (!BG && r.effect === 'suspected_noop') rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
+function heard(r: desk.Sent, rec: Rec, s: Step) { if (r.typed === false) throw new Surprise(`${typedText(s)} did not show in the focused field${s.type?.includes('\n') ? ', after all its lines and the Returns between them were sent' : ''}`, {}); if (r.typed === null && !secure(s)) rec.caveat ??= UNCHECKED; if (!BG && r.effect === 'suspected_noop') rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
 function hush(note: string) { return `unverifiable: the password was sent and the target did not confirm it${note.includes(TERMINAL) ? ` (${TERMINAL})` : ''}; do not type it again` }
 async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
   let ws = seed ?? await desk.windows()
@@ -1407,16 +1408,16 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   }
   if (s.verify) {
     const want = s.verify
-    let seenTarget = false
+    let observed = false
     const miss = async (ask: boolean) => {
       const { nodes, snap } = tree
       if (s.gone) {
         const kept = nodes.find((n) => n.shown && norm(n.name) === norm(want.slice(0, NAME_CUT).trim()))
-        if (kept) { seenTarget = true; return `verify: "${kept.name}" is still there` }
+        if (kept) { observed = true; return `verify: "${kept.name}" is still there` }
         return snap.truncated ? `verify: snapshot is truncated; cannot confirm "${want}" is gone` : ''
       }
       const hit = await resolve(nodes, want, targetRole(s), undefined, 0.7, s.fp, ask)
-      if (!hit) return `verify: no element matches "${want}"`
+      if (!hit) { observed ||= !snap.truncated; return `verify: no element matches "${want}"` }
       rec.how = hit.how; rec.fp = fingerprint(nodes, hit)
       const bad: string[] = []
       if (s.value !== undefined) { let v = ''; let url: string | undefined; try { const r = await desk.read(hit.n.id); url = r.url; v = r.url ?? r.value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); v = hit.n.value }; if (url !== undefined ? url !== s.value : !holds(hit.n.role, v, s.value)) bad.push(`reads "${v}"`) }
@@ -1425,10 +1426,10 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       return bad.length ? `verify: "${hit.n.name || want}" ${bad.join(', ')}` : ''
     }
     const end = Math.min(Date.now() + (s.timeout_ms ?? 0), deadline)
-    for (let first = true; ; first = false) {
+    for (;;) {
       const last = Date.now() >= end
       const why = await miss(last)
-      if (!why) { rec.waited = !first && (seenTarget || rec.how === 'ax' || rec.how === 'fp'); return }
+      if (!why) { rec.waited = observed && (s.gone || rec.how === 'ax' || rec.how === 'fp'); return }
       if (last) throw new Surprise(why, await seen())
       await sleep(Math.min(VERIFY_POLL, end - Date.now()))
       tree = s.web ? await onPage(s.web, w, undefined, read) : await readTree(w, read)
