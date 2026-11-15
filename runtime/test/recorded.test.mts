@@ -215,9 +215,9 @@ test('a foreground right click whose hit lands in its own window, on its root, o
   }
 })
 
-test('a foreground right click on a menu entry is sent though its popup hangs over another window', async (t) => {
+for (const role of ['menuitem', 'menu']) test(`a foreground right click on a ${role} is sent though its popup hangs over another window`, async (t) => {
   const win = { id: '1/1', title: 'Files', role: 'window', pid: process.pid, active: true, app: 'Finder', bounds: [0, 0, 800, 600] }
-  const entry = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'menuitem', name: 'Open Recent', states: ['showing'], bounds: [100, 200, 40, 20] }
+  const entry = { ref: 1, id: '1/2', parent: 0, depth: 1, role, name: 'Open Recent', states: ['showing'], bounds: [100, 200, 40, 20] }
   let clicks = 0
   await daemon(t, ({ tool }) => {
     if (tool === 'desk_windows') return JSON.stringify([win, { id: '9/1', title: 'Always on top', role: 'window', pid: 9, active: false, app: 'Pinned', bounds: [0, 0, 400, 400] }])
@@ -230,4 +230,22 @@ test('a foreground right click on a menu entry is sent though its popup hangs ov
   const r = await main({ steps: [{ click: 'Open Recent', button: 'right' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(clicks, 1)
+})
+
+test('a foreground right click whose hit lands in a window of the same app that the plan window does not own is not sent', async (t) => {
+  const win = { id: '1/1', title: 'Files', role: 'window', pid: process.pid, active: true, app: 'Finder', bounds: [0, 0, 800, 600] }
+  const file = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'report.txt', states: ['showing'], bounds: [100, 200, 40, 20] }
+  let clicks = 0
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win, { id: '1/9', title: 'Inspector', role: 'window', pid: process.pid, active: false, app: 'Finder', bounds: [0, 0, 400, 400] }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: 'Files', states: ['showing'] }, file] })
+    if (tool === 'desk_read') return JSON.stringify(file)
+    if (tool === 'desk_at') return JSON.stringify({ found: { ref: 0, id: '1/10', parent: -1, depth: 0, role: 'button', name: 'Apply', states: [] }, path: [{ id: '1/9', role: 'window', name: 'Inspector' }], pid: process.pid })
+    if (tool === 'desk_click') clicks += 1
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ click: 'report.txt', button: 'right' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /^the centre of button "report\.txt" is on button "Apply" under window "Inspector".*, so the click was not sent/)
+  assert.equal(clicks, 0)
 })
