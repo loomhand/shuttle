@@ -3390,7 +3390,12 @@ pub(crate) mod tests {
                 ),
                 "{os:?}"
             );
-            assert_eq!(sent(&calls, "press_key").len(), 1, "{os:?} {:?}", order(&calls));
+            assert_eq!(
+                sent(&calls, "press_key").len(),
+                1,
+                "{os:?} {:?}",
+                order(&calls)
+            );
             let typed: Vec<String> = calls
                 .lock()
                 .unwrap()
@@ -3398,7 +3403,10 @@ pub(crate) mod tests {
                 .filter(|(t, _)| t == "type_text")
                 .map(|(_, a)| a["text"].as_str().unwrap_or_default().to_owned())
                 .collect();
-            assert!(typed.iter().all(|t| !t.contains('c') && !t.contains('e')), "{os:?} {typed:?}");
+            assert!(
+                typed.iter().all(|t| !t.contains('c') && !t.contains('e')),
+                "{os:?} {typed:?}"
+            );
         }
     }
 
