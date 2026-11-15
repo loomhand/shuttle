@@ -466,11 +466,12 @@ function at(w: Win | null): desk.Target {
   return { window: to.title, pid: to.pid }
 }
 function lined(w: Win | null, ws: Win[], text: string): desk.Target {
-  if (BG || !w?.active || !/\n[^]/.test(text)) return at(w)
+  if (BG || OS === 'linux' || !w?.active || !/\n[^]/.test(text)) return at(w)
   let x = w
   for (let o = OS === 'darwin' ? x.owner : undefined; o; o = x.owner) { const up = ws.find((y) => y.id === o); if (!up) break; x = up }
   const to = x
-  return ws.some((y) => y.id !== to.id && y.pid === to.pid && y.title === to.title) ? FG : { ...FG, window: to.title, pid: to.pid }
+  const under = (y: Win) => { let z: Win | undefined = y; for (let k = 0; z && k <= ws.length; k++, z = ws.find((v) => v.id === z?.owner)) if (z.id === to.id) return true; return false }
+  return !to.title.trim() || ws.some((y) => !under(y) && y.pid === to.pid && y.title === to.title) ? FG : { ...FG, window: to.title, pid: to.pid }
 }
 function unique(w: Win) {
   if (BG && listed.some((y) => y.id !== w.id && y.pid === w.pid && y.title === w.title)) throw new Surprise(`another window of the app is also titled "${w.title}", and background input names its window by title, so it never guesses which one gets it`)
