@@ -444,7 +444,11 @@ impl Android {
                 self.keys("return").await.map_err(partly)?;
             }
             if line.is_empty() {
-                if i == 0 && window.is_none() && text.split('\n').any(|l| !l.is_empty()) {
+                if i == 0
+                    && window.is_none()
+                    && at.is_none()
+                    && text.split('\n').any(|l| !l.is_empty())
+                {
                     pin = Some(self.field_window().await?.ok_or(NO_FIELD_FIRST)?);
                 }
                 continue;
@@ -462,12 +466,7 @@ impl Android {
                 window,
                 i == 0,
                 &mut took,
-                |live| async move {
-                    let answer = self
-                        .served(if live { "focus live" } else { "focus" })
-                        .await?;
-                    serde_json::from_str(answer.trim()).map_err(|e| format!("decode focus: {e}"))
-                },
+                |live| self.focus(live),
                 || self.paste(line),
             )
             .await
@@ -484,10 +483,15 @@ impl Android {
         Ok(typed)
     }
 
+    async fn focus(&self, live: bool) -> Result<Option<Focus>, String> {
+        let answer = self
+            .served(if live { "focus live" } else { "focus" })
+            .await?;
+        serde_json::from_str(answer.trim()).map_err(|e| format!("decode focus: {e}"))
+    }
+
     async fn field_window(&self) -> Result<Option<i64>, String> {
-        let answer = self.served("focus live").await?;
-        let focus: Option<Focus> =
-            serde_json::from_str(answer.trim()).map_err(|e| format!("decode focus: {e}"))?;
+        let focus = self.focus(true).await?;
         Ok(focus.filter(|f| f.editable && f.window).and_then(|f| f.id))
     }
 
@@ -2048,46 +2052,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn acked(fake: &Fake) {
-        let mut peer = controlled(&fake.android).await;
-        tokio::spawn(async move {
-            let mut head = [0u8; 14];
-            while peer.read_exact(&mut head).await.is_ok() {
-                let len = u32::from_be_bytes([head[10], head[11], head[12], head[13]]);
-                let mut text = vec![0u8; len as usize];
-                peer.read_exact(&mut text).await.unwrap();
-                let mut ack = vec![ACK_CLIPBOARD];
-                ack.extend_from_slice(&head[1..9]);
-                peer.write_all(&ack).await.unwrap();
-            }
-        });
-    }
-
-    #[cfg(unix)]
-    fn focused(id: i64, text: &str) -> String {
-        format!(
-            r#"{{"editable":true,"password":false,"window":true,"id":{id},"len":{},"hash":{},"tail":"{text}","bounds":[0,0,720,100]}}"#,
-            text.len(),
-            text.len()
-        )
-    }
-
-    #[cfg(unix)]
-    fn documents(dialog: bool) -> String {
-        let main = format!(
-            r#"{{"id":10,"type":1,"layer":0,"title":"Downloads","package":"com.android.documentsui","active":{},"focused":{},"bounds":[0,0,720,1280]}}"#,
-            !dialog, !dialog
-        );
-        if dialog {
-            format!(
-                r#"[{{"id":11,"type":1,"layer":1,"title":"New folder","package":"com.android.documentsui","active":true,"focused":true,"bounds":[60,400,660,800]}},{main}]"#
-            )
-        } else {
-            format!("[{main}]")
-        }
-    }
-
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_named_type_goes_on_only_in_the_window_it_began_in() {
         for closes in [true, false] {
@@ -2186,7 +2150,35 @@ mod tests {
                 pastes,
                 "{text:?} {requests}"
             );
+            if keys > 0 {
+                let first = requests.find("focus live").unwrap_or(usize::MAX);
+                assert!(first < requests.find("key ").unwrap_or(0), "{requests}");
+            }
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_text_at_a_point_that_starts_with_a_line_break_is_refused_after_its_return() {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true\ntrue");
+        fake.windows("");
+        fake.put("focus.json", &focused(7, ""));
+        acked(&fake).await;
+        let err = fake
+            .android
+            .act(serde_json::json!({"action": "type", "text": "\nbody", "x": 10, "y": 20}))
+            .await
+            .unwrap_err();
+        assert!(err.starts_with(NO_FIELD), "{err}");
+        assert!(
+            err.ends_with("; 1 of 2 lines and the Return after line 1 were typed before it"),
+            "{err}"
+        );
+        let requests = log(&fake, "requests");
+        assert_eq!(requests.matches("key ").count(), 1, "{requests}");
+        assert_eq!(requests.matches("focus").count(), 0, "{requests}");
+        assert_eq!(requests.matches("paste").count(), 0, "{requests}");
     }
 
     #[cfg(unix)]
@@ -3041,6 +3033,46 @@ mod tests {
         .await
         .unwrap();
         assert_eq!((out, pastes.get()), (None, 1));
+    }
+
+    #[cfg(unix)]
+    async fn acked(fake: &Fake) {
+        let mut peer = controlled(&fake.android).await;
+        tokio::spawn(async move {
+            let mut head = [0u8; 14];
+            while peer.read_exact(&mut head).await.is_ok() {
+                let len = u32::from_be_bytes([head[10], head[11], head[12], head[13]]);
+                let mut text = vec![0u8; len as usize];
+                peer.read_exact(&mut text).await.unwrap();
+                let mut ack = vec![ACK_CLIPBOARD];
+                ack.extend_from_slice(&head[1..9]);
+                peer.write_all(&ack).await.unwrap();
+            }
+        });
+    }
+
+    #[cfg(unix)]
+    fn focused(id: i64, text: &str) -> String {
+        format!(
+            r#"{{"editable":true,"password":false,"window":true,"id":{id},"len":{},"hash":{},"tail":"{text}","bounds":[0,0,720,100]}}"#,
+            text.len(),
+            text.len()
+        )
+    }
+
+    #[cfg(unix)]
+    fn documents(dialog: bool) -> String {
+        let main = format!(
+            r#"{{"id":10,"type":1,"layer":0,"title":"Downloads","package":"com.android.documentsui","active":{},"focused":{},"bounds":[0,0,720,1280]}}"#,
+            !dialog, !dialog
+        );
+        if dialog {
+            format!(
+                r#"[{{"id":11,"type":1,"layer":1,"title":"New folder","package":"com.android.documentsui","active":true,"focused":true,"bounds":[60,400,660,800]}},{main}]"#
+            )
+        } else {
+            format!("[{main}]")
+        }
     }
 
     #[cfg(unix)]
