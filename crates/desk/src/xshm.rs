@@ -611,7 +611,7 @@ impl Grabber {
             } else {
                 self.top_level(up.parent)?
             };
-            managed.insert(top, (owner, extents));
+            managed.insert(top, (c, owner, extents));
         }
         let mut frames = Vec::new();
         for (w, attrs, geometry) in looks.into_iter().rev() {
@@ -622,7 +622,7 @@ impl Grabber {
             }
         }
         let name = |w| self.title(w).unwrap_or_default();
-        Ok(over(&frames, at, bounds, pid, title, name).map(|f| (name(f.id), f.pid)))
+        Ok(over(&frames, at, bounds, pid, title, name).map(|f| (name(f.client), f.pid)))
     }
 
     /// The mapped children of the root with their geometry, past a cua-driver cursor overlay; the desktop shell's only with `shell`.
@@ -953,6 +953,7 @@ enum Cover {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Framed {
     id: Window,
+    client: Window,
     rect: [i32; 4],
     input: [i32; 4],
     pid: Option<u32>,
@@ -1003,9 +1004,9 @@ fn framed(
     id: Window,
     attrs: &GetWindowAttributesReply,
     g: &GetGeometryReply,
-    client: Option<(Option<u32>, [u32; 4])>,
+    client: Option<(Window, Option<u32>, [u32; 4])>,
 ) -> Option<Framed> {
-    let (pid, [left, right, top, bottom]) = client?;
+    let (client, pid, [left, right, top, bottom]) = client?;
     if attrs.map_state != MapState::VIEWABLE || attrs.override_redirect {
         return None;
     }
@@ -1020,6 +1021,7 @@ fn framed(
     ];
     Some(Framed {
         id,
+        client,
         rect,
         input,
         pid,
@@ -1040,7 +1042,7 @@ fn over(
         .filter(|f| bounds.is_some_and(|b| around(f.rect, b)))
         .collect();
     if own.is_empty() {
-        let t = name(hit.id);
+        let t = name(hit.client);
         return (hit.pid != pid && (t.is_empty() || t != title)).then_some(hit);
     }
     let of_pid: Vec<&Framed> = own
@@ -1052,7 +1054,7 @@ fn over(
         own = of_pid;
     }
     if own.len() > 1 {
-        let named: Vec<(&Framed, String)> = own.iter().map(|f| (*f, name(f.id))).collect();
+        let named: Vec<(&Framed, String)> = own.iter().map(|f| (*f, name(f.client))).collect();
         if let Some(found) = (0..2)
             .map(|tier| {
                 named
@@ -1690,7 +1692,7 @@ mod tests {
             height: 800,
             ..Default::default()
         };
-        let client = Some((Some(7), [0, 0, 0, 0]));
+        let client = Some((70, Some(7), [0, 0, 0, 0]));
         assert_eq!(framed(7, &attrs(true), &screen, client), None);
         assert_eq!(framed(8, &attrs(false), &screen, None), None);
         let hidden = GetWindowAttributesReply {
@@ -1705,16 +1707,56 @@ mod tests {
             height: 400,
             ..Default::default()
         };
-        let csd = framed(10, &attrs(false), &g, Some((None, [40, 40, 36, 34]))).unwrap();
+        let csd = framed(10, &attrs(false), &g, Some((80, None, [40, 40, 36, 34]))).unwrap();
         assert_eq!(
-            (csd.rect, csd.input, csd.pid),
-            ([100, 100, 600, 400], [140, 136, 520, 330], None)
+            (csd.client, csd.rect, csd.input, csd.pid),
+            (80, [100, 100, 600, 400], [140, 136, 520, 330], None)
         );
+    }
+
+    #[test]
+    fn a_tie_is_settled_by_the_title_of_the_client_a_nested_frame_holds() {
+        let full = [0, 27, 1280, 773];
+        let names = |w| match w {
+            30 => "a.txt - Mousepad".to_owned(),
+            31 => "b.txt - Mousepad".to_owned(),
+            _ => String::new(),
+        };
+        let own = Framed {
+            client: 30,
+            ..frame(20, full, Some(7))
+        };
+        let second = Framed {
+            client: 31,
+            ..frame(21, full, Some(7))
+        };
+        let at = (640, 400);
+        assert_eq!(
+            over(
+                &[own, second],
+                at,
+                Some(full),
+                Some(7),
+                "a.txt - Mousepad",
+                names
+            ),
+            None
+        );
+        let got = over(
+            &[second, own],
+            at,
+            Some(full),
+            Some(7),
+            "a.txt - Mousepad",
+            names,
+        );
+        assert_eq!(got.map(|f| (f.id, f.client)), Some((21, 31)));
     }
 
     fn frame(id: Window, rect: [i32; 4], pid: Option<u32>) -> Framed {
         Framed {
             id,
+            client: id,
             rect,
             input: rect,
             pid,
