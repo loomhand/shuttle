@@ -384,7 +384,7 @@ test('a grounded point whose element is a window or document root, belongs to an
   hitPid = process.pid + 1
   const foreign = await plan('the pay button', tree, {})
   assert.equal(foreign.ok, false, JSON.stringify(foreign))
-  assert.match(foreign.escalate?.reason ?? '', /grounding pointed at push button "Pay", which belongs to another process/)
+  assert.match(foreign.escalate?.reason ?? '', /grounding pointed at push button "Pay", which lies outside the plan window/)
   assert.deepEqual([clicked, looks, foreign.trace?.[0]?.ground?.check], [[], [], 'foreign-hit'])
   hitPid = null
   const unknown = await plan('the pay button', tree, {})

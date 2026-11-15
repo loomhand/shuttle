@@ -308,3 +308,80 @@ test('a waiting verify whose misses came from truncated snapshots does not confi
   assert.equal(whole.ok, true, JSON.stringify(whole))
   assert.equal(whole.escalate, undefined, JSON.stringify(whole))
 })
+
+test('an expect on a cut tree tells the model the read stopped before the end of the window', async (t) => {
+  const asked: string[] = []
+  const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Size', states: ['showing'], bounds: [10, 10, 100, 20] }
+  let truncated = true
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated, nodes: [root, field] })
+    if (tool === 'model_decide') { asked.push(JSON.stringify(args)); return JSON.stringify({ answers: { ok: { probability: 0.9 } }, served: { model: 'm', build: null, id: null }, usage }) }
+    return '{"ok":true}'
+  })
+  for (const cut of [true, false]) {
+    truncated = cut
+    const r = await main({ steps: [{ expect: 'the error is gone' }] })
+    assert.equal(r.ok, true, JSON.stringify(r))
+  }
+  assert.equal(asked.length, 2)
+  assert.match(asked[0] ?? '', /this accessibility read stopped before the end of the window/)
+  assert.doesNotMatch(asked[1] ?? '', /this accessibility read stopped before the end of the window/)
+})
+
+test('an expect on a whole tree longer than the model is given tells the model only its start shows', async (t) => {
+  const asked: string[] = []
+  const rows = Array.from({ length: 120 }, (_, i) => ({ ref: i + 1, id: `1/${i + 2}`, parent: 0, depth: 1, role: 'textbox', name: `Field number ${i} with a long label`, states: ['showing'], bounds: [10, 10, 100, 20] }))
+  let many = true
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root, ...(many ? rows : rows.slice(0, 2))] })
+    if (tool === 'model_decide') { asked.push(JSON.stringify(args)); return JSON.stringify({ answers: { ok: { probability: 0.9 } }, served: { model: 'm', build: null, id: null }, usage }) }
+    return '{"ok":true}'
+  })
+  for (const long of [true, false]) {
+    many = long
+    const r = await main({ steps: [{ expect: 'the error is gone' }] })
+    assert.equal(r.ok, true, JSON.stringify(r))
+  }
+  assert.equal(asked.length, 2)
+  assert.match(asked[0] ?? '', /the outline shows only the start of the window/)
+  assert.doesNotMatch(asked[0] ?? '', /this accessibility read stopped before the end of the window/)
+  assert.doesNotMatch(asked[1] ?? '', /the outline shows only the start of the window/)
+})
+
+test('an expect tree of exactly the 4000 characters the model is given carries no note, and one of 4001 is cut to 4000 with the note', async (t) => {
+  const NOTE = '\n(the outline shows only the start of the window: desk snapshot or find reads the rest)'
+  const line = (name: string, id: string) => `  - textbox "${name}" [id=${id}]`
+  const tree = (size: number) => {
+    const rows: { ref: number; id: string; parent: number; depth: number; role: string; name: string; states: string[] }[] = []
+    let text = '- dialog "Format" [id=1/1]'
+    for (let i = 0; ; i++) {
+      const id = `1/${i + 2}`
+      const name = `Field ${String(i).padStart(3, '0')} with a label`
+      const room = size - text.length - 1 - line('', id).length
+      const last = room <= 60
+      const n = last ? 'x'.repeat(room) : name
+      rows.push({ ref: i + 1, id, parent: 0, depth: 1, role: 'textbox', name: n, states: ['showing'] })
+      text += `\n${line(n, id)}`
+      if (last) return { rows, text }
+    }
+  }
+  const asked: string[] = []
+  let shown = tree(4000)
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root, ...shown.rows] })
+    if (tool === 'model_decide') { asked.push(String((args.state as { contents: string }).contents)); return JSON.stringify({ answers: { ok: { probability: 0.9 } }, served: { model: 'm', build: null, id: null }, usage }) }
+    return '{"ok":true}'
+  })
+  const want: string[] = []
+  for (const size of [4000, 4001]) {
+    shown = tree(size)
+    assert.equal(shown.text.length, size)
+    want.push(size > 4000 ? `${shown.text.slice(0, 4000)}${NOTE}` : shown.text)
+    const r = await main({ steps: [{ expect: 'the error is gone' }] })
+    assert.equal(r.ok, true, JSON.stringify(r))
+  }
+  assert.deepEqual(asked, want)
+})
