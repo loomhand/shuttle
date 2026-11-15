@@ -855,7 +855,12 @@ test('a type the device reports did not show stops the step, and one it could no
   const keyed = await foreground({ steps: [{ app: 'Notepad' }, { key: 'tab' }, { type: 'abc' }] })
   assert.equal(keyed.escalate?.step, 2, JSON.stringify(keyed))
   assert.equal(types, 1)
+  const lines = await foreground({ steps: [{ app: 'Notepad' }, { type: 'ab\ncd' }] })
+  assert.match(lines.escalate?.reason ?? '', /^"ab\ncd" did not show in the focused field, after all its lines and the Returns between them were sent/, JSON.stringify(lines))
   typed = null
+  const secret = await foreground({ steps: [{ app: 'Notepad' }, { type: 'example-pass', secret: true }] })
+  assert.equal(secret.ok, true, JSON.stringify(secret))
+  assert.equal(secret.caveats, undefined, JSON.stringify(secret))
   const unchecked = await foreground({ steps: [{ app: 'Notepad' }, { type: 'abc' }] })
   assert.equal(unchecked.ok, true, JSON.stringify(unchecked))
   assert.deepEqual(unchecked.caveats?.map((c) => c.step), [1], JSON.stringify(unchecked))
