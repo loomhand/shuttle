@@ -20,7 +20,6 @@ const WINDOW_WATCH: &str = "CUA_DRIVER_WINDOW_CHANGE_TIMEOUT_MS";
 const WINDOW_WATCH_MS: &str = "50";
 const REMOVE_MASTERS: &str = "CUA_DRIVER_RS_REMOVE_MPX_MASTERS";
 const GLIDE_MS: &str = "1";
-const DIR: &str = "driver";
 const LISTEN_WAIT: Duration = Duration::from_secs(10);
 const STOP_WAIT: Duration = Duration::from_secs(3);
 const POLL: Duration = Duration::from_millis(100);
@@ -89,10 +88,6 @@ struct Proc {
 
 impl Proc {
     async fn spawn(&self) -> Result<Running, String> {
-        #[cfg(unix)]
-        if let Some(dir) = Path::new(&self.endpoint).parent() {
-            crate::private_dir(dir)?;
-        }
         #[cfg(unix)]
         clear_stale(&self.endpoint).await;
         let mut cmd = Command::new(&self.bin);
@@ -196,14 +191,13 @@ impl Proc {
     }
 }
 
-/// The socket of the driver the daemon at `desk` runs: in a directory beside the desk socket that only its user enters, or a pipe named after the desk pipe on Windows.
+/// The socket of the driver the daemon at `desk` runs: beside the desk socket, or a pipe named after the desk pipe on Windows.
 pub fn endpoint(desk: &str) -> String {
     if cfg!(windows) {
         format!("{desk}-driver")
     } else {
         Path::new(desk)
-            .with_file_name(DIR)
-            .join("sock")
+            .with_file_name("driver.sock")
             .to_string_lossy()
             .into_owned()
     }
@@ -341,28 +335,6 @@ while True:
     }
 
     #[tokio::test]
-    async fn the_driver_socket_sits_in_a_directory_only_the_daemon_user_enters() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
-        let exe = fake(dir.path(), FAKE).unwrap();
-        let desk = dir.path().join("desk.sock");
-        let endpoint = endpoint(&desk.to_string_lossy());
-        let own = Path::new(&endpoint).parent().unwrap();
-        std::fs::create_dir(own).unwrap();
-        std::fs::set_permissions(own, std::fs::Permissions::from_mode(0o775)).unwrap();
-        let driver = Bundled::start(&exe, &endpoint, true, false, false)
-            .await
-            .unwrap()
-            .unwrap();
-        let mode = std::fs::metadata(own).unwrap().permissions().mode() & 0o777;
-        let listening = server::connect(&endpoint).await.is_ok();
-        driver.stop().await;
-        assert_eq!(own.parent(), desk.parent());
-        assert_eq!(mode, 0o700);
-        assert!(listening);
-    }
-
-    #[tokio::test]
     async fn the_driver_draws_its_cursor_and_glides_it_in_one_millisecond() {
         let (_dir, endpoint, driver) = started(FAKE, true).await;
         let argv = std::fs::read_to_string(format!("{endpoint}.argv")).unwrap_or_default();
@@ -477,7 +449,6 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        std::fs::create_dir(Path::new(&endpoint).parent().unwrap()).unwrap();
         let mut left = std::process::Command::new(exe.with_file_name("cua-driver"))
             .args(["serve", "--socket", &endpoint, "--pid-file"])
             .arg(pid_file(&endpoint).unwrap())
@@ -521,7 +492,6 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        std::fs::create_dir(Path::new(&endpoint).parent().unwrap()).unwrap();
         drop(std::os::unix::net::UnixListener::bind(&endpoint).unwrap());
         let driver = Bundled::start(&exe, &endpoint, true, true, false)
             .await
