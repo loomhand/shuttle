@@ -1037,7 +1037,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         for left in (0..times).rev() {
             if left + 1 < times
                 && let Some(w) = raised
-                && let Some(why) = self.answered_move(w, front.as_deref(), &mut budget).await
+                && let Some(Some(why)) = self.answered_move(w, front.as_deref(), &mut budget).await
             {
                 return Err(format!(
                     "{} of {times} presses were sent, then {why}, so the rest were not sent",
@@ -1086,6 +1086,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let mut front = None;
         let mut moved = None;
         let mut budget = ANSWER_WAIT;
+        let mut blind = false;
         for (i, line) in text.split('\n').enumerate() {
             let mut returned = false;
             let sent: Result<(), String> = async {
@@ -1101,10 +1102,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         .await?;
                     returned = true;
                     if let (Some(w), Some(f), false) =
-                        (watched, &front, budget.is_zero() || (i + 1 == lines && ended))
+                        (watched, &front, blind || (i + 1 == lines && ended))
                     {
                         tokio::time::sleep(RETURN_SETTLE).await;
-                        moved = self.answered_move(w, Some(f), &mut budget).await;
+                        match self.answered_move(w, Some(f), &mut budget).await {
+                            Some(why) => moved = why,
+                            None => blind = true,
+                        }
                         if moved.is_some() {
                             return Err(String::new());
                         }
@@ -2023,7 +2027,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         w: (i64, i64),
         front: Option<&str>,
         budget: &mut Duration,
-    ) -> Option<&'static str> {
+    ) -> Option<Option<&'static str>> {
         let mut since = None;
         let moved = loop {
             match self.moved_from(w, front).await {
@@ -2038,7 +2042,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
         };
         *budget = budget.saturating_sub(since.map_or(Duration::ZERO, |t| t.elapsed()));
-        moved
+        Some(moved)
     }
 
     async fn moved_from(&self, w: (i64, i64), front: Option<&str>) -> Option<Option<&'static str>> {
@@ -3866,6 +3870,49 @@ pub(crate) mod tests {
             "{:?}",
             began.elapsed()
         );
+    }
+
+    #[tokio::test]
+    async fn a_multi_line_type_keeps_checking_after_an_answered_wait_spends_its_whole_budget() {
+        static RETURNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static FIRST: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let spent = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                unanswering: Some(|| {
+                    RETURNS.load(Ordering::SeqCst) == 1
+                        && FIRST.get_or_init(std::time::Instant::now).elapsed()
+                            < Duration::from_millis(1999)
+                }),
+                sheet_opened: Some(|| RETURNS.load(Ordering::SeqCst) >= 2),
+                ..Stub::default()
+            })
+        };
+        let (got, calls) = typed_lines(Os::Mac, spent, &RETURNS, "a\nb\nc").await;
+        assert_eq!(
+            got.unwrap_err(),
+            "2 of 3 lines and the Return after line 2 were typed, then the frame in front of the window changed, so the rest were not sent"
+        );
+        assert_eq!(sent(&calls, "type_text").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_repeated_macos_key_still_checks_an_answered_read_after_its_budget_is_spent() {
+        static PRESSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let spent = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                unanswering: Some(|| PRESSES.load(Ordering::SeqCst) == 1),
+                sheet_opened: Some(|| PRESSES.load(Ordering::SeqCst) >= 2),
+                ..Stub::default()
+            })
+        };
+        let (got, calls) = pressed(spent, &PRESSES, 3).await;
+        assert_eq!(
+            got.unwrap_err(),
+            "2 of 3 presses were sent, then the frame in front of the window changed, so the rest were not sent"
+        );
+        assert_eq!(sent(&calls, "press_key").len(), 2);
     }
 
     #[tokio::test]
