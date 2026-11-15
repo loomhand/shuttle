@@ -5376,6 +5376,24 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn an_allowlisted_point_click_whose_hit_test_fails_sends_nothing() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let unhit = || {
+            let mut f = notepad();
+            f.unhit = true;
+            Ok(f)
+        };
+        let desk =
+            Desk::new(unhit, Behind(Arc::clone(&calls)), Os::Windows).allow(&["notepad".into()]);
+        let err = desk
+            .run("desk_click", json!({"x": 140.0, "y": 110.0}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("hit test at the point failed"), "{err}");
+        assert!(sent(&calls, "click").is_empty(), "{:?}", order(&calls));
+    }
+
+    #[tokio::test]
     async fn a_windows_cover_the_hit_test_passes_through_does_not_stop_pointer_input() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let through = || {
@@ -7569,6 +7587,7 @@ pub(crate) mod tests {
         untitled: bool,
         top: Option<u32>,
         blind: bool,
+        unhit: bool,
         listed: Option<u32>,
         pub(crate) behind: bool,
         pub(crate) pid: Option<u32>,
@@ -7646,6 +7665,9 @@ pub(crate) mod tests {
         }
 
         fn pid_at(&mut self, _: i32, _: i32) -> Result<Option<u32>, String> {
+            if self.unhit {
+                return Err("the UI Automation hit test at the point failed".into());
+            }
             Ok(self.top)
         }
 

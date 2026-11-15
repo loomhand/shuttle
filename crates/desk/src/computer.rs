@@ -715,7 +715,7 @@ impl Computer {
             {
                 return Err(if a.foreground && window_id.is_some() {
                     format!(
-                        "element {index} is in a window that was brought to the front and is still not the front window after {} ms, so nothing was clicked or typed",
+                        "element {index} is in a window that is not the front window: a bring_to_front was sent, and the window is still not the front window after {} ms, so nothing was clicked or typed",
                         RAISE_WAIT.as_millis()
                     )
                 } else {
@@ -3459,7 +3459,7 @@ mod tests {
         let (out, raises, typed) = run("behind", true).await;
         let err = out.unwrap_err();
         assert!(
-            err.contains("was brought to the front and is still not the front window after 500 ms, so nothing was clicked or typed"),
+            err.contains("a bring_to_front was sent, and the window is still not the front window after 500 ms, so nothing was clicked or typed"),
             "{err}"
         );
         assert_eq!(raises.len(), 1);
@@ -3474,8 +3474,8 @@ mod tests {
         );
         assert_eq!(raises.len(), 1);
         assert!(typed.is_empty());
-        for hit in ["raises", "sibling"] {
-            let (out, raises, typed) = run(hit, false).await;
+        for (hit, foreground) in [("raises", false), ("sibling", false), ("windowless", true)] {
+            let (out, raises, typed) = run(hit, foreground).await;
             let err = out.unwrap_err();
             assert!(
                 err.contains("is not the front window, so nothing was clicked or typed"),
