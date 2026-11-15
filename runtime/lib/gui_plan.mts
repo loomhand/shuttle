@@ -466,7 +466,7 @@ function at(w: Win | null): desk.Target {
   return { window: to.title, pid: to.pid }
 }
 function lined(w: Win | null, ws: Win[], text: string): desk.Target {
-  if (BG || !w || !/\n[^]/.test(text)) return at(w)
+  if (BG || !w?.active || !/\n[^]/.test(text)) return at(w)
   let x = w
   for (let o = OS === 'darwin' ? x.owner : undefined; o; o = x.owner) { const up = ws.find((y) => y.id === o); if (!up) break; x = up }
   const to = x
