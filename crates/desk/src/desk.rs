@@ -962,11 +962,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                                 (0..TITLE_TIERS).any(|t| title_matches(t, &f.title, w))
                             })
                     })
-                    && let Some(p) = b
-                        .owner_at(a.x, a.y)
-                        .ok()
-                        .flatten()
-                        .filter(|p| Some(*p) != a.pid)
+                    && let Some(p) = b.owner_at(a.x, a.y).ok().flatten()
                 {
                     (a.window, a.pid) = (None, Some(p));
                     frames = self::frames(b, a.pid, &allow)?;
@@ -6073,6 +6069,28 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_windows_at_under_a_cloaked_window_of_the_same_app_reads_its_visible_window() {
+        let cloaked = || {
+            let mut f = notepad();
+            f.hits.insert((600, 100), "ok".into());
+            f.top = Some(4);
+            Ok(f)
+        };
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(cloaked, SameApp(Behind(Arc::clone(&calls))), Os::Windows);
+        let out = desk
+            .run("desk_at", json!({"x": 600, "y": 100}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(
+            (&v["found"]["id"], &v["pid"]),
+            (&json!("ok"), &json!(4)),
+            "{v}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_windows_at_under_a_window_uia_lists_reads_that_window_without_the_hit_test() {
         let listed = || {
             let mut f = notepad();
@@ -8148,6 +8166,24 @@ pub(crate) mod tests {
                 self.0.1.store(false, Ordering::SeqCst);
             }
             out
+        }
+    }
+
+    struct SameApp(Behind);
+
+    impl Input for SameApp {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let mut out = self.0.call(tool, args).await?;
+            for w in out["structuredContent"]["windows"]
+                .as_array_mut()
+                .into_iter()
+                .flatten()
+                .filter(|w| w["pid"] == 8)
+            {
+                w["pid"] = 4.into();
+                w["title"] = "Cloaked".into();
+            }
+            Ok(out)
         }
     }
 
