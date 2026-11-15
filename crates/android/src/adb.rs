@@ -1114,7 +1114,6 @@ where
     };
     let start = tokio::time::Instant::now();
     let end = start + TYPE_WAIT;
-    let mut last = None;
     let before = loop {
         let cached = focus(false).await?;
         if cached.as_ref().is_some_and(usable)
@@ -1139,19 +1138,13 @@ where
                         .to_owned(),
                 );
             }
-            last = cached;
             break None;
         }
         tokio::time::sleep(TYPE_FOCUS_POLL).await;
     };
-    if before.is_none()
-        && !blind
-        && !last
-            .as_ref()
-            .is_some_and(|f| f.window && window.is_none_or(|w| f.id == Some(w)))
-    {
+    if before.is_none() && !blind {
         return Err(
-            "no element of the window holds the input focus, so the line was not pasted".to_owned(),
+            "no field of the window holds the input focus, so the line was not pasted".to_owned(),
         );
     }
     let (before, cached) = match before {
@@ -1947,7 +1940,7 @@ mod tests {
     async fn a_line_after_a_return_goes_only_into_a_field_of_the_window_checked_in_front() {
         let other = r#"{"editable":true,"password":false,"window":true,"id":9,"len":0,"hash":0,"tail":"","bounds":[0,0,720,100]}"#;
         for (focus, want) in [
-            ("null", "no element of the window holds the input focus"),
+            ("null", "no field of the window holds the input focus"),
             (other, "the input focus is in another window"),
         ] {
             let fake = Fake::new();
@@ -2412,13 +2405,13 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_line_after_a_return_goes_into_the_window_checked_in_front() {
-        let run = |focus: fn(usize) -> Option<Focus>, blind: bool| async move {
+    async fn a_line_after_a_return_goes_only_into_an_editable_field_of_the_checked_window() {
+        let run = |window: Option<i64>, focus: fn(usize) -> Option<Focus>, blind: bool| async move {
             let pastes = std::cell::Cell::new(0);
             let out = type_with(
                 "abc",
                 None,
-                Some(7),
+                window,
                 blind,
                 |_| {
                     let f = focus(pastes.get());
@@ -2430,33 +2423,59 @@ mod tests {
                 },
             )
             .await;
-            (out, pastes.get())
+            (
+                out.map_err(|e| e.split(',').next().unwrap_or_default().to_owned()),
+                pastes.get(),
+            )
         };
+        let refused = Err("no field of the window holds the input focus".to_owned());
+        fn typed(n: usize) -> Focus {
+            field(if n == 0 { "" } else { "abc" })
+        }
+        for window in [Some(7), None] {
+            assert_eq!(
+                run(
+                    window,
+                    |n| Some(Focus {
+                        id: Some(7),
+                        ..typed(n)
+                    }),
+                    false
+                )
+                .await,
+                (Ok(Some(true)), 1),
+                "{window:?}"
+            );
+            assert_eq!(
+                run(
+                    window,
+                    |_| Some(Focus {
+                        editable: false,
+                        id: Some(7),
+                        ..field("")
+                    }),
+                    false
+                )
+                .await,
+                (refused.clone(), 0),
+                "{window:?}"
+            );
+        }
         assert_eq!(
             run(
+                None,
                 |n| Some(Focus {
-                    id: Some(7),
-                    ..field(if n == 0 { "" } else { "abc" })
+                    window: false,
+                    ..typed(n)
                 }),
                 false
             )
             .await,
-            (Ok(Some(true)), 1)
+            (refused.clone(), 0)
         );
         assert_eq!(
             run(
-                |_| Some(Focus {
-                    editable: false,
-                    id: Some(7),
-                    ..field("")
-                }),
-                false
-            )
-            .await,
-            (Ok(None), 1)
-        );
-        assert_eq!(
-            run(
+                Some(7),
                 |_| Some(Focus {
                     id: None,
                     ..field("")
@@ -2466,21 +2485,18 @@ mod tests {
             .await,
             (Ok(None), 1)
         );
-        let (err, pastes) = run(
-            |_| {
-                Some(Focus {
+        assert_eq!(
+            run(
+                Some(7),
+                |_| Some(Focus {
                     id: None,
                     ..field("")
-                })
-            },
-            false,
-        )
-        .await;
-        assert!(
-            err.unwrap_err()
-                .starts_with("no element of the window holds the input focus")
+                }),
+                false
+            )
+            .await,
+            (refused, 0)
         );
-        assert_eq!(pastes, 0);
     }
 
     #[tokio::test(start_paused = true)]
