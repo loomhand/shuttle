@@ -1038,7 +1038,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             if left + 1 < times
                 && let Some(w) = raised
             {
-                let moved = if self.os == Os::Mac {
+                let moved = if self.os == Os::Mac && front.is_some() {
                     match self.front_frame(w).await {
                         None => Some("the window left the front"),
                         now if now != front => Some("the frame in front of the window changed"),
@@ -1921,6 +1921,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .is_some_and(|w| key(&w) == key(&cover))
         {
             if Instant::now() >= end {
+                let (px, py) = (x as i32, y as i32);
+                if self.os == Os::Windows
+                    && self
+                        .access
+                        .run(CALL_LIMIT, (), move |b| b.owner_at(px, py))
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some_and(|p| i64::from(p) == to.0)
+                {
+                    return Ok(());
+                }
                 return Err(format!(
                     "the window {:?} still covers the point after {:?} came to the front; nothing was sent",
                     cover["title"].as_str().unwrap_or_default(),
@@ -3221,6 +3233,30 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(sent(&calls, "press_key").len(), 3);
         assert!(sent(&calls, "bring_to_front").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_repeated_macos_key_whose_front_reads_find_nothing_at_first_sends_every_press() {
+        static READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let slow = || {
+            Ok(Stub {
+                frames: vec![Frame {
+                    number: Some(1),
+                    ..frame("w", "Untitled - Notepad", 4, true, Some("Notepad"))
+                }],
+                unread: Some(|| READS.fetch_add(1, Ordering::SeqCst) < 3),
+                ..Stub::default()
+            })
+        };
+        let desk = Desk::new(slow, Behind(Arc::clone(&calls)), Os::Mac);
+        desk.run(
+            "desk_key",
+            json!({"keys": "tab", "window": "Untitled - Notepad", "repeat": 3}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sent(&calls, "press_key").len(), 3);
     }
 
     #[tokio::test]
@@ -5250,6 +5286,32 @@ pub(crate) mod tests {
         for tool in ["click", "scroll", "drag"] {
             assert!(sent(&calls, tool).is_empty(), "{tool}: {:?}", order(&calls));
         }
+    }
+
+    #[tokio::test]
+    async fn a_windows_cover_the_hit_test_passes_through_does_not_stop_pointer_input() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let through = || {
+            let mut f = notepad();
+            f.top = Some(8);
+            Ok(f)
+        };
+        let desk = Desk::new(
+            through,
+            Topmost(BehindCover(
+                Behind(Arc::clone(&calls)),
+                AtomicBool::new(false),
+                (4, "Untitled - Notepad"),
+            )),
+            Os::Windows,
+        );
+        desk.run(
+            "desk_click",
+            json!({"x": 300.0, "y": 250.0, "window": "Inbox", "pid": 8}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sent(&calls, "click").len(), 1, "{:?}", order(&calls));
     }
 
     #[tokio::test]
@@ -7574,6 +7636,7 @@ pub(crate) mod tests {
         shells: Vec<u32>,
         unanswered: Option<Frame>,
         sheet_opened: Option<fn() -> bool>,
+        unread: Option<fn() -> bool>,
     }
 
     impl Stub {
@@ -7616,6 +7679,9 @@ pub(crate) mod tests {
         }
 
         fn frames_of(&mut self, pid: u32) -> Result<Vec<Frame>, String> {
+            if self.unread.is_some_and(|empty| empty()) {
+                return Ok(Vec::new());
+            }
             let mut frames = if self.scoped {
                 self.frames.clone()
             } else {

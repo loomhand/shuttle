@@ -680,7 +680,7 @@ impl Computer {
                     .is_none_or(|(p, w)| p != pid || window_id.is_some_and(|id| id != w))
             {
                 return Err(format!(
-                    "element {index} is in a window that is no longer in front, so nothing was clicked or typed: bring that window to the front and call computer_state again"
+                    "element {index} is in a window that is not the front window, so nothing was clicked or typed: bring that window to the front and call computer_state again"
                 ));
             }
         }
