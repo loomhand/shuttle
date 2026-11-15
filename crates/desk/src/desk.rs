@@ -29,7 +29,7 @@ use crate::driver::{
 use crate::keys::{Os, hid_plus, key_names, keystroke};
 use crate::lock;
 use crate::model::{Access, Act, Capture, Extras, Frame, Node};
-use crate::press::{Press, plan_press};
+use crate::press::{Press, hit_centre, plan_press};
 use crate::still::{Frame as StillFrame, Watch};
 use crate::worker::{Cancel, Worker};
 
@@ -98,6 +98,7 @@ const WINDOW_NEVER_READ: &str = "window_never_read";
 
 const COVERED: &str = "covers the point, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
 const LAUNCH_FLAGS: &str = "the app allowlist admits no launch argument that starts with - (or / on Windows), since a flag can make an allowed app start another program";
+const ACT_CLICK_MISSED: &str = "a hit test at the element's center finds no part of it, as when it is hidden or another element covers it, so nothing was clicked: press it with desk press";
 const COVERED_NO_CLICK: &str = "another app's window covers the point and this window takes no click of its own, so nothing was clicked: bring the window to the front, then click again";
 const COVER_UNCHECKED_NO_CLICK: &str = "the point could not be checked for another app's window and this window takes no click of its own, so nothing was clicked: bring the window to the front, then click again";
 const COVER_UNKNOWN: &str = "the point could not be checked for another app's window on top, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
@@ -902,15 +903,22 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "focus" => Act::Focus,
             "click" => {
                 let id = a.id.clone();
-                let n = self
+                let (os, bg) = (self.os, self.bg());
+                let (x, y) = self
                     .access
                     .run(CALL_LIMIT, turn.clone(), move |b| {
-                        b.node(&id, Extras::BOUNDS, 0)
+                        if !bg {
+                            return hit_centre(b, &id, os)?.ok_or(ACT_CLICK_MISSED.to_owned());
+                        }
+                        let [x, y, w, h] = b
+                            .node(&id, Extras::BOUNDS, 0)?
+                            .bounds
+                            .ok_or("the element has no screen position")?;
+                        Ok((x + w / 2, y + h / 2))
                     })
                     .await?;
-                let [x, y, w, h] = n.bounds.ok_or("the element has no screen position")?;
                 let note = self
-                    .click_element(a.id, json!({"x": x + w / 2, "y": y + h / 2}), turn)
+                    .click_element(a.id, json!({"x": x, "y": y}), turn)
                     .await?;
                 return Ok(ok_with(note));
             }
@@ -6160,6 +6168,30 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_foreground_element_click_goes_only_where_a_hit_test_finds_the_element() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let fake = || {
+            let mut f = notepad();
+            f.hits.insert((340, 110), "elsewhere".into());
+            f.add("elsewhere", None, "button", &["showing"], None);
+            Ok(f)
+        };
+        let desk = Desk::new(fake, Behind(Arc::clone(&calls)), Os::Windows);
+        let err = desk
+            .run("desk_act", json!({"id": "hidden", "action": "click"}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("nothing was clicked"), "{err}");
+        assert!(sent(&calls, "click").is_empty(), "{:?}", order(&calls));
+        desk.run("desk_act", json!({"id": "ok", "action": "click"}))
+            .await
+            .unwrap();
+        let clicks = sent(&calls, "click");
+        assert_eq!(clicks.len(), 1, "{clicks:?}");
+        assert_eq!((&clicks[0]["x"], &clicks[0]["y"]), (&json!(140), &json!(110)));
+    }
+
+    #[tokio::test]
     async fn an_element_click_holds_the_input_turn_until_the_driver_clicks() {
         for call in [json!({"id": "ok"}), json!({"id": "ok", "action": "click"})] {
             let (turn, held) = (Arc::new(OnceLock::new()), Arc::new(Mutex::new(Vec::new())));
@@ -8494,6 +8526,12 @@ pub(crate) mod tests {
                     bounds: Some([680, 190, 40, 20]),
                     ..Node::default()
                 }),
+                "4/1" => Ok(Node {
+                    id: id.into(),
+                    role: "window",
+                    states: vec!["showing"],
+                    ..Node::default()
+                }),
                 _ => Err(format!("no node {id}")),
             }
         }
@@ -8505,12 +8543,16 @@ pub(crate) mod tests {
             }))
         }
 
-        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
-            Ok(Vec::new())
+        fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
+            Ok(if id == "4/5" { vec!["4/1".into()] } else { Vec::new() })
         }
 
         fn at(&mut self, _: &str, x: i32, y: i32) -> Result<Option<String>, String> {
-            Ok(((x, y) == (5, 5)).then(|| "8/3".into()))
+            Ok(match (x, y) {
+                (5, 5) => Some("8/3".into()),
+                (700, 200) => Some("4/5".into()),
+                _ => None,
+            })
         }
 
         fn menu_at(&mut self, x: i32, y: i32) -> Result<Option<String>, String> {

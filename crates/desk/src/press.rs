@@ -76,6 +76,13 @@ pub(crate) fn plan_press<B: Access>(
     Ok(Press::Acted(b.act(id, Act::Action)?))
 }
 
+/// The centre of element `id` when a hit test there finds it or a part of it, as [`plan_press`] clicks it.
+pub(crate) fn hit_centre<B: Access>(b: &mut B, id: &str, os: Os) -> Result<Option<(i32, i32)>, String> {
+    let node = b.node(id, Extras::BOUNDS, 0)?;
+    let chain = b.ancestors(id)?;
+    Ok(reachable(b, id, &node, &chain, os == Os::Linux, false))
+}
+
 /// Whether process `pid` is LibreOffice, whose control extents can sit above the control.
 pub(crate) fn libreoffice(pid: u32) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim() == "soffice.bin")
