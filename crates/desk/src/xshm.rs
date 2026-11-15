@@ -5,7 +5,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use desk_core::window::title_matches;
+use desk_core::window::{TITLE_TIERS, title_matches};
 use x11rb::connection::Connection;
 use x11rb::errors::{ConnectionError, ReplyError};
 use x11rb::protocol::shape::{ConnectionExt as _, SK};
@@ -592,35 +592,34 @@ impl Grabber {
             })
             .collect::<Result<Vec<_>, ConnectionError>>()
             .map_err(|e| format!("read frames: {e}"))?;
-        let tops: HashSet<Window> = children.iter().copied().collect();
-        let mut managed = HashMap::new();
-        for (c, up, owner, extents) in reads {
-            let Ok(up) = up.reply() else {
-                continue;
-            };
-            let owner = owner.reply().ok().and_then(|r| r.value32()?.next());
-            let extents = extents
-                .reply()
-                .ok()
-                .and_then(|r| <[u32; 4]>::try_from(r.value32()?.collect::<Vec<_>>()).ok())
-                .unwrap_or_default();
-            let top = if up.parent == self.root {
-                c
-            } else if tops.contains(&up.parent) {
-                up.parent
-            } else {
-                self.top_level(up.parent)?
-            };
-            managed.insert(top, (c, owner, extents));
-        }
-        let mut frames = Vec::new();
-        for (w, attrs, geometry) in looks.into_iter().rev() {
-            if let (Ok(attrs), Ok(g)) = (attrs.reply(), geometry.reply())
-                && !shell.contains(&w)
-            {
-                frames.extend(framed(w, &attrs, &g, managed.get(&w).copied()));
-            }
-        }
+        let clients = reads
+            .into_iter()
+            .map(|(c, up, owner, extents)| {
+                let up = up.reply().map_or(x11rb::NONE, |t| t.parent);
+                let owner = owner.reply().ok().and_then(|r| r.value32()?.next());
+                let extents = extents
+                    .reply()
+                    .ok()
+                    .and_then(|r| <[u32; 4]>::try_from(r.value32()?.collect::<Vec<_>>()).ok())
+                    .unwrap_or_default();
+                (c, up, owner, extents)
+            })
+            .collect();
+        let looks = looks
+            .into_iter()
+            .map(|(w, attrs, geometry)| (w, attrs.reply().ok().zip(geometry.reply().ok())))
+            .collect();
+        let parents = |ws: &[Window]| {
+            let asked: Vec<_> = ws.iter().map(|&w| self.conn.query_tree(w).ok()).collect();
+            asked
+                .into_iter()
+                .map(|c| {
+                    c.and_then(|c| c.reply().ok())
+                        .map_or(x11rb::NONE, |t| t.parent)
+                })
+                .collect()
+        };
+        let frames = stack(self.root, looks, clients, &shell, parents);
         let name = |w| self.title(w).unwrap_or_default();
         Ok(over(&frames, at, bounds, pid, title, name).map(|f| (name(f.client), f.pid)))
     }
@@ -1028,6 +1027,47 @@ fn framed(
     })
 }
 
+fn stack(
+    root: Window,
+    children: Vec<(Window, Option<(GetWindowAttributesReply, GetGeometryReply)>)>,
+    mut pending: Vec<(Window, Window, Option<u32>, [u32; 4])>,
+    shell: &[Window],
+    parents: impl Fn(&[Window]) -> Vec<Window>,
+) -> Vec<Framed> {
+    let tops: HashSet<Window> = children.iter().map(|(w, _)| *w).collect();
+    let mut managed = HashMap::new();
+    loop {
+        let mut deeper = Vec::new();
+        for (c, up, pid, extents) in pending {
+            if up == root {
+                managed.insert(c, (c, pid, extents));
+            } else if tops.contains(&up) {
+                managed.insert(up, (c, pid, extents));
+            } else if up != x11rb::NONE {
+                deeper.push((c, up, pid, extents));
+            }
+        }
+        if deeper.is_empty() {
+            break;
+        }
+        let ups = parents(&deeper.iter().map(|d| d.1).collect::<Vec<_>>());
+        pending = deeper
+            .into_iter()
+            .zip(ups)
+            .map(|((c, _, pid, extents), up)| (c, up, pid, extents))
+            .collect();
+    }
+    children
+        .into_iter()
+        .rev()
+        .filter(|(w, _)| !shell.contains(w))
+        .filter_map(|(w, read)| {
+            let (attrs, g) = read?;
+            framed(w, &attrs, &g, managed.get(&w).copied())
+        })
+        .collect()
+}
+
 fn over(
     frames: &[Framed],
     (x, y): (i32, i32),
@@ -1055,7 +1095,7 @@ fn over(
     }
     if own.len() > 1 {
         let named: Vec<(&Framed, String)> = own.iter().map(|f| (*f, name(f.client))).collect();
-        if let Some(found) = (0..2)
+        if let Some(found) = (0..TITLE_TIERS)
             .map(|tier| {
                 named
                     .iter()
@@ -1751,6 +1791,115 @@ mod tests {
             names,
         );
         assert_eq!(got.map(|f| (f.id, f.client)), Some((21, 31)));
+    }
+
+    #[test]
+    fn a_tie_whose_x_titles_carry_the_app_name_is_settled_by_the_one_title_holding_the_window_name()
+    {
+        let full = [0, 27, 1280, 773];
+        let kate = |w| match w {
+            30 => "doc — Kate".to_owned(),
+            _ => "notes — Kate".to_owned(),
+        };
+        let own = Framed {
+            client: 30,
+            ..frame(20, full, Some(7))
+        };
+        let second = Framed {
+            client: 31,
+            ..frame(21, full, Some(7))
+        };
+        let at = (640, 400);
+        assert_eq!(
+            over(&[own, second], at, Some(full), Some(7), "doc", kate),
+            None
+        );
+        let got = over(&[second, own], at, Some(full), Some(7), "doc", kate);
+        assert_eq!(got.map(|f| f.id), Some(21));
+        let both = |w| match w {
+            30 => "doc — Kate".to_owned(),
+            _ => "doc 2 — Kate".to_owned(),
+        };
+        let got = over(&[own, second], at, Some(full), Some(7), "doc", both);
+        assert_eq!(got.map(|f| f.id), Some(20));
+    }
+
+    #[test]
+    fn a_frame_with_64_pixels_to_spare_is_the_elements_own_and_one_with_65_is_not() {
+        let names = |_| "Notes".to_owned();
+        let sandboxed = [frame(10, [0, 0, 600, 400], Some(31))];
+        let at = (300, 200);
+        let snug = Some([64, 64, 472, 272]);
+        assert_eq!(over(&sandboxed, at, snug, Some(7), "doc", names), None);
+        let loose = Some([65, 64, 471, 272]);
+        let got = over(&sandboxed, at, loose, Some(7), "doc", names);
+        assert_eq!(got.map(|f| f.id), Some(10));
+    }
+
+    #[test]
+    fn an_untitled_window_or_one_of_an_element_with_no_process_covers_by_the_fallback_and_ties() {
+        let names = |w| match w {
+            11 => String::new(),
+            12 => "doc".to_owned(),
+            _ => "other".to_owned(),
+        };
+        let popup = Some([300, 300, 200, 100]);
+        let under = |id, pid| [frame(id, [250, 250, 600, 400], pid)];
+        let got = over(&under(11, Some(9)), (320, 320), popup, Some(7), "", names);
+        assert_eq!(got.map(|f| f.id), Some(11));
+        let got = over(&under(13, Some(9)), (320, 320), popup, None, "doc", names);
+        assert_eq!(got.map(|f| f.id), Some(13));
+        let full = [0, 27, 1280, 773];
+        let stack = [frame(13, full, None), frame(12, full, Some(9))];
+        let got = over(&stack, (640, 400), Some(full), None, "doc", names);
+        assert_eq!(got.map(|f| f.id), Some(13));
+    }
+
+    #[test]
+    fn the_root_children_become_frames_top_down_past_the_shell_with_nested_clients_found_per_level()
+    {
+        let attrs = GetWindowAttributesReply {
+            map_state: MapState::VIEWABLE,
+            class: WindowClass::INPUT_OUTPUT,
+            ..Default::default()
+        };
+        let g = GetGeometryReply {
+            width: 400,
+            height: 300,
+            ..Default::default()
+        };
+        let read = Some((attrs, g));
+        let children = [70, 51, 72, 73, 74]
+            .map(|w| (w, read))
+            .into_iter()
+            .chain([(75, None)])
+            .collect();
+        let none = [0; 4];
+        let clients = vec![
+            (50, 60, Some(5), none),
+            (51, 1, Some(6), none),
+            (52, 72, Some(7), none),
+            (53, x11rb::NONE, Some(8), none),
+            (55, 73, Some(9), none),
+        ];
+        let asked = std::cell::RefCell::new(Vec::new());
+        let parents = |ws: &[Window]| {
+            asked.borrow_mut().push(ws.to_vec());
+            ws.iter()
+                .map(|w| match w {
+                    60 => 70,
+                    70 | 72 => 1,
+                    _ => x11rb::NONE,
+                })
+                .collect()
+        };
+        let frames = stack(1, children, clients, &[73], parents);
+        let got: Vec<_> = frames.iter().map(|f| (f.id, f.client, f.pid)).collect();
+        assert_eq!(
+            got,
+            [(72, 52, Some(7)), (51, 51, Some(6)), (70, 50, Some(5))]
+        );
+        assert_eq!(asked.into_inner(), [vec![60]]);
     }
 
     fn frame(id: Window, rect: [i32; 4], pid: Option<u32>) -> Framed {
