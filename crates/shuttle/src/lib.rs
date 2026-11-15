@@ -133,6 +133,17 @@ pub(crate) fn private_dir(dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("create {}: {e}", dir.display()))
 }
 
+#[cfg(unix)]
+pub(crate) fn private_umask(cmd: &mut tokio::process::Command) {
+    // SAFETY: the hook calls umask only, which is async-signal-safe and takes no pointers.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::umask(0o077);
+            Ok(())
+        });
+    }
+}
+
 #[cfg(not(unix))]
 pub(crate) fn private_dir(dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))

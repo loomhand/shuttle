@@ -106,6 +106,8 @@ impl Proc {
             .kill_on_drop(true);
         #[cfg(unix)]
         cmd.process_group(0);
+        #[cfg(unix)]
+        crate::private_umask(&mut cmd);
         let mut running = cmd
             .spawn()
             .map_err(|e| format!("start {}: {e}", self.bin.display()))
@@ -332,6 +334,23 @@ while True:
             (2..=3).contains(&starts),
             "{starts} starts in 4.5 s after the first one died"
         );
+    }
+
+    #[tokio::test]
+    async fn the_driver_socket_admits_only_the_daemon_user_whatever_the_daemon_umask() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake(dir.path(), FAKE).unwrap();
+        let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
+        // SAFETY: umask takes no pointers.
+        let before = unsafe { libc::umask(0o002) };
+        let started = Bundled::start(&exe, &endpoint, true, false, false).await;
+        // SAFETY: umask takes no pointers.
+        unsafe { libc::umask(before) };
+        let driver = started.unwrap().unwrap();
+        let mode = std::fs::metadata(&endpoint).unwrap().permissions().mode() & 0o777;
+        driver.stop().await;
+        assert_eq!(mode & 0o077, 0, "{mode:o}");
     }
 
     #[tokio::test]
