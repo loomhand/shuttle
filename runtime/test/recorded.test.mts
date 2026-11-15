@@ -164,3 +164,88 @@ test('a recorded right click, double click or modifier click clicks the element 
   assert.deepEqual(clicks, [{ x: 120, y: 210, button: 'right', count: undefined, modifiers: undefined }, { x: 120, y: 210, button: undefined, count: 2, modifiers: ['cmd'] }])
   assert.equal(calls.some((c) => c.tool === 'desk_press'), false)
 })
+
+for (const [how, step] of [['right click', { button: 'right' }], ['double click', { count: 2 }], ['modifier click', { mods: ['cmd'] }]] as [string, { button?: string; count?: number; mods?: string[] }][]) test(`a foreground ${how} whose element centre another window covers is not sent`, async (t) => {
+  const win = { id: '1/1', title: 'Files', role: 'window', pid: process.pid, active: true, app: 'Finder', bounds: [0, 0, 800, 600] }
+  const file = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'report.txt', states: ['showing'], bounds: [100, 200, 40, 20] }
+  let under: () => unknown = () => ({})
+  const clicks: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win, { id: '9/1', title: 'Always on top', role: 'window', pid: 9, active: false, app: 'Pinned', bounds: [0, 0, 400, 400] }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: 'Files', states: ['showing'] }, file] })
+    if (tool === 'desk_read') return JSON.stringify(file)
+    if (tool === 'desk_at') return JSON.stringify(under())
+    if (tool === 'desk_click') clicks.push(args)
+    return '{"ok":true}'
+  })
+  const covered = () => ({ found: { ref: 0, id: '1/2', parent: -1, depth: 0, role: 'button', name: 'report.txt', states: [] }, path: [{ id: '1/1', role: 'window', name: 'Files' }], pid: process.pid, covered: { title: 'Always on top', pid: 9 } })
+  const foreign = () => ({ found: { ref: 0, id: '9/2', parent: -1, depth: 0, role: 'pane', name: 'Pinned', states: [] }, path: [{ id: '9/1', role: 'window', name: 'Always on top' }], pid: 9 })
+  for (const [cover, said] of [[covered, /under the window "Always on top", so the click was not sent/], [foreign, /which lies outside the plan window, so the click was not sent/]] as const) {
+    under = cover
+    const r = await main({ steps: [{ click: 'report.txt', ...step }] })
+    assert.equal(r.ok, false, `${how} ${JSON.stringify(r)}`)
+    assert.match(r.escalate?.reason ?? '', said, how)
+  }
+  assert.deepEqual(clicks, [])
+})
+
+test('a foreground right click whose hit lands in its own window, on its root, on no known process or nowhere readable is sent', async (t) => {
+  const win = { id: '1/1', title: 'Files', role: 'window', pid: process.pid, active: true, app: 'Finder', bounds: [0, 0, 800, 600] }
+  const file = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'report.txt', states: ['showing'], bounds: [100, 200, 40, 20] }
+  let under: () => unknown = () => ({})
+  let clicks = 0
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: 'Files', states: ['showing'] }, file] })
+    if (tool === 'desk_read') return JSON.stringify(file)
+    if (tool === 'desk_at') return JSON.stringify(under())
+    if (tool === 'desk_click') clicks += 1
+    return '{"ok":true}'
+  })
+  const inside = () => ({ found: { ref: 0, id: '1/2', parent: -1, depth: 0, role: 'button', name: 'report.txt', states: [] }, path: [{ id: '1/1', role: 'window', name: 'Files' }], pid: process.pid })
+  const rooted = () => ({ found: { ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: 'Files', states: [] }, path: [{ id: '1/1', role: 'window', name: 'Files' }], pid: process.pid })
+  const unknown = () => ({ found: { ref: 0, id: '5/2', parent: -1, depth: 0, role: 'button', name: 'report.txt', states: [] }, path: [], pid: null })
+  const failed = () => { throw new Error('desk at: the hit test failed') }
+  for (const [how, hit] of [['inside', inside], ['root', rooted], ['unknown pid', unknown], ['at error', failed]] as const) {
+    under = hit
+    const before = clicks
+    const r = await main({ steps: [{ click: 'report.txt', button: 'right' }] })
+    assert.equal(r.ok, true, `${how} ${JSON.stringify(r)}`)
+    assert.equal(clicks, before + 1, how)
+  }
+})
+
+for (const role of ['menuitem', 'menu']) test(`a foreground right click on a ${role} is sent though its popup hangs over another window`, async (t) => {
+  const win = { id: '1/1', title: 'Files', role: 'window', pid: process.pid, active: true, app: 'Finder', bounds: [0, 0, 800, 600] }
+  const entry = { ref: 1, id: '1/2', parent: 0, depth: 1, role, name: 'Open Recent', states: ['showing'], bounds: [100, 200, 40, 20] }
+  let clicks = 0
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win, { id: '9/1', title: 'Always on top', role: 'window', pid: 9, active: false, app: 'Pinned', bounds: [0, 0, 400, 400] }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: 'Files', states: ['showing'] }, entry] })
+    if (tool === 'desk_read') return JSON.stringify(entry)
+    if (tool === 'desk_at') return JSON.stringify({ found: entry, path: [{ id: '1/1', role: 'window', name: 'Files' }], pid: process.pid, covered: { title: 'Always on top', pid: 9 } })
+    if (tool === 'desk_click') clicks += 1
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ click: 'Open Recent', button: 'right' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(clicks, 1)
+})
+
+test('a foreground right click whose hit lands in a window of the same app that the plan window does not own is not sent', async (t) => {
+  const win = { id: '1/1', title: 'Files', role: 'window', pid: process.pid, active: true, app: 'Finder', bounds: [0, 0, 800, 600] }
+  const file = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'report.txt', states: ['showing'], bounds: [100, 200, 40, 20] }
+  let clicks = 0
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win, { id: '1/9', title: 'Inspector', role: 'window', pid: process.pid, active: false, app: 'Finder', bounds: [0, 0, 400, 400] }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: 'Files', states: ['showing'] }, file] })
+    if (tool === 'desk_read') return JSON.stringify(file)
+    if (tool === 'desk_at') return JSON.stringify({ found: { ref: 0, id: '1/10', parent: -1, depth: 0, role: 'button', name: 'Apply', states: [] }, path: [{ id: '1/9', role: 'window', name: 'Inspector' }], pid: process.pid })
+    if (tool === 'desk_click') clicks += 1
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ click: 'report.txt', button: 'right' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, 'the centre of button "report.txt" is on button "Apply" under window "Inspector", which lies outside the plan window, so the click was not sent')
+  assert.equal(clicks, 0)
+})
