@@ -149,14 +149,29 @@ fn reachable<B: Access>(
     if !inside {
         return None;
     }
-    let hit = b.at(chain.first()?, cx, cy).ok()??;
-    if hit == id || chain.contains(&hit) {
-        return Some((cx, cy));
-    }
-    let above = b.ancestors(&hit).ok()?;
-    let reaches = above.iter().any(|a| a == id)
-        || (background && above.first().unwrap_or(&hit) != chain.first()?);
-    reaches.then_some((cx, cy))
+    let window = chain.first()?;
+    let hit = b.at(window, cx, cy).ok()??;
+    let reaches = hit == id || chain.contains(&hit) || {
+        let above = b.ancestors(&hit).ok()?;
+        above.iter().any(|a| a == id) || (background && above.first().unwrap_or(&hit) != window)
+    };
+    let covered = linux && !background && reaches && covered(b, id, window, cx, cy);
+    (reaches && !covered).then_some((cx, cy))
+}
+
+fn covered<B: Access>(b: &mut B, id: &str, window: &str, x: i32, y: i32) -> bool {
+    let Some(pid) = b.pid_of(id).ok().flatten() else {
+        return false;
+    };
+    b.frames_of(pid)
+        .ok()
+        .and_then(|frames| frames.into_iter().find(|f| f.id == window))
+        .is_some_and(|frame| {
+            b.covering(&frame, x, y)
+                .ok()
+                .flatten()
+                .is_some_and(|(_, over)| over != Some(pid))
+        })
 }
 
 #[cfg(test)]
@@ -174,6 +189,37 @@ mod tests {
             );
             assert!(f.acts.is_empty(), "{os:?}");
         }
+    }
+
+    #[test]
+    fn a_linux_element_another_app_covers_takes_no_click_and_one_its_own_app_covers_does() {
+        let mut f = notepad();
+        f.covers = Some(("Calculator".into(), Some(9)));
+        assert_eq!(hit_centre(&mut f, "ok", Os::Linux).unwrap(), None);
+        assert_eq!(
+            plan_press(&mut f, "ok", Os::Linux, false).unwrap(),
+            Press::Acted(true)
+        );
+        assert_eq!(f.acts, [("ok".to_owned(), Act::Action)]);
+        assert_eq!(
+            plan_press(&mut f, "ok", Os::Linux, true).unwrap(),
+            Press::Acted(true)
+        );
+        f.covers = Some(("Find - Notepad".into(), Some(4)));
+        assert_eq!(
+            hit_centre(&mut f, "ok", Os::Linux).unwrap(),
+            Some((140, 110))
+        );
+        f.covers = None;
+        assert_eq!(
+            hit_centre(&mut f, "ok", Os::Linux).unwrap(),
+            Some((140, 110))
+        );
+        f.covers = Some(("Calculator".into(), Some(9)));
+        assert_eq!(
+            hit_centre(&mut f, "ok", Os::Windows).unwrap(),
+            Some((140, 110))
+        );
     }
 
     #[test]
