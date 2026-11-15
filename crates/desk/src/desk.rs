@@ -1033,10 +1033,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             _ => None,
         };
         let mut note = None;
+        let mut budget = ANSWER_WAIT;
         for left in (0..times).rev() {
             if left + 1 < times
                 && let Some(w) = raised
-                && let Some(Some(why)) = self.moved_from(w, front.as_deref()).await
+                && let Some(why) = self.answered_move(w, front.as_deref(), &mut budget).await
             {
                 return Err(format!(
                     "{} of {times} presses were sent, then {why}, so the rest were not sent",
@@ -1084,8 +1085,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let watched = raised.filter(|_| lines > 2 || (lines == 2 && !ended));
         let mut front = None;
         let mut moved = None;
-        let mut blind = false;
-        let mut left = ANSWER_WAIT;
+        let mut budget = ANSWER_WAIT;
         for (i, line) in text.split('\n').enumerate() {
             let mut returned = false;
             let sent: Result<(), String> = async {
@@ -1101,23 +1101,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         .await?;
                     returned = true;
                     if let (Some(w), Some(f), false) =
-                        (watched, &front, blind || (i + 1 == lines && ended))
+                        (watched, &front, budget.is_zero() || (i + 1 == lines && ended))
                     {
                         tokio::time::sleep(RETURN_SETTLE).await;
-                        let mut since = None;
-                        moved = loop {
-                            match self.moved_from(w, Some(f)).await {
-                                Some(why) => break why,
-                                None if since.get_or_insert_with(Instant::now).elapsed() < left => {
-                                    tokio::time::sleep(WAIT_CHECK).await;
-                                }
-                                None => {
-                                    blind = true;
-                                    break None;
-                                }
-                            }
-                        };
-                        left = left.saturating_sub(since.map_or(Duration::ZERO, |t| t.elapsed()));
+                        moved = self.answered_move(w, Some(f), &mut budget).await;
                         if moved.is_some() {
                             return Err(String::new());
                         }
@@ -2029,6 +2016,29 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             None => self.front_frame(w).await,
             found => found,
         }
+    }
+
+    async fn answered_move(
+        &self,
+        w: (i64, i64),
+        front: Option<&str>,
+        budget: &mut Duration,
+    ) -> Option<&'static str> {
+        let mut since = None;
+        let moved = loop {
+            match self.moved_from(w, front).await {
+                Some(why) => break why,
+                None if since.get_or_insert_with(Instant::now).elapsed() < *budget => {
+                    tokio::time::sleep(WAIT_CHECK).await;
+                }
+                None => {
+                    *budget = Duration::ZERO;
+                    return None;
+                }
+            }
+        };
+        *budget = budget.saturating_sub(since.map_or(Duration::ZERO, |t| t.elapsed()));
+        moved
     }
 
     async fn moved_from(&self, w: (i64, i64), front: Option<&str>) -> Option<Option<&'static str>> {
@@ -3759,6 +3769,103 @@ pub(crate) mod tests {
             "1 of 2 lines and the Return after line 1 were typed, then the frame in front of the window changed, so the rest were not sent"
         );
         assert_eq!(sent(&calls, "type_text").len(), 1);
+    }
+
+    async fn pressed(
+        stub: fn() -> Result<Stub, String>,
+        presses: &'static std::sync::atomic::AtomicUsize,
+        repeat: u32,
+    ) -> (Result<Output, String>, Arc<Mutex<Vec<(String, Value)>>>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(stub, Returns(Behind(Arc::clone(&calls)), presses), Os::Mac);
+        let got = desk
+            .run(
+                "desk_key",
+                json!({"keys": "return", "window": "Untitled - Notepad", "repeat": repeat}),
+            )
+            .await;
+        (got, calls)
+    }
+
+    #[tokio::test]
+    async fn a_repeated_macos_key_waits_for_its_busy_app_and_stops_at_the_sheet_it_shows() {
+        static PRESSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static STALE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let late = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                unanswering: Some(|| {
+                    PRESSES.load(Ordering::SeqCst) == 1 && STALE.fetch_add(1, Ordering::SeqCst) < 3
+                }),
+                sheet_opened: Some(|| PRESSES.load(Ordering::SeqCst) >= 1),
+                ..Stub::default()
+            })
+        };
+        let (got, calls) = pressed(late, &PRESSES, 3).await;
+        assert_eq!(
+            got.unwrap_err(),
+            "1 of 3 presses were sent, then the frame in front of the window changed, so the rest were not sent"
+        );
+        assert_eq!(sent(&calls, "press_key").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_repeated_macos_key_sends_every_press_to_a_slow_app_that_answers_unchanged() {
+        static PRESSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static SINCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static LATE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let slow = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                unanswering: Some(|| {
+                    let p = PRESSES.load(Ordering::SeqCst);
+                    if p == 0 {
+                        return false;
+                    }
+                    if SINCE.swap(p, Ordering::SeqCst) != p {
+                        LATE.store(0, Ordering::SeqCst);
+                    }
+                    LATE.fetch_add(1, Ordering::SeqCst) < 3
+                }),
+                ..Stub::default()
+            })
+        };
+        let (got, calls) = pressed(slow, &PRESSES, 3).await;
+        got.unwrap();
+        assert_eq!(sent(&calls, "press_key").len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_repeated_macos_key_spends_one_answer_wait_per_call_on_an_app_late_after_every_press()
+    {
+        static PRESSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static SINCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static LATE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let late = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                unanswering: Some(|| {
+                    let p = PRESSES.load(Ordering::SeqCst);
+                    if p == 0 {
+                        return false;
+                    }
+                    if SINCE.swap(p, Ordering::SeqCst) != p {
+                        LATE.store(0, Ordering::SeqCst);
+                    }
+                    LATE.fetch_add(1, Ordering::SeqCst) < 10
+                }),
+                ..Stub::default()
+            })
+        };
+        let began = std::time::Instant::now();
+        let (got, calls) = pressed(late, &PRESSES, 6).await;
+        got.unwrap();
+        assert_eq!(sent(&calls, "press_key").len(), 6);
+        assert!(
+            began.elapsed() < Duration::from_millis(3500),
+            "{:?}",
+            began.elapsed()
+        );
     }
 
     #[tokio::test]
