@@ -277,6 +277,7 @@ public final class Ui {
         attr(sb, "clickable", String.valueOf(n.isClickable()));
         attr(sb, "long-clickable", String.valueOf(n.isLongClickable()));
         attr(sb, "editable", String.valueOf(n.isEditable()));
+        attr(sb, "password", String.valueOf(n.isPassword()));
         attr(sb, "enabled", String.valueOf(n.isEnabled()));
         attr(sb, "focused", String.valueOf(n.isFocused()));
         attr(sb, "selected", String.valueOf(n.isSelected()));

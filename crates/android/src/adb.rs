@@ -230,7 +230,7 @@ impl Android {
                     self.tap(p).await?;
                 }
                 let chars = text.chars().count();
-                match self.type_text(text, point).await? {
+                match self.type_text(text, point, || async { Ok(()) }).await? {
                     Some(true) => format!("typed {chars} characters"),
                     Some(false) => {
                         format!("pasted {chars} characters; the field does not show them")
@@ -390,12 +390,37 @@ impl Android {
         self.served("windows").await
     }
 
-    /// Types `text` into the focused field: each line pasted, Return between lines.
-    pub(crate) async fn type_text(
+    /// Types `text` into the focused field: each line pasted after `check` passes, Return between lines, and the clipboard emptied after.
+    pub(crate) async fn type_text<C, Cf>(
         &self,
         text: &str,
         at: Option<(i32, i32)>,
-    ) -> Result<Option<bool>, String> {
+        check: C,
+    ) -> Result<Option<bool>, String>
+    where
+        C: FnMut() -> Cf,
+        Cf: Future<Output = Result<(), String>>,
+    {
+        let typed = self.type_lines(text, at, check).await;
+        let mut slot = self.control.lock().await;
+        if let Some(control) = slot.as_mut().filter(|c| c.is_open())
+            && control.set_clipboard("").await.is_err()
+        {
+            *slot = None;
+        }
+        typed
+    }
+
+    async fn type_lines<C, Cf>(
+        &self,
+        text: &str,
+        at: Option<(i32, i32)>,
+        mut check: C,
+    ) -> Result<Option<bool>, String>
+    where
+        C: FnMut() -> Cf,
+        Cf: Future<Output = Result<(), String>>,
+    {
         let mut typed = Some(true);
         for (i, line) in text.split('\n').enumerate() {
             let partly = |e: String| match i {
@@ -405,6 +430,7 @@ impl Android {
                     text.split('\n').count()
                 ),
             };
+            check().await.map_err(partly)?;
             if i > 0 {
                 self.keys("return").await.map_err(partly)?;
             }
@@ -1827,6 +1853,109 @@ mod tests {
             err.ends_with("; 2 of 3 lines were typed before it"),
             "{err}"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_multi_line_type_stops_when_the_named_window_leaves_the_front() {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.windows("shade");
+        fake.put("after-input.json", &log(&fake, "windows.json"));
+        fake.windows("");
+        let err = desk(
+            &fake,
+            "desk_type",
+            serde_json::json!({"text": "\n\n", "window": "Settings"}),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.contains("Settings - com.android.settings is not in front"),
+            "{err}"
+        );
+        assert!(
+            err.ends_with("; 2 of 3 lines were typed before it"),
+            "{err}"
+        );
+        assert_eq!(log(&fake, "requests").matches("key ").count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn focus_refuses_a_listed_window_that_is_not_in_front() {
+        let fake = Fake::new();
+        fake.windows("shade");
+        let err = desk(
+            &fake,
+            "desk_focus",
+            serde_json::json!({"window": "Settings"}),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.starts_with("Settings - com.android.settings is not in front"),
+            "{err}"
+        );
+        assert_eq!(log(&fake, "requests"), "windows\n");
+        assert_eq!(log(&fake, "adbinput"), "");
+        fake.windows("");
+        let out = desk(
+            &fake,
+            "desk_focus",
+            serde_json::json!({"window": "Settings"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["title"], "Settings - com.android.settings");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_dump_without_a_node_is_no_answer_and_not_an_empty_window() {
+        let fake = Fake::new();
+        fake.windows("");
+        fake.put("dump.xml", "<hierarchy></hierarchy>");
+        let err = desk(
+            &fake,
+            "desk_snapshot",
+            serde_json::json!({"window": "Settings"}),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.starts_with("no accessibility answer from window"),
+            "{err}"
+        );
+        fake.dump("dump.xml", "7");
+        let out = desk(
+            &fake,
+            "desk_snapshot",
+            serde_json::json!({"window": "Settings"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["truncated"], false);
+        assert_eq!(out["nodes"].as_array().map(Vec::len), Some(2));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_type_empties_the_device_clipboard_after_it() {
+        let (android, mut peer) = session("/nonexistent/adb").await;
+        let mut ack = vec![ACK_CLIPBOARD];
+        ack.extend_from_slice(&1u64.to_be_bytes());
+        peer.write_all(&ack).await.unwrap();
+        let device = tokio::spawn(async move {
+            let mut buf = [0; 64];
+            let n = peer.read(&mut buf).await.unwrap();
+            buf[..n].to_vec()
+        });
+        let typed = android.type_text("", None, || async { Ok(()) }).await;
+        assert_eq!(typed, Ok(Some(true)));
+        let sent = tokio::time::timeout(Duration::from_secs(5), device).await;
+        assert_eq!(sent.unwrap().unwrap(), clipboard_message("", 1));
+        assert!(android.control.lock().await.is_some());
     }
 
     #[cfg(unix)]

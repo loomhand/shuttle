@@ -253,6 +253,7 @@ struct Raw<'a> {
     checkable: bool,
     checked: bool,
     editable: bool,
+    password: bool,
     enabled: bool,
     focused: bool,
     selected: bool,
@@ -320,8 +321,11 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
         }
         "desk_type" => {
             let a: TypeArgs = parse(args)?;
-            in_front(android, a.window.as_deref(), a.pid).await?;
-            let typed = android.type_text(&a.text, None).await?;
+            let typed = android
+                .type_text(&a.text, None, || {
+                    in_front(android, a.window.as_deref(), a.pid)
+                })
+                .await?;
             json!({"ok": true, "chars": a.text.chars().count(), "typed": typed}).to_string()
         }
         "desk_click" => click(android, parse(args)?).await?,
@@ -510,8 +514,7 @@ async fn tree(
             .ok_or_else(|| format!("no window {id}"))?,
         None => window::pick(frames, title, pid)?,
     };
-    let xml = android.tree(Some(&frame.id)).await?;
-    let nodes = nodes(&frame, &raws(&xml));
+    let nodes = dumped(android, &frame).await?;
     Ok((frame, nodes))
 }
 
@@ -523,9 +526,20 @@ async fn app_tree(android: &Android, app: &str) -> Result<(Frame, Vec<Node>), St
         .filter(|f| f.package == app)
         .min_by_key(|f| !f.active)
         .ok_or_else(|| format!("no window of {app}"))?;
-    let xml = android.tree(Some(&frame.id)).await?;
-    let nodes = nodes(&frame, &raws(&xml));
+    let nodes = dumped(android, &frame).await?;
     Ok((frame, nodes))
+}
+
+async fn dumped(android: &Android, frame: &Frame) -> Result<Vec<Node>, String> {
+    let xml = android.tree(Some(&frame.id)).await?;
+    let raws = raws(&xml);
+    if raws.is_empty() {
+        return Err(format!(
+            "no accessibility answer from window {:?}: it closed or its app is busy; take a new snapshot",
+            frame.title
+        ));
+    }
+    Ok(nodes(frame, &raws))
 }
 
 fn raws(xml: &str) -> Vec<Raw<'_>> {
@@ -552,6 +566,7 @@ fn raw(node: &str) -> Option<Raw<'_>> {
             "checkable" => r.checkable = on,
             "checked" => r.checked = on,
             "editable" => r.editable = on,
+            "password" => r.password = on,
             "enabled" => r.enabled = value != "false",
             "focused" => r.focused = on,
             "selected" => r.selected = on,
@@ -691,7 +706,10 @@ fn nodes(frame: &Frame, raws: &[Raw<'_>]) -> Vec<Node> {
         if r.selected {
             states.push("selected");
         }
-        let value = r.editable.then(|| {
+        if r.password {
+            states.push("protected");
+        }
+        let value = (r.editable && !r.password).then(|| {
             if r.showing_hint {
                 String::new()
             } else {
@@ -1030,6 +1048,12 @@ async fn focus(android: &Android, a: WindowArgs) -> Result<String, String> {
         }
         Err(e) => return Err(e),
     };
+    if !frame.active {
+        return Err(format!(
+            "{} is not in front, and a device brings a window to the front only by launching its app",
+            frame.title
+        ));
+    }
     let mut out = json!({"ok": true});
     out["title"] = frame.title.into();
     out["pid"] = frame.pid.into();
@@ -1332,6 +1356,34 @@ mod tests {
         let mut twice = nodes;
         twice.extend(super::nodes(&settings(), &raws(DUMP)));
         assert_eq!(unique(&twice, "text", "Dark theme"), None);
+    }
+
+    #[test]
+    fn a_password_field_is_protected_and_holds_no_value() {
+        let field = |password: &str| {
+            format!(
+                r#"<hierarchy><node text="hunter2" class="android.widget.EditText" content-desc="" hint="Password" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="true" password="{password}" enabled="true" focused="true" selected="false" scrollable="false" visible="true" path="0" bounds="[40,100][680,180]" /></hierarchy>"#
+            )
+        };
+        let secret = field("true");
+        let nodes = nodes(&settings(), &raws(&secret));
+        assert_eq!(nodes[1].name, "Password");
+        assert!(
+            nodes[1].states.contains(&"protected"),
+            "{:?}",
+            nodes[1].states
+        );
+        assert_eq!(nodes[1].value, None);
+        assert!(
+            !nodes[1]
+                .json(1, "com.android.settings")
+                .to_string()
+                .contains("hunter2")
+        );
+        let plain = field("false");
+        let nodes = super::nodes(&settings(), &raws(&plain));
+        assert!(!nodes[1].states.contains(&"protected"));
+        assert_eq!(nodes[1].value.as_deref(), Some("hunter2"));
     }
 
     #[test]
