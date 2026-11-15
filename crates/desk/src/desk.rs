@@ -1540,13 +1540,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     /// Refuses a point whose window, or the process on top there, the allowlist does not admit.
     async fn check_point(&self, x: f64, y: f64, under: Option<&Under>) -> Result<(), String> {
-        let pid = u32::try_from(under.ok_or(NO_WINDOW_UNDER)?.pid).ok();
+        let under = under.ok_or(NO_WINDOW_UNDER)?;
+        let (pid, id) = (u32::try_from(under.pid).ok(), under.id);
         let allow = self.allow.clone();
         self.access
             .run(CALL_LIMIT, (), move |b| {
-                check_process(b, &allow, pid)?;
+                let listed = b.shown(id) != Some(false);
+                if listed {
+                    check_process(b, &allow, pid)?;
+                }
                 match b.pid_at(x as i32, y as i32)? {
-                    Some(top) if Some(top) != pid => check_process(b, &allow, Some(top)),
+                    Some(top) if !listed || Some(top) != pid => check_process(b, &allow, Some(top)),
+                    None if !listed => allow.check(None),
                     _ => Ok(()),
                 }
             })
@@ -5394,6 +5399,45 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn an_allowlisted_point_click_under_a_cloaked_window_goes_by_the_hit_test() {
+        async fn click(
+            cloaked: Option<i64>,
+            top: Option<u32>,
+            unhit: bool,
+        ) -> (Result<Output, String>, usize) {
+            static CASE: Mutex<(Option<i64>, Option<u32>, bool)> = Mutex::new((None, None, false));
+            *lock(&CASE) = (cloaked, top, unhit);
+            let fake = || {
+                let mut f = notepad();
+                (f.cloaked, f.top, f.unhit) = *lock(&CASE);
+                Ok(f)
+            };
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk =
+                Desk::new(fake, Behind(Arc::clone(&calls)), Os::Windows).allow(&["notepad".into()]);
+            let out = desk
+                .run("desk_click", json!({"x": 600.0, "y": 200.0}))
+                .await;
+            let clicks = sent(&calls, "click").len();
+            (out, clicks)
+        }
+        let (out, clicks) = click(Some(2), Some(4), false).await;
+        assert!(out.is_ok() && clicks == 1, "{out:?}");
+        for (cloaked, top, unhit) in [
+            (None, Some(4), false),
+            (Some(2), Some(8), false),
+            (Some(2), None, false),
+            (Some(2), Some(4), true),
+        ] {
+            let (out, clicks) = click(cloaked, top, unhit).await;
+            assert!(
+                out.is_err() && clicks == 0,
+                "{cloaked:?} {top:?} {unhit} {out:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn a_windows_cover_the_hit_test_passes_through_does_not_stop_pointer_input() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let through = || {
@@ -7588,6 +7632,7 @@ pub(crate) mod tests {
         top: Option<u32>,
         blind: bool,
         unhit: bool,
+        cloaked: Option<i64>,
         listed: Option<u32>,
         pub(crate) behind: bool,
         pub(crate) pid: Option<u32>,
@@ -7669,6 +7714,10 @@ pub(crate) mod tests {
                 return Err("the UI Automation hit test at the point failed".into());
             }
             Ok(self.top)
+        }
+
+        fn shown(&mut self, window: i64) -> Option<bool> {
+            Some(self.cloaked != Some(window))
         }
 
         fn owner_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {

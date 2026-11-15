@@ -376,6 +376,9 @@ pub trait Access {
     fn focus_within(&mut self, _window: i64) -> Option<bool> {
         None
     }
+    fn shown(&mut self, _window: i64) -> Option<bool> {
+        None
+    }
 }
 
 /// Whether a caller can act on a node of `role`.

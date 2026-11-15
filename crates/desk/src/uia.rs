@@ -311,6 +311,10 @@ impl Access for Uia {
         Some(foreground().0 as i64)
     }
 
+    fn shown(&mut self, window: i64) -> Option<bool> {
+        Some(visible(HWND(window as *mut core::ffi::c_void)))
+    }
+
     fn focus_within(&mut self, window: i64) -> Option<bool> {
         // SAFETY: `self.auto` is a live IUIAutomation of this thread; a stale handle fails, and FindFirst finding nothing is an error.
         unsafe {
@@ -753,21 +757,7 @@ fn shown() -> Vec<Shown> {
     // SAFETY: the callback only pushes to `all`, which outlives the call.
     let _ = unsafe { EnumWindows(Some(add), LPARAM(&raw mut all as isize)) };
     all.into_iter()
-        .filter(|&hwnd| {
-            let mut cloaked = 0u32;
-            // SAFETY: the window calls take a handle and write at most the 4 bytes of `cloaked`.
-            unsafe {
-                IsWindowVisible(hwnd).as_bool()
-                    && (DwmGetWindowAttribute(
-                        hwnd,
-                        DWMWA_CLOAKED,
-                        (&raw mut cloaked).cast(),
-                        size_of::<u32>() as u32,
-                    )
-                    .is_err()
-                        || cloaked == 0)
-            }
-        })
+        .filter(|&hwnd| visible(hwnd))
         .map(|hwnd| {
             let mut pid = 0u32;
             // SAFETY: the window calls take a handle; `pid` is a live u32 they write.
@@ -872,6 +862,22 @@ fn title_units(hwnd: HWND, buf: &mut [u16; TITLE_CHARS]) -> &[u16] {
     // SAFETY: GetWindowTextW writes at most `buf.len()` UTF-16 units into `buf`.
     let n = unsafe { GetWindowTextW(hwnd, buf) };
     &buf[..usize::try_from(n).unwrap_or(0)]
+}
+
+fn visible(hwnd: HWND) -> bool {
+    let mut cloaked = 0u32;
+    // SAFETY: the window calls take a handle and write at most the 4 bytes of `cloaked`.
+    unsafe {
+        IsWindowVisible(hwnd).as_bool()
+            && (DwmGetWindowAttribute(
+                hwnd,
+                DWMWA_CLOAKED,
+                (&raw mut cloaked).cast(),
+                size_of::<u32>() as u32,
+            )
+            .is_err()
+                || cloaked == 0)
+    }
 }
 
 fn foreground() -> HWND {
