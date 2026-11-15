@@ -679,17 +679,13 @@ impl Computer {
         let Some(id) = window_id.filter(|_| raise) else {
             return Ok(false);
         };
-        let req = json!({"pid": pid, "window_id": id});
-        let once = self.once(&req);
-        let raised = self
-            .request(
-                once.as_ref().map_or(session, Owned::name),
-                "bring_to_front",
-                req,
-            )
-            .await;
-        self.end_once(once).await;
-        raised.map_err(|e| format!("{e}; nothing was clicked or typed"))?;
+        self.request(
+            session,
+            "bring_to_front",
+            json!({"pid": pid, "window_id": id}),
+        )
+        .await
+        .map_err(|e| format!("{e}; nothing was clicked or typed"))?;
         let end = Instant::now() + RAISE_WAIT;
         loop {
             if front(self.key_window(session).await?) {
@@ -717,9 +713,16 @@ impl Computer {
                     .in_front(session, (pid, window_id), a.foreground)
                     .await?
             {
-                return Err(format!(
-                    "element {index} is in a window that is not the front window, so nothing was clicked or typed: bring that window to the front and call computer_state again"
-                ));
+                return Err(if a.foreground && window_id.is_some() {
+                    format!(
+                        "element {index} is in a window that was brought to the front and is still not the front window after {} ms, so nothing was clicked or typed",
+                        RAISE_WAIT.as_millis()
+                    )
+                } else {
+                    format!(
+                        "element {index} is in a window that is not the front window, so nothing was clicked or typed: bring that window to the front and call computer_state again"
+                    )
+                });
             }
         }
         let before = self.before_input(Some(a)).await;
@@ -3439,20 +3442,47 @@ mod tests {
                 .collect();
             (out, raises, types(&calls))
         }
-        let (out, raises, typed) = run("raises", true).await;
-        assert!(out.is_ok_and(|o| !o.is_error), "{raises:?}");
-        assert_eq!(
-            (&raises[0]["pid"], &raises[0]["window_id"]),
-            (&json!(7), &json!(9))
-        );
-        assert_eq!(typed, ["\u{4e2d}"]);
+        for hit in ["raises", "late"] {
+            let (out, raises, typed) = run(hit, true).await;
+            assert!(out.is_ok_and(|o| !o.is_error), "{hit} {raises:?}");
+            assert_eq!(
+                (
+                    &raises[0]["pid"],
+                    &raises[0]["window_id"],
+                    &raises[0]["session"]
+                ),
+                (&json!(7), &json!(9), &json!("s")),
+                "{hit}"
+            );
+            assert_eq!(typed, ["\u{4e2d}"], "{hit}");
+        }
         let (out, raises, typed) = run("behind", true).await;
-        assert!(out.unwrap_err().contains("nothing was clicked or typed"));
+        let err = out.unwrap_err();
+        assert!(
+            err.contains("was brought to the front and is still not the front window after 500 ms, so nothing was clicked or typed"),
+            "{err}"
+        );
         assert_eq!(raises.len(), 1);
         assert!(typed.is_empty());
-        let (out, raises, typed) = run("raises", false).await;
-        assert!(out.unwrap_err().contains("nothing was clicked or typed"));
-        assert!(raises.is_empty() && typed.is_empty());
+        let (out, raises, typed) = run("refuses", true).await;
+        let err = out.unwrap_err();
+        assert!(
+            err.contains(
+                "focus-stealing prevention kept the window behind; nothing was clicked or typed"
+            ),
+            "{err}"
+        );
+        assert_eq!(raises.len(), 1);
+        assert!(typed.is_empty());
+        for hit in ["raises", "sibling"] {
+            let (out, raises, typed) = run(hit, false).await;
+            let err = out.unwrap_err();
+            assert!(
+                err.contains("is not the front window, so nothing was clicked or typed"),
+                "{hit} {err}"
+            );
+            assert!(raises.is_empty() && typed.is_empty(), "{hit}");
+        }
     }
 
     #[tokio::test]
@@ -5014,18 +5044,40 @@ mod tests {
     ) -> tokio::task::JoinHandle<()> {
         let listener = Fake::bind(socket).unwrap();
         let log = std::sync::Arc::clone(calls);
-        let raised = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let lists = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
         tokio::spawn(listener.serve(move |req| {
-                let up = raised.load(std::sync::atomic::Ordering::SeqCst);
-                let reply = match req["name"].as_str().unwrap_or_default() {
-                    "bring_to_front" if hit == "raises" => {
-                        raised.store(true, std::sync::atomic::Ordering::SeqCst);
+                let name = req["name"].as_str().unwrap_or_default();
+                let seen = match name {
+                    "list_windows" => lists
+                        .fetch_update(
+                            std::sync::atomic::Ordering::SeqCst,
+                            std::sync::atomic::Ordering::SeqCst,
+                            |n| Some(n.saturating_add(1)),
+                        )
+                        .unwrap_or_default()
+                        .saturating_add(1),
+                    _ => lists.load(std::sync::atomic::Ordering::SeqCst),
+                };
+                let up = match hit {
+                    "raises" => seen != usize::MAX && seen >= 1,
+                    "late" => seen != usize::MAX && seen >= 3,
+                    _ => false,
+                };
+                let reply = match name {
+                    "bring_to_front" if hit == "refuses" => {
+                        json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "focus-stealing prevention kept the window behind"}]}})
+                    }
+                    "bring_to_front" if hit == "raises" || hit == "late" => {
+                        lists.store(0, std::sync::atomic::Ordering::SeqCst);
                         json!({"ok": true, "result": {"structuredContent": {}}})
                     }
                     "list_windows" if hit == "windowless" => {
                         json!({"ok": true, "result": {"structuredContent": {"windows": []}}})
                     }
-                    "list_windows" if hit == "behind" || (hit == "raises" && !up) => {
+                    "list_windows" if hit == "sibling" => {
+                        json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 5, "app_name": "TextEdit", "title": "other", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 3}, {"pid": 7, "window_id": 9, "app_name": "TextEdit", "title": "t", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 2}]}}})
+                    }
+                    "list_windows" if matches!(hit, "behind" | "refuses" | "raises" | "late") && !up => {
                         json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 8, "window_id": 3, "app_name": "Terminal", "title": "u", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 3}, {"pid": 7, "window_id": 9, "app_name": "TextEdit", "title": "t", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 2}]}}})
                     }
                     "list_windows" => {

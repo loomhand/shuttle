@@ -467,6 +467,7 @@ impl Access for Uia {
     }
 
     fn pid_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
+        let _bounded = Bounded::new(&self.auto);
         Ok(element_at(&self.auto, x, y).and_then(|hit| process_id(&hit)))
     }
 

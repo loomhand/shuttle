@@ -962,7 +962,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                                 (0..TITLE_TIERS).any(|t| title_matches(t, &f.title, w))
                             })
                     })
-                    && let Some(p) = b.owner_at(a.x, a.y).ok().flatten()
+                    && let Some(p) = b
+                        .owner_at(a.x, a.y)
+                        .ok()
+                        .flatten()
+                        .filter(|p| Some(*p) != a.pid)
                 {
                     (a.window, a.pid) = (None, Some(p));
                     frames = self::frames(b, a.pid, &allow)?;
@@ -3250,16 +3254,16 @@ pub(crate) mod tests {
         }
         async fn raised(stub: fn() -> Result<Stub, String>, window: &str) -> Vec<Value> {
             let calls = Arc::new(Mutex::new(Vec::new()));
-            let desk = Desk::new(stub, Wheel(Arc::clone(&calls)), Os::Mac);
+            let desk = Desk::new(stub, Pathed(Wheel(Arc::clone(&calls))), Os::Mac);
             let out = desk
                 .run("desk_focus", json!({"window": window}))
                 .await
                 .unwrap();
-            assert_eq!(
-                serde_json::from_str::<Value>(&out.text).unwrap()["ok"],
-                true
-            );
-            sent(&calls, "bring_to_front")
+            let v: Value = serde_json::from_str(&out.text).unwrap();
+            assert_eq!(v["ok"], true);
+            let raises = sent(&calls, "bring_to_front");
+            assert_eq!(v.get("path").is_some(), !raises.is_empty(), "{v}");
+            raises
         }
         let sheet = || Ok(listed(true));
         assert!(raised(sheet, "Untitled - Notepad").await.is_empty());
@@ -6066,6 +6070,47 @@ pub(crate) mod tests {
             (&json!("ok"), &json!(4)),
             "{v}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_windows_at_under_a_window_uia_lists_reads_that_window_without_the_hit_test() {
+        let listed = || {
+            let mut f = notepad();
+            f.hits.insert((140, 110), "ok".into());
+            f.top = Some(9);
+            Ok(f)
+        };
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(listed, Behind(Arc::clone(&calls)), Os::Windows);
+        let out = desk
+            .run("desk_at", json!({"x": 140, "y": 110}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(
+            (&v["found"]["id"], &v["pid"]),
+            (&json!("ok"), &json!(4)),
+            "{v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn at_under_a_window_the_tree_does_not_list_has_no_hit_test_fallback_off_windows() {
+        for os in [Os::Mac, Os::Linux] {
+            let unlisted = || {
+                let mut f = notepad();
+                f.hits.insert((600, 100), "ok".into());
+                f.top = Some(4);
+                Ok(f)
+            };
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(unlisted, Behind(Arc::clone(&calls)), os);
+            let err = desk
+                .run("desk_at", json!({"x": 600, "y": 100}))
+                .await
+                .unwrap_err();
+            assert!(err.starts_with("no window \"Inbox\""), "{os:?}: {err}");
+        }
     }
 
     #[tokio::test]
@@ -9399,6 +9444,21 @@ pub(crate) mod tests {
                     {"window_id": 2, "title": "Report - Writer", "pid": 8}
                 ]}}),
                 _ => json!({}),
+            })
+        }
+    }
+
+    struct Pathed(Wheel);
+
+    impl Input for Pathed {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let out = self.0.call(tool, args).await?;
+            Ok(match tool {
+                "bring_to_front" => json!({"structuredContent": {
+                    "path": "activate",
+                    "observed": {"workspace_frontmost_pid": 4}
+                }}),
+                _ => out,
             })
         }
     }
