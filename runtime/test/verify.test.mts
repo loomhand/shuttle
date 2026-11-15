@@ -80,6 +80,24 @@ test('an expect the tree does not meet is checked on a screenshot, which fails i
   assert.deepEqual(['desk_shot', 'model_ask'].map((c) => calls.filter((x) => x === c).length), [2, 2])
 })
 
+test('an expect reads a window that answers with no element again, and stops when it never answers', async (t) => {
+  let answersAt = Infinity; let asked = 0
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: Date.now() < answersAt, nodes: [root] })
+    if (tool === 'model_decide') { asked++; return JSON.stringify({ answers: { ok: { probability: 0.9 } }, served: { model: 'm', build: null, id: null }, usage }) }
+    return '{"ok":true}'
+  })
+  const busy = await main({ steps: [{ expect: 'the error is gone' }] })
+  assert.equal(busy.ok, false, JSON.stringify(busy))
+  assert.match(busy.escalate?.reason ?? '', /"Format" gave no answer to the accessibility read/)
+  assert.equal(asked, 0)
+  answersAt = Date.now() + 400
+  const back = await main({ steps: [{ expect: 'the error is gone' }] })
+  assert.equal(back.ok, true, JSON.stringify(back))
+  assert.equal(asked, 1)
+})
+
 test('a screenshot check whose answer is no true or false fails the expect', async (t) => {
   await daemon(t, ({ tool }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])

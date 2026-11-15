@@ -102,6 +102,7 @@ const VERIFY_POLL = 200
 const RUN_S = 90
 const RUN_MAX_S = 110
 const RUN_SPARE = 3000
+const BUSY_MS = 3000
 const INERT_KEY = /^shift\+[^+]$/i
 const ARROW_KEY = /^(shift\+)?(arrow)?(up|down|left|right)$/i
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
@@ -498,6 +499,13 @@ async function snapOf(w: Win, r: Reads = {}): Promise<desk.Snap> {
 async function readTree(w: Win, r: Reads): Promise<Tree> {
   const snap = await snapOf(w, r)
   return { snap, nodes: parse(snap) }
+}
+async function answered(w: Win, r: Reads, tree: Tree): Promise<Tree> {
+  for (const end = Date.now() + BUSY_MS; tree.snap.truncated && tree.nodes.length <= 1; await sleep(VERIFY_POLL)) {
+    if (Date.now() >= end) throw new Surprise(`"${w.title}" gave no answer to the accessibility read for ${BUSY_MS / 1000} s: its app is busy`, await seen())
+    tree = await readTree(w, r)
+  }
+  return tree
 }
 function targetRole(s: Step) {
   if (s.verify !== undefined) return s.role ?? (s.value !== undefined ? FIELDS : s.on !== undefined ? `${TOGGLES}|menuitem` : undefined)
@@ -1190,9 +1198,9 @@ function shows(before: Map<string, Text> | null, after: Map<string, Text> | null
 async function holdsText(w: Win, fp: Fp) {
   const t0 = Date.now()
   try {
-    const same = shownFields(parse(await snapOf(w)), fp); const hit = same.length === 1 ? same[0] : same[fp.nth]
+    const same = shownFields((await answered(w, {}, await readTree(w, {}))).nodes, fp); const hit = same.length === 1 ? same[0] : same[fp.nth]
     return !!hit && !!hit.n.value.trim()
-  } catch { return false } finally { tick('blank', t0) }
+  } catch (e: unknown) { if (e instanceof Surprise) throw e; return false } finally { tick('blank', t0) }
 }
 
 async function documents(w: Win) {
@@ -1396,6 +1404,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   }
   if (s.web) tree = await onPage(s.web, w, tree, read)
   if (s.expect) {
+    tree = await answered(w, read, tree)
     const d = await decide({ window_title: w.title, contents: render(tree.nodes, 60, false, 4000) }, { ok: desk.yes(s.expect) })
     rec.p = +prob(d.ok).toFixed(2)
     if (prob(d.ok) >= 0.5) return
