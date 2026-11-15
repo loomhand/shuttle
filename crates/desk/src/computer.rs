@@ -664,7 +664,6 @@ impl Computer {
         (image, scale)
     }
 
-    /// Whether the window `(pid, window_id)` is the front window, once brought to the front when `raise` is set.
     async fn in_front(
         &self,
         session: &str,
