@@ -22,7 +22,8 @@ use tokio::time::Instant;
 #[cfg(target_os = "linux")]
 use crate::desk::CALL_LIMIT;
 use crate::desk::{
-    BUSY, TURN_WAIT, Turn, Typer, launch_name, runs_app, text_runs, without_protocol_tail, xtest,
+    BUSY, RAISE_WAIT, TURN_WAIT, Turn, Typer, WAIT_POLL, launch_name, runs_app, text_runs,
+    without_protocol_tail, xtest,
 };
 use crate::driver::{CONNECT_RETRY, Driver, ENDED, image_of, text_of};
 use crate::keys::{Os, hid_plus, key_names};
@@ -663,6 +664,45 @@ impl Computer {
         (image, scale)
     }
 
+    /// Whether the window `(pid, window_id)` is the front window, once brought to the front when `raise` is set.
+    async fn in_front(
+        &self,
+        session: &str,
+        (pid, window_id): (i64, Option<i64>),
+        raise: bool,
+    ) -> Result<bool, String> {
+        let front = |k: Option<(i64, i64)>| {
+            k.is_some_and(|(p, w)| p == pid && window_id.is_none_or(|id| id == w))
+        };
+        if front(self.key_window(session).await?) {
+            return Ok(true);
+        }
+        let Some(id) = window_id.filter(|_| raise) else {
+            return Ok(false);
+        };
+        let req = json!({"pid": pid, "window_id": id});
+        let once = self.once(&req);
+        let raised = self
+            .request(
+                once.as_ref().map_or(session, Owned::name),
+                "bring_to_front",
+                req,
+            )
+            .await;
+        self.end_once(once).await;
+        raised.map_err(|e| format!("{e}; nothing was clicked or typed"))?;
+        let end = Instant::now() + RAISE_WAIT;
+        loop {
+            if front(self.key_window(session).await?) {
+                return Ok(true);
+            }
+            if Instant::now() >= end {
+                return Ok(false);
+            }
+            tokio::time::sleep(WAIT_POLL).await;
+        }
+    }
+
     /// Types text with non-ASCII characters or at a point, which a click focuses first, in the calls [`text_runs`] cuts.
     async fn type_mixed(&self, session: &str, a: &ActArgs, input: Turn) -> Result<Output, String> {
         let full = without_protocol_tail(required(&a.text, "text")?);
@@ -674,10 +714,9 @@ impl Computer {
                 .get(session)
                 .map(|s| (s.pid, s.window_id));
             if let Some((pid, window_id)) = read
-                && self
-                    .key_window(session)
+                && !self
+                    .in_front(session, (pid, window_id), a.foreground)
                     .await?
-                    .is_none_or(|(p, w)| p != pid || window_id.is_some_and(|id| id != w))
             {
                 return Err(format!(
                     "element {index} is in a window that is not the front window, so nothing was clicked or typed: bring that window to the front and call computer_state again"
@@ -3377,6 +3416,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_foreground_type_brings_the_elements_window_to_the_front_before_it_types() {
+        async fn run(
+            hit: &'static str,
+            foreground: bool,
+        ) -> (Result<Output, String>, Vec<Value>, Vec<String>) {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = endpoint(dir.path());
+            let calls = Arc::default();
+            let driver = press_driver(&socket, &calls, "", "entry", hit);
+            let cua = cua(&socket);
+            cua.state(json!({"pid": 7, "session": "s"})).await.unwrap();
+            let out = cua
+                .act(json!({"action": "type", "text": "\u{4e2d}", "element": 0, "session": "s", "foreground": foreground}))
+                .await;
+            driver.abort();
+            let raises = calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| c["name"] == "bring_to_front")
+                .map(|c| c["args"].clone())
+                .collect();
+            (out, raises, types(&calls))
+        }
+        let (out, raises, typed) = run("raises", true).await;
+        assert!(out.is_ok_and(|o| !o.is_error), "{raises:?}");
+        assert_eq!(
+            (&raises[0]["pid"], &raises[0]["window_id"]),
+            (&json!(7), &json!(9))
+        );
+        assert_eq!(typed, ["\u{4e2d}"]);
+        let (out, raises, typed) = run("behind", true).await;
+        assert!(out.unwrap_err().contains("nothing was clicked or typed"));
+        assert_eq!(raises.len(), 1);
+        assert!(typed.is_empty());
+        let (out, raises, typed) = run("raises", false).await;
+        assert!(out.unwrap_err().contains("nothing was clicked or typed"));
+        assert!(raises.is_empty() && typed.is_empty());
+    }
+
+    #[tokio::test]
     async fn an_element_without_the_press_action_gets_one_hit_checked_click() {
         let (out, clicks) = field("AXList", "click", UNSUPPORTED, "").await;
         assert!(!out.is_error, "{}", out.text);
@@ -4935,12 +5015,18 @@ mod tests {
     ) -> tokio::task::JoinHandle<()> {
         let listener = Fake::bind(socket).unwrap();
         let log = std::sync::Arc::clone(calls);
+        let raised = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         tokio::spawn(listener.serve(move |req| {
+                let up = raised.load(std::sync::atomic::Ordering::SeqCst);
                 let reply = match req["name"].as_str().unwrap_or_default() {
+                    "bring_to_front" if hit == "raises" => {
+                        raised.store(true, std::sync::atomic::Ordering::SeqCst);
+                        json!({"ok": true, "result": {"structuredContent": {}}})
+                    }
                     "list_windows" if hit == "windowless" => {
                         json!({"ok": true, "result": {"structuredContent": {"windows": []}}})
                     }
-                    "list_windows" if hit == "behind" => {
+                    "list_windows" if hit == "behind" || (hit == "raises" && !up) => {
                         json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 8, "window_id": 3, "app_name": "Terminal", "title": "u", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 3}, {"pid": 7, "window_id": 9, "app_name": "TextEdit", "title": "t", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 2}]}}})
                     }
                     "list_windows" => {

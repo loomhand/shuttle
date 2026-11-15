@@ -65,6 +65,8 @@ pub(crate) const BACKGROUND_TWINS: &str = "background input: the element's own w
 pub(crate) const BACKGROUND_UIA: &str = "background input: on Windows UI Automation focuses, selects or runs an element only by bringing its window to the front; click it in its window, or use input = \"foreground\"";
 pub(crate) const BACKGROUND_TERMINAL: &str = "background input: Windows Terminal drops every key while another window is in front and its terminal holds no keyboard focus, and background input never brings a window to the front; bring it to the front, or use input = \"foreground\"";
 pub(crate) const CALL_LIMIT: Duration = Duration::from_secs(3);
+pub(crate) const RAISE_WAIT: Duration = Duration::from_millis(500);
+pub(crate) const WAIT_POLL: Duration = Duration::from_millis(10);
 pub(crate) const BUSY: &str = "desk busy: a previous action is still running";
 #[cfg(target_os = "linux")]
 pub(crate) const TYPER: Typer = crate::xtest::type_mapped;
@@ -81,8 +83,6 @@ const APP_INPUT: [&str; 5] = [
 
 const TREE_LIMIT: Duration = Duration::from_secs(10);
 const WAIT_MAX: Duration = Duration::from_secs(5);
-const RAISE_WAIT: Duration = Duration::from_millis(500);
-const WAIT_POLL: Duration = Duration::from_millis(10);
 const WAIT_CHECK: Duration = Duration::from_millis(100);
 
 const FRAME_BORDER: f64 = 16.0;
