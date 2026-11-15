@@ -1026,11 +1026,19 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
         let raised = self.raised_window(a.window.as_deref(), a.pid).await?;
         self.raise(raised).await?;
+        let front = match raised {
+            Some(w) if self.os == Os::Mac => self.front_frame(w).await,
+            _ => None,
+        };
         let mut note = None;
         for left in (0..times).rev() {
             if left + 1 < times
                 && let Some(w) = raised
-                && !self.fronted(w).await
+                && if self.os == Os::Mac {
+                    front.is_none() || self.front_frame(w).await != front
+                } else {
+                    !self.fronted(w).await
+                }
             {
                 return Err(format!(
                     "{} of {times} presses were sent, then the window left the front, so the rest were not sent",
@@ -1928,24 +1936,29 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(())
     }
 
-    /// Whether window `(pid, window_id)` is in front: on macOS by its window number or a focused sheet of it, elsewhere by an active window of its process.
-    async fn fronted(&self, (pid, window_id): (i64, i64)) -> bool {
-        let Ok(app) = u32::try_from(pid) else {
-            return false;
-        };
+    async fn fronted(&self, w: (i64, i64)) -> bool {
+        self.front_frame(w).await.is_some()
+    }
+
+    /// The active frame that puts window `(pid, window_id)` in front: on macOS the window by its number or a focused sheet of it, elsewhere an active window of its process.
+    async fn front_frame(&self, (pid, window_id): (i64, i64)) -> Option<String> {
+        let app = u32::try_from(pid).ok()?;
         let mac = self.os == Os::Mac;
-        self.access
+        let frames = self
+            .access
             .run(CALL_LIMIT, (), move |b| b.frames_of(app))
             .await
-            .is_ok_and(|frames| {
-                frames.iter().any(|f| {
-                    f.active
-                        && (!mac
-                            || sheet_window(&frames, f).is_some_and(|w| {
-                                !w.stale && w.number.map(i64::from) == Some(window_id)
-                            }))
-                })
+            .ok()?;
+        frames
+            .iter()
+            .find(|f| {
+                f.active
+                    && (!mac
+                        || sheet_window(&frames, f).is_some_and(|w| {
+                            !w.stale && w.number.map(i64::from) == Some(window_id)
+                        }))
             })
+            .map(|f| f.id.clone())
     }
 
     async fn background_window(
@@ -3135,6 +3148,74 @@ pub(crate) mod tests {
         assert_eq!(raises(|| Ok(sheets("w"))).await, 0);
         assert_eq!(raises(|| Ok(sheets("s"))).await, 0);
         assert_eq!(raises(|| Ok(sheets("x"))).await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_repeated_macos_key_goes_on_into_a_sheet_that_was_in_front_when_it_began() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let held = || {
+            Ok(Stub {
+                frames: vec![
+                    Frame {
+                        number: Some(1),
+                        ..frame("w", "Untitled - Notepad", 4, false, Some("Notepad"))
+                    },
+                    Frame {
+                        role: "dialog",
+                        owner: Some("w".into()),
+                        ..frame("s", "save", 4, true, Some("Notepad"))
+                    },
+                ],
+                ..Stub::default()
+            })
+        };
+        let desk = Desk::new(held, Behind(Arc::clone(&calls)), Os::Mac);
+        desk.run(
+            "desk_key",
+            json!({"keys": "tab", "window": "Untitled - Notepad", "repeat": 3}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sent(&calls, "press_key").len(), 3);
+        assert!(sent(&calls, "bring_to_front").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_repeated_macos_key_stops_when_a_sheet_opens_on_its_window() {
+        static PRESSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        struct Counted(Behind);
+        impl Input for Counted {
+            async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+                if tool == "press_key" {
+                    PRESSES.fetch_add(1, Ordering::SeqCst);
+                }
+                self.0.call(tool, args).await
+            }
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let opens = || {
+            Ok(Stub {
+                frames: vec![Frame {
+                    number: Some(1),
+                    ..frame("w", "Untitled - Notepad", 4, true, Some("Notepad"))
+                }],
+                sheet_opened: Some(|| PRESSES.load(Ordering::SeqCst) > 0),
+                ..Stub::default()
+            })
+        };
+        let desk = Desk::new(opens, Counted(Behind(Arc::clone(&calls))), Os::Mac);
+        let err = desk
+            .run(
+                "desk_key",
+                json!({"keys": "tab", "window": "Untitled - Notepad", "repeat": 3}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "1 of 3 presses were sent, then the window left the front, so the rest were not sent"
+        );
+        assert_eq!(sent(&calls, "press_key").len(), 1);
     }
 
     #[tokio::test]
@@ -7367,6 +7448,7 @@ pub(crate) mod tests {
         budgets: Vec<Duration>,
         shells: Vec<u32>,
         unanswered: Option<Frame>,
+        sheet_opened: Option<fn() -> bool>,
     }
 
     impl Stub {
@@ -7409,11 +7491,21 @@ pub(crate) mod tests {
         }
 
         fn frames_of(&mut self, pid: u32) -> Result<Vec<Frame>, String> {
-            let frames = if self.scoped {
+            let mut frames = if self.scoped {
                 self.frames.clone()
             } else {
                 self.frames()?
             };
+            if self.sheet_opened.is_some_and(|opened| opened()) {
+                for f in &mut frames {
+                    f.active = false;
+                }
+                frames.push(Frame {
+                    role: "dialog",
+                    owner: Some("w".into()),
+                    ..frame("s", "save", 4, true, Some("Notepad"))
+                });
+            }
             Ok(frames.into_iter().filter(|f| f.pid == Some(pid)).collect())
         }
 
