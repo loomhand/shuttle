@@ -25,7 +25,8 @@ type Web = { url: string; id?: string }
 // scale is crop pixels per desk unit
 type Recorded = { text: string; crop?: string; scale?: number; offset?: [number, number]; at?: [number, number]; size?: [number, number]; root?: boolean }
 type Reads = { keys?: boolean; menus?: boolean }
-type Kept = Reads & { id: string; snap: desk.Snap; nodes: Node[] }
+type Tree = { snap: desk.Snap; nodes: Node[] }
+type Kept = Reads & Tree & { id: string }
 type Fp = { role: string; name: string; parent: string; nth: number; of?: number; label?: string }
 type Node = { ref: number; id: string; depth: number; role: string; name: string; value: string; disabled: boolean; parent: number; shortcut: string; checked: boolean; shown: boolean; focused: boolean; bounds?: [number, number, number, number] }
 type Hit = { n: Node; i: number; how: string; p?: number; margin?: number }
@@ -494,6 +495,10 @@ function titledIn(ws: Win[], title: string, pid: number | null) { return pid !==
 async function snapOf(w: Win, r: Reads = {}): Promise<desk.Snap> {
   return BG ? desk.snapshot(undefined, { id: w.id, ...r }) : desk.snapshot(w.title, { pid: w.pid, ...r })
 }
+async function readTree(w: Win, r: Reads): Promise<Tree> {
+  const snap = await snapOf(w, r)
+  return { snap, nodes: parse(snap) }
+}
 function targetRole(s: Step) {
   if (s.verify !== undefined) return s.role ?? (s.value !== undefined ? FIELDS : s.on !== undefined ? `${TOGGLES}|menuitem` : undefined)
   return s.role ?? (s.check ? TOGGLES : s.set ? FIELDS : undefined)
@@ -896,23 +901,23 @@ async function openPage(app: string, url: string, rec: Rec) {
   }
 }
 
-async function onPage(want: Web, w: Win, nodes?: Node[], read: Reads = {}): Promise<Node[]> {
-  let p = await page(w, nodes, read)
+async function onPage(want: Web, w: Win, tree?: Tree, read: Reads = {}): Promise<Tree> {
+  let p = await page(w, tree, read)
   for (const end = Date.now() + ON_PAGE_MS; !samePage(p.url, want.url) && Date.now() < end; await sleep(200)) p = await page(w, undefined, read)
   if (!samePage(p.url, want.url)) throw new Diverged(`the recording acted on ${want.url}, and the plan's window shows ${p.url || 'no address'} now`, await seen())
-  return p.nodes
+  return p.tree
 }
 
 // the daemon turns the web tree off again when the plan ends
-async function page(w: Win, nodes?: Node[], read: Reads = {}): Promise<{ nodes: Node[]; url: string }> {
-  let ns = nodes ?? parse(await snapOf(w, read))
-  let doc = ns.find((n) => n.role === 'document')
+async function page(w: Win, initial?: Tree, read: Reads = {}): Promise<{ tree: Tree; url: string }> {
+  let tree = initial ?? await readTree(w, read)
+  let doc = tree.nodes.find((n) => n.role === 'document')
   if (!doc && w.pid !== null && !asked.has(w.pid)) {
     asked.add(w.pid)
     const r = await desk.web(w.pid, true).catch(() => null)
-    for (const end = Date.now() + WEB_TREE_MS; r && !doc && Date.now() < end; await sleep(200)) { ns = parse(await snapOf(w, read)); doc = ns.find((n) => n.role === 'document') }
+    for (const end = Date.now() + WEB_TREE_MS; r && !doc && Date.now() < end; await sleep(200)) { tree = await readTree(w, read); doc = tree.nodes.find((n) => n.role === 'document') }
   }
-  return { nodes: ns, url: doc ? (await desk.read(doc.id, { web: true })).url ?? '' : '' }
+  return { tree, url: doc ? (await desk.read(doc.id, { web: true })).url ?? '' : '' }
 }
 
 function samePage(a: string, b: string) {
@@ -1376,22 +1381,22 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   }
   const w = await windowFor(s.window, 3000, s.seen)
   rec.seen = w.title; if (w.title.trim()) lastSeen = w.title
-  let t0 = Date.now(); let nodes: Node[]
+  let t0 = Date.now(); let tree: Tree
   const r = reads(s)
-  try { nodes = reuse(kept, w, r)?.nodes ?? parse(await snapOf(w, r)) } catch (e: unknown) {
+  try { tree = reuse(kept, w, r) ?? await readTree(w, r) } catch (e: unknown) {
     if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen())
     throw e
   }
   tick('snap', t0)
   const aim = s.verify ?? s.click ?? s.check
   let read = r
-  if (OS === 'darwin' && !r.menus && aim !== undefined) {
-    const near = await resolve(nodes, aim, targetRole(s), undefined, 0.7, s.fp, false)
-    if (!near || (near.how !== 'fp' && norm(near.n.name) !== norm(aim))) { read = { ...r, menus: true }; nodes = parse(await snapOf(w, read)) }
+  if (OS === 'darwin' && !r.menus && !s.gone && aim !== undefined) {
+    const near = await resolve(tree.nodes, aim, targetRole(s), undefined, 0.7, s.fp, false)
+    if (!near || (near.how !== 'fp' && norm(near.n.name) !== norm(aim))) { read = { ...r, menus: true }; tree = await readTree(w, read) }
   }
-  if (s.web) nodes = await onPage(s.web, w, nodes, read)
+  if (s.web) tree = await onPage(s.web, w, tree, read)
   if (s.expect) {
-    const d = await decide({ window_title: w.title, contents: render(nodes, 60, false, 4000) }, { ok: desk.yes(s.expect) })
+    const d = await decide({ window_title: w.title, contents: render(tree.nodes, 60, false, 4000) }, { ok: desk.yes(s.expect) })
     rec.p = +prob(d.ok).toFixed(2)
     if (prob(d.ok) >= 0.5) return
     if (BG && !AUTO) throw new Surprise(`expectation not met in the window's tree: ${s.expect}; ${NO_PIXELS}`, await seen())
@@ -1402,10 +1407,13 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   }
   if (s.verify) {
     const want = s.verify
+    let seenTarget = false
     const miss = async (ask: boolean) => {
+      const { nodes, snap } = tree
       if (s.gone) {
         const kept = nodes.find((n) => n.shown && norm(n.name) === norm(want.slice(0, NAME_CUT).trim()))
-        return kept ? `verify: "${kept.name}" is still there` : ''
+        if (kept) { seenTarget = true; return `verify: "${kept.name}" is still there` }
+        return snap.truncated ? `verify: snapshot is truncated; cannot confirm "${want}" is gone` : ''
       }
       const hit = await resolve(nodes, want, targetRole(s), undefined, 0.7, s.fp, ask)
       if (!hit) return `verify: no element matches "${want}"`
@@ -1420,12 +1428,13 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     for (let first = true; ; first = false) {
       const last = Date.now() >= end
       const why = await miss(last)
-      if (!why) { rec.waited = !first && (s.gone || rec.how === 'ax' || rec.how === 'fp'); return }
+      if (!why) { rec.waited = !first && (seenTarget || rec.how === 'ax' || rec.how === 'fp'); return }
       if (last) throw new Surprise(why, await seen())
       await sleep(Math.min(VERIFY_POLL, end - Date.now()))
-      nodes = s.web ? await onPage(s.web, w, undefined, read) : parse(await snapOf(w, read))
+      tree = s.web ? await onPage(s.web, w, undefined, read) : await readTree(w, read)
     }
   }
+  let nodes = tree.nodes
   if (s.menu) {
     if (BG && OS === 'darwin' && !AUTO) throw new Surprise(`the macOS menu bar belongs to the front app, and an app behind it runs no menu entry: background gui_plan cannot run "${s.menu}" in "${w.title}"`, await seen())
     if (BG && OS === 'darwin') { await front(w); nodes = parse(await snapOf(w, r)) }

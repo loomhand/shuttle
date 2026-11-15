@@ -147,6 +147,26 @@ test('a verify with gone passes once its element goes, and stops naming it when 
   assert.equal(goes.ok, true, JSON.stringify(goes))
 })
 
+test('gone needs a complete snapshot to confirm absence', async (t) => {
+  let completeAt = Infinity
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: args.menus === true || Date.now() < completeAt, nodes: [root] })
+    return '{"ok":true}'
+  })
+  const step = { verify: 'Saving', gone: true }
+  const present = await main({ steps: [{ verify: win.title, gone: true }] })
+  assert.match(present.escalate?.reason ?? '', /is still there/)
+  for (const check of [step, { ...step, timeout_ms: 250 }]) {
+    const r = await main({ steps: [check] })
+    assert.match(r.escalate?.reason ?? '', /snapshot is truncated/, JSON.stringify(r))
+  }
+  completeAt = Date.now() + 400
+  const r = await main({ steps: [{ ...step, timeout_ms: 3000 }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.ok(Date.now() >= completeAt)
+})
+
 test('gone counts a shown element without bounds or past the name cap and ignores a hidden menu item', async (t) => {
   const button = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'Show', states: ['showing'], bounds: [10, 10, 60, 20] }
   const label = { ref: 2, id: '1/3', parent: 0, depth: 1, role: 'text', name: 'Done', states: ['showing'] }
@@ -172,11 +192,12 @@ test('gone counts a shown element without bounds or past the name cap and ignore
 test('a waiting verify asks no model until its last read, and one that had to wait confirms the step before it', async (t) => {
   const button = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'Show', states: ['showing'], bounds: [10, 10, 60, 20] }
   const label = { ref: 2, id: '1/3', parent: 0, depth: 1, role: 'text', name: 'Done', states: ['showing'], bounds: [10, 40, 60, 20] }
-  let shown = Infinity; let asked = 0
+  const saving = { ref: 3, id: '1/4', parent: 0, depth: 1, role: 'text', name: 'Saving', states: ['showing'], bounds: [10, 70, 60, 20] }
+  let shown = Infinity; let asked = 0; let truncatedUntil = 0; let savingUntil = 0
   await daemon(t, ({ tool }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])
-    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: Date.now() >= shown ? [root, button, label] : [root, button] })
-    if (tool === 'desk_click' || tool === 'desk_press' || tool === 'desk_act') { shown = Math.min(shown, Date.now() + 600); return JSON.stringify({ ok: true, unverified: 'unverifiable: posted click' }) }
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: Date.now() < truncatedUntil, nodes: [root, button, ...(Date.now() >= shown ? [label] : []), ...(Date.now() < savingUntil ? [saving] : [])] })
+    if (tool === 'desk_click' || tool === 'desk_press' || tool === 'desk_act') { shown = Math.min(shown, Date.now() + 600); savingUntil = Math.min(savingUntil, Date.now() + 600); return JSON.stringify({ ok: true, unverified: 'unverifiable: posted click' }) }
     if (tool === 'model_decide') {
       asked++
       return JSON.stringify({ answers: { pick: { choice: 'r2', confidence: 1, probabilities: { r2: 1 } } }, served: { model: 'm', build: null, id: null }, usage })
@@ -194,4 +215,12 @@ test('a waiting verify asks no model until its last read, and one that had to wa
   assert.equal(asked, 1)
   assert.equal(model.escalate?.step, 1, JSON.stringify(model))
   assert.match(model.escalate?.reason ?? '', /sent but not confirmed/)
+  truncatedUntil = Date.now() + 600
+  const gone = await background({ steps: [{ wait: 'Format' }, { click: 'Show' }, { verify: 'Saving', gone: true, timeout_ms: 3000 }] })
+  assert.equal(gone.escalate?.step, 1, JSON.stringify(gone))
+  assert.match(gone.escalate?.reason ?? '', /sent but not confirmed/, JSON.stringify(gone))
+  savingUntil = Infinity
+  const went = await background({ steps: [{ wait: 'Format' }, { click: 'Show' }, { verify: 'Saving', gone: true, timeout_ms: 3000 }] })
+  assert.equal(went.ok, true, JSON.stringify(went))
+  assert.equal(went.escalate, undefined, JSON.stringify(went))
 })
