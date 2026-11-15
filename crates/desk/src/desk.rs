@@ -1856,12 +1856,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
         self.raise(Some(to)).await?;
         let end = Instant::now() + RAISE_WAIT;
-        while Instant::now() < end
-            && self
-                .top_at(point)
-                .await?
-                .is_some_and(|w| key(&w) == key(&cover))
+        while self
+            .top_at(point)
+            .await?
+            .is_some_and(|w| key(&w) == key(&cover))
         {
+            if Instant::now() >= end {
+                return Err(format!(
+                    "the window {:?} still covers the point after {:?} came to the front; nothing was sent",
+                    cover["title"].as_str().unwrap_or_default(),
+                    w["title"].as_str().unwrap_or_default()
+                ));
+            }
             tokio::time::sleep(WAIT_POLL).await;
         }
         Ok(())
@@ -5049,6 +5055,46 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn pointer_input_a_window_still_covers_after_the_raise_is_refused_with_nothing_sent() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(Apps),
+            Topmost(BehindCover(
+                Behind(Arc::clone(&calls)),
+                AtomicBool::new(false),
+                (4, "Untitled - Notepad"),
+            )),
+            Os::Windows,
+        );
+        let named = json!({"window": "Inbox", "pid": 8});
+        for (tool, mut args) in [
+            ("desk_click", json!({"x": 300.0, "y": 250.0})),
+            (
+                "desk_scroll",
+                json!({"direction": "down", "x": 300.0, "y": 250.0}),
+            ),
+            (
+                "desk_drag",
+                json!({"x": 200.0, "y": 100.0, "to_x": 400.0, "to_y": 150.0}),
+            ),
+        ] {
+            args.as_object_mut()
+                .unwrap()
+                .extend(named.as_object().unwrap().clone());
+            let err = desk.run(tool, args).await.unwrap_err();
+            assert!(
+                err.contains("\"Untitled - Notepad\" still covers the point")
+                    && err.contains("nothing was sent"),
+                "{tool}: {err}"
+            );
+        }
+        assert_eq!(sent(&calls, "bring_to_front").len(), 3);
+        for tool in ["click", "scroll", "drag"] {
+            assert!(sent(&calls, tool).is_empty(), "{tool}: {:?}", order(&calls));
+        }
+    }
+
+    #[tokio::test]
     async fn a_same_app_window_on_top_is_raised_past_unless_the_desk_does_not_list_it() {
         for (cover, raised) in [
             ((8, "Other - Mail"), true),
@@ -7591,6 +7637,18 @@ pub(crate) mod tests {
                 _ => self.1.store(false, Ordering::SeqCst),
             }
             Ok(out)
+        }
+    }
+
+    struct Topmost(BehindCover);
+
+    impl Input for Topmost {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let out = self.0.call(tool, args).await;
+            if tool == "bring_to_front" {
+                self.0.1.store(false, Ordering::SeqCst);
+            }
+            out
         }
     }
 
