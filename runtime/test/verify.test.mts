@@ -256,6 +256,35 @@ test('a waiting verify asks no model until its last read, and one that had to wa
   assert.equal(went.escalate, undefined, JSON.stringify(went))
 })
 
+test('a macOS waiting verify counts a read whose menu bar was cut after the whole window as a complete miss', { skip: process.platform !== 'darwin' }, async (t) => {
+  const button = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'Show', states: ['showing'], bounds: [10, 10, 60, 20] }
+  const label = { ref: 2, id: '1/3', parent: 0, depth: 1, role: 'text', name: 'Done', states: ['showing'], bounds: [10, 40, 60, 20] }
+  const bar = { ref: 3, id: '1/4', parent: 0, depth: 1, role: 'menubar', name: '', states: ['showing'] }
+  let shown = Infinity; let walked = true
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') {
+      const on = Date.now() >= shown
+      const nodes = [root, button, ...(on ? [label] : []), ...(args.menus && walked ? [bar] : [])]
+      return JSON.stringify({ window: win, truncated: args.menus === true && !on, nodes })
+    }
+    if (tool === 'desk_click' || tool === 'desk_press' || tool === 'desk_act') { shown = Date.now() + 600; return JSON.stringify({ ok: true, unverified: 'unverifiable: posted click' }) }
+    return '{"ok":true}'
+  })
+  process.env.SHUTTLE_INPUT = 'background'
+  const mode = 'verify-menubar'
+  const background = ((await import(`../lib/gui_plan.mts?${mode}`)) as { main: typeof main }).main
+  delete process.env.SHUTTLE_INPUT
+  const plan = { steps: [{ wait: 'Format' }, { click: 'Show' }, { verify: 'Done', role: 'text', timeout_ms: 3000 }] }
+  const r = await background(plan)
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.escalate, undefined, JSON.stringify(r))
+  walked = false; shown = Infinity
+  const cut = await background(plan)
+  assert.equal(cut.escalate?.step, 1, JSON.stringify(cut))
+  assert.match(cut.escalate?.reason ?? '', /sent but not confirmed/, JSON.stringify(cut))
+})
+
 test('a waiting verify whose misses came from truncated snapshots does not confirm the step before it', async (t) => {
   const button = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'Show', states: ['showing'], bounds: [10, 10, 60, 20] }
   const label = { ref: 2, id: '1/3', parent: 0, depth: 1, role: 'text', name: 'Done', states: ['showing'], bounds: [10, 40, 60, 20] }

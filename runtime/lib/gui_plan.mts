@@ -1435,7 +1435,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
         return snap.truncated ? `verify: snapshot is truncated; cannot confirm "${want}" is gone` : ''
       }
       const hit = await resolve(nodes, want, targetRole(s), undefined, 0.7, s.fp, ask)
-      if (!hit) { observed ||= !snap.truncated; return `verify: no element matches "${want}"` }
+      if (!hit) { observed ||= !snap.truncated || (OS === 'darwin' && !!read.menus && nodes.some((n) => n.role === 'menubar' && n.depth === 1 && n.parent === 0)); return `verify: no element matches "${want}"` }
       rec.how = hit.how; rec.fp = fingerprint(nodes, hit)
       const bad: string[] = []
       if (s.value !== undefined) { let v = ''; let url: string | undefined; try { const r = await desk.read(hit.n.id); url = r.url; v = r.url ?? r.value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); v = hit.n.value }; if (url !== undefined ? url !== s.value : !holds(hit.n.role, v, s.value)) bad.push(`reads "${v}"`) }
