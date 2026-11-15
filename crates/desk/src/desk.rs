@@ -1867,13 +1867,25 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return Ok(());
         }
         let (owner, _, _) = window_key(w)?;
-        match self.cover(&json!({"x": at.0, "y": at.1}), owner).await? {
-            Some(c) if c != COVER_UNKNOWN => Err(format!(
+        let Some(c) = self
+            .cover(&json!({"x": at.0, "y": at.1}), owner)
+            .await?
+            .filter(|c| c != COVER_UNKNOWN)
+        else {
+            return Ok(());
+        };
+        let (x, y) = (at.0 as i32, at.1 as i32);
+        let listed = self
+            .access
+            .run(CALL_LIMIT, (), move |b| b.listed_owner_at(x, y))
+            .await;
+        if listed.ok().flatten().is_some_and(|p| i64::from(p) != owner) {
+            return Err(format!(
                 "{}covers the point; nothing was sent",
                 c.trim_end_matches(COVERED)
-            )),
-            _ => Ok(()),
+            ));
         }
+        Ok(())
     }
 
     /// Raises window `w`, the target of pointer input named by `window`, when the point lies in it and another window than one of [`Self::own_popup`] is on top there, under the rule [`Self::raised_window`] keeps.
@@ -5436,20 +5448,27 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_macos_foreground_scroll_or_drag_another_app_owns_the_point_of_is_not_sent() {
-        for (top, sent_ok) in [(9, false), (8, true)] {
+        for (top, sent_ok) in [(9, false), (8, true), (7, true)] {
             let calls = Arc::new(Mutex::new(Vec::new()));
-            let fake = if top == 9 {
-                || {
+            let fake = match top {
+                9 => || {
                     let mut f = notepad();
                     f.top = Some(9);
+                    f.listed = Some(9);
                     Ok(f)
-                }
-            } else {
-                || {
+                },
+                8 => || {
                     let mut f = notepad();
                     f.top = Some(8);
+                    f.listed = Some(8);
                     Ok(f)
-                }
+                },
+                _ => || {
+                    let mut f = notepad();
+                    f.top = Some(7);
+                    f.listed = Some(8);
+                    Ok(f)
+                },
             };
             let desk = Desk::new(fake, Behind(Arc::clone(&calls)), Os::Mac);
             let named = json!({"window": "Inbox", "pid": 8});

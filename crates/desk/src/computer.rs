@@ -673,12 +673,11 @@ impl Computer {
                 .await
                 .get(session)
                 .map(|s| (s.pid, s.window_id));
-            let mut listed = self.listed(session).await?;
-            listed.retain(|w| w.layer == 0);
             if let Some((pid, window_id)) = read
                 && self
-                    .app_of(&listed)
-                    .is_none_or(|w| w.pid != pid || window_id.is_some_and(|id| id != w.window_id))
+                    .key_window(session)
+                    .await?
+                    .is_none_or(|(p, w)| p != pid || window_id.is_some_and(|id| id != w))
             {
                 return Err(format!(
                     "element {index} is in a window that is no longer in front, so nothing was clicked or typed: bring that window to the front and call computer_state again"
@@ -2034,7 +2033,6 @@ struct Window {
     w: i64,
     h: i64,
     z: i64,
-    layer: i64,
 }
 
 /// A screen rectangle's pixels: the rectangle in screen units, its size and RGB rows in image pixels, and the image pixels per screen unit.
@@ -2221,7 +2219,6 @@ fn window_list(result: &Value) -> Vec<Window> {
                 w: n(&b["width"]).or_else(|| n(&b["w"])).unwrap_or(0),
                 h: n(&b["height"]).or_else(|| n(&b["h"])).unwrap_or(0),
                 z: w["z_index"].as_i64().unwrap_or(i64::MIN),
-                layer: w["layer"].as_i64().unwrap_or(0),
             })
         })
         .filter(|w| w.w >= MIN_WINDOW && w.h >= MIN_WINDOW && w.x + w.w > 0 && w.y + w.h > 0)
@@ -3376,23 +3373,6 @@ mod tests {
             "{:?}",
             calls.lock().unwrap()
         );
-        driver.abort();
-    }
-
-    #[tokio::test]
-    async fn a_floating_window_of_another_app_listed_first_does_not_stop_text_for_an_element() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = endpoint(dir.path());
-        let calls = Arc::default();
-        let driver = press_driver(&socket, &calls, "", "entry", "floating");
-        let cua = cua(&socket);
-        cua.state(json!({"pid": 7, "session": "s"})).await.unwrap();
-        let out = cua
-            .act(json!({"action": "type", "text": "\u{4e2d}", "element": 0, "session": "s"}))
-            .await
-            .unwrap();
-        assert!(!out.is_error, "{}", out.text);
-        assert_eq!(types(&calls), ["\u{4e2d}"]);
         driver.abort();
     }
 
@@ -4959,9 +4939,6 @@ mod tests {
                 let reply = match req["name"].as_str().unwrap_or_default() {
                     "list_windows" if hit == "windowless" => {
                         json!({"ok": true, "result": {"structuredContent": {"windows": []}}})
-                    }
-                    "list_windows" if hit == "floating" => {
-                        json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 8, "window_id": 3, "layer": 3, "app_name": "Picture in Picture", "title": "p", "bounds": {"x": 0.0, "y": 0.0, "width": 300.0, "height": 200.0}, "z_index": 3}, {"pid": 7, "window_id": 9, "app_name": "TextEdit", "title": "t", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 2}]}}})
                     }
                     "list_windows" if hit == "behind" => {
                         json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 8, "window_id": 3, "app_name": "Terminal", "title": "u", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 3}, {"pid": 7, "window_id": 9, "app_name": "TextEdit", "title": "t", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 2}]}}})
