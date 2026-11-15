@@ -1939,9 +1939,13 @@ mod tests {
     #[tokio::test]
     async fn a_line_after_a_return_goes_only_into_a_field_of_the_window_checked_in_front() {
         let other = r#"{"editable":true,"password":false,"window":true,"id":9,"len":0,"hash":0,"tail":"","bounds":[0,0,720,100]}"#;
+        let stale = r#"{"editable":false,"password":false,"window":true,"id":7,"len":0,"hash":0,"tail":"","bounds":[0,0,720,100]}"#;
+        let parent = r#"{"editable":false,"password":false,"window":true,"id":9,"len":0,"hash":0,"tail":"","bounds":[0,0,720,100]}"#;
         for (focus, want) in [
             ("null", "no field of the window holds the input focus"),
             (other, "the input focus is in another window"),
+            (stale, "no field of the window holds the input focus"),
+            (parent, "the input focus is in another window"),
         ] {
             let fake = Fake::new();
             fake.put("inject.answer", "true");
