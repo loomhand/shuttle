@@ -6188,7 +6188,10 @@ pub(crate) mod tests {
             .unwrap();
         let clicks = sent(&calls, "click");
         assert_eq!(clicks.len(), 1, "{clicks:?}");
-        assert_eq!((&clicks[0]["x"], &clicks[0]["y"]), (&json!(140), &json!(110)));
+        assert_eq!(
+            (&clicks[0]["x"], &clicks[0]["y"]),
+            (&json!(140), &json!(110))
+        );
     }
 
     #[tokio::test]
@@ -8544,7 +8547,11 @@ pub(crate) mod tests {
         }
 
         fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
-            Ok(if id == "4/5" { vec!["4/1".into()] } else { Vec::new() })
+            Ok(if id == "4/5" {
+                vec!["4/1".into()]
+            } else {
+                Vec::new()
+            })
         }
 
         fn at(&mut self, _: &str, x: i32, y: i32) -> Result<Option<String>, String> {

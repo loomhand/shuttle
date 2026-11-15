@@ -667,7 +667,12 @@ impl Computer {
     async fn type_mixed(&self, session: &str, a: &ActArgs, input: Turn) -> Result<Output, String> {
         let full = without_protocol_tail(required(&a.text, "text")?);
         if let Some(index) = a.element {
-            let read = self.last.lock().await.get(session).map(|s| (s.pid, s.window_id));
+            let read = self
+                .last
+                .lock()
+                .await
+                .get(session)
+                .map(|s| (s.pid, s.window_id));
             if let Some((pid, window_id)) = read
                 && self
                     .key_window(session)
@@ -3364,11 +3369,7 @@ mod tests {
         assert!(err.contains("nothing was clicked or typed"), "{err}");
         assert!(types(&calls).is_empty());
         assert!(
-            !calls
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|c| c["name"] == "click"),
+            !calls.lock().unwrap().iter().any(|c| c["name"] == "click"),
             "{:?}",
             calls.lock().unwrap()
         );
