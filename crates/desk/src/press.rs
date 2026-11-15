@@ -76,7 +76,6 @@ pub(crate) fn plan_press<B: Access>(
     Ok(Press::Acted(b.act(id, Act::Action)?))
 }
 
-/// The centre of element `id` when a hit test there finds it or a part of it, as [`plan_press`] clicks it.
 pub(crate) fn hit_centre<B: Access>(
     b: &mut B,
     id: &str,
