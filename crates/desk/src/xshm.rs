@@ -13,8 +13,8 @@ use x11rb::protocol::shm::ConnectionExt as _;
 use x11rb::protocol::xinput::{ConnectionExt as _, DeviceType};
 use x11rb::protocol::xproto::{
     Atom, AtomEnum, ChangeWindowAttributesAux, ConnectionExt as _, EventMask, GetGeometryReply,
-    GetWindowAttributesReply, GrabMode, GrabStatus, ImageFormat, ImageOrder, MapState, Window,
-    WindowClass,
+    GetWindowAttributesReply, GrabMode, GrabStatus, ImageFormat, ImageOrder, MapState, Rectangle,
+    Window, WindowClass,
 };
 use x11rb::protocol::{ErrorKind, Event};
 use x11rb::rust_connection::RustConnection;
@@ -621,7 +621,31 @@ impl Grabber {
         };
         let frames = stack(self.root, looks, clients, &shell, parents);
         let name = |w| self.title(w).unwrap_or_default();
-        Ok(over(&frames, at, bounds, pid, title, name).map(|f| (name(f.client), f.pid)))
+        let inputs = self.inputs(&banded(&frames, at), at);
+        let takes = |f: &Framed, _| inputs.get(&f.client).copied().unwrap_or(true);
+        Ok(over(&frames, at, bounds, pid, title, name, takes).map(|f| (name(f.client), f.pid)))
+    }
+
+    fn inputs(&self, clients: &[Window], (x, y): (i32, i32)) -> HashMap<Window, bool> {
+        let asked: Vec<_> = clients
+            .iter()
+            .map(|&c| {
+                let shape = self.conn.shape_get_rectangles(c, SK::INPUT).ok();
+                let origin = self.conn.translate_coordinates(c, self.root, 0, 0).ok();
+                (c, shape, origin)
+            })
+            .collect();
+        asked
+            .into_iter()
+            .map(|(c, shape, origin)| {
+                let shape = shape.and_then(|r| r.reply().ok());
+                let origin = origin.and_then(|r| r.reply().ok());
+                let rects = shape
+                    .zip(origin)
+                    .map(|(s, o)| rooted((o.dst_x, o.dst_y), &s.rectangles));
+                (c, in_shape(rects.as_deref(), x, y))
+            })
+            .collect()
     }
 
     /// The mapped children of the root with their geometry, past a cua-driver cursor overlay; the desktop shell's only with `shell`.
@@ -1075,8 +1099,11 @@ fn over(
     pid: Option<u32>,
     title: &str,
     name: impl Fn(Window) -> String,
+    takes: impl Fn(&Framed, (i32, i32)) -> bool,
 ) -> Option<Framed> {
-    let hit = *frames.iter().find(|f| holds(f.input, x, y))?;
+    let hit = *frames
+        .iter()
+        .find(|f| holds(f.rect, x, y) && (holds(f.input, x, y) || takes(f, (x, y))))?;
     let mut own: Vec<&Framed> = frames
         .iter()
         .filter(|f| bounds.is_some_and(|b| around(f.rect, b)))
@@ -1112,6 +1139,32 @@ fn over(
         [one] if one.id == hit.id => None,
         _ => Some(hit),
     }
+}
+
+fn banded(frames: &[Framed], (x, y): (i32, i32)) -> Vec<Window> {
+    frames
+        .iter()
+        .filter(|f| holds(f.rect, x, y) && !holds(f.input, x, y))
+        .map(|f| f.client)
+        .collect()
+}
+
+fn rooted((ox, oy): (i16, i16), rects: &[Rectangle]) -> Vec<[i32; 4]> {
+    rects
+        .iter()
+        .map(|r| {
+            [
+                i32::from(ox) + i32::from(r.x),
+                i32::from(oy) + i32::from(r.y),
+                r.width.into(),
+                r.height.into(),
+            ]
+        })
+        .collect()
+}
+
+fn in_shape(rects: Option<&[[i32; 4]]>, x: i32, y: i32) -> bool {
+    rects.is_none_or(|rects| rects.is_empty() || rects.iter().any(|&r| holds(r, x, y)))
 }
 
 fn holds([left, top, w, h]: [i32; 4], x: i32, y: i32) -> bool {
@@ -1532,7 +1585,7 @@ mod tests {
     }
 
     #[test]
-    fn a_client_side_shadow_over_the_element_does_not_cover_it() {
+    fn a_point_in_a_client_side_shadow_is_covered_only_where_the_shadows_input_shape_reaches() {
         let names = |w| {
             if w == 10 {
                 "a".to_owned()
@@ -1546,14 +1599,93 @@ mod tests {
             ..frame(11, [660, 100, 480, 380], Some(9))
         };
         let element = Some([100, 100, 600, 400]);
-        assert_eq!(
-            over(&[b, a], (680, 200), element, Some(7), "a", names),
-            None
+        let asked = std::cell::Cell::new(0);
+        let shape = |reach: bool| {
+            let asked = &asked;
+            move |f: &Framed, at| {
+                assert_eq!((f.client, at), (11, (692, 200)));
+                asked.set(asked.get() + 1);
+                reach
+            }
+        };
+        let got = super::over(
+            &[b, a],
+            (692, 200),
+            element,
+            Some(7),
+            "a",
+            names,
+            shape(true),
         );
-        assert_eq!(
-            over(&[b, a], (720, 200), element, Some(7), "a", names).map(|f| f.id),
-            Some(11)
+        assert_eq!(got.map(|f| f.id), Some(11));
+        let got = super::over(
+            &[b, a],
+            (692, 200),
+            element,
+            Some(7),
+            "a",
+            names,
+            shape(false),
         );
+        assert_eq!(got, None);
+        assert_eq!(asked.get(), 2);
+        let got = super::over(
+            &[b, a],
+            (720, 200),
+            element,
+            Some(7),
+            "a",
+            names,
+            shape(false),
+        );
+        assert_eq!(got.map(|f| f.id), Some(11));
+        let got = super::over(
+            &[b, a],
+            (400, 200),
+            element,
+            Some(7),
+            "a",
+            names,
+            shape(false),
+        );
+        assert_eq!(got, None);
+        assert_eq!(asked.get(), 2);
+    }
+
+    #[test]
+    fn a_shadow_input_shape_holds_the_point_by_its_root_rectangles_and_an_unread_one_holds_it() {
+        let band = [[660, 100, 480, 12], [660, 100, 12, 380]];
+        assert!(in_shape(Some(&band), 665, 300));
+        assert!(!in_shape(Some(&band), 680, 300));
+        assert!(in_shape(Some(&[]), 680, 300));
+        assert!(in_shape(None, 680, 300));
+        let client = [Rectangle {
+            x: 2,
+            y: 3,
+            width: 10,
+            height: 380,
+        }];
+        assert_eq!(rooted((664, 120), &client), [[666, 123, 10, 380]]);
+        assert!(in_shape(Some(&rooted((664, 120), &client)), 670, 200));
+        assert!(!in_shape(Some(&rooted((664, 120), &client)), 662, 200));
+    }
+
+    #[test]
+    fn only_frames_whose_shadow_band_holds_the_point_have_their_input_shape_read() {
+        let a = frame(10, [100, 100, 600, 400], Some(7));
+        let b = Framed {
+            client: 31,
+            input: [700, 140, 400, 300],
+            ..frame(11, [660, 100, 480, 380], Some(9))
+        };
+        let c = Framed {
+            client: 32,
+            input: [690, 130, 200, 200],
+            ..frame(12, [650, 90, 260, 260], Some(8))
+        };
+        assert_eq!(banded(&[c, b, a], (680, 200)), [32, 31]);
+        assert!(banded(&[c, b, a], (720, 200)).is_empty());
+        assert!(banded(&[c, b, a], (400, 200)).is_empty());
     }
 
     #[test]
@@ -1907,6 +2039,19 @@ mod tests {
             [(72, 52, Some(7)), (51, 51, Some(6)), (70, 50, Some(5))]
         );
         assert_eq!(asked.into_inner(), [vec![60], vec![61]]);
+    }
+
+    fn over(
+        frames: &[Framed],
+        at: (i32, i32),
+        bounds: Option<[i32; 4]>,
+        pid: Option<u32>,
+        title: &str,
+        name: impl Fn(Window) -> String,
+    ) -> Option<Framed> {
+        super::over(frames, at, bounds, pid, title, name, |f, at| {
+            panic!("no shape read expected for {} at {at:?}", f.id)
+        })
     }
 
     fn frame(id: Window, rect: [i32; 4], pid: Option<u32>) -> Framed {
