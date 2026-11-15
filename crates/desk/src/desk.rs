@@ -1027,23 +1027,32 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let raised = self.raised_window(a.window.as_deref(), a.pid).await?;
         self.raise(raised).await?;
         let front = match raised {
-            Some(w) if self.os == Os::Mac => self.front_frame(w).await,
+            Some(w) if self.os == Os::Mac && times > 1 => match self.front_frame(w).await {
+                None => self.front_frame(w).await,
+                found => found,
+            },
             _ => None,
         };
         let mut note = None;
         for left in (0..times).rev() {
             if left + 1 < times
                 && let Some(w) = raised
-                && if self.os == Os::Mac {
-                    front.is_none() || self.front_frame(w).await != front
-                } else {
-                    !self.fronted(w).await
-                }
             {
-                return Err(format!(
-                    "{} of {times} presses were sent, then the window left the front, so the rest were not sent",
-                    times - left - 1
-                ));
+                let moved = if self.os == Os::Mac {
+                    match self.front_frame(w).await {
+                        None => Some("the window left the front"),
+                        now if now != front => Some("the frame in front of the window changed"),
+                        _ => None,
+                    }
+                } else {
+                    (!self.fronted(w).await).then_some("the window left the front")
+                };
+                if let Some(why) = moved {
+                    return Err(format!(
+                        "{} of {times} presses were sent, then {why}, so the rest were not sent",
+                        times - left - 1
+                    ));
+                }
             }
             self.send(tool, req.clone(), to, &mut note)
                 .await
@@ -1852,8 +1861,28 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(Some((pid, id)))
     }
 
+    async fn front(&self, w: &Value, pid: Option<u32>, at: (f64, f64)) -> Result<(), String> {
+        self.raise_past(w, pid, at).await?;
+        if self.os != Os::Mac {
+            return Ok(());
+        }
+        let (owner, _, _) = window_key(w)?;
+        match self.cover(&json!({"x": at.0, "y": at.1}), owner).await? {
+            Some(c) if c != COVER_UNKNOWN => Err(format!(
+                "{}covers the point; nothing was sent",
+                c.trim_end_matches(COVERED)
+            )),
+            _ => Ok(()),
+        }
+    }
+
     /// Raises window `w`, the target of pointer input named by `window`, when the point lies in it and another window than one of [`Self::own_popup`] is on top there, under the rule [`Self::raised_window`] keeps.
-    async fn front(&self, w: &Value, pid: Option<u32>, (x, y): (f64, f64)) -> Result<(), String> {
+    async fn raise_past(
+        &self,
+        w: &Value,
+        pid: Option<u32>,
+        (x, y): (f64, f64),
+    ) -> Result<(), String> {
         if pid.is_none() && self.os == Os::Linux {
             return Ok(());
         }
@@ -3215,7 +3244,7 @@ pub(crate) mod tests {
             .unwrap_err();
         assert_eq!(
             err,
-            "1 of 3 presses were sent, then the window left the front, so the rest were not sent"
+            "1 of 3 presses were sent, then the frame in front of the window changed, so the rest were not sent"
         );
         assert_eq!(sent(&calls, "press_key").len(), 1);
     }
@@ -5403,6 +5432,55 @@ pub(crate) mod tests {
             (&json!(4), &json!(1)),
             "{clicks:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_macos_foreground_scroll_or_drag_another_app_owns_the_point_of_is_not_sent() {
+        for (top, sent_ok) in [(9, false), (8, true)] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let fake = if top == 9 {
+                || {
+                    let mut f = notepad();
+                    f.top = Some(9);
+                    Ok(f)
+                }
+            } else {
+                || {
+                    let mut f = notepad();
+                    f.top = Some(8);
+                    Ok(f)
+                }
+            };
+            let desk = Desk::new(fake, Behind(Arc::clone(&calls)), Os::Mac);
+            let named = json!({"window": "Inbox", "pid": 8});
+            for (tool, mut args) in [
+                (
+                    "desk_scroll",
+                    json!({"direction": "down", "x": 300.0, "y": 250.0}),
+                ),
+                (
+                    "desk_drag",
+                    json!({"x": 200.0, "y": 100.0, "to_x": 400.0, "to_y": 150.0}),
+                ),
+            ] {
+                args.as_object_mut()
+                    .unwrap()
+                    .extend(named.as_object().unwrap().clone());
+                let out = desk.run(tool, args).await;
+                assert_eq!(out.is_ok(), sent_ok, "{top} {tool}: {out:?}");
+                if let Err(e) = out {
+                    assert!(e.ends_with("covers the point; nothing was sent"), "{e}");
+                }
+            }
+            for tool in ["scroll", "drag"] {
+                assert_eq!(
+                    sent(&calls, tool).len(),
+                    usize::from(sent_ok),
+                    "{top} {tool}: {:?}",
+                    order(&calls)
+                );
+            }
+        }
     }
 
     #[tokio::test]
