@@ -851,12 +851,15 @@ test('a type the device reports did not show stops the step, and one it could no
   assert.equal(lost.ok, false, JSON.stringify(lost))
   assert.equal(lost.escalate?.step, 1, JSON.stringify(lost))
   assert.match(lost.escalate?.reason ?? '', /^"abc" did not show in the focused field/)
+  assert.equal(lost.escalate?.window, notepad().title, JSON.stringify(lost))
   types = 0
   const keyed = await foreground({ steps: [{ app: 'Notepad' }, { key: 'tab' }, { type: 'abc' }] })
   assert.equal(keyed.escalate?.step, 2, JSON.stringify(keyed))
   assert.equal(types, 1)
   const lines = await foreground({ steps: [{ app: 'Notepad' }, { type: 'ab\ncd' }] })
   assert.match(lines.escalate?.reason ?? '', /^"ab\ncd" did not show in the focused field, after all its lines and the Returns between them were sent/, JSON.stringify(lines))
+  const held = await foreground({ steps: [{ app: 'Notepad' }, { type: 'example-pass\n', secret: true }] })
+  assert.equal(held.escalate?.reason, 'the password did not show in the focused field', JSON.stringify(held))
   typed = null
   const secret = await foreground({ steps: [{ app: 'Notepad' }, { type: 'example-pass', secret: true }] })
   assert.equal(secret.ok, true, JSON.stringify(secret))

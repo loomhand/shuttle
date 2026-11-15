@@ -1089,11 +1089,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let mut terminal = false;
         let lines = text.split('\n').count();
         for (i, line) in text.split('\n').enumerate() {
+            let mut returned = false;
             let sent: Result<(), String> = async {
                 self.raise(raised).await?;
                 if i > 0 {
                     self.send("press_key", json!({"key": "return"}), to, &mut note)
                         .await?;
+                    returned = true;
                 }
                 let line = line.trim_end_matches('\r');
                 if self.os == Os::Linux {
@@ -1166,9 +1168,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 Ok(())
             }
             .await;
-            sent.map_err(|e| match i {
-                0 => e,
-                _ => format!("{e}; {i} of {lines} lines were typed before it"),
+            sent.map_err(|e| match (i, returned) {
+                (0, _) => e,
+                (_, true) => format!(
+                    "{i} of {lines} lines and the Return after line {i} were typed, then this stopped the rest: {e}"
+                ),
+                _ => format!("{i} of {lines} lines were typed, then this stopped the rest: {e}"),
             })?;
         }
         if self.os == Os::Linux && to.is_none() {
@@ -3395,7 +3400,9 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.ends_with("; 1 of 3 lines were typed before it"),
+            err.starts_with(
+                "1 of 3 lines and the Return after line 1 were typed, then this stopped the rest: "
+            ),
             "{err}"
         );
         let err = desk
@@ -3403,6 +3410,20 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(!err.contains("lines were typed"), "{err}");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(Apps),
+            FailPress(Behind(calls), std::sync::atomic::AtomicUsize::new(0)),
+            Os::Mac,
+        );
+        let err = desk
+            .run("desk_type", json!({"text": "a\nb\nc"}))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "2 of 3 lines were typed, then this stopped the rest: press_key: nothing was sent"
+        );
     }
 
     #[tokio::test]
@@ -3451,7 +3472,9 @@ pub(crate) mod tests {
                         "{err}"
                     );
                     assert_eq!(
-                        err.ends_with("; 1 of 3 lines were typed before it"),
+                        err.starts_with(
+                            "1 of 3 lines and the Return after line 1 were typed, then this stopped the rest: "
+                        ),
                         returns == 1,
                         "{err}"
                     );
