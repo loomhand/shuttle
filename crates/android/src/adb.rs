@@ -45,6 +45,7 @@ const TYPE_WAIT: Duration = Duration::from_secs(1);
 const TYPE_DEADLINE: Duration = Duration::from_millis(1500);
 const TYPE_FOCUS_POLL: Duration = Duration::from_millis(20);
 const VERIFY_WAIT: Duration = Duration::from_millis(300);
+const PASTE_SETTLE: Duration = Duration::from_millis(500);
 const VERIFY_POLL: Duration = Duration::from_millis(10);
 const VERIFY_TAIL: usize = 16;
 const DEVICE_UI_JAR: &str = "/data/local/tmp/shuttle-ui.jar";
@@ -1153,12 +1154,25 @@ where
             "no element of the window holds the input focus, so the line was not pasted".to_owned(),
         );
     }
-    let Some((before, cached)) = before.filter(|(f, _)| !f.password) else {
-        return if paste().await? {
-            Ok(None)
-        } else {
-            Err(NOT_INJECTED.to_owned())
-        };
+    let (before, cached) = match before {
+        Some((f, cached)) if !f.password => (f, cached),
+        unchecked => {
+            if !paste().await? {
+                return Err(NOT_INJECTED.to_owned());
+            }
+            match unchecked {
+                Some((field, _)) => {
+                    let end = tokio::time::Instant::now() + TYPE_WAIT;
+                    while tokio::time::Instant::now() < end
+                        && focus(false).await?.is_none_or(|f| f.same_text(&field))
+                    {
+                        tokio::time::sleep(TYPE_FOCUS_POLL).await;
+                    }
+                }
+                None => tokio::time::sleep(PASTE_SETTLE).await,
+            }
+            return Ok(None);
+        }
     };
     let shows = |f: &Focus| !f.same_text(&before) && f.ends_with(line);
     let mut delivered = false;
@@ -2288,6 +2302,47 @@ mod tests {
         .await
         .unwrap();
         assert_eq!((out, pastes.get()), (Some(true), 2));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unchecked_paste_returns_only_once_the_field_took_it_or_the_settle_passed() {
+        let pastes = std::cell::Cell::new(0);
+        let after = std::cell::Cell::new(0);
+        let out = type_with(
+            "secret",
+            None,
+            None,
+            true,
+            |_| {
+                if pastes.get() > 0 {
+                    after.set(after.get() + 1);
+                }
+                let f = Focus {
+                    password: true,
+                    ..field(if after.get() < 3 { "" } else { "secret" })
+                };
+                async move { Ok(Some(f)) }
+            },
+            || {
+                pastes.set(pastes.get() + 1);
+                async { Ok(true) }
+            },
+        )
+        .await;
+        assert_eq!((out, pastes.get()), (Ok(None), 1));
+        assert_eq!(after.get(), 3);
+        let started = tokio::time::Instant::now();
+        let blind = type_with(
+            "secret",
+            None,
+            None,
+            true,
+            |_| async { Ok(None) },
+            || async { Ok(true) },
+        )
+        .await;
+        assert_eq!(blind, Ok(None));
+        assert!(started.elapsed() >= TYPE_WAIT + PASTE_SETTLE);
     }
 
     #[tokio::test(start_paused = true)]
