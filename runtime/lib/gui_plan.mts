@@ -245,7 +245,7 @@ async function perform(p: Params): Promise<Result> {
       if (before && (s.expect || (s.verify && ((s.value ?? s.on ?? s.enabled) !== undefined || rec.waited)) || (s.wait && rec.seen !== tops[i - 1]))) before.confirmed = true
     } catch (e: unknown) {
       const sp = e instanceof Surprise ? e : new Surprise(e instanceof Error ? e.message : String(e), await seen())
-      if (sp.late && sp.seen.outline === undefined && sp.reason !== NO_FRONT) sp.seen = await seen()
+      if ((sp.late || sp.seen.window === undefined) && sp.seen.outline === undefined && sp.reason !== NO_FRONT) sp.seen = await seen()
       if (sp.reason === NO_FRONT || sp.seen.outline === `(${NO_FRONT})`) { const why = await frontless(); if (sp.reason === NO_FRONT) sp.reason = why; if (sp.seen.outline === `(${NO_FRONT})`) sp.seen.outline = `(${why})` }
       const step = e instanceof Stolen ? e.step : i
       const note = step === i ? recs[i - 1]?.unverified : undefined
@@ -480,7 +480,7 @@ function traced(i: number, rec: Rec, s: Step, escalated: boolean): Trace {
   }
 }
 
-function heard(r: desk.Sent, rec: Rec, s: Step) { if (r.typed === false) throw new Surprise(`${typedText(s)} did not show in the focused field${s.type?.includes('\n') ? ', after all its lines and the Returns between them were sent' : ''}`, {}); if (r.typed === null && !secure(s)) rec.caveat ??= UNCHECKED; if (!BG && r.effect === 'suspected_noop') rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
+function heard(r: desk.Sent, rec: Rec, s: Step, sent?: string) { if (r.typed === false) throw new Surprise(`${typedText(s)} did not show in the focused field${sent?.includes('\n') ? ', after all its lines and the Returns between them were sent' : ''}`, {}); if (r.typed === null && !secure(s)) rec.caveat ??= UNCHECKED; if (!BG && r.effect === 'suspected_noop') rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
 function hush(note: string) { return `unverifiable: the password was sent and the target did not confirm it${note.includes(TERMINAL) ? ` (${TERMINAL})` : ''}; do not type it again` }
 async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
   let ws = seed ?? await desk.windows()
@@ -1145,14 +1145,14 @@ async function hides(w: Win, read: Map<string, Text> | null) {
 function whole(t: Map<string, Text> | null) { return !!t && [...t.values()].every((x) => !x.cut) }
 async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | null, rec: Rec) {
   const raw = text.split('\n'); const lines = raw.map((l) => l.replace(/\r$/, '')); const k = lines.findIndex(Boolean)
-  if (k < 0) { heard(await desk.typeText(text, at(w)), rec, s); return undefined }
+  if (k < 0) { heard(await desk.typeText(text, at(w)), rec, s, text); return undefined }
   let base = was
-  if (k > 0) { heard(await desk.typeText('\n'.repeat(k), at(w)), rec, s); base = await settled(w) }
+  if (k > 0) { heard(await desk.typeText('\n'.repeat(k), at(w)), rec, s, '\n'.repeat(k)); base = await settled(w) }
   const first = await desk.typeText(raw[k] ?? '', at(w)); heard(first, rec, s)
   if (!first.terminal) {
     if (k + 1 < raw.length) {
       if (secure(s)) { const now = await settled(w); if (shows(base, now, raw[k] ?? '', true)) throw await echoed(w, raw[k] ?? '', now) }
-      heard(await desk.typeText(`\n${raw.slice(k + 1).join('\n')}`, at(w)), rec, s)
+      heard(await desk.typeText(`\n${raw.slice(k + 1).join('\n')}`, at(w)), rec, s, `\n${raw.slice(k + 1).join('\n')}`)
       if (secure(s) && shows(base, await settled(w), raw[k] ?? '', true)) throw late(w)
     }
     return undefined
@@ -1330,7 +1330,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine(w)
     const text = sub ? s.type.slice(0, -1) : s.type; const line = held ? text.slice(0, -1) : text; let quiet: boolean | undefined
     let sent: desk.Sent | undefined
-    if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(sent = await desk.typeText(line, at(w)), rec, s)
+    if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(sent = await desk.typeText(line, at(w)), rec, s, line)
     if (w && secure(s) && sent?.terminal && !sent.unverified) throw await echoed(w, line, null)
     if (held && w) { const now = await settled(w); if (shows(was, now, line, true)) throw await echoed(w, line, now) }
     if (held) heard(await desk.key('Return', at(w)), rec, s)
