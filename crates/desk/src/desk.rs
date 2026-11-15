@@ -7423,6 +7423,7 @@ pub(crate) mod tests {
         listed: Option<u32>,
         pub(crate) behind: bool,
         pub(crate) pid: Option<u32>,
+        pub(crate) listings: usize,
     }
 
     impl Fake {
@@ -7448,6 +7449,7 @@ pub(crate) mod tests {
 
     impl Access for Fake {
         fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            self.listings += 1;
             let title = if self.untitled {
                 ""
             } else {

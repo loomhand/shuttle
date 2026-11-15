@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use crate::keys::Os;
-use crate::model::{Access, Act, Extras, Node};
+use crate::model::{Access, Act, Extras, Frame, Node};
 
 pub(crate) const MENU_POLL: Duration = Duration::from_millis(30);
 pub(crate) const MENU_POLLS: u32 = 10;
@@ -155,23 +155,24 @@ fn reachable<B: Access>(
         let above = b.ancestors(&hit).ok()?;
         above.iter().any(|a| a == id) || (background && above.first().unwrap_or(&hit) != window)
     };
-    let covered = linux && !background && reaches && covered(b, id, window, cx, cy);
-    (reaches && !covered).then_some((cx, cy))
+    if !reaches || linux && !background && covered(b, id, window, cx, cy) {
+        return None;
+    }
+    Some((cx, cy))
 }
 
 fn covered<B: Access>(b: &mut B, id: &str, window: &str, x: i32, y: i32) -> bool {
-    let Some(pid) = b.pid_of(id).ok().flatten() else {
+    let Ok(node) = b.node(window, Extras::BOUNDS, 0) else {
         return false;
     };
-    b.frames_of(pid)
-        .ok()
-        .and_then(|frames| frames.into_iter().find(|f| f.id == window))
-        .is_some_and(|frame| {
-            b.covering(&frame, x, y)
-                .ok()
-                .flatten()
-                .is_some_and(|(_, over)| over != Some(pid))
-        })
+    let frame = Frame {
+        id: window.to_owned(),
+        title: node.name,
+        pid: b.pid_of(id).ok().flatten(),
+        bounds: node.bounds,
+        ..Frame::default()
+    };
+    b.covering(&frame, x, y).ok().flatten().is_some()
 }
 
 #[cfg(test)]
@@ -192,24 +193,18 @@ mod tests {
     }
 
     #[test]
-    fn a_linux_element_another_app_covers_takes_no_click_and_one_its_own_app_covers_does() {
+    fn a_linux_element_another_window_covers_takes_no_click() {
         let mut f = notepad();
         f.covers = Some(("Calculator".into(), Some(9)));
         assert_eq!(hit_centre(&mut f, "ok", Os::Linux).unwrap(), None);
+        assert_eq!(f.listings, 0);
         assert_eq!(
             plan_press(&mut f, "ok", Os::Linux, false).unwrap(),
             Press::Acted(true)
         );
         assert_eq!(f.acts, [("ok".to_owned(), Act::Action)]);
-        assert_eq!(
-            plan_press(&mut f, "ok", Os::Linux, true).unwrap(),
-            Press::Acted(true)
-        );
         f.covers = Some(("Find - Notepad".into(), Some(4)));
-        assert_eq!(
-            hit_centre(&mut f, "ok", Os::Linux).unwrap(),
-            Some((140, 110))
-        );
+        assert_eq!(hit_centre(&mut f, "ok", Os::Linux).unwrap(), None);
         f.covers = None;
         assert_eq!(
             hit_centre(&mut f, "ok", Os::Linux).unwrap(),

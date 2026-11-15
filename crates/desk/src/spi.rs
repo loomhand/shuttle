@@ -139,9 +139,13 @@ impl Access for Spi {
         x: i32,
         y: i32,
     ) -> Result<Option<(String, Option<u32>)>, String> {
-        let Some(top) = self.shm(|g| g.client_at(x, y)).flatten() else {
+        let Some((title, pid, rect)) = self.shm(|g| g.client_at(x, y)).flatten() else {
             return Ok(None);
         };
+        if is_itself(frame, &title, rect) {
+            return Ok(None);
+        }
+        let top = (title, pid);
         if top.1 != frame.pid {
             return Ok(Some(top));
         }
@@ -297,6 +301,13 @@ fn unlisted(mut pids: impl Iterator<Item = Option<u32>>, pid: u32) -> bool {
 }
 
 /// Whether the X window `(title, pid)` is `frame`'s own: its process's only X window, or the one with that title among `titles`.
+fn is_itself(frame: &Frame, title: &str, [left, top, width, height]: [i32; 4]) -> bool {
+    title == frame.title
+        && frame.bounds.is_some_and(|[x, y, w, h]| {
+            left <= x && top <= y && x + w <= left + width && y + h <= top + height
+        })
+}
+
 fn is_frame(frame: &Frame, (title, pid): &(String, Option<u32>), titles: &[String]) -> bool {
     *pid == frame.pid
         && (titles.len() == 1
@@ -570,6 +581,25 @@ mod tests {
         ] {
             assert!(!is_frame(&mousepad, &other, &of_pid), "{other:?}");
         }
+    }
+
+    #[test]
+    fn a_window_with_the_frame_s_title_around_its_bounds_is_the_frame_whatever_its_pid() {
+        let mut mousepad = window("a.txt - Mousepad", 7, true);
+        mousepad.bounds = Some([100, 100, 600, 400]);
+        assert!(is_itself(&mousepad, "a.txt - Mousepad", [90, 70, 620, 440]));
+        assert!(!is_itself(
+            &mousepad,
+            "a.txt - Mousepad",
+            [400, 300, 600, 400]
+        ));
+        assert!(!is_itself(&mousepad, "tmp - Thunar", [90, 70, 620, 440]));
+        mousepad.bounds = None;
+        assert!(!is_itself(
+            &mousepad,
+            "a.txt - Mousepad",
+            [90, 70, 620, 440]
+        ));
     }
 
     #[test]
