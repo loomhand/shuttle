@@ -1390,7 +1390,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   tick('snap', t0)
   const aim = s.verify ?? s.click ?? s.check
   let read = r
-  if (OS === 'darwin' && !r.menus && aim !== undefined) {
+  if (OS === 'darwin' && !r.menus && !s.gone && aim !== undefined) {
     const near = await resolve(tree.nodes, aim, targetRole(s), undefined, 0.7, s.fp, false)
     if (!near || (near.how !== 'fp' && norm(near.n.name) !== norm(aim))) { read = { ...r, menus: true }; tree = await readTree(w, read) }
   }
