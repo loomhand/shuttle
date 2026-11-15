@@ -1545,13 +1545,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let allow = self.allow.clone();
         self.access
             .run(CALL_LIMIT, (), move |b| {
-                let listed = b.shown(id) != Some(false);
-                if listed {
+                let counts = b.in_view(id) != Some(false);
+                if counts {
                     check_process(b, &allow, pid)?;
                 }
                 match b.pid_at(x as i32, y as i32)? {
-                    Some(top) if !listed || Some(top) != pid => check_process(b, &allow, Some(top)),
-                    None if !listed => allow.check(None),
+                    Some(top) if !counts || Some(top) != pid => check_process(b, &allow, Some(top)),
+                    None if !counts => allow.check(None),
                     _ => Ok(()),
                 }
             })
@@ -5423,15 +5423,25 @@ pub(crate) mod tests {
         }
         let (out, clicks) = click(Some(2), Some(4), false).await;
         assert!(out.is_ok() && clicks == 1, "{out:?}");
-        for (cloaked, top, unhit) in [
-            (None, Some(4), false),
-            (Some(2), Some(8), false),
-            (Some(2), None, false),
-            (Some(2), Some(4), true),
+        for (cloaked, top, unhit, why) in [
+            (None, Some(4), false, "not in the app allowlist"),
+            (Some(2), Some(8), false, "not in the app allowlist"),
+            (
+                Some(2),
+                None,
+                false,
+                "an unknown app is not in the app allowlist",
+            ),
+            (
+                Some(2),
+                Some(4),
+                true,
+                "the UI Automation hit test at the point failed",
+            ),
         ] {
             let (out, clicks) = click(cloaked, top, unhit).await;
             assert!(
-                out.is_err() && clicks == 0,
+                out.as_ref().is_err_and(|e| e.contains(why)) && clicks == 0,
                 "{cloaked:?} {top:?} {unhit} {out:?}"
             );
         }
@@ -7716,7 +7726,7 @@ pub(crate) mod tests {
             Ok(self.top)
         }
 
-        fn shown(&mut self, window: i64) -> Option<bool> {
+        fn in_view(&mut self, window: i64) -> Option<bool> {
             Some(self.cloaked != Some(window))
         }
 

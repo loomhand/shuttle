@@ -311,7 +311,7 @@ impl Access for Uia {
         Some(foreground().0 as i64)
     }
 
-    fn shown(&mut self, window: i64) -> Option<bool> {
+    fn in_view(&mut self, window: i64) -> Option<bool> {
         Some(visible(HWND(window as *mut core::ffi::c_void)))
     }
 

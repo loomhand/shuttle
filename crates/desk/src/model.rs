@@ -376,7 +376,7 @@ pub trait Access {
     fn focus_within(&mut self, _window: i64) -> Option<bool> {
         None
     }
-    fn shown(&mut self, _window: i64) -> Option<bool> {
+    fn in_view(&mut self, _window: i64) -> Option<bool> {
         None
     }
 }
