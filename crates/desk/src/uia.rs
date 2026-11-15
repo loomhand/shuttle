@@ -467,13 +467,17 @@ impl Access for Uia {
     }
 
     fn pid_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
-        Ok(element_at(&self.auto, x, y).and_then(|hit| process_id(&hit)))
+        let _bounded = Bounded::new(&self.auto);
+        let hit = element_at(&self.auto, x, y)?;
+        process_id(&hit)
+            .map(Some)
+            .ok_or_else(|| format!("the process of the element at ({x}, {y}) could not be read"))
     }
 
     fn at(&mut self, _: &str, x: i32, y: i32) -> Result<Option<String>, String> {
-        element_at(&self.auto, x, y)
-            .map(|hit| self.id_of(&hit))
-            .transpose()
+        let _bounded = Bounded::new(&self.auto);
+        let hit = element_at(&self.auto, x, y)?;
+        self.id_of(&hit).map(Some)
     }
 
     fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
@@ -875,9 +879,10 @@ fn foreground() -> HWND {
     unsafe { GetForegroundWindow() }
 }
 
-fn element_at(auto: &IUIAutomation, x: i32, y: i32) -> Option<IUIAutomationElement> {
+fn element_at(auto: &IUIAutomation, x: i32, y: i32) -> Result<IUIAutomationElement, String> {
     // SAFETY: `auto` is a live IUIAutomation of this thread.
-    unsafe { auto.ElementFromPoint(POINT { x, y }) }.ok()
+    unsafe { auto.ElementFromPoint(POINT { x, y }) }
+        .map_err(|e| format!("the UI Automation hit test at ({x}, {y}) failed: {e}"))
 }
 
 fn process_id(el: &IUIAutomationElement) -> Option<u32> {
