@@ -465,6 +465,14 @@ function at(w: Win | null): desk.Target {
   for (const y of listed) targetSince.add(y.id)
   return { window: to.title, pid: to.pid }
 }
+function lined(w: Win | null, ws: Win[], text: string): desk.Target {
+  if (BG || OS === 'linux' || !w?.active || !/\n[^]/.test(text)) return at(w)
+  let x = w
+  for (let o = OS === 'darwin' ? x.owner : undefined; o; o = x.owner) { const up = ws.find((y) => y.id === o); if (!up) break; x = up }
+  const to = x
+  const under = (y: Win) => { let z: Win | undefined = y; for (let k = 0; z && k <= ws.length; k++, z = ws.find((v) => v.id === z?.owner)) if (z.id === to.id) return true; return false }
+  return !to.title.trim() || ws.some((y) => !under(y) && y.pid === to.pid && y.title === to.title) ? FG : { ...FG, window: to.title, pid: to.pid }
+}
 function unique(w: Win) {
   if (BG && listed.some((y) => y.id !== w.id && y.pid === w.pid && y.title === w.title)) throw new Surprise(`another window of the app is also titled "${w.title}", and background input names its window by title, so it never guesses which one gets it`)
 }
@@ -1338,7 +1346,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine(w)
     const text = sub ? s.type.slice(0, -1) : s.type; const line = held ? text.slice(0, -1) : text; let quiet: boolean | undefined
     let sent: desk.Sent | undefined
-    if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(sent = await desk.typeText(line, at(w)), rec, s, line)
+    if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(sent = await desk.typeText(line, lined(w, ws, line)), rec, s, line)
     if (w && secure(s) && sent?.terminal && !sent.unverified) throw await echoed(w, line, null)
     if (held && w) { const now = await settled(w); if (shows(was, now, line, true)) throw await echoed(w, line, now) }
     if (held) heard(await desk.key('Return', at(w)), rec, s)
