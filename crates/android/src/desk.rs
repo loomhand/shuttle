@@ -677,7 +677,11 @@ fn nodes(frame: &Frame, raws: &[Raw<'_>]) -> Vec<Node> {
     let mut listed: Vec<(usize, usize)> = Vec::new();
     for (i, r) in raws.iter().enumerate() {
         let interactive = r.clickable || r.checkable || r.editable;
-        let own: &str = if r.editable { &r.hint } else { &r.text };
+        let own: &str = if r.editable || r.password {
+            &r.hint
+        } else {
+            &r.text
+        };
         if !interactive && r.text.is_empty() && r.desc.is_empty() {
             continue;
         }
@@ -799,7 +803,7 @@ fn xywh(r: Rect) -> [i32; 4] {
 /// The texts of the descendants of raw node `i` in screen-reader order: a row's title, then its summary.
 fn labels_of<'r>(raws: &'r [Raw<'_>], i: usize) -> impl Iterator<Item = &'r str> {
     raws.iter()
-        .filter(move |r| under(&r.path, &raws[i].path))
+        .filter(move |r| !r.password && under(&r.path, &raws[i].path))
         .map(|r| if r.text.is_empty() { &r.desc } else { &r.text })
         .map(Cow::as_ref)
         .filter(|t| !t.is_empty())
@@ -1398,6 +1402,28 @@ mod tests {
         let nodes = super::nodes(&settings(), &raws(&plain));
         assert!(!nodes[1].states.contains(&"protected"));
         assert_eq!(nodes[1].value.as_deref(), Some("hunter2"));
+    }
+
+    #[test]
+    fn a_password_text_names_neither_its_row_nor_itself() {
+        let row = |password: &str| {
+            format!(
+                r#"<hierarchy><node text="" class="android.widget.LinearLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0" bounds="[0,100][720,200]" /><node text="hunter2" class="android.widget.EditText" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="true" password="{password}" enabled="true" focused="true" selected="false" scrollable="false" visible="true" path="0.0" bounds="[40,110][680,190]" /><node text="hunter2" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" password="{password}" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="1" bounds="[0,300][720,400]" /></hierarchy>"#
+            )
+        };
+        let secret = row("true");
+        let names: Vec<String> = nodes(&settings(), &raws(&secret))
+            .into_iter()
+            .map(|n| n.name)
+            .collect();
+        assert!(!names.iter().any(|n| n.contains("hunter2")), "{names:?}");
+        let plain = row("false");
+        let names: Vec<String> = nodes(&settings(), &raws(&plain))
+            .into_iter()
+            .map(|n| n.name)
+            .collect();
+        assert_eq!(names[1], "hunter2", "{names:?}");
+        assert_eq!(names.last().map(String::as_str), Some("hunter2"));
     }
 
     #[test]
