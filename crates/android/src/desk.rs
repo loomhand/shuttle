@@ -1049,7 +1049,7 @@ async fn in_front(
     }
 }
 
-/// The window `window` names, which on Android is on the screen; a package name without a window starts its app.
+/// The window `window` names, which must be in front; a package name without a window starts its app.
 async fn focus(android: &Android, a: WindowArgs) -> Result<String, String> {
     let frame = match window::pick(frames(android).await?, Some(&a.window), a.pid) {
         Ok(f) => f,
