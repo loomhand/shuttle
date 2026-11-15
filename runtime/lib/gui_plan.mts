@@ -500,13 +500,17 @@ async function readTree(w: Win, r: Reads): Promise<Tree> {
   const snap = await snapOf(w, r)
   return { snap, nodes: parse(snap) }
 }
-async function answered(w: Win, r: Reads, tree: Tree): Promise<Tree> {
-  for (const end = Date.now() + BUSY_MS; tree.snap.truncated && tree.nodes.length <= 1; await sleep(VERIFY_POLL)) {
-    if (Date.now() >= end) throw new Surprise(`"${w.title}" gave no answer to the accessibility read for ${BUSY_MS / 1000} s: its app is busy`, await seen())
-    tree = await readTree(w, r)
+async function answered(w: Win, r: Reads, tree: Tree): Promise<Tree | null> {
+  for (const end = Math.min(Date.now() + BUSY_MS, deadline); tree.snap.truncated && tree.nodes.length <= 1; await sleep(VERIFY_POLL)) {
+    if (Date.now() >= end) return null
+    try { tree = await readTree(w, r) } catch (e: unknown) {
+      if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen())
+      throw e
+    }
   }
   return tree
 }
+function busy(w: Win) { return `"${w.title}" gave no answer to the accessibility read for ${BUSY_MS / 1000} s: its app is busy` }
 function targetRole(s: Step) {
   if (s.verify !== undefined) return s.role ?? (s.value !== undefined ? FIELDS : s.on !== undefined ? `${TOGGLES}|menuitem` : undefined)
   return s.role ?? (s.check ? TOGGLES : s.set ? FIELDS : undefined)
@@ -1198,7 +1202,9 @@ function shows(before: Map<string, Text> | null, after: Map<string, Text> | null
 async function holdsText(w: Win, fp: Fp) {
   const t0 = Date.now()
   try {
-    const same = shownFields((await answered(w, {}, await readTree(w, {}))).nodes, fp); const hit = same.length === 1 ? same[0] : same[fp.nth]
+    const tree = await answered(w, {}, await readTree(w, {}))
+    if (!tree) throw new Surprise(busy(w), await seen())
+    const same = shownFields(tree.nodes, fp); const hit = same.length === 1 ? same[0] : same[fp.nth]
     return !!hit && !!hit.n.value.trim()
   } catch (e: unknown) { if (e instanceof Surprise) throw e; return false } finally { tick('blank', t0) }
 }
@@ -1404,11 +1410,13 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   }
   if (s.web) tree = await onPage(s.web, w, tree, read)
   if (s.expect) {
-    tree = await answered(w, read, tree)
-    const d = await decide({ window_title: w.title, contents: render(tree.nodes, 60, false, 4000) }, { ok: desk.yes(s.expect) })
-    rec.p = +prob(d.ok).toFixed(2)
-    if (prob(d.ok) >= 0.5) return
-    if (BG && !AUTO) throw new Surprise(`expectation not met in the window's tree: ${s.expect}; ${NO_PIXELS}`, await seen())
+    const got = await answered(w, read, tree)
+    if (got) {
+      const d = await decide({ window_title: w.title, contents: render(got.nodes, 60, false, 4000) }, { ok: desk.yes(s.expect) })
+      rec.p = +prob(d.ok).toFixed(2)
+      if (prob(d.ok) >= 0.5) return
+      if (BG && !AUTO) throw new Surprise(`expectation not met in the window's tree: ${s.expect}; ${NO_PIXELS}`, await seen())
+    } else if (BG && !AUTO) throw new Surprise(`${busy(w)}; ${NO_PIXELS}`, await seen())
     if (BG) await front(w)
     const v = await vision(`You check the state of a computer screen.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot(), 'ok'); rec.verdict = v
     if (!v.ok) throw new Surprise(`expectation not met: ${s.expect} (${v.why})`, await seen())
