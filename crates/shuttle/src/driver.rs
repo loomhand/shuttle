@@ -106,8 +106,6 @@ impl Proc {
             .kill_on_drop(true);
         #[cfg(unix)]
         cmd.process_group(0);
-        #[cfg(unix)]
-        crate::private_umask(&mut cmd);
         let mut running = cmd
             .spawn()
             .map_err(|e| format!("start {}: {e}", self.bin.display()))
@@ -129,6 +127,12 @@ impl Proc {
             tokio::time::sleep(LISTEN_POLL).await;
             waited += LISTEN_POLL;
         }
+        #[cfg(unix)]
+        std::fs::set_permissions(
+            &self.endpoint,
+            std::os::unix::fs::PermissionsExt::from_mode(0o600),
+        )
+        .map_err(|e| format!("make the driver socket {} private: {e}", self.endpoint))?;
         Ok(running)
     }
 
