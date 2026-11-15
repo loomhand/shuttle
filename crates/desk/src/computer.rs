@@ -5044,23 +5044,16 @@ mod tests {
     ) -> tokio::task::JoinHandle<()> {
         let listener = Fake::bind(socket).unwrap();
         let log = std::sync::Arc::clone(calls);
-        let lists = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+        let lists = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         tokio::spawn(listener.serve(move |req| {
                 let name = req["name"].as_str().unwrap_or_default();
-                let seen = match name {
-                    "list_windows" => lists
-                        .fetch_update(
-                            std::sync::atomic::Ordering::SeqCst,
-                            std::sync::atomic::Ordering::SeqCst,
-                            |n| Some(n.saturating_add(1)),
-                        )
-                        .unwrap_or_default()
-                        .saturating_add(1),
-                    _ => lists.load(std::sync::atomic::Ordering::SeqCst),
-                };
+                let mut seen = lists.load(std::sync::atomic::Ordering::SeqCst);
+                if name == "list_windows" && seen > 0 {
+                    seen = lists.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                }
                 let up = match hit {
-                    "raises" => seen != usize::MAX && seen >= 1,
-                    "late" => seen != usize::MAX && seen >= 3,
+                    "raises" => seen > 1,
+                    "late" => seen > 3,
                     _ => false,
                 };
                 let reply = match name {
@@ -5068,7 +5061,7 @@ mod tests {
                         json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "focus-stealing prevention kept the window behind"}]}})
                     }
                     "bring_to_front" if hit == "raises" || hit == "late" => {
-                        lists.store(0, std::sync::atomic::Ordering::SeqCst);
+                        lists.store(1, std::sync::atomic::Ordering::SeqCst);
                         json!({"ok": true, "result": {"structuredContent": {}}})
                     }
                     "list_windows" if hit == "windowless" => {
