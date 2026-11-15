@@ -1033,7 +1033,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 .await
                 .map_err(|e| match times - left - 1 {
                     0 => e,
-                    sent => format!("{e}; {sent} of {times} presses were sent before it"),
+                    sent => format!(
+                        "{sent} of {times} presses were sent, then this stopped the rest: {e}"
+                    ),
                 })?;
         }
         Ok(ok_with(note))
@@ -4283,6 +4285,32 @@ pub(crate) mod tests {
         let presses = sent(&calls, "press_key");
         assert_eq!(presses.len(), 3);
         assert!(presses.iter().all(|a| a.get("post_action_wait").is_none()));
+    }
+
+    #[tokio::test]
+    async fn a_repeated_key_that_fails_mid_way_leads_its_error_with_the_presses_sent() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(Apps),
+            FailPress(
+                Behind(Arc::clone(&calls)),
+                std::sync::atomic::AtomicUsize::new(0),
+            ),
+            Os::Windows,
+        )
+        .background(true);
+        let err = desk
+            .run(
+                "desk_key",
+                json!({"keys": "backspace", "pid": 4, "repeat": 3}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "1 of 3 presses were sent, then this stopped the rest: press_key: nothing was sent"
+        );
+        assert_eq!(sent(&calls, "press_key").len(), 2);
     }
 
     #[tokio::test]
@@ -7589,6 +7617,18 @@ pub(crate) mod tests {
                 }
                 "list_windows" | "get_window_state" | "get_screen_size" => {}
                 _ => self.1.store(false, Ordering::SeqCst),
+            }
+            Ok(out)
+        }
+    }
+
+    struct FailPress(Behind, std::sync::atomic::AtomicUsize);
+
+    impl Input for FailPress {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let out = self.0.call(tool, args).await?;
+            if tool == "press_key" && self.1.fetch_add(1, Ordering::SeqCst) == 1 {
+                return Err("press_key: nothing was sent".to_owned());
             }
             Ok(out)
         }
