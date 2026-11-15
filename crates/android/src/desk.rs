@@ -307,6 +307,7 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
         "desk_key" => {
             let a: KeyArgs = parse(args)?;
             let times = a.times()?;
+            let mut pin = None;
             for sent in 0..times {
                 let partly = |e: String| match sent {
                     0 => e,
@@ -314,7 +315,7 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
                         "{sent} of {times} presses were sent, then this stopped the rest: {e}"
                     ),
                 };
-                in_front(android, a.window.as_deref(), a.pid)
+                pin = in_front(android, a.window.as_deref(), a.pid, pin)
                     .await
                     .map_err(partly)?;
                 android.keys(&a.keys).await.map_err(partly)?;
@@ -323,9 +324,15 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
         }
         "desk_type" => {
             let a: TypeArgs = parse(args)?;
+            let pin = std::sync::Mutex::new(None);
             let typed = android
-                .type_text(&a.text, None, || {
-                    in_front(android, a.window.as_deref(), a.pid)
+                .type_text(&a.text, None, || async {
+                    let pinned = pin.lock().ok().and_then(|p| *p);
+                    let id = in_front(android, a.window.as_deref(), a.pid, pinned).await?;
+                    if let Ok(mut p) = pin.lock() {
+                        *p = id;
+                    }
+                    Ok(id)
                 })
                 .await?;
             json!({"ok": true, "chars": a.text.chars().count(), "typed": typed}).to_string()
@@ -1023,7 +1030,7 @@ async fn click(android: &Android, a: ClickArgs) -> Result<String, String> {
     if a.modifiers.as_ref().is_some_and(|m| !m.is_empty()) {
         return Err("a tap on a device takes no modifier keys".to_owned());
     }
-    in_front(android, a.window.as_deref(), a.pid).await?;
+    in_front(android, a.window.as_deref(), a.pid, None).await?;
     android
         .taps((a.x as i32, a.y as i32), a.count.unwrap_or(1))
         .await?;
@@ -1034,11 +1041,24 @@ async fn in_front(
     android: &Android,
     window: Option<&str>,
     pid: Option<u32>,
+    pinned: Option<i64>,
 ) -> Result<Option<i64>, String> {
     if window.is_none() && pid.is_none() {
         return Ok(None);
     }
-    let frame = window::pick(frames(android).await?, window, pid)?;
+    let frames = frames(android).await?;
+    let frame = match pinned {
+        Some(id) => frames
+            .into_iter()
+            .find(|f| f.id.parse() == Ok(id))
+            .ok_or_else(|| {
+                format!(
+                    "the window {} the call began in is gone",
+                    window.unwrap_or("of the process")
+                )
+            })?,
+        None => window::pick(frames, window, pid)?,
+    };
     if frame.active {
         Ok(frame.id.parse().ok())
     } else {
