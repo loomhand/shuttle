@@ -1,11 +1,13 @@
 //! Desktop capture over MIT-SHM: the root window of the display read into one shared segment.
 
+use std::collections::{HashMap, HashSet};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use desk_core::window::title_matches;
 use x11rb::connection::Connection;
-use x11rb::errors::ReplyError;
+use x11rb::errors::{ConnectionError, ReplyError};
 use x11rb::protocol::shape::{ConnectionExt as _, SK};
 use x11rb::protocol::shm::ConnectionExt as _;
 use x11rb::protocol::xinput::{ConnectionExt as _, DeviceType};
@@ -25,6 +27,7 @@ pub use crate::screen::{Placement, block_hashes, clip, visible};
 const OVERLAY_NAME: &[u8] = b"Cua.AgentCursorOverlay";
 const ALL_MASTERS: u16 = 1;
 const TITLE_CHUNKS: u32 = 16;
+const FRAME_MARGIN: i32 = 64;
 
 /// One X connection and one shared segment the size of the root window.
 pub struct Grabber {
@@ -50,6 +53,7 @@ pub struct Grabber {
     state_hidden: Atom,
     net_wm_type: Atom,
     type_dialog: Atom,
+    gtk_extents: Atom,
     shell: Mutex<Shell>,
     resized: AtomicBool,
 }
@@ -106,6 +110,7 @@ impl Grabber {
             net_workarea,
             type_dock,
             type_desktop,
+            gtk_extents,
         ] = [
             &b"_NET_WM_NAME"[..],
             b"UTF8_STRING",
@@ -122,6 +127,7 @@ impl Grabber {
             b"_NET_WORKAREA",
             b"_NET_WM_WINDOW_TYPE_DOCK",
             b"_NET_WM_WINDOW_TYPE_DESKTOP",
+            b"_GTK_FRAME_EXTENTS",
         ]
         .map(|name| {
             conn.intern_atom(false, name)
@@ -169,6 +175,7 @@ impl Grabber {
             state_hidden,
             net_wm_type,
             type_dialog,
+            gtk_extents,
             shell: Mutex::new(Shell::default()),
             resized: AtomicBool::new(false),
         };
@@ -526,29 +533,96 @@ impl Grabber {
         reply.value32()?.next()
     }
 
-    /// The title and process of the topmost managed window at the screen point `(x, y)`, past the desktop shell's windows.
-    pub fn client_at(&self, x: i32, y: i32) -> Result<Option<(String, Option<u32>)>, String> {
-        let shell = self.shell();
-        for w in self.clients()?.into_iter().rev() {
-            if shell.windows.contains(&w) {
+    /// The title and process of the window manager frame on top at the screen point `at` when it is not the frame of the window with accessibility `bounds`, process `pid` and name `title`; past the desktop shell's windows and the frames' shadows.
+    pub fn cover_at(
+        &self,
+        at: (i32, i32),
+        bounds: Option<[i32; 4]>,
+        pid: Option<u32>,
+        title: &str,
+    ) -> Result<Option<(String, Option<u32>)>, String> {
+        let shell = self.shell().windows.clone();
+        let tree = self
+            .conn
+            .query_tree(self.root)
+            .map_err(|e| format!("query tree: {e}"))?;
+        let stacking = self
+            .conn
+            .get_property(
+                false,
+                self.root,
+                self.net_stacking,
+                AtomEnum::WINDOW,
+                0,
+                1024,
+            )
+            .map_err(|e| format!("get _NET_CLIENT_LIST_STACKING: {e}"))?;
+        let children = tree
+            .reply()
+            .map_err(|e| format!("query tree: {e}"))?
+            .children;
+        let clients: Vec<Window> = stacking
+            .reply()
+            .map_err(|e| format!("get _NET_CLIENT_LIST_STACKING: {e}"))?
+            .value32()
+            .map(Iterator::collect)
+            .unwrap_or_default();
+        let reads = clients
+            .iter()
+            .map(|&c| {
+                let up = self.conn.query_tree(c)?;
+                let owner =
+                    self.conn
+                        .get_property(false, c, self.net_wm_pid, AtomEnum::CARDINAL, 0, 1)?;
+                let extents =
+                    self.conn
+                        .get_property(false, c, self.gtk_extents, AtomEnum::CARDINAL, 0, 4)?;
+                Ok((c, up, owner, extents))
+            })
+            .collect::<Result<Vec<_>, ConnectionError>>()
+            .map_err(|e| format!("read clients: {e}"))?;
+        let looks = children
+            .iter()
+            .map(|&w| {
+                Ok((
+                    w,
+                    self.conn.get_window_attributes(w)?,
+                    self.conn.get_geometry(w)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, ConnectionError>>()
+            .map_err(|e| format!("read frames: {e}"))?;
+        let tops: HashSet<Window> = children.iter().copied().collect();
+        let mut managed = HashMap::new();
+        for (c, up, owner, extents) in reads {
+            let Ok(up) = up.reply() else {
                 continue;
-            }
-            if self.on_root(w).is_some_and(|[left, top, width, height]| {
-                (left..left + width).contains(&x) && (top..top + height).contains(&y)
-            }) {
-                return Ok(Some((self.title(w).unwrap_or_default(), self.pid(w))));
+            };
+            let owner = owner.reply().ok().and_then(|r| r.value32()?.next());
+            let extents = extents
+                .reply()
+                .ok()
+                .and_then(|r| <[u32; 4]>::try_from(r.value32()?.collect::<Vec<_>>()).ok())
+                .unwrap_or_default();
+            let top = if up.parent == self.root {
+                c
+            } else if tops.contains(&up.parent) {
+                up.parent
+            } else {
+                self.top_level(up.parent)?
+            };
+            managed.insert(top, (owner, extents));
+        }
+        let mut frames = Vec::new();
+        for (w, attrs, geometry) in looks.into_iter().rev() {
+            if let (Ok(attrs), Ok(g)) = (attrs.reply(), geometry.reply())
+                && !shell.contains(&w)
+            {
+                frames.extend(framed(w, &attrs, &g, managed.get(&w).copied()));
             }
         }
-        Ok(None)
-    }
-
-    pub fn titles(&self, pid: Option<u32>) -> Result<Vec<String>, String> {
-        Ok(self
-            .clients()?
-            .into_iter()
-            .filter(|&w| self.pid(w) == pid)
-            .map(|w| self.title(w).unwrap_or_default())
-            .collect())
+        let name = |w| self.title(w).unwrap_or_default();
+        Ok(over(&frames, at, bounds, pid, title, name).map(|f| (name(f.id), f.pid)))
     }
 
     /// The mapped children of the root with their geometry, past a cua-driver cursor overlay; the desktop shell's only with `shell`.
@@ -876,6 +950,14 @@ enum Cover {
     Under(Window),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Framed {
+    id: Window,
+    rect: [i32; 4],
+    input: [i32; 4],
+    pid: Option<u32>,
+}
+
 /// Which 16-pixel squares of a `width` by `height` screen, row-major, a dock rectangle of `docks` (`[x, y, w, h]`) overlaps.
 fn dock_mask(docks: &[[i32; 4]], (width, height): (usize, usize)) -> Vec<bool> {
     let columns = width.div_ceil(BLOCK);
@@ -915,6 +997,93 @@ fn cover(
         .find(|p| p.drawn && !p.popup && p.contains(cx, cy))
         .filter(|p| p.id != frame && !opened(p.id))
         .map(|p| Cover::Under(p.id))
+}
+
+fn framed(
+    id: Window,
+    attrs: &GetWindowAttributesReply,
+    g: &GetGeometryReply,
+    client: Option<(Option<u32>, [u32; 4])>,
+) -> Option<Framed> {
+    let (pid, [left, right, top, bottom]) = client?;
+    if attrs.map_state != MapState::VIEWABLE || attrs.override_redirect {
+        return None;
+    }
+    let rect = [g.x.into(), g.y.into(), g.width.into(), g.height.into()];
+    let [left, right, top, bottom] =
+        [left, right, top, bottom].map(|v| i32::try_from(v).unwrap_or(0));
+    let input = [
+        rect[0] + left,
+        rect[1] + top,
+        rect[2] - left - right,
+        rect[3] - top - bottom,
+    ];
+    Some(Framed {
+        id,
+        rect,
+        input,
+        pid,
+    })
+}
+
+fn over(
+    frames: &[Framed],
+    (x, y): (i32, i32),
+    bounds: Option<[i32; 4]>,
+    pid: Option<u32>,
+    title: &str,
+    name: impl Fn(Window) -> String,
+) -> Option<Framed> {
+    let hit = *frames.iter().find(|f| holds(f.input, x, y))?;
+    let mut own: Vec<&Framed> = frames
+        .iter()
+        .filter(|f| bounds.is_some_and(|b| around(f.rect, b)))
+        .collect();
+    if own.is_empty() {
+        let t = name(hit.id);
+        return (hit.pid != pid && (t.is_empty() || t != title)).then_some(hit);
+    }
+    let of_pid: Vec<&Framed> = own
+        .iter()
+        .copied()
+        .filter(|f| pid.is_some() && f.pid == pid)
+        .collect();
+    if own.len() > 1 && !of_pid.is_empty() {
+        own = of_pid;
+    }
+    if own.len() > 1 {
+        let named: Vec<(&Framed, String)> = own.iter().map(|f| (*f, name(f.id))).collect();
+        if let Some(found) = (0..2)
+            .map(|tier| {
+                named
+                    .iter()
+                    .filter(|(_, t)| title_matches(tier, t, title))
+                    .map(|(f, _)| *f)
+                    .collect::<Vec<_>>()
+            })
+            .find(|m| !m.is_empty())
+        {
+            own = found;
+        }
+    }
+    match own[..] {
+        [one] if one.id == hit.id => None,
+        _ => Some(hit),
+    }
+}
+
+fn holds([left, top, w, h]: [i32; 4], x: i32, y: i32) -> bool {
+    (left..left + w).contains(&x) && (top..top + h).contains(&y)
+}
+
+fn around(frame: [i32; 4], bounds: [i32; 4]) -> bool {
+    let spare = [
+        bounds[0] - frame[0],
+        bounds[1] - frame[1],
+        frame[0] + frame[2] - bounds[0] - bounds[2],
+        frame[1] + frame[3] - bounds[1] - bounds[3],
+    ];
+    spare.iter().all(|s| (0..=FRAME_MARGIN).contains(s))
 }
 
 fn placement(
@@ -1216,6 +1385,340 @@ mod tests {
             ..attrs(true)
         };
         assert!(placement(8, &hidden, &screen, b"").is_none());
+    }
+
+    #[test]
+    fn a_frame_over_the_element_covers_it_whatever_its_process() {
+        let mousepad = frame(10, [100, 100, 600, 400], Some(7));
+        let element = Some([100, 128, 600, 372]);
+        let names = |w| match w {
+            10 => "a.txt - Mousepad".to_owned(),
+            11 => "tmp - Thunar".to_owned(),
+            _ => "Find".to_owned(),
+        };
+        let at = (300, 300);
+        for cover in [
+            frame(11, [250, 250, 300, 200], Some(9)),
+            frame(12, [250, 250, 300, 200], Some(7)),
+        ] {
+            let got = over(
+                &[cover, mousepad],
+                at,
+                element,
+                Some(7),
+                "a.txt - Mousepad",
+                names,
+            );
+            assert_eq!(got.map(|f| f.id), Some(cover.id));
+        }
+        assert_eq!(
+            over(
+                &[mousepad, frame(11, [250, 250, 300, 200], Some(9))],
+                at,
+                element,
+                Some(7),
+                "a.txt - Mousepad",
+                names
+            ),
+            None
+        );
+        assert_eq!(
+            over(
+                &[mousepad],
+                (900, 900),
+                element,
+                Some(7),
+                "a.txt - Mousepad",
+                names
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn the_title_bar_of_a_cascaded_window_covers_the_element_under_it() {
+        let a = frame(10, [100, 100, 600, 400], Some(7));
+        let b = frame(11, [130, 130, 600, 400], Some(7));
+        let element = Some([100, 128, 600, 372]);
+        let names = |w| {
+            if w == 10 {
+                "a".to_owned()
+            } else {
+                "b".to_owned()
+            }
+        };
+        let got = over(&[b, a], (300, 140), element, Some(7), "a", names);
+        assert_eq!(got.map(|f| f.id), Some(11));
+        let same = |_| "Untitled".to_owned();
+        let element = Some([130, 158, 600, 372]);
+        assert_eq!(
+            over(&[b, a], (300, 300), element, Some(7), "Untitled", same),
+            None
+        );
+    }
+
+    #[test]
+    fn a_lone_decorated_or_client_side_window_is_its_own_frame() {
+        let names = |_| "w".to_owned();
+        let decorated = frame(10, [100, 100, 600, 400], Some(7));
+        for bounds in [[100, 100, 600, 400], [104, 128, 592, 368]] {
+            assert_eq!(
+                over(&[decorated], (300, 300), Some(bounds), Some(7), "w", names),
+                None
+            );
+        }
+        let csd = Framed {
+            input: [140, 136, 520, 330],
+            ..frame(10, [100, 100, 600, 400], Some(7))
+        };
+        assert_eq!(
+            over(
+                &[csd],
+                (300, 300),
+                Some([140, 136, 520, 330]),
+                Some(7),
+                "w",
+                names
+            ),
+            None
+        );
+        let far = Some([100, 100, 600, 300]);
+        assert_eq!(
+            over(&[decorated], (300, 300), far, Some(7), "w", names),
+            None
+        );
+    }
+
+    #[test]
+    fn a_client_side_shadow_over_the_element_does_not_cover_it() {
+        let names = |w| {
+            if w == 10 {
+                "a".to_owned()
+            } else {
+                "b".to_owned()
+            }
+        };
+        let a = frame(10, [100, 100, 600, 400], Some(7));
+        let b = Framed {
+            input: [700, 140, 400, 300],
+            ..frame(11, [660, 100, 480, 380], Some(9))
+        };
+        let element = Some([100, 100, 600, 400]);
+        assert_eq!(
+            over(&[b, a], (680, 200), element, Some(7), "a", names),
+            None
+        );
+        assert_eq!(
+            over(&[b, a], (720, 200), element, Some(7), "a", names).map(|f| f.id),
+            Some(11)
+        );
+    }
+
+    #[test]
+    fn maximized_frames_tie_and_the_elements_process_then_its_title_settle_which_is_its_own() {
+        let full = [0, 27, 1280, 773];
+        let element = Some(full);
+        let names = |w| match w {
+            10 => "a.txt - Mousepad".to_owned(),
+            11 => "Downloads - Thunar".to_owned(),
+            12 => "b.txt - Mousepad".to_owned(),
+            _ => "a.txt - Mousepad".to_owned(),
+        };
+        let mousepad = frame(10, full, Some(7));
+        let namesake = frame(14, full, Some(9));
+        let thunar = frame(11, full, Some(9));
+        let at = (640, 400);
+        assert_eq!(
+            over(
+                &[mousepad, thunar],
+                at,
+                element,
+                Some(7),
+                "a.txt - Mousepad",
+                names
+            ),
+            None
+        );
+        assert_eq!(
+            over(
+                &[thunar, mousepad],
+                at,
+                element,
+                Some(7),
+                "a.txt - Mousepad",
+                names
+            )
+            .map(|f| f.id),
+            Some(11)
+        );
+        let second = frame(12, full, Some(7));
+        assert_eq!(
+            over(
+                &[second, mousepad],
+                at,
+                element,
+                Some(7),
+                "a.txt - Mousepad",
+                names
+            )
+            .map(|f| f.id),
+            Some(12)
+        );
+        assert_eq!(
+            over(
+                &[mousepad, second],
+                at,
+                element,
+                Some(7),
+                "a.txt - Mousepad",
+                names
+            ),
+            None
+        );
+        assert_eq!(
+            over(
+                &[mousepad, namesake],
+                (640, 400),
+                element,
+                Some(7),
+                "a.txt - Mousepad",
+                names
+            ),
+            None
+        );
+        let twin = frame(13, full, Some(7));
+        for stack in [[twin, mousepad], [mousepad, twin]] {
+            let got = over(&stack, at, element, Some(7), "a.txt - Mousepad", names);
+            assert_eq!(got.map(|f| f.id), Some(stack[0].id));
+        }
+    }
+
+    #[test]
+    fn a_window_whose_process_the_x_server_does_not_name_is_its_own_frame_by_place_then_title() {
+        let full = [0, 27, 1280, 773];
+        let names = |w| {
+            if w == 10 {
+                "Notes".to_owned()
+            } else {
+                "tmp - Thunar".to_owned()
+            }
+        };
+        let flatpak = frame(10, [100, 100, 600, 400], None);
+        assert_eq!(
+            over(
+                &[flatpak],
+                (300, 300),
+                Some([100, 100, 600, 400]),
+                Some(7),
+                "Notes",
+                names
+            ),
+            None
+        );
+        let flatpak = frame(10, full, Some(31));
+        let thunar = frame(11, full, Some(9));
+        assert_eq!(
+            over(
+                &[flatpak, thunar],
+                (640, 400),
+                Some(full),
+                Some(7),
+                "notes",
+                names
+            ),
+            None
+        );
+        assert_eq!(
+            over(
+                &[thunar, flatpak],
+                (640, 400),
+                Some(full),
+                Some(7),
+                "Notes",
+                names
+            )
+            .map(|f| f.id),
+            Some(11)
+        );
+    }
+
+    #[test]
+    fn with_no_frame_around_the_element_only_another_process_with_another_title_covers_it() {
+        let names = |w| match w {
+            11 => "tmp - Thunar".to_owned(),
+            12 => String::new(),
+            _ => "a.txt - Mousepad".to_owned(),
+        };
+        let popup = Some([300, 300, 200, 100]);
+        let at = (320, 320);
+        let under = |id, pid| [frame(id, [250, 250, 600, 400], pid)];
+        assert_eq!(
+            over(&under(11, Some(9)), at, popup, Some(7), "", names).map(|f| f.id),
+            Some(11)
+        );
+        assert_eq!(
+            over(&under(12, Some(9)), at, popup, Some(7), "x", names).map(|f| f.id),
+            Some(12)
+        );
+        assert_eq!(
+            over(&under(11, Some(7)), at, popup, Some(7), "", names),
+            None
+        );
+        assert_eq!(
+            over(
+                &under(13, Some(9)),
+                at,
+                None,
+                Some(7),
+                "a.txt - Mousepad",
+                names
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn an_override_redirect_or_unmanaged_root_child_is_no_frame_and_a_shadow_leaves_the_input() {
+        let attrs = |popup| GetWindowAttributesReply {
+            map_state: MapState::VIEWABLE,
+            override_redirect: popup,
+            class: WindowClass::INPUT_OUTPUT,
+            ..Default::default()
+        };
+        let screen = GetGeometryReply {
+            width: 1280,
+            height: 800,
+            ..Default::default()
+        };
+        let client = Some((Some(7), [0, 0, 0, 0]));
+        assert_eq!(framed(7, &attrs(true), &screen, client), None);
+        assert_eq!(framed(8, &attrs(false), &screen, None), None);
+        let hidden = GetWindowAttributesReply {
+            map_state: MapState::UNMAPPED,
+            ..attrs(false)
+        };
+        assert_eq!(framed(9, &hidden, &screen, client), None);
+        let g = GetGeometryReply {
+            x: 100,
+            y: 100,
+            width: 600,
+            height: 400,
+            ..Default::default()
+        };
+        let csd = framed(10, &attrs(false), &g, Some((None, [40, 40, 36, 34]))).unwrap();
+        assert_eq!(
+            (csd.rect, csd.input, csd.pid),
+            ([100, 100, 600, 400], [140, 136, 520, 330], None)
+        );
+    }
+
+    fn frame(id: Window, rect: [i32; 4], pid: Option<u32>) -> Framed {
+        Framed {
+            id,
+            rect,
+            input: rect,
+            pid,
+        }
     }
 
     fn property(value: &[u8], offset: u32) -> Option<(Vec<u8>, u32)> {
