@@ -10,10 +10,11 @@ use x11rb::protocol::xproto::{AtomEnum, ClientMessageEvent, ConnectionExt as _, 
 
 use crate::atspi::{self, Atspi, Obj};
 use crate::model::{Access, Act, Capture, Extras, Frame, Modal, Node, Tree};
-use crate::xshm::{Grabber, clip};
+use crate::xshm::{Client, Grabber, clip};
 
 const FRAME_ROLES: [u32; 6] = [2, 16, 19, 20, 23, WINDOW_ROLE];
 const WINDOW_ROLE: u32 = 69;
+const FRAME_MARGIN: i32 = 64;
 
 /// The AT-SPI client, the single-thread runtime its calls run on, and the MIT-SHM grabber once opened.
 pub struct Spi {
@@ -139,18 +140,12 @@ impl Access for Spi {
         x: i32,
         y: i32,
     ) -> Result<Option<(String, Option<u32>)>, String> {
-        let Some((title, pid, rect)) = self.shm(|g| g.client_at(x, y)).flatten() else {
+        let Some(at) = self.shm(|g| g.clients_at(x, y)) else {
             return Ok(None);
         };
-        if is_itself(frame, &title, rect) {
-            return Ok(None);
-        }
-        let top = (title, pid);
-        if top.1 != frame.pid {
-            return Ok(Some(top));
-        }
-        let titles = self.shm(|g| g.titles(top.1)).unwrap_or_default();
-        Ok((!is_frame(frame, &top, &titles)).then_some(top))
+        Ok(cover(frame, &at, |pid| {
+            self.shm(|g| g.titles(pid)).unwrap_or_default()
+        }))
     }
 
     fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
@@ -300,14 +295,37 @@ fn unlisted(mut pids: impl Iterator<Item = Option<u32>>, pid: u32) -> bool {
     pid != 0 && pids.all(|p| p != Some(pid))
 }
 
-/// Whether the X window `(title, pid)` is `frame`'s own: its process's only X window, or the one with that title among `titles`.
-fn is_itself(frame: &Frame, title: &str, [left, top, width, height]: [i32; 4]) -> bool {
-    title == frame.title
-        && frame.bounds.is_some_and(|[x, y, w, h]| {
-            left <= x && top <= y && x + w <= left + width && y + h <= top + height
-        })
+fn cover(
+    frame: &Frame,
+    at: &[Client],
+    titles: impl FnOnce(Option<u32>) -> Vec<String>,
+) -> Option<(String, Option<u32>)> {
+    let (title, pid, _, _) = at.first()?;
+    let top = (title.clone(), *pid);
+    if let Some(own) = frame.bounds.and_then(|b| own_frame(b, at)) {
+        return (own != 0).then_some(top);
+    }
+    if top.1 != frame.pid {
+        return Some(top);
+    }
+    (!is_frame(frame, &top, &titles(top.1))).then_some(top)
 }
 
+fn own_frame([x, y, w, h]: [i32; 4], at: &[Client]) -> Option<usize> {
+    let holds = |[left, top, width, height]: [i32; 4]| {
+        (x - FRAME_MARGIN..=x).contains(&left)
+            && (y - FRAME_MARGIN..=y).contains(&top)
+            && (x + w..=x + w + FRAME_MARGIN).contains(&(left + width))
+            && (y + h..=y + h + FRAME_MARGIN).contains(&(top + height))
+    };
+    let mut own = at.iter().enumerate().filter(|(_, c)| holds(c.3));
+    match (own.next(), own.next()) {
+        (Some((i, _)), None) => Some(i),
+        _ => None,
+    }
+}
+
+/// Whether the X window `(title, pid)` is `frame`'s own: its process's only X window, or the one with that title among `titles`.
 fn is_frame(frame: &Frame, (title, pid): &(String, Option<u32>), titles: &[String]) -> bool {
     *pid == frame.pid
         && (titles.len() == 1
@@ -584,22 +602,47 @@ mod tests {
     }
 
     #[test]
-    fn a_window_with_the_frame_s_title_around_its_bounds_is_the_frame_whatever_its_pid() {
-        let mut mousepad = window("a.txt - Mousepad", 7, true);
-        mousepad.bounds = Some([100, 100, 600, 400]);
-        assert!(is_itself(&mousepad, "a.txt - Mousepad", [90, 70, 620, 440]));
-        assert!(!is_itself(
-            &mousepad,
-            "a.txt - Mousepad",
-            [400, 300, 600, 400]
-        ));
-        assert!(!is_itself(&mousepad, "tmp - Thunar", [90, 70, 620, 440]));
-        mousepad.bounds = None;
-        assert!(!is_itself(
-            &mousepad,
-            "a.txt - Mousepad",
-            [90, 70, 620, 440]
-        ));
+    fn a_window_over_an_element_covers_it_unless_it_is_the_element_s_own_frame() {
+        let mut own = window("a.txt - Mousepad", 7, true);
+        own.bounds = Some([100, 100, 600, 400]);
+        let frame = [100, 100, 600, 400];
+        let client = [105, 130, 590, 365];
+        let twins = |_| vec!["a.txt - Mousepad".to_owned(), "a.txt - Mousepad".to_owned()];
+        let at = |list: &[(&str, u32, [i32; 4], [i32; 4])]| -> Vec<Client> {
+            list.iter()
+                .map(|&(t, p, c, f)| (t.to_owned(), Some(p), c, f))
+                .collect()
+        };
+        let stacked = at(&[
+            ("a.txt - Mousepad", 7, client, frame),
+            ("a.txt - Mousepad", 7, client, frame),
+        ]);
+        assert!(cover(&own, &stacked, twins).is_some());
+        let decorated = at(&[("a.txt - Mousepad", 7, client, frame)]);
+        assert_eq!(cover(&own, &decorated, twins), None);
+        let shadowed = [60, 64, 680, 476];
+        let csd = at(&[("a.txt - Mousepad", 7, shadowed, shadowed)]);
+        assert_eq!(cover(&own, &csd, twins), None);
+        let flatpak = at(&[("a.txt \u{2014} Kate", 99, client, frame)]);
+        assert_eq!(cover(&own, &flatpak, twins), None);
+        let calculator = at(&[
+            ("Calculator", 9, [300, 200, 200, 300], [295, 175, 210, 330]),
+            ("a.txt - Mousepad", 7, client, frame),
+        ]);
+        assert_eq!(
+            cover(&own, &calculator, twins),
+            Some(("Calculator".to_owned(), Some(9)))
+        );
+        let find = at(&[
+            (
+                "a.txt - Mousepad",
+                7,
+                [300, 200, 200, 300],
+                [295, 175, 210, 330],
+            ),
+            ("a.txt - Mousepad", 7, client, frame),
+        ]);
+        assert!(cover(&own, &find, twins).is_some());
     }
 
     #[test]

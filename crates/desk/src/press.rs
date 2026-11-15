@@ -64,7 +64,10 @@ pub(crate) fn plan_press<B: Access>(
         || node.role.starts_with("menu")
         || !b.pid_of(id).ok().flatten().is_some_and(libreoffice)
         || in_dialog(b, &chain);
-    if pixel && let Some((x, y)) = reachable(b, id, &node, &chain, linux, background) {
+    if pixel
+        && let Some((x, y)) = reachable(b, id, &node, &chain, linux, background)
+        && !(linux && !background && covered(b, id, &chain, x, y).is_some())
+    {
         return Ok(Press::Click(x, y));
     }
     if uia_behind {
@@ -83,7 +86,16 @@ pub(crate) fn hit_centre<B: Access>(
 ) -> Result<Option<(i32, i32)>, String> {
     let node = b.node(id, Extras::BOUNDS, 0)?;
     let chain = b.ancestors(id)?;
-    Ok(reachable(b, id, &node, &chain, os == Os::Linux, false))
+    let linux = os == Os::Linux;
+    let Some((x, y)) = reachable(b, id, &node, &chain, linux, false) else {
+        return Ok(None);
+    };
+    if linux && let Some(title) = covered(b, id, &chain, x, y) {
+        return Err(format!(
+            "the window {title:?} covers the element's center, so nothing was clicked: bring the element's window to the front, or press it with desk press"
+        ));
+    }
+    Ok(Some((x, y)))
 }
 
 /// Whether process `pid` is LibreOffice, whose control extents can sit above the control.
@@ -155,24 +167,23 @@ fn reachable<B: Access>(
         let above = b.ancestors(&hit).ok()?;
         above.iter().any(|a| a == id) || (background && above.first().unwrap_or(&hit) != window)
     };
-    if !reaches || linux && !background && covered(b, id, window, cx, cy) {
-        return None;
-    }
-    Some((cx, cy))
+    reaches.then_some((cx, cy))
 }
 
-fn covered<B: Access>(b: &mut B, id: &str, window: &str, x: i32, y: i32) -> bool {
-    let Ok(node) = b.node(window, Extras::BOUNDS, 0) else {
-        return false;
-    };
+fn covered<B: Access>(b: &mut B, id: &str, chain: &[String], x: i32, y: i32) -> Option<String> {
+    let window = chain.first()?;
+    let node = b.node(window, Extras::BOUNDS, 0).ok()?;
     let frame = Frame {
-        id: window.to_owned(),
+        id: window.clone(),
         title: node.name,
         pid: b.pid_of(id).ok().flatten(),
         bounds: node.bounds,
         ..Frame::default()
     };
-    b.covering(&frame, x, y).ok().flatten().is_some()
+    b.covering(&frame, x, y)
+        .ok()
+        .flatten()
+        .map(|(title, _)| title)
 }
 
 #[cfg(test)]
@@ -196,7 +207,8 @@ mod tests {
     fn a_linux_element_another_window_covers_takes_no_click() {
         let mut f = notepad();
         f.covers = Some(("Calculator".into(), Some(9)));
-        assert_eq!(hit_centre(&mut f, "ok", Os::Linux).unwrap(), None);
+        let err = hit_centre(&mut f, "ok", Os::Linux).unwrap_err();
+        assert!(err.starts_with("the window \"Calculator\" covers"), "{err}");
         assert_eq!(f.listings, 0);
         assert_eq!(
             plan_press(&mut f, "ok", Os::Linux, false).unwrap(),
@@ -204,7 +216,7 @@ mod tests {
         );
         assert_eq!(f.acts, [("ok".to_owned(), Act::Action)]);
         f.covers = Some(("Find - Notepad".into(), Some(4)));
-        assert_eq!(hit_centre(&mut f, "ok", Os::Linux).unwrap(), None);
+        assert!(hit_centre(&mut f, "ok", Os::Linux).is_err());
         f.covers = None;
         assert_eq!(
             hit_centre(&mut f, "ok", Os::Linux).unwrap(),

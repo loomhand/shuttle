@@ -98,7 +98,7 @@ const WINDOW_NEVER_READ: &str = "window_never_read";
 
 const COVERED: &str = "covers the point, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
 const LAUNCH_FLAGS: &str = "the app allowlist admits no launch argument that starts with - (or / on Windows), since a flag can make an allowed app start another program";
-const ACT_CLICK_MISSED: &str = "a hit test at the element's center finds no part of it, as when it is hidden or another element or window covers it, so nothing was clicked: press it with desk press";
+const ACT_CLICK_MISSED: &str = "a hit test at the element's center finds no part of it, as when it is hidden or another element covers it, so nothing was clicked: press it with desk press";
 const COVERED_NO_CLICK: &str = "another app's window covers the point and this window takes no click of its own, so nothing was clicked: bring the window to the front, then click again";
 const COVER_UNCHECKED_NO_CLICK: &str = "the point could not be checked for another app's window and this window takes no click of its own, so nothing was clicked: bring the window to the front, then click again";
 const COVER_UNKNOWN: &str = "the point could not be checked for another app's window on top, so the click went in the background to the window under it and did not move the pointer: confirm its effect by a read-back";
