@@ -80,6 +80,37 @@ test('an expect the tree does not meet is checked on a screenshot, which fails i
   assert.deepEqual(['desk_shot', 'model_ask'].map((c) => calls.filter((x) => x === c).length), [2, 2])
 })
 
+test('an expect reads a window that answers with no element again, then checks the screen in the foreground and stops in the background', async (t) => {
+  let answersAt = Infinity; let asked = 0; let looked = 0
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: Date.now() < answersAt, nodes: [root] })
+    if (tool === 'model_decide') { asked++; return JSON.stringify({ answers: { ok: { probability: 0.9 } }, served: { model: 'm', build: null, id: null }, usage }) }
+    if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(800, 600).toString('base64') }
+    if (tool === 'model_ask') { looked++; return JSON.stringify({ text: JSON.stringify({ ok: true, why: 'no error shows' }), usage }) }
+    return '{"ok":true}'
+  })
+  const shown = await main({ steps: [{ expect: 'the error is gone' }] })
+  assert.equal(shown.ok, true, JSON.stringify(shown))
+  assert.deepEqual([asked, looked], [0, 1])
+  process.env.SHUTTLE_INPUT = 'background'
+  const mode = 'expect-bg'
+  const background = ((await import(`../lib/gui_plan.mts?${mode}`)) as { main: typeof main }).main
+  delete process.env.SHUTTLE_INPUT
+  const busy = await background({ steps: [{ wait: 'Format' }, { expect: 'the error is gone' }] })
+  assert.equal(busy.ok, false, JSON.stringify(busy))
+  assert.match(busy.escalate?.reason ?? '', /"Format" gave no answer to the accessibility read for 3\.\d s/)
+  assert.deepEqual([asked, looked], [0, 1])
+  const late = await main({ steps: [{ expect: 'the error is gone' }], timeout_s: 1 })
+  assert.equal(late.ok, false, JSON.stringify(late))
+  assert.match(late.escalate?.reason ?? '', /"Format" gave no answer to the accessibility read for 0\.\d s: its app is busy$/)
+  assert.deepEqual([asked, looked], [0, 1])
+  answersAt = Date.now() + 400
+  const back = await main({ steps: [{ expect: 'the error is gone' }] })
+  assert.equal(back.ok, true, JSON.stringify(back))
+  assert.deepEqual([asked, looked], [1, 1])
+})
+
 test('a screenshot check whose answer is no true or false fails the expect', async (t) => {
   await daemon(t, ({ tool }) => {
     if (tool === 'desk_windows') return JSON.stringify([win])

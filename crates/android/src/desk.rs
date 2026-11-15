@@ -253,6 +253,7 @@ struct Raw<'a> {
     checkable: bool,
     checked: bool,
     editable: bool,
+    password: bool,
     enabled: bool,
     focused: bool,
     selected: bool,
@@ -309,7 +310,9 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
             for sent in 0..times {
                 let partly = |e: String| match sent {
                     0 => e,
-                    _ => format!("{e}; {sent} of {times} presses were sent before it"),
+                    _ => format!(
+                        "{sent} of {times} presses were sent, then this stopped the rest: {e}"
+                    ),
                 };
                 in_front(android, a.window.as_deref(), a.pid)
                     .await
@@ -320,8 +323,11 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
         }
         "desk_type" => {
             let a: TypeArgs = parse(args)?;
-            in_front(android, a.window.as_deref(), a.pid).await?;
-            let typed = android.type_text(&a.text, None).await?;
+            let typed = android
+                .type_text(&a.text, None, || {
+                    in_front(android, a.window.as_deref(), a.pid)
+                })
+                .await?;
             json!({"ok": true, "chars": a.text.chars().count(), "typed": typed}).to_string()
         }
         "desk_click" => click(android, parse(args)?).await?,
@@ -502,17 +508,25 @@ async fn tree(
     title: Option<&str>,
     pid: Option<u32>,
 ) -> Result<(Frame, Vec<Node>), String> {
+    let frame = picked(android, id, title, pid).await?;
+    let nodes = dumped(android, &frame).await?;
+    Ok((frame, nodes))
+}
+
+async fn picked(
+    android: &Android,
+    id: Option<&str>,
+    title: Option<&str>,
+    pid: Option<u32>,
+) -> Result<Frame, String> {
     let frames = frames(android).await?;
-    let frame = match id {
+    match id {
         Some(id) => frames
             .into_iter()
             .find(|f| f.id == id)
-            .ok_or_else(|| format!("no window {id}"))?,
-        None => window::pick(frames, title, pid)?,
-    };
-    let xml = android.tree(Some(&frame.id)).await?;
-    let nodes = nodes(&frame, &raws(&xml));
-    Ok((frame, nodes))
+            .ok_or_else(|| format!("no window {id}")),
+        None => window::pick(frames, title, pid),
+    }
 }
 
 /// The front window of package `app` with its nodes.
@@ -523,9 +537,24 @@ async fn app_tree(android: &Android, app: &str) -> Result<(Frame, Vec<Node>), St
         .filter(|f| f.package == app)
         .min_by_key(|f| !f.active)
         .ok_or_else(|| format!("no window of {app}"))?;
-    let xml = android.tree(Some(&frame.id)).await?;
-    let nodes = nodes(&frame, &raws(&xml));
+    let nodes = dumped(android, &frame).await?;
     Ok((frame, nodes))
+}
+
+async fn dumped(android: &Android, frame: &Frame) -> Result<Vec<Node>, String> {
+    match dump(android, frame).await? {
+        (nodes, true) => Ok(nodes),
+        (_, false) => Err(format!(
+            "no accessibility answer from window {:?}: it closed or its app is busy; take a new snapshot",
+            frame.title
+        )),
+    }
+}
+
+async fn dump(android: &Android, frame: &Frame) -> Result<(Vec<Node>, bool), String> {
+    let xml = android.tree(Some(&frame.id)).await?;
+    let raws = raws(&xml);
+    Ok((nodes(frame, &raws), !raws.is_empty()))
 }
 
 fn raws(xml: &str) -> Vec<Raw<'_>> {
@@ -552,6 +581,7 @@ fn raw(node: &str) -> Option<Raw<'_>> {
             "checkable" => r.checkable = on,
             "checked" => r.checked = on,
             "editable" => r.editable = on,
+            "password" => r.password = on,
             "enabled" => r.enabled = value != "false",
             "focused" => r.focused = on,
             "selected" => r.selected = on,
@@ -649,7 +679,11 @@ fn nodes(frame: &Frame, raws: &[Raw<'_>]) -> Vec<Node> {
     let mut listed: Vec<(usize, usize)> = Vec::new();
     for (i, r) in raws.iter().enumerate() {
         let interactive = r.clickable || r.checkable || r.editable;
-        let own: &str = if r.editable { &r.hint } else { &r.text };
+        let own: &str = if r.editable || r.password {
+            &r.hint
+        } else {
+            &r.text
+        };
         if !interactive && r.text.is_empty() && r.desc.is_empty() {
             continue;
         }
@@ -691,7 +725,10 @@ fn nodes(frame: &Frame, raws: &[Raw<'_>]) -> Vec<Node> {
         if r.selected {
             states.push("selected");
         }
-        let value = r.editable.then(|| {
+        if r.password {
+            states.push("protected");
+        }
+        let value = (r.editable && !r.password).then(|| {
             if r.showing_hint {
                 String::new()
             } else {
@@ -768,7 +805,7 @@ fn xywh(r: Rect) -> [i32; 4] {
 /// The texts of the descendants of raw node `i` in screen-reader order: a row's title, then its summary.
 fn labels_of<'r>(raws: &'r [Raw<'_>], i: usize) -> impl Iterator<Item = &'r str> {
     raws.iter()
-        .filter(move |r| under(&r.path, &raws[i].path))
+        .filter(move |r| !r.password && under(&r.path, &raws[i].path))
         .map(|r| if r.text.is_empty() { &r.desc } else { &r.text })
         .map(Cow::as_ref)
         .filter(|t| !t.is_empty())
@@ -797,11 +834,12 @@ fn role(r: &Raw<'_>) -> &'static str {
 
 async fn snapshot(android: &Android, a: SnapArgs) -> Result<String, String> {
     let started = Instant::now();
-    let (frame, nodes) = tree(android, a.id.as_deref(), a.window.as_deref(), a.pid).await?;
+    let frame = picked(android, a.id.as_deref(), a.window.as_deref(), a.pid).await?;
+    let (nodes, answered) = dump(android, &frame).await?;
     let mut out = json!({});
     out["window"] = frame.json();
     out["ms"] = ms(started.elapsed().as_micros());
-    out["truncated"] = false.into();
+    out["truncated"] = (!answered).into();
     if a.text {
         out["text"] = outline(&nodes, &frame.package, a.max_chars.unwrap_or(NAME_CHARS)).into();
     } else {
@@ -992,13 +1030,17 @@ async fn click(android: &Android, a: ClickArgs) -> Result<String, String> {
     Ok(OK.to_owned())
 }
 
-async fn in_front(android: &Android, window: Option<&str>, pid: Option<u32>) -> Result<(), String> {
+async fn in_front(
+    android: &Android,
+    window: Option<&str>,
+    pid: Option<u32>,
+) -> Result<Option<i64>, String> {
     if window.is_none() && pid.is_none() {
-        return Ok(());
+        return Ok(None);
     }
     let frame = window::pick(frames(android).await?, window, pid)?;
     if frame.active {
-        Ok(())
+        Ok(frame.id.parse().ok())
     } else {
         Err(format!(
             "{} is not in front, and input on a device reaches only the front window",
@@ -1030,6 +1072,12 @@ async fn focus(android: &Android, a: WindowArgs) -> Result<String, String> {
         }
         Err(e) => return Err(e),
     };
+    if !frame.active {
+        return Err(format!(
+            "{} is not in front, and a device brings a window to the front only by launching its app",
+            frame.title
+        ));
+    }
     let mut out = json!({"ok": true});
     out["title"] = frame.title.into();
     out["pid"] = frame.pid.into();
@@ -1332,6 +1380,56 @@ mod tests {
         let mut twice = nodes;
         twice.extend(super::nodes(&settings(), &raws(DUMP)));
         assert_eq!(unique(&twice, "text", "Dark theme"), None);
+    }
+
+    #[test]
+    fn a_password_field_is_protected_and_holds_no_value() {
+        let field = |password: &str| {
+            format!(
+                r#"<hierarchy><node text="hunter2" class="android.widget.EditText" content-desc="" hint="Password" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="true" password="{password}" enabled="true" focused="true" selected="false" scrollable="false" visible="true" path="0" bounds="[40,100][680,180]" /></hierarchy>"#
+            )
+        };
+        let secret = field("true");
+        let nodes = nodes(&settings(), &raws(&secret));
+        assert_eq!(nodes[1].name, "Password");
+        assert!(
+            nodes[1].states.contains(&"protected"),
+            "{:?}",
+            nodes[1].states
+        );
+        assert_eq!(nodes[1].value, None);
+        assert!(
+            !nodes[1]
+                .json(1, "com.android.settings")
+                .to_string()
+                .contains("hunter2")
+        );
+        let plain = field("false");
+        let nodes = super::nodes(&settings(), &raws(&plain));
+        assert!(!nodes[1].states.contains(&"protected"));
+        assert_eq!(nodes[1].value.as_deref(), Some("hunter2"));
+    }
+
+    #[test]
+    fn a_password_text_names_neither_its_row_nor_itself() {
+        let row = |password: &str| {
+            format!(
+                r#"<hierarchy><node text="" class="android.widget.LinearLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0" bounds="[0,100][720,200]" /><node text="hunter2" class="android.widget.EditText" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="true" password="{password}" enabled="true" focused="true" selected="false" scrollable="false" visible="true" path="0.0" bounds="[40,110][680,190]" /><node text="hunter2" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" password="{password}" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="1" bounds="[0,300][720,400]" /></hierarchy>"#
+            )
+        };
+        let secret = row("true");
+        let names: Vec<String> = nodes(&settings(), &raws(&secret))
+            .into_iter()
+            .map(|n| n.name)
+            .collect();
+        assert!(!names.iter().any(|n| n.contains("hunter2")), "{names:?}");
+        let plain = row("false");
+        let names: Vec<String> = nodes(&settings(), &raws(&plain))
+            .into_iter()
+            .map(|n| n.name)
+            .collect();
+        assert_eq!(names[1], "hunter2", "{names:?}");
+        assert_eq!(names.last().map(String::as_str), Some("hunter2"));
     }
 
     #[test]

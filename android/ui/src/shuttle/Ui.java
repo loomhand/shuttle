@@ -159,7 +159,8 @@ public final class Ui {
         int n = text.codePointCount(0, text.length());
         String tail = text.substring(text.offsetByCodePoints(0, Math.max(0, n - TAIL)));
         return "{\"editable\":" + f.isEditable() + ",\"password\":" + f.isPassword()
-            + ",\"window\":" + (w != null && w.isFocused()) + ",\"len\":" + text.length()
+            + ",\"window\":" + (w != null && w.isFocused()) + ",\"id\":" + (w == null ? "null" : String.valueOf(w.getId()))
+            + ",\"len\":" + text.length()
             + ",\"hash\":" + text.hashCode() + ",\"tail\":" + json(tail) + ",\"bounds\":[" + r.left + ',' + r.top
             + ',' + r.right + ',' + r.bottom + "]}";
     }
@@ -277,6 +278,7 @@ public final class Ui {
         attr(sb, "clickable", String.valueOf(n.isClickable()));
         attr(sb, "long-clickable", String.valueOf(n.isLongClickable()));
         attr(sb, "editable", String.valueOf(n.isEditable()));
+        attr(sb, "password", String.valueOf(n.isPassword()));
         attr(sb, "enabled", String.valueOf(n.isEnabled()));
         attr(sb, "focused", String.valueOf(n.isFocused()));
         attr(sb, "selected", String.valueOf(n.isSelected()));
