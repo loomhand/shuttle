@@ -1961,39 +1961,40 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(!lists_top_level(&self.listed().await?, w))
     }
 
-    async fn raise(&self, window: Option<(i64, i64)>) -> Result<(), String> {
+    async fn raise(&self, window: Option<(i64, i64)>) -> Result<Value, String> {
         let Some((pid, window_id)) = window else {
-            return Ok(());
+            return Ok(Value::Null);
         };
         if self.os == Os::Mac && self.fronted((pid, window_id)).await {
-            return Ok(());
+            return Ok(Value::Null);
         }
-        if let Err(e) = self
+        let e = match self
             .call(
                 "bring_to_front",
                 json!({"pid": pid, "window_id": window_id}),
             )
             .await
         {
-            let front = match e
-                .rsplit_once(crate::driver::ACTUAL_FRONT)
-                .and_then(|(_, id)| id.trim().parse::<u64>().ok())
-            {
-                Some(id) => self
-                    .on_screen()
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .find(|w| w["window_id"].as_u64() == Some(id))
-                    .and_then(|w| w["title"].as_str().map(str::to_owned)),
-                None => None,
-            };
-            return Err(match front {
-                Some(title) => format!("{e}; the front window is {title:?}"),
-                None => e,
-            });
-        }
-        Ok(())
+            Ok(v) => return Ok(v),
+            Err(e) => e,
+        };
+        let front = match e
+            .rsplit_once(crate::driver::ACTUAL_FRONT)
+            .and_then(|(_, id)| id.trim().parse::<u64>().ok())
+        {
+            Some(id) => self
+                .on_screen()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .find(|w| w["window_id"].as_u64() == Some(id))
+                .and_then(|w| w["title"].as_str().map(str::to_owned)),
+            None => None,
+        };
+        Err(match front {
+            Some(title) => format!("{e}; the front window is {title:?}"),
+            None => e,
+        })
     }
 
     async fn fronted(&self, w: (i64, i64)) -> bool {
@@ -2190,12 +2191,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let window_id: i64 =
             w.id.parse()
                 .map_err(|_| format!("window id {:?} is not a number", w.id))?;
-        let mut v = self
-            .call(
-                "bring_to_front",
-                json!({"pid": w.pid, "window_id": window_id}),
-            )
-            .await?;
+        let pid = w
+            .pid
+            .ok_or_else(|| format!("window {:?} has no process", w.title))?;
+        let mut v = self.raise(Some((pid.into(), window_id))).await?;
         let mut out = Value::from_iter([
             ("ok", Value::from(true)),
             ("title", w.title.into()),
@@ -3208,6 +3207,57 @@ pub(crate) mod tests {
         assert_eq!(raises(|| Ok(sheets("w"))).await, 0);
         assert_eq!(raises(|| Ok(sheets("s"))).await, 0);
         assert_eq!(raises(|| Ok(sheets("x"))).await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_macos_focus_raises_only_a_window_whose_sheet_does_not_hold_the_focus() {
+        fn listed(sheet: bool) -> Stub {
+            let mut frames = vec![
+                Frame {
+                    number: Some(1),
+                    ..frame("w", "Untitled - Notepad", 4, false, Some("Notepad"))
+                },
+                Frame {
+                    number: Some(3),
+                    ..frame("f", "Find", 4, false, Some("Notepad"))
+                },
+            ];
+            if sheet {
+                frames.push(Frame {
+                    role: "dialog",
+                    owner: Some("w".into()),
+                    ..frame("s", "save", 4, true, Some("Notepad"))
+                });
+            }
+            Stub {
+                frames,
+                ..Stub::default()
+            }
+        }
+        async fn raised(stub: fn() -> Result<Stub, String>, window: &str) -> Vec<Value> {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(stub, Wheel(Arc::clone(&calls)), Os::Mac);
+            let out = desk
+                .run("desk_focus", json!({"window": window}))
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&out.text).unwrap()["ok"],
+                true
+            );
+            sent(&calls, "bring_to_front")
+        }
+        let sheet = || Ok(listed(true));
+        assert!(raised(sheet, "Untitled - Notepad").await.is_empty());
+        let find = raised(sheet, "Find").await;
+        assert_eq!(find.len(), 1);
+        assert_eq!(find[0]["window_id"], 3);
+        assert_eq!(
+            raised(|| Ok(listed(false)), "Untitled - Notepad")
+                .await
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
