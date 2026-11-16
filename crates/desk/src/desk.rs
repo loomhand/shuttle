@@ -15,7 +15,7 @@ use desk_core::args::{
     ScrollArgs, ShotArgs, SnapArgs, StillArgs, TypeArgs, WaitArgs, WebArgs, WindowArgs, parse,
 };
 use desk_core::diff::{Baselines, SINCE_TEXT};
-use desk_core::shot::{OFF_SCREEN, covers_whole, crop_png, png_size, rgb_png};
+use desk_core::shot::{OFF_SCREEN, crop_png, rgb_png};
 use desk_core::text::{MAX_FOUND, NAME_CHARS, READ_CHARS, READ_TAIL, cut_read, matches, ms, quote};
 use desk_core::window::{self, TITLE_TIERS, title_matches};
 use desk_core::wire::{OK, Output};
@@ -2482,12 +2482,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
             Grab::Driver(png, factor) => {
                 let mask = self.mask(shown, factor).await?;
-                if mask.is_none()
-                    && covers_whole(&png, rect, factor)
-                    && let Some((w, h)) = png_size(&png)
-                {
-                    return Ok(delivered(png, sized(w, h)));
-                }
                 let (w, h, png) = crop_png(&png, rect, factor, mask.as_deref()).map_err(|e| {
                     if e == OFF_SCREEN {
                         format!("{e}{OTHER_DISPLAY}")
@@ -2565,16 +2559,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let png = B64
             .decode(png)
             .map_err(|e| format!("decode screenshot: {e}"))?;
-        let (w, h, png) = match png_size(&png).filter(|_| covers_whole(&png, rect, 1.0)) {
-            Some((w, h)) => (w, h, png),
-            None => crop_png(&png, rect, 1.0, None).map_err(|e| {
-                if e == OFF_SCREEN {
-                    "the rectangle is off the window".to_owned()
-                } else {
-                    e
-                }
-            })?,
-        };
+        let (w, h, png) = crop_png(&png, rect, 1.0, None).map_err(|e| {
+            if e == OFF_SCREEN {
+                "the rectangle is off the window".to_owned()
+            } else {
+                e
+            }
+        })?;
         let mut out = sized(w, h);
         out["origin"] = json!([rect[0].max(0.0) as u32, rect[1].max(0.0) as u32]);
         if let Some(note) = stale {
@@ -7886,18 +7877,6 @@ pub(crate) mod tests {
             (shot[2], shot[7], shot[97], shot[90]),
             ([255; 3], [0; 3], [255; 3], [0; 3])
         );
-    }
-
-    #[tokio::test]
-    async fn a_whole_unmasked_shot_is_the_driver_png_as_is() {
-        let driver = Desktop(Arc::default());
-        let raw = driver.call("get_desktop_state", json!({})).await.unwrap();
-        let png = B64
-            .decode(raw["content"][0]["data"].as_str().unwrap())
-            .unwrap();
-        let open = Desk::new(|| Ok(Apps), Desktop(Arc::default()), Os::Windows);
-        let out = open.run("desk_shot", json!({})).await.unwrap();
-        assert_eq!(B64.decode(out.image_b64.unwrap()).unwrap(), png);
     }
 
     #[tokio::test]
