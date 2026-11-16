@@ -1643,7 +1643,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 None => (x, y),
             },
             _ => {
-                let mut target = self.front_window().await?;
+                let (mut target, listed) = self.front_window().await?;
                 if self.os == Os::Mac {
                     req["pid"] = target["pid"].take();
                     req["window_id"] = target["window_id"].take();
@@ -1653,7 +1653,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 }
                 let [bx, by, bw, bh] = bounds(&target);
                 let (x, y) = (bx + bw / 2.0, by + bh / 2.0);
-                let under = self.window_at(x, y).await?;
+                let scale = self.scale().await?;
+                let point = (x / scale, y / scale);
+                let under = self
+                    .top_in(listed, point)
+                    .and_then(|w| Under::of(&w, point));
                 if under.is_none_or(|u| {
                     (Some(u.pid), Some(u.id))
                         != (target["pid"].as_i64(), target["window_id"].as_i64())
@@ -1670,7 +1674,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(OK.to_owned())
     }
 
-    async fn front_window(&self) -> Result<Value, String> {
+    async fn front_window(&self) -> Result<(Value, Vec<Value>), String> {
         let picked = if self.allow.is_open() && self.os != Os::Linux {
             None
         } else {
@@ -1681,9 +1685,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 .await?;
             Some((frame.pid, frame.title))
         };
-        self.on_screen()
-            .await?
-            .into_iter()
+        let listed = self.on_screen().await?;
+        let target = listed
+            .iter()
             .filter(|w| layer(w) == 0)
             .filter(|w| {
                 picked.as_ref().is_none_or(|(pid, _)| {
@@ -1696,7 +1700,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     .is_some_and(|(_, t)| w["title"] == t.as_str());
                 (titled, w["z_index"].as_i64().unwrap_or(i64::MIN))
             })
-            .ok_or_else(|| "no app window is in front to scroll".to_owned())
+            .cloned()
+            .ok_or_else(|| "no app window is in front to scroll".to_owned())?;
+        Ok((target, listed))
     }
 
     async fn drag(&self, a: DragArgs) -> Result<String, String> {
@@ -2205,9 +2211,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     /// The topmost app window the driver lists at `point`, in points.
     async fn top_at(&self, point: (f64, f64)) -> Result<Option<Value>, String> {
-        let top = self
-            .on_screen()
-            .await?
+        Ok(self.top_in(self.on_screen().await?, point))
+    }
+
+    fn top_in(&self, listed: Vec<Value>, point: (f64, f64)) -> Option<Value> {
+        let top = listed
             .into_iter()
             .filter(|w| layer(w) == 0)
             .filter(|w| {
@@ -2218,7 +2226,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if let Some(w) = &top {
             self.classify(w);
         }
-        Ok(top)
+        top
     }
 
     async fn on_screen(&self) -> Result<Vec<Value>, String> {
@@ -8353,7 +8361,9 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("covers the front window's center"), "{err}");
-        assert!(!calls.lock().unwrap().iter().any(|(t, _)| t == "scroll"));
+        let calls = calls.lock().unwrap();
+        assert!(!calls.iter().any(|(t, _)| t == "scroll"));
+        assert_eq!(calls.iter().filter(|(t, _)| t == "list_windows").count(), 1);
     }
 
     #[tokio::test]
