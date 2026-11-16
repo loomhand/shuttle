@@ -50,19 +50,20 @@ async function run(t: TestContext, plan: Plan, typed: (before: string, text: str
   return { r, calls: d.calls, doc: d.doc() }
 }
 
-async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', extra = {} as Record<string, unknown>, front = false, answer = (s: string) => `${s}\n$ `, blind = false, named = true, role = 'document', erases = true, eraseFails = false, eraseBlinds = false, readBlinds = false, steal = false, stealMid = false, eraseLimit = Infinity, renumber = false } = {}) {
+async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', extra = {} as Record<string, unknown>, front = false, answer = (s: string) => `${s}\n$ `, blind = false, named = true, role = 'document', erases = true, eraseFails = false, eraseBlinds = false, readBlinds = false, steal = false, stealMid = false, eraseLimit = Infinity, renumber = false, eraseLag = 0 } = {}) {
   const term: W = { id: 't', title: 'Terminal', role: 'window', pid: 7, active: front, app: 'Terminal' }
   const bare = role === 'text' || role === 'terminal'
   const node = () => ({ ref: 0, id: renumber && erased ? 'd2' : 'd', parent: -1, depth: 0, role, name: role === 'text' ? 'Command Prompt' : '', states: role === 'text' ? ['focused'] : [], ...(bare ? {} : { value: screen }) })
-  const calls: Call[] = []; let late = ''; let keyed = false; let erased = false; let typed1 = false; let backs = 0
+  const calls: Call[] = []; let late = ''; let keyed = false; let erased = false; let typed1 = false; let backs = 0; let stale = ''; let lag = 0
+  const view = () => lag > 0 ? (lag -= 1, stale) : screen
   await daemon(t, (c) => {
     calls.push(c)
     if (c.tool === 'desk_windows') return JSON.stringify(front && !(steal && typed1) && !(stealMid && backs > 0) ? [{ ...user(), active: false }, term] : front ? [user(), { ...term, active: false }] : [user(), term])
     if (((blind && keyed) || (eraseBlinds && erased)) && (c.tool === 'desk_snapshot' || c.tool === 'desk_read')) throw new Error('the window answers no accessibility calls')
     if (readBlinds && erased && c.tool === 'desk_read') throw new Error('the node answers no text')
-    if (c.tool === 'desk_snapshot') { const out = JSON.stringify({ window: term, nodes: [{ ...node(), ...(bare ? {} : { value: screen.slice(0, 200) }) }], truncated: false }); screen += late; late = ''; return out }
-    if (c.tool === 'desk_read') return JSON.stringify({ ...node(), value: c.args.tail ? screen.slice(-READ) : screen.slice(0, READ), ...(screen.length > READ ? { truncated: true } : {}) })
-    if (c.tool === 'desk_key' && c.args.keys === 'backspace') { if (eraseFails) throw new Error('bring_to_front: refused'); erased = true; for (let n = Number(c.args.repeat ?? 1); n > 0; n--) { backs += 1; if (erases && backs <= eraseLimit) screen = screen.slice(0, -1) } return '{"ok":true}' }
+    if (c.tool === 'desk_snapshot') { const out = JSON.stringify({ window: term, nodes: [{ ...node(), ...(bare ? {} : { value: view().slice(0, 200) }) }], truncated: false }); screen += late; late = ''; return out }
+    if (c.tool === 'desk_read') { const v = view(); return JSON.stringify({ ...node(), value: c.args.tail ? v.slice(-READ) : v.slice(0, READ), ...(v.length > READ ? { truncated: true } : {}) }) }
+    if (c.tool === 'desk_key' && c.args.keys === 'backspace') { if (eraseFails) throw new Error('bring_to_front: refused'); if (eraseLag && !erased) { stale = screen; lag = eraseLag } erased = true; for (let n = Number(c.args.repeat ?? 1); n > 0; n--) { backs += 1; if (erases && backs <= eraseLimit) screen = screen.slice(0, -1) } return '{"ok":true}' }
     if (c.tool === 'desk_key') { screen = answer(screen); late = prompt; keyed = true; return JSON.stringify({ ok: true, ...(key ? { unverified: key } : {}) }) }
     if (c.tool !== 'desk_type') return '{"ok":true}'
     const text = String(c.args.text)
@@ -426,6 +427,14 @@ test('a shown password is erased only in its own front window, by the characters
   assert.equal(part.r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it could not be erased: clear it by hand')
   const unread = await terminal(t, foreground, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, front: true, role: 'terminal', readBlinds: true })
   assert.equal(unread.r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, Backspace was sent over it, unchecked')
+})
+
+test('a shown password whose erase the terminal draws late is read again and reported as erased', async (t) => {
+  for (const [mode, plan, front] of [...modes.map(([m, p]) => [m, p, false] as const), ['foreground', foreground, true] as const]) {
+    const { r } = await terminal(t, plan, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, front, eraseLag: 6 })
+    assert.equal(r.escalate?.reason, 'the password showed in "Terminal", so it was not submitted, and it was erased', mode)
+    assert.ok(!JSON.stringify(r).includes('example-pass'), JSON.stringify(r))
+  }
 })
 
 test('a shown password that Backspace does not erase is reported as still on screen', async (t) => {

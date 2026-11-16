@@ -96,6 +96,7 @@ const ON_PAGE_MS = 3000
 const DOM_READS = 60
 const READS_AT_ONCE = 4
 const BASE_SETTLE = 300
+const ERASE_WAIT = 1000
 const VALUE_CHARS = 200
 const NAME_CUT = 80
 const MAX_REPEAT = 256
@@ -580,10 +581,13 @@ async function echoed(w: Win, line: string, shown: Map<string, Text> | null) {
     let sent = true
     if (BG) for (let n = [...typed].length; n > 0; n -= MAX_REPEAT) await desk.key('backspace', at(w), Math.min(n, MAX_REPEAT))
     else for (const _ of typed) { if (!await mine()) { sent = false; break } await desk.key('backspace', at(w)) }
-    const after = sent && before ? await settled(w) : null
-    const read = !!after && after.size > 0 && [...after.values()].every((t) => t.value !== undefined)
     const same = (a: string, b: string, part: boolean) => a === b || (part && (a.endsWith(b) || b.endsWith(a)))
-    const back = read && [...after].every(([id, t]) => { const was = before?.get(id); return same(flat(t.value).trimEnd(), cut(flat(was?.value)).trimEnd(), !!was && !!(t.cut || was.cut)) })
+    const judge = (after: Map<string, Text> | null) => {
+      const read = !!after && after.size > 0 && [...after.values()].every((t) => t.value !== undefined)
+      return { read, back: read && [...after].every(([id, t]) => { const was = before?.get(id); return same(flat(t.value).trimEnd(), cut(flat(was?.value)).trimEnd(), !!was && !!(t.cut || was.cut)) }) }
+    }
+    let { read, back } = judge(sent && before ? await settled(w) : null)
+    for (const end = Date.now() + ERASE_WAIT; read && !back && Date.now() < end; await sleep(VERIFY_POLL)) ({ read, back } = judge(await settled(w)))
     if (sent) left = !read ? 'Backspace was sent over it, unchecked' : back ? 'and it was erased' : left
   } catch {}
   return new Surprise(`the password showed in "${w.title}", so it was not submitted, ${left}`, { window: w.title })
