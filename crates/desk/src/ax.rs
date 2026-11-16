@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, c_void};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -177,7 +177,8 @@ impl Ax {
             let name = name
                 .and_then(|v| v.downcast::<CFString>())
                 .map(|s| s.to_string());
-            let bundle = bundle_stem(p)
+            let bundle = exe_path(p)
+                .and_then(|e| main_bundle(&e))
                 .filter(|b| name.as_deref().is_none_or(|n| !n.eq_ignore_ascii_case(b)));
             let front = boolean(front).unwrap_or(false);
             if front {
@@ -408,10 +409,12 @@ impl Access for Ax {
     fn off_space(&mut self) -> Vec<Frame> {
         let own = std::process::id();
         let driver = &self.driver;
-        off_space_frames(&off_space_windows(), |pid| {
-            let exe = || exe_path(i32::try_from(pid).ok()?);
-            pid == own || driver.is_some() && exe() == *driver
-        })
+        let exe = |pid: u32| exe_path(i32::try_from(pid).ok()?);
+        off_space_frames(
+            &off_space_windows(),
+            |pid| pid == own || driver.is_some() && exe(pid) == *driver,
+            |pid| exe(pid).and_then(|e| main_bundle(&e)),
+        )
     }
 
     fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
@@ -521,21 +524,6 @@ impl Access for Ax {
 
     fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
         Ok(pid(&self.element(id)?).and_then(|p| u32::try_from(p).ok()))
-    }
-
-    fn bundle_name(&mut self, app: &str) -> Result<Option<String>, String> {
-        let pid = self
-            .frames()?
-            .into_iter()
-            .find(|f| {
-                f.app
-                    .as_deref()
-                    .is_some_and(|a| a.eq_ignore_ascii_case(app))
-            })
-            .and_then(|f| f.pid);
-        Ok(pid
-            .and_then(|p| bundle_stem(i32::try_from(p).ok()?))
-            .filter(|name| !name.eq_ignore_ascii_case(app)))
     }
 
     fn web_of(&mut self, id: &str) -> Result<(Option<String>, Option<String>), String> {
@@ -988,6 +976,16 @@ pub fn bundle_stem(pid: i32) -> Option<String> {
         .ancestors()
         .find(|a| a.extension().is_some_and(|e| e == "app"))?;
     Some(bundle.file_stem()?.to_string_lossy().into_owned())
+}
+
+fn main_bundle(exe: &Path) -> Option<String> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let bundle = contents.parent()?;
+    let main = macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && bundle.extension()? == "app";
+    main.then(|| bundle.file_stem().map(|s| s.to_string_lossy().into_owned()))?
 }
 
 #[cfg(not(test))]
@@ -1556,6 +1554,7 @@ fn off_space_windows() -> Vec<CFDictionary<CFString, CFType>> {
 fn off_space_frames(
     windows: &[CFDictionary<CFString, CFType>],
     skip: impl Fn(u32) -> bool,
+    bundle: impl Fn(u32) -> Option<String>,
 ) -> Vec<Frame> {
     let (name, owner, layer, shown) = (
         CFString::from_static_string("kCGWindowName"),
@@ -1578,12 +1577,14 @@ fn off_space_frames(
             if skip(pid) {
                 return None;
             }
+            let app = string(d.find(&owner).map(|v| (*v).clone()));
             Some(Frame {
                 id: number(d, &id)?.to_string(),
                 title: string(d.find(&name).map(|v| (*v).clone())),
                 role: "window",
                 pid: Some(pid),
-                app: Some(string(d.find(&owner).map(|v| (*v).clone()))),
+                bundle: bundle(pid).filter(|b| !b.eq_ignore_ascii_case(&app)),
+                app: Some(app),
                 space: Some("other"),
                 ..Frame::default()
             })
@@ -1633,6 +1634,30 @@ fn text(v: &CFType, chars: usize, tail: bool) -> String {
 mod tests {
     use super::*;
     use crate::model::MAX_IDS;
+
+    #[test]
+    fn a_window_takes_the_bundle_of_its_app_only_from_that_bundle_s_main_executable() {
+        for (exe, want) in [
+            (
+                "/System/Applications/TextEdit.app/Contents/MacOS/TextEdit",
+                Some("TextEdit"),
+            ),
+            (
+                "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper",
+                Some("Google Chrome Helper"),
+            ),
+            (
+                "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wineloader",
+                None,
+            ),
+            ("/Applications/Foo.app/Contents/Resources/tool", None),
+            ("/usr/bin/python3", None),
+            ("/A/Foo.app/X/MacOS/exe", None),
+            ("/A/Foo/Contents/MacOS/exe", None),
+        ] {
+            assert_eq!(main_bundle(Path::new(exe)).as_deref(), want, "{exe}");
+        }
+    }
 
     #[test]
     fn secure_keyboard_entry_looks_only_at_covered_terminals_by_english_or_localized_name() {
@@ -1695,6 +1720,42 @@ mod tests {
     }
 
     #[test]
+    fn a_window_off_this_space_takes_the_bundle_only_when_its_owner_name_differs() {
+        let listed = |owner: &str| {
+            let mut pairs = [
+                ("kCGWindowNumber", 4244),
+                ("kCGWindowOwnerPID", 906),
+                ("kCGWindowLayer", 0),
+            ]
+            .map(|(k, v)| {
+                (
+                    CFString::from_static_string(k),
+                    CFNumber::from(v).as_CFType(),
+                )
+            })
+            .to_vec();
+            pairs.push((
+                CFString::from_static_string("kCGWindowOwnerName"),
+                CFString::new(owner).as_CFType(),
+            ));
+            CFDictionary::from_CFType_pairs(&pairs)
+        };
+        let bundle = |_| Some("TextEdit".to_owned());
+        let off = off_space_frames(&[listed("文本编辑"), listed("TextEdit")], |_| false, bundle);
+        let got: Vec<_> = off
+            .iter()
+            .map(|f| (f.app.as_deref(), f.bundle.as_deref()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (Some("文本编辑"), Some("TextEdit")),
+                (Some("TextEdit"), None)
+            ]
+        );
+    }
+
+    #[test]
     fn a_window_listed_on_this_space_and_then_off_it_has_one_id() {
         let mut ax = bare();
         let on = ax.window_id(&application(905), 4243);
@@ -1711,7 +1772,7 @@ mod tests {
                 )
             }),
         );
-        let off = off_space_frames(&[listed], |_| false);
+        let off = off_space_frames(&[listed], |_| false, |_| None);
         assert_eq!(off.len(), 1, "{off:?}");
         assert_eq!(off[0].id, on);
     }

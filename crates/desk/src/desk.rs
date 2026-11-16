@@ -21,7 +21,7 @@ use desk_core::window::{self, TITLE_TIERS, title_matches};
 use desk_core::wire::{OK, Output};
 use serde_json::{Map, Value, json};
 
-use crate::allow::{Allow, app_key, app_of};
+use crate::allow::{Allow, app_key, frame_of};
 use crate::auto;
 use crate::driver::{
     CAPTURE_SESSION, INPUT_TOOLS, Input, WINDOW_SESSION, background, desktop, image_of, text_of,
@@ -543,7 +543,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let front = self
             .access
             .run(CALL_LIMIT, (), move |b| {
-                Ok(b.unanswered().filter(|f| allow.admits(f.app.as_deref())))
+                Ok(b.unanswered().filter(|f| allow.admits_frame(f)))
             })
             .await?;
         serde_json::to_string(&front).map_err(|e| format!("encode unanswered: {e}"))
@@ -580,7 +580,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.access
             .run(CALL_LIMIT, (), move |b| {
                 let mut frames = shown(b, background)?;
-                frames.retain(|f| allow.admits(f.app.as_deref()));
+                frames.retain(|f| allow.admits_frame(f));
                 frames.sort_by_key(|f| !f.active);
                 let modals = b.modals();
                 let shells = b.shells();
@@ -602,7 +602,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let since = match a.since {
             Value::Array(ws) => Some(
                 ws.into_iter()
-                    .filter(|w| self.allow.admits(w["app"].as_str()))
+                    .filter(|w| {
+                        self.allow.admits(w["app"].as_str())
+                            || self.allow.admits(w["bundle"].as_str())
+                    })
                     .collect::<Value>(),
             ),
             _ => None,
@@ -719,7 +722,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                             return Err(away(b, background, |f| f.id == id)
                                 .unwrap_or(format!("no window {id}")));
                         };
-                        allow.check(f.app.as_deref())?;
+                        allow.check_frame(Some(&f))?;
                         f
                     }
                     None => pick(b, &allow, background, listed, window.as_deref(), pid)?,
@@ -990,7 +993,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 };
                 let pid = b.pid_of(&hit)?;
                 if let Some(frames) = &kept {
-                    allow.check(app_of(frames, pid))?;
+                    allow.check_frame(frame_of(frames, pid))?;
                 }
                 let covered = b.covering(&frame, a.x, a.y).ok().flatten();
                 let node = b.node(&hit, Extras::default(), 0)?;
@@ -2367,7 +2370,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 .run(CALL_LIMIT, (), move |b| shown(b, background))
                 .await?;
             for w in &mut windows {
-                w.app = app_of(&frames, w.pid).map(str::to_owned);
+                let of = frame_of(&frames, w.pid);
+                w.app = of.and_then(|f| f.app.clone());
+                w.bundle = of.and_then(|f| f.bundle.clone());
                 let number = w.id.parse::<u32>().ok();
                 match frames
                     .iter()
@@ -2386,9 +2391,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
         }
         let rivals = window.map_or(1, |want| {
-            let admitted = windows
-                .iter()
-                .filter(|w| self.allow.admits(w.app.as_deref()));
+            let admitted = windows.iter().filter(|w| self.allow.admits_frame(w));
             window::rivals(admitted, want, pid)
         });
         let w = self.allow.pick(windows, window, pid)?;
@@ -2569,7 +2572,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .into_iter()
             .map(|w| {
                 let pid = w["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
-                (bounds(&w), self.allow.admits(app_of(&frames, pid)))
+                (
+                    bounds(&w),
+                    frame_of(&frames, pid).is_some_and(|f| self.allow.admits_frame(f))
+                        || self.allow.is_open(),
+                )
             })
             .collect())
     }
@@ -2823,7 +2830,7 @@ fn holding<B: Access>(
 
 fn check_process<B: Access>(b: &mut B, allow: &Allow, pid: Option<u32>) -> Result<(), String> {
     let frames = pid.map_or(Ok(Vec::new()), |p| b.frames_of(p))?;
-    allow.check(app_of(&frames, pid))
+    allow.check_frame(frame_of(&frames, pid))
 }
 
 fn pick<B: Access>(
@@ -3305,6 +3312,41 @@ pub(crate) mod tests {
             .unwrap();
         let key = sent(&calls, "hotkey");
         assert_eq!(key[0]["target"]["pid"], 4, "{}", key[0]);
+    }
+
+    #[tokio::test]
+    async fn the_allowlist_admits_a_localized_macos_window_by_its_bundle() {
+        let localized = || {
+            Ok(Stub {
+                frames: vec![
+                    Frame {
+                        bundle: Some("TextEdit".into()),
+                        ..frame("w", "未命名", 4, true, Some("文本编辑"))
+                    },
+                    frame("v", "备忘录", 5, false, Some("备忘录")),
+                    Frame {
+                        bundle: Some("Notes".into()),
+                        ..frame("u", "便笺", 6, false, Some("便笺"))
+                    },
+                ],
+                ..Stub::default()
+            })
+        };
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk =
+            Desk::new(localized, Behind(Arc::clone(&calls)), Os::Mac).allow(&["TextEdit".into()]);
+        let listed: Vec<Value> =
+            serde_json::from_str(&desk.run("desk_windows", json!({})).await.unwrap().text).unwrap();
+        let titles: Vec<&str> = listed.iter().filter_map(|w| w["title"].as_str()).collect();
+        assert_eq!(titles, ["未命名"]);
+        desk.run("desk_snapshot", json!({"window": "未命名"}))
+            .await
+            .unwrap();
+        let err = desk
+            .run("desk_snapshot", json!({"window": "便笺"}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("no window \"便笺\""), "{err}");
     }
 
     #[tokio::test]
@@ -5541,6 +5583,52 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_macos_launch_retries_by_bundle_only_for_a_bundle_s_own_executable() {
+        struct Named(Arc<Mutex<Vec<String>>>);
+
+        impl Input for Named {
+            async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+                let name = args["name"].as_str().unwrap_or_default().to_owned();
+                self.0.lock().unwrap().push(name.clone());
+                match (tool, name.as_str()) {
+                    ("launch_app", "TextEdit") => Ok(
+                        json!({"content": [{"type": "text", "text": "Launched TextEdit (pid 4) in background."}]}),
+                    ),
+                    ("launch_app", _) => Err(format!("no app named {name}")),
+                    _ => Ok(json!({})),
+                }
+            }
+        }
+
+        let running = || {
+            Ok(Stub {
+                frames: vec![
+                    Frame {
+                        bundle: Some("TextEdit".into()),
+                        ..frame("w", "未命名", 4, true, Some("文本编辑"))
+                    },
+                    frame("v", "Untitled - Notepad", 5, false, Some("notepad.exe")),
+                ],
+                ..Stub::default()
+            })
+        };
+        let names = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(running, Named(Arc::clone(&names)), Os::Mac);
+        desk.run("desk_launch", json!({"app": "文本编辑"}))
+            .await
+            .unwrap();
+        let err = desk
+            .run("desk_launch", json!({"app": "notepad.exe"}))
+            .await
+            .unwrap_err();
+        assert_eq!(err, "no app named notepad.exe");
+        assert_eq!(
+            *names.lock().unwrap(),
+            ["文本编辑", "TextEdit", "notepad.exe"]
+        );
+    }
+
+    #[tokio::test]
     async fn a_launch_with_arguments_starts_a_new_instance_on_macos_with_them() {
         for os in [Os::Mac, Os::Linux, Os::Windows] {
             let calls = Arc::new(Mutex::new(Vec::new()));
@@ -7741,6 +7829,31 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn an_app_allowlist_admits_a_localized_window_by_its_bundle_on_every_path() {
+        let mac = Desk::new(|| Ok(Localized), Desktop(Arc::default()), Os::Mac)
+            .allow(&["notepad".into()]);
+        mac.run("desk_snapshot", json!({})).await.unwrap();
+        let past = mac
+            .run("desk_shot", json!({"window": "Untitled - Notepad"}))
+            .await
+            .unwrap_err();
+        assert_eq!(past, "the driver returned no screenshot of the window");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let windows = Desk::new(|| Ok(Localized), Desktop(calls.clone()), Os::Windows)
+            .allow(&["notepad".into()]);
+        windows
+            .run("desk_click", json!({"x": 100.0, "y": 800.0}))
+            .await
+            .unwrap();
+        assert!(calls.lock().unwrap().iter().any(|t| t == "click"));
+        let shot = pixels(&windows.run("desk_shot", json!({})).await.unwrap());
+        assert_eq!(
+            (shot[2], shot[7], shot[97], shot[90]),
+            ([255; 3], [0; 3], [255; 3], [0; 3])
+        );
+    }
+
+    #[tokio::test]
     async fn an_app_allowlist_masks_shots_outside_its_windows_and_costs_nothing_without_one() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let open = Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Windows);
@@ -9882,6 +9995,70 @@ pub(crate) mod tests {
     }
 
     struct Apps;
+
+    struct Localized;
+
+    impl Access for Localized {
+        fn foreground(&mut self) -> Option<i64> {
+            Apps.foreground()
+        }
+
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            let mut frames = Apps.frames()?;
+            frames[0].app = Some("记事本".into());
+            frames[0].bundle = Some("Notepad".into());
+            frames[0].number = Some(1);
+            Ok(frames)
+        }
+
+        fn chromium(&mut self, pid: u32) -> bool {
+            Apps.chromium(pid)
+        }
+
+        fn off_space(&mut self) -> Vec<Frame> {
+            Apps.off_space()
+        }
+
+        fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
+            Apps.tree(frame, extras)
+        }
+
+        fn node(&mut self, id: &str, extras: Extras, depth: usize) -> Result<Node, String> {
+            Apps.node(id, extras, depth)
+        }
+
+        fn keyboard_focus(&mut self, pid: u32) -> Result<Option<Node>, String> {
+            Apps.keyboard_focus(pid)
+        }
+
+        fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
+            Apps.ancestors(id)
+        }
+
+        fn at(&mut self, frame: &str, x: i32, y: i32) -> Result<Option<String>, String> {
+            Apps.at(frame, x, y)
+        }
+
+        fn menu_at(&mut self, x: i32, y: i32) -> Result<Option<String>, String> {
+            Apps.menu_at(x, y)
+        }
+
+        fn pid_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
+            Apps.pid_at(x, y)
+        }
+
+        fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
+            Apps.pid_of(id)
+        }
+
+        fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
+            Apps.act(id, act)
+        }
+
+        fn close(&mut self, frame: &Frame) -> Result<(), String> {
+            Apps.close(frame)
+        }
+    }
 
     impl Access for Apps {
         fn foreground(&mut self) -> Option<i64> {
