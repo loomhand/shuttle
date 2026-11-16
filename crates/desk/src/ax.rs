@@ -139,7 +139,7 @@ impl Ax {
         })
     }
 
-    fn listed(&mut self) -> Vec<(i32, Vec<[f64; 4]>)> {
+    fn listed(&mut self, only: Option<u32>) -> Vec<(i32, Vec<[f64; 4]>)> {
         let shown = shown_windows();
         let has = |p: &i32| shown.iter().any(|(q, _)| q == p);
         let mut hang = lock(&HANG);
@@ -154,6 +154,7 @@ impl Ax {
         let driver = self.driver.as_ref();
         shown
             .into_iter()
+            .filter(|(p, _)| only.is_none_or(|o| *p as u32 == o))
             .filter(|(p, _)| driver.is_none_or(|d| exe_path(*p).as_ref() != Some(d)))
             .collect()
     }
@@ -392,12 +393,12 @@ impl Ax {
 
 impl Access for Ax {
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
-        let apps = self.listed();
+        let apps = self.listed(None);
         Ok(self.app_frames(apps))
     }
 
     fn frames_of(&mut self, pid: u32) -> Result<Vec<Frame>, String> {
-        let apps = self.listed().into_iter().filter(|(p, _)| *p as u32 == pid);
+        let apps = self.listed(Some(pid));
         Ok(self.app_frames(apps))
     }
 
