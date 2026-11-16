@@ -272,8 +272,8 @@ async function perform(p: Params): Promise<Result> {
     const ts = Date.now(); let { ws } = await afterSettle(); const front = frontOf(ws); const was = front?.title
     const inert = (last.type !== undefined && !last.type.includes('\n')) || (last.key !== undefined && (INERT_KEY.test(last.key) || (ARROW_KEY.test(last.key) && front?.role === 'window')))
     if ((last.key || last.type !== undefined || last.click) && !recs.at(-1)?.submit && !inert) {
-      await until((ws) => frontOf(ws)?.title !== was, 480, ws)
-      await sleep(80); ws = await desk.windows()
+      ws = await until((ws) => frontOf(ws)?.title !== was, 560, ws)
+      if (frontOf(ws)?.title !== was) { await sleep(80); ws = await desk.windows() }
     }
     const acted = !!(last.click || last.check || last.set || last.menu || last.key || last.close || last.type !== undefined)
     const f = frontOf(ws); end = f; const o = f && (acted || f.role !== 'window') ? await outline(f) : ''
