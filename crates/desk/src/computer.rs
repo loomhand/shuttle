@@ -61,7 +61,6 @@ const RETURN_GAP: Duration = Duration::from_millis(300);
 const RETURN_POLL: Duration = Duration::from_millis(10);
 
 const STILL_EDGE: u32 = 160;
-const PROBE_EDGE: u32 = 320;
 const STILL_TOLERANCE: u8 = 48;
 const MOVED_PERCENT: usize = 5;
 
@@ -377,7 +376,7 @@ impl Computer {
         if a.action == "wait" {
             let secs = a.seconds.unwrap_or(1.0).clamp(0.1, MAX_WAIT_SECS);
             tokio::time::sleep(Duration::from_secs_f64(secs)).await;
-            let (shot, missed) = self.settled(session, &a).await;
+            let (shot, missed) = self.settled(session, None, &a).await;
             return Ok(Output {
                 text: format!("waited {secs:.1}s{missed}"),
                 image_b64: shot,
@@ -457,8 +456,8 @@ impl Computer {
         }
         self.end_once(once).await;
         let k = self.mapped(session, a.scale);
-        let changes = self.settle(before, k).await;
-        let (shot, missed) = self.settled(session, &a).await;
+        let (changes, still) = self.settle(before, k).await;
+        let (shot, missed) = self.settled(session, still, &a).await;
         drop(input);
         let (text, is_error) = match result {
             Ok(v) => {
@@ -565,12 +564,22 @@ impl Computer {
         Ok(self.capture(session, max_edge, false).await?.0)
     }
 
-    /// The screenshot after a settled input; a failed capture comes back as text.
-    async fn settled(&self, session: &str, a: &ActArgs) -> (Option<String>, String) {
-        let shot = if a.shot_discarded {
-            Ok(None)
-        } else {
-            self.screenshot(session, a.max_edge).await
+    /// The screenshot after a settled input: the capture `still` held on, else a new one; a failed capture comes back as text.
+    async fn settled(
+        &self,
+        session: &str,
+        still: Option<Value>,
+        a: &ActArgs,
+    ) -> (Option<String>, String) {
+        let shot = match still {
+            _ if a.shot_discarded => Ok(None),
+            Some(v) => {
+                self.touch();
+                Ok(self
+                    .adopt(session, &v, a.max_edge.unwrap_or(DEFAULT_EDGE), false)
+                    .0)
+            }
+            None => self.screenshot(session, a.max_edge).await,
         };
         match shot {
             Ok(image) => (image, String::new()),
@@ -792,8 +801,8 @@ impl Computer {
             }
         }
         self.end_once(once).await;
-        let changes = self.settle(before, self.mapped(session, a.scale)).await;
-        let (shot, missed) = self.settled(session, a).await;
+        let (changes, still) = self.settle(before, self.mapped(session, a.scale)).await;
+        let (shot, missed) = self.settled(session, still, a).await;
         drop(input);
         let total = full.chars().count();
         let summary = format!(
@@ -861,7 +870,7 @@ impl Computer {
                     self.end_own(probe).await;
                 }
                 drop(input);
-                let (shot, missed) = self.settled(session, a).await;
+                let (shot, missed) = self.settled(session, None, a).await;
                 return Ok(Output {
                     text: e + &missed,
                     is_error: true,
@@ -869,8 +878,8 @@ impl Computer {
                 });
             }
         };
-        let changes = self.settle(before, self.mapped(session, a.scale)).await;
-        let (shot, missed) = self.settled(session, a).await;
+        let (changes, still) = self.settle(before, self.mapped(session, a.scale)).await;
+        let (shot, missed) = self.settled(session, still, a).await;
         drop(input);
         Ok(Output {
             text: text + &changes + &missed,
@@ -914,7 +923,7 @@ impl Computer {
         }
         let probe = self.own("still");
         match self.frame(probe.name()).await {
-            Some(frame) => Some(Before {
+            Some((frame, _)) => Some(Before {
                 probe: Some(probe),
                 paused: None,
                 frame: Frame::Thumb(frame),
@@ -933,7 +942,7 @@ impl Computer {
     }
 
     /// Waits until the screen differs from `before` and holds still; returns the window changes, or that no poll differed, and the probe capture it held still on.
-    async fn settle(&self, before: Option<Before>, scale: f64) -> String {
+    async fn settle(&self, before: Option<Before>, scale: f64) -> (String, Option<Value>) {
         let Some(Before {
             probe,
             paused,
@@ -947,7 +956,7 @@ impl Computer {
         }) = before
         else {
             tokio::time::sleep(SETTLE).await;
-            return String::new();
+            return (String::new(), None);
         };
         let poll = if probe.is_some() {
             STILL_POLL
@@ -966,6 +975,7 @@ impl Computer {
         let (mut seen, mut focus, mut hold) = (windows.clone(), active, first_hold);
         let (mut still, mut changed, mut quiet) = (false, false, true);
         let (mut shown, mut prev) = (Shown::default(), None::<Vec<u64>>);
+        let mut capture = None;
         while !still && Instant::now() < deadline {
             let at = Instant::now();
             let mut nap = poll.min(deadline.saturating_duration_since(at));
@@ -974,9 +984,10 @@ impl Computer {
             }
             tokio::time::sleep(nap).await;
             let polled = match probe.as_ref().map(Owned::name) {
-                Some(probe) => self.frame(probe).await.map(|f| {
+                Some(probe) => self.frame(probe).await.map(|(f, v)| {
                     let f = Frame::Thumb(f);
                     let differs = first.changes(&f, &volatile);
+                    capture = Some(v);
                     (f, differs, seen.clone(), focus)
                 }),
                 None => self.shm(|g| {
@@ -1052,13 +1063,13 @@ impl Computer {
         };
         if let Some(probe) = probe {
             self.end_own(probe).await;
-            return note;
+            return (note, capture.filter(|_| still));
         }
         if seen == windows && focus == active {
-            return note;
+            return (note, None);
         }
         let report = self.shm(|g| Ok(self.window_report(g, &windows, &seen, active, focus, scale)));
-        note + &report.unwrap_or_default()
+        (note + &report.unwrap_or_default(), None)
     }
 
     /// The session of `agent` when its call names none; once ended, it starts again on its next call (see [`Self::call`]).
@@ -1176,13 +1187,14 @@ impl Computer {
         out
     }
 
-    /// An RGBA thumbnail, whose long edge is [`STILL_EDGE`], of a small capture from the probe driver session `probe`.
-    async fn frame(&self, probe: &str) -> Option<Vec<u8>> {
-        let small = json!({"max_image_dimension": PROBE_EDGE});
-        let v = self.request(probe, "get_desktop_state", small).await.ok()?;
+    /// A full-size capture from the probe driver session `probe` and its RGBA thumbnail, whose long edge is [`STILL_EDGE`].
+    async fn frame(&self, probe: &str) -> Option<(Vec<u8>, Value)> {
+        let full = json!({"max_image_dimension": 0});
+        let v = self.request(probe, "get_desktop_state", full).await.ok()?;
         let data = B64.decode(image_of(&v)?).ok()?;
         let (info, rgba) = decode_png(&data)?;
-        Some(lanczos(&info, &rgba, STILL_EDGE)?.2)
+        let thumb = lanczos(&info, &rgba, STILL_EDGE)?.2;
+        Some((thumb, v))
     }
 
     fn scales(&self) -> std::sync::MutexGuard<'_, HashMap<String, f64>> {
@@ -3208,12 +3220,6 @@ mod tests {
     async fn a_linux_foreground_type_brings_its_window_to_the_front_before_typing() {
         let call = |name: &str, args: Value| json!({"name": name, "args": args});
         let shot = || call("get_desktop_state", json!({"max_image_dimension": 0}));
-        let probe = || {
-            call(
-                "get_desktop_state",
-                json!({"max_image_dimension": PROBE_EDGE}),
-            )
-        };
         let end = || call("end_session", json!({}));
         let list = || call("list_windows", json!({"on_screen_only": true}));
         let front = || call("bring_to_front", json!({"pid": 7, "window_id": 9}));
@@ -3231,7 +3237,7 @@ mod tests {
         let background = if cfg!(target_os = "linux") {
             vec![
                 list(),
-                probe(),
+                shot(),
                 end(),
                 typed(json!({"pid": 7, "window_id": 9, "text": "abc"})),
                 end(),
@@ -3240,7 +3246,7 @@ mod tests {
         } else {
             vec![
                 list(),
-                probe(),
+                shot(),
                 end(),
                 typed(
                     json!({"target": {"kind": "desktop", "display_id": "primary"}, "text": "abc"}),
@@ -3252,12 +3258,12 @@ mod tests {
             (
                 Os::Linux,
                 plain.clone(),
-                vec![list(), probe(), end(), front(), foreground(), end(), shot()],
+                vec![list(), shot(), end(), front(), foreground(), end(), shot()],
             ),
             (
                 Os::Linux,
                 accented.clone(),
-                vec![probe(), end(), list(), front(), mixed(), end(), shot()],
+                vec![shot(), end(), list(), front(), mixed(), end(), shot()],
             ),
             (
                 Os::Linux,
@@ -3269,12 +3275,12 @@ mod tests {
             cases.push((
                 os,
                 plain.clone(),
-                vec![list(), probe(), end(), foreground(), end(), shot()],
+                vec![list(), shot(), end(), foreground(), end(), shot()],
             ));
             cases.push((
                 os,
                 accented.clone(),
-                vec![probe(), end(), list(), mixed(), end(), shot()],
+                vec![shot(), end(), list(), mixed(), end(), shot()],
             ));
         }
         for (os, act, want) in cases {
@@ -3930,7 +3936,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_action_that_settles_probes_small_and_takes_one_full_capture_after() {
+    async fn an_action_that_settles_still_returns_the_capture_it_settled_on() {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let listener = Fake::bind(&socket).unwrap();
@@ -3939,17 +3945,11 @@ mod tests {
         dark["result"]["content"][0]["data"] = png_of(1280, 16, &vec![0; 1280 * 16 * 4]).into();
         let captures = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let log = std::sync::Arc::clone(&captures);
-        let sizes = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
-        let asked = std::sync::Arc::clone(&sizes);
         let mut probes = 0;
         let driver = tokio::spawn(listener.serve(move |req| {
             let session = req["args"]["session"].as_str().unwrap_or_default();
             match req["name"].as_str().unwrap_or_default() {
                 "get_desktop_state" if session.starts_with("still-") => {
-                    asked
-                        .lock()
-                        .unwrap()
-                        .push(req["args"]["max_image_dimension"].clone());
                     probes += 1;
                     if probes == 1 {
                         light.clone()
@@ -3974,18 +3974,10 @@ mod tests {
         let image = B64.decode(out.image_b64.unwrap()).unwrap();
         let mut webp = image_webp::WebPDecoder::new(std::io::Cursor::new(&image)).unwrap();
         assert_eq!(webp.dimensions(), (1024, 12));
-        let mut rgb = vec![0; webp.output_buffer_size().unwrap()];
+        let mut rgb = vec![1; webp.output_buffer_size().unwrap()];
         webp.read_image(&mut rgb).unwrap();
-        assert!(rgb.iter().any(|c| *c != 0));
-        assert_eq!(
-            *captures.lock().unwrap(),
-            [DEFAULT_SESSION, DEFAULT_SESSION]
-        );
-        let sizes = sizes.lock().unwrap();
-        assert!(
-            sizes.len() > 1 && sizes.iter().all(|s| *s == PROBE_EDGE),
-            "{sizes:?}"
-        );
+        assert!(rgb.iter().all(|c| *c == 0));
+        assert_eq!(*captures.lock().unwrap(), [DEFAULT_SESSION]);
         assert_eq!(cua.scale_of(DEFAULT_SESSION), 1.25);
         driver.abort();
     }
