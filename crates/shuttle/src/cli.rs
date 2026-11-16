@@ -347,7 +347,8 @@ async fn serve(
         path.with_file_name("flows"),
         key_vars,
     )
-    .input(mode);
+    .input(mode)
+    .android(!local);
     let desk = match android {
         Some(settings) => Desks::Android(Box::new(android::device(settings, &exe)?)),
         None => Desks::Native(server::native(
