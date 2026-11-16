@@ -1045,10 +1045,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             hid_plus(&mut req);
         }
         let raised = self.raised_window(a.window.as_deref(), a.pid).await?;
-        self.raise(raised).await?;
         let front = match raised {
-            Some(w) if self.os == Os::Mac && times > 1 => self.first_front(w).await,
-            _ => None,
+            Some(w) if self.os == Os::Mac && times > 1 => self.raise_watched(w).await?,
+            _ => {
+                self.raise(raised).await?;
+                None
+            }
         };
         let mut note = None;
         let mut budget = ANSWER_WAIT;
@@ -1109,6 +1111,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         for (i, line) in text.split('\n').enumerate() {
             let mut returned = false;
             let sent: Result<(), String> = async {
+                let mut checked = false;
                 if i >= 2
                     && !blind
                     && !after_blank
@@ -1119,15 +1122,16 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                             moved = Some(why);
                             return Err(String::new());
                         }
-                        Some(None) => {}
+                        Some(None) => checked = self.os == Os::Mac,
                         None => blind = true,
                     }
                 }
-                self.raise(raised).await?;
                 if i == 0
                     && let Some(w) = watched
                 {
-                    front = self.first_front(w).await;
+                    front = self.raise_watched(w).await?;
+                } else if !checked {
+                    self.raise(raised).await?;
                 }
                 let line = line.trim_end_matches('\r');
                 if i > 0 {
@@ -2029,12 +2033,26 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn raise(&self, window: Option<(i64, i64)>) -> Result<Value, String> {
-        let Some((pid, window_id)) = window else {
+        let Some(w) = window else {
             return Ok(Value::Null);
         };
-        if self.os == Os::Mac && self.fronted((pid, window_id)).await {
+        if self.os == Os::Mac && self.fronted(w).await {
             return Ok(Value::Null);
         }
+        self.bring(w).await
+    }
+
+    async fn raise_watched(&self, w: (i64, i64)) -> Result<Option<String>, String> {
+        if self.os == Os::Mac
+            && let Some(front) = self.front_frame(w).await
+        {
+            return Ok(Some(front));
+        }
+        self.bring(w).await?;
+        Ok(self.first_front(w).await)
+    }
+
+    async fn bring(&self, (pid, window_id): (i64, i64)) -> Result<Value, String> {
         let e = match self
             .call(
                 "bring_to_front",
@@ -4196,7 +4214,7 @@ pub(crate) mod tests {
                 .unwrap();
             reads.push(READS.load(Ordering::SeqCst));
         }
-        assert_eq!(reads, [1, 2, 4, 7, 6]);
+        assert_eq!(reads, [1, 2, 3, 5, 5]);
     }
 
     #[tokio::test]
