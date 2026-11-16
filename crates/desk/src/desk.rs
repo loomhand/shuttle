@@ -328,11 +328,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return Ok(());
         }
         let key = app_key(&app);
-        let pid = self
-            .listed()
-            .await?
-            .into_iter()
-            .find(|f| f.app.as_deref().is_some_and(|a| app_key(a) == key))
+        let listed = self.listed().await?;
+        let names = |name: &Option<String>| name.as_deref().is_some_and(|a| app_key(a) == key);
+        let pid = listed
+            .iter()
+            .find(|f| names(&f.app))
+            .or_else(|| listed.iter().find(|f| names(&f.bundle)))
             .and_then(|f| f.pid);
         match pid {
             Some(pid) => {
@@ -3260,6 +3261,50 @@ pub(crate) mod tests {
                 assert_eq!(sent(&calls, "bring_to_front")[0]["pid"], 4);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn input_naming_an_app_by_its_bundle_goes_to_its_localized_window() {
+        let localized = || {
+            Ok(Stub {
+                frames: vec![Frame {
+                    bundle: Some("TextEdit".into()),
+                    ..frame("w", "未命名", 4, true, Some("文本编辑"))
+                }],
+                ..Stub::default()
+            })
+        };
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(localized, Behind(Arc::clone(&calls)), Os::Mac).background(true);
+        desk.run("desk_key", json!({"keys": "cmd+s", "app": "TextEdit"}))
+            .await
+            .unwrap();
+        let key = sent(&calls, "hotkey");
+        assert_eq!(key.len(), 1);
+        assert_eq!(key[0]["target"]["pid"], 4, "{}", key[0]);
+    }
+
+    #[tokio::test]
+    async fn input_naming_an_app_prefers_its_name_to_another_process_bundle() {
+        let hosted = || {
+            Ok(Stub {
+                frames: vec![
+                    Frame {
+                        bundle: Some("CrossOver".into()),
+                        ..frame("w", "Untitled - Notepad", 5, true, Some("notepad.exe"))
+                    },
+                    frame("v", "CrossOver", 4, true, Some("CrossOver")),
+                ],
+                ..Stub::default()
+            })
+        };
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(hosted, Behind(Arc::clone(&calls)), Os::Mac).background(true);
+        desk.run("desk_key", json!({"keys": "cmd+s", "app": "CrossOver"}))
+            .await
+            .unwrap();
+        let key = sent(&calls, "hotkey");
+        assert_eq!(key[0]["target"]["pid"], 4, "{}", key[0]);
     }
 
     #[tokio::test]
