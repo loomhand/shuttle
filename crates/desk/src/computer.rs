@@ -25,7 +25,7 @@ use crate::desk::{
     BUSY, RAISE_WAIT, TURN_WAIT, Turn, Typer, WAIT_POLL, launch_name, runs_app, text_runs,
     without_protocol_tail, xtest,
 };
-use crate::driver::{CONNECT_RETRY, Driver, ENDED, image_of, text_of};
+use crate::driver::{CONNECT_RETRY, Driver, ended, image_of, text_of};
 use crate::keys::{Os, hid_plus, key_names};
 use crate::lock;
 use crate::model::Modal;
@@ -1878,7 +1878,8 @@ impl Computer {
             None => self.call(session, name, args).await,
         }?;
         if result["isError"] == true {
-            return Err(format!("{name}: {}", text_of(&result)));
+            let text = text_of(&result).replace("get_window_state", "computer_state");
+            return Err(format!("{name}: {text}"));
         }
         Ok(result)
     }
@@ -1887,7 +1888,7 @@ impl Computer {
     async fn call(&self, session: &str, name: &str, mut args: Value) -> Result<Value, String> {
         args["session"] = session.into();
         let mut v = self.reply(name, &args).await?;
-        if name != "end_session" && v["error"].as_str().is_some_and(|e| e.contains(ENDED)) {
+        if name != "end_session" && ended(&v) {
             self.reply("start_session", &json!({"session": session}))
                 .await?;
             v = self.reply(name, &args).await?;
@@ -4289,6 +4290,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_stale_element_refusal_points_the_model_at_computer_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let driver = tokio::spawn(listener.serve(move |req| {
+                match req["name"].as_str().unwrap_or_default() {
+                    "list_windows" => json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "TextEdit", "title": "notes", "bounds": {"x": 0, "y": 0, "width": 800, "height": 600}, "z_index": 1}]}}}),
+                    "get_window_state" => json!({"ok": true, "result": {"structuredContent": {"elements": [{"element_index": 0, "element_token": "t0", "role": "push button", "label": "OK"}]}}}),
+                    "click" => json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "element_token is stale; call get_window_state again and use a fresh token"}], "structuredContent": {"status": "refused", "refusal": {"code": "stale_element_token"}}}}),
+                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+                }
+        }));
+        let cua = cua(&socket);
+        cua.run("a", "desk_computer_state", json!({"pid": 7}))
+            .await
+            .unwrap();
+        let out = cua
+            .run(
+                "a",
+                "desk_computer_act",
+                json!({"action": "click", "element": 0}),
+            )
+            .await;
+        let text = match out {
+            Ok(o) => o.text,
+            Err(e) => e,
+        };
+        assert!(
+            text.contains("call computer_state again") && !text.contains("get_window_state"),
+            "{text}"
+        );
+        driver.abort();
+    }
+
+    #[tokio::test]
     async fn callers_without_a_session_get_their_own_and_an_ended_default_starts_again() {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
@@ -4307,7 +4343,7 @@ mod tests {
                     ended.retain(|s| *s != session);
                     json!({"ok": true, "result": {}})
                 } else if ended.contains(&session) {
-                    json!({"ok": false, "error": format!("session has ended; tool call '{name}' was rejected")})
+                    json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": format!("session '{session}' has ended; call start_session")}], "structuredContent": {"status": "refused", "refusal": {"code": "session_ended", "message": "ended"}}}})
                 } else if name == "end_session" {
                     ended.push(session);
                     json!({"ok": true, "result": {}})

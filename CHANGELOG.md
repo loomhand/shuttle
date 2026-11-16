@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **The desk and `computer_act` start a session again when a newer cua-driver refuses a call on an ended one.** cua-driver 0.50 and later answer a call on an ended session with a `session_ended` refusal in place of the "session has ended" error that the desk and `computer_act` matched, so on macOS and Windows a session the driver had ended, as after `computer_act` `end` or an idle sweep, stayed ended and every later call failed. Both now read either form, so the bundled driver and a newer one behave the same. A `computer_act` error that tells the model to call `get_window_state`, as a newer driver's refusal of a stale element token does, names `computer_state`, the tool the model has. Cost: none.
+
 - **`gui_plan`: a password erased from a terminal that redraws late is reported as erased (#476).** After a secret line that a terminal showed was erased, the window was read back once it held still, and when that read still showed part of the password the step stopped with "…and it could not be erased: clear it by hand", although the terminal finished redrawing a moment later and was clean: 7 of 64 runs into xfce4-terminal on a Linux desk with foreground input. A read-back that does not yet match is now read again for up to 1 s, within the plan's deadline, before the step says so, and a read-back that turns unreadable meanwhile keeps the last readable verdict; the password is still never submitted, and a password that stays on screen is still reported as not erased. Cost: none when the erase reads back at once; up to about 1 s more, plus one read, before a stop that reports the password still on screen.
 
 ## 0.1.57 - 2026-11-16
