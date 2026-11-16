@@ -168,6 +168,28 @@ test('a DOM id search reads four ids at once and takes the first control in orde
   assert.equal(most, 4)
 })
 
+test('a DOM id that the first candidate has is read alone, with no batch after it', async (t) => {
+  const els = [{ id: '7/9', role: 'button', name: 'Go', dom_id: 'x' }, ...Array.from({ length: 8 }, (_, k) => ({ id: `7/${k + 10}`, role: 'button', name: `Other ${k}`, dom_id: k === 0 ? 'b' : `d${k}` }))]
+  const win = { id: '7/1', title: 'Form - Browser', role: 'window', pid: 7, active: true, app: 'Browser' }
+  const pressed: unknown[] = []
+  const read: unknown[] = []
+  await daemon(t, async ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: '7/1', parent: -1, depth: 0, role: 'window', name: win.title, states: ['showing'] }, { ref: 1, id: '7/2', parent: 0, depth: 1, role: 'document', name: '', states: ['showing'] }, ...els.map((e, i) => ({ ref: i + 2, parent: 1, depth: 2, bounds: [100 * i, 200, 80, 20], states: ['showing'], ...e }))] })
+    if (tool === 'desk_read' && args.id === '7/2') return JSON.stringify({ ref: 0, id: '7/2', role: 'document', name: '', states: [], url: 'https://shop.test/form' })
+    if (tool === 'desk_read') {
+      read.push(args.id)
+      return JSON.stringify({ ref: 0, states: ['showing'], ...els.find((x) => x.id === args.id) })
+    }
+    if (tool === 'desk_press') pressed.push(args.id)
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ click: 'Go', role: 'button', web: { url: 'https://shop.test/form', id: 'b' } }] })
+  assert.equal(r.ok, true, JSON.stringify(r).slice(0, 300))
+  assert.deepEqual(pressed, ['7/10'])
+  assert.deepEqual(read, ['7/9', '7/10'])
+})
+
 test('a DOM id finds its row among a hundred same-named controls', async (t) => {
   const rows = Array.from({ length: 100 }, (_, i) => ({ id: `7/${i + 10}`, role: 'button', name: 'Delete', dom_id: `delete${i}` }))
   const calls = await browser(t, { url: () => 'https://shop.test/admin', els: rows })

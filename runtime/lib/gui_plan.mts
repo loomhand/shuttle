@@ -961,7 +961,8 @@ async function byDom(nodes: Node[], id: string, hit: Hit | null, target: string,
   const t = norm(target)
   const named = all.filter(({ n }) => norm(n.name) === t)
   const pool = [...named, ...all.filter(({ n }) => norm(n.name) !== t).slice(0, DOM_READS)]
-  for (let k = 0; k < pool.length; k += READS_AT_ONCE) {
+  if (pool[0] && await idOf(pool[0].n) === id) return { ...pool[0], how: 'dom' }
+  for (let k = 1; k < pool.length; k += READS_AT_ONCE) {
     const part = pool.slice(k, k + READS_AT_ONCE)
     const c = part[(await Promise.all(part.map((x) => idOf(x.n)))).indexOf(id)]
     if (c) return { ...c, how: 'dom' }
