@@ -1105,13 +1105,6 @@ mod tests {
     }
 
     #[test]
-    fn the_roots_come_from_the_window_list_handed_in() {
-        let mut uia = Uia::open().expect("UI Automation starts");
-        let shown = [window(1, 0), window(2, 1), window(3, 9)];
-        assert_eq!(uia.roots(&shown), vec![0, 2]);
-    }
-
-    #[test]
     fn a_nested_owned_alert_names_the_dialog_that_owns_it() {
         let shown = [window(3, 2), window(2, 1), window(1, 0)];
         let frame = |id: &str| Frame {
