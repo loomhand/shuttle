@@ -1375,7 +1375,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const vo = v && v.title !== w?.title ? await outline(v, {}, blank?.kept) : o
     if (v && w && v.id === w.id && !isDialog(vo)) known.add(v.title)
     if (sub && w) { rec.submit = true; await submit(w, true) } else if (v && isDialog(vo) && await closed(v.title, v.pid)) rec.submit = true
-    if (dialog && w && !secure(s)) {
+    if (dialog && w && !secure(s) && (isDialog(o) || !o.startsWith('- '))) {
       const want = s.type.slice(0, 30).replace(/\\/g, '\\\\').replace(/"/g, '\\"'); let after = ''
       for (let k = 0; k < 5; k++) { after = await outline(w); if (!isDialog(after) || after.split('\n').some((l) => /^\s*- (textbox|searchbox|combobox|spinbutton)\b.*: ".*/.test(l) && l.includes(want))) return; await sleep(40) }
       throw new Surprise(`"${s.type}" reached no text field of "${w.title}" (Tab can land on a button): fill the field with {set: label, value}`, await seen())
