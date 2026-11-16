@@ -177,6 +177,8 @@ impl Ax {
             let name = name
                 .and_then(|v| v.downcast::<CFString>())
                 .map(|s| s.to_string());
+            let bundle = bundle_stem(p)
+                .filter(|b| name.as_deref().is_none_or(|n| !n.eq_ignore_ascii_case(b)));
             let front = boolean(front).unwrap_or(false);
             if front {
                 answered.get_or_insert(p as u32);
@@ -214,6 +216,7 @@ impl Ax {
                         pid: Some(p as u32),
                         active,
                         app: name.clone(),
+                        bundle: bundle.clone(),
                         owner: Some(parent.map_or_else(|| owner.clone(), |at| ids[at].clone())),
                         ..Frame::default()
                     });
@@ -236,6 +239,7 @@ impl Ax {
                     pid: Some(p as u32),
                     active,
                     app: name.clone(),
+                    bundle: bundle.clone(),
                     hidden: !shows(&bounds, frame),
                     number,
                     bounds: frame.map(|f| f.map(|v| (v * scale).round() as i32)),

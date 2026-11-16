@@ -24,6 +24,26 @@ test('an app step finds a running app by the app its windows name, whatever thei
   assert.ok(!calls.includes('desk_launch'), calls.join(' '))
 })
 
+test('an app step finds a running app by the bundle its localized windows come from', async (t) => {
+  const doc = { id: '1', title: '未命名', role: 'window', pid: process.pid, active: false, app: '文本编辑', bundle: 'TextEdit' }
+  const calls: string[] = []
+  await daemon(t, ({ tool, args }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify([doc])
+    if (tool === 'desk_focus') {
+      if (args.window !== doc.title) return { text: `no window "${String(args.window)}"`, error: true }
+      doc.active = true
+      return JSON.stringify({ ok: true, title: doc.title, pid: doc.pid })
+    }
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: doc, nodes: [], truncated: false })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'TextEdit' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.window, '未命名')
+  assert.ok(!calls.includes('desk_launch'), calls.join(' '))
+})
+
 test('an app step takes the window a launch raised, whatever its app and title are called', async (t) => {
   const term = { id: '1', title: 'Terminal - user@box: ~', role: 'window', pid: process.pid, active: false, app: 'xfce4-terminal' }
   const calls: string[] = []

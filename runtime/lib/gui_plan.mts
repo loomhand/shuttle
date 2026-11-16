@@ -1305,7 +1305,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const app = norm(s.app)
     const pkg = !s.title && ANDROID_PACKAGE.test(s.app)
     const titled = (w: Win) => pkg ? w.title === s.app || w.title.endsWith(` - ${s.app}`) : worded(w.title, name)
-    const named = (w: Win) => !s.title && !!w.app && worded(w.app, app)
+    const named = (w: Win) => !s.title && [w.app, w.bundle].some((a) => !!a && worded(a, app))
     const own = (w: Win) => titled(w) || (word && (ownedBy(w.pid, name) || entries.some((e) => worded(w.title, e))))
     const mine = (ws: Win[]) => [...ws.filter(named), ...ws.filter(own)]
     let started: Awaited<ReturnType<typeof desk.launch>> | undefined

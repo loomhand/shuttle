@@ -57,6 +57,8 @@ pub struct Frame {
     pub active: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<String>,
     /// The frame that owns this one: the window of a macOS sheet, the owner window of a Windows dialog.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
