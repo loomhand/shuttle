@@ -67,7 +67,7 @@ test('a shown match in a tree without bounds, as GTK 4 gives, is clicked without
 
 test('the step after a click, and the end of the plan, take the window list the click settled on instead of listing the windows again', async (t) => {
   const { lists, tools } = await twoClicks(t)
-  assert.deepEqual(lists, [1, 2], tools.join(' '))
+  assert.deepEqual(lists, [1, 1], tools.join(' '))
 })
 
 test('the step after a settle lists the windows again when another daemon call came after the settle', async (t) => {
@@ -134,3 +134,20 @@ async function twoClicks(t: TestContext, o: { after?: string; handoff?: boolean 
   const count = (x: string[]) => x.filter((y) => y === 'desk_windows').length
   return { lists: [count(tools.slice(first + 1, second)), count(tools.slice(second + 1))], tools }
 }
+
+test('a dialog that opens half a second after the last step still stops the plan at its end', async (t) => {
+  const doc = { id: '1', title: 'Untitled - Editor', role: 'window', pid: process.pid, active: true }
+  const dialog = { id: '2', title: 'Confirm', role: 'dialog', pid: process.pid, active: true }
+  const nodes = [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }, { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'Go', states: ['showing'] }]
+  let opened = Infinity
+  await daemon(t, ({ tool }) => {
+    const open = Date.now() > opened
+    const ws = open ? [dialog, { ...doc, active: false }] : [doc]
+    if (tool === 'desk_windows') return JSON.stringify(ws)
+    if (tool === 'desk_snapshot') return JSON.stringify(open ? { window: dialog, truncated: false, nodes: [{ ref: 0, id: '2/1', parent: -1, depth: 0, role: 'dialog', name: 'Confirm', states: ['showing'] }] } : { window: doc, truncated: false, nodes })
+    if (tool === 'desk_press') { opened = Date.now() + 500; return JSON.stringify({ ok: true, how: 'action' }) }
+    return '{"ok":true}'
+  })
+  const r = await plan({ steps: [{ click: 'Go' }] })
+  assert.equal(r.escalate?.reason, 'the plan ended with "Confirm" still in front', JSON.stringify(r))
+})

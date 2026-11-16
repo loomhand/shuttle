@@ -244,7 +244,7 @@ test('a background step that fell back to the foreground leaves the end of the p
   assert.equal(r.ok, true, JSON.stringify(r))
   const pressed = calls.findIndex((c) => c.tool === 'desk_press')
   assert.ok(pressed >= 0, tools(calls).join('\n'))
-  assert.equal(calls.slice(pressed + 1).filter((c) => c.tool === 'desk_windows').length, 3, tools(calls).join('\n'))
+  assert.equal(calls.slice(pressed + 1).filter((c) => c.tool === 'desk_windows').length, 2, tools(calls).join('\n'))
 })
 
 test('a password auto cannot see in its field is never typed again in the foreground', async (t) => {

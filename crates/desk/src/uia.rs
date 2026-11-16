@@ -249,18 +249,16 @@ impl Uia {
         self.tops.get(&key)
     }
 
-    fn roots(&mut self) -> (Vec<Shown>, Vec<usize>) {
-        let shown = shown();
+    fn roots(&mut self, shown: &[Shown]) -> Vec<usize> {
         let listed = |h: &isize| shown.iter().any(|s| s.hwnd.0 as isize == *h);
         self.tops.retain(|h, _| listed(h));
         lock(&LAST).retain(|h, _| listed(h));
-        let roots = (0..shown.len())
+        (0..shown.len())
             .filter(|&i| {
                 let owner = shown[i].owner;
                 owner == 0 || !shown.iter().any(|o| o.hwnd.0 as isize == owner)
             })
-            .collect();
-        (shown, roots)
+            .collect()
     }
 
     fn owns_dialog(&mut self, hwnd: isize, shown: &[Shown]) -> bool {
@@ -332,7 +330,8 @@ impl Access for Uia {
 
     fn frames(&mut self) -> Result<Vec<Frame>, String> {
         let front = foreground();
-        let (shown, roots) = self.roots();
+        let shown = shown();
+        let roots = self.roots(&shown);
         let (mut frames, mut answered) = (Vec::new(), HashMap::new());
         for i in roots {
             let Some(top) = self.frame_of(&shown[i], front, &mut answered) else {
@@ -391,7 +390,8 @@ impl Access for Uia {
         let mut truncated = self.walk(&cached, &kids, None, 0, extras, &mut nodes)?;
         let walked = started.elapsed().as_micros() - fetched;
         if !truncated {
-            let (shown, roots) = self.roots();
+            let shown = self.shown.clone();
+            let roots = self.roots(&shown);
             let mut menus = Vec::new();
             for i in roots
                 .into_iter()
@@ -594,6 +594,7 @@ struct Top {
     el: IUIAutomationElement,
 }
 
+#[derive(Clone)]
 struct Shown {
     hwnd: HWND,
     owner: isize,

@@ -86,3 +86,20 @@ test('a foreground multi-line type names its window past a dialog it owns that h
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(typed, [{ text: 'a\nb', window: 'Doc', pid: process.pid }])
 })
+
+for (const role of ['window', 'dialog']) {
+  test(`a one-line type into a ${role} of an app with another window reads the ${role} again after typing only when it is a dialog`, async (t) => {
+    let snaps = 0
+    await daemon(t, ({ tool }) => {
+      if (tool === 'desk_windows') return JSON.stringify([doc, { ...doc, id: '1/7', title: 'Find', active: false }])
+      if (tool === 'desk_snapshot') {
+        snaps += 1
+        return JSON.stringify({ window: doc, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role, name: 'Doc', states: ['showing'] }, { ref: 1, id: '1/8', parent: 0, depth: 1, role: 'textbox', name: 'Name', value: 'a', states: ['showing', 'focused'] }] })
+      }
+      return '{"ok":true}'
+    })
+    const r = await main({ steps: [{ type: 'a' }] })
+    assert.equal(r.ok, true, JSON.stringify(r))
+    assert.equal(snaps, role === 'dialog' ? 3 : 2)
+  })
+}

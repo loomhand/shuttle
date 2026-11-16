@@ -196,7 +196,9 @@ async function perform(p: Params): Promise<Result> {
   const vetted = new Set<string>()
   const startTitles = new Set(known)
   const start = frontOf(ws0); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
-  const startAlert = !start?.title.trim() && isAlert(await outline(start))
+  const startRead = start && !start.title.trim() ? await look(start) : null
+  const startAlert = !!startRead && isAlert(startRead.text)
+  const startKept = start && startRead?.snap && startRead.nodes ? { id: start.id, snap: startRead.snap, nodes: startRead.nodes } : undefined
   const recs: Rec[] = []; const tops: (string | undefined)[] = []
   let escalate: Escalation | null = null; let done = plan.length; let diverged = false; let lastWs = ws0
   if (held && !held.dirty) putPending({ ...held, dirty: true })
@@ -223,7 +225,7 @@ async function perform(p: Params): Promise<Result> {
       const m = s.close ? null : await hiddenModal(ws, f)
       if (m) throw new Surprise(modalBlocks(m), await seen())
       const r = reads(s)
-      const pre = f && (!known.has(f.title) || !f.title.trim()) && !vetted.has(`${f.id} ${f.pid} ${f.title}`) && !(i === (p.start ?? 0) && startAlert) && !(s.window && norm(f.title).includes(norm(s.window))) && !(s.wait && f.role !== 'alert' && awaited(f.title, s.wait, s.seen)) ? await look(f, r) : null
+      const pre = f && (!known.has(f.title) || !f.title.trim()) && !vetted.has(`${f.id} ${f.pid} ${f.title}`) && !(i === (p.start ?? 0) && startAlert) && !(s.window && norm(f.title).includes(norm(s.window))) && !(s.wait && f.role !== 'alert' && awaited(f.title, s.wait, s.seen)) ? await look(f, r, f === start ? startKept : undefined) : null
       const o = pre?.text ?? ''
       if (f && blocked(o)) throw new Surprise(unanswered(f.title), await seen())
       if (f && (isAlert(o) || (pre && f.role === 'alert'))) throw new Surprise(`alert "${f.title}" is in front`, await seen())
@@ -271,8 +273,8 @@ async function perform(p: Params): Promise<Result> {
     const ts = Date.now(); let { ws } = await afterSettle(); const front = frontOf(ws); const was = front?.title
     const inert = (last.type !== undefined && !last.type.includes('\n')) || (last.key !== undefined && (INERT_KEY.test(last.key) || (ARROW_KEY.test(last.key) && front?.role === 'window')))
     if ((last.key || last.type !== undefined || last.click) && !recs.at(-1)?.submit && !inert) {
-      await until((ws) => frontOf(ws)?.title !== was, 480, ws)
-      await sleep(80); ws = await desk.windows()
+      ws = await until((ws) => frontOf(ws)?.title !== was, 560, ws)
+      if (frontOf(ws)?.title !== was) { await sleep(80); ws = await desk.windows() }
     }
     const acted = !!(last.click || last.check || last.set || last.menu || last.key || last.close || last.type !== undefined)
     const f = frontOf(ws); end = f; const o = f && (acted || f.role !== 'window') ? await outline(f) : ''
@@ -688,7 +690,7 @@ function gtkToggle(pid: number, label: string): boolean | null {
   } catch { return null } finally { tick('state', t0) }
 }
 
-async function windowFor(want: string | undefined, ms = 3000, saw?: string): Promise<Win> {
+async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept?: Kept): Promise<Win> {
   const t0 = Date.now()
   if (!want) {
     const ws = await current(); let w = frontOf(ws)
@@ -696,7 +698,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string): Pro
     const [plan, ...twins] = !w && lastSeen ? ws.filter((x) => x.title === lastSeen) : []
     if (plan && !twins.length) { w = plan; await desk.focus(w.title, w.pid) }
     // an untitled focused window that is no alert (a completion popup) leaves the step in the window the plan was in
-    if (w && !w.title.trim() && lastSeen && !isAlert(await outline(w))) { const pid = w.pid; w = ws.find((x) => x.title === lastSeen && x.pid === pid) ?? w }
+    if (w && !w.title.trim() && lastSeen && (kept?.id === w.id || !isAlert(await outline(w)))) { const pid = w.pid; w = ws.find((x) => x.title === lastSeen && x.pid === pid) ?? w }
     tick('wait', t0); if (!w) throw new Surprise(NO_FRONT, {}, true); return w
   }
   const end = Date.now() + ms; let asked: string | null = null; let many = 0
@@ -959,7 +961,12 @@ async function byDom(nodes: Node[], id: string, hit: Hit | null, target: string,
   const t = norm(target)
   const named = all.filter(({ n }) => norm(n.name) === t)
   const pool = [...named, ...all.filter(({ n }) => norm(n.name) !== t).slice(0, DOM_READS)]
-  for (const c of pool) if (await idOf(c.n) === id) return { ...c, how: 'dom' }
+  if (pool[0] && await idOf(pool[0].n) === id) return { ...pool[0], how: 'dom' }
+  for (let k = 1; k < pool.length; k += READS_AT_ONCE) {
+    const part = pool.slice(k, k + READS_AT_ONCE)
+    const c = part[(await Promise.all(part.map((x) => idOf(x.n)))).indexOf(id)]
+    if (c) return { ...c, how: 'dom' }
+  }
   return hit
 }
 
@@ -1375,7 +1382,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const vo = v && v.title !== w?.title ? await outline(v, {}, blank?.kept) : o
     if (v && w && v.id === w.id && !isDialog(vo)) known.add(v.title)
     if (sub && w) { rec.submit = true; await submit(w, true) } else if (v && isDialog(vo) && await closed(v.title, v.pid)) rec.submit = true
-    if (dialog && w && !secure(s)) {
+    if (dialog && w && !secure(s) && (isDialog(o) || !o.startsWith('- '))) {
       const want = s.type.slice(0, 30).replace(/\\/g, '\\\\').replace(/"/g, '\\"'); let after = ''
       for (let k = 0; k < 5; k++) { after = await outline(w); if (!isDialog(after) || after.split('\n').some((l) => /^\s*- (textbox|searchbox|combobox|spinbutton)\b.*: ".*/.test(l) && l.includes(want))) return; await sleep(40) }
       throw new Surprise(`"${s.type}" reached no text field of "${w.title}" (Tab can land on a button): fill the field with {set: label, value}`, await seen())
@@ -1415,7 +1422,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     tick('act', t0); if (!await closed(title, pid)) throw new Surprise(`"${title}" is still open after Escape and a close`, await seen())
     return
   }
-  const w = await windowFor(s.window, 3000, s.seen)
+  const w = await windowFor(s.window, 3000, s.seen, kept)
   rec.seen = w.title; if (w.title.trim()) lastSeen = w.title
   let t0 = Date.now(); let tree: Tree
   const r = reads(s)

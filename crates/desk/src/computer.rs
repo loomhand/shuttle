@@ -1406,6 +1406,8 @@ impl Computer {
             desktop = true;
         } else if clicks {
             return Err(format!("{} needs element or x and y", a.action));
+        } else if self.os != Os::Linux && !a.foreground && tool != "scroll" && tool != "type_text" {
+            desktop = true;
         } else if let Some((pid, window_id)) = self.key_window(session).await? {
             if tool != "scroll" && !a.foreground && self.keyboard(pid, window_id) {
                 desktop = true;
@@ -4242,9 +4244,12 @@ mod tests {
         let listener = Fake::bind(&socket).unwrap();
         let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
         let log = std::sync::Arc::clone(&sent);
+        let lists = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let listed = std::sync::Arc::clone(&lists);
         let driver = tokio::spawn(listener.serve(move |req| {
                 match req["name"].as_str().unwrap_or_default() {
                     "list_windows" => {
+                        listed.fetch_add(1, Ordering::SeqCst);
                         json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Notepad.exe", "title": "notes", "bounds": {"x": 0, "y": 0, "width": 800, "height": 600}, "z_index": 1}]}}})
                     }
                     "press_key" | "type_text" => {
@@ -4258,6 +4263,7 @@ mod tests {
         cua.act(json!({"action": "key", "key": "escape"}))
             .await
             .unwrap();
+        assert_eq!(lists.load(Ordering::SeqCst), 0);
         cua.act(json!({"action": "type", "text": "hi"}))
             .await
             .unwrap();
