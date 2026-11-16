@@ -19,6 +19,7 @@ pub const CAPTURE_SESSION: &str = "desk-capture";
 pub(crate) const CLICK_SPACING: Duration = Duration::from_millis(500);
 pub(crate) const CONNECT_RETRY: Duration = Duration::from_millis(250);
 pub(crate) const ENDED: &str = "session has ended";
+const ENDED_CODE: &str = "session_ended";
 pub(crate) const ACTUAL_FRONT: &str = "; actual foreground window ";
 pub(crate) const INPUT_TOOLS: [&str; 9] = [
     "click",
@@ -345,6 +346,11 @@ pub(crate) fn user_input_since(seconds: f64) {
     USER_SINCE.with(|s| s.set(seconds));
 }
 
+pub(crate) fn ended(reply: &Value) -> bool {
+    reply["error"].as_str().is_some_and(|e| e.contains(ENDED))
+        || reply["result"]["structuredContent"]["refusal"]["code"] == ENDED_CODE
+}
+
 fn result(tool: &str, reply: &str) -> Result<Value, String> {
     let mut v: Value =
         serde_json::from_str(reply).map_err(|e| format!("decode cua-driver reply: {e}"))?;
@@ -365,6 +371,9 @@ fn result(tool: &str, reply: &str) -> Result<Value, String> {
         }
     }
     if out["isError"] == true {
+        if out["structuredContent"]["refusal"]["code"] == ENDED_CODE {
+            return Err(format!("{tool}: {ENDED}"));
+        }
         let text = text_of(&out);
         let text = text.split_once(NEXT_HINT).map_or(text.as_str(), |(t, _)| t);
         let mut e = match out["structuredContent"]["reason"].as_str() {
@@ -637,41 +646,44 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn the_first_call_starts_a_desktop_session_and_an_ended_one_starts_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cua.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let ok = b"{\"ok\":true,\"result\":{\"structuredContent\":{\"width\":1280}}}\n";
-        let ended =
+        let old: &'static [u8] =
             b"{\"ok\":false,\"error\":\"session has ended; tool call 'press_key' was rejected\"}\n";
-        let daemon = tokio::spawn(async move {
-            let mut lines = Vec::new();
-            for i in 0..5 {
-                let (s, _) = listener.accept().await.unwrap();
-                let mut s = BufReader::new(s);
-                let mut line = String::new();
-                s.read_line(&mut line).await.unwrap();
-                let reply: &[u8] = if i == 2 { ended } else { ok };
-                s.get_mut().write_all(reply).await.unwrap();
-                lines.push(serde_json::from_str::<Value>(&line).unwrap());
-            }
-            lines
-        });
-        let d = Driver::new(socket.to_string_lossy().into_owned());
-        let got = d.call("get_screen_size", json!({})).await.unwrap();
-        assert_eq!(got["structuredContent"]["width"], 1280);
-        d.call("press_key", json!({"key": "a"})).await.unwrap();
-        let lines = daemon.await.unwrap();
-        assert!(lines.iter().all(|l| l["args"]["session"] == SESSION));
-        assert_eq!(
-            lines.iter().map(|l| &l["name"]).collect::<Vec<_>>(),
-            [
-                "start_session",
-                "get_screen_size",
-                "press_key",
-                "start_session",
-                "press_key"
-            ]
-        );
+        let refused: &'static [u8] = b"{\"ok\":true,\"result\":{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":\"session 'desk' has ended; call start_session to begin a new one\"}],\"structuredContent\":{\"status\":\"refused\",\"refusal\":{\"code\":\"session_ended\",\"message\":\"session 'desk' has ended\"}}}}\n";
+        for ended in [old, refused] {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("cua.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let ok = b"{\"ok\":true,\"result\":{\"structuredContent\":{\"width\":1280}}}\n";
+            let daemon = tokio::spawn(async move {
+                let mut lines = Vec::new();
+                for i in 0..5 {
+                    let (s, _) = listener.accept().await.unwrap();
+                    let mut s = BufReader::new(s);
+                    let mut line = String::new();
+                    s.read_line(&mut line).await.unwrap();
+                    let reply: &[u8] = if i == 2 { ended } else { ok };
+                    s.get_mut().write_all(reply).await.unwrap();
+                    lines.push(serde_json::from_str::<Value>(&line).unwrap());
+                }
+                lines
+            });
+            let d = Driver::new(socket.to_string_lossy().into_owned());
+            let got = d.call("get_screen_size", json!({})).await.unwrap();
+            assert_eq!(got["structuredContent"]["width"], 1280);
+            d.call("press_key", json!({"key": "a"})).await.unwrap();
+            let lines = daemon.await.unwrap();
+            assert!(lines.iter().all(|l| l["args"]["session"] == SESSION));
+            assert_eq!(
+                lines.iter().map(|l| &l["name"]).collect::<Vec<_>>(),
+                [
+                    "start_session",
+                    "get_screen_size",
+                    "press_key",
+                    "start_session",
+                    "press_key"
+                ]
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]
