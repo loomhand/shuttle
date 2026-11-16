@@ -48,6 +48,17 @@ test('a foreground multi-line type into an untitled focused window names none of
   assert.deepEqual(typed, [{ text: 'a\nb' }])
 })
 
+test('a foreground multi-line type on an Android device names no window, so a text that starts with a line break keeps the read of the focused field before its Return', async (t) => {
+  const desk = 'android'
+  process.env.SHUTTLE_DESK = desk
+  const android = ((await import(`../lib/gui_plan.mts?${desk}`)) as { main: typeof main }).main
+  delete process.env.SHUTTLE_DESK
+  const typed = await plan(t)
+  const r = await android({ steps: [{ type: '\nbody' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(typed, [{ text: '\nbody' }])
+})
+
 test('a foreground multi-line type on Linux names no window, since the driver may list another pid for it', { skip: process.platform !== 'linux' }, async (t) => {
   const typed = await plan(t)
   const r = await main({ steps: [{ type: 'a\nb' }] })

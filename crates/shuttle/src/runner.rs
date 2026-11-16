@@ -31,6 +31,7 @@ pub struct Runner {
     flows: PathBuf,
     key_vars: Vec<String>,
     input: &'static str,
+    android: bool,
     stop: watch::Sender<bool>,
 }
 
@@ -49,6 +50,7 @@ impl Runner {
             flows,
             key_vars,
             input: "foreground",
+            android: false,
             stop: watch::Sender::new(false),
         }
     }
@@ -56,6 +58,11 @@ impl Runner {
     /// Runs with `SHUTTLE_INPUT` set to `mode`: `background` and `auto` make `gui_plan` drive its target window without fronting it.
     pub fn input(mut self, mode: &'static str) -> Self {
         self.input = mode;
+        self
+    }
+
+    pub fn android(mut self, on: bool) -> Self {
+        self.android = on;
         self
     }
 
@@ -171,6 +178,10 @@ impl Runner {
             .env("SHUTTLE_FLOWS", &self.flows)
             .env("SHUTTLE_AGENT", agent)
             .env("SHUTTLE_INPUT", self.input)
+            .env(
+                "SHUTTLE_DESK",
+                if self.android { "android" } else { "native" },
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -384,6 +395,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(report["result"], "background", "{report}");
+    }
+
+    #[tokio::test]
+    async fn a_run_knows_whether_the_desk_drives_an_android_device() {
+        let dir = tempfile::tempdir().unwrap();
+        let code = "export function main() { return process.env.SHUTTLE_DESK }";
+        for (on, want) in [(false, "native"), (true, "android")] {
+            let report = runner(dir.path())
+                .android(on)
+                .script(json!({"code": code}), "run-test")
+                .await
+                .unwrap();
+            assert_eq!(report["result"], want, "{report}");
+        }
     }
 
     #[tokio::test]

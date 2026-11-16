@@ -51,6 +51,7 @@ type Trace = { i: number; op?: string; how?: string; input?: 'foreground'; ms?: 
 const OS = process.platform
 const BEHIND = process.env.SHUTTLE_INPUT === 'background' || process.env.SHUTTLE_INPUT === 'auto'
 const AUTO = process.env.SHUTTLE_INPUT === 'auto'
+const ANDROID = process.env.SHUTTLE_DESK === 'android'
 const FG: desk.Target = AUTO ? { delivery_mode: 'foreground' } : {}
 const NO_PIXELS = 'background gui_plan does not read the screen, which shows whatever covers the plan\'s window'
 const NO_FRONT = 'no focused window'
@@ -466,7 +467,7 @@ function at(w: Win | null): desk.Target {
   return { window: to.title, pid: to.pid }
 }
 function lined(w: Win | null, ws: Win[], text: string): desk.Target {
-  if (BG || OS === 'linux' || !w?.active || !/\n[^]/.test(text)) return at(w)
+  if (BG || ANDROID || OS === 'linux' || !w?.active || !/\n[^]/.test(text)) return at(w)
   let x = w
   for (let o = OS === 'darwin' ? x.owner : undefined; o; o = x.owner) { const up = ws.find((y) => y.id === o); if (!up) break; x = up }
   const to = x
