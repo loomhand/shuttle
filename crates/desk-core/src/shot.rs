@@ -11,6 +11,19 @@ pub fn png_size(png: &[u8]) -> Option<(u32, u32)> {
     Some((size(16)?, size(20)?))
 }
 
+pub fn covers_whole(png: &[u8], [x, y, w, h]: [f64; 4], factor: f64) -> bool {
+    let Some((width, height)) = png_size(png) else {
+        return false;
+    };
+    let clip = |v: f64, max: u32| (v * factor).floor().clamp(0.0, f64::from(max)) as u32;
+    (
+        clip(x, width),
+        clip(y, height),
+        clip(x + w, width),
+        clip(y + h, height),
+    ) == (0, 0, width, height)
+}
+
 /// A crop of the screen rectangle `[x, y, w, h]` from a screenshot scaled by `factor`, as `(width, height, PNG)`.
 pub fn crop_png(
     png: &[u8],
@@ -125,6 +138,26 @@ mod tests {
             crop_png(&png, [0.0, 0.0, f64::MAX / 4.0, f64::MAX / 4.0], 1.0, None).unwrap();
         assert_eq!((w, h), (4, 2));
         assert!(crop_png(&png, [100.0, 0.0, 4.0, 4.0], 1.0, None).is_err());
+    }
+
+    #[test]
+    fn a_rectangle_covers_the_whole_screenshot_only_when_it_spans_every_pixel() {
+        let mut png = Vec::new();
+        let mut enc = png::Encoder::new(&mut png, 4, 2);
+        enc.set_color(png::ColorType::Rgba);
+        enc.write_header()
+            .unwrap()
+            .write_image_data(&[200; 4 * 2 * 4])
+            .unwrap();
+        assert!(covers_whole(
+            &png,
+            [0.0, 0.0, f64::MAX / 4.0, f64::MAX / 4.0],
+            1.0
+        ));
+        assert!(covers_whole(&png, [0.0, 0.0, 8.0, 4.0], 0.5));
+        assert!(!covers_whole(&png, [1.0, 0.0, 4.0, 2.0], 1.0));
+        assert!(!covers_whole(&png, [0.0, 0.0, 4.0, 1.0], 1.0));
+        assert!(!covers_whole(b"not a png", [0.0, 0.0, 4.0, 2.0], 1.0));
     }
 
     #[test]
