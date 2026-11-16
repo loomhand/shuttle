@@ -587,7 +587,7 @@ async function echoed(w: Win, line: string, shown: Map<string, Text> | null) {
       return { read, back: read && [...after].every(([id, t]) => { const was = before?.get(id); return same(flat(t.value).trimEnd(), cut(flat(was?.value)).trimEnd(), !!was && !!(t.cut || was.cut)) }) }
     }
     let { read, back } = judge(sent && before ? await settled(w) : null)
-    for (const end = Date.now() + ERASE_WAIT; read && !back && Date.now() < end; await sleep(VERIFY_POLL)) ({ read, back } = judge(await settled(w)))
+    for (const end = Math.min(Date.now() + ERASE_WAIT, deadline); read && !back && Date.now() < end;) { await sleep(VERIFY_POLL); const next = judge(await settled(w)); if (!next.read) break; ({ read, back } = next) }
     if (sent) left = !read ? 'Backspace was sent over it, unchecked' : back ? 'and it was erased' : left
   } catch {}
   return new Surprise(`the password showed in "${w.title}", so it was not submitted, ${left}`, { window: w.title })

@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **`gui_plan`: a password erased from a terminal that redraws late is reported as erased (#476).** After a secret line that a terminal showed was erased, the window was read back once it held still, and when that read still showed part of the password the step stopped with "…and it could not be erased: clear it by hand", although the terminal finished redrawing a moment later and was clean: 7 of 64 runs into xfce4-terminal on a Linux desk with foreground input. A read-back that does not yet match is now read again for up to 1 s before the step says so; the password is still never submitted, and a password that stays on screen is still reported as not erased. Cost: none when the erase reads back at once; up to 1 s more before a stop that reports the password still on screen.
+- **`gui_plan`: a password erased from a terminal that redraws late is reported as erased (#476).** After a secret line that a terminal showed was erased, the window was read back once it held still, and when that read still showed part of the password the step stopped with "…and it could not be erased: clear it by hand", although the terminal finished redrawing a moment later and was clean: 7 of 64 runs into xfce4-terminal on a Linux desk with foreground input. A read-back that does not yet match is now read again for up to 1 s, within the plan's deadline, before the step says so, and a read-back that turns unreadable meanwhile keeps the last readable verdict; the password is still never submitted, and a password that stays on screen is still reported as not erased. Cost: none when the erase reads back at once; up to about 1 s more, plus one read, before a stop that reports the password still on screen.
 
 ## 0.1.57 - 2026-11-16
 
