@@ -197,7 +197,9 @@ async function perform(p: Params): Promise<Result> {
   const vetted = new Set<string>()
   const startTitles = new Set(known)
   const start = frontOf(ws0); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
-  const startAlert = !start?.title.trim() && isAlert(await outline(start))
+  const startRead = start && !start.title.trim() ? await look(start) : null
+  const startAlert = !!startRead && isAlert(startRead.text)
+  const startKept = start && startRead?.snap && startRead.nodes ? { id: start.id, snap: startRead.snap, nodes: startRead.nodes } : undefined
   const recs: Rec[] = []; const tops: (string | undefined)[] = []
   let escalate: Escalation | null = null; let done = plan.length; let diverged = false; let lastWs = ws0
   if (held && !held.dirty) putPending({ ...held, dirty: true })
@@ -224,7 +226,7 @@ async function perform(p: Params): Promise<Result> {
       const m = s.close ? null : await hiddenModal(ws, f)
       if (m) throw new Surprise(modalBlocks(m), await seen())
       const r = reads(s)
-      const pre = f && (!known.has(f.title) || !f.title.trim()) && !vetted.has(`${f.id} ${f.pid} ${f.title}`) && !(i === (p.start ?? 0) && startAlert) && !(s.window && norm(f.title).includes(norm(s.window))) && !(s.wait && f.role !== 'alert' && awaited(f.title, s.wait, s.seen)) ? await look(f, r) : null
+      const pre = f && (!known.has(f.title) || !f.title.trim()) && !vetted.has(`${f.id} ${f.pid} ${f.title}`) && !(i === (p.start ?? 0) && startAlert) && !(s.window && norm(f.title).includes(norm(s.window))) && !(s.wait && f.role !== 'alert' && awaited(f.title, s.wait, s.seen)) ? await look(f, r, f === start ? startKept : undefined) : null
       const o = pre?.text ?? ''
       if (f && blocked(o)) throw new Surprise(unanswered(f.title), await seen())
       if (f && (isAlert(o) || (pre && f.role === 'alert'))) throw new Surprise(`alert "${f.title}" is in front`, await seen())
@@ -689,7 +691,7 @@ function gtkToggle(pid: number, label: string): boolean | null {
   } catch { return null } finally { tick('state', t0) }
 }
 
-async function windowFor(want: string | undefined, ms = 3000, saw?: string): Promise<Win> {
+async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept?: Kept): Promise<Win> {
   const t0 = Date.now()
   if (!want) {
     const ws = await current(); let w = frontOf(ws)
@@ -697,7 +699,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string): Pro
     const [plan, ...twins] = !w && lastSeen ? ws.filter((x) => x.title === lastSeen) : []
     if (plan && !twins.length) { w = plan; await desk.focus(w.title, w.pid) }
     // an untitled focused window that is no alert (a completion popup) leaves the step in the window the plan was in
-    if (w && !w.title.trim() && lastSeen && !isAlert(await outline(w))) { const pid = w.pid; w = ws.find((x) => x.title === lastSeen && x.pid === pid) ?? w }
+    if (w && !w.title.trim() && lastSeen && (kept?.id === w.id || !isAlert(await outline(w)))) { const pid = w.pid; w = ws.find((x) => x.title === lastSeen && x.pid === pid) ?? w }
     tick('wait', t0); if (!w) throw new Surprise(NO_FRONT, {}, true); return w
   }
   const end = Date.now() + ms; let asked: string | null = null; let many = 0
@@ -1415,7 +1417,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     tick('act', t0); if (!await closed(title, pid)) throw new Surprise(`"${title}" is still open after Escape and a close`, await seen())
     return
   }
-  const w = await windowFor(s.window, 3000, s.seen)
+  const w = await windowFor(s.window, 3000, s.seen, kept)
   rec.seen = w.title; if (w.title.trim()) lastSeen = w.title
   let t0 = Date.now(); let tree: Tree
   const r = reads(s)
