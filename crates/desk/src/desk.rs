@@ -2125,7 +2125,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         }))
             })
             .map(|f| f.id.clone());
-        Some((!frames.iter().any(|f| f.stale), front))
+        let answered = !frames.iter().any(|f| f.stale) || !frames.iter().any(|f| f.active);
+        Some((answered, front))
     }
 
     async fn background_window(
@@ -3886,12 +3887,13 @@ pub(crate) mod tests {
     }
 
     async fn pressed(
+        os: Os,
         stub: fn() -> Result<Stub, String>,
         presses: &'static std::sync::atomic::AtomicUsize,
         repeat: u32,
     ) -> (Result<Output, String>, Arc<Mutex<Vec<(String, Value)>>>) {
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let desk = Desk::new(stub, Returns(Behind(Arc::clone(&calls)), presses), Os::Mac);
+        let desk = Desk::new(stub, Returns(Behind(Arc::clone(&calls)), presses), os);
         let got = desk
             .run(
                 "desk_key",
@@ -3899,6 +3901,48 @@ pub(crate) mod tests {
             )
             .await;
         (got, calls)
+    }
+
+    #[tokio::test]
+    async fn a_repeated_key_stops_when_its_busy_app_leaves_the_front() {
+        static PRESSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let left = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                unanswering: Some(|| PRESSES.load(Ordering::SeqCst) > 0),
+                behind: Some(|| PRESSES.load(Ordering::SeqCst) > 0),
+                ..Stub::default()
+            })
+        };
+        for os in [Os::Mac, Os::Windows] {
+            PRESSES.store(0, Ordering::SeqCst);
+            let started = Instant::now();
+            let (got, calls) = pressed(os, left, &PRESSES, 3).await;
+            assert_eq!(
+                got.unwrap_err(),
+                "1 of 3 presses were sent, then the window left the front, so the rest were not sent",
+                "{os:?}"
+            );
+            assert_eq!(sent(&calls, "press_key").len(), 1, "{os:?}");
+            assert!(started.elapsed() < ANSWER_WAIT, "{os:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_repeated_windows_key_waits_for_its_busy_app_in_front_then_sends_every_press() {
+        static PRESSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let busy = || {
+            Ok(Stub {
+                frames: vec![notepad_window(true)],
+                unanswering: Some(|| PRESSES.load(Ordering::SeqCst) > 0),
+                ..Stub::default()
+            })
+        };
+        let started = Instant::now();
+        let (got, calls) = pressed(Os::Windows, busy, &PRESSES, 3).await;
+        got.unwrap();
+        assert_eq!(sent(&calls, "press_key").len(), 3);
+        assert!(started.elapsed() >= ANSWER_WAIT);
     }
 
     #[tokio::test]
@@ -3915,7 +3959,7 @@ pub(crate) mod tests {
                 ..Stub::default()
             })
         };
-        let (got, calls) = pressed(late, &PRESSES, 3).await;
+        let (got, calls) = pressed(Os::Mac, late, &PRESSES, 3).await;
         assert_eq!(
             got.unwrap_err(),
             "1 of 3 presses were sent, then the frame in front of the window changed, so the rest were not sent"
@@ -3944,7 +3988,7 @@ pub(crate) mod tests {
                 ..Stub::default()
             })
         };
-        let (got, calls) = pressed(slow, &PRESSES, 3).await;
+        let (got, calls) = pressed(Os::Mac, slow, &PRESSES, 3).await;
         got.unwrap();
         assert_eq!(sent(&calls, "press_key").len(), 3);
     }
@@ -3972,7 +4016,7 @@ pub(crate) mod tests {
             })
         };
         let began = std::time::Instant::now();
-        let (got, calls) = pressed(late, &PRESSES, 6).await;
+        let (got, calls) = pressed(Os::Mac, late, &PRESSES, 6).await;
         got.unwrap();
         assert_eq!(sent(&calls, "press_key").len(), 6);
         assert!(
@@ -4017,7 +4061,7 @@ pub(crate) mod tests {
                 ..Stub::default()
             })
         };
-        let (got, calls) = pressed(spent, &PRESSES, 3).await;
+        let (got, calls) = pressed(Os::Mac, spent, &PRESSES, 3).await;
         assert_eq!(
             got.unwrap_err(),
             "2 of 3 presses were sent, then the frame in front of the window changed, so the rest were not sent"
@@ -8613,6 +8657,7 @@ pub(crate) mod tests {
         sheet_opened: Option<fn() -> bool>,
         unread: Option<fn() -> bool>,
         unanswering: Option<fn() -> bool>,
+        behind: Option<fn() -> bool>,
         failing: Option<fn() -> bool>,
     }
 
@@ -8670,6 +8715,10 @@ pub(crate) mod tests {
             if self.unanswering.is_some_and(|hung| hung()) {
                 for f in &mut frames {
                     f.stale = true;
+                }
+            }
+            if self.behind.is_some_and(|left| left()) {
+                for f in &mut frames {
                     f.active = false;
                 }
             }

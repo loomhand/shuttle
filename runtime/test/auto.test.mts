@@ -736,6 +736,37 @@ test('a background type of several lines that a later desk call stops counts the
   }
 })
 
+test('an auto right click into a window with no screen bounds fronts it and is hit-tested like a foreground one', async (t) => {
+  const win = { id: '1/1', title: 'Files', role: 'window', pid: process.pid, active: true, app: 'Finder' }
+  const file = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'report.txt', states: ['showing'], bounds: [100, 200, 40, 20] }
+  const hit = { found: { ref: 0, id: '1/2', parent: -1, depth: 0, role: 'button', name: 'report.txt', states: [] }, path: [{ id: '1/1', role: 'window', name: 'Files' }], pid: process.pid }
+  for (const [under, sent] of [[{ ...hit, covered: { title: 'Always on top', pid: 9 } }, false], [hit, true]] as const) {
+    const tools: string[] = []
+    await daemon(t, ({ tool }) => {
+      tools.push(tool)
+      if (tool === 'desk_windows') return JSON.stringify([win, { id: '9/1', title: 'Always on top', role: 'window', pid: 9, active: false, app: 'Pinned', bounds: [0, 0, 400, 400] }])
+      if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: 'Files', states: ['showing'] }, file] })
+      if (tool === 'desk_read') return JSON.stringify(file)
+      if (tool === 'desk_at') return JSON.stringify(under)
+      return '{"ok":true}'
+    })
+    const r = await auto({ steps: [{ wait: 'Files' }, { click: 'report.txt', button: 'right' }] })
+    assert.equal(r.ok, sent, JSON.stringify(r))
+    if (!sent) assert.match(r.escalate?.reason ?? '', /under the window "Always on top", so the click was not sent/)
+    assert.ok(tools.indexOf('desk_focus') >= 0 && tools.indexOf('desk_focus') < tools.indexOf('desk_at'), tools.join(' '))
+    assert.equal(tools.includes('desk_click'), sent, tools.join(' '))
+  }
+})
+
+test('a background type of several lines that a later desk call stops for a front change counts the lines and Returns of the whole step', async (t) => {
+  for (const [mode, plan] of modes) {
+    const d = desktop((b, s) => b + s, false)
+    await daemon(t, (c) => c.tool === 'desk_type' && c.args.text === '\nbar' ? { text: '1 of 2 lines and the Return after line 1 were typed, then the window left the front, so the rest were not sent', error: true } : d.reply(c))
+    const r = await plan({ steps: [{ app: 'Notepad' }, { type: '\n\nfoo\nbar' }] })
+    assert.equal(r.escalate?.reason, '3 of 4 lines and the Return after line 3 were typed, then the window left the front, so the rest were not sent', mode)
+  }
+})
+
 test('a background type of several lines counts what went in when its first line or its rest fails with no count of its own, and passes on an error before anything went', async (t) => {
   const fails = (text: string) => (c: Call) => c.tool === 'desk_type' && c.args.text === text ? { text: 'type_text: nothing was sent', error: true } : undefined
   for (const [mode, plan] of modes) {

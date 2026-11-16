@@ -1190,9 +1190,9 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
 }
 function cutShort(e: unknown, n: number, done: number, ret: boolean, from: number) {
   const m = e instanceof Error ? e.message : String(e)
-  const d = /^(\d+) of \d+ lines( and the Return after line \d+)? were typed, then this stopped the rest: /.exec(m)
-  const [i, r, why] = d ? [from + Number(d[1]), !!d[2], m.slice(d[0].length)] : [done, ret, m]
-  return i ? new Error(`${i} of ${n} lines${r ? ` and the Return after line ${i}` : ''} were typed, then this stopped the rest: ${why}`) : e
+  const d = /^(\d+) of \d+ lines( and the Return after line \d+)? were typed, then (?:this stopped the rest: ([^]*)|([^]+, so the rest were not sent))$/.exec(m)
+  const [i, r, then] = d ? [from + Number(d[1]), !!d[2], d[4] ?? `this stopped the rest: ${d[3]}`] : [done, ret, `this stopped the rest: ${m}`]
+  return i ? new Error(`${i} of ${n} lines${r ? ` and the Return after line ${i}` : ''} were typed, then ${then}`) : e
 }
 async function settled(w: Win) {
   let a = await texts(w)
