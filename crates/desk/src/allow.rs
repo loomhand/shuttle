@@ -19,8 +19,7 @@ impl Allow {
     }
 
     pub(crate) fn admits_frame(&self, frame: &Frame) -> bool {
-        self.admits(frame.app.as_deref())
-            || frame.bundle.is_some() && self.admits(frame.bundle.as_deref())
+        self.admits(frame.app.as_deref()) || self.admits(frame.bundle.as_deref())
     }
 
     pub(crate) fn check(&self, app: Option<&str>) -> Result<(), String> {

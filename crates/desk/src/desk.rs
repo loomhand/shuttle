@@ -604,7 +604,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 ws.into_iter()
                     .filter(|w| {
                         self.allow.admits(w["app"].as_str())
-                            || w["bundle"].is_string() && self.allow.admits(w["bundle"].as_str())
+                            || self.allow.admits(w["bundle"].as_str())
                     })
                     .collect::<Value>(),
             ),
@@ -5583,6 +5583,52 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_macos_launch_retries_by_bundle_only_for_a_bundle_s_own_executable() {
+        struct Named(Arc<Mutex<Vec<String>>>);
+
+        impl Input for Named {
+            async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+                let name = args["name"].as_str().unwrap_or_default().to_owned();
+                self.0.lock().unwrap().push(name.clone());
+                match (tool, name.as_str()) {
+                    ("launch_app", "TextEdit") => Ok(
+                        json!({"content": [{"type": "text", "text": "Launched TextEdit (pid 4) in background."}]}),
+                    ),
+                    ("launch_app", _) => Err(format!("no app named {name}")),
+                    _ => Ok(json!({})),
+                }
+            }
+        }
+
+        let running = || {
+            Ok(Stub {
+                frames: vec![
+                    Frame {
+                        bundle: Some("TextEdit".into()),
+                        ..frame("w", "未命名", 4, true, Some("文本编辑"))
+                    },
+                    frame("v", "Untitled - Notepad", 5, false, Some("notepad.exe")),
+                ],
+                ..Stub::default()
+            })
+        };
+        let names = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(running, Named(Arc::clone(&names)), Os::Mac);
+        desk.run("desk_launch", json!({"app": "文本编辑"}))
+            .await
+            .unwrap();
+        let err = desk
+            .run("desk_launch", json!({"app": "notepad.exe"}))
+            .await
+            .unwrap_err();
+        assert_eq!(err, "no app named notepad.exe");
+        assert_eq!(
+            *names.lock().unwrap(),
+            ["文本编辑", "TextEdit", "notepad.exe"]
+        );
+    }
+
+    #[tokio::test]
     async fn a_launch_with_arguments_starts_a_new_instance_on_macos_with_them() {
         for os in [Os::Mac, Os::Linux, Os::Windows] {
             let calls = Arc::new(Mutex::new(Vec::new()));
@@ -7783,6 +7829,31 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn an_app_allowlist_admits_a_localized_window_by_its_bundle_on_every_path() {
+        let mac = Desk::new(|| Ok(Localized), Desktop(Arc::default()), Os::Mac)
+            .allow(&["notepad".into()]);
+        mac.run("desk_snapshot", json!({})).await.unwrap();
+        let past = mac
+            .run("desk_shot", json!({"window": "Untitled - Notepad"}))
+            .await
+            .unwrap_err();
+        assert_eq!(past, "the driver returned no screenshot of the window");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let windows = Desk::new(|| Ok(Localized), Desktop(calls.clone()), Os::Windows)
+            .allow(&["notepad".into()]);
+        windows
+            .run("desk_click", json!({"x": 100.0, "y": 800.0}))
+            .await
+            .unwrap();
+        assert!(calls.lock().unwrap().iter().any(|t| t == "click"));
+        let shot = pixels(&windows.run("desk_shot", json!({})).await.unwrap());
+        assert_eq!(
+            (shot[2], shot[7], shot[97], shot[90]),
+            ([255; 3], [0; 3], [255; 3], [0; 3])
+        );
+    }
+
+    #[tokio::test]
     async fn an_app_allowlist_masks_shots_outside_its_windows_and_costs_nothing_without_one() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let open = Desk::new(|| Ok(Apps), Desktop(calls.clone()), Os::Windows);
@@ -9924,6 +9995,70 @@ pub(crate) mod tests {
     }
 
     struct Apps;
+
+    struct Localized;
+
+    impl Access for Localized {
+        fn foreground(&mut self) -> Option<i64> {
+            Apps.foreground()
+        }
+
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            let mut frames = Apps.frames()?;
+            frames[0].app = Some("记事本".into());
+            frames[0].bundle = Some("Notepad".into());
+            frames[0].number = Some(1);
+            Ok(frames)
+        }
+
+        fn chromium(&mut self, pid: u32) -> bool {
+            Apps.chromium(pid)
+        }
+
+        fn off_space(&mut self) -> Vec<Frame> {
+            Apps.off_space()
+        }
+
+        fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
+            Apps.tree(frame, extras)
+        }
+
+        fn node(&mut self, id: &str, extras: Extras, depth: usize) -> Result<Node, String> {
+            Apps.node(id, extras, depth)
+        }
+
+        fn keyboard_focus(&mut self, pid: u32) -> Result<Option<Node>, String> {
+            Apps.keyboard_focus(pid)
+        }
+
+        fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
+            Apps.ancestors(id)
+        }
+
+        fn at(&mut self, frame: &str, x: i32, y: i32) -> Result<Option<String>, String> {
+            Apps.at(frame, x, y)
+        }
+
+        fn menu_at(&mut self, x: i32, y: i32) -> Result<Option<String>, String> {
+            Apps.menu_at(x, y)
+        }
+
+        fn pid_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
+            Apps.pid_at(x, y)
+        }
+
+        fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
+            Apps.pid_of(id)
+        }
+
+        fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
+            Apps.act(id, act)
+        }
+
+        fn close(&mut self, frame: &Frame) -> Result<(), String> {
+            Apps.close(frame)
+        }
+    }
 
     impl Access for Apps {
         fn foreground(&mut self) -> Option<i64> {

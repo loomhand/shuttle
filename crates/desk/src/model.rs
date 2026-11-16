@@ -336,8 +336,16 @@ pub trait Access {
         Ok(None)
     }
     /// The name that launches the running app whose windows list `app`, where it differs, as Chrome's windows list "Chrome" for "Google Chrome".
-    fn bundle_name(&mut self, _app: &str) -> Result<Option<String>, String> {
-        Ok(None)
+    fn bundle_name(&mut self, app: &str) -> Result<Option<String>, String> {
+        Ok(self
+            .frames()?
+            .into_iter()
+            .find(|f| {
+                f.app
+                    .as_deref()
+                    .is_some_and(|a| a.eq_ignore_ascii_case(app))
+            })
+            .and_then(|f| f.bundle))
     }
     fn chromium(&mut self, _pid: u32) -> bool {
         false
