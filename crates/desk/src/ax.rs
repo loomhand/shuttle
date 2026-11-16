@@ -1679,9 +1679,11 @@ mod tests {
         let wants = |name: &'static str| move |a: &str| a.eq_ignore_ascii_case(name);
         assert!(names_entry(&iterm, wants("iTerm"), none));
         assert!(names_entry(&iterm, wants("iTerm2"), none));
-        assert!(names_entry(&terminal, wants("终端"), |_| vec![
-            "终端".to_owned()
-        ]));
+        let running = |d: &str| match d {
+            "com.apple.Terminal" => vec!["终端".to_owned()],
+            _ => Vec::new(),
+        };
+        assert!(names_entry(&terminal, wants("终端"), running));
         assert!(!names_entry(&terminal, wants("终端"), none));
         assert!(!names_entry(&iterm, wants("Safari"), none));
     }
