@@ -162,6 +162,7 @@ impl Ax {
         let mut frames = Vec::new();
         let mut answered = None;
         let scale = display_scale();
+        let system = front_app();
         for (p, bounds) in apps {
             {
                 let hang = lock(&HANG);
@@ -185,7 +186,7 @@ impl Ax {
             let bundle = exe_path(p)
                 .and_then(|e| main_bundle(&e))
                 .filter(|b| name.as_deref().is_none_or(|n| !n.eq_ignore_ascii_case(b)));
-            let front = boolean(front).unwrap_or(false);
+            let front = frontmost(boolean(front).unwrap_or(false), p as u32, system);
             if front {
                 answered.get_or_insert(p as u32);
             }
@@ -262,7 +263,7 @@ impl Ax {
             hang.last.insert(p, frames[from..].to_vec());
         }
         if frames.iter().any(|f| f.stale) {
-            stale_front(&mut frames, answered.or_else(front_app));
+            stale_front(&mut frames, answered.or(system));
         }
         frames
     }
@@ -1385,6 +1386,10 @@ fn front_app() -> Option<u32> {
     })
 }
 
+fn frontmost(claims: bool, pid: u32, system: Option<u32>) -> bool {
+    claims && system.is_none_or(|s| s == pid)
+}
+
 fn kept(last: &BTreeMap<i32, Vec<Frame>>, p: i32) -> Vec<Frame> {
     last.get(&p)
         .into_iter()
@@ -1917,6 +1922,14 @@ mod tests {
             actives(vec![doc("a.rtf", false), doc("b.rtf", false)], Some(7)),
             ["a.rtf"]
         );
+    }
+
+    #[test]
+    fn an_app_that_claims_the_front_counts_only_when_the_system_names_it() {
+        assert!(frontmost(true, 425, Some(425)));
+        assert!(!frontmost(true, 425, Some(214)));
+        assert!(!frontmost(false, 425, Some(425)));
+        assert!(frontmost(true, 425, None));
     }
 
     #[test]
