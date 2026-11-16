@@ -1580,10 +1580,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn check_point(&self, x: f64, y: f64, under: Option<&Under>) -> Result<(), String> {
         let under = under.ok_or(NO_WINDOW_UNDER)?;
         let (pid, id) = (u32::try_from(under.pid).ok(), under.id);
-        let allow = self.allow.clone();
+        let (allow, bg) = (self.allow.clone(), self.bg());
         self.access
             .run(CALL_LIMIT, (), move |b| {
-                let counts = b.in_view(id) != Some(false);
+                let counts = bg || b.in_view(id) != Some(false);
                 if counts {
                     check_process(b, &allow, pid)?;
                 }
@@ -6102,6 +6102,7 @@ pub(crate) mod tests {
             cloaked: Option<i64>,
             top: Option<u32>,
             unhit: bool,
+            bg: bool,
         ) -> (Result<Output, String>, usize) {
             static CASE: Mutex<(Option<i64>, Option<u32>, bool)> = Mutex::new((None, None, false));
             *lock(&CASE) = (cloaked, top, unhit);
@@ -6111,16 +6112,24 @@ pub(crate) mod tests {
                 Ok(f)
             };
             let calls = Arc::new(Mutex::new(Vec::new()));
-            let desk =
-                Desk::new(fake, Behind(Arc::clone(&calls)), Os::Windows).allow(&["notepad".into()]);
+            let desk = Desk::new(fake, Behind(Arc::clone(&calls)), Os::Windows)
+                .allow(&["notepad".into()])
+                .background(bg);
             let out = desk
                 .run("desk_click", json!({"x": 600.0, "y": 200.0}))
                 .await;
             let clicks = sent(&calls, "click").len();
             (out, clicks)
         }
-        let (out, clicks) = click(Some(2), Some(4), false).await;
+        let (out, clicks) = click(Some(2), Some(4), false, false).await;
         assert!(out.is_ok() && clicks == 1, "{out:?}");
+        let (out, clicks) = click(Some(2), Some(4), false, true).await;
+        assert!(
+            out.as_ref()
+                .is_err_and(|e| e.contains("not in the app allowlist"))
+                && clicks == 0,
+            "{out:?}"
+        );
         for (cloaked, top, unhit, why) in [
             (None, Some(4), false, "not in the app allowlist"),
             (Some(2), Some(8), false, "not in the app allowlist"),
@@ -6137,7 +6146,7 @@ pub(crate) mod tests {
                 "the UI Automation hit test at the point failed",
             ),
         ] {
-            let (out, clicks) = click(cloaked, top, unhit).await;
+            let (out, clicks) = click(cloaked, top, unhit, false).await;
             assert!(
                 out.as_ref().is_err_and(|e| e.contains(why)) && clicks == 0,
                 "{cloaked:?} {top:?} {unhit} {out:?}"
