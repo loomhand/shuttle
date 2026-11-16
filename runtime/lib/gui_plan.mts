@@ -90,6 +90,7 @@ const FOCUS_MOVE = 500
 const STALE_WAIT = 2000
 const OPENING = 1000
 const LIST_REUSE = 25
+const WAIT_STEP = 100
 const WEB_TREE_MS = 4000
 const PAGE_MS = 10_000
 const ON_PAGE_MS = 3000
@@ -700,8 +701,8 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string): Pro
     tick('wait', t0); if (!w) throw new Surprise(NO_FRONT, {}, true); return w
   }
   const end = Date.now() + ms; let asked: string | null = null; let many = 0
-  for (;;) {
-    const ws = await desk.windows(); const w = frontOf(ws)
+  for (let ws = await listNow(); ; ws = (await desk.wait(ws, Math.max(1, Math.min(WAIT_STEP, end - Date.now())))).windows) {
+    const w = frontOf(ws)
     if (w && awaited(w.title, want, saw)) return found(w, t0)
     if (BG) {
       const t = target
@@ -724,7 +725,6 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string): Pro
       if (prob(d.is) < 0.3) { tick('wait', t0); throw new Surprise(`window "${w.title}" opened instead of "${want}"`, await seen()) }
     }
     if (Date.now() > end) { tick('wait', t0); throw new Surprise(many > 1 ? `${many} windows match "${want}", and the step never guesses which one: name the window more exactly` : `expected window "${want}" did not appear`, await seen()) }
-    await sleep(30)
   }
 }
 function awaited(title: string, want: string, saw?: string) { return norm(title).includes(norm(want)) || (!!saw && title === saw) }

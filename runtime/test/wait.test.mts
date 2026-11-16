@@ -74,3 +74,21 @@ test('a wait asks no model about the front window that only changed its title, a
   assert.equal(asked, 0)
   assert.ok(late > 500, String(late))
 })
+
+test('a wait for a window that opens late waits on the desk instead of listing windows every few milliseconds', async (t) => {
+  const doc = { id: '1', title: 'Untitled - Notepad', role: 'window', pid: process.pid, active: true }
+  const dialog = { id: '2', title: 'Print', role: 'dialog', pid: process.pid, active: true }
+  const opened = Date.now() + 300
+  let lists = 0
+  await daemon(t, ({ tool, args }) => {
+    const open = Date.now() > opened
+    const ws = open ? [{ ...doc, active: false }, dialog] : [doc]
+    if (tool === 'desk_windows') { if (!args.waiting) lists++; return JSON.stringify(ws) }
+    if (tool === 'desk_snapshot') { const w = open ? dialog : doc; return JSON.stringify({ window: w, truncated: false, nodes: [{ ref: 0, id: `${w.id}/1`, parent: -1, depth: 0, role: w.role, name: w.title, states: ['showing'] }] }) }
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ wait: 'Print', timeout_ms: 2000 }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.window, 'Print')
+  assert.ok(lists <= 3, String(lists))
+})
