@@ -512,12 +512,13 @@ fn per_point() -> f64 {
 }
 
 fn kept(app: Option<&str>, bundle: Option<&str>, pid: Option<u64>, apps: &[String]) -> bool {
+    if bundle.is_some_and(|b| blocked(b, None)) {
+        return false;
+    }
     let Some(app) = app else {
         return apps.is_empty();
     };
-    !blocked(app, pid)
-        && !bundle.is_some_and(|b| blocked(b, None))
-        && (covers(apps, app) || bundle.is_some_and(|b| covers(apps, b)))
+    !blocked(app, pid) && (covers(apps, app) || bundle.is_some_and(|b| covers(apps, b)))
 }
 
 fn blocked(app: &str, pid: Option<u64>) -> bool {
@@ -988,6 +989,25 @@ mod tests {
             &settings
         ));
         assert!(!kept(Some("系统设置"), Some("System Settings"), None, &[]));
+        assert!(!kept(None, Some("1Password"), None, &[]));
+        let localized = json!({"title": "未命名", "app": "文本编辑", "bundle": "TextEdit"});
+        assert!(came(Some(&localized), None, &apps, Instant::now()).is_some());
+    }
+
+    #[tokio::test]
+    async fn a_key_in_a_localized_app_named_by_its_bundle_is_recorded() {
+        let desk = Desk::new(json!({}));
+        let typed = Input::Key {
+            code: 0,
+            text: "x".into(),
+            mods: Vec::new(),
+            secret: false,
+            pid: Some(5),
+            focus: None,
+            read: false,
+        };
+        let r = run(&desk, &["TextEdit"], vec![typed]).await;
+        assert_eq!(r["events"][0]["kind"], "key", "{r}");
     }
 
     #[cfg(target_os = "macos")]
@@ -1186,6 +1206,7 @@ mod tests {
                     json!([
                         {"id": "7/1", "title": front, "role": "window", "pid": 7, "active": true, "app": "TextEdit", "bounds": [10, 20, 300, 200]},
                         {"id": "9/1", "title": "Vault", "role": "window", "pid": 9, "active": false, "app": "1Password"},
+                        {"id": "5/1", "title": "未命名", "role": "window", "pid": 5, "active": false, "app": "文本编辑", "bundle": "TextEdit"},
                     ])
                     .to_string(),
                 ),
