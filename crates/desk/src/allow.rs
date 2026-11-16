@@ -18,11 +18,23 @@ impl Allow {
         self.is_open() || app.is_some_and(|a| self.0.contains(&app_key(a)))
     }
 
+    pub(crate) fn admits_frame(&self, frame: &Frame) -> bool {
+        self.admits(frame.app.as_deref())
+            || frame.bundle.is_some() && self.admits(frame.bundle.as_deref())
+    }
+
     pub(crate) fn check(&self, app: Option<&str>) -> Result<(), String> {
         if self.admits(app) {
             Ok(())
         } else {
             Err(refused(app.unwrap_or("an unknown app")))
+        }
+    }
+
+    pub(crate) fn check_frame(&self, frame: Option<&Frame>) -> Result<(), String> {
+        match frame {
+            Some(f) if self.admits_frame(f) => Ok(()),
+            _ => self.check(frame.and_then(|f| f.app.as_deref())),
         }
     }
 
@@ -34,10 +46,10 @@ impl Allow {
     ) -> Result<Frame, String> {
         if want.is_none() || self.is_open() {
             let frame = window::pick(frames, want, pid)?;
-            self.check(frame.app.as_deref())?;
+            self.check_frame(Some(&frame))?;
             return Ok(frame);
         }
-        frames.retain(|f| self.admits(f.app.as_deref()));
+        frames.retain(|f| self.admits_frame(f));
         window::pick(frames, want, pid)
     }
 }
@@ -50,12 +62,9 @@ pub(crate) fn app_key(app: &str) -> String {
     key
 }
 
-pub(crate) fn app_of(frames: &[Frame], pid: Option<u32>) -> Option<&str> {
+pub(crate) fn frame_of(frames: &[Frame], pid: Option<u32>) -> Option<&Frame> {
     let pid = pid?;
-    frames
-        .iter()
-        .find(|f| f.pid == Some(pid))
-        .and_then(|f| f.app.as_deref())
+    frames.iter().find(|f| f.pid == Some(pid))
 }
 
 fn refused(app: &str) -> String {

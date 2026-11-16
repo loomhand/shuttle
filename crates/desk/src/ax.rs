@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, c_void};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -177,7 +177,8 @@ impl Ax {
             let name = name
                 .and_then(|v| v.downcast::<CFString>())
                 .map(|s| s.to_string());
-            let bundle = bundle_stem(p)
+            let bundle = exe_path(p)
+                .and_then(|e| main_bundle(&e))
                 .filter(|b| name.as_deref().is_none_or(|n| !n.eq_ignore_ascii_case(b)));
             let front = boolean(front).unwrap_or(false);
             if front {
@@ -990,6 +991,16 @@ pub fn bundle_stem(pid: i32) -> Option<String> {
     Some(bundle.file_stem()?.to_string_lossy().into_owned())
 }
 
+fn main_bundle(exe: &Path) -> Option<String> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let bundle = contents.parent()?;
+    let main = macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && bundle.extension()? == "app";
+    main.then(|| bundle.file_stem().map(|s| s.to_string_lossy().into_owned()))?
+}
+
 #[cfg(not(test))]
 pub(crate) fn focused_window() -> Option<(i64, i64)> {
     let pid = i32::try_from(front_app()?).ok()?;
@@ -1633,6 +1644,28 @@ fn text(v: &CFType, chars: usize, tail: bool) -> String {
 mod tests {
     use super::*;
     use crate::model::MAX_IDS;
+
+    #[test]
+    fn a_window_takes_the_bundle_of_its_app_only_from_that_bundle_s_main_executable() {
+        for (exe, want) in [
+            (
+                "/System/Applications/TextEdit.app/Contents/MacOS/TextEdit",
+                Some("TextEdit"),
+            ),
+            (
+                "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper",
+                Some("Google Chrome Helper"),
+            ),
+            (
+                "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wineloader",
+                None,
+            ),
+            ("/Applications/Foo.app/Contents/Resources/tool", None),
+            ("/usr/bin/python3", None),
+        ] {
+            assert_eq!(main_bundle(Path::new(exe)).as_deref(), want, "{exe}");
+        }
+    }
 
     #[test]
     fn secure_keyboard_entry_looks_only_at_covered_terminals_by_english_or_localized_name() {

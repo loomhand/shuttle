@@ -39,7 +39,7 @@ On macOS shuttle can record what you do, so that an agent can turn it into a pla
 
 ## App allowlist
 
-`apps = ["TextEdit", "notepad.exe"]` under `[safety]` limits the desk calls to windows of those apps. A name matches the macOS app name, the Windows executable or the Linux executable's file name (`/proc/PID/exe`), case-insensitive and with or without `.exe`; a Linux window whose executable cannot be read is refused. The daemon checks the app on every desk call:
+`apps = ["TextEdit", "notepad.exe"]` under `[safety]` limits the desk calls to windows of those apps. A name matches the macOS app name, or on a window on the current Space whose process is a `.app` bundle's main executable the bundle's file name (`TextEdit` for `文本编辑` on a Chinese macOS; a program that only runs from inside a bundle, as a Windows program under CrossOver does, has none), the Windows executable or the Linux executable's file name (`/proc/PID/exe`), case-insensitive and with or without `.exe`; a Linux window whose executable cannot be read is refused. The daemon checks the app on every desk call:
 - a window name picks only among the allowed apps' windows, and an error lists only those; with no name, the focused window must belong to an allowed app;
 - the focused window for `key` and `type`;
 - the process of the element for `read`, `press` and `act`, and of the element `at` finds;
