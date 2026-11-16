@@ -82,9 +82,14 @@ const FRAME_ATTRS: [&str; 6] = [
     "AXSize",
 ];
 
-const SECURE_ENTRY: [(&str, &str, &str); 2] = [
-    ("Terminal", "com.apple.Terminal", "SecureKeyboardEntry"),
-    ("iTerm2", "com.googlecode.iterm2", "Secure Input"),
+const SECURE_ENTRY: [(&str, &str, &str, &str); 2] = [
+    (
+        "Terminal",
+        "Terminal",
+        "com.apple.Terminal",
+        "SecureKeyboardEntry",
+    ),
+    ("iTerm2", "iTerm", "com.googlecode.iterm2", "Secure Input"),
 ];
 
 static PROMPTED: AtomicBool = AtomicBool::new(false);
@@ -884,12 +889,12 @@ pub fn secure_input() -> bool {
     unsafe { IsSecureEventInputEnabled() }
 }
 
-/// The first terminal app whose Secure Keyboard Entry setting is on, which hides every key typed in it from an event tap, among those `wanted` accepts by its English name or the localized name of a running copy.
+/// The first terminal app whose Secure Keyboard Entry setting is on, which hides every key typed in it from an event tap, among those `wanted` accepts by its English name, its bundle name or the localized name of a running copy.
 pub fn secure_keyboard_entry(wanted: impl Fn(&str) -> bool) -> Option<&'static str> {
     first_on(
         &SECURE_ENTRY,
-        |(app, domain, _)| wanted(app) || running_names(domain).iter().any(|n| wanted(n)),
-        |(_, domain, key)| preference_on(domain, key),
+        |e| names_entry(e, &wanted, running_names),
+        |(_, _, domain, key)| preference_on(domain, key),
     )
     .map(|(app, ..)| *app)
 }
@@ -996,6 +1001,14 @@ pub(crate) fn focused_window() -> Option<(i64, i64)> {
         window = attr(&window, "AXParent")?;
     }
     Some((i64::from(pid), i64::from(number_of(&window)?)))
+}
+
+fn names_entry(
+    &(app, bundle, domain, _): &(&str, &str, &str, &str),
+    wanted: impl Fn(&str) -> bool,
+    running: impl Fn(&str) -> Vec<String>,
+) -> bool {
+    wanted(app) || wanted(bundle) || running(domain).iter().any(|n| wanted(n))
 }
 
 fn first_on<T>(entries: &[T], covered: impl Fn(&T) -> bool, on: impl Fn(&T) -> bool) -> Option<&T> {
@@ -1657,6 +1670,20 @@ mod tests {
         ] {
             assert_eq!(main_bundle(Path::new(exe)).as_deref(), want, "{exe}");
         }
+    }
+
+    #[test]
+    fn a_terminal_whose_keys_secure_entry_hides_is_named_by_its_app_bundle_or_running_name() {
+        let [terminal, iterm] = SECURE_ENTRY;
+        let none = |_: &str| Vec::new();
+        let wants = |name: &'static str| move |a: &str| a.eq_ignore_ascii_case(name);
+        assert!(names_entry(&iterm, wants("iTerm"), none));
+        assert!(names_entry(&iterm, wants("iTerm2"), none));
+        assert!(names_entry(&terminal, wants("终端"), |_| vec![
+            "终端".to_owned()
+        ]));
+        assert!(!names_entry(&terminal, wants("终端"), none));
+        assert!(!names_entry(&iterm, wants("Safari"), none));
     }
 
     #[test]

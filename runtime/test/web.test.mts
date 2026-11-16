@@ -7,9 +7,9 @@ import { main } from '../lib/gui_plan.mts'
 
 type El = { id: string; role: string; name: string; url?: string; dom_id?: string; states?: string[] }
 
-function browser(t: TestContext, o: { url: () => string; els: El[]; tree?: () => boolean; on?: boolean; focused?: string }) {
+function browser(t: TestContext, o: { url: () => string; els: El[]; tree?: () => boolean; on?: boolean; focused?: string; app?: string; bundle?: string }) {
   const calls: Call[] = []
-  const win = { id: '7/1', title: 'Form - Browser', role: 'window', pid: 7, active: true, app: 'Browser' }
+  const win = { id: '7/1', title: 'Form - Browser', role: 'window', pid: 7, active: true, app: o.app ?? 'Browser', ...(o.bundle ? { bundle: o.bundle } : {}) }
   let on = o.on ?? true
   return daemon(t, (c) => {
     calls.push(c)
@@ -75,6 +75,14 @@ test('an app step with a url opens it in that browser and takes the window that 
   const r = await main({ steps: [{ app: 'Browser', url: 'https://shop.test/{{page}}' }], params: { page: 'form' } })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(calls.filter((c) => c.tool === 'desk_launch').map((c) => c.args), [{ app: 'Browser', args: ['https://shop.test/form'] }])
+})
+
+test('an app step with a url takes the page in a browser whose localized name shares nothing with its bundle', async (t) => {
+  const calls = await browser(t, { url: () => 'https://shop.test/form', els: [], app: 'سفاري', bundle: 'Safari' })
+  const r = await main({ steps: [{ app: 'Safari', url: 'https://shop.test/form' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.window, 'Form - Browser')
+  assert.equal(calls.filter((c) => c.tool === 'desk_launch').length, 1)
 })
 
 test('a recorded type step stops where the focused field has another DOM id', async (t) => {
