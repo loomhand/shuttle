@@ -324,8 +324,10 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                         windows = list(desk).await;
                         light(desk, &windows, &apps, &mut asked).await;
                         let win = window_of(&windows, &at);
-                        let app = win.and_then(|w| w["app"].as_str()).map(str::to_owned).or_else(|| app_of(&windows, pid));
-                        if (app.is_some() || pid.is_none()) && kept(app.as_deref(), pid, &apps) {
+                        let named = win.filter(|w| w["app"].is_string()).or_else(|| of_pid(&windows, pid));
+                        let app = named.and_then(|w| w["app"].as_str()).map(str::to_owned);
+                        let bundle = named.and_then(|w| w["bundle"].as_str()).map(str::to_owned);
+                        if (app.is_some() || pid.is_none()) && kept(app.as_deref(), bundle.as_deref(), pid, &apps) {
                             let late = frame.as_ref().is_none_or(|f| f.at < acted || win.is_none_or(|w| w["id"] != f.window.as_str()));
                             if late {
                                 frame = framed(desk, &windows, win, &apps).await;
@@ -356,8 +358,10 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                     }
                     Input::Password { pid, focus } => {
                         windows = list(desk).await;
-                        let app = app_of(&windows, pid.map(u64::from));
-                        if app.is_some() && kept(app.as_deref(), pid.map(u64::from), &apps) {
+                        let named = of_pid(&windows, pid.map(u64::from));
+                        let app = named.and_then(|w| w["app"].as_str()).map(str::to_owned);
+                        let bundle = named.and_then(|w| w["bundle"].as_str()).map(str::to_owned);
+                        if app.is_some() && kept(app.as_deref(), bundle.as_deref(), pid.map(u64::from), &apps) {
                             json!({"t": t, "kind": "password", "app": app, "focus": focus})
                         } else {
                             json!({"t": t, "kind": "skipped"})
@@ -376,11 +380,13 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                         if pid.is_some_and(|p| !windows.iter().any(|w| w["pid"].as_u64() == Some(p))) {
                             windows = list(desk).await;
                         }
-                        let app = match pid {
-                            Some(_) => app_of(&windows, pid),
-                            None => front.as_ref().and_then(|w| w["app"].as_str()).map(str::to_owned),
+                        let named = match pid {
+                            Some(_) => of_pid(&windows, pid),
+                            None => front.as_ref(),
                         };
-                        if (app.is_none() && pid.is_some()) || pid == Some(u64::from(std::process::id())) || !kept(app.as_deref(), pid, &apps) {
+                        let app = named.and_then(|w| w["app"].as_str()).map(str::to_owned);
+                        let bundle = named.and_then(|w| w["bundle"].as_str()).map(str::to_owned);
+                        if (app.is_none() && pid.is_some()) || pid == Some(u64::from(std::process::id())) || !kept(app.as_deref(), bundle.as_deref(), pid, &apps) {
                             json!({"t": t, "kind": "skipped"})
                         } else if secret {
                             json!({"t": t, "kind": "key", "secret": true, "app": app})
@@ -505,11 +511,13 @@ fn per_point() -> f64 {
     1.0
 }
 
-fn kept(app: Option<&str>, pid: Option<u64>, apps: &[String]) -> bool {
+fn kept(app: Option<&str>, bundle: Option<&str>, pid: Option<u64>, apps: &[String]) -> bool {
     let Some(app) = app else {
         return apps.is_empty();
     };
-    !blocked(app, pid) && covers(apps, app)
+    !blocked(app, pid)
+        && !bundle.is_some_and(|b| blocked(b, None))
+        && (covers(apps, app) || bundle.is_some_and(|b| covers(apps, b)))
 }
 
 fn blocked(app: &str, pid: Option<u64>) -> bool {
@@ -539,13 +547,9 @@ fn window_of<'a>(windows: &'a [Value], at: &Value) -> Option<&'a Value> {
     })
 }
 
-fn app_of(windows: &[Value], pid: Option<u64>) -> Option<String> {
+fn of_pid(windows: &[Value], pid: Option<u64>) -> Option<&Value> {
     let pid = pid?;
-    windows
-        .iter()
-        .find(|w| w["pid"].as_u64() == Some(pid))
-        .and_then(|w| w["app"].as_str())
-        .map(str::to_owned)
+    windows.iter().find(|w| w["pid"].as_u64() == Some(pid))
 }
 
 fn front_of(windows: &[Value]) -> Option<Value> {
@@ -557,7 +561,7 @@ fn front_of(windows: &[Value]) -> Option<Value> {
 
 fn came(now: Option<&Value>, was: Option<&Value>, apps: &[String], t0: Instant) -> Option<Value> {
     let w = now?;
-    (Some(&w["title"]) != was.map(|w| &w["title"]) && kept(w["app"].as_str(), w["pid"].as_u64(), apps)).then(|| {
+    (Some(&w["title"]) != was.map(|w| &w["title"]) && kept(w["app"].as_str(), w["bundle"].as_str(), w["pid"].as_u64(), apps)).then(|| {
         json!({"t": t0.elapsed().as_millis(), "kind": "after", "window": w["title"], "role": w["role"], "app": w["app"]})
     })
 }
@@ -568,7 +572,12 @@ async fn light<H: Handler>(desk: &H, windows: &[Value], apps: &[String], asked: 
         let Some(pid) = w["pid"].as_u64().filter(|p| !asked.contains(p)) else {
             continue;
         };
-        if !kept(w["app"].as_str(), w["pid"].as_u64(), apps) {
+        if !kept(
+            w["app"].as_str(),
+            w["bundle"].as_str(),
+            w["pid"].as_u64(),
+            apps,
+        ) {
             continue;
         }
         asked.push(pid);
@@ -600,7 +609,12 @@ async fn framed<H: Handler>(
         };
         w = windows.iter().find(|x| x["id"].as_str() == Some(owner))?;
     }
-    if !kept(w["app"].as_str(), w["pid"].as_u64(), apps) {
+    if !kept(
+        w["app"].as_str(),
+        w["bundle"].as_str(),
+        w["pid"].as_u64(),
+        apps,
+    ) {
         return None;
     }
     let bounds = <[f64; 4]>::deserialize(&w["bounds"]).ok()?;
@@ -955,9 +969,25 @@ mod tests {
     #[test]
     fn the_blocked_apps_match_whatever_the_case() {
         for app in ["shuttle", "SYSTEM SETTINGS", "keychain access", "1password"] {
-            assert!(!kept(Some(app), None, &[]), "{app}");
+            assert!(!kept(Some(app), None, None, &[]), "{app}");
         }
-        assert!(kept(Some("TextEdit"), None, &[]));
+        assert!(kept(Some("TextEdit"), None, None, &[]));
+    }
+
+    #[test]
+    fn a_recording_named_by_bundle_keeps_a_localized_app_and_never_a_blocked_one() {
+        let apps = ["TextEdit".to_owned()];
+        assert!(kept(Some("文本编辑"), Some("TextEdit"), None, &apps));
+        assert!(!kept(Some("文本编辑"), None, None, &apps));
+        assert!(!kept(Some("备忘录"), Some("Notes"), None, &apps));
+        let settings = ["System Settings".to_owned()];
+        assert!(!kept(
+            Some("系统设置"),
+            Some("System Settings"),
+            None,
+            &settings
+        ));
+        assert!(!kept(Some("系统设置"), Some("System Settings"), None, &[]));
     }
 
     #[cfg(target_os = "macos")]
