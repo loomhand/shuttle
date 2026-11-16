@@ -154,7 +154,7 @@ impl Default for Roles {
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Safety {
-    /// The apps the desk calls may reach, matched by app name or executable; empty allows every app.
+    /// The apps the desk calls may reach, matched by app name, executable or macOS bundle name; empty allows every app.
     pub apps: Vec<String>,
     /// The global key combination that stops shuttle, such as `ctrl+alt+cmd+escape`.
     pub kill_hotkey: String,

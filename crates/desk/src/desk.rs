@@ -218,7 +218,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
     }
 
-    /// Limits the desk calls to windows of `apps`, matched by app name or executable, case-insensitive; empty allows every app.
+    /// Limits the desk calls to windows of `apps`, matched by app name, executable or macOS bundle name, case-insensitive; empty allows every app.
     pub fn allow(mut self, apps: &[String]) -> Self {
         self.allow = Allow(apps.iter().map(|a| app_key(a)).collect());
         self
@@ -8276,6 +8276,21 @@ pub(crate) mod tests {
         let out: Value = serde_json::from_str(&out.text).unwrap();
         assert_eq!(out["changed"], false);
         assert!(!out.to_string().contains("Inbox"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_wait_keeps_a_localized_window_the_allowlist_admits_by_its_bundle() {
+        let desk =
+            Desk::new(|| Ok(Localized), Screen(Arc::default()), Os::Mac).allow(&["notepad".into()]);
+        let since: Value =
+            serde_json::from_str(&desk.run("desk_windows", json!({})).await.unwrap().text).unwrap();
+        assert_eq!(since[0]["bundle"], "Notepad", "{since}");
+        let out = desk
+            .run("desk_wait", json!({"since": since, "timeout_ms": 50}))
+            .await
+            .unwrap();
+        let out: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(out["changed"], false, "{out}");
     }
 
     #[tokio::test]
