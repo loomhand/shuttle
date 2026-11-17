@@ -1647,6 +1647,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 None => (x, y),
             },
             _ => {
+                if self.os == Os::Mac
+                    && let Some((pid, id)) = self.raised_window(a.window.as_deref(), a.pid).await?
+                {
+                    req["pid"] = pid.into();
+                    req["window_id"] = id.into();
+                    req["session"] = WINDOW_SESSION.into();
+                    self.call("scroll", req).await?;
+                    return Ok(OK.to_owned());
+                }
                 let (mut target, listed) = self.front_window().await?;
                 if self.os == Os::Mac {
                     req["pid"] = target["pid"].take();
@@ -8429,6 +8438,21 @@ pub(crate) mod tests {
             (
                 "scroll".to_owned(),
                 json!({"direction": "up", "amount": 5, "pid": 4, "window_id": 3, "session": WINDOW_SESSION})
+            )
+        );
+        Desk::new(
+            || Err::<Fake, _>("no accessibility".to_owned()),
+            Wheel(calls.clone()),
+            Os::Mac,
+        )
+        .run("desk_scroll", json!({"direction": "up", "window": "Inbox"}))
+        .await
+        .unwrap();
+        assert_eq!(
+            last(),
+            (
+                "scroll".to_owned(),
+                json!({"direction": "up", "amount": 3, "pid": 8, "window_id": 2, "session": WINDOW_SESSION})
             )
         );
         let allowed =
