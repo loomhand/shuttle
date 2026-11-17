@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -107,7 +108,7 @@ pub struct Android {
     points: Mutex<HashMap<String, Saved>>,
     ui: Mutex<Option<UiServer>>,
     server_input: AtomicBool,
-    control: Mutex<Option<Control>>,
+    control: Arc<Mutex<Option<Control>>>,
     natural: OnceCell<(i32, i32)>,
 }
 
@@ -118,7 +119,7 @@ impl Android {
             points: Mutex::new(HashMap::new()),
             ui: Mutex::new(None),
             server_input: AtomicBool::new(true),
-            control: Mutex::new(None),
+            control: Arc::default(),
             natural: OnceCell::new(),
         }
     }
@@ -405,13 +406,10 @@ impl Android {
         C: FnMut() -> Cf,
         Cf: Future<Output = Result<Option<i64>, String>>,
     {
+        let mut wipe = Wipe(Some(Arc::clone(&self.control)));
         let typed = self.type_lines(text, at, check).await;
-        let mut slot = self.control.lock().await;
-        if let Some(control) = slot.as_mut().filter(|c| c.is_open())
-            && control.set_clipboard("").await.is_err()
-        {
-            *slot = None;
-        }
+        wipe.0 = None;
+        wiped(&self.control).await;
         typed
     }
 
@@ -930,6 +928,19 @@ impl Control {
     }
 }
 
+/// Empties the device clipboard when a type call is dropped before it does.
+struct Wipe(Option<Arc<Mutex<Option<Control>>>>);
+
+impl Drop for Wipe {
+    fn drop(&mut self) {
+        if let Some(slot) = self.0.take()
+            && let Ok(rt) = tokio::runtime::Handle::try_current()
+        {
+            rt.spawn(async move { wiped(&slot).await });
+        }
+    }
+}
+
 struct Forward {
     port: String,
     remove: Command,
@@ -1301,6 +1312,15 @@ async fn connect_control(port: &str) -> Result<TcpStream, String> {
 }
 
 /// Reads the device message that acknowledges the clipboard of `sequence`, the only one a server without clipboard autosync sends.
+async fn wiped(slot: &Mutex<Option<Control>>) {
+    let mut slot = slot.lock().await;
+    if let Some(control) = slot.as_mut().filter(|c| c.is_open())
+        && control.set_clipboard("").await.is_err()
+    {
+        *slot = None;
+    }
+}
+
 async fn read_ack<R: AsyncRead + Unpin>(r: &mut R, sequence: u64) -> Result<(), String> {
     let fail = |e: std::io::Error| format!("read scrcpy control: {e}");
     let kind = r.read_u8().await.map_err(fail)?;
@@ -1600,6 +1620,33 @@ mod tests {
         assert_eq!(press_target(&fake).await["y"].as_i64(), Some(650));
         assert_eq!(log(&fake, "requests").matches("show ").count(), 1);
         assert_eq!(log(&fake, "adbinput").matches("swipe").count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_press_in_a_window_behind_another_apps_dialog_is_refused_with_nothing_sent() {
+        let fake = Fake::new();
+        fake.windows("dialog");
+        for (bounds, what) in [
+            ("[0,200][720,300]", "beside the dialog"),
+            ("[0,1300][720,1400]", "off the screen"),
+        ] {
+            list(&fake, "dump.xml", bounds);
+            let err = crate::desk::run(
+                &fake.android,
+                "desk_press",
+                serde_json::json!({"id": "com.android.settings:0.0.1:button:Target"}),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                err,
+                "Settings - com.android.settings is not in front, and input on a device reaches only the front window",
+                "{what}"
+            );
+        }
+        let sent = log(&fake, "requests") + &log(&fake, "adbinput");
+        assert!(!sent.contains("tap") && !sent.contains("swipe"), "{sent}");
     }
 
     #[cfg(unix)]
@@ -2312,6 +2359,24 @@ mod tests {
         let sent = tokio::time::timeout(Duration::from_secs(5), device).await;
         assert_eq!(sent.unwrap().unwrap(), clipboard_message("", 1));
         assert!(android.control.lock().await.is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_type_dropped_before_its_end_still_empties_the_device_clipboard() {
+        let (android, mut peer) = session("/nonexistent/adb").await;
+        let typing = android.type_text("secret", None, std::future::pending);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), typing)
+                .await
+                .is_err()
+        );
+        let mut buf = [0; 64];
+        let n = tokio::time::timeout(Duration::from_secs(5), peer.read(&mut buf))
+            .await
+            .expect("no clear after the dropped type")
+            .unwrap();
+        assert_eq!(buf[..n], clipboard_message("", 1));
     }
 
     #[cfg(unix)]
@@ -3060,10 +3125,10 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn acked(fake: &Fake) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
+    async fn acked(fake: &Fake) -> Arc<std::sync::Mutex<Vec<String>>> {
         let mut peer = controlled(&fake.android).await;
-        let pasted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let seen = std::sync::Arc::clone(&pasted);
+        let pasted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&pasted);
         tokio::spawn(async move {
             let mut head = [0u8; 14];
             while peer.read_exact(&mut head).await.is_ok() {
@@ -3147,6 +3212,10 @@ mod tests {
                 "landscape" => format!(
                     r#"[{{"id":5,"type":3,"layer":2,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[1184,0,1280,720]}},{}]"#,
                     app(true).replace("[0,0,720,1280]", "[0,0,1280,720]")
+                ),
+                "dialog" => format!(
+                    r#"[{bar},{{"id":9,"type":1,"layer":3,"title":"Allow","package":"com.android.permissioncontroller","active":true,"focused":true,"bounds":[60,400,660,800]}},{}]"#,
+                    app(false)
                 ),
                 "none" => "[]".to_owned(),
                 _ => format!("[{bar},{}]", app(true)),

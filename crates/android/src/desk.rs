@@ -943,6 +943,9 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
     }
     let mut ask = true;
     for _ in 0..SCROLL_TRIES {
+        if !frame.active {
+            return Err(behind(&frame.title));
+        }
         if let Some((x, y)) = frame.tap_at(&node) {
             android.tap((x, y)).await?;
             return Ok(json!({"ok": true, "how": "click", "x": x, "y": y}).to_string());
@@ -1061,11 +1064,12 @@ async fn in_front(
     if frame.active {
         Ok(frame.id.parse().ok())
     } else {
-        Err(format!(
-            "{} is not in front, and input on a device reaches only the front window",
-            frame.title
-        ))
+        Err(behind(&frame.title))
     }
+}
+
+fn behind(title: &str) -> String {
+    format!("{title} is not in front, and input on a device reaches only the front window")
 }
 
 /// The window `window` names, which must be in front; a package name without a window starts its app.
