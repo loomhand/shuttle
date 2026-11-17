@@ -2594,9 +2594,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn steady_grab(&self, rect: [f64; 4]) -> Result<(Grab, Vec<([f64; 4], bool)>), String> {
         for _ in 0..MASK_TRIES {
-            let before = self.mask_rects(None).await?;
+            let before = self.mask_rects().await?;
             let grab = self.grab(rect).await?;
-            let after = self.mask_rects(None).await?;
+            let after = self.mask_rects().await?;
             if after == before {
                 return Ok((grab, after));
             }
@@ -2628,7 +2628,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let mut read = None;
         for _ in 0..if masked { MASK_TRIES } else { 1 } {
             let before = if masked {
-                Some(self.mask_rects(Some(&w)).await?)
+                Some(self.mask_rects().await?)
             } else {
                 None
             };
@@ -2638,21 +2638,21 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 .await?;
             let _ = self.remember(key, &v, true);
             drop(session);
-            if !masked || Some(self.mask_rects(Some(&w)).await?) == before {
+            if !masked || Some(self.mask_rects().await?) == before {
                 read = Some((v, before));
                 break;
             }
         }
-        let (v, over) = read.ok_or(WINDOWS_MOVING)?;
-        let mask = match over {
-            Some(over) => {
+        let (v, shown) = read.ok_or(WINDOWS_MOVING)?;
+        let mask = match shown {
+            Some(shown) => {
                 let (kx, ky) = image_scale(&v, key.1)?;
                 let [bx, by, bw, bh] = key.2;
                 let own = ([0.0, 0.0, bw * kx, bh * ky], true);
-                let over = over.into_iter().map(|([x, y, w, h], admitted)| {
+                let shown = shown.into_iter().map(|([x, y, w, h], admitted)| {
                     ([(x - bx) * kx, (y - by) * ky, w * kx, h * ky], admitted)
                 });
-                Some(std::iter::once(own).chain(over).collect::<Vec<_>>())
+                Some(std::iter::once(own).chain(shown).collect::<Vec<_>>())
             }
             None => None,
         };
@@ -2691,21 +2691,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(Some(mask))
     }
 
-    /// The windows on screen, bottom first, each with whether the allowlist admits it; with `over`, only those stacked above that driver window.
-    async fn mask_rects(&self, over: Option<&Value>) -> Result<Vec<([f64; 4], bool)>, String> {
+    async fn mask_rects(&self) -> Result<Vec<([f64; 4], bool)>, String> {
         let mut windows = self.on_screen().await?;
         let frames = self.access.run(CALL_LIMIT, (), |b| b.frames()).await?;
         windows.sort_by_key(|w| w["z_index"].as_i64().unwrap_or(i64::MIN));
-        let above = over
-            .and_then(|o| {
-                windows
-                    .iter()
-                    .position(|w| (&w["pid"], &w["window_id"]) == (&o["pid"], &o["window_id"]))
-            })
-            .map_or(0, |i| i + 1);
         Ok(windows
             .into_iter()
-            .skip(above)
             .map(|w| {
                 let pid = w["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
                 (
