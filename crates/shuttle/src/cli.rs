@@ -291,6 +291,7 @@ async fn serve(
         confirm: safety.confirm,
         asker,
         background: input == InputMode::Background,
+        android: !local,
     };
     let auto = local && !cfg!(target_os = "linux") && input == InputMode::Auto;
     let mode = if guard.background {

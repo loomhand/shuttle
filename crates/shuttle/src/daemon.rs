@@ -62,6 +62,7 @@ pub struct Guard {
     pub asker: Option<Asker>,
     /// Whether desk input goes in the background, which `gui_plan` refuses on Linux.
     pub background: bool,
+    pub android: bool,
 }
 
 /// What the menu-bar controls read and drive.
@@ -315,11 +316,14 @@ impl<H: Handler> Daemon<H> {
             Confirm::Off => false,
             Confirm::Coordinate => match call.tool.as_str() {
                 "desk_click" | "desk_press" | "desk_drag" => true,
-                "desk_act" => call.args["action"] == "click",
-                COMPUTER_ACT => match call.args["actions"].as_array() {
-                    Some(list) => list.iter().any(points),
-                    None => points(&call.args),
-                },
+                "desk_act" => self.guard.android || call.args["action"] == "click",
+                COMPUTER_ACT => {
+                    let points = |a: &Value| points(a, self.guard.android);
+                    match call.args["actions"].as_array() {
+                        Some(list) => list.iter().any(points),
+                        None => points(&call.args),
+                    }
+                }
                 _ => false,
             },
             Confirm::Every => true,
@@ -594,10 +598,11 @@ fn steps(list: &[Value]) -> String {
 }
 
 /// Whether the computer action `a` can end in a click at a screen point: a pointer action, or typing at an element or a point, which clicks it first.
-fn points(a: &Value) -> bool {
+fn points(a: &Value, android: bool) -> bool {
     let action = a["action"].as_str().unwrap_or_default();
     POINTER_ACTIONS.contains(&action)
         || (action == "type" && (a.get("element").is_some() || a.get("x").is_some()))
+        || (android && action == "scroll")
 }
 
 fn step(a: &Value) -> String {
@@ -947,6 +952,25 @@ mod tests {
         );
         assert_eq!(no.answer(act("click")).await.text, DECLINED);
         assert!(!no.answer(act("action")).await.is_error);
+        let device = daemon(
+            Echo,
+            Guard {
+                confirm: Confirm::Coordinate,
+                asker: Some(asker(false, Arc::default())),
+                android: true,
+                ..Guard::default()
+            },
+        );
+        for action in ["action", "select", "focus"] {
+            assert_eq!(device.answer(act(action)).await.text, DECLINED, "{action}");
+        }
+        for swiped in [
+            json!({"action": "scroll", "element": 4, "direction": "left"}),
+            json!({"actions": [{"action": "key", "key": "back"}, {"action": "scroll", "direction": "down"}]}),
+        ] {
+            let swipe = call("desk_computer_act", swiped);
+            assert_eq!(device.answer(swipe).await.text, DECLINED);
+        }
         let drag = call("desk_drag", json!({"x": 1, "y": 2, "to_x": 30, "to_y": 40}));
         assert_eq!(no.answer(drag).await.text, DECLINED);
         let scroll = call("desk_scroll", json!({"direction": "down", "x": 1, "y": 2}));
@@ -1638,6 +1662,7 @@ mod tests {
                 confirm: Confirm::Off,
                 asker: None,
                 background: false,
+                android: false,
             }
         }
     }
