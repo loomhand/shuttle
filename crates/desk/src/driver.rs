@@ -20,6 +20,7 @@ pub(crate) const CLICK_SPACING: Duration = Duration::from_millis(500);
 pub(crate) const CONNECT_RETRY: Duration = Duration::from_millis(250);
 pub(crate) const ENDED: &str = "session has ended";
 const ENDED_CODE: &str = "session_ended";
+const CLOSED: &str = "cua-driver closed the connection without an answer, as it does when it stops, so whether the call ran is not known: read the window before sending it again";
 pub(crate) const ACTUAL_FRONT: &str = "; actual foreground window ";
 pub(crate) const INPUT_TOOLS: [&str; 9] = [
     "click",
@@ -352,6 +353,9 @@ pub(crate) fn ended(reply: &Value) -> bool {
 }
 
 fn result(tool: &str, reply: &str) -> Result<Value, String> {
+    if reply.is_empty() {
+        return Err(format!("{tool}: {CLOSED}"));
+    }
     let mut v: Value =
         serde_json::from_str(reply).map_err(|e| format!("decode cua-driver reply: {e}"))?;
     if v["ok"] != true {
@@ -640,6 +644,22 @@ mod tests {
         let d = Driver::new(socket.to_string_lossy().into_owned());
         let got = d.send("get_screen_size", &json!({})).await.unwrap();
         assert_eq!(got["width"], 1280);
+        daemon.await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_driver_that_closes_without_an_answer_is_named_as_such() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let daemon = tokio::spawn(async move {
+            let (s, _) = listener.accept().await.unwrap();
+            drop(s);
+        });
+        let d = Driver::new(socket.to_string_lossy().into_owned());
+        let err = d.send("click", &json!({})).await.unwrap_err();
+        assert_eq!(err, format!("click: {CLOSED}"));
         daemon.await.unwrap();
     }
 
