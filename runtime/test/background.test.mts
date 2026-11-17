@@ -319,6 +319,34 @@ test('a background click with a button, count or modifiers goes into the plan wi
   assert.deepEqual(sent(d.calls, 'desk_click'), [{ x: 440, y: 420, count: 2, window: 'Report', pid: 4 }])
   assert.deepEqual(sent(d.calls, 'desk_shot'), [{ window: 'Report', pid: 4 }])
   assert.equal(d.calls.some((c) => c.tool === 'desk_at'), false)
+  const note = 'unverifiable: Posted click (not verified).'
+  const u = desktop([user(), report], ({ tool }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: report, truncated: false, nodes: [{ ref: 0, id: '1', parent: -1, depth: 0, role: 'window', name: 'Report', states: ['showing'] }, file] })
+    if (tool === 'desk_read') return JSON.stringify(file)
+    if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(1200, 800).toString('base64') }
+    if (tool === 'desk_click') return JSON.stringify({ ok: true, unverified: note })
+    return undefined
+  })
+  await daemon(t, u.reply)
+  const heard = await main({ steps: [{ app: 'Report' }, { click: 'report.txt', count: 2 }] })
+  assert.deepEqual(heard.unverified, [{ step: 1, note }], JSON.stringify(heard))
+})
+
+test('a background check whose state cannot be read after its press says the control was pressed', async (t) => {
+  let pressed = false
+  const box = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Wrap lines', states: ['showing'] }
+  const d = desktop([user(), notepad()], ({ tool, args }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad().title, states: ['showing'] }, box] })
+    if (tool === 'desk_press' && args.id === '1/2') pressed = true
+    if (tool === 'desk_read' && pressed) throw new Error('unknown element id 1/2')
+    if (tool === 'desk_read') return JSON.stringify(box)
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { check: 'Wrap lines', on: true }] })
+  assert.equal(r.ok, false)
+  assert.match(String(r.escalate?.reason), /^"Wrap lines" was pressed, and its state after the press needs a look at the screen: /)
+  assert.deepEqual(sent(d.calls, 'desk_press').map((a) => a.id), ['1/2'])
 })
 
 test('a background click with a count takes the image scale from the window of its own app when another app has a window of that title', async (t) => {

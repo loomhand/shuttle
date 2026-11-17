@@ -1185,7 +1185,7 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
     if (i > k) { heard(await sent(desk.key('Return', at(w)), i, false), rec, s); if (!line) continue; base = await settled(w) }
     const r = i > k ? await sent(desk.typeText(raw[i] ?? '', at(w)), i, true) : first
     if (i > k) heard(r, rec, s)
-    if (!r.unverified?.includes(TERMINAL)) { if (secure(s) && !r.unverified) throw await echoed(w, raw[i] ?? '', null); continue }
+    if (!r.unverified) { if (secure(s)) throw await echoed(w, raw[i] ?? '', null); continue }
     const now = await texts(w); const shown = shows(base, now, line, true)
     if (secure(s) && shown) throw await echoed(w, raw[i] ?? '', now)
     if (secure(s) && !unchanged(base, now)) throw new Surprise(changed(w, hush(r.unverified)), await seen())
@@ -1298,7 +1298,7 @@ async function option(combo: Node, opts: Node[], value: string, target: string, 
 }
 
 async function cropState(n: Node, unsent = true) {
-  if (BG && (!AUTO || !unsent)) throw new Surprise(`the state of "${n.name}" needs a look at the screen: ${NO_PIXELS}`, await seen())
+  if (BG && (!AUTO || !unsent)) throw new Surprise(`${unsent ? `the state of "${n.name}"` : `"${n.name}" was pressed, and its state after the press`} needs a look at the screen: ${NO_PIXELS}`, await seen())
   if (BG) await front(frontOf(await desk.windows()))
   const b = (await desk.read(n.id)).bounds ?? n.bounds
   if (!b) throw new Error(`"${n.name}" has no screen position`)
@@ -1365,16 +1365,17 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     tick('act', t0)
     if (BG && rec.unverified && w && !sub && quiet !== undefined) rec.confirmed = !quiet
     else if (BG && rec.unverified && w && !sub) {
-      const now = await texts(w); const tty = rec.unverified.includes(TERMINAL); const shown = shows(was, now, s.type, tty) || (!tty && secure(s) && masked(was, now, s.type.replace(/\n/g, '')))
+      const now = await texts(w); const tty = !!sent?.terminal || rec.unverified.includes(TERMINAL); const shown = shows(was, now, s.type, tty) || (!tty && secure(s) && masked(was, now, s.type.replace(/\n/g, '')))
       if (tty && secure(s) && shown) throw await echoed(w, s.type, now)
       const sealed = OS === 'win32' && !shown && !tty && secure(s) && !!was && !!now && [...now].every(([id, t]) => t.value === was.get(id)?.value) && await hides(w, now)
       if (AUTO && !tty && !secure(s) && !shown && unchanged(was, now) && whole(was) && whole(now) && !taken(await desk.windows())) {
         await desk.focus(w.title, w.pid)
-        await desk.typeText(s.type, FG)
+        const again = await desk.typeText(s.type, FG)
         rec.how = 'foreground'; rec.unverified = undefined; fronted = true; BG = false
+        heard(again, rec, s)
       } else if (tty && secure(s) && !unchanged(was, now)) throw new Surprise(changed(w, rec.unverified), await seen())
       else if (!shown && !sealed && !(tty && unchanged(was, now))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
-      rec.confirmed = shown || (!tty && !sealed)
+      if (BG) rec.confirmed = shown || (!tty && !sealed)
     }
     const blank = recording && first && !chooser && w ? await typedInto(w, s.type) : null
     if (blank) rec.blank = blank.fp
@@ -1585,7 +1586,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const [x, y, into] = await inWindow(w, b[0] + b[2] / 2, b[1] + b[3] / 2)
     const c = into === FG && !hit.n.role.startsWith('menu') ? await placed(x, y, w) : null
     if (c?.check === 'covered-hit' || c?.check === 'foreign-hit') throw new Surprise(`the centre of ${rec.ref} is on ${told(c)}, so the click was not sent`, await seen())
-    t0 = Date.now(); await desk.click(x, y, { ...pointer(s), ...into }); tick('act', t0)
+    t0 = Date.now(); const sent = await desk.click(x, y, { ...pointer(s), ...into }); tick('act', t0)
+    if (BG && sent.unverified) unheard ??= sent.unverified
     await settle(w.title); return
   }
   if (s.click && hit.n.role === 'menuitem') {
