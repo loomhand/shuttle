@@ -352,6 +352,7 @@ test('a terminal nobody sees is read back before a Return where it can be read, 
     assert.equal(dark.calls.filter((c) => c.tool === 'desk_type').length, 1, mode)
     assert.match(String(dark.r.escalate?.reason), /^step 1 \(type\) was sent but not confirmed/, `${mode} ${JSON.stringify(dark.r)}`)
     assert.ok(!JSON.stringify(dark.r).includes('example-pass'), mode)
+    assert.ok(dark.calls.filter((c) => c.tool === 'desk_snapshot').length < 20, mode)
   }
 })
 
