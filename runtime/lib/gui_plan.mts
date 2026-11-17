@@ -1189,9 +1189,8 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
     if (i > k) { heard(await sent(desk.key('Return', at(w)), i, false), rec, s); if (!line) continue; base = await settled(w) }
     const r = i > k ? await sent(desk.typeText(raw[i] ?? '', at(w)), i, true) : first
     if (i > k) heard(r, rec, s)
-    if (!r.unverified) { if (secure(s)) throw await echoed(w, raw[i] ?? '', null); continue }
+    if (!r.unverified?.includes(TERMINAL)) { if (secure(s) && !r.unverified) throw await echoed(w, raw[i] ?? '', null); continue }
     const now = await texts(w); const shown = shows(base, now, line, true)
-    if (!now && !r.unverified.includes(TERMINAL)) { quiet = true; continue }
     if (secure(s) && shown) throw await echoed(w, raw[i] ?? '', now)
     if (secure(s) && !unchanged(base, now)) throw new Surprise(changed(w, hush(r.unverified)), await seen())
     if (!shown && !unchanged(base, now)) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing line ${i + 1} of ${n}${i > 1 ? `, after the ${i} lines before it and their Returns were sent` : i ? ', after the line before it and its Return were sent' : ''}: ${r.unverified}`, await seen())
@@ -1372,7 +1371,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (BG && rec.unverified && w && !sub && quiet !== undefined) rec.confirmed = !quiet
     else if (BG && rec.unverified && w && !sub) {
       const now = await texts(w); const left = !now && nl && isDialog(o) && await closed(w.title, w.pid); if (left) rec.submit = true
-      const tty = !!sent?.terminal || rec.unverified.includes(TERMINAL); const shown = shows(was, now, s.type, tty) || (!tty && secure(s) && masked(was, now, s.type.replace(/\n/g, '')))
+      const tty = rec.unverified.includes(TERMINAL); const shown = shows(was, now, s.type, tty) || (!tty && secure(s) && masked(was, now, s.type.replace(/\n/g, '')))
       if (tty && secure(s) && shown) throw await echoed(w, s.type, now)
       const sealed = OS === 'win32' && !shown && !tty && secure(s) && !!was && !!now && [...now].every(([id, t]) => t.value === was.get(id)?.value) && await hides(w, now)
       if (AUTO && !tty && !secure(s) && !shown && unchanged(was, now) && whole(was) && whole(now) && !taken(await desk.windows())) {

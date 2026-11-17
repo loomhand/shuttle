@@ -10,7 +10,6 @@ type Plan = typeof auto
 
 const NOTE = 'unverifiable: Sent 2 char(s) via PostMessage (not verified).'
 const TTY = 'unverifiable: Sent (unverified) 3 char(s) via CGEvent (terminal emulator, 0ms delay). — a terminal may not echo what it reads (a password prompt), so neither the screen nor a screenshot can confirm it; do not type the text again.'
-const UNSEEN = 'unverifiable; the window is on another Space: the app may not repaint a window nobody sees, so the text may be there even if a screenshot looks unchanged: do not type it again, and before you submit it with Return or Send, confirm that it is there by a read-back you can trust or by asking the user'
 const LONG = `${'$ ls\nREADME.md\n'.repeat(20)}$ `
 const READ = 64 << 10
 const HUGE = LONG.repeat(250)
@@ -51,7 +50,7 @@ async function run(t: TestContext, plan: Plan, typed: (before: string, text: str
   return { r, calls: d.calls, doc: d.doc() }
 }
 
-async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', extra = {} as Record<string, unknown>, front = false, answer = (s: string) => `${s}\n$ `, blind = false, named = true, role = 'document', erases = true, eraseFails = false, eraseBlinds = false, readBlinds = false, steal = false, stealMid = false, eraseLimit = Infinity, renumber = false, eraseLag = 0, lagThenBlind = false, unseen = false, dark = false } = {}) {
+async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', extra = {} as Record<string, unknown>, front = false, answer = (s: string) => `${s}\n$ `, blind = false, named = true, role = 'document', erases = true, eraseFails = false, eraseBlinds = false, readBlinds = false, steal = false, stealMid = false, eraseLimit = Infinity, renumber = false, eraseLag = 0, lagThenBlind = false } = {}) {
   const term: W = { id: 't', title: 'Terminal', role: 'window', pid: 7, active: front, app: 'Terminal' }
   const bare = role === 'text' || role === 'terminal'
   const node = () => ({ ref: 0, id: renumber && erased ? 'd2' : 'd', parent: -1, depth: 0, role, name: role === 'text' ? 'Command Prompt' : '', states: role === 'text' ? ['focused'] : [], ...(bare ? {} : { value: screen }) })
@@ -60,7 +59,6 @@ async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text
   await daemon(t, (c) => {
     calls.push(c)
     if (c.tool === 'desk_windows') return JSON.stringify(front && !(steal && typed1) && !(stealMid && backs > 0) ? [{ ...user(), active: false }, term] : front ? [user(), { ...term, active: false }] : [user(), term])
-    if (dark && (c.tool === 'desk_snapshot' || c.tool === 'desk_read')) throw new Error('"Terminal" is on another Space: accessibility does not reach it there')
     if (((blind && keyed) || (eraseBlinds && erased)) && (c.tool === 'desk_snapshot' || c.tool === 'desk_read')) throw new Error('the window answers no accessibility calls')
     if (readBlinds && erased && c.tool === 'desk_read') throw new Error('the node answers no text')
     if (lagThenBlind && erased && lag === 0 && (c.tool === 'desk_snapshot' || c.tool === 'desk_read')) throw new Error('the window answers no accessibility calls')
@@ -72,7 +70,7 @@ async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text
     const text = String(c.args.text)
     typed1 = true
     screen = typed(screen, text)
-    return JSON.stringify(front ? { ok: true, chars: 3 } : named ? { ok: true, chars: 3, terminal: true, ...(sure(text) ? {} : { unverified: unseen ? UNSEEN : TTY }) } : { ok: true, chars: 3, unverified: 'unverifiable: Sent 3 char(s) via PostMessage (not verified).' })
+    return JSON.stringify(front ? { ok: true, chars: 3 } : named ? { ok: true, chars: 3, terminal: true, ...(sure(text) ? {} : { unverified: TTY }) } : { ok: true, chars: 3, unverified: 'unverifiable: Sent 3 char(s) via PostMessage (not verified).' })
   })
   const step = { type, ...extra }
   const steps = type.includes('\n') ? [{ app: 'Terminal' }, step] : [{ app: 'Terminal' }, step, { key: 'Return' }]
@@ -324,26 +322,6 @@ test('a secret step never shows its text, and a password the terminal echoed sto
       }
     }
     assert.equal(kept(), false, mode)
-  }
-})
-
-test('a terminal nobody sees is read back before a Return where it can be read, and where it cannot its line is submitted once and stays unconfirmed', async (t) => {
-  for (const [mode, plan] of modes) {
-    const echo = await terminal(t, plan, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, unseen: true })
-    assert.match(String(echo.r.escalate?.reason), /^the password showed in "Terminal", so it was not submitted, and it was erased$/, mode)
-    assert.ok(!pressed(echo.calls).includes('Return'), `${mode}\n${tools(echo.calls).join('\n')}`)
-    const lines = await terminal(t, plan, (screen, text) => screen + text.slice(0, 1), { type: 'ls\npwd', unseen: true })
-    assert.match(String(lines.r.escalate?.reason), /did not show in "Terminal" after typing line 1 of 2/, mode)
-    assert.ok(!pressed(lines.calls).includes('Return'), mode)
-    const quiet = await terminal(t, plan, (screen) => screen, { unseen: true })
-    assert.equal(quiet.calls.filter((c) => c.tool === 'desk_type').length, 1, `${mode}\n${tools(quiet.calls).join('\n')}`)
-    assert.ok(!quiet.calls.some((c) => c.tool === 'desk_focus'), mode)
-    assert.deepEqual(quiet.r.unverified, [{ step: 1, note: UNSEEN }], mode)
-    const dark = await terminal(t, plan, (screen) => screen, { type: 'example-pass\n', extra: { secret: true }, unseen: true, dark: true })
-    assert.deepEqual(pressed(dark.calls), ['Return'], `${mode}\n${tools(dark.calls).join('\n')}`)
-    assert.equal(dark.calls.filter((c) => c.tool === 'desk_type').length, 1, mode)
-    assert.match(String(dark.r.escalate?.reason), /^step 1 \(type\) was sent but not confirmed/, `${mode} ${JSON.stringify(dark.r)}`)
-    assert.ok(!JSON.stringify(dark.r).includes('example-pass'), mode)
   }
 })
 
