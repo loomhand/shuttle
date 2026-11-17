@@ -475,6 +475,23 @@ test('a background Return that closes its dialog is confirmed by the dialog leav
   assert.equal(r.unverified, undefined)
 })
 
+test('a background line whose Return closes its dialog is confirmed, not reported as text that did not show', async (t) => {
+  const go = { id: '2', title: 'Go To Line', role: 'window', pid: 4, active: false }
+  const ws = [user(), notepad(), go]
+  const note = 'unverifiable: Sent via PostMessage (not verified).'
+  const d = desktop(ws, ({ tool, args }) => {
+    if (tool === 'desk_snapshot') { if (!ws.includes(go)) return { text: 'no window "Go To Line"', error: true }; return JSON.stringify({ window: go, truncated: false, nodes: [{ ref: 0, id: '2', parent: -1, depth: 0, role: 'dialog', name: go.title, states: ['showing'] }, { ref: 1, id: '2/1', parent: 0, depth: 1, role: 'textbox', name: 'Line number', states: ['showing', 'focused'], value: '' }] }) }
+    if (tool !== 'desk_type') return undefined
+    if (String(args.text).includes('\n')) ws.pop()
+    return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: note })
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Go To Line' }, { type: '10\n' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.unverified, undefined)
+  assert.deepEqual(sent(d.calls, 'desk_type').map((a) => a.text), ['10', '\n'])
+})
+
 test('a recorded after that the window the step opened satisfies confirms the step the driver could not', async (t) => {
   const ws = [user(), notepad()]
   const d = desktop(ws, ({ tool }) => {

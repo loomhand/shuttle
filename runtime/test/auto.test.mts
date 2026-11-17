@@ -308,6 +308,7 @@ test('typing an echoing terminal shows is confirmed', async (t) => {
 
 test('a secret step never shows its text, and a password the terminal echoed stops before its Return', async (t) => {
   const hidden = (r: unknown) => !JSON.stringify(r).includes('example-pass') && !JSON.stringify(r).includes('exam')
+  const kept = () => readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8').includes('exam')
   for (const [mode, plan] of modes) {
     for (const type of ['example-pass', 'example-pass\n']) {
       const part = await terminal(t, plan, (screen, text) => screen + (text === 'example-pass' ? 'exam' : text), { type, extra: { secret: true } })
@@ -321,6 +322,7 @@ test('a secret step never shows its text, and a password the terminal echoed sto
         assert.ok(hidden(echo.r), `${mode} ${JSON.stringify(type)}`)
       }
     }
+    assert.equal(kept(), false, mode)
   }
 })
 

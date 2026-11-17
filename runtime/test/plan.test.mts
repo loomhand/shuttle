@@ -161,5 +161,7 @@ test('a save name with no ASCII letter or digit and a param that is an object ar
   const params = { name: { example: 'Ada' } } as unknown as Record<string, string>
   const typed = await main({ steps: [{ app: 'Notepad' }, { type: '{{name}}' }], params })
   assert.equal(typed.error, 'param "name" must be a string, not an object; nothing ran')
+  const saved = await main({ save: 'x', params })
+  assert.equal(saved.error, typed.error)
   assert.deepEqual(calls, [])
 })

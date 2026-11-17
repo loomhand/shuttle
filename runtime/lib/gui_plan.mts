@@ -163,14 +163,14 @@ async function perform(p: Params): Promise<Result> {
   if (p.find) return await find(p.find)
   if (p.locate) return await locate(p.locate.target, p.locate.press ?? false)
   if (p.save && !slug(p.save)) return { ok: false, error: 'save needs a name with an ASCII letter or digit; nothing ran' }
+  const odd = Object.entries(p.params ?? {}).find(([, v]: [string, unknown]) => v === null || typeof v === 'object')?.[0]
+  if (odd !== undefined) return { ok: false, error: `param "${odd}" must be a string, not an object; nothing ran` }
   if (p.save && !p.steps?.length && !p.flow) return await promote(p.save, p.params)
   let flow: Flow | null = null
   try { if (p.flow) flow = loadFlow(p.flow) } catch (e: unknown) { return { ok: false, done: 0, ms: 0, escalate: { reason: e instanceof Error ? e.message : String(e) } } }
   const params = { ...(flow?.params ?? {}), ...(p.params ?? {}) }
   const plan: Step[] = flow ? flow.steps : p.steps ?? []
   if (!plan.length) return { ok: false, error: 'pass steps, flow or find' }
-  const odd = Object.entries(params).find(([, v]: [string, unknown]) => v === null || typeof v === 'object')?.[0]
-  if (odd !== undefined) return { ok: false, error: `param "${odd}" must be a string, not an object; nothing ran` }
   recording = !flow && !!plan[0]?.app && !p.start
   lastSeen = ''
   const trace: Trace[] = []; const log: Record<string, unknown>[] = []
@@ -1370,7 +1370,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     tick('act', t0)
     if (BG && rec.unverified && w && !sub && quiet !== undefined) rec.confirmed = !quiet
     else if (BG && rec.unverified && w && !sub) {
-      const now = await texts(w); const tty = !!sent?.terminal || rec.unverified.includes(TERMINAL); const shown = shows(was, now, s.type, tty) || (!tty && secure(s) && masked(was, now, s.type.replace(/\n/g, '')))
+      const now = await texts(w); const left = !now && nl && isDialog(o) && await closed(w.title, w.pid); if (left) rec.submit = true
+      const tty = !!sent?.terminal || rec.unverified.includes(TERMINAL); const shown = shows(was, now, s.type, tty) || (!tty && secure(s) && masked(was, now, s.type.replace(/\n/g, '')))
       if (tty && secure(s) && shown) throw await echoed(w, s.type, now)
       const sealed = OS === 'win32' && !shown && !tty && secure(s) && !!was && !!now && [...now].every(([id, t]) => t.value === was.get(id)?.value) && await hides(w, now)
       if (AUTO && !tty && !secure(s) && !shown && unchanged(was, now) && whole(was) && whole(now) && !taken(await desk.windows())) {
@@ -1379,7 +1380,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
         rec.how = 'foreground'; rec.unverified = undefined; fronted = true; BG = false
         heard(again, rec, s)
       } else if (tty && secure(s) && !unchanged(was, now)) throw new Surprise(changed(w, rec.unverified), await seen())
-      else if (!shown && !sealed && !(tty && unchanged(was, now))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
+      else if (!left && !shown && !sealed && !(tty && unchanged(was, now))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
       if (BG) rec.confirmed = shown || (!tty && !sealed)
     }
     const blank = recording && first && !chooser && w ? await typedInto(w, s.type) : null
