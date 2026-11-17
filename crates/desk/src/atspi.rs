@@ -1823,7 +1823,7 @@ mod tests {
         assert_eq!(Obj::parse(&other.id()).unwrap(), other);
         let gtk4 = Obj {
             bus: ":1.14".into(),
-            path: "/dev/cmgs/Probe/a11y/8c851f3c".into(),
+            path: "/org/example/Probe/a11y/8c851f3c".into(),
         };
         assert_eq!(Obj::parse(&gtk4.id()).unwrap(), gtk4);
         assert!(Obj::parse("nope").is_err());
