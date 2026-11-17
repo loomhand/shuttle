@@ -475,7 +475,7 @@ test('a background Return that closes its dialog is confirmed by the dialog leav
   assert.equal(r.unverified, undefined)
 })
 
-test('a background line whose Return closes its dialog is confirmed, not reported as text that did not show', async (t) => {
+test('a background line whose Return closes its dialog stays unconfirmed, and is not reported as text that did not show', async (t) => {
   const go = { id: '2', title: 'Go To Line', role: 'window', pid: 4, active: false }
   const ws = [user(), notepad(), go]
   const note = 'unverifiable: Sent via PostMessage (not verified).'
@@ -487,8 +487,8 @@ test('a background line whose Return closes its dialog is confirmed, not reporte
   })
   await daemon(t, d.reply)
   const r = await main({ steps: [{ app: 'Go To Line' }, { type: '10\n' }] })
-  assert.equal(r.ok, true, JSON.stringify(r))
-  assert.equal(r.unverified, undefined)
+  assert.match(String(r.escalate?.reason), /^step 1 \(type\) was sent but not confirmed/, JSON.stringify(r))
+  assert.deepEqual(r.unverified, [{ step: 1, note }])
   assert.deepEqual(sent(d.calls, 'desk_type').map((a) => a.text), ['10', '\n'])
 })
 

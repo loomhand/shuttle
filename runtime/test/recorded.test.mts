@@ -180,7 +180,8 @@ for (const [how, step] of [['right click', { button: 'right' }], ['double click'
   })
   const covered = () => ({ found: { ref: 0, id: '1/2', parent: -1, depth: 0, role: 'button', name: 'report.txt', states: [] }, path: [{ id: '1/1', role: 'window', name: 'Files' }], pid: process.pid, covered: { title: 'Always on top', pid: 9 } })
   const foreign = () => ({ found: { ref: 0, id: '9/2', parent: -1, depth: 0, role: 'pane', name: 'Pinned', states: [] }, path: [{ id: '9/1', role: 'window', name: 'Always on top' }], pid: 9 })
-  for (const [cover, said] of [[covered, /under the window "Always on top", so the click was not sent/], [foreign, /which lies outside the plan window, so the click was not sent/]] as const) {
+  const menu = () => ({ ...covered(), covered: { title: '', pid: 9 } })
+  for (const [cover, said] of [[covered, /under the window "Always on top", so the click was not sent/], [menu, /"Files", under another window, so the click was not sent/], [foreign, /which lies outside the plan window, so the click was not sent/]] as const) {
     under = cover
     const r = await main({ steps: [{ click: 'report.txt', ...step }] })
     assert.equal(r.ok, false, `${how} ${JSON.stringify(r)}`)
