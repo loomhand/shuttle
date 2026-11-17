@@ -417,11 +417,14 @@ impl Computer {
         }
         let mut refused = None;
         let mut result = match pressed {
-            Some(pressed) if req.get("verify_hit").is_some() => {
+            Some(mut pressed) if req.get("verify_hit").is_some() => {
+                if let Some(p) = pressed.as_object_mut() {
+                    p.remove("delivery_mode");
+                }
                 match self.call(target, tool, req).await {
                     Ok(v) if v["isError"] == true => {
                         let text = format!("{tool}: {}", told(&v));
-                        if is_hit_refusal(&v) {
+                        if self.os != Os::Windows && is_hit_refusal(&v) {
                             match self.request(target, "click", pressed).await {
                                 Err(e) if e.contains(AX_UNSUPPORTED) => Err(text),
                                 Err(e) => Err(format!("{text}\n{e}")),
@@ -1703,9 +1706,11 @@ impl Computer {
         if let Some(id) = window_id {
             req["window_id"] = id.into();
         }
-        for (n, menu) in menus.iter().enumerate() {
-            if n > 0 {
+        let mut open = false;
+        for menu in menus {
+            if open {
                 self.escape().await;
+                open = false;
             }
             let Some((x, y)) = self.poll_pixel(session, *menu, true).await else {
                 continue;
@@ -1713,6 +1718,7 @@ impl Computer {
             if self.pixel_click(x, y).await.is_err() {
                 continue;
             }
+            open = true;
             let probe = self.own("menu");
             let state = self
                 .request(probe.name(), "get_window_state", req.clone())
@@ -1748,7 +1754,7 @@ impl Computer {
                 }
             }
         }
-        if !menus.is_empty() {
+        if open {
             self.escape().await;
         }
         None
@@ -3575,6 +3581,19 @@ mod tests {
                 out.text
             );
         }
+        let front = json!({"action": "click", "element": 0, "foreground": true});
+        let (out, sent) =
+            field_with("AXTextField", front.clone(), "", HIT_REFUSALS[0], Os::Mac).await;
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(
+            (&sent[0]["delivery_mode"], sent[1].get("delivery_mode")),
+            (&json!("foreground"), None),
+            "{sent:?}"
+        );
+        for code in HIT_REFUSALS {
+            let (out, sent) = field_with("Edit", front.clone(), "", code, Os::Windows).await;
+            assert!(out.is_error && sent.len() == 1, "{code}: {sent:?}");
+        }
         let (unknown, sent) = field("AXTextField", "click", "", "unknown").await;
         assert!(unknown.is_error && sent.len() == 1, "{sent:?}");
         let (_, windowless) = field("AXTextField", "click", "", "windowless").await;
@@ -5181,17 +5200,25 @@ mod tests {
         refusal: &'static str,
         hit: &'static str,
     ) -> (Output, Vec<Value>) {
+        let act = json!({"action": action, "element": 0});
+        field_with(role, act, refusal, hit, Os::Mac).await
+    }
+
+    async fn field_with(
+        role: &'static str,
+        act: Value,
+        refusal: &'static str,
+        hit: &'static str,
+        os: Os,
+    ) -> (Output, Vec<Value>) {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
         let calls = std::sync::Arc::default();
         let driver = press_driver(&socket, &calls, refusal, role, hit);
-        let cua = cua_on(&socket, Os::Mac);
+        let cua = cua_on(&socket, os);
         cua.state(json!({"pid": 7})).await.unwrap();
         calls.lock().unwrap().clear();
-        let out = cua
-            .act(json!({"action": action, "element": 0}))
-            .await
-            .unwrap();
+        let out = cua.act(act).await.unwrap();
         driver.abort();
         let sent = calls
             .lock()

@@ -35,7 +35,7 @@ impl<B: 'static> Worker<B> {
     {
         let (tx, rx) = oneshot::channel();
         let slot = Arc::new(Mutex::new(Some(hold)));
-        let _unstarted = Unstarted(Arc::clone(&slot));
+        let unstarted = Unstarted(Arc::clone(&slot));
         let job: Job<B> = Box::new(move |backend| {
             let Some(hold) = lock(&slot).take() else {
                 return;
@@ -59,9 +59,15 @@ impl<B: 'static> Worker<B> {
                 Err("the accessibility worker stopped".to_owned())
             }
             Err(_) => {
+                let queued = lock(&unstarted.0).take().is_some();
                 self.restart(sent_on);
+                let why = if queued {
+                    ": the call waited behind another accessibility call and did not start, so nothing was sent"
+                } else {
+                    "; the app may hang, and an action sent to it may still take effect once it answers"
+                };
                 Err(format!(
-                    "no accessibility answer within {} ms; the app may hang, and an action sent to it may still take effect once it answers",
+                    "no accessibility answer within {} ms{why}",
                     limit.as_millis()
                 ))
             }
@@ -164,6 +170,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("within 50 ms"), "{err}");
+        assert!(err.contains("may still take effect"), "{err}");
         let fresh = w.run(Duration::from_secs(1), (), |v| Ok(v.len())).await;
         assert_eq!(fresh.unwrap(), 0);
     }
@@ -199,7 +206,11 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(err.contains("within 50 ms"), "{err}");
+        assert!(
+            err.starts_with("no accessibility answer within 50 ms: ")
+                && err.ends_with("did not start, so nothing was sent"),
+            "{err}"
+        );
         release.send(()).unwrap();
         hang.await.unwrap().unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;

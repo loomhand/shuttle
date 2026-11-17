@@ -611,6 +611,7 @@ impl Access for Ax {
             return Ok(None);
         };
         let target = self.element(&frame.id)?;
+        let foreign = pid(&at).filter(|&p| Some(p) != pid(&target));
         let mut window = None;
         for _ in 0..MAX_DEPTH {
             if at == target {
@@ -625,10 +626,13 @@ impl Access for Ax {
             };
             at = parent;
         }
-        Ok(window.map(|w| {
-            let pid = pid(&w).and_then(|p| u32::try_from(p).ok());
-            (string(attr(&w, "AXTitle")), pid)
-        }))
+        Ok(match window {
+            Some(w) => {
+                let pid = pid(&w).and_then(|p| u32::try_from(p).ok());
+                Some((string(attr(&w, "AXTitle")), pid))
+            }
+            None => foreign.map(|p| (String::new(), u32::try_from(p).ok())),
+        })
     }
 
     fn menu_at(&mut self, x: i32, y: i32) -> Result<Option<String>, String> {
