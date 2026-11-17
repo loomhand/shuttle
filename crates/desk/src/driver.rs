@@ -20,6 +20,8 @@ pub(crate) const CLICK_SPACING: Duration = Duration::from_millis(500);
 pub(crate) const CONNECT_RETRY: Duration = Duration::from_millis(250);
 pub(crate) const ENDED: &str = "session has ended";
 const ENDED_CODE: &str = "session_ended";
+const TIMED_OUT: &str =
+    "timed out, and it may still take effect: read the window before sending it again";
 pub(crate) const CLOSED: &str = "cua-driver closed the connection without an answer, as it does when it stops, so whether the call ran is not known: read the window before sending it again";
 pub(crate) const ACTUAL_FRONT: &str = "; actual foreground window ";
 pub(crate) const INPUT_TOOLS: [&str; 9] = [
@@ -145,7 +147,7 @@ impl Driver {
         line.push(b'\n');
         tokio::time::timeout(call_limit(tool, args, limit), self.exchange(line))
             .await
-            .map_err(|_| format!("cua-driver {tool} timed out"))?
+            .map_err(|_| format!("cua-driver {tool} {TIMED_OUT}"))?
     }
 
     pub(crate) async fn admit(&self, tool: &str, args: &Value) -> Result<bool, String> {
@@ -272,15 +274,20 @@ impl Input for Driver {
                 _ => ("", self.calls.fetch_add(1, Ordering::Relaxed)),
             };
             args["session"] = format!("desk-{}-{kind}{n}", std::process::id()).into();
+            let mut ending = Ending {
+                endpoint: &self.endpoint,
+                session: (!read).then_some(&args["session"]),
+            };
             let done = match point {
                 Some(point) => self.spaced(point, self.send(tool, &args)).await,
                 None => self.send(tool, &args).await,
             };
-            if !read && !done.as_ref().is_err_and(|e| e.starts_with(CONNECT_FAILED)) {
-                let _ = self
-                    .send("end_session", &json!({"session": args["session"]}))
-                    .await;
+            if let Some(session) = ending.session
+                && !done.as_ref().is_err_and(|e| e.starts_with(CONNECT_FAILED))
+            {
+                let _ = self.send("end_session", &json!({"session": session})).await;
             }
+            ending.session = None;
             return done;
         }
         let foreground = self.admit(tool, &args).await?;
@@ -298,6 +305,28 @@ impl Input for Driver {
 impl Input for std::sync::Arc<Driver> {
     fn call(&self, tool: &str, args: Value) -> impl Future<Output = Result<Value, String>> + Send {
         Driver::call(self, tool, args)
+    }
+}
+
+struct Ending<'a> {
+    endpoint: &'a str,
+    session: Option<&'a Value>,
+}
+
+impl Drop for Ending<'_> {
+    fn drop(&mut self) {
+        let Some(session) = self.session.cloned() else {
+            return;
+        };
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let driver = Driver::new(self.endpoint.to_owned());
+        rt.spawn(async move {
+            let _ = driver
+                .send("end_session", &json!({"session": session}))
+                .await;
+        });
     }
 }
 
@@ -897,6 +926,43 @@ mod tests {
         assert_eq!(calls[7].0, "get_window_state");
         assert!(!calls[7].1.contains("window"), "{calls:?}");
         assert_eq!(calls[8], ("end_session", calls[7].1));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn on_linux_a_call_dropped_before_its_answer_still_ends_its_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let daemon = tokio::spawn(async move {
+            let mut lines = Vec::new();
+            let mut held = Vec::new();
+            for _ in 0..2 {
+                let (s, _) = listener.accept().await.unwrap();
+                let mut s = BufReader::new(s);
+                let mut line = String::new();
+                s.read_line(&mut line).await.unwrap();
+                lines.push(serde_json::from_str::<Value>(&line).unwrap());
+                held.push(s);
+            }
+            lines
+        });
+        let d = Driver::new(socket.to_string_lossy().into_owned());
+        let call = d.call("type_text", json!({"text": "a"}));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), call)
+                .await
+                .is_err()
+        );
+        let lines = tokio::time::timeout(Duration::from_secs(5), daemon)
+            .await
+            .expect("no end_session after the dropped call")
+            .unwrap();
+        assert_eq!(
+            (&lines[0]["name"], &lines[1]["name"]),
+            (&json!("type_text"), &json!("end_session"))
+        );
+        assert_eq!(lines[0]["args"]["session"], lines[1]["args"]["session"]);
     }
 
     #[cfg(target_os = "linux")]

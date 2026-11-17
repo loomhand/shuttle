@@ -64,7 +64,7 @@ pub(crate) fn plan_press<B: Access>(
         || node.role.starts_with("menu")
         || !b.pid_of(id).ok().flatten().is_some_and(libreoffice)
         || in_dialog(b, &chain);
-    if pixel && let Ok((x, y)) = reachable(b, id, &node, &chain, linux, background) {
+    if pixel && let Ok((x, y)) = reachable(b, id, &node, &chain, os, background) {
         return Ok(Press::Click(x, y));
     }
     if uia_behind {
@@ -83,7 +83,7 @@ pub(crate) fn hit_centre<B: Access>(
 ) -> Result<Option<(i32, i32)>, String> {
     let node = b.node(id, Extras::BOUNDS, 0)?;
     let chain = b.ancestors(id)?;
-    match reachable(b, id, &node, &chain, os == Os::Linux, false) {
+    match reachable(b, id, &node, &chain, os, false) {
         Ok(point) => Ok(Some(point)),
         Err(None) => Ok(None),
         Err(Some(title)) => {
@@ -139,7 +139,7 @@ fn reachable<B: Access>(
     id: &str,
     node: &Node,
     chain: &[String],
-    linux: bool,
+    os: Os,
     background: bool,
 ) -> Result<(i32, i32), Option<String>> {
     let [x, y, w, h] = node.bounds.ok_or(None)?;
@@ -157,7 +157,7 @@ fn reachable<B: Access>(
                     (bx..bx + bw).contains(&cx) && (by..by + bh).contains(&cy)
                 })
         }
-        Err(_) => linux,
+        Err(_) => os == Os::Linux,
     });
     if !inside {
         return Err(None);
@@ -171,25 +171,26 @@ fn reachable<B: Access>(
     if !reaches {
         return Err(None);
     }
-    if linux
+    if os != Os::Windows
         && !background
-        && let Some(cover) = covered(b, id, window, cx, cy)
+        && let Some(cover) = covered(b, id, window, cx, cy, os)
     {
         return Err(Some(cover));
     }
     Ok((cx, cy))
 }
 
-fn covered<B: Access>(b: &mut B, id: &str, window: &str, x: i32, y: i32) -> Option<String> {
-    let node = b.node(window, Extras::BOUNDS, 0).ok()?;
-    let pid = b.pid_of(id).ok().flatten();
-    let frame = Frame {
+fn covered<B: Access>(b: &mut B, id: &str, window: &str, x: i32, y: i32, os: Os) -> Option<String> {
+    let mut frame = Frame {
         id: window.to_owned(),
-        title: node.name,
-        pid,
-        bounds: node.bounds,
         ..Frame::default()
     };
+    if os != Os::Mac {
+        let node = b.node(window, Extras::BOUNDS, 0).ok()?;
+        frame.title = node.name;
+        frame.bounds = node.bounds;
+        frame.pid = b.pid_of(id).ok().flatten();
+    }
     b.covering(&frame, x, y)
         .ok()
         .flatten()
@@ -299,6 +300,20 @@ mod tests {
     }
 
     #[test]
+    fn a_macos_element_a_window_of_another_app_covers_takes_no_click() {
+        let mut f = notepad();
+        f.behind = true;
+        f.covers = Some(("Calculator".into(), Some(9)));
+        let err = hit_centre(&mut f, "ok", Os::Mac).unwrap_err();
+        assert!(err.starts_with("the window \"Calculator\" covers"), "{err}");
+        assert_eq!(
+            plan_press(&mut f, "ok", Os::Mac, false).unwrap(),
+            Press::Acted(true)
+        );
+        assert_eq!(f.acts, [("ok".to_owned(), Act::Action)]);
+    }
+
+    #[test]
     fn a_macos_button_that_refuses_its_action_takes_a_click() {
         let mut f = notepad();
         f.add(
@@ -334,7 +349,7 @@ mod tests {
         f.ancestry = 0;
         for background in [false, true] {
             assert_eq!(
-                reachable(&mut f, "ok", &node, &chain, false, background),
+                reachable(&mut f, "ok", &node, &chain, Os::Windows, background),
                 Ok((140, 110))
             );
         }
