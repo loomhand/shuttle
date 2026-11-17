@@ -157,11 +157,12 @@ public final class Ui {
         CharSequence value = f.isShowingHintText() ? null : f.getText();
         String text = value == null ? "" : value.toString();
         int n = text.codePointCount(0, text.length());
-        String tail = text.substring(text.offsetByCodePoints(0, Math.max(0, n - TAIL)));
-        return "{\"editable\":" + f.isEditable() + ",\"password\":" + f.isPassword()
+        boolean secret = f.isPassword();
+        String tail = secret ? "" : text.substring(text.offsetByCodePoints(0, Math.max(0, n - TAIL)));
+        return "{\"editable\":" + f.isEditable() + ",\"password\":" + secret
             + ",\"window\":" + (w != null && w.isFocused()) + ",\"id\":" + (w == null ? "null" : String.valueOf(w.getId()))
             + ",\"len\":" + text.length()
-            + ",\"hash\":" + text.hashCode() + ",\"tail\":" + json(tail) + ",\"bounds\":[" + r.left + ',' + r.top
+            + ",\"hash\":" + (secret ? 0 : text.hashCode()) + ",\"tail\":" + json(tail) + ",\"bounds\":[" + r.left + ',' + r.top
             + ',' + r.right + ',' + r.bottom + "]}";
     }
 
@@ -268,7 +269,7 @@ public final class Ui {
         Rect r = new Rect();
         n.getBoundsInScreen(r);
         sb.append("<node");
-        attr(sb, "text", n.getText());
+        attr(sb, "text", n.isPassword() ? null : n.getText());
         attr(sb, "class", n.getClassName());
         attr(sb, "content-desc", n.getContentDescription());
         attr(sb, "hint", n.getHintText());
