@@ -122,6 +122,7 @@ const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
 const ACTION_ONLY = 'an accessibility action ran, and on Linux its success does not show its effect; no later step read it back'
 const NOOP = 'the input was sent, and the driver saw nothing change where it expected a change; no later step read its effect'
 const UNCHECKED = 'the text was sent, and the device did not check that it showed, as for a web view, a field that changes what is typed, or a first line pasted where no field reports the input focus; no later step read it back'
+const MAY_HAVE_RUN = ['input_delivery_stalled:', 'closed the connection without an answer', 'timed out']
 const TOGGLE_UNREAD = 'the menu toggle was pressed, and its state after the press could not be read; no later step read it back'
 const SHORTCUT_VERBS: Record<string, string> = { 'ctrl+n': 'new', 'ctrl+s': 'save', 'ctrl+shift+s': 'save as', 'ctrl+o': 'open' }
 const known = new Set<string>()
@@ -161,6 +162,9 @@ async function perform(p: Params): Promise<Result> {
   if (p.reindex) { repo(); writeIndex(); git('add', '-A'); git('commit', '-q', '-m', 'sync from the flow library'); return { ok: true } }
   if (p.find) return await find(p.find)
   if (p.locate) return await locate(p.locate.target, p.locate.press ?? false)
+  if (p.save && !slug(p.save)) return { ok: false, error: 'save needs a name with an ASCII letter or digit; nothing ran' }
+  const odd = Object.entries(p.params ?? {}).find(([, v]: [string, unknown]) => v === null || typeof v === 'object')?.[0]
+  if (odd !== undefined) return { ok: false, error: `param "${odd}" must be a string, not an object; nothing ran` }
   if (p.save && !p.steps?.length && !p.flow) return await promote(p.save, p.params)
   let flow: Flow | null = null
   try { if (p.flow) flow = loadFlow(p.flow) } catch (e: unknown) { return { ok: false, done: 0, ms: 0, escalate: { reason: e instanceof Error ? e.message : String(e) } } }
@@ -492,7 +496,7 @@ function traced(i: number, rec: Rec, s: Step, escalated: boolean): Trace {
   }
 }
 
-function heard(r: desk.Sent, rec: Rec, s: Step, sent?: string) { if (r.typed === false) throw new Surprise(`${typedText(s)} did not show in the focused field${sent?.includes('\n') ? ', after all its lines and the Returns between them were sent' : ''}`, {}); if (r.typed === null && !secure(s)) rec.caveat ??= UNCHECKED; if (!BG && r.effect === 'suspected_noop') rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
+function heard(r: desk.Sent, rec: Rec, s: Step, sent?: string) { if (r.typed === false) throw new Surprise(`${typedText(s)} did not show in the focused field${sent?.includes('\n') ? ', after all its lines and the Returns between them were sent' : ''}`, {}); if (r.typed === null && !secure(s)) rec.caveat ??= UNCHECKED; if ((!BG || r.input === 'foreground') && r.effect === 'suspected_noop') rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
 function hush(note: string) { return `unverifiable: the password was sent and the target did not confirm it${note.includes(TERMINAL) ? ` (${TERMINAL})` : ''}; do not type it again` }
 async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
   let ws = seed ?? await desk.windows()
@@ -1075,7 +1079,7 @@ async function choose(nodes: Node[], n: Node, rec: { via?: string }, open = fals
     const mods = n.shortcut.split('+').slice(0, -1)
     if (OS !== 'darwin' && n.shortcut && (mods.some((x) => x !== 'shift') || /^f\d+$/.test(n.shortcut))) {
       if (open) for (const _ of menus(nodes, n.parent)) await desk.key('Escape', at(w))
-      try { const k = await desk.key(n.shortcut, at(w)); if (BG && k.unverified) unheard ??= k.unverified; rec.via = 'shortcut'; return } catch (e: unknown) { if (e instanceof Error && (e.message.includes('input_delivery_stalled:') || e.message.startsWith('declined by the user'))) throw e }
+      try { const k = await desk.key(n.shortcut, at(w)); if (BG && k.unverified) unheard ??= k.unverified; rec.via = 'shortcut'; return } catch (e: unknown) { if (e instanceof Error && (MAY_HAVE_RUN.some((x) => e.message.includes(x)) || e.message.startsWith('declined by the user'))) throw e }
     }
     rec.via = await act(n)
   } finally { tick('act', t0) }
@@ -1298,7 +1302,7 @@ async function option(combo: Node, opts: Node[], value: string, target: string, 
 }
 
 async function cropState(n: Node, unsent = true) {
-  if (BG && (!AUTO || !unsent)) throw new Surprise(`the state of "${n.name}" needs a look at the screen: ${NO_PIXELS}`, await seen())
+  if (BG && (!AUTO || !unsent)) throw new Surprise(`${unsent ? `the state of "${n.name}"` : `"${n.name}" was pressed, and its state after the press`} needs a look at the screen: ${NO_PIXELS}`, await seen())
   if (BG) await front(frontOf(await desk.windows()))
   const b = (await desk.read(n.id)).bounds ?? n.bounds
   if (!b) throw new Error(`"${n.name}" has no screen position`)
@@ -1318,7 +1322,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const titled = (w: Win) => pkg ? w.title === s.app || w.title.endsWith(` - ${s.app}`) : worded(w.title, name)
     const named = (w: Win) => !s.title && [w.app, w.bundle].some((a) => !!a && worded(a, app))
     const own = (w: Win) => titled(w) || (word && (ownedBy(w.pid, name) || entries.some((e) => worded(w.title, e))))
-    const mine = (ws: Win[]) => [...ws.filter(named), ...ws.filter(own)]
+    const rank = (w: Win) => { const of = [w.app, w.bundle].filter((a): a is string => !!a); return (of.some((a) => norm(a) === app) ? 0 : of.some((a) => worded(a, app)) ? 2 : 4) + (norm(w.title) === name ? 0 : 1) }
+    const mine = (ws: Win[]) => s.title ? ws.filter(titled).sort((a, b) => rank(a) - rank(b)) : [...ws.filter(named), ...ws.filter(own)]
     let started: Awaited<ReturnType<typeof desk.launch>> | undefined
     const has = async () => { const ws = await desk.windows(); return mine(ws)[0] ?? (s.title ? undefined : started?.running ? ws.find((w) => w.title === started?.title && w.pid === started?.pid) : launched ? ws.find((w) => w.title && !before.has(w.id) && (!pids.has(w.pid) || (!!w.app && terms(w.app).some((x) => terms(app).includes(x))))) : undefined) }
     const owned = mine(ws); let w = (BG ? owned.find((x) => !!x.title.trim()) : undefined) ?? owned[0] ?? (s.url ? ws.find((x) => x.stale && [x.app, x.bundle].some((a) => !!a && ` ${words(app)}`.endsWith(` ${words(a)}`))) : undefined)
@@ -1365,16 +1370,18 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     tick('act', t0)
     if (BG && rec.unverified && w && !sub && quiet !== undefined) rec.confirmed = !quiet
     else if (BG && rec.unverified && w && !sub) {
-      const now = await texts(w); const tty = rec.unverified.includes(TERMINAL); const shown = shows(was, now, s.type, tty) || (!tty && secure(s) && masked(was, now, s.type.replace(/\n/g, '')))
+      const now = await texts(w); const left = !now && nl && isDialog(o) && await closed(w.title, w.pid); if (left) rec.submit = true
+      const tty = rec.unverified.includes(TERMINAL); const shown = shows(was, now, s.type, tty) || (!tty && secure(s) && masked(was, now, s.type.replace(/\n/g, '')))
       if (tty && secure(s) && shown) throw await echoed(w, s.type, now)
       const sealed = OS === 'win32' && !shown && !tty && secure(s) && !!was && !!now && [...now].every(([id, t]) => t.value === was.get(id)?.value) && await hides(w, now)
       if (AUTO && !tty && !secure(s) && !shown && unchanged(was, now) && whole(was) && whole(now) && !taken(await desk.windows())) {
         await desk.focus(w.title, w.pid)
-        await desk.typeText(s.type, FG)
+        const again = await desk.typeText(s.type, FG)
         rec.how = 'foreground'; rec.unverified = undefined; fronted = true; BG = false
+        heard(again, rec, s)
       } else if (tty && secure(s) && !unchanged(was, now)) throw new Surprise(changed(w, rec.unverified), await seen())
-      else if (!shown && !sealed && !(tty && unchanged(was, now))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
-      rec.confirmed = shown || (!tty && !sealed)
+      else if (!left && !shown && !sealed && !(tty && unchanged(was, now))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
+      if (BG) rec.confirmed = shown || (!tty && !sealed)
     }
     const blank = recording && first && !chooser && w ? await typedInto(w, s.type) : null
     if (blank) rec.blank = blank.fp
@@ -1398,7 +1405,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (w && isChooser(o)) { rec.submit = true; await submit(w, true); return }
     const t0 = Date.now(); heard(await desk.key(s.key, at(w)), rec, s); tick('act', t0)
     pressed = w && /\b(ctrl|control|alt|cmd|command|meta|super)\+|^f\d+$/i.test(s.key) ? { title: w.title, at: Date.now() } : null
-    if (w && isDialog(o) && await closed(w.title, w.pid)) rec.submit = true
+    if (w && isDialog(o) && await closed(w.title, w.pid)) { rec.submit = true; rec.confirmed = true }
     return
   }
   if (s.wait) { const w = await windowFor(s.wait, s.timeout_ms ?? 5000, s.seen); rec.seen = lastSeen = w.title; return }
@@ -1585,7 +1592,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const [x, y, into] = await inWindow(w, b[0] + b[2] / 2, b[1] + b[3] / 2)
     const c = into === FG && !hit.n.role.startsWith('menu') ? await placed(x, y, w) : null
     if (c?.check === 'covered-hit' || c?.check === 'foreign-hit') throw new Surprise(`the centre of ${rec.ref} is on ${told(c)}, so the click was not sent`, await seen())
-    t0 = Date.now(); await desk.click(x, y, { ...pointer(s), ...into }); tick('act', t0)
+    t0 = Date.now(); const sent = await desk.click(x, y, { ...pointer(s), ...into }); tick('act', t0)
+    if (BG && sent.unverified) unheard ??= sent.unverified
     await settle(w.title); return
   }
   if (s.click && hit.n.role === 'menuitem') {

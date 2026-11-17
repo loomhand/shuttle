@@ -305,3 +305,24 @@ test('an app step with a url launches an app whose name only begins with the nam
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(calls.filter((c) => c === 'desk_launch').length, 1, calls.join(' '))
 })
+
+test('an app step with a title takes the titled window of its own app, the exact title first, before a window of that title in another app', async (t) => {
+  const pages = { id: '1', title: 'Untitled', role: 'window', pid: 7, active: true, app: 'Pages' }
+  const second = { id: '2', title: 'Untitled 2', role: 'window', pid: 8, active: false, app: 'TextEdit' }
+  const doc = { id: '3', title: 'Untitled', role: 'window', pid: 8, active: false, app: 'TextEdit' }
+  const focused: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([pages, second, doc])
+    if (tool === 'desk_focus') { focused.push([args.window, args.pid]); for (const w of [pages, second, doc]) w.active = w.title === args.window && w.pid === args.pid; return JSON.stringify({ ok: true, title: args.window, pid: args.pid }) }
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: doc, nodes: [], truncated: false })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'TextEdit', title: 'Untitled' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(focused, [['Untitled', 8]])
+  second.app = 'TextEdit'; doc.app = 'TextEdit Preview'; doc.pid = 9; focused.length = 0
+  for (const w of [pages, second, doc]) w.active = w === pages
+  const own = await main({ steps: [{ app: 'TextEdit', title: 'Untitled' }] })
+  assert.equal(own.ok, true, JSON.stringify(own))
+  assert.deepEqual(focused, [['Untitled 2', 8]])
+})

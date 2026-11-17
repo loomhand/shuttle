@@ -319,6 +319,34 @@ test('a background click with a button, count or modifiers goes into the plan wi
   assert.deepEqual(sent(d.calls, 'desk_click'), [{ x: 440, y: 420, count: 2, window: 'Report', pid: 4 }])
   assert.deepEqual(sent(d.calls, 'desk_shot'), [{ window: 'Report', pid: 4 }])
   assert.equal(d.calls.some((c) => c.tool === 'desk_at'), false)
+  const note = 'unverifiable: Posted click (not verified).'
+  const u = desktop([user(), report], ({ tool }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: report, truncated: false, nodes: [{ ref: 0, id: '1', parent: -1, depth: 0, role: 'window', name: 'Report', states: ['showing'] }, file] })
+    if (tool === 'desk_read') return JSON.stringify(file)
+    if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(1200, 800).toString('base64') }
+    if (tool === 'desk_click') return JSON.stringify({ ok: true, unverified: note })
+    return undefined
+  })
+  await daemon(t, u.reply)
+  const heard = await main({ steps: [{ app: 'Report' }, { click: 'report.txt', count: 2 }] })
+  assert.deepEqual(heard.unverified, [{ step: 1, note }], JSON.stringify(heard))
+})
+
+test('a background check whose state cannot be read after its press says the control was pressed', async (t) => {
+  let pressed = false
+  const box = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Wrap lines', states: ['showing'] }
+  const d = desktop([user(), notepad()], ({ tool, args }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad().title, states: ['showing'] }, box] })
+    if (tool === 'desk_press' && args.id === '1/2') pressed = true
+    if (tool === 'desk_read' && pressed) throw new Error('unknown element id 1/2')
+    if (tool === 'desk_read') return JSON.stringify(box)
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { check: 'Wrap lines', on: true }] })
+  assert.equal(r.ok, false)
+  assert.match(String(r.escalate?.reason), /^"Wrap lines" was pressed, and its state after the press needs a look at the screen: /)
+  assert.deepEqual(sent(d.calls, 'desk_press').map((a) => a.id), ['1/2'])
 })
 
 test('a background click with a count takes the image scale from the window of its own app when another app has a window of that title', async (t) => {
@@ -430,6 +458,38 @@ test('a recorded after waits for the window the step opens and never takes an ol
   const r = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+n', after: 'Untitled 2' }, { type: 'x' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'x', window: 'Untitled 2', pid: 4 }])
+})
+
+test('a background Return that closes its dialog is confirmed by the dialog leaving', async (t) => {
+  const ask = { id: '2', title: 'Save changes?', role: 'window', pid: 4, active: false }
+  const ws = [user(), notepad(), ask]
+  const d = desktop(ws, ({ tool }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: ask, truncated: false, nodes: [{ ref: 0, id: '2', parent: -1, depth: 0, role: 'dialog', name: ask.title, states: ['showing'] }] })
+    if (tool !== 'desk_key') return undefined
+    ws.pop()
+    return JSON.stringify({ ok: true, unverified: 'unverifiable: Posted Return (not verified).' })
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Save changes?' }, { key: 'Return' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.unverified, undefined)
+})
+
+test('a background line whose Return closes its dialog is confirmed, not reported as text that did not show', async (t) => {
+  const go = { id: '2', title: 'Go To Line', role: 'window', pid: 4, active: false }
+  const ws = [user(), notepad(), go]
+  const note = 'unverifiable: Sent via PostMessage (not verified).'
+  const d = desktop(ws, ({ tool, args }) => {
+    if (tool === 'desk_snapshot') { if (!ws.includes(go)) return { text: 'no window "Go To Line"', error: true }; return JSON.stringify({ window: go, truncated: false, nodes: [{ ref: 0, id: '2', parent: -1, depth: 0, role: 'dialog', name: go.title, states: ['showing'] }, { ref: 1, id: '2/1', parent: 0, depth: 1, role: 'textbox', name: 'Line number', states: ['showing', 'focused'], value: '' }] }) }
+    if (tool !== 'desk_type') return undefined
+    if (String(args.text).includes('\n')) ws.pop()
+    return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: note })
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Go To Line' }, { type: '10\n' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.unverified, undefined)
+  assert.deepEqual(sent(d.calls, 'desk_type').map((a) => a.text), ['10', '\n'])
 })
 
 test('a recorded after that the window the step opened satisfies confirms the step the driver could not', async (t) => {

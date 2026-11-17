@@ -99,6 +99,14 @@ test('typing that did not land and left the front alone runs once in the foregro
   assert.equal(au.r.trace?.[1]?.how, 'foreground')
 })
 
+test('a foreground retype under auto that the driver suspects changed nothing carries a caveat', async (t) => {
+  const d = desktop((b) => b, true)
+  await daemon(t, (c) => c.tool === 'desk_type' && c.args.delivery_mode === 'foreground' ? (d.calls.push(c), JSON.stringify({ ok: true, chars: 2, effect: 'suspected_noop' })) : d.reply(c))
+  const r = await auto({ steps: [{ app: 'Notepad' }, { type: 'hi' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(r.caveats, [{ step: 1, note: 'the input was sent, and the driver saw nothing change where it expected a change; no later step read its effect' }])
+})
+
 test('typing that landed in part is never typed again in the foreground', async (t) => {
   const au = await run(t, auto, (b) => `${b}h`, true)
   assert.equal(au.r.ok, false)
@@ -915,6 +923,14 @@ test('a foreground key the driver suspects changed nothing carries a caveat, and
   assert.deepEqual(r.caveats, [{ step: 1, note: 'the input was sent, and the driver saw nothing change where it expected a change; no later step read its effect' }])
   const b = await background({ steps: [{ app: 'Notepad' }, { key: 'ctrl+s' }] })
   assert.equal(b.caveats, undefined, JSON.stringify(b))
+  await daemon(t, (c) => {
+    if (c.tool === 'desk_windows') return JSON.stringify([user(), notepad()])
+    if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes: [], truncated: false })
+    if (c.tool === 'desk_key') return JSON.stringify({ ok: true, input: 'foreground', effect: 'suspected_noop' })
+    return '{"ok":true}'
+  })
+  const fell = await auto({ steps: [{ app: 'Notepad' }, { key: 'ctrl+s' }] })
+  assert.deepEqual(fell.caveats, r.caveats, JSON.stringify(fell))
 })
 
 test('a type the device reports did not show stops the step, and one it could not check carries a caveat', async (t) => {
