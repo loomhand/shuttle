@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 
 type Main = (params: unknown) => unknown
@@ -16,6 +16,8 @@ setInterval(() => {
   }
 }, 1000).unref()
 
+const given = readFileSync(out('params.json'), 'utf8')
+rmSync(out('params.json'))
 let main: Main | undefined
 try {
   Object.assign(globalThis, { desk: await import('./desk.mts') })
@@ -27,7 +29,7 @@ try {
 }
 if (main) {
   try {
-    const params: unknown = JSON.parse(readFileSync(out('params.json'), 'utf8'))
+    const params: unknown = JSON.parse(given)
     writeFileSync(out('result.json'), JSON.stringify(await main(params)) ?? 'null')
   } catch (e: unknown) {
     fail('exception', e)

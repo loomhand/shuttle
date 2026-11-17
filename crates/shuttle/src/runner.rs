@@ -813,10 +813,33 @@ mod tests {
     async fn the_scratch_directory_and_the_params_are_the_users_alone() {
         let dir = tempfile::tempdir().unwrap();
         let r = runner(dir.path());
-        let code = "import { statSync } from 'node:fs'\nexport function main() { const run = process.env.SHUTTLE_RUN; return [statSync(run).mode & 0o777, statSync(`${run}/params.json`).mode & 0o777, statSync(`${run}/script.mts`).mode & 0o777] }";
+        let code = "import { existsSync, statSync } from 'node:fs'\nexport function main(p) { const run = process.env.SHUTTLE_RUN; return [run, statSync(run).mode & 0o777, statSync(`${run}/script.mts`).mode & 0o777, existsSync(`${run}/params.json`), p.word] }";
+        let args = json!({"code": code, "params": {"word": "kept"}});
+        let report = r.script(args, "run-test").await.unwrap();
+        let run = report["result"][0].as_str().unwrap().to_owned();
+        assert_eq!(
+            report["result"],
+            json!([run, 0o700, 0o600, false, "kept"]),
+            "{report}"
+        );
+        assert!(!Path::new(&run).exists(), "{run}");
+        let slow = "export async function main() { console.log(process.env.SHUTTLE_RUN); await new Promise(() => setTimeout(() => {}, 60000)) }";
+        let stopped = r
+            .script(json!({"code": slow, "timeout_s": 1}), "run-test")
+            .await
+            .unwrap();
+        assert_eq!(stopped["error"]["kind"], "timeout", "{stopped}");
+        let run = stopped["logs"].as_str().unwrap().trim();
+        assert!(!run.is_empty() && !Path::new(run).exists(), "{stopped}");
+    }
+
+    #[tokio::test]
+    async fn a_runs_output_is_kept_up_to_its_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = runner(dir.path());
+        let code = "export function main() { console.log('x'.repeat(100000)); return 1 }";
         let report = r.script(json!({"code": code}), "run-test").await.unwrap();
-        let modes: Vec<u32> = serde_json::from_value(report["result"].clone()).unwrap();
-        assert_eq!(modes, [0o700, 0o600, 0o600], "{report}");
+        assert_eq!(report["logs"].as_str().map(str::len), Some(MAX_OUTPUT));
     }
 
     #[tokio::test]

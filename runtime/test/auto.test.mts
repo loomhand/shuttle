@@ -358,6 +358,9 @@ test('a terminal nobody sees is read back before a Return where it can be read, 
       assert.deepEqual(pressed(blind.calls), [], `${mode} ${JSON.stringify(type)}\n${tools(blind.calls).join('\n')}`)
       assert.match(String(blind.r.escalate?.reason), /changed while the password was typed|did not show in "Terminal"/, `${mode} ${JSON.stringify(blind.r)}`)
     }
+    const plain = await terminal(t, plan, (screen) => screen, { type: 'ls', dark: true })
+    assert.match(String(plain.r.escalate?.reason), /did not show in "Terminal" after typing/, `${mode} ${JSON.stringify(plain.r)}`)
+    assert.equal(plain.calls.filter((c) => c.tool === 'desk_type').length, 1, mode)
   }
 })
 
