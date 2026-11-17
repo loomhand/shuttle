@@ -1191,6 +1191,7 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
     if (i > k) heard(r, rec, s)
     if (!r.unverified) { if (secure(s)) throw await echoed(w, raw[i] ?? '', null); continue }
     const now = await texts(w); const shown = shows(base, now, line, true)
+    if (!now && !r.unverified.includes(TERMINAL)) { quiet = true; continue }
     if (secure(s) && shown) throw await echoed(w, raw[i] ?? '', now)
     if (secure(s) && !unchanged(base, now)) throw new Surprise(changed(w, hush(r.unverified)), await seen())
     if (!shown && !unchanged(base, now)) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing line ${i + 1} of ${n}${i > 1 ? `, after the ${i} lines before it and their Returns were sent` : i ? ', after the line before it and its Return were sent' : ''}: ${r.unverified}`, await seen())

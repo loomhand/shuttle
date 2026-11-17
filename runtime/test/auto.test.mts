@@ -51,7 +51,7 @@ async function run(t: TestContext, plan: Plan, typed: (before: string, text: str
   return { r, calls: d.calls, doc: d.doc() }
 }
 
-async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', extra = {} as Record<string, unknown>, front = false, answer = (s: string) => `${s}\n$ `, blind = false, named = true, role = 'document', erases = true, eraseFails = false, eraseBlinds = false, readBlinds = false, steal = false, stealMid = false, eraseLimit = Infinity, renumber = false, eraseLag = 0, lagThenBlind = false, unseen = false } = {}) {
+async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text: string) => string, { screen = '$ read -s', type = 'abc', sure = (_: string): boolean => false, key = '', prompt = '', extra = {} as Record<string, unknown>, front = false, answer = (s: string) => `${s}\n$ `, blind = false, named = true, role = 'document', erases = true, eraseFails = false, eraseBlinds = false, readBlinds = false, steal = false, stealMid = false, eraseLimit = Infinity, renumber = false, eraseLag = 0, lagThenBlind = false, unseen = false, dark = false } = {}) {
   const term: W = { id: 't', title: 'Terminal', role: 'window', pid: 7, active: front, app: 'Terminal' }
   const bare = role === 'text' || role === 'terminal'
   const node = () => ({ ref: 0, id: renumber && erased ? 'd2' : 'd', parent: -1, depth: 0, role, name: role === 'text' ? 'Command Prompt' : '', states: role === 'text' ? ['focused'] : [], ...(bare ? {} : { value: screen }) })
@@ -60,6 +60,7 @@ async function terminal(t: TestContext, plan: Plan, typed: (screen: string, text
   await daemon(t, (c) => {
     calls.push(c)
     if (c.tool === 'desk_windows') return JSON.stringify(front && !(steal && typed1) && !(stealMid && backs > 0) ? [{ ...user(), active: false }, term] : front ? [user(), { ...term, active: false }] : [user(), term])
+    if (dark && (c.tool === 'desk_snapshot' || c.tool === 'desk_read')) throw new Error('"Terminal" is on another Space: accessibility does not reach it there')
     if (((blind && keyed) || (eraseBlinds && erased)) && (c.tool === 'desk_snapshot' || c.tool === 'desk_read')) throw new Error('the window answers no accessibility calls')
     if (readBlinds && erased && c.tool === 'desk_read') throw new Error('the node answers no text')
     if (lagThenBlind && erased && lag === 0 && (c.tool === 'desk_snapshot' || c.tool === 'desk_read')) throw new Error('the window answers no accessibility calls')
@@ -326,7 +327,7 @@ test('a secret step never shows its text, and a password the terminal echoed sto
   }
 })
 
-test('a terminal nobody sees, whose note names no terminal, is still read back before a Return and never typed again in the foreground', async (t) => {
+test('a terminal nobody sees is read back before a Return where it can be read, and where it cannot its line is submitted once and stays unconfirmed', async (t) => {
   for (const [mode, plan] of modes) {
     const echo = await terminal(t, plan, (screen, text) => screen + text, { type: 'example-pass\n', extra: { secret: true }, unseen: true })
     assert.match(String(echo.r.escalate?.reason), /^the password showed in "Terminal", so it was not submitted, and it was erased$/, mode)
@@ -338,6 +339,11 @@ test('a terminal nobody sees, whose note names no terminal, is still read back b
     assert.equal(quiet.calls.filter((c) => c.tool === 'desk_type').length, 1, `${mode}\n${tools(quiet.calls).join('\n')}`)
     assert.ok(!quiet.calls.some((c) => c.tool === 'desk_focus'), mode)
     assert.deepEqual(quiet.r.unverified, [{ step: 1, note: UNSEEN }], mode)
+    const dark = await terminal(t, plan, (screen) => screen, { type: 'example-pass\n', extra: { secret: true }, unseen: true, dark: true })
+    assert.deepEqual(pressed(dark.calls), ['Return'], `${mode}\n${tools(dark.calls).join('\n')}`)
+    assert.equal(dark.calls.filter((c) => c.tool === 'desk_type').length, 1, mode)
+    assert.match(String(dark.r.escalate?.reason), /^step 1 \(type\) was sent but not confirmed/, `${mode} ${JSON.stringify(dark.r)}`)
+    assert.ok(!JSON.stringify(dark.r).includes('example-pass'), mode)
   }
 })
 
