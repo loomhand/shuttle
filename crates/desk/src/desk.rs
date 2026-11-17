@@ -1647,9 +1647,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 None => (x, y),
             },
             _ => {
-                if self.os == Os::Mac
-                    && let Some((pid, id)) = self.raised_window(a.window.as_deref(), a.pid).await?
-                {
+                if self.os == Os::Mac && (a.window.is_some() || a.pid.is_some()) {
+                    let (_, w, _) = self.pick_window(a.window.as_deref(), a.pid, true).await?;
+                    if w["is_on_screen"] == false || off_space(&w) {
+                        return Err(format!(
+                            "{:?} is not on screen (minimized or on another Space), so nothing was scrolled",
+                            w["title"].as_str().unwrap_or_default()
+                        ));
+                    }
+                    let (pid, id, _) = window_key(&w)?;
                     req["pid"] = pid.into();
                     req["window_id"] = id.into();
                     req["session"] = WINDOW_SESSION.into();
@@ -8455,6 +8461,20 @@ pub(crate) mod tests {
                 json!({"direction": "up", "amount": 3, "pid": 8, "window_id": 2, "session": WINDOW_SESSION})
             )
         );
+        let folded = Arc::new(Mutex::new(Vec::new()));
+        let err = Desk::new(
+            || Err::<Fake, _>("no accessibility".to_owned()),
+            Folded(folded.clone()),
+            Os::Mac,
+        )
+        .run(
+            "desk_scroll",
+            json!({"direction": "up", "window": "Folded"}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("is not on screen"), "{err}");
+        assert!(sent(&folded, "scroll").is_empty());
         let allowed =
             Desk::new(|| Ok(Apps), Wheel(calls.clone()), Os::Windows).allow(&["notepad".into()]);
         allowed
@@ -10648,6 +10668,21 @@ pub(crate) mod tests {
                     {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "title": "Inbox", "bounds": {"x": 500.0, "y": 0.0, "width": 300.0, "height": 300.0}},
                     {"pid": 4, "window_id": 3, "layer": 0, "z_index": 3, "title": "Find", "bounds": {"x": 100.0, "y": 400.0, "width": 200.0, "height": 100.0}},
                     {"pid": 98, "window_id": 9, "layer": 25, "z_index": 9, "title": "Menu"}
+                ]}}),
+                _ => json!({}),
+            })
+        }
+    }
+
+    struct Folded(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for Folded {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 4, "window_id": 3, "layer": 0, "z_index": 1, "title": "Front", "bounds": {"x": 0.0, "y": 0.0, "width": 400.0, "height": 300.0}},
+                    {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "title": "Folded", "is_on_screen": false, "on_current_space": true, "bounds": {"x": 500.0, "y": 0.0, "width": 300.0, "height": 300.0}}
                 ]}}),
                 _ => json!({}),
             })
