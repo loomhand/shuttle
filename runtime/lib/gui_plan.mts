@@ -1197,7 +1197,7 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
     if (!shown && !unchanged(base, now)) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing line ${i + 1} of ${n}${i > 1 ? `, after the ${i} lines before it and their Returns were sent` : i ? ', after the line before it and its Return were sent' : ''}: ${r.unverified}`, await seen())
     quiet ||= !shown
   }
-  if (quiet && secure(s) && text.endsWith('\n')) {
+  if (quiet && base && secure(s) && text.endsWith('\n')) {
     const after = await settled(w)
     if (shows(base, after, raw[k] ?? '', true)) throw late(w)
     if (moved(base, after)) return false
@@ -1372,7 +1372,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (BG && rec.unverified && w && !sub && quiet !== undefined) rec.confirmed = !quiet
     else if (BG && rec.unverified && w && !sub) {
       const now = await texts(w); const left = !now && nl && isDialog(o) && await closed(w.title, w.pid); if (left) rec.submit = true
-      const tty = !!sent?.terminal || rec.unverified.includes(TERMINAL); const shown = shows(was, now, s.type, tty) || (!tty && secure(s) && masked(was, now, s.type.replace(/\n/g, '')))
+      const tty = !!sent?.terminal || rec.unverified.includes(TERMINAL); const dark = !now && tty && !rec.unverified.includes(TERMINAL); const shown = shows(was, now, s.type, tty) || (!tty && secure(s) && masked(was, now, s.type.replace(/\n/g, '')))
       if (tty && secure(s) && shown) throw await echoed(w, s.type, now)
       const sealed = OS === 'win32' && !shown && !tty && secure(s) && !!was && !!now && [...now].every(([id, t]) => t.value === was.get(id)?.value) && await hides(w, now)
       if (AUTO && !tty && !secure(s) && !shown && unchanged(was, now) && whole(was) && whole(now) && !taken(await desk.windows())) {
@@ -1380,8 +1380,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
         const again = await desk.typeText(s.type, FG)
         rec.how = 'foreground'; rec.unverified = undefined; fronted = true; BG = false
         heard(again, rec, s)
-      } else if (tty && secure(s) && !unchanged(was, now)) throw new Surprise(changed(w, rec.unverified), await seen())
-      else if (!left && !shown && !sealed && !(tty && unchanged(was, now))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
+      } else if (!dark && tty && secure(s) && !unchanged(was, now)) throw new Surprise(changed(w, rec.unverified), await seen())
+      else if (!dark && !left && !shown && !sealed && !(tty && unchanged(was, now))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
       if (BG) rec.confirmed = shown || (!tty && !sealed)
     }
     const blank = recording && first && !chooser && w ? await typedInto(w, s.type) : null
