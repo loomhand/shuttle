@@ -139,6 +139,7 @@ pub(crate) struct Frame {
     active: bool,
     bounds: [i32; 4],
     covers: Vec<[i32; 4]>,
+    under: bool,
     screen: (i32, i32),
 }
 
@@ -446,19 +447,25 @@ fn turned((w, h): (i32, i32), list: &[WindowInfo]) -> (i32, i32) {
 }
 
 fn frames_of(list: Vec<WindowInfo>, screen: (i32, i32)) -> Vec<Frame> {
-    let layers: Vec<(i64, [i32; 4])> = list.iter().map(|w| (w.layer, w.bounds)).collect();
+    let layers: Vec<(i64, [i32; 4], bool)> = list
+        .iter()
+        .map(|w| (w.layer, w.bounds, w.kind == APPLICATION || w.active))
+        .collect();
     let shown = listed(list);
     let alone = shown.len() == 1;
     shown
         .into_iter()
         .map(|w| {
-            let covers = layers
-                .iter()
-                .filter(|(layer, _)| *layer > w.layer)
-                .map(|&(_, [l, t, r, b])| [l, t, r - l, b - t])
+            let above = || layers.iter().filter(|(layer, ..)| *layer > w.layer);
+            let covers = above()
+                .map(|&(_, [l, t, r, b], _)| [l, t, r - l, b - t])
                 .collect();
+            let [wl, wt, wr, wb] = w.bounds;
+            let under = above()
+                .any(|&(_, [l, t, r, b], takes)| takes && l < wr && wl < r && t < wb && wt < b);
             Frame {
                 covers,
+                under,
                 ..frame(w, alone, screen)
             }
         })
@@ -495,6 +502,7 @@ fn frame(w: WindowInfo, alone: bool, screen: (i32, i32)) -> Frame {
         active: w.active,
         bounds: [l, t, r - l, b - t],
         covers: Vec::new(),
+        under: false,
         screen,
     }
 }
@@ -943,7 +951,7 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
     }
     let mut ask = true;
     for _ in 0..SCROLL_TRIES {
-        if !frame.active {
+        if !frame.active && frame.under {
             return Err(behind(&frame.title));
         }
         if let Some((x, y)) = frame.tap_at(&node) {

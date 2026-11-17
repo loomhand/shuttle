@@ -115,6 +115,7 @@ const UNSEEN_SENT: &str = "the app may not repaint a window nobody sees, so the 
 const UNSEEN_TYPED: &str = "the app may not repaint a window nobody sees, so the text may be there even if a screenshot looks unchanged: do not type it again, and before you submit it with Return or Send, confirm that it is there by a read-back you can trust or by asking the user";
 
 const MASK_TRIES: usize = 3;
+const WINDOW_CUT: &str = "the driver's image is not the whole window, as when part of it is off the screen, so it could not be masked to the app allowlist; move the window onto the screen";
 const WINDOWS_MOVING: &str = "the windows kept changing while the screenshot was taken, so it could not be masked to the app allowlist; take it again";
 
 const EFFECTS: [&str; 4] = ["confirmed", "unverifiable", "partial", "suspected_noop"];
@@ -2647,7 +2648,21 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let mask = match shown {
             Some(shown) => {
                 let (kx, ky) = image_scale(&v, key.1)?;
-                let [bx, by, bw, bh] = key.2;
+                let c = &v["structuredContent"];
+                let b = &c["window_bounds"];
+                let (Some(bx), Some(by)) = (b["x"].as_f64(), b["y"].as_f64()) else {
+                    return Err(WINDOW_CUT.to_owned());
+                };
+                let (bw, bh) = (
+                    b["width"].as_f64().unwrap_or_default(),
+                    b["height"].as_f64().unwrap_or_default(),
+                );
+                let cut = c["screenshot_original_width"]
+                    .as_f64()
+                    .is_some_and(|w| self.os == Os::Linux && (w - bw).abs() >= 1.0);
+                if cut || (kx - ky).abs() * bw.max(bh) > 2.0 {
+                    return Err(WINDOW_CUT.to_owned());
+                }
                 let own = ([0.0, 0.0, bw * kx, bh * ky], true);
                 let shown = shown.into_iter().map(|([x, y, w, h], admitted)| {
                     ([(x - bx) * kx, (y - by) * ky, w * kx, h * ky], admitted)
@@ -2699,11 +2714,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .into_iter()
             .map(|w| {
                 let pid = w["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
-                (
-                    bounds(&w),
-                    frame_of(&frames, pid).is_some_and(|f| self.allow.admits_frame(f))
-                        || self.allow.is_open(),
-                )
+                let admitted = frame_of(&frames, pid).is_some_and(|f| self.allow.admits_frame(f))
+                    || self.allow.is_open();
+                let [x, y, width, height] = bounds(&w);
+                if admitted || self.os != Os::Linux {
+                    return ([x, y, width, height], admitted);
+                }
+                let [l, t, r, b] = [FRAME_BORDER, TITLE_BAR, FRAME_BORDER, FRAME_BORDER];
+                ([x - l, y - t, width + l + r, height + t + b], admitted)
             })
             .collect())
     }
@@ -8062,32 +8080,43 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn off_macos_an_app_allowlist_blacks_a_window_shot_where_a_window_it_leaves_out_is_on_top()
      {
-        let shot = |os, allow: &[String]| {
+        let shot = |os, allow: &[String], x: f64, image: [u32; 3]| {
             let calls = Arc::new(Mutex::new(Vec::new()));
-            let desk = Desk::new(|| Ok(Apps), Stacked(calls.clone()), os).allow(allow);
+            let desk = Desk::new(|| Ok(Apps), Stacked(calls.clone(), x, image), os).allow(allow);
             async move {
                 let out = desk
                     .run("desk_shot", json!({"window": "Untitled - Notepad"}))
-                    .await
-                    .unwrap();
-                let lists = sent_tools(&calls, "list_windows");
-                (pixels(&out), lists)
+                    .await;
+                (out.map(|o| pixels(&o)), sent_tools(&calls, "list_windows"))
             }
         };
         let listed = ["notepad".to_owned()];
-        for os in [Os::Linux, Os::Windows] {
-            let (px, lists) = shot(os, &listed).await;
-            let at = |row: usize, col: usize| px[row * 20 + col];
+        let whole = [400, 400, 200];
+        for (os, framed) in [(Os::Linux, true), (Os::Windows, false)] {
+            let (px, lists) = shot(os, &listed, 100.0, whole).await;
+            let px = px.unwrap();
+            let at = |row: usize, col: usize| px[row * 400 + col] == [0; 3];
             assert_eq!(
-                (at(0, 9), at(0, 10), at(9, 19), at(10, 19), at(19, 0)),
-                ([255; 3], [0; 3], [0; 3], [255; 3], [255; 3]),
+                (at(150, 350), at(399, 0), at(350, 399), at(150, 250)),
+                (true, false, false, false),
                 "{os:?}"
             );
+            assert_eq!((at(10, 350), at(150, 290)), (framed, framed), "{os:?}");
             assert_eq!(lists, 3, "{os:?}");
+            let (moved, _) = shot(os, &listed, 130.0, whole).await;
+            assert_eq!(moved.unwrap()[150 * 400 + 250], [0; 3], "{os:?}");
+        }
+        for (os, image) in [
+            (Os::Windows, [400, 300, 200]),
+            (Os::Linux, [400, 300, 200]),
+            (Os::Linux, [200, 200, 100]),
+        ] {
+            let (cut, _) = shot(os, &listed, 100.0, image).await;
+            assert_eq!(cut.unwrap_err(), WINDOW_CUT, "{os:?} {image:?}");
         }
         for (os, allow) in [(Os::Mac, &listed[..]), (Os::Linux, &[])] {
-            let (px, lists) = shot(os, allow).await;
-            assert!(px.iter().all(|p| *p == [255; 3]), "{os:?}");
+            let (px, lists) = shot(os, allow, 100.0, whole).await;
+            assert!(px.unwrap().iter().all(|p| *p == [255; 3]), "{os:?}");
             assert_eq!(lists, 1, "{os:?}");
         }
     }
@@ -10670,28 +10699,30 @@ pub(crate) mod tests {
         calls.lock().unwrap().iter().filter(|t| *t == tool).count()
     }
 
-    struct Stacked(Arc<Mutex<Vec<String>>>);
+    struct Stacked(Arc<Mutex<Vec<String>>>, f64, [u32; 3]);
 
     impl Input for Stacked {
         async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
             self.0.lock().unwrap().push(tool.to_owned());
+            let [wide, high, original] = self.2;
             Ok(match tool {
                 "list_windows" => json!({"structuredContent": {"windows": [
-                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "bounds": {"x": 100.0, "y": 100.0, "width": 10.0, "height": 10.0}},
-                    {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "title": "Inbox", "bounds": {"x": 105.0, "y": 95.0, "width": 10.0, "height": 10.0}},
-                    {"pid": 8, "window_id": 3, "layer": 0, "z_index": 0, "title": "Sent", "bounds": {"x": 100.0, "y": 105.0, "width": 10.0, "height": 10.0}}
+                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "bounds": {"x": 100.0, "y": 100.0, "width": 200.0, "height": 200.0}},
+                    {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "title": "Inbox", "bounds": {"x": 250.0, "y": 150.0, "width": 100.0, "height": 100.0}},
+                    {"pid": 8, "window_id": 3, "layer": 0, "z_index": 0, "title": "Sent", "bounds": {"x": 100.0, "y": 250.0, "width": 200.0, "height": 100.0}}
                 ]}}),
                 "get_window_state" => {
                     let mut png = Vec::new();
-                    let mut enc = png::Encoder::new(&mut png, 20, 20);
+                    let mut enc = png::Encoder::new(&mut png, wide, high);
                     enc.set_color(png::ColorType::Rgb);
                     enc.write_header()
                         .unwrap()
-                        .write_image_data(&[255; 1200])
+                        .write_image_data(&vec![255; (wide * high * 3) as usize])
                         .unwrap();
                     let mut v = json!({"structuredContent": {
-                        "screenshot_width": 20, "screenshot_height": 20,
-                        "window_bounds": {"x": 100.0, "y": 100.0, "width": 10.0, "height": 10.0}
+                        "screenshot_width": wide, "screenshot_height": high,
+                        "screenshot_original_width": original,
+                        "window_bounds": {"x": self.1, "y": 100.0, "width": 200.0, "height": 200.0}
                     }});
                     v["content"] = json!([{"type": "image", "data": B64.encode(&png)}]);
                     v

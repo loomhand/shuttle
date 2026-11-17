@@ -1310,7 +1310,6 @@ async fn connect_control(port: &str) -> Result<TcpStream, String> {
     Err("scrcpy control did not start".to_owned())
 }
 
-/// Reads the device message that acknowledges the clipboard of `sequence`, the only one a server without clipboard autosync sends.
 async fn wiped(slot: &Mutex<Option<Control>>) {
     let mut slot = slot.lock().await;
     if let Some(control) = slot.as_mut().filter(|c| c.is_open())
@@ -1320,6 +1319,7 @@ async fn wiped(slot: &Mutex<Option<Control>>) {
     }
 }
 
+/// Reads the device message that acknowledges the clipboard of `sequence`, the only one a server without clipboard autosync sends.
 async fn read_ack<R: AsyncRead + Unpin>(r: &mut R, sequence: u64) -> Result<(), String> {
     let fail = |e: std::io::Error| format!("read scrcpy control: {e}");
     let kind = r.read_u8().await.map_err(fail)?;
@@ -1646,6 +1646,9 @@ mod tests {
         }
         let sent = log(&fake, "requests") + &log(&fake, "adbinput");
         assert!(!sent.contains("tap") && !sent.contains("swipe"), "{sent}");
+        fake.windows("split");
+        list(&fake, "dump.xml", "[0,200][720,300]");
+        assert_eq!(press_target(&fake).await["y"].as_i64(), Some(250));
     }
 
     #[cfg(unix)]
@@ -3215,6 +3218,10 @@ mod tests {
                 "dialog" => format!(
                     r#"[{bar},{{"id":9,"type":1,"layer":3,"title":"Allow","package":"com.android.permissioncontroller","active":true,"focused":true,"bounds":[60,400,660,800]}},{}]"#,
                     app(false)
+                ),
+                "split" => format!(
+                    r#"[{{"id":9,"type":1,"layer":1,"title":"Files","package":"com.android.documentsui","active":true,"focused":true,"bounds":[0,640,720,1280]}},{}]"#,
+                    app(false).replace("[0,0,720,1280]", "[0,0,720,640]")
                 ),
                 "none" => "[]".to_owned(),
                 _ => format!("[{bar},{}]", app(true)),
