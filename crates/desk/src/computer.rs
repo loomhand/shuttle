@@ -1914,6 +1914,9 @@ impl Computer {
             tokio::time::sleep(CONNECT_RETRY).await;
             reply = self.driver.line(name, args, REQUEST_TIMEOUT).await?;
         }
+        if reply.is_empty() {
+            return Err(format!("{name}: {}", crate::driver::CLOSED));
+        }
         serde_json::from_str::<Value>(&reply).map_err(|e| format!("decode cua-driver reply: {e}"))
     }
 }
@@ -2868,7 +2871,10 @@ mod tests {
         let socket = endpoint(dir.path());
         let driver = tokio::spawn(closing_then_answering_driver(socket.clone()));
         let out = cua(&socket).request("s", "click", json!({})).await;
-        assert!(out.unwrap_err().starts_with("decode cua-driver reply"));
+        assert_eq!(
+            out.unwrap_err(),
+            format!("click: {}", crate::driver::CLOSED)
+        );
         driver.abort();
     }
 
