@@ -460,6 +460,21 @@ test('a recorded after waits for the window the step opens and never takes an ol
   assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'x', window: 'Untitled 2', pid: 4 }])
 })
 
+test('a background Return that closes its dialog is confirmed by the dialog leaving', async (t) => {
+  const ask = { id: '2', title: 'Save changes?', role: 'window', pid: 4, active: false }
+  const ws = [user(), notepad(), ask]
+  const d = desktop(ws, ({ tool }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: ask, truncated: false, nodes: [{ ref: 0, id: '2', parent: -1, depth: 0, role: 'dialog', name: ask.title, states: ['showing'] }] })
+    if (tool !== 'desk_key') return undefined
+    ws.pop()
+    return JSON.stringify({ ok: true, unverified: 'unverifiable: Posted Return (not verified).' })
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Save changes?' }, { key: 'Return' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.unverified, undefined)
+})
+
 test('a recorded after that the window the step opened satisfies confirms the step the driver could not', async (t) => {
   const ws = [user(), notepad()]
   const d = desktop(ws, ({ tool }) => {

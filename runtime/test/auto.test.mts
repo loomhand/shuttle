@@ -937,6 +937,14 @@ test('a foreground key the driver suspects changed nothing carries a caveat, and
   assert.deepEqual(r.caveats, [{ step: 1, note: 'the input was sent, and the driver saw nothing change where it expected a change; no later step read its effect' }])
   const b = await background({ steps: [{ app: 'Notepad' }, { key: 'ctrl+s' }] })
   assert.equal(b.caveats, undefined, JSON.stringify(b))
+  await daemon(t, (c) => {
+    if (c.tool === 'desk_windows') return JSON.stringify([user(), notepad()])
+    if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes: [], truncated: false })
+    if (c.tool === 'desk_key') return JSON.stringify({ ok: true, input: 'foreground', effect: 'suspected_noop' })
+    return '{"ok":true}'
+  })
+  const fell = await auto({ steps: [{ app: 'Notepad' }, { key: 'ctrl+s' }] })
+  assert.deepEqual(fell.caveats, r.caveats, JSON.stringify(fell))
 })
 
 test('a type the device reports did not show stops the step, and one it could not check carries a caveat', async (t) => {

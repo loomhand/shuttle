@@ -4,15 +4,16 @@ import { test } from 'node:test'
 import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
 
-for (const stalled of [true, false]) {
-  test(`a menu shortcut ${stalled ? 'stalled after sending stops without another action' : 'refused before sending falls back to its action'}`, { skip: process.platform === 'darwin' }, async (t) => {
+const UNANSWERED = ['hotkey: input_delivery_stalled: input was inserted and may still appear in the target', 'hotkey: cua-driver closed the connection without an answer, as it does when it stops, so whether the call ran is not known: read the window before sending it again', 'cua-driver hotkey timed out, and it may still take effect: read the window before sending it again']
+for (const error of [...UNANSWERED, 'hotkey: foreground_unavailable: no input was sent']) {
+  const stalled = UNANSWERED.includes(error)
+  test(`a menu shortcut ${stalled ? `that may have run stops without another action: ${error.slice(0, 40)}` : 'refused before sending falls back to its action'}`, { skip: process.platform === 'darwin' }, async (t) => {
     const win = { id: '1', title: 'Untitled', role: 'window', pid: process.pid, active: true }
     const nodes = [
       { ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: win.title, states: ['showing'] },
       { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'menu', name: 'Edit', states: ['showing'] },
       { ref: 2, id: '1/3', parent: 1, depth: 2, role: 'menuitem', name: 'Undo', states: ['showing'], shortcut: 'ctrl+z' },
     ]
-    const error = stalled ? 'hotkey: input_delivery_stalled: input was inserted and may still appear in the target' : 'hotkey: foreground_unavailable: no input was sent'
     const calls: string[] = []
     await daemon(t, ({ tool, args }) => {
       if (tool === 'desk_windows') return JSON.stringify([win])
