@@ -24,8 +24,7 @@ use serde_json::{Map, Value, json};
 use crate::allow::{Allow, app_key, frame_of};
 use crate::auto;
 use crate::driver::{
-    CAPTURE_SESSION, CLOSED, INPUT_TOOLS, Input, WINDOW_SESSION, background, desktop, image_of,
-    text_of,
+    CAPTURE_SESSION, INPUT_TOOLS, Input, WINDOW_SESSION, background, desktop, image_of, text_of,
 };
 use crate::keys::{Os, hid_plus, key_names, keystroke};
 use crate::lock;
@@ -97,6 +96,10 @@ const OTHER_DISPLAY: &str =
 const OUTSIDE_WINDOW: &str = "the point is outside the window the call's pid or app picks, so nothing was sent: name the window the point is in, or leave pid and app out to reach the window under the point";
 const NO_WINDOW_UNDER: &str =
     "no window under the point, and the app allowlist admits only windows";
+const NAME_REFUSED: [&str; 2] = [
+    "No installed macOS app found for name",
+    "matches several installed macOS apps",
+];
 const NO_WINDOW_AT: &str = "no app window at the point; name one with window or pid";
 const NO_WINDOWSERVER_CONNECTION: &str = "SLPSPostEventRecordTo returned 1002";
 const WINDOW_NEVER_READ: &str = "window_never_read";
@@ -477,9 +480,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 }
                 let retry = (self.os == Os::Mac).then(|| req.clone());
                 let v = match (self.call("launch_app", req).await, retry) {
-                    (Err(e), Some(mut req))
-                        if e.starts_with("launch_app: ") && !e.contains(CLOSED) =>
-                    {
+                    (Err(e), Some(mut req)) if NAME_REFUSED.iter().any(|m| e.contains(m)) => {
                         let app = a.app;
                         let named = self
                             .access
@@ -5718,7 +5719,9 @@ pub(crate) mod tests {
                     ("launch_app", "TextEdit") => Ok(
                         json!({"content": [{"type": "text", "text": "Launched TextEdit (pid 4) in background."}]}),
                     ),
-                    ("launch_app", _) => Err(format!("launch_app: no app named {name}")),
+                    ("launch_app", _) => Err(format!(
+                        "launch_app: No installed macOS app found for name '{name}'."
+                    )),
                     _ => Ok(json!({})),
                 }
             }
@@ -5745,7 +5748,10 @@ pub(crate) mod tests {
             .run("desk_launch", json!({"app": "notepad.exe"}))
             .await
             .unwrap_err();
-        assert_eq!(err, "launch_app: no app named notepad.exe");
+        assert_eq!(
+            err,
+            "launch_app: No installed macOS app found for name 'notepad.exe'."
+        );
         assert_eq!(
             *names.lock().unwrap(),
             ["文本编辑", "TextEdit", "notepad.exe"]
@@ -6518,6 +6524,7 @@ pub(crate) mod tests {
                 BehindCover(Behind(Arc::clone(&calls)), AtomicBool::new(false), cover),
                 Os::Windows,
             );
+            let began = Instant::now();
             let _ = desk
                 .run(
                     "desk_scroll",
@@ -6530,6 +6537,7 @@ pub(crate) mod tests {
                 "{cover:?}: {:?}",
                 order(&calls)
             );
+            assert_eq!(began.elapsed() >= WHEEL_SETTLE, raised, "{cover:?}");
         }
     }
 
@@ -8294,14 +8302,23 @@ pub(crate) mod tests {
             sent.lock().unwrap()[1]["urls"],
             json!(["https://shop.test/form"])
         );
-        for (n, url) in ["https://closed.test", "https://cut.test"]
-            .iter()
-            .enumerate()
+        for (n, url) in [
+            "https://closed.test",
+            "https://cut.test",
+            "https://failed.test",
+        ]
+        .iter()
+        .enumerate()
         {
             let args = json!({"app": "Chrome", "args": [url]});
             desk.run("desk_launch", args).await.unwrap_err();
             assert_eq!(sent.lock().unwrap().len(), 4 + n, "{url}");
         }
+        let args = json!({"app": "Chrome", "args": ["https://several.test"]});
+        desk.run("desk_launch", args).await.unwrap();
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent.len(), 8);
+        assert_eq!(sent[7]["name"], "Google Chrome");
     }
 
     #[tokio::test]
@@ -8509,9 +8526,25 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("covers the front window's center"), "{err}");
-        let calls = calls.lock().unwrap();
-        assert!(!calls.iter().any(|(t, _)| t == "scroll"));
-        assert_eq!(calls.iter().filter(|(t, _)| t == "list_windows").count(), 1);
+        {
+            let calls = calls.lock().unwrap();
+            assert!(!calls.iter().any(|(t, _)| t == "scroll"));
+            assert_eq!(calls.iter().filter(|(t, _)| t == "list_windows").count(), 1);
+        }
+        let linux = Desk::new(|| Ok(Apps), Covered(calls.clone()), Os::Linux)
+            .allow(&["notepad".into(), "mail".into()]);
+        let named = json!({"direction": "down", "window": "Untitled"});
+        let err = linux.run("desk_scroll", named).await.unwrap_err();
+        assert_eq!(
+            err,
+            "another window covers the named window's center, so nothing was scrolled"
+        );
+        assert!(sent(&calls, "bring_to_front").is_empty());
+        let by_pid = json!({"direction": "down", "window": "Untitled", "pid": 4});
+        let err = linux.run("desk_scroll", by_pid).await.unwrap_err();
+        assert!(err.contains("still covers the point"), "{err}");
+        assert!(!sent(&calls, "bring_to_front").is_empty());
+        assert!(sent(&calls, "scroll").is_empty());
     }
 
     #[tokio::test]
@@ -8616,6 +8649,18 @@ pub(crate) mod tests {
         .await
         .unwrap_err();
         assert!(err.contains("is not on screen"), "{err}");
+        let err = Desk::new(
+            || Err::<Fake, _>("no accessibility".to_owned()),
+            Folded(folded.clone()),
+            Os::Linux,
+        )
+        .run(
+            "desk_scroll",
+            json!({"direction": "up", "window": "Folded", "pid": 8}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, "\"Folded\" is not on screen, so nothing was scrolled");
         assert!(sent(&folded, "scroll").is_empty());
         let allowed =
             Desk::new(|| Ok(Apps), Wheel(calls.clone()), Os::Windows).allow(&["notepad".into()]);
@@ -10093,9 +10138,22 @@ pub(crate) mod tests {
             if tool == "launch_app" {
                 self.0.lock().unwrap().push(args.clone());
                 match args["urls"][0].as_str() {
-                    Some("https://closed.test") => return Err(format!("launch_app: {CLOSED}")),
+                    Some("https://closed.test") => {
+                        return Err(format!("launch_app: {}", crate::driver::CLOSED));
+                    }
                     Some("https://cut.test") => {
-                        return Err("read cua-driver: connection reset".into());
+                        return Err(format!(
+                            "cua-driver launch_app {}",
+                            crate::driver::TIMED_OUT
+                        ));
+                    }
+                    Some("https://failed.test") => {
+                        return Err(
+                            "launch_app: Launch failed: the launch callback timed out".into()
+                        );
+                    }
+                    Some("https://several.test") if args["name"] == "Chrome" => {
+                        return Err("launch_app: The name 'Chrome' matches several installed macOS apps: Google Chrome, Google Chrome Canary. Pass one of these names or a bundle_id.".into());
                     }
                     _ => {}
                 }
@@ -10843,8 +10901,12 @@ pub(crate) mod tests {
 
     impl Input for Folded {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let shown = args["on_screen_only"] == true;
             self.0.lock().unwrap().push((tool.to_owned(), args));
             Ok(match tool {
+                "list_windows" if shown => json!({"structuredContent": {"windows": [
+                    {"pid": 4, "window_id": 3, "layer": 0, "z_index": 1, "title": "Front", "bounds": {"x": 0.0, "y": 0.0, "width": 400.0, "height": 300.0}}
+                ]}}),
                 "list_windows" => json!({"structuredContent": {"windows": [
                     {"pid": 4, "window_id": 3, "layer": 0, "z_index": 1, "title": "Front", "bounds": {"x": 0.0, "y": 0.0, "width": 400.0, "height": 300.0}},
                     {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "title": "Folded", "is_on_screen": false, "on_current_space": true, "bounds": {"x": 500.0, "y": 0.0, "width": 300.0, "height": 300.0}}

@@ -893,7 +893,7 @@ async function inWindow(w: Win, x: number, y: number): Promise<[number, number, 
 
 function told(g: Pick<Grounding, 'what' | 'check' | 'why' | 'cover'>) {
   if (g.why) return `a point whose element could not be read: ${g.why}`
-  return g.what ? `${g.what.slice(0, 80)}${g.cover !== undefined ? `, under the window "${g.cover}"` : REFUSED[g.check] ?? ''}` : 'no accessible element'
+  return g.what ? `${g.what.slice(0, 80)}${g.cover !== undefined ? (g.cover ? `, under the window "${g.cover}"` : ', under another window') : REFUSED[g.check] ?? ''}` : 'no accessible element'
 }
 
 async function typingInto(want: Focus, w: Win | null) {
@@ -1382,7 +1382,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
         heard(again, rec, s)
       } else if (!dark && tty && secure(s) && !unchanged(was, now)) throw new Surprise(changed(w, rec.unverified), await seen())
       else if (!dark && !left && !shown && !sealed && !(tty && unchanged(was, now))) throw new Surprise(`${typedText(s)} did not show in "${w.title}" after typing: ${rec.unverified}`, await seen())
-      if (BG) rec.confirmed = shown || (!tty && !sealed)
+      if (BG) rec.confirmed = !left && (shown || (!tty && !sealed))
     }
     const blank = recording && first && !chooser && w ? await typedInto(w, s.type) : null
     if (blank) rec.blank = blank.fp

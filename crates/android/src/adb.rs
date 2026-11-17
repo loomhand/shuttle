@@ -1942,12 +1942,17 @@ mod tests {
         fake.put("inject.answer", "true");
         fake.windows("");
         fake.put("focus.json", &focused(7, ""));
-        acked(&fake).await;
+        let pasted = acked(&fake).await;
         let typed = desk(&fake, "desk_type", serde_json::json!({"text": "\r\n\r\n"})).await;
         let requests = log(&fake, "requests");
         assert!(typed.is_ok(), "{typed:?} {requests}");
         assert_eq!(requests.matches("key ").count(), 2, "{requests}");
         assert_eq!(requests.matches("paste").count(), 0, "{requests}");
+        fake.put("after-paste.json", &focused(7, "a"));
+        let _ = desk(&fake, "desk_type", serde_json::json!({"text": "a\r\nb"})).await;
+        let pasted = pasted.lock().unwrap();
+        assert_eq!(pasted.iter().find(|t| !t.is_empty()), Some(&"a".to_owned()));
+        assert!(pasted.iter().all(|t| !t.contains('\r')), "{pasted:?}");
     }
 
     #[cfg(unix)]
@@ -2548,10 +2553,7 @@ mod tests {
                 if pastes.get() > 0 {
                     after.set(after.get() + 1);
                 }
-                let f = Focus {
-                    password: true,
-                    ..field(if after.get() < 3 { "" } else { "secret" })
-                };
+                let f = secret(if after.get() < 3 { "" } else { "secret" });
                 async move { Ok(Some(f)) }
             },
             || {
@@ -2562,6 +2564,26 @@ mod tests {
         .await;
         assert_eq!((out, pastes.get()), (Ok(None), 1));
         assert_eq!(after.get(), 3);
+        let pastes = std::cell::Cell::new(0);
+        let began = tokio::time::Instant::now();
+        let same = type_with(
+            "new",
+            None,
+            None,
+            true,
+            &mut None,
+            |_| {
+                let f = secret(if pastes.get() == 0 { "old" } else { "new" });
+                async move { Ok(Some(f)) }
+            },
+            || {
+                pastes.set(pastes.get() + 1);
+                async { Ok(true) }
+            },
+        )
+        .await;
+        assert_eq!((same, pastes.get()), (Ok(None), 1));
+        assert!(began.elapsed() >= TYPE_WAIT, "{:?}", began.elapsed());
         let started = tokio::time::Instant::now();
         let blind = type_with(
             "secret",
@@ -2623,10 +2645,7 @@ mod tests {
                     (false, _, n) if n < 3 => "old",
                     _ => "secret",
                 };
-                let f = Focus {
-                    password: true,
-                    ..field(text)
-                };
+                let f = secret(text);
                 async move { Ok(Some(f)) }
             },
             || {
@@ -2646,10 +2665,7 @@ mod tests {
             &mut None,
             |_| {
                 let read = if pastes.get() == 0 {
-                    Ok(Some(Focus {
-                        password: true,
-                        ..field("")
-                    }))
+                    Ok(Some(secret("")))
                 } else {
                     Err("decode focus: EOF".to_owned())
                 };
@@ -2964,12 +2980,7 @@ mod tests {
             None,
             true,
             &mut None,
-            |_| async {
-                Ok(Some(Focus {
-                    password: true,
-                    ..field("")
-                }))
-            },
+            |_| async { Ok(Some(secret(""))) },
             || {
                 pastes.set(pastes.get() + 1);
                 async { Ok(true) }
@@ -3049,19 +3060,25 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn acked(fake: &Fake) {
+    async fn acked(fake: &Fake) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
         let mut peer = controlled(&fake.android).await;
+        let pasted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = std::sync::Arc::clone(&pasted);
         tokio::spawn(async move {
             let mut head = [0u8; 14];
             while peer.read_exact(&mut head).await.is_ok() {
                 let len = u32::from_be_bytes([head[10], head[11], head[12], head[13]]);
                 let mut text = vec![0u8; len as usize];
                 peer.read_exact(&mut text).await.unwrap();
+                seen.lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&text).into_owned());
                 let mut ack = vec![ACK_CLIPBOARD];
                 ack.extend_from_slice(&head[1..9]);
                 peer.write_all(&ack).await.unwrap();
             }
         });
+        pasted
     }
 
     #[cfg(unix)]
@@ -3284,6 +3301,15 @@ mod tests {
         let pasted = android.paste("hi").await;
         assert_eq!(device.await.unwrap().0, clipboard_message("hi", 1));
         pasted
+    }
+
+    fn secret(text: &str) -> Focus {
+        Focus {
+            password: true,
+            hash: 0,
+            tail: String::new(),
+            ..field(text)
+        }
     }
 
     fn field(text: &str) -> Focus {

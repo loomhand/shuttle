@@ -20,7 +20,7 @@ pub(crate) const CLICK_SPACING: Duration = Duration::from_millis(500);
 pub(crate) const CONNECT_RETRY: Duration = Duration::from_millis(250);
 pub(crate) const ENDED: &str = "session has ended";
 const ENDED_CODE: &str = "session_ended";
-const TIMED_OUT: &str =
+pub(crate) const TIMED_OUT: &str =
     "timed out, and it may still take effect: read the window before sending it again";
 pub(crate) const CLOSED: &str = "cua-driver closed the connection without an answer, as it does when it stops, so whether the call ran is not known: read the window before sending it again";
 pub(crate) const ACTUAL_FRONT: &str = "; actual foreground window ";
@@ -934,7 +934,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("cua.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let (read, got) = tokio::sync::oneshot::channel();
         let daemon = tokio::spawn(async move {
+            let mut read = Some(read);
             let mut lines = Vec::new();
             let mut held = Vec::new();
             for _ in 0..2 {
@@ -944,16 +946,17 @@ mod tests {
                 s.read_line(&mut line).await.unwrap();
                 lines.push(serde_json::from_str::<Value>(&line).unwrap());
                 held.push(s);
+                if let Some(read) = read.take() {
+                    read.send(()).unwrap();
+                }
             }
             lines
         });
         let d = Driver::new(socket.to_string_lossy().into_owned());
-        let call = d.call("type_text", json!({"text": "a"}));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(200), call)
-                .await
-                .is_err()
-        );
+        tokio::select! {
+            out = d.call("type_text", json!({"text": "a"})) => panic!("answered: {out:?}"),
+            _ = got => {}
+        }
         let lines = tokio::time::timeout(Duration::from_secs(5), daemon)
             .await
             .expect("no end_session after the dropped call")
