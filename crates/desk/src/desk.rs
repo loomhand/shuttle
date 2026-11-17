@@ -115,7 +115,7 @@ const UNSEEN_SENT: &str = "the app may not repaint a window nobody sees, so the 
 const UNSEEN_TYPED: &str = "the app may not repaint a window nobody sees, so the text may be there even if a screenshot looks unchanged: do not type it again, and before you submit it with Return or Send, confirm that it is there by a read-back you can trust or by asking the user";
 
 const MASK_TRIES: usize = 3;
-const WINDOW_OFF_SCREEN: &str = "the window is off the left or top edge of the screen, so its screenshot could not be taken under the app allowlist; move it onto the screen";
+const WINDOW_OFF_SCREEN: &str = "the window is off the left or top edge of the screen, so its screenshot could not be masked to the app allowlist; move it onto the screen";
 const WINDOWS_MOVING: &str = "the windows kept changing while the screenshot was taken, so it could not be masked to the app allowlist; take it again";
 
 const EFFECTS: [&str; 4] = ["confirmed", "unverifiable", "partial", "suspected_noop"];
@@ -2544,13 +2544,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if let Some(window) = a.window.as_deref() {
             return self.window_shot(window, a.pid, rect).await;
         }
-        let (w, h, png) = self.screen_png(rect, None).await.map_err(|e| {
-            if e == OFF_SCREEN {
-                format!("{e}{OTHER_DISPLAY}")
-            } else {
-                e
-            }
-        })?;
+        let (w, h, png) = self.screen_png(rect, None).await?;
         Ok(delivered(png, sized(w, h)))
     }
 
@@ -2576,9 +2570,42 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             }
             Grab::Driver(png, factor) => {
                 let mask = self.mask(shown, factor).await?;
-                crop_png(&png, rect, factor, mask.as_deref())
+                crop_png(&png, rect, factor, mask.as_deref()).map_err(|e| {
+                    if e == OFF_SCREEN {
+                        format!("{e}{OTHER_DISPLAY}")
+                    } else {
+                        e
+                    }
+                })
             }
         }
+    }
+
+    async fn screen_at(&self, bounds: [f64; 4], rect: [f64; 4]) -> Result<Output, String> {
+        let scale = self.scale().await?;
+        let [bx, by, bw, bh] = bounds.map(|v| v * scale);
+        let (x, y) = (rect[0].clamp(0.0, bw), rect[1].clamp(0.0, bh));
+        let (right, bottom) = (
+            (rect[0] + rect[2]).clamp(0.0, bw),
+            (rect[1] + rect[3]).clamp(0.0, bh),
+        );
+        if right <= x || bottom <= y {
+            return Err("the rectangle is off the window".to_owned());
+        }
+        if bx + x < 0.0 || by + y < 0.0 {
+            return Err(WINDOW_OFF_SCREEN.to_owned());
+        }
+        let part = [bx + x, by + y, right - x, bottom - y];
+        let (w, h, png) = self.screen_png(part, Some(bounds)).await.map_err(|e| {
+            if e.starts_with(OFF_SCREEN) {
+                WINDOW_OFF_SCREEN.to_owned()
+            } else {
+                e
+            }
+        })?;
+        let mut out = sized(w, h);
+        out["origin"] = json!([x as u32, y as u32]);
+        Ok(delivered(png, out))
     }
 
     async fn grab(&self, rect: [f64; 4]) -> Result<Grab, String> {
@@ -2616,7 +2643,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Err(WINDOWS_MOVING.to_owned())
     }
 
-    /// The image of the window titled `window`, as the driver captures that window alone, cropped to `rect` in its pixels; on Linux under an app allowlist, where that capture can hold what covers the window, the masked screen there.
+    /// The image of the window titled `window`, as the driver captures that window alone, cropped to `rect` in its pixels; the masked screen there when, under an app allowlist, the driver says its image is the screen's.
     async fn window_shot(
         &self,
         window: &str,
@@ -2625,32 +2652,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     ) -> Result<Output, String> {
         let (_, w, _) = self.pick_window(Some(window), pid, true).await?;
         let key = window_key(&w)?;
-        if self.os == Os::Linux && !self.allow.is_open() {
-            let scale = self.scale().await?;
-            let [bx, by, bw, bh] = key.2.map(|v| v * scale);
-            let (x, y) = (rect[0].clamp(0.0, bw), rect[1].clamp(0.0, bh));
-            let (right, bottom) = (
-                (rect[0] + rect[2]).clamp(0.0, bw),
-                (rect[1] + rect[3]).clamp(0.0, bh),
-            );
-            if right <= x || bottom <= y {
-                return Err("the rectangle is off the window".to_owned());
-            }
-            if bx + x < 0.0 || by + y < 0.0 {
-                return Err(WINDOW_OFF_SCREEN.to_owned());
-            }
-            let part = [bx + x, by + y, right - x, bottom - y];
-            let (w, h, png) = self.screen_png(part, Some(key.2)).await.map_err(|e| {
-                if e == OFF_SCREEN {
-                    WINDOW_OFF_SCREEN.to_owned()
-                } else {
-                    e
-                }
-            })?;
-            let mut out = sized(w, h);
-            out["origin"] = json!([x as u32, y as u32]);
-            return Ok(delivered(png, out));
-        }
         let stale = lock(&self.unseen)
             .get(&(key.0, key.1))
             .filter(|_| self.os == Os::Mac)
@@ -2668,6 +2669,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .await?;
         let _ = self.remember(key, &v, true);
         drop(session);
+        if !self.allow.is_open() && v["structuredContent"]["screenshot_composited"] == true {
+            return self.screen_at(key.2, rect).await;
+        }
         let png = image_of(&v).ok_or("the driver returned no screenshot of the window")?;
         let png = B64
             .decode(png)
@@ -8072,60 +8076,56 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn on_linux_an_app_allowlist_makes_a_window_shot_the_masked_screen_there() {
-        let at = |os, allow: &[String], args: Value, xs: [f64; 2]| {
+    async fn an_allowlist_swaps_a_window_shot_the_driver_took_from_the_screen_for_the_masked_screen()
+     {
+        let at = |allow: &[String], args: Value, xs: [f64; 2], composited: bool| {
             let calls = Arc::new(Mutex::new(Vec::new()));
-            let driver = Titled(Desktop(calls.clone()), xs, AtomicUsize::new(0));
-            let desk = Desk::new(|| Ok(Apps), driver, os).allow(allow);
+            let driver = Titled(Desktop(calls.clone()), xs, AtomicUsize::new(0), composited);
+            let desk = Desk::new(|| Ok(Apps), driver, Os::Linux).allow(allow);
             async move {
                 let out = desk.run("desk_shot", args).await;
-                (out, calls.lock().unwrap().clone())
+                let calls = calls.lock().unwrap();
+                let grabs = calls.iter().filter(|t| *t == "get_desktop_state").count();
+                (out, grabs)
             }
         };
-        let shot = |os, allow, args| at(os, allow, args, [100.0; 2]);
         let listed = ["notepad".to_owned()];
         let whole = json!({"window": "Untitled - Notepad"});
-        let (out, calls) = shot(Os::Linux, &listed, whole.clone()).await;
+        let (out, grabs) = at(&listed, whole.clone(), [100.0; 2], true).await;
         let out = out.unwrap();
         let px = pixels(&out);
         assert_eq!(
-            (px[0], px[4], px[6], px[69]),
-            ([255; 3], [0; 3], [0; 3], [255; 3])
+            (px[0], px[4], px[3 * 8 + 7], px[4 * 8 + 4], px[63]),
+            ([255; 3], [0; 3], [0; 3], [255; 3], [255; 3])
         );
         assert_eq!(
             serde_json::from_str::<Value>(&out.text).unwrap(),
-            json!({"ok": true, "width": 9, "height": 10, "origin": [0, 0]})
+            json!({"ok": true, "width": 8, "height": 8, "origin": [0, 0]})
         );
-        assert!(!calls.iter().any(|t| t == "get_window_state"), "{calls:?}");
+        assert_eq!(grabs, 1);
         let part =
-            json!({"window": "Untitled - Notepad", "x": 500.0, "y": 0.0, "w": 500.0, "h": 500.0});
-        let (out, _) = shot(Os::Linux, &listed, part).await;
+            json!({"window": "Untitled - Notepad", "x": 400.0, "y": 0.0, "w": 400.0, "h": 400.0});
+        let (out, _) = at(&listed, part, [100.0; 2], true).await;
         let out = out.unwrap();
         assert!(pixels(&out).iter().all(|p| *p == [0; 3]));
-        assert!(out.text.contains(r#""origin":[500,0]"#), "{}", out.text);
+        assert!(out.text.contains(r#""origin":[400,0]"#), "{}", out.text);
         let beside = json!({"window": "Untitled - Notepad", "x": -20.0, "w": 10.0});
-        let (off, _) = shot(Os::Linux, &listed, beside).await;
+        let (off, _) = at(&listed, beside, [100.0; 2], true).await;
         assert_eq!(off.unwrap_err(), "the rectangle is off the window");
-        let (moved, _) = at(Os::Linux, &listed, whole.clone(), [100.0, 150.0]).await;
+        let (moved, _) = at(&listed, whole.clone(), [100.0, 150.0], true).await;
         assert_eq!(moved.unwrap_err(), WINDOWS_MOVING);
-        let (cut, _) = at(Os::Linux, &listed, whole.clone(), [-100.0; 2]).await;
+        let (cut, _) = at(&listed, whole.clone(), [-100.0; 2], true).await;
         assert_eq!(cut.unwrap_err(), WINDOW_OFF_SCREEN);
         let shown =
             json!({"window": "Untitled - Notepad", "x": 100.0, "y": 0.0, "w": 400.0, "h": 400.0});
-        let (out, _) = at(Os::Linux, &listed, shown, [-100.0; 2]).await;
+        let (out, _) = at(&listed, shown, [-100.0; 2], true).await;
         assert!(out.unwrap().text.contains(r#""origin":[100,0]"#));
-        for (os, allow) in [
-            (Os::Windows, &listed[..]),
-            (Os::Mac, &listed[..]),
-            (Os::Linux, &[]),
-        ] {
-            let (out, calls) = shot(os, allow, whole.clone()).await;
-            assert_eq!(
-                out.unwrap_err(),
-                "the driver returned no screenshot of the window",
-                "{os:?}"
-            );
-            assert!(!calls.iter().any(|t| t == "get_desktop_state"), "{os:?}");
+        for (allow, composited) in [(&listed[..], false), (&[], true)] {
+            let (out, grabs) = at(allow, whole.clone(), [100.0; 2], composited).await;
+            let out = out.unwrap();
+            assert!(pixels(&out).iter().all(|p| *p == [255; 3]), "{composited}");
+            assert!(out.text.contains(r#""width":10"#), "{}", out.text);
+            assert_eq!(grabs, 0, "{composited}");
         }
     }
 
@@ -10703,19 +10703,31 @@ pub(crate) mod tests {
         }
     }
 
-    struct Titled(Desktop, [f64; 2], AtomicUsize);
+    struct Titled(Desktop, [f64; 2], AtomicUsize, bool);
 
     impl Input for Titled {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
-            if tool != "list_windows" {
-                return self.0.call(tool, args).await;
+            match tool {
+                "list_windows" => {
+                    self.0.0.lock().unwrap().push(tool.to_owned());
+                    let x = self.1[usize::from(self.2.fetch_add(1, Ordering::SeqCst) > 0)];
+                    Ok(json!({"structuredContent": {"windows": [
+                        {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "bounds": {"x": x, "y": 100.0, "width": 800.0, "height": 800.0}},
+                        {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "title": "Inbox", "bounds": {"x": 500.0, "y": 0.0, "width": 500.0, "height": 500.0}}
+                    ]}}))
+                }
+                "get_window_state" => {
+                    let mut v = self.0.call("get_desktop_state", args).await?;
+                    v["structuredContent"] = json!({
+                        "screenshot_width": 10, "screenshot_height": 10,
+                        "window_bounds": {"x": self.1[0], "y": 100.0, "width": 800.0, "height": 800.0},
+                        "screenshot_composited": self.3
+                    });
+                    self.0.0.lock().unwrap().pop();
+                    Ok(v)
+                }
+                _ => self.0.call(tool, args).await,
             }
-            self.0.0.lock().unwrap().push(tool.to_owned());
-            let x = self.1[usize::from(self.2.fetch_add(1, Ordering::SeqCst) > 0)];
-            Ok(json!({"structuredContent": {"windows": [
-                {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "bounds": {"x": x, "y": 0.0, "width": 900.0, "height": 1000.0}},
-                {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "title": "Inbox", "bounds": {"x": 500.0, "y": 0.0, "width": 500.0, "height": 500.0}}
-            ]}}))
         }
     }
 
