@@ -466,13 +466,12 @@ fn frames_of(list: Vec<WindowInfo>, screen: (i32, i32)) -> Vec<Frame> {
 }
 
 fn listed(list: Vec<WindowInfo>) -> Vec<WindowInfo> {
+    let fronted = list.iter().any(|w| w.active);
     let mut shown: Vec<WindowInfo> = list
         .into_iter()
         .filter(|w| !w.package.is_empty() && (w.kind == APPLICATION || w.active))
         .collect();
-    if !shown.iter().any(|w| w.active)
-        && let Some(w) = shown.iter_mut().max_by_key(|w| (w.focused, w.layer))
-    {
+    if !fronted && let Some(w) = shown.iter_mut().max_by_key(|w| (w.focused, w.layer)) {
         w.active = true;
     }
     shown
@@ -1225,6 +1224,17 @@ mod tests {
         assert!(
             shown[0].active,
             "without an active window the top app is in front"
+        );
+        let unread = WindowInfo {
+            id: 8,
+            package: String::new(),
+            ..app(true)
+        };
+        let shown = listed(vec![app(false), unread]);
+        assert_eq!(
+            shown.iter().map(|w| (w.id, w.active)).collect::<Vec<_>>(),
+            [(7, false)],
+            "an active window with no readable root keeps the app behind it out of the front"
         );
     }
 

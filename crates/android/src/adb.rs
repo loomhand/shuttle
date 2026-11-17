@@ -427,8 +427,9 @@ impl Android {
     {
         let mut typed = Some(true);
         let mut pin = None;
-        let lines = text.split('\n').count();
-        for (i, line) in text.split('\n').enumerate() {
+        let rows: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
+        let lines = rows.len();
+        for (i, line) in rows.iter().copied().enumerate() {
             let partly = |e: String| match i {
                 0 => e,
                 _ => format!("{e}; {i} of {lines} lines were typed before it"),
@@ -444,10 +445,7 @@ impl Android {
                 self.keys("return").await.map_err(partly)?;
             }
             if line.is_empty() {
-                if i == 0
-                    && window.is_none()
-                    && at.is_none()
-                    && text.split('\n').any(|l| !l.is_empty())
+                if i == 0 && window.is_none() && at.is_none() && rows.iter().any(|l| !l.is_empty())
                 {
                     pin = Some(self.field_window().await?.ok_or(NO_FIELD_FIRST)?);
                 }
@@ -1935,6 +1933,21 @@ mod tests {
             err.ends_with("; 2 of 3 lines were typed before it"),
             "{err}"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_crlf_text_types_its_lines_without_the_carriage_returns() {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.windows("");
+        fake.put("focus.json", &focused(7, ""));
+        acked(&fake).await;
+        let typed = desk(&fake, "desk_type", serde_json::json!({"text": "\r\n\r\n"})).await;
+        let requests = log(&fake, "requests");
+        assert!(typed.is_ok(), "{typed:?} {requests}");
+        assert_eq!(requests.matches("key ").count(), 2, "{requests}");
+        assert_eq!(requests.matches("paste").count(), 0, "{requests}");
     }
 
     #[cfg(unix)]
