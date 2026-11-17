@@ -115,6 +115,7 @@ const UNSEEN_SENT: &str = "the app may not repaint a window nobody sees, so the 
 const UNSEEN_TYPED: &str = "the app may not repaint a window nobody sees, so the text may be there even if a screenshot looks unchanged: do not type it again, and before you submit it with Return or Send, confirm that it is there by a read-back you can trust or by asking the user";
 
 const MASK_TRIES: usize = 3;
+const WINDOW_OFF_SCREEN: &str = "the window is off the left or top edge of the screen, so its screenshot could not be taken under the app allowlist; move it onto the screen";
 const WINDOWS_MOVING: &str = "the windows kept changing while the screenshot was taken, so it could not be masked to the app allowlist; take it again";
 
 const EFFECTS: [&str; 4] = ["confirmed", "unverifiable", "partial", "suspected_noop"];
@@ -2543,7 +2544,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if let Some(window) = a.window.as_deref() {
             return self.window_shot(window, a.pid, rect).await;
         }
-        let (w, h, png) = self.screen_png(rect).await.map_err(|e| {
+        let (w, h, png) = self.screen_png(rect, None).await.map_err(|e| {
             if e == OFF_SCREEN {
                 format!("{e}{OTHER_DISPLAY}")
             } else {
@@ -2553,11 +2554,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(delivered(png, sized(w, h)))
     }
 
-    async fn screen_png(&self, rect: [f64; 4]) -> Result<(u32, u32, Vec<u8>), String> {
+    async fn screen_png(
+        &self,
+        rect: [f64; 4],
+        still_at: Option<[f64; 4]>,
+    ) -> Result<(u32, u32, Vec<u8>), String> {
         let (grab, shown) = if self.allow.is_open() {
             (self.grab(rect).await?, None)
         } else {
             let (grab, shown) = self.steady_grab(rect).await?;
+            if still_at.is_some_and(|at| !shown.iter().any(|&(r, admitted)| admitted && r == at)) {
+                return Err(WINDOWS_MOVING.to_owned());
+            }
             (grab, Some(shown))
         };
         match grab {
@@ -2620,20 +2628,27 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if self.os == Os::Linux && !self.allow.is_open() {
             let scale = self.scale().await?;
             let [bx, by, bw, bh] = key.2.map(|v| v * scale);
-            let (x, y) = (rect[0].max(0.0), rect[1].max(0.0));
-            let part = [bx + x, by + y, rect[2].min(bw - x), rect[3].min(bh - y)];
-            let (w, h, png) = self.screen_png(part).await.map_err(|e| {
+            let (x, y) = (rect[0].clamp(0.0, bw), rect[1].clamp(0.0, bh));
+            let (right, bottom) = (
+                (rect[0] + rect[2]).clamp(0.0, bw),
+                (rect[1] + rect[3]).clamp(0.0, bh),
+            );
+            if right <= x || bottom <= y {
+                return Err("the rectangle is off the window".to_owned());
+            }
+            if bx + x < 0.0 || by + y < 0.0 {
+                return Err(WINDOW_OFF_SCREEN.to_owned());
+            }
+            let part = [bx + x, by + y, right - x, bottom - y];
+            let (w, h, png) = self.screen_png(part, Some(key.2)).await.map_err(|e| {
                 if e == OFF_SCREEN {
-                    "the rectangle is off the window or the window is off the screen".to_owned()
+                    WINDOW_OFF_SCREEN.to_owned()
                 } else {
                     e
                 }
             })?;
             let mut out = sized(w, h);
-            out["origin"] = json!([
-                (part[0].max(0.0) - bx) as u32,
-                (part[1].max(0.0) - by) as u32
-            ]);
+            out["origin"] = json!([x as u32, y as u32]);
             return Ok(delivered(png, out));
         }
         let stale = lock(&self.unseen)
@@ -3214,7 +3229,7 @@ fn outline(nodes: &[Node], max_chars: usize) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, OnceLock};
 
     use desk_core::text::clip;
@@ -8058,20 +8073,25 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn on_linux_an_app_allowlist_makes_a_window_shot_the_masked_screen_there() {
-        let shot = |os, allow: &[String], args: Value| {
+        let at = |os, allow: &[String], args: Value, xs: [f64; 2]| {
             let calls = Arc::new(Mutex::new(Vec::new()));
-            let desk = Desk::new(|| Ok(Apps), Titled(Desktop(calls.clone())), os).allow(allow);
+            let driver = Titled(Desktop(calls.clone()), xs, AtomicUsize::new(0));
+            let desk = Desk::new(|| Ok(Apps), driver, os).allow(allow);
             async move {
                 let out = desk.run("desk_shot", args).await;
                 (out, calls.lock().unwrap().clone())
             }
         };
+        let shot = |os, allow, args| at(os, allow, args, [100.0; 2]);
         let listed = ["notepad".to_owned()];
         let whole = json!({"window": "Untitled - Notepad"});
         let (out, calls) = shot(Os::Linux, &listed, whole.clone()).await;
         let out = out.unwrap();
         let px = pixels(&out);
-        assert_eq!((px[2], px[6], px[69]), ([255; 3], [0; 3], [255; 3]));
+        assert_eq!(
+            (px[0], px[4], px[6], px[69]),
+            ([255; 3], [0; 3], [0; 3], [255; 3])
+        );
         assert_eq!(
             serde_json::from_str::<Value>(&out.text).unwrap(),
             json!({"ok": true, "width": 9, "height": 10, "origin": [0, 0]})
@@ -8083,6 +8103,17 @@ pub(crate) mod tests {
         let out = out.unwrap();
         assert!(pixels(&out).iter().all(|p| *p == [0; 3]));
         assert!(out.text.contains(r#""origin":[500,0]"#), "{}", out.text);
+        let beside = json!({"window": "Untitled - Notepad", "x": -20.0, "w": 10.0});
+        let (off, _) = shot(Os::Linux, &listed, beside).await;
+        assert_eq!(off.unwrap_err(), "the rectangle is off the window");
+        let (moved, _) = at(Os::Linux, &listed, whole.clone(), [100.0, 150.0]).await;
+        assert_eq!(moved.unwrap_err(), WINDOWS_MOVING);
+        let (cut, _) = at(Os::Linux, &listed, whole.clone(), [-100.0; 2]).await;
+        assert_eq!(cut.unwrap_err(), WINDOW_OFF_SCREEN);
+        let shown =
+            json!({"window": "Untitled - Notepad", "x": 100.0, "y": 0.0, "w": 400.0, "h": 400.0});
+        let (out, _) = at(Os::Linux, &listed, shown, [-100.0; 2]).await;
+        assert!(out.unwrap().text.contains(r#""origin":[100,0]"#));
         for (os, allow) in [
             (Os::Windows, &listed[..]),
             (Os::Mac, &listed[..]),
@@ -10672,7 +10703,7 @@ pub(crate) mod tests {
         }
     }
 
-    struct Titled(Desktop);
+    struct Titled(Desktop, [f64; 2], AtomicUsize);
 
     impl Input for Titled {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
@@ -10680,8 +10711,9 @@ pub(crate) mod tests {
                 return self.0.call(tool, args).await;
             }
             self.0.0.lock().unwrap().push(tool.to_owned());
+            let x = self.1[usize::from(self.2.fetch_add(1, Ordering::SeqCst) > 0)];
             Ok(json!({"structuredContent": {"windows": [
-                {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "bounds": {"x": 100.0, "y": 0.0, "width": 900.0, "height": 1000.0}},
+                {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "bounds": {"x": x, "y": 0.0, "width": 900.0, "height": 1000.0}},
                 {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "title": "Inbox", "bounds": {"x": 500.0, "y": 0.0, "width": 500.0, "height": 500.0}}
             ]}}))
         }

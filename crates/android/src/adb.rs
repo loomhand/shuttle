@@ -1623,36 +1623,6 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_press_in_a_window_behind_another_apps_dialog_is_refused_with_nothing_sent() {
-        let fake = Fake::new();
-        fake.windows("dialog");
-        for (bounds, what) in [
-            ("[0,200][720,300]", "beside the dialog"),
-            ("[0,1300][720,1400]", "off the screen"),
-        ] {
-            list(&fake, "dump.xml", bounds);
-            let err = crate::desk::run(
-                &fake.android,
-                "desk_press",
-                serde_json::json!({"id": "com.android.settings:0.0.1:button:Target"}),
-            )
-            .await
-            .unwrap_err();
-            assert_eq!(
-                err,
-                "Settings - com.android.settings is not in front, and input on a device reaches only the front window",
-                "{what}"
-            );
-        }
-        let sent = log(&fake, "requests") + &log(&fake, "adbinput");
-        assert!(!sent.contains("tap") && !sent.contains("swipe"), "{sent}");
-        fake.windows("split");
-        list(&fake, "dump.xml", "[0,200][720,300]");
-        assert_eq!(press_target(&fake).await["y"].as_i64(), Some(250));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
     async fn a_refusing_element_is_swiped_for() {
         let fake = Fake::new();
         fake.windows("");
@@ -3214,14 +3184,6 @@ mod tests {
                 "landscape" => format!(
                     r#"[{{"id":5,"type":3,"layer":2,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[1184,0,1280,720]}},{}]"#,
                     app(true).replace("[0,0,720,1280]", "[0,0,1280,720]")
-                ),
-                "dialog" => format!(
-                    r#"[{bar},{{"id":9,"type":1,"layer":3,"title":"Allow","package":"com.android.permissioncontroller","active":true,"focused":true,"bounds":[60,400,660,800]}},{}]"#,
-                    app(false)
-                ),
-                "split" => format!(
-                    r#"[{{"id":9,"type":1,"layer":1,"title":"Files","package":"com.android.documentsui","active":true,"focused":true,"bounds":[0,640,720,1280]}},{{"id":10,"type":1,"layer":2,"title":"Video","package":"com.android.gallery3d","active":false,"focused":false,"bounds":[400,400,700,600]}},{}]"#,
-                    app(false).replace("[0,0,720,1280]", "[0,0,720,640]")
                 ),
                 "none" => "[]".to_owned(),
                 _ => format!("[{bar},{}]", app(true)),

@@ -139,7 +139,6 @@ pub(crate) struct Frame {
     active: bool,
     bounds: [i32; 4],
     covers: Vec<[i32; 4]>,
-    under: bool,
     screen: (i32, i32),
 }
 
@@ -447,23 +446,19 @@ fn turned((w, h): (i32, i32), list: &[WindowInfo]) -> (i32, i32) {
 }
 
 fn frames_of(list: Vec<WindowInfo>, screen: (i32, i32)) -> Vec<Frame> {
-    let layers: Vec<(i64, [i32; 4], bool)> =
-        list.iter().map(|w| (w.layer, w.bounds, w.active)).collect();
+    let layers: Vec<(i64, [i32; 4])> = list.iter().map(|w| (w.layer, w.bounds)).collect();
     let shown = listed(list);
     let alone = shown.len() == 1;
     shown
         .into_iter()
         .map(|w| {
-            let above = || layers.iter().filter(|(layer, ..)| *layer > w.layer);
-            let covers = above()
-                .map(|&(_, [l, t, r, b], _)| [l, t, r - l, b - t])
+            let covers = layers
+                .iter()
+                .filter(|(layer, _)| *layer > w.layer)
+                .map(|&(_, [l, t, r, b])| [l, t, r - l, b - t])
                 .collect();
-            let [wl, wt, wr, wb] = w.bounds;
-            let under = above()
-                .any(|&(_, [l, t, r, b], active)| active && l < wr && wl < r && t < wb && wt < b);
             Frame {
                 covers,
-                under,
                 ..frame(w, alone, screen)
             }
         })
@@ -500,7 +495,6 @@ fn frame(w: WindowInfo, alone: bool, screen: (i32, i32)) -> Frame {
         active: w.active,
         bounds: [l, t, r - l, b - t],
         covers: Vec::new(),
-        under: false,
         screen,
     }
 }
@@ -949,9 +943,6 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
     }
     let mut ask = true;
     for _ in 0..SCROLL_TRIES {
-        if !frame.active && frame.under {
-            return Err(behind(&frame.title));
-        }
         if let Some((x, y)) = frame.tap_at(&node) {
             android.tap((x, y)).await?;
             return Ok(json!({"ok": true, "how": "click", "x": x, "y": y}).to_string());
@@ -1070,12 +1061,11 @@ async fn in_front(
     if frame.active {
         Ok(frame.id.parse().ok())
     } else {
-        Err(behind(&frame.title))
+        Err(format!(
+            "{} is not in front, and input on a device reaches only the front window",
+            frame.title
+        ))
     }
-}
-
-fn behind(title: &str) -> String {
-    format!("{title} is not in front, and input on a device reaches only the front window")
 }
 
 /// The window `window` names, which must be in front; a package name without a window starts its app.
