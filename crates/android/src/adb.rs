@@ -3220,7 +3220,7 @@ mod tests {
                     app(false)
                 ),
                 "split" => format!(
-                    r#"[{{"id":9,"type":1,"layer":1,"title":"Files","package":"com.android.documentsui","active":true,"focused":true,"bounds":[0,640,720,1280]}},{}]"#,
+                    r#"[{{"id":9,"type":1,"layer":1,"title":"Files","package":"com.android.documentsui","active":true,"focused":true,"bounds":[0,640,720,1280]}},{{"id":10,"type":1,"layer":2,"title":"Video","package":"com.android.gallery3d","active":false,"focused":false,"bounds":[400,400,700,600]}},{}]"#,
                     app(false).replace("[0,0,720,1280]", "[0,0,720,640]")
                 ),
                 "none" => "[]".to_owned(),

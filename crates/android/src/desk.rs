@@ -447,10 +447,8 @@ fn turned((w, h): (i32, i32), list: &[WindowInfo]) -> (i32, i32) {
 }
 
 fn frames_of(list: Vec<WindowInfo>, screen: (i32, i32)) -> Vec<Frame> {
-    let layers: Vec<(i64, [i32; 4], bool)> = list
-        .iter()
-        .map(|w| (w.layer, w.bounds, w.kind == APPLICATION || w.active))
-        .collect();
+    let layers: Vec<(i64, [i32; 4], bool)> =
+        list.iter().map(|w| (w.layer, w.bounds, w.active)).collect();
     let shown = listed(list);
     let alone = shown.len() == 1;
     shown
@@ -462,7 +460,7 @@ fn frames_of(list: Vec<WindowInfo>, screen: (i32, i32)) -> Vec<Frame> {
                 .collect();
             let [wl, wt, wr, wb] = w.bounds;
             let under = above()
-                .any(|&(_, [l, t, r, b], takes)| takes && l < wr && wl < r && t < wb && wt < b);
+                .any(|&(_, [l, t, r, b], active)| active && l < wr && wl < r && t < wb && wt < b);
             Frame {
                 covers,
                 under,
