@@ -2594,9 +2594,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn steady_grab(&self, rect: [f64; 4]) -> Result<(Grab, Vec<([f64; 4], bool)>), String> {
         for _ in 0..MASK_TRIES {
-            let before = self.mask_rects().await?;
+            let before = self.mask_rects(None).await?;
             let grab = self.grab(rect).await?;
-            let after = self.mask_rects().await?;
+            let after = self.mask_rects(None).await?;
             if after == before {
                 return Ok((grab, after));
             }
@@ -2604,7 +2604,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Err(WINDOWS_MOVING.to_owned())
     }
 
-    /// The image of the window titled `window`, as the driver captures that window alone, cropped to `rect` in its pixels.
+    /// The image of the window titled `window`, as the driver captures that window alone, cropped to `rect` in its pixels; off macOS, where that capture can hold what covers the window, black where a window the allowlist leaves out is on top of it.
     async fn window_shot(
         &self,
         window: &str,
@@ -2624,17 +2624,43 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     u.why()
                 )
             });
-        let session = self.session.lock().await;
-        let v = self
-            .call("get_window_state", full_read(key.0, key.1))
-            .await?;
-        let _ = self.remember(key, &v, true);
-        drop(session);
+        let masked = self.os != Os::Mac && !self.allow.is_open();
+        let mut read = None;
+        for _ in 0..if masked { MASK_TRIES } else { 1 } {
+            let before = if masked {
+                Some(self.mask_rects(Some(&w)).await?)
+            } else {
+                None
+            };
+            let session = self.session.lock().await;
+            let v = self
+                .call("get_window_state", full_read(key.0, key.1))
+                .await?;
+            let _ = self.remember(key, &v, true);
+            drop(session);
+            if !masked || Some(self.mask_rects(Some(&w)).await?) == before {
+                read = Some((v, before));
+                break;
+            }
+        }
+        let (v, over) = read.ok_or(WINDOWS_MOVING)?;
+        let mask = match over {
+            Some(over) => {
+                let (kx, ky) = image_scale(&v, key.1)?;
+                let [bx, by, bw, bh] = key.2;
+                let own = ([0.0, 0.0, bw * kx, bh * ky], true);
+                let over = over.into_iter().map(|([x, y, w, h], admitted)| {
+                    ([(x - bx) * kx, (y - by) * ky, w * kx, h * ky], admitted)
+                });
+                Some(std::iter::once(own).chain(over).collect::<Vec<_>>())
+            }
+            None => None,
+        };
         let png = image_of(&v).ok_or("the driver returned no screenshot of the window")?;
         let png = B64
             .decode(png)
             .map_err(|e| format!("decode screenshot: {e}"))?;
-        let (w, h, png) = crop_png(&png, rect, 1.0, None).map_err(|e| {
+        let (w, h, png) = crop_png(&png, rect, 1.0, mask.as_deref()).map_err(|e| {
             if e == OFF_SCREEN {
                 "the rectangle is off the window".to_owned()
             } else {
@@ -2665,12 +2691,21 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(Some(mask))
     }
 
-    async fn mask_rects(&self) -> Result<Vec<([f64; 4], bool)>, String> {
+    /// The windows on screen, bottom first, each with whether the allowlist admits it; with `over`, only those stacked above that driver window.
+    async fn mask_rects(&self, over: Option<&Value>) -> Result<Vec<([f64; 4], bool)>, String> {
         let mut windows = self.on_screen().await?;
         let frames = self.access.run(CALL_LIMIT, (), |b| b.frames()).await?;
         windows.sort_by_key(|w| w["z_index"].as_i64().unwrap_or(i64::MIN));
+        let above = over
+            .and_then(|o| {
+                windows
+                    .iter()
+                    .position(|w| (&w["pid"], &w["window_id"]) == (&o["pid"], &o["window_id"]))
+            })
+            .map_or(0, |i| i + 1);
         Ok(windows
             .into_iter()
+            .skip(above)
             .map(|w| {
                 let pid = w["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
                 (
@@ -8034,6 +8069,39 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn off_macos_an_app_allowlist_blacks_a_window_shot_where_a_window_it_leaves_out_is_on_top()
+     {
+        let shot = |os, allow: &[String]| {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(Apps), Stacked(calls.clone()), os).allow(allow);
+            async move {
+                let out = desk
+                    .run("desk_shot", json!({"window": "Untitled - Notepad"}))
+                    .await
+                    .unwrap();
+                let lists = sent_tools(&calls, "list_windows");
+                (pixels(&out), lists)
+            }
+        };
+        let listed = ["notepad".to_owned()];
+        for os in [Os::Linux, Os::Windows] {
+            let (px, lists) = shot(os, &listed).await;
+            let at = |row: usize, col: usize| px[row * 20 + col];
+            assert_eq!(
+                (at(0, 9), at(0, 10), at(9, 19), at(10, 19), at(19, 0)),
+                ([255; 3], [0; 3], [0; 3], [255; 3], [255; 3]),
+                "{os:?}"
+            );
+            assert_eq!(lists, 3, "{os:?}");
+        }
+        for (os, allow) in [(Os::Mac, &listed[..]), (Os::Linux, &[])] {
+            let (px, lists) = shot(os, allow).await;
+            assert!(px.iter().all(|p| *p == [255; 3]), "{os:?}");
+            assert_eq!(lists, 1, "{os:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn a_shot_tells_the_backend_whether_the_driver_may_show_its_overlay() {
         for shown in [true, false] {
             let desk = Desk::new(|| Ok(Stub::default()), Desktop(Arc::default()), Os::Linux)
@@ -10599,6 +10667,41 @@ pub(crate) mod tests {
                         .write_image_data(&[255; 300])
                         .unwrap();
                     let mut v = json!({"structuredContent": {"screenshot_width": 10, "screenshot_original_width": 1000}});
+                    v["content"] = json!([{"type": "image", "data": B64.encode(&png)}]);
+                    v
+                }
+                _ => json!({}),
+            })
+        }
+    }
+
+    fn sent_tools(calls: &Mutex<Vec<String>>, tool: &str) -> usize {
+        calls.lock().unwrap().iter().filter(|t| *t == tool).count()
+    }
+
+    struct Stacked(Arc<Mutex<Vec<String>>>);
+
+    impl Input for Stacked {
+        async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push(tool.to_owned());
+            Ok(match tool {
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "bounds": {"x": 100.0, "y": 100.0, "width": 10.0, "height": 10.0}},
+                    {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "title": "Inbox", "bounds": {"x": 105.0, "y": 95.0, "width": 10.0, "height": 10.0}},
+                    {"pid": 8, "window_id": 3, "layer": 0, "z_index": 0, "title": "Sent", "bounds": {"x": 100.0, "y": 105.0, "width": 10.0, "height": 10.0}}
+                ]}}),
+                "get_window_state" => {
+                    let mut png = Vec::new();
+                    let mut enc = png::Encoder::new(&mut png, 20, 20);
+                    enc.set_color(png::ColorType::Rgb);
+                    enc.write_header()
+                        .unwrap()
+                        .write_image_data(&[255; 1200])
+                        .unwrap();
+                    let mut v = json!({"structuredContent": {
+                        "screenshot_width": 20, "screenshot_height": 20,
+                        "window_bounds": {"x": 100.0, "y": 100.0, "width": 10.0, "height": 10.0}
+                    }});
                     v["content"] = json!([{"type": "image", "data": B64.encode(&png)}]);
                     v
                 }
