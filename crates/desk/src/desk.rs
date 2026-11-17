@@ -5301,13 +5301,13 @@ pub(crate) mod tests {
                 json!({"x": 300.0, "y": y, "window": "Untitled"}),
             )
         };
-        let type_cmgs = || desk.run("desk_type", json!({"text": "cmgs", "window": "Untitled"}));
+        let type_word = || desk.run("desk_type", json!({"text": "word", "window": "Untitled"}));
         let missed: Value = serde_json::from_str(&click(30.0).await.unwrap().text).unwrap();
         assert_eq!(
             missed["focused"],
             json!({"role": "textbox", "name": "Message", "at_click": false})
         );
-        let err = type_cmgs().await.unwrap_err();
+        let err = type_word().await.unwrap_err();
         assert!(
             err.contains("nothing was typed") && err.contains("textbox \"Message\""),
             "{err}"
@@ -5315,7 +5315,7 @@ pub(crate) mod tests {
         assert!(sent(&calls, "type_text").is_empty());
         let hit: Value = serde_json::from_str(&click(480.0).await.unwrap().text).unwrap();
         assert_eq!(hit["focused"]["at_click"], true, "{hit}");
-        let typed: Value = serde_json::from_str(&type_cmgs().await.unwrap().text).unwrap();
+        let typed: Value = serde_json::from_str(&type_word().await.unwrap().text).unwrap();
         assert_eq!(
             typed["focused"],
             json!({"role": "textbox", "name": "Message"})
@@ -5325,7 +5325,7 @@ pub(crate) mod tests {
         desk.run("desk_key", json!({"keys": "tab", "window": "Untitled"}))
             .await
             .unwrap();
-        type_cmgs().await.unwrap();
+        type_word().await.unwrap();
         assert_eq!(sent(&calls, "type_text").len(), 2);
     }
 
@@ -5342,7 +5342,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         let err = desk
-            .run("desk_type", json!({"text": "cmgs", "window": "Untitled"}))
+            .run("desk_type", json!({"text": "word", "window": "Untitled"}))
             .await
             .unwrap_err();
         assert_eq!(err, FOCUS_UNREAD);
@@ -5351,7 +5351,7 @@ pub(crate) mod tests {
             &desk
                 .run(
                     "desk_type",
-                    json!({"text": "cmgs", "window": "Untitled", "focus": "unverified"}),
+                    json!({"text": "word", "window": "Untitled", "focus": "unverified"}),
                 )
                 .await
                 .unwrap()
