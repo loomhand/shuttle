@@ -1322,7 +1322,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const titled = (w: Win) => pkg ? w.title === s.app || w.title.endsWith(` - ${s.app}`) : worded(w.title, name)
     const named = (w: Win) => !s.title && [w.app, w.bundle].some((a) => !!a && worded(a, app))
     const own = (w: Win) => titled(w) || (word && (ownedBy(w.pid, name) || entries.some((e) => worded(w.title, e))))
-    const rank = (w: Win) => ([w.app, w.bundle].some((a) => !!a && worded(a, app)) ? 0 : 2) + (norm(w.title) === name ? 0 : 1)
+    const rank = (w: Win) => { const of = [w.app, w.bundle].filter((a): a is string => !!a); return (of.some((a) => norm(a) === app) ? 0 : of.some((a) => worded(a, app)) ? 2 : 4) + (norm(w.title) === name ? 0 : 1) }
     const mine = (ws: Win[]) => s.title ? ws.filter(titled).sort((a, b) => rank(a) - rank(b)) : [...ws.filter(named), ...ws.filter(own)]
     let started: Awaited<ReturnType<typeof desk.launch>> | undefined
     const has = async () => { const ws = await desk.windows(); return mine(ws)[0] ?? (s.title ? undefined : started?.running ? ws.find((w) => w.title === started?.title && w.pid === started?.pid) : launched ? ws.find((w) => w.title && !before.has(w.id) && (!pids.has(w.pid) || (!!w.app && terms(w.app).some((x) => terms(app).includes(x))))) : undefined) }

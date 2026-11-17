@@ -320,4 +320,9 @@ test('an app step with a title takes the titled window of its own app, the exact
   const r = await main({ steps: [{ app: 'TextEdit', title: 'Untitled' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(focused, [['Untitled', 8]])
+  second.app = 'TextEdit'; doc.app = 'TextEdit Preview'; doc.pid = 9; focused.length = 0
+  for (const w of [pages, second, doc]) w.active = w === pages
+  const own = await main({ steps: [{ app: 'TextEdit', title: 'Untitled' }] })
+  assert.equal(own.ok, true, JSON.stringify(own))
+  assert.deepEqual(focused, [['Untitled 2', 8]])
 })
