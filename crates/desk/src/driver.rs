@@ -20,7 +20,7 @@ pub(crate) const CLICK_SPACING: Duration = Duration::from_millis(500);
 pub(crate) const CONNECT_RETRY: Duration = Duration::from_millis(250);
 pub(crate) const ENDED: &str = "session has ended";
 const ENDED_CODE: &str = "session_ended";
-const CLOSED: &str = "cua-driver closed the connection without an answer, as it does when it stops, so whether the call ran is not known: read the window before sending it again";
+pub(crate) const CLOSED: &str = "cua-driver closed the connection without an answer, as it does when it stops, so whether the call ran is not known: read the window before sending it again";
 pub(crate) const ACTUAL_FRONT: &str = "; actual foreground window ";
 pub(crate) const INPUT_TOOLS: [&str; 9] = [
     "click",
@@ -218,17 +218,17 @@ impl Driver {
 
     async fn exchange(&self, line: Vec<u8>) -> Result<String, String> {
         let mut stream = BufReader::new(self.connect().await?);
-        stream
-            .get_mut()
-            .write_all(&line)
-            .await
-            .map_err(|e| format!("write cua-driver: {e}"))?;
+        match stream.get_mut().write_all(&line).await {
+            Err(e) if e.kind() == ErrorKind::BrokenPipe => return Ok(String::new()),
+            sent => sent.map_err(|e| format!("write cua-driver: {e}"))?,
+        }
         let mut reply = String::new();
-        stream
-            .read_line(&mut reply)
-            .await
-            .map_err(|e| format!("read cua-driver: {e}"))?;
-        Ok(reply)
+        match stream.read_line(&mut reply).await {
+            Err(e) if e.kind() == ErrorKind::ConnectionReset => Ok(String::new()),
+            read => read
+                .map(|_| reply)
+                .map_err(|e| format!("read cua-driver: {e}")),
+        }
     }
 
     fn since_own_input(&self) -> Option<Duration> {
@@ -655,12 +655,15 @@ mod tests {
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         let daemon = tokio::spawn(async move {
             let (s, _) = listener.accept().await.unwrap();
-            drop(s);
+            let mut s = BufReader::new(s);
+            let mut line = String::new();
+            s.read_line(&mut line).await.unwrap();
         });
         let d = Driver::new(socket.to_string_lossy().into_owned());
         let err = d.send("click", &json!({})).await.unwrap_err();
         assert_eq!(err, format!("click: {CLOSED}"));
         daemon.await.unwrap();
+        assert_eq!(result("click", "").unwrap_err(), format!("click: {CLOSED}"));
     }
 
     #[cfg(target_os = "macos")]
