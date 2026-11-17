@@ -1656,6 +1656,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         ));
                     }
                     let (pid, id, _) = window_key(&w)?;
+                    self.raise(Some((pid, id))).await?;
                     req["pid"] = pid.into();
                     req["window_id"] = id.into();
                     req["session"] = WINDOW_SESSION.into();
@@ -8460,6 +8461,10 @@ pub(crate) mod tests {
                 "scroll".to_owned(),
                 json!({"direction": "up", "amount": 3, "pid": 8, "window_id": 2, "session": WINDOW_SESSION})
             )
+        );
+        assert_eq!(
+            sent(&calls, "bring_to_front").last(),
+            Some(&json!({"pid": 8, "window_id": 2}))
         );
         let folded = Arc::new(Mutex::new(Vec::new()));
         let err = Desk::new(
