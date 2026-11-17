@@ -8078,7 +8078,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn an_allowlist_swaps_a_window_shot_the_driver_took_from_the_screen_for_the_masked_screen()
      {
-        let at = |allow: &[String], args: Value, xs: [f64; 2], composited: bool| {
+        let at = |allow: &[String], args: Value, xs: [f64; 3], composited: bool| {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let driver = Titled(Desktop(calls.clone()), xs, AtomicUsize::new(0), composited);
             let desk = Desk::new(|| Ok(Apps), driver, Os::Linux).allow(allow);
@@ -8091,7 +8091,7 @@ pub(crate) mod tests {
         };
         let listed = ["notepad".to_owned()];
         let whole = json!({"window": "Untitled - Notepad"});
-        let (out, grabs) = at(&listed, whole.clone(), [100.0; 2], true).await;
+        let (out, grabs) = at(&listed, whole.clone(), [100.0; 3], true).await;
         let out = out.unwrap();
         let px = pixels(&out);
         assert_eq!(
@@ -8105,23 +8105,29 @@ pub(crate) mod tests {
         assert_eq!(grabs, 1);
         let part =
             json!({"window": "Untitled - Notepad", "x": 400.0, "y": 0.0, "w": 400.0, "h": 400.0});
-        let (out, _) = at(&listed, part, [100.0; 2], true).await;
+        let (out, _) = at(&listed, part, [100.0; 3], true).await;
         let out = out.unwrap();
         assert!(pixels(&out).iter().all(|p| *p == [0; 3]));
         assert!(out.text.contains(r#""origin":[400,0]"#), "{}", out.text);
         let beside = json!({"window": "Untitled - Notepad", "x": -20.0, "w": 10.0});
-        let (off, _) = at(&listed, beside, [100.0; 2], true).await;
+        let (off, _) = at(&listed, beside, [100.0; 3], true).await;
         assert_eq!(off.unwrap_err(), "the rectangle is off the window");
-        let (moved, _) = at(&listed, whole.clone(), [100.0, 150.0], true).await;
+        let (moved, _) = at(&listed, whole.clone(), [100.0, 150.0, 100.0], true).await;
         assert_eq!(moved.unwrap_err(), WINDOWS_MOVING);
-        let (cut, _) = at(&listed, whole.clone(), [-100.0; 2], true).await;
+        let (cut, _) = at(&listed, whole.clone(), [-100.0, -100.0, 100.0], true).await;
         assert_eq!(cut.unwrap_err(), WINDOW_OFF_SCREEN);
         let shown =
             json!({"window": "Untitled - Notepad", "x": 100.0, "y": 0.0, "w": 400.0, "h": 400.0});
-        let (out, _) = at(&listed, shown, [-100.0; 2], true).await;
+        let (out, _) = at(&listed, shown, [-100.0, -100.0, 100.0], true).await;
         assert!(out.unwrap().text.contains(r#""origin":[100,0]"#));
+        let low =
+            json!({"window": "Untitled - Notepad", "x": 100.0, "y": 100.0, "w": 400.0, "h": 400.0});
+        let (out, _) = at(&listed, low, [100.0; 3], true).await;
+        assert!(out.unwrap().text.contains(r#""origin":[100,100]"#));
+        let (above, _) = at(&listed, whole.clone(), [100.0, 100.0, -100.0], true).await;
+        assert_eq!(above.unwrap_err(), WINDOW_OFF_SCREEN);
         for (allow, composited) in [(&listed[..], false), (&[], true)] {
-            let (out, grabs) = at(allow, whole.clone(), [100.0; 2], composited).await;
+            let (out, grabs) = at(allow, whole.clone(), [100.0; 3], composited).await;
             let out = out.unwrap();
             assert!(pixels(&out).iter().all(|p| *p == [255; 3]), "{composited}");
             assert!(out.text.contains(r#""width":10"#), "{}", out.text);
@@ -10703,7 +10709,7 @@ pub(crate) mod tests {
         }
     }
 
-    struct Titled(Desktop, [f64; 2], AtomicUsize, bool);
+    struct Titled(Desktop, [f64; 3], AtomicUsize, bool);
 
     impl Input for Titled {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
@@ -10712,7 +10718,7 @@ pub(crate) mod tests {
                     self.0.0.lock().unwrap().push(tool.to_owned());
                     let x = self.1[usize::from(self.2.fetch_add(1, Ordering::SeqCst) > 0)];
                     Ok(json!({"structuredContent": {"windows": [
-                        {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "bounds": {"x": x, "y": 100.0, "width": 800.0, "height": 800.0}},
+                        {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "bounds": {"x": x, "y": self.1[2], "width": 800.0, "height": 800.0}},
                         {"pid": 8, "window_id": 2, "layer": 0, "z_index": 2, "title": "Inbox", "bounds": {"x": 500.0, "y": 0.0, "width": 500.0, "height": 500.0}}
                     ]}}))
                 }
@@ -10720,7 +10726,7 @@ pub(crate) mod tests {
                     let mut v = self.0.call("get_desktop_state", args).await?;
                     v["structuredContent"] = json!({
                         "screenshot_width": 10, "screenshot_height": 10,
-                        "window_bounds": {"x": self.1[0], "y": 100.0, "width": 800.0, "height": 800.0},
+                        "window_bounds": {"x": self.1[0], "y": self.1[2], "width": 800.0, "height": 800.0},
                         "screenshot_composited": self.3
                     });
                     self.0.0.lock().unwrap().pop();
