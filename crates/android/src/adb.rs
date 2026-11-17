@@ -928,7 +928,6 @@ impl Control {
     }
 }
 
-/// Empties the device clipboard when a type call is dropped before it does.
 struct Wipe(Option<Arc<Mutex<Option<Control>>>>);
 
 impl Drop for Wipe {

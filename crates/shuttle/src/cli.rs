@@ -391,7 +391,6 @@ async fn serve(
     served
 }
 
-/// The environment variables no run, plugin or service gets: the model keys and the HTTP token.
 fn key_vars(configured: Option<&str>) -> Vec<String> {
     let mut vars = vec![DEFAULT_KEY_ENV.to_owned(), http::TOKEN_ENV.to_owned()];
     if let Some(key) = configured.filter(|k| !vars.iter().any(|v| v == k)) {
