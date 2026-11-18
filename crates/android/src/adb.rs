@@ -173,6 +173,7 @@ impl Android {
         }
         let saved = Saved {
             window: front.window().to_owned(),
+            screen: front.screen(),
             points: elements.iter().map(Node::center).collect(),
         };
         self.points.lock().await.insert(args.session, saved);
@@ -614,11 +615,11 @@ impl Android {
         let Some(i) = args.element else {
             return Ok(args.x.zip(args.y).map(|(x, y)| (x as i32, y as i32)));
         };
-        let (window, point) = {
+        let (window, screen, point) = {
             let saved = self.points.lock().await;
             saved
                 .get(&args.session)
-                .and_then(|s| Some((s.window.clone(), *s.points.get(i)?)))
+                .and_then(|s| Some((s.window.clone(), s.screen, *s.points.get(i)?)))
                 .ok_or_else(|| format!("no element [{i}] in the latest computer_state"))?
         };
         let front = desk::front(self).await?;
@@ -627,7 +628,7 @@ impl Android {
                 "the window list is unavailable; use x,y or call computer_state again".to_owned(),
             );
         }
-        if front.window() != window {
+        if front.window() != window || front.screen() != screen {
             return Err("the screen changed since computer_state; call it again".to_owned());
         }
         if front.covered(point) {
@@ -802,6 +803,7 @@ impl Android {
 
 struct Saved {
     window: String,
+    screen: (i32, i32),
     points: Vec<(i32, i32)>,
 }
 
@@ -1705,6 +1707,7 @@ mod tests {
             "s".into(),
             Saved {
                 window: "7".into(),
+                screen: (720, 1280),
                 points: vec![(360, 760)],
             },
         );
@@ -1722,6 +1725,11 @@ mod tests {
         );
         fake.windows("");
         assert_eq!(fake.android.point(&act).await, Ok(Some((360, 760))));
+        fake.windows("landscape");
+        assert_eq!(
+            fake.android.point(&act).await,
+            Err("the screen changed since computer_state; call it again".to_owned())
+        );
         let explicit: ActArgs = serde_json::from_value(
             serde_json::json!({"session": "s", "action": "tap", "x": 360.0, "y": 760.0}),
         )
@@ -1740,6 +1748,7 @@ mod tests {
             "known".into(),
             Saved {
                 window: "7".into(),
+                screen: (720, 1280),
                 points: vec![(360, 760)],
             },
         );
@@ -1747,6 +1756,7 @@ mod tests {
             "unknown".into(),
             Saved {
                 window: String::new(),
+                screen: (720, 1280),
                 points: vec![(360, 760)],
             },
         );
@@ -3307,6 +3317,7 @@ mod tests {
     fn saved(points: Vec<(i32, i32)>) -> Saved {
         Saved {
             window: String::new(),
+            screen: (720, 1280),
             points,
         }
     }

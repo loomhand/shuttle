@@ -145,6 +145,10 @@ impl Frame {
         &self.id
     }
 
+    pub(crate) fn screen(&self) -> (i32, i32) {
+        self.screen
+    }
+
     /// Whether a window above this one covers screen point `(x, y)`.
     pub(crate) fn covered(&self, (x, y): (i32, i32)) -> bool {
         self.covers
