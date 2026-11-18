@@ -86,13 +86,14 @@ async fn answer(android: &Android, call: Call) -> Output {
 }
 
 fn with_session(tool: &str, agent: String, mut args: Value) -> Result<Value, String> {
-    if args.is_object() || args.is_null() {
-        match &args["session"] {
-            Value::String(_) => {}
-            Value::Number(n) => args["session"] = n.to_string().into(),
-            Value::Null => args["session"] = agent.into(),
-            _ => return Err(format!("{tool}: session takes a string; nothing was sent")),
-        }
+    if !args.is_object() && !args.is_null() {
+        return Err(format!("{tool}: args are not an object"));
+    }
+    match &args["session"] {
+        Value::String(_) => {}
+        Value::Number(n) => args["session"] = n.to_string().into(),
+        Value::Null => args["session"] = agent.into(),
+        _ => return Err(format!("{tool}: session takes a string; nothing was sent")),
     }
     Ok(args)
 }
@@ -158,6 +159,32 @@ mod tests {
                     "desk_computer_end: session takes a string; nothing was sent"
                 )
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn computer_verbs_on_a_device_refuse_args_that_are_not_an_object() {
+        let android = fake();
+        for tool in [
+            "desk_computer_end",
+            "desk_computer_state",
+            "desk_computer_act",
+        ] {
+            for args in [serde_json::json!(["tap"]), serde_json::json!("tap")] {
+                let out = answer(
+                    &android,
+                    Call {
+                        agent_id: "agent".into(),
+                        tool: tool.into(),
+                        args,
+                    },
+                )
+                .await;
+                assert_eq!(
+                    (out.is_error, out.text),
+                    (true, format!("{tool}: args are not an object"))
+                );
+            }
         }
     }
 
