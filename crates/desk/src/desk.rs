@@ -430,7 +430,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let Some(window) = window else {
             return Ok(!matches!(tool, "desk_press" | "desk_act"));
         };
-        self.front_named(WindowArgs { window, pid, id }, None)
+        self.focus(WindowArgs { window, pid, id }, None)
             .await
             .map(|_| true)
     }
@@ -456,7 +456,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_scroll" => self.scroll(parse(args)?).await?,
             "desk_drag" => self.drag(parse(args)?).await?,
             "desk_still" => self.still(parse(args)?).await?,
-            "desk_focus" => self.focus(parse(args)?).await?,
+            "desk_focus" => self.focus(parse(args)?, Some(window::BY_ID)).await?,
             "desk_unanswered" => self.unanswered().await?,
             "desk_close" => self.close(parse(args)?, turn).await?,
             "desk_web" => self.web(parse(args)?).await?,
@@ -570,7 +570,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             pid: w.pid,
             id: Some(w.id.clone()),
         };
-        if self.focus(front).await.is_err() {
+        if self.focus(front, Some(window::BY_ID)).await.is_err() {
             return Ok(None);
         }
         let launched = format!("{app} is already running; brought its window to the front");
@@ -1042,15 +1042,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     number: window.or(frame.number),
                     ..frame
                 })?;
-                let note = match b.close(&frame) {
-                    Ok(()) => None,
-                    Err(e) if e == CLOSE_UNANSWERED => Some(e),
-                    Err(e) => return Err(e),
-                };
+                let closed = b.close(&frame);
                 let mut out =
                     Value::from_iter([("ok", Value::from(true)), ("title", frame.title.into())]);
-                if let Some(note) = note {
-                    out["unverified"] = note.into();
+                match closed {
+                    Err(e) if e == CLOSE_UNANSWERED => out["unverified"] = e.into(),
+                    closed => closed?,
                 }
                 Ok(out.to_string())
             })
@@ -2369,11 +2366,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
     }
 
-    async fn focus(&self, a: WindowArgs) -> Result<String, String> {
-        self.front_named(a, Some(window::BY_ID)).await
-    }
-
-    async fn front_named(&self, a: WindowArgs, way_out: Option<&str>) -> Result<String, String> {
+    async fn focus(&self, a: WindowArgs, way_out: Option<&str>) -> Result<String, String> {
         let w = match a.id.as_deref() {
             Some(id) => self.id_window(id, &a.window, a.pid).await?,
             None => self.input_window(Some(&a.window), a.pid, way_out).await?.0,
@@ -2446,13 +2439,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let raw = listed["structuredContent"]["windows"]
             .as_array()
             .map_or(&[][..], Vec::as_slice);
-        let exact = framed(&f, raw, TITLE_TIERS - 1);
-        let contained = exact.is_empty() && f.number.is_none();
-        let same = if contained {
-            framed(&f, raw, TITLE_TIERS)
-        } else {
-            exact
-        };
+        let same = framed(&f, raw, TITLE_TIERS);
+        let contained = f.number.is_none() && framed(&f, raw, TITLE_TIERS - 1).is_empty();
         let fit = if same.len() > 1 || contained || (twinned && f.number.is_none()) {
             let root = id.to_owned();
             let frame = self

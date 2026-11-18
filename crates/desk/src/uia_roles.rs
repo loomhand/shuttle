@@ -152,13 +152,7 @@ pub fn menu_click_reaches(
 pub fn first_window(
     handles: impl IntoIterator<Item = Result<isize, String>>,
 ) -> Result<Option<isize>, String> {
-    for handle in handles {
-        let handle = handle?;
-        if handle != 0 {
-            return Ok(Some(handle));
-        }
-    }
-    Ok(None)
+    handles.into_iter().find(|h| *h != Ok(0)).transpose()
 }
 
 pub fn menu_family(control_type: i32) -> bool {

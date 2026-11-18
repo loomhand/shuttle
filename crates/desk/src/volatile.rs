@@ -185,13 +185,8 @@ impl Shared {
             }
             let at = Instant::now();
             s.samples.push_back((at, hashes));
-            while s
-                .samples
-                .front()
-                .is_some_and(|(t, _)| at.duration_since(*t) > WINDOW + SAMPLE_EVERY)
-            {
-                s.samples.pop_front();
-            }
+            s.samples
+                .retain(|(t, _)| at.duration_since(*t) <= WINDOW + SAMPLE_EVERY);
         }
     }
 }

@@ -564,7 +564,8 @@ impl Access for Uia {
             let Ok(parent) = (unsafe { walker.GetParentElement(&at) }) else {
                 break;
             };
-            if same(&self.auto, &parent, &self.root) {
+            // SAFETY: `self.auto`, `parent` and `self.root` are live UIA objects of this thread.
+            if unsafe { self.auto.CompareElements(&parent, &self.root) }.is_ok_and(BOOL::as_bool) {
                 break;
             }
             chain.push(self.found_id(&parent, None)?);
@@ -1206,25 +1207,16 @@ fn top_at(x: i32, y: i32) -> Option<isize> {
 }
 
 fn owners_of(top: isize) -> Vec<isize> {
-    let mut owners = Vec::new();
-    let mut at = HWND(top as *mut core::ffi::c_void);
-    while owners.len() < MAX_DEPTH {
+    let owner = |at: &HWND| {
         // SAFETY: GetWindow takes any handle; a stale or unowned one answers an error or a null handle.
-        let Ok(owner) = (unsafe { GetWindow(at, GW_OWNER) }) else {
-            break;
-        };
-        if owner.is_invalid() {
-            break;
-        }
-        owners.push(owner.0 as isize);
-        at = owner;
-    }
-    owners
-}
-
-fn same(auto: &IUIAutomation, a: &IUIAutomationElement, b: &IUIAutomationElement) -> bool {
-    // SAFETY: `auto`, `a` and `b` are live UIA objects of this thread.
-    unsafe { auto.CompareElements(a, b) }.is_ok_and(BOOL::as_bool)
+        unsafe { GetWindow(*at, GW_OWNER) }
+            .ok()
+            .filter(|o| !o.is_invalid())
+    };
+    std::iter::successors(owner(&HWND(top as *mut core::ffi::c_void)), owner)
+        .take(MAX_DEPTH)
+        .map(|h| h.0 as isize)
+        .collect()
 }
 
 #[cfg(test)]
