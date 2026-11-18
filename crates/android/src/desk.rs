@@ -35,6 +35,8 @@ const MIN_SWIPE: i32 = 48;
 const WAIT_MAX: Duration = Duration::from_secs(5);
 const WAIT_POLL: Duration = Duration::from_millis(10);
 const UNSETTLED: &str = "the device lists no window in front at this moment, as while a window opens or closes, so the input was refused: retry once the screen settles";
+const FRONT_BY_PID: &str = "input on a device reaches only the front window, so send it with pid alone, which reaches the one of them in front";
+const FRONT_BY_ITS_PID: &str = "input on a device reaches only the front window, so send it with the window's pid from desk windows alone, which reaches the one of them in front";
 
 /// One element of a window as the desk and computer_state show it.
 #[derive(Debug)]
@@ -1080,7 +1082,14 @@ fn front_id(
                 )
             })?,
         None => match window {
-            Some(want) => window::pick_input(frames, want, pid, window::BY_TITLE)?,
+            Some(want) => {
+                let way_out = if pid.is_some() {
+                    FRONT_BY_PID
+                } else {
+                    FRONT_BY_ITS_PID
+                };
+                window::pick_input(frames, want, pid, way_out)?
+            }
             None => window::pick(frames, None, pid)?,
         },
     };
@@ -1281,6 +1290,40 @@ mod tests {
             front_id(frames, Some("About phone - com.android.settings"), None, None),
             Err("no window titled \"About phone - com.android.settings\", so nothing was sent; \"Device name - com.android.settings\" of the same app is in front: name it to send there".to_owned())
         );
+    }
+
+    #[test]
+    fn input_by_a_title_two_windows_share_names_the_pid_alone_as_the_way_out() {
+        let twins = || {
+            frames_of(
+                vec![
+                    window([0, 0, 720, 1280]),
+                    WindowInfo {
+                        id: 9,
+                        active: false,
+                        focused: false,
+                        ..window([0, 0, 720, 1280])
+                    },
+                ],
+                REDROID,
+            )
+        };
+        let title = "Settings - com.android.settings";
+        let refused = |ending: &str| {
+            Err(format!(
+                "2 windows match the title \"{title}\", so nothing was sent: {ending}"
+            ))
+        };
+        let pid = package_pid("com.android.settings");
+        assert_eq!(
+            front_id(twins(), Some(title), None, None),
+            refused(FRONT_BY_ITS_PID)
+        );
+        assert_eq!(
+            front_id(twins(), Some(title), Some(pid), None),
+            refused(FRONT_BY_PID)
+        );
+        assert_eq!(front_id(twins(), None, Some(pid), None), Ok(Some(7)));
     }
 
     #[test]
