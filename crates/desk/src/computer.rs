@@ -465,7 +465,7 @@ impl Computer {
             },
         };
         if let Err(e) = &result
-            && let Some(note) = own_popup_front(e)
+            && let Some(note) = own_popup_front(e, same_process)
         {
             result = Ok(json!({"content": [{"type": "text", "text": note}]}));
         }
@@ -2647,10 +2647,10 @@ fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
 }
 
 /// The note for a Windows click the driver calls `foreground_unavailable` because a window of the target's own process, such as Explorer's context-menu host, took the foreground after it.
-fn own_popup_front(e: &str) -> Option<String> {
+fn own_popup_front(e: &str, same: fn(i64, i64) -> bool) -> Option<String> {
     let (target, actual) = front_pair(e)?;
     let tool = e.split(':').next()?;
-    same_process(target, actual).then(|| format!("{tool} {OWN_POPUP}"))
+    same(target, actual).then(|| format!("{tool} {OWN_POPUP}"))
 }
 
 fn front_pair(e: &str) -> Option<(i64, i64)> {
@@ -2710,6 +2710,17 @@ mod tests {
         ] {
             assert_eq!(front_pair(pre), None, "{pre}");
         }
+    }
+
+    #[test]
+    fn a_windows_post_click_foreground_of_the_targets_own_process_reads_as_sent_and_any_other_stays_refused()
+     {
+        let e = "click: foreground_unavailable: exact target HWND 0x100f2 or a verified same-process post-action window was not foreground after the click (actual foreground HWND 0x9029a)";
+        let pair = |target: i64, actual: i64| target == 0x100f2 && actual == 0x9029a;
+        assert_eq!(own_popup_front(e, pair), Some(format!("click {OWN_POPUP}")));
+        assert_eq!(own_popup_front(e, |_, _| false), None);
+        let pre = "click: foreground_unavailable: Windows did not activate exact target HWND 0x100f2 (actual foreground HWND 0x9029a); no mouse input was sent";
+        assert_eq!(own_popup_front(pre, |_, _| true), None);
     }
 
     #[cfg(unix)]
