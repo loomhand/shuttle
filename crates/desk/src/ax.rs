@@ -73,6 +73,14 @@ const APP_ATTRS: [&str; 5] = [
     "AXWindows",
 ];
 const CLIMB_ATTRS: [&str; 2] = ["AXRole", "AXParent"];
+const PATH_ATTRS: [&str; 6] = [
+    "AXRole",
+    "AXSubrole",
+    "AXTitle",
+    "AXDescription",
+    "AXValue",
+    "AXParent",
+];
 const FRAME_ATTRS: [&str; 6] = [
     "AXRole",
     "AXSubrole",
@@ -846,7 +854,7 @@ unsafe extern "C" {
 
 /// What the hit test finds at desk point `(x, y)` now, with its ancestors up to its window, read before its app handles the click.
 pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
-    let names = names(ATTRS);
+    let (names, climb) = (names(ATTRS), names(PATH_ATTRS));
     let mut el = hit(&system_wide(), x, y, display_scale())?;
     let mut a = attrs(&names, &el);
     // the text of a link or button answers the hit test, and the control is what a click means
@@ -863,10 +871,22 @@ pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
     let mut up = attr(&el, "AXParent");
     for _ in 0..MAX_DEPTH {
         let Some(p) = up.take() else { break };
-        let mut pa = attrs(&names, &p);
+        let [role, subrole, title, description, value, parent] = values(&climb, &p);
+        let mut pa = Attrs {
+            role: string(role),
+            subrole: string(subrole),
+            title: string(title),
+            description: string(description),
+            value,
+            ..Attrs::default()
+        };
         if path.len() < PATH_MAX_DEPTH || pa.role == "AXWindow" {
+            let kind = Kind {
+                submenu: pa.role == "AXMenuItem",
+                ..kind_of(&pa)
+            };
             path.push((
-                ax_roles::role(kind_of(&pa)).unwrap_or("generic"),
+                ax_roles::role(kind).unwrap_or("generic"),
                 name_of(&mut pa, NAME_CHARS),
             ));
         }
@@ -876,7 +896,7 @@ pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
         if pa.role == "AXWindow" {
             break;
         }
-        up = attr(&p, "AXParent");
+        up = parent;
     }
     Some(Seen {
         role: ax_roles::role(kind_of(&a)).unwrap_or("generic"),
