@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { test, type TestContext } from 'node:test'
 
 import { daemon, gray, notepad, root, user } from './daemon.mts'
@@ -556,4 +557,26 @@ test('a background wait takes the one window whose title is exactly the text ove
   const r = await main({ steps: [{ wait: 'Viewer', timeout_ms: 400 }, { type: 'x' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'x', window: 'Viewer', pid: 7 }])
+})
+
+test('a plan stopped for a step sent but not confirmed or for a theft counts as done every step that ran, and its chain record ends before the step to check', async (t) => {
+  for (const [steps, done] of [
+    [[{ app: 'Notepad' }, { key: 'ctrl+a' }, { type: 'hello' }], 3],
+    [[{ app: 'Notepad' }, { key: 'alt' }, { type: 'x' }], 2],
+    [[{ app: 'Notepad' }, { key: 'alt' }], 2],
+  ] as const) {
+    const ws = [user(), notepad()]
+    const d = desktop(ws, ({ tool, args }) => {
+      if (tool !== 'desk_key') return undefined
+      if (args.keys === 'alt') { ws[0] = { ...user(), active: false }; ws[1] = { ...notepad(), active: true } }
+      return JSON.stringify({ ok: true, ...(args.keys === 'ctrl+a' ? { unverified: 'unverifiable: posted' } : {}) })
+    })
+    await daemon(t, d.reply)
+    const r = await main({ steps: [...steps] })
+    assert.equal(r.ok, false, JSON.stringify(r))
+    assert.equal(r.escalate?.step, 1, JSON.stringify(r))
+    assert.equal(r.done, done, JSON.stringify(r))
+    const chain = JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as { steps: unknown[] }
+    assert.deepEqual(chain.steps, [{ app: 'Notepad' }], JSON.stringify(chain))
+  }
 })

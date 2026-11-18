@@ -204,7 +204,7 @@ async function perform(p: Params): Promise<Result> {
   const startAlert = !!startRead && isAlert(startRead.text)
   const startKept = start && startRead?.snap && startRead.nodes ? { id: start.id, snap: startRead.snap, nodes: startRead.nodes } : undefined
   const recs: Rec[] = []; const tops: (string | undefined)[] = []
-  let escalate: Escalation | null = null; let done = plan.length; let diverged = false; let lastWs = ws0
+  let escalate: Escalation | null = null; let done = plan.length; let upto = plan.length; let diverged = false; let lastWs = ws0
   if (held && !held.dirty) putPending({ ...held, dirty: true })
   const left = () => {
     const at = (p.start ?? 0) + trace.length
@@ -260,7 +260,7 @@ async function perform(p: Params): Promise<Result> {
       const theft = BG && !(e instanceof Stolen) ? taken(await desk.windows()) : null
       const reason = `${sp.reason}${note ? ` (the step before was sent but not confirmed: ${note})` : ''}${theft ? `; meanwhile ${theft}` : ''}`
       const { outline, ...shown } = sp.seen
-      escalate = { step, plan_step: unrecorded(plan[step] ?? planned), reason, ...shown, ...(secure(plan[step] ?? planned) ? {} : { outline }) }; done = step
+      escalate = { step, plan_step: unrecorded(plan[step] ?? planned), reason, ...shown, ...(secure(plan[step] ?? planned) ? {} : { outline }) }; done = i; upto = step
       diverged = e instanceof Diverged
     }
     stepWs = null
@@ -286,8 +286,8 @@ async function perform(p: Params): Promise<Result> {
     const left = f && !startTitles.has(f.title) && isDialog(o) && !(last.wait || last.app || (last.window && norm(f.title).includes(norm(last.window))))
     const theft = BG ? taken(ws) : null
     const open = recs.find((r) => r?.unverified && !r.confirmed)
-    if (theft) { escalate = { step: plan.length - 1, reason: theft, ...(await seen()) }; done = plan.length - 1 }
-    else if (open) { const { outline, ...shown } = await seen(); escalate = { step: open.i, reason: `step ${open.i} (${open.op}) was sent but not confirmed, and no later step read its effect, so the plan cannot say it landed: ${open.unverified}`, ...shown, ...(secure(plan[open.i] ?? {}) ? {} : { outline }) }; done = open.i }
+    if (theft) { escalate = { step: plan.length - 1, reason: theft, ...(await seen()) }; upto = plan.length - 1 }
+    else if (open) { const { outline, ...shown } = await seen(); escalate = { step: open.i, reason: `step ${open.i} (${open.op}) was sent but not confirmed, and no later step read its effect, so the plan cannot say it landed: ${open.unverified}`, ...shown, ...(secure(plan[open.i] ?? {}) ? {} : { outline }) }; upto = open.i }
     else if (f && blocked(o) && recs.at(-1)?.how !== 'wm') { escalate = { step: plan.length, reason: unanswered(f.title), ...(await seen()) }; done = plan.length }
     else if (f && (isAlert(o) || left)) { escalate = { step: plan.length, reason: `the plan ended with "${f.title || o.split('\n')[0]}" still in front`, ...(await seen()) }; done = plan.length }
     opened = !!f && !startTitles.has(f.title) && isDialog(o)
@@ -297,7 +297,7 @@ async function perform(p: Params): Promise<Result> {
   const settled = !escalate && !opened
   if (flow) {
     const front = escalate ? await focused() : null
-    putPending(escalate ? { at: Date.now(), window: front?.title ?? null, pid: front && !isShell(front) ? front.pid : null, name: flow.name, named: true, params, steps: plan.slice(0, done), dirty: recs.some((r) => r?.unsaved), escalated: true, saved: false, usage: plus({}, desk.usage) } : null, plan)
+    putPending(escalate ? { at: Date.now(), window: front?.title ?? null, pid: front && !isShell(front) ? front.pid : null, name: flow.name, named: true, params, steps: plan.slice(0, upto), dirty: recs.some((r) => r?.unsaved), escalated: true, saved: false, usage: plus({}, desk.usage) } : null, plan)
     if (settled && recs.every((r) => !r?.unsaved)) {
       const rewrites = recs.filter((r, i) => r?.fp && flow.steps[i] && pinned(flow.steps[i]) && !isDeepStrictEqual(r.fp, flow.steps[i].fp))
       if (rewrites.length) {
@@ -308,7 +308,7 @@ async function perform(p: Params): Promise<Result> {
     }
   } else {
     // a chain spans calls: it starts at an app step, and later calls extend it from the window it left
-    const ran = plan.slice(p.start ?? 0, done).map((s, k) => { const r = recs[(p.start ?? 0) + k]; const o: Step = { ...s }; if (r?.fp && pinned(s)) o.fp = r.fp; if (r?.seen && !s.app && pinned(s)) o.seen = r.seen; if (r?.blank) o.blank = r.blank; return o })
+    const ran = plan.slice(p.start ?? 0, upto).map((s, k) => { const r = recs[(p.start ?? 0) + k]; const o: Step = { ...s }; if (r?.fp && pinned(s)) o.fp = r.fp; if (r?.seen && !s.app && pinned(s)) o.seen = r.seen; if (r?.blank) o.blank = r.blank; return o })
     const dirty = recs.some((r) => r?.unsaved)
     let chain: Chain | null = null; const prev = held
     if (plan[0]?.app && !(p.start ?? 0)) chain = { at: Date.now(), window: null, pid: null, params: { ...(p.params ?? {}) }, steps: ran, dirty, usage: plus({}, desk.usage) }
