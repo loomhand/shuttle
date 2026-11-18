@@ -2927,6 +2927,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_state_read_the_driver_marks_failed_names_computer_state_once_whether_or_not_its_text_starts_with_get_window_state()
+     {
+        let named = "get_window_state: screenshot_format must be \"png\" or \"jpeg\", got \"gif\"";
+        let plain = "Nothing to return: both include_accessibility_tree:false and include_screenshot:false. Set at least one to true, or pass screenshot_out_file to force a capture.";
+        for (text, want) in [
+            (
+                named,
+                "computer_state: screenshot_format must be \"png\" or \"jpeg\", got \"gif\"",
+            ),
+            (plain, &*format!("computer_state: {plain}")),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = endpoint(dir.path());
+            let reply = json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": text}]}});
+            let driver = tokio::spawn(Fake::bind(&socket).unwrap().serve(move |_| reply.clone()));
+            let out = cua(&socket)
+                .request("s", "get_window_state", json!({}))
+                .await;
+            assert_eq!(out.unwrap_err(), want);
+            driver.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_type_the_driver_refuses_with_its_own_tool_name_names_type_text_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let refused = "type_text: post_action_wait must be \"default\" or \"none\", got 7";
+        let driver = tokio::spawn(Fake::bind(&socket).unwrap().serve(move |req| {
+            match req["name"].as_str().unwrap_or_default() {
+                "type_text" => {
+                    json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": refused}]}})
+                }
+                "list_windows" => {
+                    json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Google-chrome", "title": "checkout", "bounds": {"x": 0, "y": 0, "width": 800, "height": 600}, "z_index": 1}]}}})
+                }
+                _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+            }
+        }));
+        let out = cua(&socket)
+            .act(json!({"action": "type", "text": "hello", "x": 10, "y": 20}))
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains(&format!("stopped: {refused}")),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("type_text: type_text"), "{}", out.text);
+        driver.abort();
+    }
+
+    #[tokio::test]
     async fn a_key_with_no_window_on_the_screen_goes_to_the_desktop_and_typing_fails() {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
