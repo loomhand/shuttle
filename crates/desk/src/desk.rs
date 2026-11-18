@@ -657,29 +657,17 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "desk_read" | "desk_press" | "desk_act" => {
                 Some(args["id"].as_str().ok_or("no element id")?.to_owned())
             }
-            "desk_key" | "desk_type" => None,
+            "desk_key" | "desk_type" if !self.bg() => None,
             _ => return Ok(()),
         };
-        let (allow, background) = (self.allow.clone(), self.bg());
-        let named = background.then(|| {
-            (
-                args["window"].as_str().map(str::to_owned),
-                args["pid"].as_u64(),
-            )
-        });
+        let allow = self.allow.clone();
         self.access
             .run(CALL_LIMIT, (), move |b| match id {
                 Some(id) => {
                     let pid = b.pid_of(&id)?;
                     check_process(b, &allow, pid)
                 }
-                None => {
-                    let (window, pid) = named.unwrap_or_default();
-                    let pid = pid.and_then(|p| u32::try_from(p).ok());
-                    allow
-                        .pick(shown(b, background)?, window.as_deref(), pid)
-                        .map(drop)
-                }
+                None => allow.pick(b.frames()?, None, None).map(drop),
             })
             .await
     }
@@ -7397,6 +7385,29 @@ pub(crate) mod tests {
                 .await
                 .unwrap_err();
             assert_eq!(err, "every app was read", "{tool}");
+        }
+    }
+
+    #[tokio::test]
+    async fn with_an_allowlist_background_keys_and_text_read_the_window_list_once() {
+        for (tool, args) in [
+            (
+                "desk_key",
+                json!({"keys": "ctrl+s", "window": "Untitled - Notepad"}),
+            ),
+            ("desk_type", json!({"text": "a", "pid": 4})),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(notepad()), Behind(Arc::clone(&calls)), Os::Mac)
+                .allow(&["Notepad".into()])
+                .background(true);
+            desk.run(tool, args).await.unwrap();
+            let reads = desk
+                .access
+                .run(CALL_LIMIT, (), |b| Ok(b.listings))
+                .await
+                .unwrap();
+            assert_eq!(reads, 1, "{tool}");
         }
     }
 
