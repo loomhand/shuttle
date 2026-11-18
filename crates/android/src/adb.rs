@@ -307,10 +307,11 @@ impl Android {
     }
 
     pub(crate) async fn tap(&self, (x, y): (i32, i32)) -> Result<(), String> {
-        match self.inject(&format!("tap {x} {y}")).await {
-            Injection::Done => return Ok(()),
-            Injection::Unconfirmed(why) => return Err(unconfirmed(&format!("tap {x},{y}"), &why)),
-            Injection::NotSent => {}
+        if self
+            .inject(&format!("tap {x} {y}"), || format!("tap {x},{y}"))
+            .await?
+        {
+            return Ok(());
         }
         self.input(&["tap", &x.to_string(), &y.to_string()]).await
     }
@@ -324,19 +325,17 @@ impl Android {
             if i > 1 {
                 tokio::time::sleep(TAP_GAP).await;
             }
-            match self.inject(&cmd).await {
-                Injection::Done => {}
-                Injection::Unconfirmed(why) => {
-                    return Err(unconfirmed(&format!("tap {i} of {count} at {x},{y}"), &why));
-                }
-                Injection::NotSent if i == 1 => {
-                    return Err(format!(
+            if !self
+                .inject(&cmd, || format!("tap {i} of {count} at {x},{y}"))
+                .await?
+            {
+                return Err(if i == 1 {
+                    format!(
                         "{count} taps at {x},{y} need the UI server's touch injection, since adb input taps too slowly for one gesture"
-                    ));
-                }
-                Injection::NotSent => {
-                    return Err(format!("tap {i} of {count} at {x},{y} was not sent"));
-                }
+                    )
+                } else {
+                    format!("tap {i} of {count} at {x},{y} was not sent")
+                });
             }
         }
         Ok(())
@@ -345,14 +344,12 @@ impl Android {
     /// Presses a key or a combination such as `ctrl+a`.
     pub(crate) async fn keys(&self, keys: &str) -> Result<(), String> {
         let codes = keycodes(keys)?;
-        if let [code] = codes[..] {
-            match self.inject(&format!("key {code}")).await {
-                Injection::Done => return Ok(()),
-                Injection::Unconfirmed(why) => {
-                    return Err(unconfirmed(&format!("key {keys}"), &why));
-                }
-                Injection::NotSent => {}
-            }
+        if let [code] = codes[..]
+            && self
+                .inject(&format!("key {code}"), || format!("key {keys}"))
+                .await?
+        {
+            return Ok(());
         }
         let codes: Vec<String> = codes.iter().map(u32::to_string).collect();
         let mut argv = vec![if codes.len() == 1 {
@@ -559,31 +556,31 @@ impl Android {
         .map(drop)
     }
 
-    async fn inject(&self, cmd: &str) -> Injection {
+    async fn inject(&self, cmd: &str, what: impl FnOnce() -> String) -> Result<bool, String> {
         if !self.server_input.load(Ordering::Relaxed) {
-            return Injection::NotSent;
+            return Ok(false);
         }
         let mut slot = self.ui.lock().await;
         let Ok(mut server) = self.ui_server(&mut slot).await else {
-            return Injection::NotSent;
+            return Ok(false);
         };
         if server.send(cmd).await.is_err() {
-            return Injection::NotSent;
+            return Ok(false);
         }
         let answer = match tokio::time::timeout(UI_TIMEOUT, server.read_answer()).await {
             Ok(Ok(answer)) => answer,
-            Ok(Err(e)) => return Injection::Unconfirmed(e),
-            Err(_) => return Injection::Unconfirmed("UI server: timed out".to_owned()),
+            Ok(Err(e)) => return Err(unconfirmed(&what(), &e)),
+            Err(_) => return Err(unconfirmed(&what(), "UI server: timed out")),
         };
         *slot = Some(server);
         match answer.trim() {
-            "true" => Injection::Done,
-            "false" => Injection::Unconfirmed("the injection was not confirmed".to_owned()),
+            "true" => Ok(true),
+            "false" => Err(unconfirmed(&what(), "the injection was not confirmed")),
             other => match server_error(other) {
-                Some(e) => Injection::Unconfirmed(e.to_owned()),
+                Some(e) => Err(unconfirmed(&what(), e)),
                 None => {
                     self.server_input.store(false, Ordering::Relaxed);
-                    Injection::NotSent
+                    Ok(false)
                 }
             },
         }
@@ -805,12 +802,6 @@ impl Android {
 struct Saved {
     window: String,
     points: Vec<(i32, i32)>,
-}
-
-enum Injection {
-    Done,
-    NotSent,
-    Unconfirmed(String),
 }
 
 /// The UI server (`android/ui`) on the device, one answer per request line; dropping it stops the server.
