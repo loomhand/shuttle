@@ -47,11 +47,11 @@ impl Tap {
     pub fn start(
         tx: UnboundedSender<Input>,
         acting: Arc<AtomicUsize>,
+        layout: Vec<u32>,
     ) -> Result<(Self, bool), String> {
         let (ready, started) = std::sync::mpsc::channel();
         let done = Arc::new(AtomicBool::new(false));
         let ended = Arc::clone(&done);
-        let layout = dispatch2::run_on_main(|_| layout());
         let thread = std::thread::spawn(move || {
             let seen = Box::into_raw(Box::new(Seen {
                 tx,
@@ -221,7 +221,7 @@ extern "C" fn heard(
     event
 }
 
-fn layout() -> Vec<u32> {
+pub(crate) fn layout() -> Vec<u32> {
     // SAFETY: the source is released after its layout data, which it owns, is copied out whole.
     unsafe {
         let source = TISCopyCurrentKeyboardLayoutInputSource();

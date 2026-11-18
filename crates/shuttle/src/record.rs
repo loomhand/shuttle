@@ -2,7 +2,7 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -17,9 +17,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
-use crate::lock;
 #[cfg(target_os = "macos")]
 use crate::tap::{self, Tap};
+use crate::{STOPPED, lock};
 
 const SETTLE: Duration = Duration::from_millis(700);
 const CROP_PT: [f64; 2] = [200.0, 100.0];
@@ -44,8 +44,6 @@ const OTHER_OS: &str = "recording runs only on macOS";
 const RECORDING: &str = "a recording is already running: stop it first";
 const NOTHING: &str = "no recording is running, and none was made since the daemon started";
 const GONE: &str = "the recording worker is gone";
-const STOPPED_STARTING: &str =
-    "the recording was stopped while it started, so nothing was recorded";
 const SECURE_INPUT: &str = "secure input is on, so macOS hides every key from the recorder until it ends: the recording keeps your clicks but no keys until then. An app holds it while it shows a password field or prompt or has Secure Keyboard Entry on, and it can be an app that is not in front: close that field, prompt or app to record typing";
 
 #[cfg(target_os = "macos")]
@@ -118,8 +116,7 @@ pub struct Recorder {
     acting: Arc<AtomicUsize>,
     queue: UnboundedSender<Session>,
     sessions: Mutex<Option<UnboundedReceiver<Session>>>,
-    live: Mutex<Slot>,
-    starts: AtomicU64,
+    live: Mutex<Option<Live>>,
     ended: Mutex<Option<Ended>>,
 }
 
@@ -132,8 +129,7 @@ impl Recorder {
             acting,
             queue,
             sessions: Mutex::new(Some(sessions)),
-            live: Mutex::new(Slot::Idle),
-            starts: AtomicU64::new(0),
+            live: Mutex::new(None),
             ended: Mutex::new(None),
         }
     }
@@ -144,35 +140,34 @@ impl Recorder {
     }
 
     pub fn recording(&self) -> bool {
-        !matches!(*lock(&self.live), Slot::Idle)
+        lock(&self.live).is_some()
     }
 
-    /// Starts recording the user's input, in `apps` alone when it names any; answers the recording's id, and a note while secure input hides the keys.
-    pub fn start(&self, apps: Vec<String>) -> Result<Value, String> {
-        self.start_with(apps, listen)
+    /// Starts recording the user's input, in `apps` alone when it names any, unless `halted`; answers the recording's id, and a note while secure input hides the keys.
+    pub fn start(&self, apps: Vec<String>, halted: impl Fn() -> bool) -> Result<Value, String> {
+        self.start_with(apps, halted, keyboard, listen)
     }
 
     /// Adds the user's note to the running recording, where it is now.
     pub fn note(&self, text: String) -> Result<(), String> {
-        match &*lock(&self.live) {
-            Slot::Live(live) => live
-                .notes
-                .send(Input::Note(text))
-                .map_err(|_| GONE.to_owned()),
-            _ => Err("no recording is running".to_owned()),
-        }
+        lock(&self.live)
+            .as_ref()
+            .ok_or("no recording is running")?
+            .notes
+            .send(Input::Note(text))
+            .map_err(|_| GONE.to_owned())
     }
 
     pub fn hotkey(&self, code: u32) {
-        if let Slot::Live(live) = &*lock(&self.live) {
+        if let Some(live) = lock(&self.live).as_ref() {
             let _ = live.notes.send(Input::Hotkey(i64::from(code)));
         }
     }
 
     /// Ends the running recording; the worker saves it once it has read the last input.
     pub fn end(&self) {
-        let live = std::mem::replace(&mut *lock(&self.live), Slot::Idle);
-        if let Slot::Live(Live { path, made, .. }) = live {
+        let live = lock(&self.live).take();
+        if let Some(Live { path, made, .. }) = live {
             *lock(&self.ended) = Some(Ended {
                 path,
                 made: Some(made),
@@ -212,50 +207,39 @@ impl Recorder {
     pub(crate) fn start_with<T: Send + 'static>(
         &self,
         apps: Vec<String>,
+        halted: impl Fn() -> bool,
+        keyboard: impl FnOnce() -> Vec<u32>,
         listen: impl FnOnce(
             UnboundedSender<Input>,
             Arc<AtomicUsize>,
             &[String],
+            Vec<u32>,
         ) -> Result<(T, bool), String>,
     ) -> Result<Value, String> {
-        let token = self.starts.fetch_add(1, Ordering::Relaxed);
-        {
-            let mut slot = lock(&self.live);
-            if !matches!(*slot, Slot::Idle) {
-                return Err(RECORDING.to_owned());
-            }
-            *slot = Slot::Starting(token);
+        let layout = keyboard();
+        let mut live = lock(&self.live);
+        if live.is_some() {
+            return Err(RECORDING.to_owned());
+        }
+        if halted() {
+            return Err(STOPPED.to_owned());
         }
         let (notes, inputs) = unbounded_channel();
-        let listened = listen(notes.clone(), Arc::clone(&self.acting), &apps);
-        let mut live = lock(&self.live);
-        let ours = matches!(*live, Slot::Starting(t) if t == token);
-        let (tap, held) = match listened {
-            Err(e) => {
-                if ours {
-                    *live = Slot::Idle;
-                }
-                return Err(e);
-            }
-            Ok(_) if !ours => return Err(STOPPED_STARTING.to_owned()),
-            Ok(listened) => listened,
-        };
+        let (tap, held) = listen(notes.clone(), Arc::clone(&self.acting), &apps, layout)?;
         let id = format!("rec-{}", now_ms());
         let path = self.path(&id);
         let (done, made) = oneshot::channel();
-        let queued = self.queue.send(Session {
-            id: id.clone(),
-            apps,
-            per_point: per_point(),
-            path: path.clone(),
-            inputs,
-            done,
-        });
-        if queued.is_err() {
-            *live = Slot::Idle;
-            return Err(GONE.to_owned());
-        }
-        *live = Slot::Live(Live {
+        self.queue
+            .send(Session {
+                id: id.clone(),
+                apps,
+                per_point: per_point(),
+                path: path.clone(),
+                inputs,
+                done,
+            })
+            .map_err(|_| GONE.to_owned())?;
+        *live = Some(Live {
             path,
             notes,
             made,
@@ -280,12 +264,6 @@ struct Live {
     notes: UnboundedSender<Input>,
     made: oneshot::Receiver<Value>,
     _tap: Box<dyn Send>,
-}
-
-enum Slot {
-    Idle,
-    Starting(u64),
-    Live(Live),
 }
 
 struct Ended {
@@ -482,6 +460,7 @@ fn listen(
     tx: UnboundedSender<Input>,
     acting: Arc<AtomicUsize>,
     apps: &[String],
+    layout: Vec<u32>,
 ) -> Result<(Listening, bool), String> {
     if !tap::allowed() {
         tap::ask();
@@ -490,7 +469,7 @@ fn listen(
     if let Some(app) = shuttle_desk::ax::secure_keyboard_entry(|a| covers(apps, a)) {
         return Err(hidden(app));
     }
-    Tap::start(tx, acting)
+    Tap::start(tx, acting, layout)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -498,8 +477,19 @@ fn listen(
     _: UnboundedSender<Input>,
     _: Arc<AtomicUsize>,
     _: &[String],
+    _: Vec<u32>,
 ) -> Result<(Listening, bool), String> {
     Err(OTHER_OS.to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn keyboard() -> Vec<u32> {
+    dispatch2::run_on_main(|_| tap::layout())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn keyboard() -> Vec<u32> {
+    Vec::new()
 }
 
 fn started(id: String, held: bool) -> Value {
@@ -1150,52 +1140,91 @@ mod tests {
     }
 
     #[test]
-    fn a_stop_while_the_tap_starts_ends_the_start_and_drops_its_tap() {
+    fn a_stopped_daemon_starts_no_recording_and_no_tap() {
+        let r = Recorder::new(std::env::temp_dir(), Arc::default());
+        let mut listened = false;
+        let out = r.start_with(
+            Vec::new(),
+            || true,
+            Vec::new,
+            |_, _, _, _| {
+                listened = true;
+                Ok(((), false))
+            },
+        );
+        assert_eq!(out, Err(STOPPED.to_owned()));
+        assert!(!listened && !r.recording());
+    }
+
+    #[test]
+    fn the_layout_is_read_with_the_lock_free_and_the_tap_starts_under_it() {
+        let r = Recorder::new(std::env::temp_dir(), Arc::default());
+        let out = r.start_with(
+            Vec::new(),
+            || false,
+            || {
+                assert!(
+                    r.live.try_lock().is_ok(),
+                    "the layout is read under the lock"
+                );
+                Vec::new()
+            },
+            |_, _, _, _| {
+                assert!(
+                    r.live.try_lock().is_err(),
+                    "the tap starts outside the lock"
+                );
+                Err::<((), bool), _>("no tap".to_owned())
+            },
+        );
+        assert_eq!(out, Err("no tap".to_owned()));
+    }
+
+    #[test]
+    fn a_stop_while_the_tap_starts_ends_the_recording_once_it_is_published() {
         struct Fake(Arc<std::sync::atomic::AtomicBool>);
         impl Drop for Fake {
             fn drop(&mut self) {
                 self.0.store(true, std::sync::atomic::Ordering::Relaxed);
             }
         }
-        let r = Recorder::new(std::env::temp_dir(), Arc::default());
+        let r = Arc::new(Recorder::new(std::env::temp_dir(), Arc::default()));
         let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let out = r.start_with(Vec::new(), |_, _, _| {
-            r.end();
-            Ok((Fake(Arc::clone(&dropped)), false))
-        });
-        assert_eq!(
-            out,
-            Err("the recording was stopped while it started, so nothing was recorded".to_owned())
+        let (listening, stopping) = std::sync::mpsc::channel();
+        let (issued, stop_issued) = std::sync::mpsc::channel();
+        let stopper = {
+            let r = Arc::clone(&r);
+            std::thread::spawn(move || {
+                stopping.recv().unwrap();
+                issued.send(()).unwrap();
+                r.end();
+            })
+        };
+        let out = r.start_with(
+            Vec::new(),
+            || false,
+            Vec::new,
+            |_, _, _, _| {
+                listening.send(()).unwrap();
+                stop_issued.recv().unwrap();
+                Ok((Fake(Arc::clone(&dropped)), false))
+            },
         );
+        stopper.join().unwrap();
+        assert!(out.is_ok(), "{out:?}");
         assert!(!r.recording());
         assert!(dropped.load(std::sync::atomic::Ordering::Relaxed));
     }
 
     #[test]
-    fn a_second_start_while_the_tap_starts_is_refused() {
+    fn a_second_start_while_one_is_live_is_refused() {
         let r = Recorder::new(std::env::temp_dir(), Arc::default());
-        let out = r.start_with(Vec::new(), |_, _, _| {
-            assert!(r.recording());
-            let second = r.start_with(Vec::new(), |_, _, _| Ok(((), false)));
-            assert_eq!(second, Err(RECORDING.to_owned()));
-            Err::<((), bool), _>("no tap".to_owned())
-        });
-        assert_eq!(out, Err("no tap".to_owned()));
-        assert!(!r.recording());
-    }
-
-    #[test]
-    fn a_start_listens_with_no_lock_the_main_thread_takes() {
-        let r = Recorder::new(std::env::temp_dir(), Arc::default());
-        let out = r.start_with(Vec::new(), |_, _, _| {
-            assert!(
-                r.live.try_lock().is_ok(),
-                "the live lock is held while the tap starts"
-            );
-            Err::<((), bool), _>("no tap".to_owned())
-        });
-        assert_eq!(out, Err("no tap".to_owned()));
-        assert!(!r.recording());
+        let first = r.start_with(Vec::new(), || false, Vec::new, |_, _, _, _| Ok(((), false)));
+        assert!(first.is_ok(), "{first:?}");
+        let second = r.start_with(Vec::new(), || false, Vec::new, |_, _, _, _| Ok(((), false)));
+        assert_eq!(second, Err(RECORDING.to_owned()));
+        assert!(r.recording());
+        r.end();
     }
 
     #[test]
