@@ -151,6 +151,7 @@ let T: Record<string, number> = {}
 let stepWs: { ws: Win[]; at: number } | null = null
 let prior = new Set<string>()
 let settleWs: { ws: Win[]; at: number; calls: number } | null = null
+let picked: Win[] = []
 let deadline = 0
 let sealStep = (): void => {}
 
@@ -700,7 +701,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
   }
   const end = Date.now() + ms; let asked: string | null = null; let many = 0
   for (;;) {
-    const ws = await desk.windows(); const w = frontOf(ws)
+    const ws = picked = await desk.windows(); const w = frontOf(ws)
     if (w && awaited(w.title, want, saw)) return found(w, t0)
     if (BG) {
       const t = target
@@ -1421,7 +1422,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const hung = self ? undefined : ws.find((x) => x.stale && !isShell(x))
     if (hung) throw new Surprise(`no window is in front, and "${hung.title || hung.app}" is listed as not answering accessibility, as an app hung behind its own dialog leaves it: nothing was sent; wait for it, or close the app`, await seen())
     if (!w) { rec.noop = true; tick('act', t0); return }
-    const [title, pid, id, twin] = [w.title, w.pid, w.id, twinId(w, ws)]; rec.seen = title; if (!w.active && !BG) await desk.focus(title, pid, twin); await desk.key('Escape', at(w))
+    const [title, pid, id, twin] = [w.title, w.pid, w.id, twinId(w, s.window ? picked : ws)]; rec.seen = title; if (!w.active && !BG) await desk.focus(title, pid, twin); await desk.key('Escape', at(w))
     if (titledIn(await settle(w.title), title, pid, id)) { unique(w); await desk.close(title, pid, twin) }
     tick('act', t0); if (!await closed(title, pid, id)) throw new Surprise(`"${title}" is still open after Escape and a close`, await seen())
     return

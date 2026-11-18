@@ -87,6 +87,28 @@ test('a close step whose dialog no other window of the process shares a title wi
   assert.deepEqual(sent, [{ tool: 'desk_close', args: { window: 'Find', pid: process.pid } }])
 })
 
+test('a close step that names its window sends the id of the window it picked when another window of the process has its title, and the title alone when none has', async (t) => {
+  for (const twin of [true, false]) {
+    const editor = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: false }
+    const finds = [{ id: '2', title: 'Find', role: 'dialog', pid: process.pid, active: true }, ...(twin ? [{ id: '3', title: 'Find', role: 'dialog', pid: process.pid, active: false }] : [])]
+    const sent: Record<string, unknown>[] = []
+    await daemon(t, ({ tool, args }) => {
+      if (tool === 'desk_windows') return JSON.stringify([{ ...editor, active: !finds.some((f) => f.active) }, ...finds])
+      if (tool === 'desk_snapshot') return JSON.stringify({ window: finds[0], truncated: false, nodes: [{ ref: 0, id: '2/1', parent: -1, depth: 0, role: 'dialog', name: 'Find', states: ['showing'] }] })
+      if (tool === 'desk_close') {
+        sent.push(args)
+        if (twin && args.id === undefined) return { text: '2 windows match the title "Find", so nothing was sent: pass the window\'s id from desk windows', error: true }
+        finds.splice(finds.findIndex((f) => f.id === (args.id ?? '2')), 1)
+      }
+      return '{"ok":true}'
+    })
+    const r = await main({ steps: [{ close: true, window: 'Find' }] })
+    assert.equal(r.ok, true, `${twin} ${JSON.stringify(r)}`)
+    assert.deepEqual(sent, [{ window: 'Find', pid: process.pid, ...(twin ? { id: '2' } : {}) }])
+    assert.deepEqual(finds.map((f) => f.id), twin ? ['3'] : [])
+  }
+})
+
 test('a close step with no window in front and a window listed as not answering sends nothing and is not ok', async (t) => {
   const panel = { id: '1.2/38', title: '', role: 'window', pid: 1206, active: false, app: 'xfce4-panel', shell: true }
   const editor = { id: '1.9/116', title: '~/a.txt - Mousepad', role: 'window', pid: 1339, active: false, app: 'mousepad', stale: true }
