@@ -189,10 +189,14 @@ impl Computer {
         if !args.is_object() && !args.is_null() {
             return Err(format!("{tool}: args are not an object"));
         }
-        let default =
-            !matches!(tool, "desk_look" | "desk_title_at") && !args["session"].is_string();
-        if default {
-            args["session"] = Self::default_session(agent).into();
+        match &args["session"] {
+            Value::String(_) => {}
+            Value::Number(n) => args["session"] = n.to_string().into(),
+            Value::Null if !matches!(tool, "desk_look" | "desk_title_at") => {
+                args["session"] = Self::default_session(agent).into();
+            }
+            Value::Null => {}
+            _ => return Err(format!("{tool}: session takes a string; nothing was sent")),
         }
         CALLER.scope(agent.to_owned(), self.verb(tool, args)).await
     }
@@ -4485,6 +4489,40 @@ mod tests {
             act.await.unwrap_err(),
             "no element list yet; call computer_state first"
         );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_numbered_session_is_that_session_and_a_session_of_another_type_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = shot_driver(&socket, &calls);
+        let cua = cua(&socket);
+        let end = |args| cua.run("a", "desk_computer_end", args);
+        assert_eq!(
+            end(json!({"session": 2})).await.unwrap().text,
+            "ended session 2"
+        );
+        assert_eq!(
+            end(json!({})).await.unwrap().text,
+            "ended session computer-a"
+        );
+        for (tool, session) in [("desk_computer_end", json!({})), ("desk_look", json!([2]))] {
+            let out = cua.run("a", tool, json!({"session": session})).await;
+            assert_eq!(
+                out.unwrap_err(),
+                format!("{tool}: session takes a string; nothing was sent")
+            );
+        }
+        let ends: Vec<String> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(n, _)| n == "end_session")
+            .map(|(_, s)| s.clone())
+            .collect();
+        assert_eq!(ends, ["2", "computer-a"]);
         driver.abort();
     }
 
