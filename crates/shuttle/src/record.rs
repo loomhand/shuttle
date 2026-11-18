@@ -323,7 +323,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                         }
                         windows = list(desk).await;
                         light(desk, &windows, &apps, &mut asked).await;
-                        let win = window_of(&windows, &at);
+                        let win = window_of(&windows, &at, x, y);
                         let named = win.filter(|w| w["app"].is_string()).or_else(|| of_pid(&windows, pid));
                         let app = named.and_then(|w| w["app"].as_str()).map(str::to_owned);
                         if !at.is_null() && (app.is_some() || pid.is_none()) && kept(app.as_deref(), named.and_then(|w| w["bundle"].as_str()), pid, &apps) {
@@ -552,18 +552,24 @@ fn bundle(_pid: u64) -> Option<String> {
 }
 
 // a path from the tap names its window by role and title, one from desk_at by id
-fn window_of<'a>(windows: &'a [Value], at: &Value) -> Option<&'a Value> {
+fn window_of<'a>(windows: &'a [Value], at: &Value, x: f64, y: f64) -> Option<&'a Value> {
     let path = at["path"].as_array()?;
     let pid = at["pid"].as_u64();
+    let under = |w: &&Value| {
+        <[f64; 4]>::deserialize(&w["bounds"]).is_ok_and(|[left, top, width, height]| {
+            (left..left + width).contains(&x) && (top..top + height).contains(&y)
+        })
+    };
     path.iter().find_map(|n| {
-        windows.iter().find(|w| match n["id"].as_str() {
+        let mut named = windows.iter().filter(|w| match n["id"].as_str() {
             Some(id) => w["id"].as_str() == Some(id),
             None => {
                 (n["role"] == "window" || (n["role"] == "dialog" && w["role"] == "dialog"))
                     && w["title"] == n["name"]
                     && w["pid"].as_u64() == pid
             }
-        })
+        });
+        named.clone().find(under).or_else(|| named.next())
     })
 }
 
@@ -620,7 +626,10 @@ async fn framed<H: Handler>(
         };
         w = windows.iter().find(|x| x["id"].as_str() == Some(owner))?;
     }
-    if !window_kept(w, apps) {
+    let twin = windows
+        .iter()
+        .any(|o| o["id"] != w["id"] && o["pid"] == w["pid"] && o["title"] == w["title"]);
+    if twin || !window_kept(w, apps) {
         return None;
     }
     let bounds = <[f64; 4]>::deserialize(&w["bounds"]).ok()?;
@@ -943,6 +952,37 @@ mod tests {
             "{e}"
         );
         assert!(e["crop"].is_string(), "{e}");
+    }
+
+    #[tokio::test]
+    async fn a_click_in_one_of_two_windows_of_one_title_keeps_the_window_under_it_and_no_crop() {
+        let desk = Desk {
+            more: vec![
+                json!({"id": "7/2", "title": "Untitled", "role": "window", "pid": 7, "active": false, "app": "TextEdit", "bounds": [400, 20, 300, 200]}),
+            ],
+            ..Desk::new(Value::Null)
+        };
+        let at = |x| Input::Click {
+            x,
+            y: 80.0,
+            right: false,
+            count: 1,
+            mods: Vec::new(),
+            found: Some(Hit {
+                role: "textbox",
+                pid: Some(7),
+                path: vec![("window", "Untitled".into())],
+                ..Hit::default()
+            }),
+        };
+        let r = run(&desk, &[], vec![at(500.0), at(100.0)]).await;
+        let e = &r["events"];
+        assert_eq!(
+            (&e[0]["window"]["bounds"], &e[1]["window"]["bounds"]),
+            (&json!([400, 20, 300, 200]), &json!([10, 20, 300, 200])),
+            "{e}"
+        );
+        assert!(each(&r, "crop").iter().all(|c| c.is_null()), "{e}");
     }
 
     #[tokio::test]
