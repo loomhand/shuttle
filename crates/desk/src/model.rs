@@ -314,6 +314,14 @@ pub trait Access {
     fn pid_at(&mut self, _x: i32, _y: i32) -> Result<Option<u32>, String> {
         Ok(None)
     }
+    fn menu_cover(
+        &mut self,
+        _id: &str,
+        _x: i32,
+        _y: i32,
+    ) -> Result<Option<(String, Option<u32>)>, String> {
+        Ok(None)
+    }
     /// The process of the topmost window at the screen pixel `(x, y)` on any window level; an error when the hit test fails.
     fn owner_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
         self.pid_at(x, y)

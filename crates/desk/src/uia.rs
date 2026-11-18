@@ -178,6 +178,28 @@ impl Uia {
         }
     }
 
+    fn native_root(&self, id: &str) -> Result<Option<isize>, String> {
+        // SAFETY: `self.auto` is a live IUIAutomation of this thread.
+        let walker =
+            unsafe { self.auto.ControlViewWalker() }.map_err(|e| format!("UIA walker: {e}"))?;
+        let mut at = self.element(id)?;
+        for _ in 0..MAX_DEPTH {
+            // SAFETY: `at` is a live UIA element of this thread; a stale one answers an error.
+            let hwnd = unsafe { at.CurrentNativeWindowHandle() }.unwrap_or_default();
+            if !hwnd.is_invalid() {
+                // SAFETY: GetAncestor takes any handle; a stale one answers a null handle.
+                let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+                return Ok((!root.is_invalid()).then_some(root.0 as isize));
+            }
+            // SAFETY: `walker` and `at` are live UIA objects of this thread.
+            let Ok(parent) = (unsafe { walker.GetParentElement(&at) }) else {
+                break;
+            };
+            at = parent;
+        }
+        Ok(None)
+    }
+
     fn cached(
         &self,
         el: &IUIAutomationElement,
@@ -529,6 +551,26 @@ impl Access for Uia {
 
     fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
         Ok(process_id(&self.element(id)?))
+    }
+
+    fn menu_cover(
+        &mut self,
+        id: &str,
+        x: i32,
+        y: i32,
+    ) -> Result<Option<(String, Option<u32>)>, String> {
+        let own = self.native_root(id)?;
+        let at = top_at(x, y);
+        if uia_roles::same_window(at, own) {
+            return Ok(None);
+        }
+        Ok(Some(at.map_or((String::new(), None), |w| {
+            let hwnd = HWND(w as *mut core::ffi::c_void);
+            let mut pid = 0u32;
+            // SAFETY: GetWindowThreadProcessId takes any handle and writes the pid into a live u32; a stale handle writes nothing.
+            unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut pid)) };
+            (title(hwnd).trim().to_owned(), (pid != 0).then_some(pid))
+        })))
     }
 
     fn pid_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {

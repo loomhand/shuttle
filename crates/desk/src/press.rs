@@ -12,6 +12,8 @@ pub(crate) const BACKGROUND_NO_POINT: &str = "background input: the element show
 const PRESSABLE_ROLES: [&str; 4] = ["button", "checkbox", "switch", "link"];
 const SELECTED_ROLES: [&str; 5] = ["tab", "option", "radio", "listitem", "treeitem"];
 
+type Cover = (String, Option<u32>);
+
 /// What a press comes to after the backend's part of it.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Press {
@@ -87,16 +89,7 @@ pub(crate) fn hit_centre<B: Access>(
     match reachable(b, id, &node, &chain, os, background) {
         Ok(point) => Ok(Some(point)),
         Err(None) => Ok(None),
-        Err(Some(title)) => {
-            let cover = if title.is_empty() {
-                "another window".to_owned()
-            } else {
-                format!("the window {title:?}")
-            };
-            Err(format!(
-                "{cover} covers the element's center, so nothing was clicked: bring the element's window to the front, or press it with desk press"
-            ))
-        }
+        Err(Some((title, pid))) => Err(covered_text(&title, pid)),
     }
 }
 
@@ -142,13 +135,19 @@ fn reachable<B: Access>(
     chain: &[String],
     os: Os,
     background: bool,
-) -> Result<(i32, i32), Option<String>> {
+) -> Result<(i32, i32), Option<Cover>> {
     let [x, y, w, h] = node.bounds.ok_or(None)?;
     if !node.has("showing") || w <= 0 || h <= 0 {
         return Err(None);
     }
     let (cx, cy) = (x + w / 2, y + h / 2);
     if node.role.starts_with("menu") {
+        if os == Os::Windows
+            && !background
+            && let Some(cover) = b.menu_cover(id, cx, cy).map_err(|_| None)?
+        {
+            return Err(Some(cover));
+        }
         return Ok((cx, cy));
     }
     let inside = chain.iter().all(|a| match b.node(a, Extras::BOUNDS, 0) {
@@ -176,9 +175,21 @@ fn reachable<B: Access>(
         && !background
         && let Some(cover) = covered(b, id, window, cx, cy, os)
     {
-        return Err(Some(cover));
+        return Err(Some((cover, None)));
     }
     Ok((cx, cy))
+}
+
+fn covered_text(title: &str, pid: Option<u32>) -> String {
+    let cover = match (title.is_empty(), pid) {
+        (true, None) => "another window".to_owned(),
+        (true, Some(p)) => format!("a window of pid {p}"),
+        (false, None) => format!("the window {title:?}"),
+        (false, Some(p)) => format!("the window {title:?} (pid {p})"),
+    };
+    format!(
+        "{cover} covers the element's center, so nothing was clicked: bring the element's window to the front, or press it with desk press"
+    )
 }
 
 fn covered<B: Access>(b: &mut B, id: &str, window: &str, x: i32, y: i32, os: Os) -> Option<String> {
@@ -201,7 +212,8 @@ fn covered<B: Access>(b: &mut B, id: &str, window: &str, x: i32, y: i32, os: Os)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::desk::tests::notepad;
+    use crate::desk::tests::{Fake, notepad};
+    use crate::model::Tree;
 
     #[test]
     fn a_shown_control_that_a_hit_test_finds_takes_a_click() {
@@ -213,6 +225,44 @@ mod tests {
             );
             assert!(f.acts.is_empty(), "{os:?}");
         }
+    }
+
+    #[test]
+    fn a_windows_menu_entry_whose_point_another_window_holds_takes_no_click() {
+        let mut m = Menu(notepad(), Some((String::new(), Some(4242))));
+        let err = hit_centre(&mut m, "file", Os::Windows, false).unwrap_err();
+        assert_eq!(err, covered_text("", Some(4242)));
+        assert_eq!(
+            hit_centre(&mut m, "file", Os::Windows, true).unwrap(),
+            Some((20, 10))
+        );
+        assert_eq!(
+            hit_centre(&mut m, "file", Os::Linux, false).unwrap(),
+            Some((20, 10))
+        );
+        m.1 = None;
+        assert_eq!(
+            hit_centre(&mut m, "file", Os::Windows, false).unwrap(),
+            Some((20, 10))
+        );
+    }
+
+    #[test]
+    fn a_cover_refusal_names_the_window_at_the_point_by_title_and_pid_when_known() {
+        let tail = " covers the element's center, so nothing was clicked: bring the element's window to the front, or press it with desk press";
+        assert_eq!(
+            covered_text("", Some(4242)),
+            format!("a window of pid 4242{tail}")
+        );
+        assert_eq!(
+            covered_text("r90-menu", Some(7)),
+            format!("the window \"r90-menu\" (pid 7){tail}")
+        );
+        assert_eq!(
+            covered_text("Calculator", None),
+            format!("the window \"Calculator\"{tail}")
+        );
+        assert_eq!(covered_text("", None), format!("another window{tail}"));
     }
 
     #[test]
@@ -602,5 +652,34 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         (dir, office)
+    }
+
+    struct Menu(Fake, Option<Cover>);
+
+    impl Access for Menu {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            self.0.frames()
+        }
+        fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
+            self.0.tree(frame, extras)
+        }
+        fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String> {
+            self.0.node(id, extras, chars)
+        }
+        fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
+            self.0.ancestors(id)
+        }
+        fn at(&mut self, window: &str, x: i32, y: i32) -> Result<Option<String>, String> {
+            self.0.at(window, x, y)
+        }
+        fn menu_cover(&mut self, _: &str, _: i32, _: i32) -> Result<Option<Cover>, String> {
+            Ok(self.1.clone())
+        }
+        fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
+            self.0.act(id, act)
+        }
+        fn close(&mut self, frame: &Frame) -> Result<(), String> {
+            self.0.close(frame)
+        }
     }
 }

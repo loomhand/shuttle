@@ -137,6 +137,10 @@ pub fn owned_entries<K>(nodes: &[model::Node], frame: &mut Vec<(String, K)>) -> 
     owned
 }
 
+pub fn same_window(at: Option<isize>, own: Option<isize>) -> bool {
+    at.is_some_and(|a| a != 0 && Some(a) == own)
+}
+
 pub fn walked_id<'a, K: PartialEq + 'a>(
     lists: impl IntoIterator<Item = &'a (isize, bool, Vec<(String, K)>)>,
     top: Option<isize>,
@@ -313,6 +317,21 @@ mod tests {
         let ids = |l: &[(String, i32)]| l.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
         assert_eq!(ids(&popup), ["u2", "u3"]);
         assert_eq!(ids(&frame), ["u1", "u4", "u5"]);
+    }
+
+    #[test]
+    fn a_menu_click_goes_out_only_when_the_window_at_the_point_is_the_entrys_own_window() {
+        let (form, dropdown, submenu, copy_b, toast) = (7, 12, 14, 21, 30);
+        assert!(same_window(Some(dropdown), Some(dropdown)));
+        assert!(same_window(Some(form), Some(form)));
+        assert!(same_window(Some(submenu), Some(submenu)));
+        assert!(!same_window(Some(submenu), Some(dropdown)));
+        assert!(!same_window(Some(copy_b), Some(dropdown)));
+        assert!(!same_window(Some(toast), Some(dropdown)));
+        assert!(!same_window(Some(form), Some(dropdown)));
+        assert!(!same_window(None, Some(dropdown)));
+        assert!(!same_window(Some(dropdown), None));
+        assert!(!same_window(Some(0), Some(0)));
     }
 
     #[test]
