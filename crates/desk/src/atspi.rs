@@ -573,7 +573,7 @@ impl Atspi {
             &mut HashSet::new(),
             &mut nodes,
         );
-        truncated |= nodes.len() >= MAX_NODES;
+        truncated |= capped(&mut nodes);
         let mut tree = Tree {
             nodes,
             truncated,
@@ -1357,6 +1357,12 @@ fn needs_live(r: &Raw, cached: Option<&Vec<(i32, Rc<Obj>)>>) -> bool {
         || cached.is_some_and(|c| c.iter().any(|(i, _)| *i < 0))
 }
 
+fn capped(nodes: &mut Vec<Node>) -> bool {
+    let cut = nodes.len() > MAX_NODES;
+    nodes.truncate(MAX_NODES);
+    cut
+}
+
 /// Appends `obj` and its subtree in preorder, once per parent: an object shared by two parents under both, but a menu bar outside any document that repeats an earlier one's menus under neither; a nameless generic container gives its place to its children.
 fn flatten<'a>(
     obj: &'a Rc<Obj>,
@@ -1370,7 +1376,7 @@ fn flatten<'a>(
     let Some(r) = raw.get(obj) else {
         return;
     };
-    if out.len() >= MAX_NODES || path.contains(&obj) {
+    if out.len() > MAX_NODES || path.contains(&obj) {
         return;
     }
     if r.role == ROLE_MENU_BAR
@@ -1594,6 +1600,49 @@ mod tests {
             .collect();
         assert_eq!(bars, ["1.9/b1", "1.9/b2"]);
         assert_eq!(out.len(), 8);
+    }
+
+    #[test]
+    fn a_tree_of_exactly_the_node_limit_is_whole_and_one_more_node_cuts_it() {
+        let o = |p: &str| Rc::new(Obj::at(":1.9", &format!("{PATH_PREFIX}/{p}")));
+        for (children, cut) in [(MAX_NODES - 1, false), (MAX_NODES, true)] {
+            let items: Vec<Rc<Obj>> = (0..children).map(|i| o(&i.to_string())).collect();
+            let mut raw: HashMap<Rc<Obj>, Raw> = items
+                .iter()
+                .map(|c| {
+                    let r = Raw {
+                        role: 33,
+                        name: c.id(),
+                        ..Raw::default()
+                    };
+                    (Rc::clone(c), r)
+                })
+                .collect();
+            raw.insert(
+                o("w"),
+                Raw {
+                    role: 23,
+                    name: "Big".to_owned(),
+                    ..Raw::default()
+                },
+            );
+            let kids = HashMap::from([(o("w"), items)]);
+            let mut out = Vec::new();
+            flatten(
+                &o("w"),
+                &raw,
+                &kids,
+                None,
+                &mut Vec::new(),
+                &mut HashSet::new(),
+                &mut out,
+            );
+            assert_eq!(
+                (capped(&mut out), out.len()),
+                (cut, MAX_NODES),
+                "{children}"
+            );
+        }
     }
 
     #[test]
