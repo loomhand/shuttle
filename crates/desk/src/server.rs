@@ -256,16 +256,14 @@ impl<B: Access + 'static> Handler for Native<B> {
     }
 }
 
-/// Takes the unix socket `endpoint`, readable by its user only, once no other daemon holds its lock.
-#[cfg(unix)]
+/// Takes `endpoint`, a unix socket readable by its user only or a local-only named pipe open to SYSTEM and this user, once no other daemon holds it.
 pub async fn bind(endpoint: &str) -> Result<Listener, String> {
     bind_at(endpoint, None)
 }
 
-/// Takes the unix socket `endpoint` like [`bind`] with mode 0660 for `group`, a group name or number, in a directory only this user can write.
-#[cfg(unix)]
+/// Takes `endpoint` like [`bind`], open also to `group`: a group name or number for a socket (mode 0660, in a directory only this user can write), an account name or SID string for a pipe.
 pub async fn bind_for(endpoint: &str, group: &str) -> Result<Listener, String> {
-    bind_at(endpoint, Some(gid(group)?))
+    bind_at(endpoint, Some(group))
 }
 
 #[cfg(unix)]
@@ -281,18 +279,6 @@ pub async fn serve<H: Handler>(handler: Arc<H>, listener: Listener) -> Result<()
             }
         }
     }
-}
-
-/// Takes the named pipe `endpoint`, open to SYSTEM and this user, local clients only, once no other daemon holds it.
-#[cfg(windows)]
-pub async fn bind(endpoint: &str) -> Result<Listener, String> {
-    bind_at(endpoint, None)
-}
-
-/// Takes the named pipe `endpoint` like [`bind`], open also to `group`, an account name or SID string.
-#[cfg(windows)]
-pub async fn bind_for(endpoint: &str, group: &str) -> Result<Listener, String> {
-    bind_at(endpoint, Some(group))
 }
 
 #[cfg(windows)]
@@ -427,9 +413,10 @@ pub fn native(_: String, _: &[String], _: bool, _: bool, _: bool, _: bool) -> im
 }
 
 #[cfg(unix)]
-fn bind_at(endpoint: &str, gid: Option<u32>) -> Result<Listener, String> {
+fn bind_at(endpoint: &str, group: Option<&str>) -> Result<Listener, String> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 
+    let gid = group.map(gid).transpose()?;
     let path = std::path::Path::new(endpoint);
     if let Some(dir) = path.parent() {
         std::fs::DirBuilder::new()
