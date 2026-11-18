@@ -99,16 +99,6 @@ pub enum Os {
     Linux,
 }
 
-impl Os {
-    fn logo(self) -> &'static str {
-        match self {
-            Self::Windows => "win",
-            Self::Mac => "cmd",
-            Self::Linux => "super",
-        }
-    }
-}
-
 /// The driver's key names of `combo`: `Ctrl+Shift+S` is `["ctrl", "shift", "s"]`; a name no driver knows fails.
 pub fn key_names(combo: &str, os: Os) -> Result<Vec<String>, String> {
     let mut parts: Vec<&str> = combo.split('+').collect();
@@ -178,7 +168,12 @@ fn key_name(key: &str, os: Os, combo: &str) -> Result<String, String> {
     }
     let named = |alias: &str| k.chars().count() > 1 && folded(alias).eq(folded(&k));
     if LOGO.iter().any(|logo| named(logo)) {
-        return Ok(os.logo().to_owned());
+        let logo = match os {
+            Os::Windows => "win",
+            Os::Mac => "cmd",
+            Os::Linux => "super",
+        };
+        return Ok(logo.to_owned());
     }
     let name = ALIASES
         .iter()

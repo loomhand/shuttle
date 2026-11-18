@@ -225,7 +225,7 @@ async function perform(p: Params): Promise<Result> {
       }
       stepWs = { ws, at: since }; tops[i] = f?.title; prior = new Set(lastWs.map((x) => x.id)); lastWs = ws
       if (BG && doubt && !s.app && !s.wait) throw new Surprise(doubt, await seen())
-      if (BG && i > (p.start ?? 0)) stolen(ws, i - 1)
+      if (BG && i > (p.start ?? 0)) { const r = taken(ws); if (r) throw new Stolen(r, i - 1) }
       const m = s.close ? null : await hiddenModal(ws, f)
       if (m) throw new Surprise(modalBlocks(m), await seen())
       const r = reads(s)
@@ -254,7 +254,7 @@ async function perform(p: Params): Promise<Result> {
     } catch (e: unknown) {
       const sp = e instanceof Surprise ? e : new Surprise(e instanceof Error ? e.message : String(e), await seen())
       if ((sp.late || sp.seen.window === undefined) && sp.seen.outline === undefined && sp.reason !== NO_FRONT) sp.seen = await seen()
-      if (sp.reason === NO_FRONT || sp.seen.outline === `(${NO_FRONT})`) { const why = await frontless(); if (sp.reason === NO_FRONT) sp.reason = why; if (sp.seen.outline === `(${NO_FRONT})`) sp.seen.outline = `(${why})` }
+      if (sp.reason === NO_FRONT || sp.seen.outline === `(${NO_FRONT})`) { const u = await desk.unanswered().catch(() => null); const why = u ? `front app "${u.app ?? u.title}" (pid ${u.pid}) is not answering accessibility` : NO_FRONT; if (sp.reason === NO_FRONT) sp.reason = why; if (sp.seen.outline === `(${NO_FRONT})`) sp.seen.outline = `(${why})` }
       const step = e instanceof Stolen ? e.step : i
       const note = step === i ? recs[i - 1]?.unverified : undefined
       const theft = BG && !(e instanceof Stolen) ? taken(await desk.windows()) : null
@@ -371,7 +371,6 @@ function taken(ws: Win[]): string | null {
   if (!f || !target || fronted || f.pid !== target.pid || (userFront && f.id === userFront.id)) return null
   return `"${f.title || f.app || 'the app'}" brought itself to the front though the plan sent no fronting call: background input cannot keep this app behind`
 }
-function stolen(ws: Win[], step: number) { const r = taken(ws); if (r) throw new Stolen(r, step) }
 
 function terms(s: string) { return norm(s).split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !FILLER.has(w)).map((w) => w.length > 3 ? w.replace(/s$/, '') : w) }
 function norm(s: string) { return s.toLowerCase().replace(/[_…]|\.\.\.|:$/g, '').replace(/\s+/g, ' ').trim() }
@@ -379,6 +378,7 @@ function worded(text: string, part: string) { const p = words(part); return !!p 
 function words(s: string) { return norm(s).split(/[^\p{L}\p{N}]+/u).filter(Boolean).join(' ') }
 function slug(s: string) { return norm(s).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) }
 function tick(k: string, t0: number) { T[k] = (T[k] ?? 0) + Date.now() - t0 }
+async function timed<R>(k: string, f: () => Promise<R>) { const t0 = Date.now(); try { return await f() } finally { tick(k, t0) } }
 function* up<N extends { parent: number }>(nodes: N[], from: number): Generator<[number, N]> {
   for (let p = from; p >= 0;) { const n = nodes[p]; if (!n) return; yield [p, n]; p = n.parent }
 }
@@ -445,13 +445,11 @@ function targetIn(ws: Win[]): Win | null {
   const leaves = owned.filter((x) => !owned.some((y) => y.owner === x.id))
   return leaves.find((x) => x.active) ?? leaves.at(-1) ?? live
 }
-function ours(x: Win, ws: Win[]) {
-  for (let y: Win | undefined = x, k = 0; y && k < ws.length; y = ws.find((z) => z.id === y?.owner), k++) if ((y.id === target?.id && y.pid === target.pid) || adopted.has(y.id)) return true
-  return false
-}
+function* chain(w: Win, ws: Win[]) { for (let x: Win | undefined = w, k = 0; x && k <= ws.length; x = ws.find((y) => y.id === x?.owner), k++) yield x }
+function host(w: Win, ws: Win[]) { let x = w; for (let o = OS === 'darwin' ? x.owner : undefined; o; o = x.owner) { const up = ws.find((y) => y.id === o); if (!up) break; x = up } return x }
+function ours(x: Win, ws: Win[]) { for (const y of chain(x, ws)) if ((y.id === target?.id && y.pid === target.pid) || adopted.has(y.id)) return true; return false }
 function ownerOf(w: Win, ws: Win[]) {
-  let x = w
-  for (let k = 0; k < ws.length; k++) { const o = ws.find((y) => y.id === x.owner); if (!o) break; x = o }
+  let x = w; for (const y of chain(w, ws)) x = y
   return x.id !== w.id ? x : ws.find((y) => y.id === target?.id && y.pid === target.pid && y.id !== w.id)
 }
 async function front(w: Win | null) {
@@ -466,18 +464,14 @@ function at(w: Win | null): desk.Target {
   if (!BG) return FG
   if (!w) return {}
   if (doubt) throw new Surprise(doubt)
-  let x = w
-  for (let o = OS === 'darwin' ? x.owner : undefined; o; o = x.owner) { const up = listed.find((y) => y.id === o); if (!up) break; x = up }
-  const to = x
+  const to = host(w, listed)
   unique(to)
   for (const y of listed) targetSince.add(y.id)
   return { window: to.title, pid: to.pid }
 }
 function lined(w: Win | null, ws: Win[], text: string): desk.Target {
   if (BG || ANDROID || OS === 'linux' || !w?.active || !/\n[^]/.test(text)) return at(w)
-  let x = w
-  for (let o = OS === 'darwin' ? x.owner : undefined; o; o = x.owner) { const up = ws.find((y) => y.id === o); if (!up) break; x = up }
-  const to = x
+  const to = host(w, ws)
   const under = (y: Win) => { let z: Win | undefined = y; for (let k = 0; z && k <= ws.length; k++, z = ws.find((v) => v.id === z?.owner)) if (z.id === to.id) return true; return false }
   return !to.title.trim() || ws.some((y) => !under(y) && y.pid === to.pid && y.title === to.title) ? FG : { ...FG, window: to.title, pid: to.pid }
 }
@@ -520,10 +514,7 @@ async function readTree(w: Win, r: Reads): Promise<Tree> {
 async function answered(w: Win, r: Reads, tree: Tree): Promise<Tree | null> {
   for (const end = Math.min(Date.now() + BUSY_MS, deadline); tree.snap.truncated && tree.nodes.length <= 1; await sleep(VERIFY_POLL)) {
     if (Date.now() >= end) return null
-    try { tree = await readTree(w, r) } catch (e: unknown) {
-      if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen())
-      throw e
-    }
+    try { tree = await readTree(w, r) } catch (e: unknown) { await unblocked(e, w); throw e }
   }
   return tree
 }
@@ -554,10 +545,6 @@ async function outline(w: Win | null, r: Reads = {}, kept?: Kept, max = 1800) {
   if (!w) return `(${NO_FRONT})`
   return (await look(w, r, kept, max)).text
 }
-async function frontless() {
-  const u = await desk.unanswered().catch(() => null)
-  return u ? `front app "${u.app ?? u.title}" (pid ${u.pid}) is not answering accessibility` : NO_FRONT
-}
 async function look(w: Win, r: Reads = {}, kept?: Kept, max = 1800): Promise<{ text: string; snap?: desk.Snap; nodes?: Node[] }> {
   try { const k = reuse(kept, w, r); const s = k?.snap ?? await snapOf(w, r); const nodes = k?.nodes ?? parse(s); const full = render(nodes, 100, nodes.length > 60, max + 1); return { text: `${full.slice(0, max)}${s.truncated ? TREE_CUT : full.length > max ? TEXT_CUT : ''}`, snap: s, nodes } } catch (e: unknown) { return { text: String(e) } }
 }
@@ -575,6 +562,7 @@ async function hiddenModal(ws: Win[], f: Win | null) {
 }
 function modalBlocks(m: Win) { return `modal dialog "${m.title}" is open but ${m.modal}, and ${m.blocks ? `"${m.blocks}"` : 'its app'} takes no input until it closes: finish it, or close it with {close: true, window: "${m.title}"}` }
 function blocked(o: string) { return /AT-SPI peer \S+ is not responding|no accessibility answer within/.test(o) }
+async function unblocked(e: unknown, w: Win) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()) }
 function isChooser(o: string) { return isDialog(o) && CHOOSER.test(o) }
 async function selectLine(w: Win | null) { if (OS === 'darwin') await desk.key(SELECT_ALL, at(w)); else { await desk.key('home', at(w)); await desk.key('shift+end', at(w)) } }
 async function echoed(w: Win, line: string, shown: Map<string, Text> | null) {
@@ -624,23 +612,20 @@ function plus(a: desk.Usage = {}, b: desk.Usage = {}): desk.Usage {
 }
 
 async function decide(state: unknown, q: Record<string, desk.Question>) {
-  const t0 = Date.now()
-  try { return await desk.decide(state, q) } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
+  try { return await timed('jev', () => desk.decide(state, q)) } finally { T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
 
 async function vision(prompt: string, shot: Buffer, field: 'ok' | 'on'): Promise<Vision> {
-  const t0 = Date.now()
-  try {
+  return timed('vision', async () => {
     const a = await desk.ask(`${prompt}\nAnswer with one JSON object and nothing else.`, [shot])
     const v = JSON.parse(a.slice(a.indexOf('{'), a.lastIndexOf('}') + 1)) as Vision
     if (typeof v[field] !== 'boolean') throw new Error(`the screen check answered no true or false for "${field}"`)
     return v
-  } finally { tick('vision', t0) }
+  })
 }
 
 async function checked(n: Node): Promise<boolean | 'mixed' | null> {
-  const t0 = Date.now()
-  try { const r = await desk.read(n.id); return r.states.includes('mixed') ? 'mixed' : r.states.includes('checked') || r.states.includes('pressed') } catch { return null } finally { tick('state', t0) }
+  return timed('state', async () => { try { const r = await desk.read(n.id); return r.states.includes('mixed') ? 'mixed' : r.states.includes('checked') || r.states.includes('pressed') } catch { return null } })
 }
 // a command-line word may extend the app name: gnome-terminal-server for gnome-terminal
 function ownedBy(pid: number | null, app: string) {
@@ -1062,27 +1047,25 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
 }
 
 async function act(n: Node) {
-  const t0 = Date.now()
-  try {
+  return timed('act', async () => {
     const r = await desk.press(n.id)
     if (!r.ok) throw new Surprise(`"${n.name}" took no ${r.how}`, await seen())
     if (BG && r.unverified) unheard ??= r.unverified
     if (OS === 'linux' && (r.how === 'action' || r.how === 'select')) actioned = true
     return r.how
-  } finally { tick('act', t0) }
+  })
 }
 
 // a menu entry with a shortcut takes the shortcut, since an AT-SPI action can open a modal dialog that deadlocks the app on the first key
 async function choose(nodes: Node[], n: Node, rec: { via?: string }, open = false, w: Win | null = null) {
-  const t0 = Date.now()
-  try {
+  return timed('act', async () => {
     const mods = n.shortcut.split('+').slice(0, -1)
     if (OS !== 'darwin' && n.shortcut && (mods.some((x) => x !== 'shift') || /^f\d+$/.test(n.shortcut))) {
       if (open) for (const _ of menus(nodes, n.parent)) await desk.key('Escape', at(w))
       try { const k = await desk.key(n.shortcut, at(w)); if (BG && k.unverified) unheard ??= k.unverified; rec.via = 'shortcut'; return } catch (e: unknown) { if (e instanceof Error && (MAY_HAVE_RUN.some((x) => e.message.includes(x)) || e.message.startsWith('declined by the user'))) throw e }
     }
     rec.via = await act(n)
-  } finally { tick('act', t0) }
+  })
 }
 
 async function settle(before: string | undefined) {
@@ -1244,13 +1227,12 @@ async function holdsText(w: Win, fp: Fp) {
 }
 
 async function documents(w: Win) {
-  const t0 = Date.now()
-  try {
+  return timed('verify', async () => {
     const ws = await desk.windows()
     const d = BG ? ownerOf(w, ws) : ws.find((x) => x.title !== w.title && x.pid === w.pid); if (!d) return null
     const ids = parse(await snapOf(d)).filter((n) => n.role === 'textbox').map((n) => n.id)
     return async () => (await Promise.all(ids.map(async (id) => { try { return (await desk.read(id, { text: true })).value ?? '' } catch { return '' } }))).join('\n')
-  } catch { return null } finally { tick('verify', t0) }
+  }).catch(() => null)
 }
 async function replaced(nodes: Node[], read: () => Promise<string>, before: string | undefined) {
   const t0 = Date.now(); let now = await read()
@@ -1434,10 +1416,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   rec.seen = w.title; if (w.title.trim()) lastSeen = w.title
   let t0 = Date.now(); let tree: Tree
   const r = reads(s)
-  try { tree = reuse(kept, w, r) ?? await readTree(w, r) } catch (e: unknown) {
-    if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen())
-    throw e
-  }
+  try { tree = reuse(kept, w, r) ?? await readTree(w, r) } catch (e: unknown) { await unblocked(e, w); throw e }
   tick('snap', t0)
   const aim = s.verify ?? s.click ?? s.check
   let read = r
@@ -1475,7 +1454,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       if (!hit) { observed ||= !snap.truncated || (OS === 'darwin' && !!read.menus && nodes.some((n) => n.role === 'menubar' && n.depth === 1 && n.parent === 0)); return `verify: no element matches "${want}"` }
       rec.how = hit.how; rec.fp = fingerprint(nodes, hit)
       const bad: string[] = []
-      if (s.value !== undefined) { let v = ''; let url: string | undefined; try { const r = await desk.read(hit.n.id); url = r.url; v = r.url ?? r.value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); v = hit.n.value }; if (url !== undefined ? url !== s.value : !holds(hit.n.role, v, s.value)) bad.push(`reads "${v}"`) }
+      if (s.value !== undefined) { let v = ''; let url: string | undefined; try { const r = await desk.read(hit.n.id); url = r.url; v = r.url ?? r.value ?? '' } catch (e: unknown) { await unblocked(e, w); v = hit.n.value }; if (url !== undefined ? url !== s.value : !holds(hit.n.role, v, s.value)) bad.push(`reads "${v}"`) }
       if (s.enabled !== undefined && hit.n.disabled === s.enabled) bad.push(hit.n.disabled ? 'is disabled' : 'is enabled')
       if (s.on !== undefined) { const c = (w.pid === null ? null : gtkToggle(w.pid, hit.n.name)) ?? (await checked(hit.n)) ?? (ask ? await cropState(hit.n) : null); rec.was = c; if (c !== s.on) bad.push(c === 'mixed' ? 'is mixed' : c ? 'is on' : 'is off') }
       return bad.length ? `verify: "${hit.n.name || want}" ${bad.join(', ')}` : ''
@@ -1622,7 +1601,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (f.role === 'textbox' && !lines) await selectLine(w); else await desk.key(SELECT_ALL, at(w)); if (value) await desk.typeText(value, at(w)); else await desk.key('delete', at(w)); if (hit.n.role === 'spinbutton' || hit.n.role === 'slider') { await desk.key('tab', at(w)); await desk.key('shift+tab', at(w)) }
   tick('act', t0)
   t0 = Date.now(); let got: string | undefined
-  for (let i = 0; i < 10; i++) { try { got = (await desk.read(f.id)).value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); got = undefined }; if (same(got)) break; await sleep(40) }
+  for (let i = 0; i < 10; i++) { try { got = (await desk.read(f.id)).value ?? '' } catch (e: unknown) { await unblocked(e, w); got = undefined }; if (same(got)) break; await sleep(40) }
   tick('verify', t0); rec.value = got
   if (!same(got)) throw new Surprise(`"${target}" reads "${got}" after set`, await seen())
   rec.confirmed = true

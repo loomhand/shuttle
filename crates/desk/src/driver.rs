@@ -72,7 +72,7 @@ pub trait Input {
 }
 
 /// A client of the cua-driver daemon at `endpoint`, in a desktop session, or the window session a call names; on Linux each call runs in a session of its own, except window reads, whose session the next window input shares and ends.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Driver {
     endpoint: String,
     started: [AtomicBool; 3],
@@ -86,21 +86,14 @@ impl Driver {
     pub fn new(endpoint: String) -> Self {
         Self {
             endpoint,
-            started: Default::default(),
-            calls: AtomicU64::new(0),
-            window_n: AtomicU64::new(0),
-            last_click: Mutex::new(None),
-            last_input: std::sync::Mutex::new(None),
+            ..Self::default()
         }
     }
 
     /// The daemon's endpoint: `CUA_DRIVER_SOCKET`, else the driver's default for this OS.
     pub fn default_endpoint() -> String {
         if cfg!(windows) {
-            return std::env::var("CUA_DRIVER_SOCKET")
-                .ok()
-                .filter(|e| !e.is_empty())
-                .unwrap_or_else(|| DEFAULT_PIPE.to_owned());
+            return crate::env("CUA_DRIVER_SOCKET").unwrap_or_else(|| DEFAULT_PIPE.to_owned());
         }
         crate::server::cache_endpoint(
             "CUA_DRIVER_SOCKET",

@@ -29,17 +29,14 @@ impl<'a> Part<'a> {
         .map(Part::from_item)
     }
 
-    fn from_item(v: &'a Value) -> Part<'a> {
+    fn from_item(v: &'a Value) -> Self {
         if let Some(s) = v.as_str() {
             return Part::Text(Cow::Borrowed(s));
         }
-        match v["image_url"]["url"]
+        v["image_url"]["url"]
             .as_str()
             .and_then(|u| u.strip_prefix(PNG_DATA_URL))
-        {
-            Some(png) => Part::Png(png),
-            None => Part::Text(Cow::Owned(v.to_string())),
-        }
+            .map_or_else(|| Part::Text(Cow::Owned(v.to_string())), Part::Png)
     }
 }
 

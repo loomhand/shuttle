@@ -188,7 +188,7 @@ impl Computer {
         let default =
             !matches!(tool, "desk_look" | "desk_title_at") && !args["session"].is_string();
         if default {
-            args["session"] = self.default_session(agent).into();
+            args["session"] = Self::default_session(agent).into();
         }
         match tool {
             "desk_computer_state" => self.state(args).await,
@@ -225,7 +225,7 @@ impl Computer {
             )),
             None => self
                 .app_of(&listed)
-                .or(listed.first())
+                .or_else(|| listed.first())
                 .map(|w| (w.pid, Some(w.window_id))),
         };
         let mut elements = None;
@@ -357,14 +357,10 @@ impl Computer {
         Ok(out)
     }
 
-    async fn act_one(&self, session: &str, a: ActArgs) -> Result<Output, String> {
+    async fn act_one(&self, session: &str, mut a: ActArgs) -> Result<Output, String> {
         if a.action == "launch_app" {
             return self.launch(session, &a).await;
         }
-        self.act_input(session, a).await
-    }
-
-    async fn act_input(&self, session: &str, mut a: ActArgs) -> Result<Output, String> {
         if a.action == "left_click" {
             "click".clone_into(&mut a.action);
         }
@@ -516,12 +512,10 @@ impl Computer {
         region: &Value,
         max_edge: Option<u32>,
     ) -> Result<Output, String> {
-        let k = session.map_or_else(|| *self.last_scale(), |s| self.scale_of(s));
-        let [Some(x), Some(y), Some(w), Some(h)] = ["x", "y", "w", "h"].map(|f| region[f].as_f64())
-        else {
-            return Err("region needs x, y, w and h".to_owned());
-        };
-        let area = [x * k, y * k, w * k, h * k];
+        let k = session.map_or_else(|| *lock(&self.last_scale), |s| self.scale_of(s));
+        let area = rect_of(region)
+            .ok_or("region needs x, y, w and h")?
+            .map(|v| v * k);
         let Cut {
             rect,
             width: rw,
@@ -593,7 +587,7 @@ impl Computer {
     async fn screenshot_once(&self, max_edge: Option<u32>) -> Result<Option<String>, String> {
         let session = self.own("shot");
         let shot = self.screenshot(session.name(), max_edge).await;
-        self.scales().remove(session.name());
+        lock(&self.scales).remove(session.name());
         self.end_own(session).await;
         shot
     }
@@ -601,7 +595,7 @@ impl Computer {
     async fn end(&self, args: Value) -> Result<String, String> {
         let session = session_of(&args);
         self.last.lock().await.remove(&session);
-        self.scales().remove(&session);
+        lock(&self.scales).remove(&session);
         self.request(&session, "end_session", json!({})).await?;
         Ok(format!("ended session {session}"))
     }
@@ -634,8 +628,7 @@ impl Computer {
                 return Ok((Some(B64.encode(image)), scale, Some(screen)));
             }
         }
-        let full = json!({"max_image_dimension": 0});
-        let v = self.request(session, "get_desktop_state", full).await?;
+        let v = self.desktop_state(session).await?;
         let (image, scale) = self.adopt(session, &v, edge, shared);
         Ok((image, scale, None))
     }
@@ -742,10 +735,8 @@ impl Computer {
             };
             let (tool, req) = self.action_request(session, &focus).await?;
             let once = self.once(&req);
-            failure = self
-                .request(once.as_ref().map_or(session, Owned::name), tool, req)
-                .await
-                .err();
+            let target = once.as_ref().map_or(session, Owned::name);
+            failure = self.request(target, tool, req).await.err();
             self.end_once(once).await;
         }
         let mut base = json!({});
@@ -768,10 +759,9 @@ impl Computer {
         let runs = text_runs(text);
         let mut typed = 0;
         let once = self.once(&base);
+        let target = once.as_ref().map_or(session, Owned::name);
         if failure.is_none()
-            && let Err(e) = self
-                .front_for_typing(once.as_ref().map_or(session, Owned::name), &base)
-                .await
+            && let Err(e) = self.front_for_typing(target, &base).await
         {
             failure = Some(e);
         }
@@ -782,10 +772,7 @@ impl Computer {
             let mut req = base.clone();
             req["text"] = (*run).into();
             req["literal"] = true.into();
-            match self
-                .call(once.as_ref().map_or(session, Owned::name), "type_text", req)
-                .await
-            {
+            match self.call(target, "type_text", req).await {
                 Ok(v) if v["isError"] == true || text_of(&v).contains(SKIPPED) => {
                     typed += landed(run, &v);
                     failure = Some(format!("type_text: {}", told(&v)));
@@ -795,10 +782,7 @@ impl Computer {
             }
         }
         if failure.is_none() && text.len() < full.len() {
-            match self
-                .press_return(once.as_ref().map_or(session, Owned::name), base)
-                .await
-            {
+            match self.press_return(target, base).await {
                 Ok(_) => typed += 1,
                 Err(e) => failure = Some(e),
             }
@@ -925,23 +909,21 @@ impl Computer {
             });
         }
         let probe = self.own("still");
-        match self.frame(probe.name()).await {
-            Some((frame, _)) => Some(Before {
-                probe: Some(probe),
-                paused: None,
-                frame: Frame::Thumb(frame),
-                pixels: Vec::new(),
-                volatile: Vec::new(),
-                windows: Vec::new(),
-                active: None,
-                page: false,
-                wait: SETTLE,
-            }),
-            None => {
-                self.end_own(probe).await;
-                None
-            }
-        }
+        let Some((frame, _)) = self.frame(probe.name()).await else {
+            self.end_own(probe).await;
+            return None;
+        };
+        Some(Before {
+            probe: Some(probe),
+            paused: None,
+            frame: Frame::Thumb(frame),
+            pixels: Vec::new(),
+            volatile: Vec::new(),
+            windows: Vec::new(),
+            active: None,
+            page: false,
+            wait: SETTLE,
+        })
     }
 
     /// Waits until the screen differs from `before` and holds still; returns the window changes, or that no poll differed, and the probe capture it held still on.
@@ -1076,7 +1058,7 @@ impl Computer {
     }
 
     /// The session of `agent` when its call names none; once ended, it starts again on its next call (see [`Self::call`]).
-    fn default_session(&self, agent: &str) -> String {
+    fn default_session(agent: &str) -> String {
         let mut name = DEFAULT_SESSION.to_owned();
         if !agent.is_empty() {
             name.push('-');
@@ -1192,37 +1174,28 @@ impl Computer {
 
     /// A full-size capture from the probe driver session `probe` and its RGBA thumbnail, whose long edge is [`STILL_EDGE`].
     async fn frame(&self, probe: &str) -> Option<(Vec<u8>, Value)> {
-        let full = json!({"max_image_dimension": 0});
-        let v = self.request(probe, "get_desktop_state", full).await.ok()?;
+        let v = self.desktop_state(probe).await.ok()?;
         let data = B64.decode(image_of(&v)?).ok()?;
         let (info, rgba) = decode_png(&data)?;
         let thumb = lanczos(&info, &rgba, STILL_EDGE)?.2;
         Some((thumb, v))
     }
 
-    fn scales(&self) -> std::sync::MutexGuard<'_, HashMap<String, f64>> {
-        lock(&self.scales)
-    }
-
-    fn last_scale(&self) -> std::sync::MutexGuard<'_, f64> {
-        lock(&self.last_scale)
-    }
-
     fn keep_scale(&self, session: &str, scale: f64, shared: bool) {
-        if let Some(kept) = self.scales().get_mut(session) {
+        if let Some(kept) = lock(&self.scales).get_mut(session) {
             *kept = scale;
         } else {
-            self.scales().insert(session.to_owned(), scale);
+            lock(&self.scales).insert(session.to_owned(), scale);
         }
         if !shared {
-            *self.last_scale() = scale;
+            *lock(&self.last_scale) = scale;
         }
     }
 
     /// Screen pixels per pixel of the last screenshot of `session`, else of any session, so its x,y map to the screen.
     fn scale_of(&self, session: &str) -> f64 {
-        let own = self.scales().get(session).copied();
-        own.unwrap_or_else(|| *self.last_scale())
+        let own = lock(&self.scales).get(session).copied();
+        own.unwrap_or_else(|| *lock(&self.last_scale))
     }
 
     /// Runs `read` on the MIT-SHM grabber, opening it when needed or after the screen changed size; `None` when it is unavailable or fails.
@@ -1733,15 +1706,7 @@ impl Computer {
                 .flatten()
                 .filter(|e| e["role"] == "menu item")
                 .filter(|e| e["label"].as_str().is_some_and(|l| norm(l) == name))
-                .filter_map(|e| {
-                    let f = &e["frame"];
-                    Some([
-                        f["x"].as_f64()?,
-                        f["y"].as_f64()?,
-                        f["w"].as_f64()?,
-                        f["h"].as_f64()?,
-                    ])
-                });
+                .filter_map(|e| rect_of(&e["frame"]));
             for [fx, fy, fw, fh] in frames {
                 let (cx, cy) = ((fx + fw / 2.0).floor(), (fy + fh / 2.0).floor());
                 let rect = [fx, fy, fw, fh].map(|v| v.round() as i32);
@@ -1793,13 +1758,7 @@ impl Computer {
 
     /// The screen rectangle `area` clipped to the screen, cut from a full-size driver capture.
     async fn captured_region(&self, session: &str, area: [f64; 4]) -> Result<Cut, String> {
-        let v = self
-            .request(
-                session,
-                "get_desktop_state",
-                json!({"max_image_dimension": 0}),
-            )
-            .await?;
+        let v = self.desktop_state(session).await?;
         self.keep_backing(&v["structuredContent"]);
         let png = B64
             .decode(image_of(&v).ok_or("the capture has no image")?)
@@ -1809,7 +1768,7 @@ impl Computer {
         let screen = state["screen_width"]
             .as_f64()
             .zip(state["screen_height"].as_f64())
-            .unwrap_or((f64::from(info.width), f64::from(info.height)));
+            .unwrap_or_else(|| (f64::from(info.width), f64::from(info.height)));
         let ps = f64::from(info.width) / screen.0;
         let rect = clip(area, (screen.0 as usize, screen.1 as usize)).ok_or(OFF_SCREEN)?;
         let (width, height, rgb) = crop(
@@ -1870,6 +1829,11 @@ impl Computer {
             tokio::time::sleep(MENU_POLL).await;
         }
         None
+    }
+
+    async fn desktop_state(&self, session: &str) -> Result<Value, String> {
+        let full = json!({"max_image_dimension": 0});
+        self.request(session, "get_desktop_state", full).await
     }
 
     async fn request(&self, session: &str, name: &str, args: Value) -> Result<Value, String> {
@@ -2296,12 +2260,7 @@ fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
         let Some(index) = e["element_index"].as_i64() else {
             continue;
         };
-        let f = &e["frame"];
-        let frame = [&f["x"], &f["y"], &f["w"], &f["h"]].map(Value::as_f64);
-        let frame = frame
-            .iter()
-            .all(Option::is_some)
-            .then(|| frame.map(Option::unwrap_or_default));
+        let frame = rect_of(&e["frame"]);
         let disabled = e["enabled"] == false;
         if let Some(t) = e["element_token"].as_str() {
             let element = Element {
@@ -2355,6 +2314,13 @@ fn element_tree(result: &Value, scale: f64) -> (String, HashMap<i64, Element>) {
     (tree, by_index)
 }
 
+fn rect_of(v: &Value) -> Option<[f64; 4]> {
+    let [Some(x), Some(y), Some(w), Some(h)] = ["x", "y", "w", "h"].map(|k| v[k].as_f64()) else {
+        return None;
+    };
+    Some([x, y, w, h])
+}
+
 fn told(result: &Value) -> String {
     text_of(result).replace("get_window_state", "computer_state")
 }
@@ -2362,7 +2328,7 @@ fn told(result: &Value) -> String {
 /// Whether the driver refused a `verify_hit` click before sending it.
 fn is_hit_refusal(result: &Value) -> bool {
     let s = &result["structuredContent"];
-    let code = s["refusal"]["code"].as_str().or(s["code"].as_str());
+    let code = s["refusal"]["code"].as_str().or_else(|| s["code"].as_str());
     s["effect"] == "refused" && code.is_some_and(|c| HIT_REFUSALS.contains(&c))
 }
 
@@ -2455,15 +2421,12 @@ fn shot_points(text: &str, scale: f64) -> String {
                 y.trim().parse::<f64>().ok()?,
             ))
         });
-        match point {
-            Some((close, x, y)) => {
-                let _ = write!(out, "({:.0},{:.0})", x / scale, y / scale);
-                rest = &rest[close + 1..];
-            }
-            None => {
-                out.push('(');
-                rest = &rest[1..];
-            }
+        if let Some((close, x, y)) = point {
+            let _ = write!(out, "({:.0},{:.0})", x / scale, y / scale);
+            rest = &rest[close + 1..];
+        } else {
+            out.push('(');
+            rest = &rest[1..];
         }
     }
     out.push_str(rest);

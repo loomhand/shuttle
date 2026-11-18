@@ -153,12 +153,10 @@ impl Shared {
                 }
                 s.actions
             };
-            if !grabber.as_ref().is_some_and(Grabber::current) {
-                grabber = None;
-            }
-            if grabber.is_none() {
-                grabber = Grabber::open().ok();
-            }
+            grabber = grabber
+                .take()
+                .filter(Grabber::current)
+                .or_else(|| Grabber::open().ok());
             match grabber.as_ref().map(Grabber::blocks) {
                 Some(Ok(hashes)) => {
                     failing = false;

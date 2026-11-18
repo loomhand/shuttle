@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use tokio::process::Child;
+use tokio::process::{Child, Command};
 
 /// The program name in usage lines, endpoints and the MCP server info.
 pub const NAME: &str = "shuttle";
@@ -64,9 +64,15 @@ pub(crate) struct Running {
 
 impl Running {
     /// On Windows the child goes into a job that ends its whole tree with it, or with `alone` the child but not the apps it starts.
-    pub(crate) fn new(child: Child, alone: bool) -> Result<Self, String> {
+    pub(crate) fn spawn(cmd: &mut Command, alone: bool) -> Result<Self, String> {
         #[cfg(not(windows))]
         let _ = alone;
+        cmd.kill_on_drop(true);
+        #[cfg(unix)]
+        cmd.process_group(0);
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("start {}: {e}", cmd.as_std().get_program().display()))?;
         Ok(Self {
             #[cfg(unix)]
             group: child.id(),

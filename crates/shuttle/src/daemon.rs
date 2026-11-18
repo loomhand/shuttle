@@ -245,10 +245,12 @@ impl<H: Handler> Daemon<H> {
         let n = self.runs.fetch_add(1, Ordering::Relaxed);
         let agent = format!("run-{:x}-{n}", self.nonce);
         *lock(&self.running) = Some(agent.clone());
-        let _running = RunningAgent(&self.running);
+        let _running = Defer(|| *lock(&self.running) = None);
         self.actions.fetch_add(1, Ordering::Relaxed);
-        let _acting = Acting(&self.actions);
-        let _held = Held(&self.desk, &agent);
+        let _acting = Defer(|| {
+            self.actions.fetch_sub(1, Ordering::Relaxed);
+        });
+        let _held = Defer(|| self.desk.release(&agent));
         let report = match plugin {
             Some(p) => self.runner.plugin(&p.bin, args, &agent).await,
             None if tool == "gui_plan" => self.runner.plan(args, &agent).await,
@@ -268,7 +270,9 @@ impl<H: Handler> Daemon<H> {
             (true, None) => return Output::error(NO_ASK),
         };
         self.actions.fetch_add(1, Ordering::Relaxed);
-        let _acting = Acting(&self.actions);
+        let _acting = Defer(|| {
+            self.actions.fetch_sub(1, Ordering::Relaxed);
+        });
         let _turn = match self.held_turn(&call.agent_id).await {
             Ok(turn) => turn,
             Err(e) => return Output::error(e),
@@ -305,7 +309,7 @@ impl<H: Handler> Daemon<H> {
         if self.asking.swap(true, Ordering::AcqRel) {
             return Err(CONFIRM_OPEN);
         }
-        let open = Asking(&self.asking);
+        let open = Defer(|| self.asking.store(false, Ordering::Release));
         let allowed = ask(question).await.unwrap_or(false);
         drop(open);
         if allowed { Ok(()) } else { Err(DECLINED) }
@@ -319,10 +323,9 @@ impl<H: Handler> Daemon<H> {
                 "desk_act" => self.guard.android || call.args["action"] == "click",
                 COMPUTER_ACT => {
                     let points = |a: &Value| points(a, self.guard.android);
-                    match call.args["actions"].as_array() {
-                        Some(list) => list.iter().any(points),
-                        None => points(&call.args),
-                    }
+                    call.args["actions"]
+                        .as_array()
+                        .map_or_else(|| points(&call.args), |list| list.iter().any(points))
                 }
                 _ => false,
             },
@@ -464,35 +467,11 @@ impl<H: Handler> Controls for Daemon<H> {
     }
 }
 
-struct Asking<'a>(&'a AtomicBool);
+struct Defer<F: FnMut()>(F);
 
-impl Drop for Asking<'_> {
+impl<F: FnMut()> Drop for Defer<F> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
-}
-
-struct Held<'a, H: Handler>(&'a H, &'a str);
-
-impl<H: Handler> Drop for Held<'_, H> {
-    fn drop(&mut self) {
-        self.0.release(self.1);
-    }
-}
-
-struct RunningAgent<'a>(&'a Mutex<Option<String>>);
-
-impl Drop for RunningAgent<'_> {
-    fn drop(&mut self) {
-        *lock(self.0) = None;
-    }
-}
-
-struct Acting<'a>(&'a AtomicUsize);
-
-impl Drop for Acting<'_> {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
+        (self.0)();
     }
 }
 
@@ -517,10 +496,9 @@ fn question(call: &Call, background: bool) -> String {
             named(a).unwrap_or_else(|| "the focused window".to_owned()),
             quoted(&a["text"], PREVIEW_CHARS)
         ),
-        "computer_act" => match a["actions"].as_array() {
-            Some(list) => steps(list),
-            None => step(a),
-        },
+        "computer_act" => a["actions"]
+            .as_array()
+            .map_or_else(|| step(a), |l| steps(l)),
         _ => format!("{verb} {a}"),
     };
     format!(

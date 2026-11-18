@@ -148,7 +148,8 @@ impl Android {
         let args: StateArgs = parse(args)?;
         let mut tries = 0;
         let (xml, shot, front) = loop {
-            let (xml, shot, front) = tokio::join!(self.tree(None), self.look(), desk::front(self));
+            let (xml, shot, front) =
+                tokio::join!(self.served("dump"), self.look(), desk::front(self));
             let (xml, front) = (xml?, front?);
             if desk::same_window(&xml, &front) {
                 break (xml, shot, front);
@@ -307,10 +308,11 @@ impl Android {
     }
 
     pub(crate) async fn tap(&self, (x, y): (i32, i32)) -> Result<(), String> {
-        match self.inject(&format!("tap {x} {y}")).await {
-            Injection::Done => return Ok(()),
-            Injection::Unconfirmed(why) => return Err(unconfirmed(&format!("tap {x},{y}"), &why)),
-            Injection::NotSent => {}
+        if self
+            .inject(&format!("tap {x} {y}"), || format!("tap {x},{y}"))
+            .await?
+        {
+            return Ok(());
         }
         self.input(&["tap", &x.to_string(), &y.to_string()]).await
     }
@@ -324,19 +326,17 @@ impl Android {
             if i > 1 {
                 tokio::time::sleep(TAP_GAP).await;
             }
-            match self.inject(&cmd).await {
-                Injection::Done => {}
-                Injection::Unconfirmed(why) => {
-                    return Err(unconfirmed(&format!("tap {i} of {count} at {x},{y}"), &why));
-                }
-                Injection::NotSent if i == 1 => {
-                    return Err(format!(
+            if !self
+                .inject(&cmd, || format!("tap {i} of {count} at {x},{y}"))
+                .await?
+            {
+                return Err(if i == 1 {
+                    format!(
                         "{count} taps at {x},{y} need the UI server's touch injection, since adb input taps too slowly for one gesture"
-                    ));
-                }
-                Injection::NotSent => {
-                    return Err(format!("tap {i} of {count} at {x},{y} was not sent"));
-                }
+                    )
+                } else {
+                    format!("tap {i} of {count} at {x},{y} was not sent")
+                });
             }
         }
         Ok(())
@@ -345,14 +345,12 @@ impl Android {
     /// Presses a key or a combination such as `ctrl+a`.
     pub(crate) async fn keys(&self, keys: &str) -> Result<(), String> {
         let codes = keycodes(keys)?;
-        if let [code] = codes[..] {
-            match self.inject(&format!("key {code}")).await {
-                Injection::Done => return Ok(()),
-                Injection::Unconfirmed(why) => {
-                    return Err(unconfirmed(&format!("key {keys}"), &why));
-                }
-                Injection::NotSent => {}
-            }
+        if let [code] = codes[..]
+            && self
+                .inject(&format!("key {code}"), || format!("key {keys}"))
+                .await?
+        {
+            return Ok(());
         }
         let codes: Vec<String> = codes.iter().map(u32::to_string).collect();
         let mut argv = vec![if codes.len() == 1 {
@@ -376,12 +374,9 @@ impl Android {
             .await
     }
 
-    /// The UI tree of window `window`, else of the active one, from the UI server.
-    pub(crate) async fn tree(&self, window: Option<&str>) -> Result<String, String> {
-        match window {
-            Some(w) => self.served(&format!("dump {w}")).await,
-            None => self.served("dump").await,
-        }
+    /// The UI tree of window `window` from the UI server.
+    pub(crate) async fn tree(&self, window: &str) -> Result<String, String> {
+        self.served(&format!("dump {window}")).await
     }
 
     /// Whether the element at `path` of window `window` took the UI server's request to scroll itself into view.
@@ -559,31 +554,31 @@ impl Android {
         .map(drop)
     }
 
-    async fn inject(&self, cmd: &str) -> Injection {
+    async fn inject(&self, cmd: &str, what: impl FnOnce() -> String) -> Result<bool, String> {
         if !self.server_input.load(Ordering::Relaxed) {
-            return Injection::NotSent;
+            return Ok(false);
         }
         let mut slot = self.ui.lock().await;
         let Ok(mut server) = self.ui_server(&mut slot).await else {
-            return Injection::NotSent;
+            return Ok(false);
         };
         if server.send(cmd).await.is_err() {
-            return Injection::NotSent;
+            return Ok(false);
         }
         let answer = match tokio::time::timeout(UI_TIMEOUT, server.read_answer()).await {
             Ok(Ok(answer)) => answer,
-            Ok(Err(e)) => return Injection::Unconfirmed(e),
-            Err(_) => return Injection::Unconfirmed("UI server: timed out".to_owned()),
+            Ok(Err(e)) => return Err(unconfirmed(&what(), &e)),
+            Err(_) => return Err(unconfirmed(&what(), "UI server: timed out")),
         };
         *slot = Some(server);
         match answer.trim() {
-            "true" => Injection::Done,
-            "false" => Injection::Unconfirmed("the injection was not confirmed".to_owned()),
+            "true" => Ok(true),
+            "false" => Err(unconfirmed(&what(), "the injection was not confirmed")),
             other => match server_error(other) {
-                Some(e) => Injection::Unconfirmed(e.to_owned()),
+                Some(e) => Err(unconfirmed(&what(), e)),
                 None => {
                     self.server_input.store(false, Ordering::Relaxed);
-                    Injection::NotSent
+                    Ok(false)
                 }
             },
         }
@@ -699,7 +694,7 @@ impl Android {
         tokio::time::timeout(UI_TIMEOUT, stdout.read_line(&mut ready))
             .await
             .map_err(|_| "UI server start timed out".to_owned())?
-            .map_err(|e| format!("read UI server: {e}"))?;
+            .map_err(read_err)?;
         if ready.trim() != "ready" {
             return Err(self.start_failure(&mut child, stderr, ready.trim()).await);
         }
@@ -807,12 +802,6 @@ struct Saved {
     points: Vec<(i32, i32)>,
 }
 
-enum Injection {
-    Done,
-    NotSent,
-    Unconfirmed(String),
-}
-
 /// The UI server (`android/ui`) on the device, one answer per request line; dropping it stops the server.
 struct UiServer {
     child: Child,
@@ -825,26 +814,14 @@ impl UiServer {
     async fn ask_png(&mut self) -> Result<Result<Vec<u8>, String>, String> {
         self.send("shot").await?;
         let mut head = String::new();
-        self.stdout
-            .read_line(&mut head)
-            .await
-            .map_err(|e| format!("read UI server: {e}"))?;
+        self.stdout.read_line(&mut head).await.map_err(read_err)?;
         let Some(len) = head
             .strip_prefix("png ")
             .and_then(|n| n.trim().parse::<usize>().ok())
             .filter(|n| *n <= MAX_PNG)
         else {
-            let mut line = String::new();
-            while head.trim_end() != UI_END && line.trim_end() != UI_END {
-                line.clear();
-                let n = self
-                    .stdout
-                    .read_line(&mut line)
-                    .await
-                    .map_err(|e| format!("read UI server: {e}"))?;
-                if n == 0 {
-                    return Err("UI server exited".to_owned());
-                }
+            if head.trim_end() != UI_END {
+                self.read_answer().await?;
             }
             return Ok(Err(match server_error(&head) {
                 Some(e) => format!("UI server: {e}"),
@@ -852,15 +829,9 @@ impl UiServer {
             }));
         };
         let mut png = vec![0; len];
-        self.stdout
-            .read_exact(&mut png)
-            .await
-            .map_err(|e| format!("read UI server: {e}"))?;
+        self.stdout.read_exact(&mut png).await.map_err(read_err)?;
         let mut end = String::new();
-        self.stdout
-            .read_line(&mut end)
-            .await
-            .map_err(|e| format!("read UI server: {e}"))?;
+        self.stdout.read_line(&mut end).await.map_err(read_err)?;
         if end.trim_end() != UI_END {
             return Err("UI server: the PNG frame has no end".to_owned());
         }
@@ -883,11 +854,7 @@ impl UiServer {
         let mut answer = String::new();
         loop {
             let start = answer.len();
-            let n = self
-                .stdout
-                .read_line(&mut answer)
-                .await
-                .map_err(|e| format!("read UI server: {e}"))?;
+            let n = self.stdout.read_line(&mut answer).await.map_err(read_err)?;
             if n == 0 {
                 return Err("UI server exited".to_owned());
             }
@@ -1039,6 +1006,10 @@ fn unhandled_paste(focus: &str) -> String {
         "{stalled} within {} s; the paste may still land, so check the field before typing again",
         PASTE_TIMEOUT.as_secs()
     )
+}
+
+fn read_err(e: std::io::Error) -> String {
+    format!("read UI server: {e}")
 }
 
 fn server_error(answer: &str) -> Option<&str> {

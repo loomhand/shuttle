@@ -428,11 +428,7 @@ pub fn states(s: States) -> Vec<&'static str> {
 }
 
 pub fn format_number(v: f64) -> String {
-    if v.fract() == 0.0 && v.abs() < 1e15 {
-        (v as i64).to_string()
-    } else {
-        v.to_string()
-    }
+    (v + 0.0).to_string()
 }
 
 pub fn place(
