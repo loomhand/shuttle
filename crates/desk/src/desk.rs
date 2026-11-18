@@ -1377,20 +1377,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn click(&self, a: ClickArgs, turn: Option<Turn>) -> Result<String, String> {
-        let named = match a.window.as_deref() {
-            Some(window) => Some(self.shot_window(window, a.pid).await?.1),
-            None if self.bg() && a.pid.is_some() => Some(self.pick_window(None, a.pid).await?.1),
-            None => None,
+        let (named, (x, y)) = match self.pointed(a.window.as_deref(), a.pid, (a.x, a.y)).await? {
+            Some((w, point)) => (Some(w), point),
+            None => (None, (a.x, a.y)),
         };
-        let (x, y) = match &named {
-            Some(w) if a.window.is_some() => self.desk_point(w, (a.x, a.y)).await?,
-            Some(w) => self.inside(w, (a.x, a.y)).await?,
-            None => (a.x, a.y),
-        };
-        if let Some(w) = named
-            .as_ref()
-            .filter(|_| a.window.is_some() && !self.bg() && self.os != Os::Mac)
-        {
+        if let Some(w) = named.as_ref().filter(|_| !self.bg() && self.os != Os::Mac) {
             self.front(w, a.pid, (x, y)).await?;
         }
         let mut req = json!({"x": x, "y": y});
@@ -1427,6 +1418,24 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             out["focused"] = focused;
         }
         Ok(out.to_string())
+    }
+
+    async fn pointed(
+        &self,
+        window: Option<&str>,
+        pid: Option<u32>,
+        at: (f64, f64),
+    ) -> Result<Option<(Value, (f64, f64))>, String> {
+        let w = match window {
+            Some(window) => self.shot_window(window, pid).await?.1,
+            None if pid.is_some() => self.pick_window(None, pid).await?.1,
+            None => return Ok(None),
+        };
+        let point = match window {
+            Some(_) => self.desk_point(&w, at).await?,
+            None => self.inside(&w, at).await?,
+        };
+        Ok(Some((w, point)))
     }
 
     async fn inside(&self, w: &Value, (x, y): (f64, f64)) -> Result<(f64, f64), String> {
@@ -1624,10 +1633,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return Ok(ok_with(self.unverified(&out, Some(to), false)));
         }
         let (x, y) = match (a.x, a.y) {
-            (Some(x), Some(y)) => match a.window.as_deref() {
-                Some(window) => {
-                    let (_, w) = self.shot_window(window, a.pid).await?;
-                    let point = self.desk_point(&w, (x, y)).await?;
+            (Some(x), Some(y)) => match self.pointed(a.window.as_deref(), a.pid, (x, y)).await? {
+                Some((w, point)) => {
                     if self.front(&w, a.pid, point).await? && self.os == Os::Windows {
                         tokio::time::sleep(WHEEL_SETTLE).await;
                     }
@@ -1766,10 +1773,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let out = self.call("drag", background(req, target)).await?;
             return Ok(ok_with(self.unverified(&out, Some(target), false)));
         }
-        if let Some(window) = a.window.as_deref() {
-            let (_, w) = self.shot_window(window, a.pid).await?;
-            from = self.desk_point(&w, from).await?;
-            to = self.desk_point(&w, to).await?;
+        if let Some((w, point)) = self.pointed(a.window.as_deref(), a.pid, from).await? {
+            if a.window.is_some() {
+                to = self.desk_point(&w, to).await?;
+            }
+            from = point;
             self.front(&w, a.pid, from).await?;
         }
         self.admit_point(from.0, from.1).await?;
@@ -6377,6 +6385,78 @@ pub(crate) mod tests {
             );
         }
         assert_eq!(sent(&calls, "bring_to_front").len(), 3);
+        for tool in ["click", "scroll", "drag"] {
+            assert!(sent(&calls, tool).is_empty(), "{tool}: {:?}", order(&calls));
+        }
+    }
+
+    #[tokio::test]
+    async fn foreground_pointer_input_named_by_pid_alone_goes_to_that_pids_window() {
+        let pointer = [
+            ("desk_click", json!({"x": 600.0, "y": 250.0, "pid": 8})),
+            (
+                "desk_scroll",
+                json!({"direction": "down", "x": 600.0, "y": 250.0, "pid": 8}),
+            ),
+            (
+                "desk_drag",
+                json!({"x": 600.0, "y": 100.0, "to_x": 700.0, "to_y": 150.0, "pid": 8}),
+            ),
+        ];
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let cover = (4, "Untitled - Notepad");
+        let desk = Desk::new(
+            || Ok(Apps),
+            BehindCover(Behind(Arc::clone(&calls)), AtomicBool::new(false), cover),
+            Os::Windows,
+        );
+        for (tool, args) in pointer.clone() {
+            desk.run(tool, args).await.unwrap();
+        }
+        let input: Vec<String> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(t, _)| ["bring_to_front", "click", "scroll", "drag"].contains(&t.as_str()))
+            .map(|(t, a)| format!("{t} {}", a["pid"].as_i64().unwrap_or(0)))
+            .collect();
+        assert_eq!(
+            input,
+            [
+                "bring_to_front 8",
+                "click 0",
+                "bring_to_front 8",
+                "scroll 0",
+                "bring_to_front 8",
+                "drag 0"
+            ]
+        );
+        assert_eq!(
+            sent(&calls, "click"),
+            [json!({"x": 600.0, "y": 250.0, "scope": "desktop"})]
+        );
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(Apps),
+            Topmost(BehindCover(
+                Behind(Arc::clone(&calls)),
+                AtomicBool::new(false),
+                cover,
+            )),
+            Os::Windows,
+        );
+        for (tool, args) in pointer.clone() {
+            let err = desk.run(tool, args).await.unwrap_err();
+            assert!(
+                err.contains("\"Untitled - Notepad\" still covers the point"),
+                "{tool}: {err}"
+            );
+        }
+        for (tool, mut args) in pointer {
+            args["x"] = 300.0.into();
+            let err = desk.run(tool, args).await.unwrap_err();
+            assert_eq!(err, OUTSIDE_WINDOW, "{tool}");
+        }
         for tool in ["click", "scroll", "drag"] {
             assert!(sent(&calls, tool).is_empty(), "{tool}: {:?}", order(&calls));
         }
