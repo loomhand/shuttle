@@ -3147,6 +3147,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_launch_raises_a_running_app_starts_an_absent_one_and_says_when_raising_or_launching_failed()
+     {
+        let launch = |running: bool, raises: bool, starts: bool, shown_after: bool| async move {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = endpoint(dir.path());
+            let listener = Fake::bind(&socket).unwrap();
+            let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+            let log = std::sync::Arc::clone(&calls);
+            let mut lists = 0;
+            let driver = tokio::spawn(listener.serve(move |req| {
+                let name = req["name"].as_str().unwrap_or_default();
+                log.lock().unwrap().push(name.to_owned());
+                let refused = |text: &str| json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": text}]}});
+                match name {
+                    "list_windows" => {
+                        lists += 1;
+                        let listed = if lists == 1 { running } else { shown_after };
+                        let windows = if listed {
+                            json!([{"pid": 7, "window_id": 9, "app_name": "TextEdit", "title": "t", "bounds": {"x": 0, "y": 0, "width": 800, "height": 600}, "z_index": 1}])
+                        } else {
+                            json!([])
+                        };
+                        json!({"ok": true, "result": {"structuredContent": {"windows": windows}}})
+                    }
+                    "bring_to_front" if !raises => refused("focus-stealing prevention kept the window behind"),
+                    "launch_app" if !starts => refused("no app named TextEdit"),
+                    "launch_app" => {
+                        json!({"ok": true, "result": {"content": [{"type": "text", "text": "Launched TextEdit (pid 7)"}]}})
+                    }
+                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+                }
+            }));
+            let cua = cua_on(&socket, Os::Mac);
+            let act = json!({"action": "launch_app", "app": "TextEdit"});
+            let out = cua.act(act).await.unwrap();
+            driver.abort();
+            let sent: Vec<String> = calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|n| *n == "bring_to_front" || *n == "launch_app")
+                .cloned()
+                .collect();
+            ((out.is_error, out.text), sent)
+        };
+        let raised = "TextEdit is already running; brought its window 9 \"t\" (pid 7) to the front";
+        assert_eq!(
+            launch(true, true, true, true).await,
+            ((false, raised.into()), vec!["bring_to_front".into()])
+        );
+        let unraised = "TextEdit is already running as window 9 \"t\" (pid 7); raising it failed: bring_to_front: focus-stealing prevention kept the window behind";
+        assert_eq!(
+            launch(true, false, true, true).await,
+            ((false, unraised.into()), vec!["bring_to_front".into()])
+        );
+        assert_eq!(
+            launch(false, true, true, true).await,
+            (
+                (false, "Launched TextEdit (pid 7)".into()),
+                vec!["launch_app".into()]
+            )
+        );
+        let reported = "TextEdit is running as window 9 \"t\" (pid 7); the launcher reported: launch_app: no app named TextEdit";
+        assert_eq!(
+            launch(false, true, false, true).await,
+            ((false, reported.into()), vec!["launch_app".into()])
+        );
+        assert_eq!(
+            launch(false, true, false, false).await,
+            (
+                (true, "launch_app: no app named TextEdit".into()),
+                vec!["launch_app".into()]
+            )
+        );
+    }
+
+    #[tokio::test]
     async fn a_typed_protocol_tail_reaches_neither_the_xtest_typer_nor_the_driver() {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
