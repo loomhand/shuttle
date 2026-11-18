@@ -115,6 +115,7 @@ const UNSEEN_SENT: &str = "the app may not repaint a window nobody sees, so the 
 const UNSEEN_TYPED: &str = "the app may not repaint a window nobody sees, so the text may be there even if a screenshot looks unchanged: do not type it again, and before you submit it with Return or Send, confirm that it is there by a read-back you can trust or by asking the user";
 
 const MASK_TRIES: usize = 3;
+const OUTSIDE_SHOT: &str = "the point is outside the named window's shot image, so nothing was sent: pass pixels of that window's shot, or leave window out to pass desk coordinates";
 const WINDOW_OFF_SCREEN: &str = "the window is off the left or top edge of the screen, so its screenshot could not be masked to the app allowlist; move it onto the screen";
 const WINDOWS_MOVING: &str = "the windows kept changing while the screenshot was taken, so it could not be masked to the app allowlist; take it again";
 
@@ -2322,6 +2323,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 }
             }
         };
+        if !(0.0..=key.2[2] * kx).contains(&x) || !(0.0..=key.2[3] * ky).contains(&y) {
+            return Err(OUTSIDE_SHOT.to_owned());
+        }
         let scale = self.scale().await?;
         Ok(((key.2[0] + x / kx) * scale, (key.2[1] + y / ky) * scale))
     }
@@ -5038,7 +5042,7 @@ pub(crate) mod tests {
         let desk = Desk::new(|| Ok(Apps), HiddenTwin(Arc::clone(&calls)), Os::Mac).background(true);
         desk.run(
             "desk_click",
-            json!({"x": -1000.0, "y": 300.0, "window": "\u{5fae}\u{4fe1}"}),
+            json!({"x": 416.0, "y": 300.0, "window": "\u{5fae}\u{4fe1}"}),
         )
         .await
         .unwrap();
@@ -5824,15 +5828,15 @@ pub(crate) mod tests {
         for (tool, args) in [
             (
                 "desk_click",
-                json!({"x": 600.0, "y": 100.0, "window": "Inbox"}),
+                json!({"x": 300.0, "y": 100.0, "window": "Inbox"}),
             ),
             (
                 "desk_scroll",
-                json!({"direction": "down", "x": 600.0, "y": 100.0, "window": "Inbox"}),
+                json!({"direction": "down", "x": 300.0, "y": 100.0, "window": "Inbox"}),
             ),
             (
                 "desk_drag",
-                json!({"x": 600.0, "y": 100.0, "to_x": 700.0, "to_y": 100.0, "window": "Inbox"}),
+                json!({"x": 300.0, "y": 100.0, "to_x": 400.0, "to_y": 100.0, "window": "Inbox"}),
             ),
         ] {
             let err = desk.run(tool, args).await.unwrap_err();
@@ -6375,6 +6379,40 @@ pub(crate) mod tests {
         assert_eq!(sent(&calls, "bring_to_front").len(), 3);
         for tool in ["click", "scroll", "drag"] {
             assert!(sent(&calls, tool).is_empty(), "{tool}: {:?}", order(&calls));
+        }
+    }
+
+    #[tokio::test]
+    async fn pointer_input_at_window_pixels_outside_its_shot_sends_nothing() {
+        let window = "Untitled - Notepad";
+        let drag = |x: f64, to_x: f64| json!({"x": x, "y": 100.0, "to_x": to_x, "to_y": 100.0, "window": window});
+        let outside = [
+            (
+                "desk_click",
+                json!({"x": 850.0, "y": 100.0, "window": window}),
+            ),
+            (
+                "desk_click",
+                json!({"x": 100.0, "y": 650.0, "window": window}),
+            ),
+            (
+                "desk_scroll",
+                json!({"direction": "down", "x": 850.0, "y": 100.0, "window": window}),
+            ),
+            ("desk_drag", drag(850.0, 100.0)),
+            ("desk_drag", drag(100.0, 850.0)),
+        ];
+        for bg in [false, true] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk =
+                Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Windows).background(bg);
+            for (tool, args) in outside.clone() {
+                let err = desk.run(tool, args.clone()).await.unwrap_err();
+                assert_eq!(err, OUTSIDE_SHOT, "{bg} {args}");
+            }
+            for tool in ["click", "scroll", "drag", "bring_to_front"] {
+                assert!(sent(&calls, tool).is_empty(), "{bg} {tool}");
+            }
         }
     }
 
