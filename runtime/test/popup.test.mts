@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { rmSync } from 'node:fs'
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { test } from 'node:test'
 
 import { daemon } from './daemon.mts'
@@ -88,7 +88,8 @@ test('a macOS key into an untitled alert the plan\'s own step opened goes into t
 })
 
 test('a macOS alert of the app open before the plan stops every input step, named or not, with nothing sent, an unnamed close closes it, and an unnamed close among two such dialogs stops', { skip: process.platform !== 'darwin' }, async (t) => {
-  for (const [step, want, variant] of [[{ click: 'Tool', window: 'r89aN3' }, TEXT, ''], [{ click: 'Tool' }, TEXT, ''], [{ click: 'OK' }, TEXT, ''], [{ click: 'Delete' }, TEXT, 'menu'], [{ click: 'Delete', fp: { role: 'button', name: 'Tool', parent: 'r89aN3', nth: 0 } }, TEXT, ''], [{ click: 'Delete' }, TEXT, 'hidden'], [{ click: 'Delete' }, TEXT, 'unbounded'], [{ click: 'Delete' }, TEXT, 'static'], [{ check: 'Wrap', on: true }, TEXT, ''], [{ set: 'Name', value: 'x' }, TEXT, ''], [{ menu: 'Edit > Delete' }, TEXT, 'menu'], [{ type: 'x' }, TEXT, ''], [{ key: 'return' }, TEXT, ''], [{ close: true, window: 'r89aN3' }, TEXT, ''], [{ close: true }, '', ''], [{ close: true }, SEVERAL, 'two dialogs'], [{ type: 'x' }, ALONE, 'front'], [{ key: 'return' }, ALONE, 'front'], [{ click: 'OK' }, ALONE, 'front'], [{ close: true }, '', 'front'], [{ close: true }, SEVERAL, 'two front'], [{ close: true }, SEVERAL, 'two second front'], [{ click: 'Tool' }, TEXT, 'wait']] as const) {
+  for (const [step, want, variant] of [[{ click: 'Tool', window: 'r89aN3' }, TEXT, ''], [{ click: 'Tool' }, TEXT, ''], [{ click: 'OK' }, TEXT, ''], [{ click: 'Delete' }, TEXT, 'menu'], [{ click: 'Delete', fp: { role: 'button', name: 'Tool', parent: 'r89aN3', nth: 0 } }, TEXT, ''], [{ click: 'Delete' }, TEXT, 'hidden'], [{ click: 'Delete' }, TEXT, 'unbounded'], [{ click: 'Delete' }, TEXT, 'static'], [{ check: 'Wrap', on: true }, TEXT, ''], [{ set: 'Name', value: 'x' }, TEXT, ''], [{ menu: 'Edit > Delete' }, TEXT, 'menu'], [{ type: 'x' }, TEXT, ''], [{ key: 'return' }, TEXT, ''], [{ close: true, window: 'r89aN3' }, TEXT, ''], [{ close: true }, '', ''], [{ close: true }, SEVERAL, 'two dialogs'], [{ type: 'x' }, ALONE, 'front'], [{ key: 'return' }, ALONE, 'front'], [{ click: 'OK' }, ALONE, 'front'], [{ close: true }, '', 'front'], [{ close: true }, SEVERAL, 'two front'], [{ close: true }, SEVERAL, 'two second front'], [{ click: 'Tool' }, TEXT, 'wait'], [{ key: 'return' }, TEXT, 'wait'], [{ type: 'x' }, TEXT, 'wait']] as const) {
+    rmSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, { force: true })
     const doc = { id: '198', title: 'r89aN3', role: 'window', pid: 1966, active: !['front', 'two front', 'two second front', 'wait'].includes(variant), app: 'R89Kit' }
     const alert = { id: '201', title: '', role: 'dialog', pid: 1966, active: variant === 'front' || variant === 'two front' || variant === 'wait', app: 'R89Kit' }
     const second = { id: '202', title: '', role: 'dialog', pid: 1966, active: variant === 'two second front', app: 'R89Kit' }
@@ -130,8 +131,39 @@ test('a call that continues the chain of a plan that named its app stops at an u
     assert.equal(r.escalate?.reason, ALONE, JSON.stringify(r))
   }
   assert.deepEqual(keys, [])
-  rmSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, { force: true })
+  const pending = `${process.env.SHUTTLE_FLOWS}/.pending.json`
+  const held = JSON.parse(readFileSync(pending, 'utf8')) as Record<string, Record<string, unknown>>
+  for (const [field, value] of [['at', Date.now() - 11 * 60 * 1000], ['window', 'elsewhere']] as const) {
+    writeFileSync(pending, JSON.stringify({ '': { ...held[''], [field]: value, ...(field === 'window' ? { pid: 77 } : {}) } }))
+    const r = await plan({ steps: [{ key: 'shift+a' }] })
+    assert.equal(r.ok, true, `${field} ${JSON.stringify(r)}`)
+  }
+  rmSync(pending, { force: true })
   const fresh = await plan({ steps: [{ key: 'shift+a' }] })
   assert.equal(fresh.ok, true, JSON.stringify(fresh))
+})
+
+test('a macOS call that continues the chain of an app step that failed at its first step stops at an untitled dialog of the app, and a type or key that names its window stops with no step before it', { skip: process.platform !== 'darwin' }, async (t) => {
+  const alert = { id: '201', title: '', role: 'dialog', pid: 1966, active: true, app: 'R89Kit' }
+  const doc = { id: '198', title: 'r89aN3', role: 'window', pid: 1966, active: false, app: 'R89Kit' }
+  let stale = true; const keys: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([{ ...alert, ...(stale ? { stale: true } : {}) }, doc])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: alert, nodes: [{ ref: 0, id: '201/0', parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }], truncated: false })
+    if (tool === 'desk_key' || tool === 'desk_type') keys.push(args.keys ?? args.text)
+    return '{"ok":true}'
+  })
+  rmSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, { force: true })
+  const failed = await plan({ steps: [{ app: 'R89Kit' }] })
+  assert.equal(failed.escalate?.step, 0, JSON.stringify(failed))
+  stale = false
+  const next = await plan({ steps: [{ key: 'return' }] })
+  assert.equal(next.escalate?.reason, ALONE, JSON.stringify(next))
+  rmSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, { force: true })
+  for (const step of [{ type: 'x', window: 'r89aN3' }, { key: 'return', window: 'r89aN3' }]) {
+    const r = await plan({ steps: [step] })
+    assert.equal(r.escalate?.reason, ALONE, JSON.stringify(r))
+  }
+  assert.deepEqual(keys, [])
 })
 

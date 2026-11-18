@@ -210,7 +210,7 @@ async function perform(p: Params): Promise<Result> {
   const vetted = new Set<string>()
   const startTitles = new Set(known)
   const start = frontOf(ws0); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
-  const chained = !flow && !!held && Date.now() - held.at < CHAIN_AGE && (held.window === startWindow || (held.pid !== null && held.pid === startPid)) && held.steps.some((x) => !!x.app || !!x.wait)
+  const chained = !flow && !!held && Date.now() - held.at < CHAIN_AGE && (held.window === startWindow || (held.pid !== null && held.pid === startPid))
   const startRead = start && !start.title.trim() ? await look(start) : null
   const startAlert = !!startRead && isAlert(startRead.text)
   const startKept = start && startRead?.snap && startRead.nodes ? { id: start.id, snap: startRead.snap, nodes: startRead.nodes } : undefined
@@ -738,9 +738,9 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
 function modalOver(w: Win, under: Win) {
   if (alertIn(w, under)) throw new Surprise(alertText(w, under))
 }
-function behindAlert(w: Win, ws: Win[]) {
+function behindAlert(w: Win, ws: Win[], named = aimed) {
   for (const x of ws) modalOver(x, w)
-  if (aimed && atStart.has(w.id) && lone(w)) throw new Surprise(alertText(w, lastSeen ? ws.find((x) => x.title === lastSeen && x.pid === w.pid) : undefined))
+  if (named && atStart.has(w.id) && lone(w)) throw new Surprise(alertText(w, lastSeen ? ws.find((x) => x.title === lastSeen && x.pid === w.pid) : undefined))
 }
 function alertText(w: Win, under?: Win) { return `an untitled dialog of "${w.app ?? under?.title ?? 'its app'}" ${under ? `is in front of "${under.title}" and ` : ''}takes all of its app's input until it closes, and a plan never presses a button of such a dialog: ${ALERT_WAYS}; nothing was sent` }
 function lone(w: Win) { return OS === 'darwin' && w.role === 'dialog' && !w.title.trim() && w.owner === undefined }
@@ -1360,7 +1360,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.type !== undefined) {
     await refocused()
     const nl = s.type.endsWith('\n'); const ws = await current(nl ? OPENING : SETTLE); const w = frontOf(ws); const t0 = Date.now()
-    if (w) behindAlert(w, ws)
+    if (w) behindAlert(w, ws, aimed || !!s.window)
     if (BG && !w) throw new Surprise('background gui_plan has no target window to type into: start the plan with an app step, or name the window with a wait step')
     if (s.web && w) await onPage(s.web, w)
     if (s.focus && s.focus !== 'unverified') await typingInto(s.focus, w)
@@ -1414,7 +1414,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.key) {
     await refocused()
     const ws = await listNow(); const w = frontOf(ws)
-    if (w) behindAlert(w, ws)
+    if (w) behindAlert(w, ws, aimed || !!s.window)
     if (BG && !w) throw new Surprise('background gui_plan has no target window for the key: start the plan with an app step, or name the window with a wait step')
     const o = /^(enter|return)$/i.test(s.key) && w ? (await filled(w, kept)).text : ''
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())

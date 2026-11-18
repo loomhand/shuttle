@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { test, type TestContext } from 'node:test'
 
@@ -285,7 +285,8 @@ test('a macOS background step, named for its window or not, stops with nothing s
 })
 
 test('a macOS background alert of the app open before the plan stops every input step, named or not, with nothing sent, an unnamed close closes it, and an unnamed close among two such dialogs stops', { skip: process.platform !== 'darwin' }, async (t) => {
-  for (const [step, want, variant] of [[{ click: 'Tool', window: 'r89aN3' }, TEXT, ''], [{ click: 'Tool' }, TEXT, ''], [{ click: 'OK' }, TEXT, ''], [{ click: 'Delete' }, TEXT, 'menu'], [{ click: 'Delete', fp: { role: 'button', name: 'Tool', parent: 'r89aN3', nth: 0 } }, TEXT, ''], [{ click: 'Delete' }, TEXT, 'hidden'], [{ click: 'Delete' }, TEXT, 'unbounded'], [{ click: 'Delete' }, TEXT, 'static'], [{ check: 'Wrap', on: true }, TEXT, ''], [{ set: 'Name', value: 'x' }, TEXT, ''], [{ menu: 'Edit > Delete' }, TEXT, 'menu'], [{ type: 'x' }, TEXT, ''], [{ key: 'return' }, TEXT, ''], [{ close: true, window: 'r89aN3' }, TEXT, ''], [{ close: true }, '', ''], [{ close: true }, SEVERAL, 'two dialogs'], [{ type: 'x' }, TEXT, 'front'], [{ key: 'return' }, TEXT, 'front'], [{ click: 'OK' }, TEXT, 'front'], [{ close: true }, '', 'front'], [{ close: true }, SEVERAL, 'two front'], [{ close: true }, SEVERAL, 'two second front'], [{ click: 'Tool' }, TEXT, 'wait']] as const) {
+  for (const [step, want, variant] of [[{ click: 'Tool', window: 'r89aN3' }, TEXT, ''], [{ click: 'Tool' }, TEXT, ''], [{ click: 'OK' }, TEXT, ''], [{ click: 'Delete' }, TEXT, 'menu'], [{ click: 'Delete', fp: { role: 'button', name: 'Tool', parent: 'r89aN3', nth: 0 } }, TEXT, ''], [{ click: 'Delete' }, TEXT, 'hidden'], [{ click: 'Delete' }, TEXT, 'unbounded'], [{ click: 'Delete' }, TEXT, 'static'], [{ check: 'Wrap', on: true }, TEXT, ''], [{ set: 'Name', value: 'x' }, TEXT, ''], [{ menu: 'Edit > Delete' }, TEXT, 'menu'], [{ type: 'x' }, TEXT, ''], [{ key: 'return' }, TEXT, ''], [{ close: true, window: 'r89aN3' }, TEXT, ''], [{ close: true }, '', ''], [{ close: true }, SEVERAL, 'two dialogs'], [{ type: 'x' }, TEXT, 'front'], [{ key: 'return' }, TEXT, 'front'], [{ click: 'OK' }, TEXT, 'front'], [{ close: true }, '', 'front'], [{ close: true }, SEVERAL, 'two front'], [{ close: true }, SEVERAL, 'two second front'], [{ click: 'Tool' }, TEXT, 'wait'], [{ key: 'return' }, TEXT, 'wait'], [{ type: 'x' }, TEXT, 'wait']] as const) {
+    rmSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, { force: true })
     const doc: W = { id: '198', title: 'r89aN3', role: 'window', pid: 4, active: false, app: 'R89Kit' }
     const alert: W = { id: '201', title: '', role: 'dialog', pid: 4, active: variant === 'front' || variant === 'two front' || variant === 'wait', app: 'R89Kit' }
     const second: W = { id: '202', title: '', role: 'dialog', pid: 4, active: variant === 'two second front', app: 'R89Kit' }
@@ -403,6 +404,24 @@ test('a pressed password field stays the field a background type goes to across 
     const disk = ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
     assert.equal([JSON.stringify(r), disk].some((x) => x.includes('hunter2')), !sealed, `${JSON.stringify(between)} ${JSON.stringify(r)}`)
   }
+})
+
+test('a macOS background call that continues the chain of an app step that failed at its first step sends nothing to an untitled dialog of the app', { skip: process.platform !== 'darwin' }, async (t) => {
+  const alert: W = { id: '201', title: '', role: 'dialog', pid: 4, active: true, app: 'R89Kit' }
+  const doc: W = { id: '198', title: 'r89aN3', role: 'window', pid: 4, active: false, app: 'R89Kit' }
+  let stale = true
+  const d = desktop([alert, doc], ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([{ ...alert, ...(stale ? { stale: true } : {}) }, { ...doc, ...(stale ? { stale: true } : {}) }, { ...user(), active: false }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: alert, nodes: [{ ref: 0, id: '201/0', parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }], truncated: false })
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const failed = await main({ steps: [{ app: 'R89Kit' }] })
+  assert.equal(failed.escalate?.step, 0, JSON.stringify(failed))
+  stale = false
+  const next = await main({ steps: [{ key: 'return' }] })
+  assert.equal(next.ok, false, JSON.stringify(next))
+  assert.ok(!d.calls.some((c) => c.tool === 'desk_key' || c.tool === 'desk_type'), JSON.stringify(next))
 })
 
 test('when the plan window is gone a window of the app with the same title never takes its place', async (t) => {
