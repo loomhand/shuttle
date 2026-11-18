@@ -430,7 +430,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let Some(window) = window else {
             return Ok(!matches!(tool, "desk_press" | "desk_act"));
         };
-        self.focus(WindowArgs { window, pid, id })
+        self.front_named(WindowArgs { window, pid, id }, None)
             .await
             .map(|_| true)
     }
@@ -2357,13 +2357,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn focus(&self, a: WindowArgs) -> Result<String, String> {
+        self.front_named(a, Some(window::BY_ID)).await
+    }
+
+    async fn front_named(&self, a: WindowArgs, way_out: Option<&str>) -> Result<String, String> {
         let w = match a.id.as_deref() {
             Some(id) => self.id_window(id, &a.window, a.pid).await?,
-            None => {
-                self.input_window(Some(&a.window), a.pid, Some(window::BY_ID))
-                    .await?
-                    .0
-            }
+            None => self.input_window(Some(&a.window), a.pid, way_out).await?.0,
         };
         let window_id: i64 =
             w.id.parse()
@@ -3530,6 +3530,23 @@ pub(crate) mod tests {
             .unwrap_err();
         assert_eq!(err, BACKGROUND_UIA);
         assert!(sent(&calls, "bring_to_front").is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_auto_drag_by_a_title_twins_share_names_a_way_out_drag_has() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let driver = Twins(Arc::clone(&calls), 900.0, "Untitled - Notepad", 0.0);
+        let desk = Desk::new(|| Ok(TwinDocs::new(true, true, false)), driver, Os::Windows)
+            .background(true)
+            .auto(true);
+        let start = "2 windows match the title \"Untitled - Notepad\", so nothing was sent: ";
+        for (pid, ending) in [(Some(4), FOCUS_THEN_PID), (None, window::BY_TITLE)] {
+            let mut drag = json!({"x": 10.0, "y": 10.0, "to_x": 20.0, "to_y": 20.0, "window": "Untitled - Notepad"});
+            drag["pid"] = pid.into();
+            let err = desk.run("desk_drag", drag).await.unwrap_err();
+            assert_eq!(err, format!("{start}{ending}"), "{pid:?}");
+        }
+        assert!(sent(&calls, "drag").is_empty());
     }
 
     #[tokio::test]
