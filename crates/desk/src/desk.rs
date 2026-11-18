@@ -8979,6 +8979,30 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn an_allowlisted_shot_from_the_native_grab_paints_the_windows_outside_it_black() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let grabbed = || {
+            Ok(Stub {
+                frames: Apps.frames()?,
+                captured: Some(Capture {
+                    rect: [495, 0, 10, 10],
+                    rgb: vec![255; 300],
+                }),
+                ..Stub::default()
+            })
+        };
+        let desk = Desk::new(grabbed, Desktop(calls.clone()), Os::Linux).allow(&["notepad".into()]);
+        let part = json!({"x": 495.0, "y": 0.0, "w": 10.0, "h": 10.0});
+        let shot = pixels(&desk.run("desk_shot", part).await.unwrap());
+        assert_eq!(
+            (shot[4], shot[5], shot[94], shot[95]),
+            ([255; 3], [0; 3], [255; 3], [0; 3])
+        );
+        let sent = calls.lock().unwrap();
+        assert!(!sent.iter().any(|t| t == "get_desktop_state"), "{sent:?}");
+    }
+
+    #[tokio::test]
     async fn a_linux_mask_grows_each_left_out_window_by_its_own_frame_extents() {
         let shot = |os: Os| async move {
             let desk = Desk::new(|| Ok(Decorated::default()), Desktop(Arc::default()), os)
@@ -10121,6 +10145,7 @@ pub(crate) mod tests {
         closed: Vec<String>,
         opens: Option<Opens>,
         overlays: Vec<bool>,
+        captured: Option<Capture>,
         stalled: bool,
         budgets: Vec<Duration>,
         shells: Vec<u32>,
@@ -10158,7 +10183,7 @@ pub(crate) mod tests {
 
         fn capture(&mut self, _: [f64; 4], overlay: bool) -> Result<Option<Capture>, String> {
             self.overlays.push(overlay);
-            Ok(None)
+            Ok(self.captured.take())
         }
 
         fn frames(&mut self) -> Result<Vec<Frame>, String> {
