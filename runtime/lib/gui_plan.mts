@@ -244,7 +244,7 @@ async function perform(p: Params): Promise<Result> {
       if (f && pre) vetted.add(`${f.id} ${f.pid} ${f.title}`)
       const kept = f && pre?.snap && pre.nodes && f.title !== pressed?.title ? { ...r, id: f.id, snap: pre.snap, nodes: pre.nodes } : undefined
       const prev = plan[i - 1]
-      unheard = undefined; actioned = false; if (!(prev?.wait || prev?.expect || prev?.verify)) lastPress = pressedId; pressedId = undefined
+      unheard = undefined; actioned = false; picked = []; if (!(prev?.wait || prev?.expect || prev?.verify)) lastPress = pressedId; pressedId = undefined
       const runs = desk.foreground.runs + foreground.steps
       sealStep = () => { rec.secret = true; if (secure(planned)) return; planned.secret = s.secret = true; left() }
       await run(s, rec, kept).catch(async (e: unknown) => {
@@ -1445,11 +1445,11 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   const r = reads(s); const goal = s.click ?? s.check ?? s.set ?? s.menu
   const over = goal === undefined ? undefined : picked.find((x) => alertIn(x, w))
   if (over && s.window) namedBehind(w)
-  const own = over && await readTree(over, r)
+  const own = over && await readTree(over, r).catch((e: unknown) => { throw new Surprise(`the untitled dialog of "${over.app ?? w.title}" in front of "${w.title}" gave no accessibility read (${e instanceof Error ? e.message : String(e)}): nothing was sent`) })
   if (over && own) {
     const has = async (t: Tree) => !!await resolve(t.nodes, goal ?? '', targetRole(s), undefined, s.set ? 0.5 : 0.7, undefined, false)
     if (!await has(own)) modalOver(over, w)
-    if (await has(reuse(kept, w, r) ?? await readTree(w, r))) throw new Surprise(`"${goal}" is in both the untitled dialog of "${over.app ?? w.title}" and "${w.title}" behind it, and the step never guesses which one it means: answer the dialog with a button only it has, or close it with {close: true}, then click "${goal}"; nothing was sent`)
+    if (await has(reuse(kept, w, r) ?? await readTree(w, r).catch(async (e: unknown) => { await unblocked(e, w); throw e }))) throw new Surprise(`"${goal}" is in both the untitled dialog of "${over.app ?? w.title}" and "${w.title}" behind it, and the step never guesses which one it means: answer the dialog with a button only it has, or close it with {close: true}, then click "${goal}"; nothing was sent`)
     w = over
   }
   rec.seen = w.title; if (w.title.trim()) lastSeen = w.title

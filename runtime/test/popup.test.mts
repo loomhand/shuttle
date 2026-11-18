@@ -72,7 +72,7 @@ test('a macOS click step with an untitled app-modal alert of the app in front st
 })
 
 test('a macOS alert of the app open before the plan stops a step meant for the window behind it, one that names that window, a type or key, and a click whose name both have, each with nothing sent, and lets a click on a button only it has through', { skip: process.platform !== 'darwin' }, async (t) => {
-  for (const [step, want, risky] of [[{ click: 'Tool' }, BASE, 'Delete'], [{ click: 'Tool', window: 'r89aN3' }, NAMED, 'Delete'], [{ type: 'x' }, INPUT, 'Delete'], [{ key: 'return' }, INPUT, 'Delete'], [{ click: 'OK' }, '', 'Delete'], [{ click: 'Delete', window: 'r89aN3' }, NAMED, 'Delete'], [{ click: 'OK', window: 'r89aN3' }, NAMED, 'Delete'], [{ click: 'Delete' }, BOTH, 'Delete'], [{ click: 'Delete' }, BOTH, 'Delete…'], [{ close: true, window: 'r89aN3' }, NAMED, 'Delete'], [{ close: true }, '', 'Delete']] as const) {
+  for (const [step, want, risky] of [[{ click: 'Tool', window: 'r89aN3' }, NAMED, 'Delete'], [{ click: 'Tool' }, BASE, 'Delete'], [{ type: 'x' }, INPUT, 'Delete'], [{ key: 'return' }, INPUT, 'Delete'], [{ click: 'OK' }, '', 'Delete'], [{ click: 'Delete', window: 'r89aN3' }, NAMED, 'Delete'], [{ click: 'OK', window: 'r89aN3' }, NAMED, 'Delete'], [{ click: 'Delete' }, BOTH, 'Delete'], [{ click: 'Delete' }, BOTH, 'Delete…'], [{ close: true, window: 'r89aN3' }, NAMED, 'Delete'], [{ close: true }, '', 'Delete']] as const) {
     const doc = { id: '198', title: 'r89aN3', role: 'window', pid: 1966, active: true, app: 'R89Kit' }
     const alert = { id: '201', title: '', role: 'dialog', pid: 1966, active: false, app: 'R89Kit' }
     const nodes = [{ ref: 0, id: '198/0', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }, { ref: 1, id: '198/2', parent: 0, depth: 1, role: 'button', name: 'Tool', states: ['showing'] }, { ref: 2, id: '198/3', parent: 0, depth: 1, role: 'button', name: 'Delete', states: ['showing'] }]
@@ -92,4 +92,19 @@ test('a macOS alert of the app open before the plan stops a step meant for the w
     assert.equal(r.escalate?.reason, want, JSON.stringify(step))
     assert.deepEqual(input, [], JSON.stringify(step))
   }
+})
+
+test('a macOS step whose read of the app\'s untitled alert fails names the alert and sends nothing', { skip: process.platform !== 'darwin' }, async (t) => {
+  const doc = { id: '198', title: 'r89aN3', role: 'window', pid: 1966, active: true, app: 'R89Kit' }
+  const alert = { id: '201', title: '', role: 'dialog', pid: 1966, active: false, app: 'R89Kit' }
+  const sent: string[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([doc, alert])
+    if (tool === 'desk_snapshot') return args.window === '' || args.id === alert.id ? { text: 'snapshot failed: AXError -25204', error: true } : JSON.stringify({ window: doc, nodes: [{ ref: 0, id: '198/0', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }], truncated: false })
+    if (['desk_press', 'desk_click', 'desk_type', 'desk_key', 'desk_close'].includes(tool)) sent.push(tool)
+    return '{"ok":true}'
+  })
+  const r = await plan({ steps: [{ app: 'R89Kit' }, { click: 'OK' }] })
+  assert.equal(r.escalate?.reason, 'the untitled dialog of "R89Kit" in front of "r89aN3" gave no accessibility read (snapshot failed: AXError -25204): nothing was sent', JSON.stringify(r))
+  assert.deepEqual(sent, [])
 })
