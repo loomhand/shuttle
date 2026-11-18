@@ -108,6 +108,7 @@ pub fn walked_id<'a, K: PartialEq + 'a>(
     lists: impl IntoIterator<Item = &'a (isize, Vec<(String, K)>)>,
     top: Option<isize>,
     seen: &K,
+    now: impl FnOnce(&str) -> Option<K>,
 ) -> Option<String> {
     let top = top.filter(|&t| t != 0)?;
     let mut found = None;
@@ -123,7 +124,7 @@ pub fn walked_id<'a, K: PartialEq + 'a>(
             found = Some(id);
         }
     }
-    found.cloned()
+    found.filter(|id| now(id).as_ref() == Some(seen)).cloned()
 }
 
 #[cfg(test)]
@@ -213,19 +214,33 @@ mod tests {
                 ],
             ),
         ];
-        assert_eq!(
-            walked_id(&lists, Some(7), &item("item 5", 145)).as_deref(),
-            Some("u1")
-        );
-        assert_eq!(walked_id(&lists, Some(8), &item("item 5", 145)), None);
-        assert_eq!(walked_id(&lists, Some(9), &item("item 5", 145)), None);
-        assert_eq!(
-            walked_id(&lists, Some(9), &item("Yes", 300)).as_deref(),
-            Some("u2")
-        );
-        assert_eq!(walked_id(&lists, Some(7), &item("Yes", 300)), None);
-        assert_eq!(walked_id(&lists, None, &item("item 5", 145)), None);
-        assert_eq!(walked_id(&lists, Some(11), &item("No", 330)), None);
-        assert_eq!(walked_id(&lists, Some(7), &item("item 5", 158)), None);
+        let found =
+            |top, seen: (String, [i32; 4])| walked_id(&lists, top, &seen, |_| Some(seen.clone()));
+        assert_eq!(found(Some(7), item("item 5", 145)).as_deref(), Some("u1"));
+        assert_eq!(found(Some(8), item("item 5", 145)), None);
+        assert_eq!(found(Some(9), item("item 5", 145)), None);
+        assert_eq!(found(Some(9), item("Yes", 300)).as_deref(), Some("u2"));
+        assert_eq!(found(Some(7), item("Yes", 300)), None);
+        assert_eq!(found(None, item("item 5", 145)), None);
+        assert_eq!(found(Some(11), item("No", 330)), None);
+        assert_eq!(found(Some(7), item("item 5", 158)), None);
+    }
+
+    #[test]
+    fn a_walked_element_that_no_longer_has_its_recorded_type_name_and_bounds_gives_no_id() {
+        let row = |y: i32| ("row".to_owned(), [90, y, 296, 13]);
+        let lists = [(
+            7,
+            vec![("u1".to_owned(), row(93)), ("u2".to_owned(), row(106))],
+        )];
+        let at = |now: Option<(String, [i32; 4])>| {
+            walked_id(&lists, Some(7), &row(106), move |id| {
+                assert_eq!(id, "u2");
+                now
+            })
+        };
+        assert_eq!(at(Some(row(106))).as_deref(), Some("u2"));
+        assert_eq!(at(Some(row(93))), None);
+        assert_eq!(at(None), None);
     }
 }

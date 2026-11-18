@@ -169,7 +169,8 @@ impl Uia {
             None if w > 0 && h > 0 => top_at(x + w / 2, y + h / 2),
             None => None,
         };
-        match uia_roles::walked_id(self.unnamed.values(), top, &seen) {
+        let now = |id: &str| Some(key(&self.cached(self.ids.get(id)?, &self.single).ok()?));
+        match uia_roles::walked_id(self.unnamed.values(), top, &seen, now) {
             Some(id) => Ok(id),
             None => self.id_of(el),
         }
