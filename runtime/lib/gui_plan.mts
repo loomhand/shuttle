@@ -210,7 +210,7 @@ async function perform(p: Params): Promise<Result> {
   const vetted = new Set<string>()
   const startTitles = new Set(known)
   const start = frontOf(ws0); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
-  const chained = !flow && !p.start && !!held && Date.now() - held.at < CHAIN_AGE && (held.window === startWindow || (held.pid !== null && held.pid === startPid)) && held.steps.some((x) => !!x.app || !!x.wait)
+  const chained = !flow && !!held && Date.now() - held.at < CHAIN_AGE && (held.window === startWindow || (held.pid !== null && held.pid === startPid)) && held.steps.some((x) => !!x.app || !!x.wait)
   const startRead = start && !start.title.trim() ? await look(start) : null
   const startAlert = !!startRead && isAlert(startRead.text)
   const startKept = start && startRead?.snap && startRead.nodes ? { id: start.id, snap: startRead.snap, nodes: startRead.nodes } : undefined
@@ -1440,7 +1440,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       const own = self ? ws.filter((x) => alertIn(x, self)) : []
       let d: Win | null = own[0] ?? null; if (!d) for (const x of others) if (isDialog(await outline(x))) { d = x; break }
       const pid = w.pid
-      if (BG && !d && OS === 'darwin' && ws.some((x) => x.pid === pid && x.owner === undefined && x.role === 'dialog' && !!x.title.trim() && !adopted.has(x.id))) throw new Surprise(`a dialog of "${w.title}"'s app has no owner the OS names, and background close never guesses whether it belongs to the plan's window: name it with {close: true, window}`, await seen())
+      if (BG && !d && OS === 'darwin' && ws.some((x) => x.pid === pid && x.owner === undefined && x.role === 'dialog' && !adopted.has(x.id))) throw new Surprise(`a dialog of "${w.title}"'s app has no owner the OS names, and background close never guesses whether it belongs to the plan's window: name it with {close: true, window}`, await seen())
       w = d
     }
     const hung = self ? undefined : ws.find((x) => x.stale && !isShell(x))

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { rmSync } from 'node:fs'
 import { test } from 'node:test'
 
 import { daemon } from './daemon.mts'
@@ -94,9 +95,10 @@ test('a macOS alert of the app open before the plan stops every input step, name
     const at = variant === 'unbounded' ? { bounds: [10, 10, 40, 20] } : {}
     const nodes = [{ ref: 0, id: '198/0', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }, { ref: 1, id: '198/2', parent: 0, depth: 1, role: 'button', name: 'Tool', states: ['showing'], ...at }, { ref: 2, id: '198/3', parent: 0, depth: 1, role: variant === 'static' ? 'text' : 'button', name: variant === 'menu' ? 'Wrap' : 'Delete', states: variant === 'hidden' ? [] : ['showing'] }, { ref: 3, id: '198/4', parent: 0, depth: 1, role: 'checkbox', name: 'Wrap', states: ['showing'] }, { ref: 4, id: '198/5', parent: 0, depth: 1, role: 'textbox', name: 'Name', states: ['showing'] }, { ref: 5, id: '198/6', parent: 0, depth: 1, role: 'menubar', name: '', states: ['showing'] }, { ref: 6, id: '198/7', parent: 5, depth: 2, role: 'menu', name: 'Edit', states: ['showing'] }, { ref: 7, id: '198/8', parent: 6, depth: 3, role: 'menuitem', name: 'Delete', states: [] }]
     const own = [{ ref: 0, id: '201/0', parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }, { ref: 1, id: '201/1', parent: 0, depth: 1, role: 'button', name: 'OK', states: ['showing'] }, { ref: 2, id: '201/2', parent: 0, depth: 1, role: 'button', name: 'Cancel', states: ['showing'] }, { ref: 3, id: '201/3', parent: 0, depth: 1, role: 'button', name: 'Delete', states: ['showing'] }]
-    let open = true; const input: string[] = []
+    let open = true; const input: string[] = []; let focused = 0
     await daemon(t, ({ tool, args }) => {
       if (tool === 'desk_windows') return JSON.stringify([doc, ...(open ? [alert] : []), ...(variant.startsWith('two') ? [second] : [])].sort((a, b) => +b.active - +a.active))
+      if (tool === 'desk_focus') focused += 1
       if (tool === 'desk_snapshot') return JSON.stringify(args.window === doc.title ? { window: doc, nodes, truncated: false } : { window: alert, nodes: own, truncated: false })
       if (['desk_press', 'desk_type', 'desk_key', 'desk_click', 'desk_close'].includes(tool)) input.push(tool)
       if (tool === 'desk_key' && args.keys === 'Escape') open = false
@@ -107,6 +109,29 @@ test('a macOS alert of the app open before the plan stops every input step, name
     assert.equal(r.escalate?.step, 1, `${JSON.stringify(step)} ${JSON.stringify(r)}`)
     assert.equal(r.escalate?.reason, want, JSON.stringify(step))
     assert.deepEqual(input, [], JSON.stringify(step))
+    if (variant === 'wait') assert.equal(focused, 0)
   }
+})
+
+test('a call that continues the chain of a plan that named its app stops at an untitled dialog of the app open before the plan, also when it is retried from a later step', { skip: process.platform !== 'darwin' }, async (t) => {
+  const alert = { id: '201', title: '', role: 'dialog', pid: 1966, active: true, app: 'R89Kit' }
+  const doc = { id: '198', title: 'r89aN3', role: 'window', pid: 1966, active: false, app: 'R89Kit' }
+  const keys: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([alert, doc])
+    if (tool === 'desk_snapshot') return JSON.stringify(args.window === doc.title ? { window: doc, nodes: [{ ref: 0, id: '198/0', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }], truncated: false } : { window: alert, nodes: [{ ref: 0, id: '201/0', parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }, { ref: 1, id: '201/1', parent: 0, depth: 1, role: 'button', name: 'OK', states: ['showing'] }], truncated: false })
+    if (tool === 'desk_key') keys.push(args.keys)
+    return '{"ok":true}'
+  })
+  assert.equal((await plan({ steps: [{ app: 'R89Kit' }] })).ok, true)
+  const steps = [{ verify: 'OK' }, { key: 'return' }]
+  for (const r of [await plan({ steps }), await plan({ steps, start: 1 })]) {
+    assert.equal(r.escalate?.step, 1, JSON.stringify(r))
+    assert.equal(r.escalate?.reason, ALONE, JSON.stringify(r))
+  }
+  assert.deepEqual(keys, [])
+  rmSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, { force: true })
+  const fresh = await plan({ steps: [{ key: 'shift+a' }] })
+  assert.equal(fresh.ok, true, JSON.stringify(fresh))
 })
 
