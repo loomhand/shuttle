@@ -106,7 +106,8 @@ const RUN_MAX_S = 110
 const RUN_SPARE = 3000
 const BUSY_MS = 3000
 const INTO_PASSWORD = ' (into a password field)'
-const ALERT_WAYS = 'close it with {close: true}, or press its button with the desk tool (snapshot with the dialog\'s id from desk windows, then press with the button\'s id)'
+const ALERT_DESK = 'press its button with the desk tool (snapshot with the dialog\'s id from desk windows, then press with the button\'s id)'
+const ALERT_WAYS = `${ALERT_DESK}, or close it with {close: true} when it has a Cancel button`
 const INERT_KEY = /^shift\+[^+]$/i
 const ARROW_KEY = /^(shift\+)?(arrow)?(up|down|left|right)$/i
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
@@ -1448,7 +1449,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (hung) throw new Surprise(`no window is in front, and "${hung.title || hung.app}" is listed as not answering accessibility, as an app hung behind its own dialog leaves it: nothing was sent; wait for it, or close the app`, await seen())
     if (!w) { rec.noop = true; tick('act', t0); return }
     const [title, pid, id, twin] = [w.title, w.pid, w.id, twinId(w, s.window ? picked : ws)]; rec.seen = title; if (!w.active && !BG) await desk.focus(title, pid, twin); await desk.key('Escape', at(w))
-    if (titledIn(await settle(w.title), title, pid, id)) { unique(w); await desk.close(title, pid, twin) }
+    if (titledIn(await settle(w.title), title, pid, id)) { unique(w); const one = w; await desk.close(title, pid, twin).catch((e: unknown) => { throw lone(one) ? new Surprise(`${e instanceof Error ? e.message : String(e)}, and the Escape sent before it did not close the dialog: ${ALERT_DESK}`) : e }) }
     tick('act', t0); if (!await closed(title, pid, id)) throw new Surprise(`"${title}" is still open after Escape and a close`, await seen())
     return
   }

@@ -5,8 +5,8 @@ import { test } from 'node:test'
 import { daemon } from './daemon.mts'
 import { main as plan } from '../lib/gui_plan.mts'
 
-const TEXT = 'an untitled dialog of "R89Kit" is in front of "r89aN3" and takes all of its app\'s input until it closes, and a plan never presses a button of such a dialog: close it with {close: true}, or press its button with the desk tool (snapshot with the dialog\'s id from desk windows, then press with the button\'s id); nothing was sent'
-const ALONE = 'an untitled dialog of "R89Kit" takes all of its app\'s input until it closes, and a plan never presses a button of such a dialog: close it with {close: true}, or press its button with the desk tool (snapshot with the dialog\'s id from desk windows, then press with the button\'s id); nothing was sent'
+const TEXT = 'an untitled dialog of "R89Kit" is in front of "r89aN3" and takes all of its app\'s input until it closes, and a plan never presses a button of such a dialog: press its button with the desk tool (snapshot with the dialog\'s id from desk windows, then press with the button\'s id), or close it with {close: true} when it has a Cancel button; nothing was sent'
+const ALONE = 'an untitled dialog of "R89Kit" takes all of its app\'s input until it closes, and a plan never presses a button of such a dialog: press its button with the desk tool (snapshot with the dialog\'s id from desk windows, then press with the button\'s id), or close it with {close: true} when it has a Cancel button; nothing was sent'
 const SEVERAL = '2 untitled dialogs of "R89Kit" are open, and a plan never picks one of them: press the button meant with the desk tool (snapshot with that dialog\'s id from desk windows, then press with the button\'s id); nothing was sent'
 
 test('a click that opens a combo box\'s list leaves the next step in the dialog, whose tree holds the list\'s entries, also in a new plan', async (t) => {
@@ -112,6 +112,21 @@ test('a macOS alert of the app open before the plan stops every input step, name
     assert.deepEqual(input, [], JSON.stringify(step))
     if (variant === 'wait') assert.equal(focused, 0)
   }
+})
+
+test('an unnamed close of an untitled dialog with no Cancel button says the Escape went out and that the desk tool presses its button', { skip: process.platform !== 'darwin' }, async (t) => {
+  const alert = { id: '201', title: '', role: 'dialog', pid: 1966, active: true, app: 'R89Kit' }
+  const sent: string[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([alert])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: alert, nodes: [{ ref: 0, id: '201/0', parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }, { ref: 1, id: '201/1', parent: 0, depth: 1, role: 'button', name: 'OK', states: ['showing'] }], truncated: false })
+    if (tool === 'desk_key') sent.push(String(args.keys))
+    if (tool === 'desk_close') return { text: 'close: the window has no close button', error: true }
+    return '{"ok":true}'
+  })
+  const r = await plan({ steps: [{ close: true }] })
+  assert.equal(r.escalate?.reason, 'close: the window has no close button, and the Escape sent before it did not close the dialog: press its button with the desk tool (snapshot with the dialog\'s id from desk windows, then press with the button\'s id)', JSON.stringify(r))
+  assert.deepEqual(sent, ['Escape'])
 })
 
 test('a plan with no app step acts in an untitled dialog of another process right after a plan of another app left its chain at an untitled window, and a call of the same process continues the chain by its pid', { skip: process.platform !== 'darwin' }, async (t) => {
