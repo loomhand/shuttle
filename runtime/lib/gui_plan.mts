@@ -706,7 +706,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
     const [plan, ...twins] = !w && lastSeen ? ws.filter((x) => x.title === lastSeen) : []
     if (plan && !twins.length) { w = plan; await desk.focus(w.title, w.pid, twinId(w, ws)) }
     // an untitled focused window that is no alert (a completion popup) leaves the step in the window the plan was in
-    if (w && !w.title.trim() && lastSeen && (kept?.id === w.id || !isAlert(await outline(w)))) { const pid = w.pid; const under = ws.find((x) => x.title === lastSeen && x.pid === pid); if (under) modalOver(w, under); w = under ?? w }
+    if (w && !w.title.trim() && lastSeen && (kept?.id === w.id || !isAlert(await outline(w)))) { const pid = w.pid; const under = ws.find((x) => x.title === lastSeen && x.pid === pid); if (under && alertIn(w, under)) throw new Surprise(alertText(w, under)); w = under ?? w }
     tick('wait', t0); if (!w) throw new Surprise(NO_FRONT, {}, true); return w
   }
   const end = Date.now() + ms; let asked: string | null = null; let many = 0
@@ -737,11 +737,8 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
     await sleep(30)
   }
 }
-function modalOver(w: Win, under: Win) {
-  if (alertIn(w, under)) throw new Surprise(alertText(w, under))
-}
 function behindAlert(w: Win, ws: Win[], named = aimed) {
-  for (const x of ws) modalOver(x, w)
+  for (const x of ws) if (alertIn(x, w)) throw new Surprise(alertText(x, w))
   if (named && atStart.has(w.id) && lone(w)) throw new Surprise(alertText(w, lastSeen ? ws.find((x) => x.title === lastSeen && x.pid === w.pid) : undefined))
 }
 function alertText(w: Win, under?: Win) { return `an untitled dialog of "${w.app ?? under?.title ?? 'its app'}" ${under ? `is in front of "${under.title}" and ` : ''}takes all of its app's input until it closes, and a plan never presses a button of such a dialog: ${ALERT_WAYS}; nothing was sent` }
@@ -1439,8 +1436,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (w && blocked(o) && others.length) { rec.seen = w.title; rec.how = 'wm'; unique(w); await desk.close(w.title, w.pid, twinId(w, ws)); await settle(w.title); tick('act', t0); if (!await closed(w.title, w.pid, w.id)) throw new Surprise(`"${w.title}" is still open after a close`, await seen()); return }
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     if (w && !s.window && !isDialog(o)) {
-      const own = self ? ws.filter((x) => alertIn(x, self)) : []
-      let d: Win | null = own[0] ?? null; if (!d) for (const x of others) if (isDialog(await outline(x))) { d = x; break }
+      let d: Win | null = many.find((x) => x.id !== self?.id) ?? null; if (!d) for (const x of others) if (isDialog(await outline(x))) { d = x; break }
       const pid = w.pid
       if (BG && !d && OS === 'darwin' && ws.some((x) => x.pid === pid && x.owner === undefined && x.role === 'dialog' && !adopted.has(x.id))) throw new Surprise(`a dialog of "${w.title}"'s app has no owner the OS names, and background close never guesses whether it belongs to the plan's window: name it with {close: true, window}`, await seen())
       w = d
