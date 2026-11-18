@@ -92,7 +92,7 @@ impl Grabber {
         )
         .map_err(|e| format!("watch the root window: {e}"))?;
         let seg = conn.generate_id().map_err(|e| format!("X id: {e}"))?;
-        let _ = conn.xinput_xi_query_version(2, 2).map(|c| c.reply());
+        let _ = conn.xinput_xi_query_version(2, 2).map(Cookie::reply);
         let [
             net_wm_name,
             utf8,
@@ -132,7 +132,7 @@ impl Grabber {
             conn.intern_atom(false, name)
                 .ok()
                 .and_then(|c| c.reply().ok())
-                .map_or(u32::from(AtomEnum::NONE), |r| r.atom)
+                .map_or_else(|| u32::from(AtomEnum::NONE), |r| r.atom)
         });
         let size = usize::from(width) * usize::from(height) * 4;
         // SAFETY: a plain syscall that creates a private segment of `size` bytes.
