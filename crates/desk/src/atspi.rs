@@ -516,8 +516,8 @@ impl Atspi {
                 }
             }))
             .await;
-            let (mut listed, cut) = listed_of(&live, lists);
-            truncated |= cut;
+            let mut listed = HashMap::with_capacity(live.len());
+            truncated |= read_into(&mut listed, live.iter().map(|o| Rc::clone(o)).zip(lists));
             let mut queued: HashSet<&Rc<Obj>> = HashSet::new();
             let mut unknown: Vec<Rc<Obj>> = live
                 .iter()
@@ -532,11 +532,7 @@ impl Atspi {
                 unknown.truncate(budget);
             }
             let fetched = join_all(unknown.iter().map(|o| self.raw(o))).await;
-            for (o, r) in unknown.into_iter().zip(fetched) {
-                if let Ok(r) = r {
-                    raw.insert(o, r);
-                }
-            }
+            truncated |= read_into(&mut raw, unknown.into_iter().zip(fetched));
             let mut next = Vec::new();
             for o in frontier {
                 let mut sorted = cached.remove(&*o).unwrap_or_default();
@@ -1356,21 +1352,20 @@ fn needs_live(r: &Raw, cached: Option<&Vec<(i32, Rc<Obj>)>>) -> bool {
         || cached.is_some_and(|c| c.iter().any(|(i, _)| *i < 0))
 }
 
-fn listed_of(
-    live: &[&Rc<Obj>],
-    lists: Vec<Result<Vec<Rc<Obj>>, String>>,
-) -> (HashMap<Rc<Obj>, Vec<Rc<Obj>>>, bool) {
-    let mut listed = HashMap::with_capacity(lists.len());
+fn read_into<T>(
+    into: &mut HashMap<Rc<Obj>, T>,
+    reads: impl IntoIterator<Item = (Rc<Obj>, Result<T, String>)>,
+) -> bool {
     let mut cut = false;
-    for (o, list) in live.iter().zip(lists) {
-        match list {
-            Ok(list) => {
-                listed.insert(Rc::clone(o), list);
+    for (o, read) in reads {
+        match read {
+            Ok(v) => {
+                into.insert(o, v);
             }
             Err(_) => cut = true,
         }
     }
-    (listed, cut)
+    cut
 }
 
 fn capped(nodes: &mut Vec<Node>) -> bool {
@@ -1665,15 +1660,46 @@ mod tests {
     fn a_children_read_that_fails_cuts_the_tree_and_keeps_the_lists_that_answered() {
         let o = |p: &str| Rc::new(Obj::at(":1.9", &format!("{PATH_PREFIX}/{p}")));
         let (a, b) = (o("a"), o("b"));
-        let (listed, cut) = listed_of(&[&a, &b], vec![Ok(vec![o("a1")]), Ok(Vec::new())]);
-        assert_eq!((listed.len(), cut), (2, false));
-        let (listed, cut) = listed_of(
-            &[&a, &b],
-            vec![Ok(vec![o("a1")]), Err(not_responding(":1.9"))],
-        );
+        let mut listed = HashMap::new();
+        let lists = [(a.clone(), Ok(vec![o("a1")])), (b.clone(), Ok(Vec::new()))];
+        assert!(!read_into(&mut listed, lists));
+        assert_eq!(listed.len(), 2);
+        let mut listed = HashMap::new();
+        let lists = [
+            (a.clone(), Ok(vec![o("a1")])),
+            (b.clone(), Err(not_responding(":1.9"))),
+        ];
+        assert!(read_into(&mut listed, lists));
         assert_eq!(
-            (listed[&a].clone(), listed.contains_key(&b), cut),
-            (vec![o("a1")], false, true)
+            (listed[&a].clone(), listed.contains_key(&b)),
+            (vec![o("a1")], false)
+        );
+    }
+
+    #[test]
+    fn a_listed_child_whose_own_read_fails_cuts_the_tree_and_the_children_that_answered_stay() {
+        let o = |p: &str| Rc::new(Obj::at(":1.9", &format!("{PATH_PREFIX}/{p}")));
+        let r = |name: &str| Raw {
+            role: 33,
+            name: name.to_owned(),
+            ..Raw::default()
+        };
+        let mut raw = HashMap::from([(o("w"), r("Window"))]);
+        let fetched = [(o("c1"), Ok(r("One"))), (o("c2"), Ok(r("Two")))];
+        assert!(!read_into(&mut raw, fetched));
+        assert_eq!(raw.len(), 3);
+        let fetched = [
+            (o("c3"), Ok(r("Three"))),
+            (o("c4"), Err(not_responding(":1.20"))),
+        ];
+        assert!(read_into(&mut raw, fetched));
+        assert_eq!(
+            (
+                raw[&o("c3")].name.as_str(),
+                raw.contains_key(&o("c4")),
+                raw.len()
+            ),
+            ("Three", false, 4)
         );
     }
 
