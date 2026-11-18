@@ -243,7 +243,7 @@ async function perform(p: Params): Promise<Result> {
       const prev = plan[i - 1]
       unheard = undefined; actioned = false
       const runs = desk.foreground.runs + foreground.steps
-      sealStep = () => { planned.secret = s.secret = true; left() }
+      sealStep = () => { rec.secret = true; if (secure(planned)) return; planned.secret = s.secret = true; left() }
       await run(s, rec, kept).catch(async (e: unknown) => {
         const late = (x: unknown) => x instanceof Surprise && x.late
         if (!late(e) || !(prev?.menu || prev?.click || prev?.key)) throw e
@@ -258,7 +258,7 @@ async function perform(p: Params): Promise<Result> {
       const before = recs[i - 1]
       if (before && (s.expect || (s.verify && ((s.value ?? s.on ?? s.enabled) !== undefined || rec.waited)) || (s.wait && rec.seen !== tops[i - 1]))) before.confirmed = true
     } catch (e: unknown) {
-      if (s.type !== undefined && !secure(s) && String(e instanceof Error ? e.message : e).endsWith(INTO_PASSWORD)) { rec.secret = true; sealStep() }
+      if (s.type !== undefined && String(e instanceof Error ? e.message : e).endsWith(INTO_PASSWORD)) sealStep()
       const sp = e instanceof Surprise ? e : new Surprise(e instanceof Error ? e.message : String(e), await seen())
       if ((sp.late || sp.seen.window === undefined) && sp.seen.outline === undefined && sp.reason !== NO_FRONT) sp.seen = await seen()
       if (sp.reason === NO_FRONT || sp.seen.outline === `(${NO_FRONT})`) { const u = await desk.unanswered().catch(() => null); const why = u ? `front app "${u.app ?? u.title}" (pid ${u.pid}) is not answering accessibility` : NO_FRONT; if (sp.reason === NO_FRONT) sp.reason = why; if (sp.seen.outline === `(${NO_FRONT})`) sp.seen.outline = `(${why})` }
@@ -500,7 +500,7 @@ function traced(i: number, rec: Rec, s: Step, escalated: boolean): Trace {
   }
 }
 
-function heard(r: desk.Sent, rec: Rec, s: Step, sent?: string) { if (r.protected && !rec.secret) { rec.secret = true; sealStep() } if (r.typed === false) throw new Surprise(`${typedText(s)} did not show in the focused field${sent?.includes('\n') ? ', after all its lines and the Returns between them were sent' : ''}`, {}); if (r.typed === null && !secure(s)) rec.caveat ??= UNCHECKED; if ((!BG || r.input === 'foreground') && r.effect === 'suspected_noop') rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
+function heard(r: desk.Sent, rec: Rec, s: Step, sent?: string) { if (r.protected) sealStep(); if (r.typed === false) throw new Surprise(`${typedText(s)} did not show in the focused field${sent?.includes('\n') ? ', after all its lines and the Returns between them were sent' : ''}`, {}); if (r.typed === null && !secure(s)) rec.caveat ??= UNCHECKED; if ((!BG || r.input === 'foreground') && r.effect === 'suspected_noop') rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
 function hush(note: string) { return `unverifiable: the password was sent and the target did not confirm it${note.includes(TERMINAL) ? ` (${TERMINAL})` : ''}; do not type it again` }
 async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
   let ws = seed ?? await desk.windows()
@@ -1149,17 +1149,18 @@ async function readTexts(w: Win): Promise<Map<string, Text>> {
   const slot = pool(READS_AT_ONCE)
   const snap = await snapOf(w); const nodes = parse(snap); const textual = (n: Node) => n.role === 'document' || n.role === 'terminal' || FIELD_ROLES.has(n.role); const bare = !nodes.some(textual)
   const all = await Promise.all(nodes.map(async (n, i): Promise<[string, Text][]> => {
-    const field = textual(n); const secret = hidden(snap.nodes[i]) || undefined
-    if (n.value && !(field && n.value.length >= VALUE_CHARS)) return [[n.id, { value: n.value, field, secret }]]
+    const field = textual(n)
+    if (n.value && !(field && n.value.length >= VALUE_CHARS)) return [[n.id, { value: n.value, field, secret: hidden(snap.nodes[i]) || undefined }]]
     if (!field && !(bare && n.role === 'text' && n.focused)) return []
     const r = await slot(() => desk.read(n.id, { text: true, tail: true })).catch(() => null)
-    return [[n.id, { value: r?.value, field, cut: r?.truncated, secret }]]
+    return [[n.id, { value: r?.value, field, cut: r?.truncated, secret: hidden(snap.nodes[i]) || undefined }]]
   }))
   return new Map(all.flat())
 }
 async function hides(w: Win, read: Map<string, Text> | null) {
   try { return !!read && (await snapOf(w)).nodes.some((n) => hidden(n) && n.value === undefined && read.has(n.id) && read.get(n.id)?.value === undefined) } catch { return false }
 }
+function secretIn(t: Map<string, Text> | null) { for (const x of t?.values() ?? []) if (x.secret) return true; return false }
 function hidden(n: desk.El | undefined) { return !!n?.states.includes('protected') && n.states.includes('focused') }
 function whole(t: Map<string, Text> | null) { return !!t && [...t.values()].every((x) => !x.cut) }
 async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | null, rec: Rec) {
@@ -1355,7 +1356,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const first = !typed; typed = true
     const held = !BG && !sub && nl && secure(s)
     const was = (BG || held) && w ? await texts(w) : null
-    if (pre?.snap?.nodes.some(hidden) || [...was?.values() ?? []].some((x) => x.secret)) { rec.secret = true; sealStep() }
+    if (pre?.snap?.nodes.some(hidden) || secretIn(was)) sealStep()
     if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field in a plan that continues the flow from this step, which saves the fix into the flow`, await seen())
     // GTK preselects a file name only up to its last dot
     if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine(w)
@@ -1607,7 +1608,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   const raw = s.value
   if (raw === undefined) throw new Surprise(`set "${target}" needs a value`, await seen())
   const guarded = !!tree.snap.nodes[hit.i]?.states.includes('protected')
-  if (guarded || secure(s)) { rec.secret = true; sealStep() }
+  if (guarded || secure(s)) sealStep()
   const value = raw.endsWith('\n') ? raw.slice(0, -1) : raw
   const same = (v: string | undefined) => v !== undefined && holds(hit.n.role, v, value)
   const f = hit.n.role === 'combobox' ? nodes.find((x) => x.parent === hit.i && x.role === 'textbox') ?? hit.n : hit.n
