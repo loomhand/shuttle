@@ -208,7 +208,7 @@ async function perform(p: Params): Promise<Result> {
   if (held && !held.dirty) putPending({ ...held, dirty: true })
   const left = () => {
     const at = (p.start ?? 0) + trace.length
-    try { if (RUN) writeFileSync(`${RUN}/result.json`, JSON.stringify({ ok: false, done: at, trace, escalate: { step: at, plan_step: plan[at] && unrecorded(plan[at]), reason: `the run ended during step ${at}: the steps before it ran, and step ${at} may have acted in part` } })) } catch {}
+    try { if (RUN) writeFileSync(`${RUN}/result.json`, JSON.stringify({ ok: false, done: at, trace, escalate: { step: at, plan_step: plan[at] && unrecorded(plan[at]), reason: `the run ended during step ${at}: the steps before it ran, and step ${at} may have acted in part` }, ...noted(recs) })) } catch {}
   }
   left()
   for (const [i, planned] of plan.entries()) {
@@ -334,11 +334,13 @@ async function perform(p: Params): Promise<Result> {
   else out.window = end?.title ?? null
   if (escalate && (diverged || escalate.reason.startsWith(SPENT))) out.error = escalate.reason
   if (escalate && diverged) out.stopped = stopped(plan, escalate)
+  return Object.assign(out, noted(recs))
+}
+
+function noted(recs: Rec[]) {
   const notes = recs.filter((r) => r?.unverified && !r.confirmed).map((r) => ({ step: r.i, note: r.unverified }))
-  if (notes.length) out.unverified = notes
   const caveats = recs.filter((r) => r?.caveat && !r.confirmed).map((r) => ({ step: r.i, note: r.caveat }))
-  if (caveats.length) out.caveats = caveats
-  return out
+  return { ...(notes.length ? { unverified: notes } : {}), ...(caveats.length ? { caveats } : {}) }
 }
 
 function unrecorded({ recorded: _, fp: __, blank: ___, ...s }: Step): Bare { return literal(s) ? { ...unsaid(s), type: 'the password' } : s }

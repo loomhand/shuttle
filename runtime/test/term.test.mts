@@ -28,6 +28,28 @@ test('a plan killed outright leaves the steps it finished as its result', { skip
   assert.deepEqual(r.trace.map((s) => s.op), ['key'])
 })
 
+test('a background plan killed outright leaves the note of a step it sent but could not confirm in its result', { skip: process.platform === 'win32' }, async (t) => {
+  const user = { id: 'c', title: 'Calculator', role: 'window', pid: 9, active: true }
+  const win = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: false }
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([user, win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: win.title, states: ['showing'] }] })
+    if (tool === 'desk_key') return JSON.stringify({ ok: true, unverified: 'unverifiable: posted' })
+    return '{"ok":true}'
+  })
+  const run = mkdtempSync(`${tmpdir()}/run-`)
+  writeFileSync(`${run}/params.json`, JSON.stringify({ steps: [{ app: 'Editor' }, { key: 'ctrl+b' }, { wait: 'Never', timeout_ms: 30000 }] }))
+  const lib = new URL('../lib/', import.meta.url).pathname
+  const child = spawn(process.execPath, [`${lib}entry.mts`], { env: { ...process.env, SHUTTLE_SCRIPT: `${lib}gui_plan.mts`, SHUTTLE_RUN: run, SHUTTLE_INPUT: 'background' }, stdio: 'ignore' })
+  const ended = new Promise((r) => child.on('exit', r))
+  for (let i = 0; i < 500 && finished(run) !== 2; i++) await sleep(10)
+  child.kill('SIGKILL')
+  await ended
+  const r = JSON.parse(readFileSync(`${run}/result.json`, 'utf8')) as { done: number; unverified?: { step: number; note: string }[] }
+  assert.equal(r.done, 2)
+  assert.deepEqual(r.unverified, [{ step: 1, note: 'unverifiable: posted' }])
+})
+
 function finished(run: string): number | undefined {
   try { return (JSON.parse(readFileSync(`${run}/result.json`, 'utf8')) as { done?: number }).done } catch { return undefined }
 }
