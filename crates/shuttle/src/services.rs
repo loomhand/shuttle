@@ -612,7 +612,13 @@ server.serve_forever()
             &[],
         )
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        let sockets = ["quits", "absent"].map(|name| socket(&endpoint, name));
+        assert!(
+            crate::until(100, || sockets
+                .iter()
+                .all(|s| lock(&LAST_RUN).contains_key(s)))
+            .await
+        );
         tokio::time::pause();
         let mut errs = Vec::new();
         for name in ["quits", "absent"] {
