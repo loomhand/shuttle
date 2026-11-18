@@ -1535,7 +1535,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .as_array()
             .map_or(&[][..], Vec::as_slice);
         let picked;
-        let mut same = framed(&frame, raw);
+        let mut same = framed(&frame, raw, TITLE_TIERS);
         if frame.number.is_none() {
             if same.is_empty() {
                 picked = self
@@ -2437,7 +2437,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let raw = listed["structuredContent"]["windows"]
             .as_array()
             .map_or(&[][..], Vec::as_slice);
-        let same = framed(&f, raw);
+        let same = framed(&f, raw, TITLE_TIERS - 1);
         let fit = if same.len() > 1 || (twinned && f.number.is_none()) {
             let root = id.to_owned();
             let frame = self
@@ -3271,7 +3271,7 @@ fn ok_with(unverified: Option<String>) -> String {
     }
 }
 
-fn framed<'a>(f: &Frame, listed: &'a [Value]) -> Vec<&'a Value> {
+fn framed<'a>(f: &Frame, listed: &'a [Value], tiers: usize) -> Vec<&'a Value> {
     if let Some(n) = f.number {
         return listed
             .iter()
@@ -3282,7 +3282,7 @@ fn framed<'a>(f: &Frame, listed: &'a [Value]) -> Vec<&'a Value> {
         r["pid"].as_u64() == f.pid.map(u64::from)
             && title_matches(tier, r["title"].as_str().unwrap_or_default(), &f.title)
     };
-    (0..TITLE_TIERS)
+    (0..tiers)
         .map(|t| listed.iter().filter(|r| titled(r, t)).collect::<Vec<_>>())
         .find(|m| !m.is_empty())
         .unwrap_or_default()
@@ -8848,6 +8848,82 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn on_linux_a_driver_window_that_only_holds_the_frames_title_takes_no_input() {
+        let one = || {
+            Ok(Stub {
+                frames: vec![frame("w1", "Untitled - Notepad", 4, true, Some("Notepad"))],
+                ..Stub::default()
+            })
+        };
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let driver = Listed(Arc::clone(&calls), &[(7, "Untitled - Notepad 2", 2000.0)]);
+        let desk = Desk::new(one, driver, Os::Linux);
+        let err = desk
+            .run(
+                "desk_focus",
+                json!({"window": "Untitled - Notepad", "pid": 4, "id": "w1"}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "window id \"w1\" is not in the driver's window list, so nothing was sent"
+        );
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let driver = Listed(Arc::clone(&calls), &[(7, "Untitled - Notepad 2", 2000.0)]);
+        let desk =
+            Desk::new(|| Ok(TwinDocs::new(false, true, false)), driver, Os::Linux).background(true);
+        let err = desk
+            .run("desk_act", json!({"id": "b1", "action": "click"}))
+            .await
+            .unwrap_err();
+        assert_eq!(err, BACKGROUND_TWINS);
+        assert!(sent(&calls, "bring_to_front").is_empty() && sent(&calls, "click").is_empty());
+    }
+
+    #[tokio::test]
+    async fn on_linux_the_frames_own_window_wins_over_one_that_only_holds_its_title() {
+        let windows: &[(i64, &str, f64)] = &[
+            (7, "Untitled - Notepad 2", 0.0),
+            (5, "Untitled - Notepad", 0.0),
+        ];
+        let one = || {
+            Ok(Stub {
+                frames: vec![frame("w1", "Untitled - Notepad", 4, true, Some("Notepad"))],
+                ..Stub::default()
+            })
+        };
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(one, Listed(Arc::clone(&calls), windows), Os::Linux);
+        desk.run(
+            "desk_focus",
+            json!({"window": "Untitled - Notepad", "pid": 4, "id": "w1"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            sent(&calls, "bring_to_front"),
+            [json!({"pid": 4, "window_id": 5})]
+        );
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(TwinDocs::new(false, true, false)),
+            Listed(Arc::clone(&calls), windows),
+            Os::Linux,
+        )
+        .background(true);
+        desk.run("desk_act", json!({"id": "b1", "action": "click"}))
+            .await
+            .unwrap();
+        let clicks = sent(&calls, "click");
+        assert_eq!(
+            (clicks.len(), &clicks[0]["window_id"]),
+            (1, &json!(5)),
+            "{clicks:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn focus_by_id_on_linux_tells_same_titled_windows_of_one_process_apart_by_their_bounds() {
         for (id, number) in [("w3", 3), ("w1", 1)] {
             let calls = Arc::new(Mutex::new(Vec::new()));
@@ -12432,6 +12508,33 @@ pub(crate) mod tests {
                 v["structuredContent"]["windows"][1]["bounds"]["x"] = x.into();
             }
             Ok(v)
+        }
+    }
+
+    struct Listed(
+        Arc<Mutex<Vec<(String, Value)>>>,
+        &'static [(i64, &'static str, f64)],
+    );
+
+    impl Input for Listed {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
+                "list_windows" => {
+                    let windows: Vec<Value> = self
+                        .1
+                        .iter()
+                        .map(|&(id, title, x)| json!({"pid": 4, "window_id": id, "layer": 0, "z_index": id, "title": title, "bounds": {"x": x, "y": 0.0, "width": 800.0, "height": 600.0}}))
+                        .collect();
+                    json!({"structuredContent": {"windows": windows}})
+                }
+                "get_window_state" => json!({"structuredContent": {
+                    "screenshot_width": 800, "screenshot_height": 600,
+                    "window_bounds": {"width": 800.0, "height": 600.0}
+                }}),
+                _ => json!({}),
+            })
         }
     }
 
