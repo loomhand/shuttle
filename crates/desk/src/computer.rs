@@ -783,7 +783,7 @@ impl Computer {
         }
         if failure.is_none() && text.len() < full.len() {
             match self.press_return(target, base).await {
-                Ok(_) => typed += 1,
+                Ok(_) => typed += full[text.len()..].chars().count(),
                 Err(e) => failure = Some(e),
             }
         }
@@ -2070,7 +2070,9 @@ fn positive(scale: Option<f64>) -> Result<(), String> {
 }
 
 fn before_newline(text: &str) -> Option<&str> {
-    text.strip_suffix(['\n', '\r']).filter(|t| !t.is_empty())
+    text.strip_suffix("\r\n")
+        .or_else(|| text.strip_suffix(['\n', '\r']))
+        .filter(|t| !t.is_empty())
 }
 
 /// How many characters of `run` a failed type_text call typed: all but the skipped ones on the virtual-keyboard route, else the count its "typed N of" error names.
@@ -3189,6 +3191,34 @@ mod tests {
             );
             driver.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn on_linux_a_typed_trailing_crlf_is_sent_as_one_return() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        for (text, line) in [("name\r\n", "name"), ("né\r\n", "né")] {
+            let act = json!({"action": "type", "text": text, "foreground": true});
+            let out = cua_on(&socket, Os::Linux).act(act).await.unwrap();
+            assert!(!out.is_error, "{text:?}: {}", out.text);
+            let mut calls = calls.lock().unwrap();
+            let typed: Vec<&Value> = calls.iter().filter(|c| c["name"] == "type_text").collect();
+            assert_eq!(typed.len(), 1, "{calls:?}");
+            assert_eq!(typed[0]["args"]["text"], line);
+            let returns = calls.iter().filter(|c| c["name"] == "press_key").count();
+            assert_eq!(returns, 1, "{calls:?}");
+            calls.clear();
+        }
+        let act = json!({"action": "type", "text": "né\r\n", "foreground": true});
+        let out = cua_on(&socket, Os::Linux).act(act).await.unwrap();
+        assert!(
+            out.text.starts_with("typed 4 of 4 characters"),
+            "{}",
+            out.text
+        );
+        driver.abort();
     }
 
     #[tokio::test]
@@ -4900,6 +4930,7 @@ mod tests {
     fn only_a_newline_after_other_text_is_split_off() {
         assert_eq!(before_newline("/tmp/name.txt\n"), Some("/tmp/name.txt"));
         assert_eq!(before_newline("a\nb\r"), Some("a\nb"));
+        assert_eq!(before_newline("report.txt\r\n"), Some("report.txt"));
         for kept in ["\n", "plain", "a\nb"] {
             assert_eq!(before_newline(kept), None);
         }
