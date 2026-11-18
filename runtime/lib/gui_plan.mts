@@ -1352,12 +1352,13 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (s.focus && s.focus !== 'unverified') await typingInto(s.focus, w)
     const dialog = !s.type.includes('\n') && !!w && ws.some((x) => x.title !== w.title && x.pid === w.pid)
     const pre = (nl || dialog) && w ? await filled(w, kept) : null; const o = pre?.text ?? ''
+    if (pre?.snap?.nodes.some(hidden)) sealStep()
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     const chooser = isChooser(o); const sub = chooser && nl
     const first = !typed; typed = true
     const held = !BG && !sub && nl && secure(s)
     const was = (BG || held) && w ? await texts(w) : null
-    if (pre?.snap?.nodes.some(hidden) || secretIn(was)) sealStep()
+    if (secretIn(was)) sealStep()
     if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field in a plan that continues the flow from this step, which saves the fix into the flow`, await seen())
     // GTK preselects a file name only up to its last dot
     if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine(w)

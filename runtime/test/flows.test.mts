@@ -122,24 +122,30 @@ test('a plain type whose desk reply says it went into a password field is kept o
   assert.ok(disk().includes('memo12'), disk())
 })
 
-test('a plain line typed with its Return into a field the step\'s own read shows as a focused password field is sealed before it goes out', async (t) => {
+test('a plain line typed with its Return into a field the step\'s own read shows as a focused password field is sealed before it goes out and sent as a secret line is', async (t) => {
   const run = mkdtempSync(`${tmpdir()}/run-`)
   process.env.SHUTTLE_RUN = run
   const partial = ((await import(`../lib/gui_plan.mts?${run}`)) as { main: typeof main }).main
   delete process.env.SHUTTLE_RUN
   const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: '', states: ['showing', 'focused', 'protected'] }
-  const shown: string[] = []
-  await daemon(t, ({ tool }) => {
-    if (tool === 'desk_type') shown.push(readFileSync(`${run}/result.json`, 'utf8'))
-    if (tool === 'desk_windows') return JSON.stringify([notepad])
-    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field] })
-    return '{"ok":true}'
-  })
-  const r = await partial({ steps: [{ app: 'Notepad' }, { type: 'hunter14\n' }] })
-  assert.equal(r.ok, true, JSON.stringify(r))
-  const disk = ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
-  assert.equal(shown.length, 1)
-  for (const text of [JSON.stringify(r), disk, ...shown]) assert.ok(!text.includes('hunter14'), text)
+  const sent: unknown[][] = []
+  for (const step of [{ type: 'hunter14\n', secret: true }, { type: 'hunter14\n' }]) {
+    const shown: string[] = []; const inputs: unknown[] = []
+    await daemon(t, ({ tool, args }) => {
+      if (tool === 'desk_type') shown.push(readFileSync(`${run}/result.json`, 'utf8'))
+      if (tool === 'desk_type' || tool === 'desk_key') inputs.push(args.text ?? args.keys)
+      if (tool === 'desk_windows') return JSON.stringify([notepad])
+      if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field] })
+      return '{"ok":true}'
+    })
+    const r = await partial({ steps: [{ app: 'Notepad' }, step] })
+    assert.equal(r.ok, true, JSON.stringify(r))
+    const disk = ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
+    assert.equal(shown.length, 1)
+    for (const text of [JSON.stringify(r), disk, ...shown]) assert.ok(!text.includes('hunter14'), text)
+    sent.push(inputs)
+  }
+  assert.deepEqual(sent, [['hunter14', 'Return'], ['hunter14', 'Return']])
 })
 
 test('a plain type whose desk call fails after finding a password field is kept out of the escalation, the partial result and the records', async (t) => {
