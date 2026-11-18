@@ -41,7 +41,7 @@ type Rec = {
 }
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
-type Text = { value?: string; field: boolean; cut?: boolean }
+type Text = { value?: string; field: boolean; cut?: boolean; secret?: boolean }
 type Bare = Omit<Step, 'recorded' | 'fp' | 'blank'>
 type Escalation = Seen & { reason: string; step?: number; plan_step?: Bare }
 type Grounding = { what: string; ok: boolean; check: string; p?: number; p_zoom?: number | null; p_full?: number | null; why?: string; cover?: string }
@@ -241,7 +241,7 @@ async function perform(p: Params): Promise<Result> {
       const prev = plan[i - 1]
       unheard = undefined; actioned = false
       const runs = desk.foreground.runs + foreground.steps
-      sealStep = () => { planned.secret = true; left() }
+      sealStep = () => { planned.secret = s.secret = true; left() }
       await run(s, rec, kept).catch(async (e: unknown) => {
         const late = (x: unknown) => x instanceof Surprise && x.late
         if (!late(e) || !(prev?.menu || prev?.click || prev?.key)) throw e
@@ -497,7 +497,7 @@ function traced(i: number, rec: Rec, s: Step, escalated: boolean): Trace {
   }
 }
 
-function heard(r: desk.Sent, rec: Rec, s: Step, sent?: string) { if (r.typed === false) throw new Surprise(`${typedText(s)} did not show in the focused field${sent?.includes('\n') ? ', after all its lines and the Returns between them were sent' : ''}`, {}); if (r.typed === null && !secure(s)) rec.caveat ??= UNCHECKED; if ((!BG || r.input === 'foreground') && r.effect === 'suspected_noop') rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
+function heard(r: desk.Sent, rec: Rec, s: Step, sent?: string) { if (r.protected && !rec.secret) { rec.secret = true; sealStep() } if (r.typed === false) throw new Surprise(`${typedText(s)} did not show in the focused field${sent?.includes('\n') ? ', after all its lines and the Returns between them were sent' : ''}`, {}); if (r.typed === null && !secure(s)) rec.caveat ??= UNCHECKED; if ((!BG || r.input === 'foreground') && r.effect === 'suspected_noop') rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
 function hush(note: string) { return `unverifiable: the password was sent and the target did not confirm it${note.includes(TERMINAL) ? ` (${TERMINAL})` : ''}; do not type it again` }
 async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
   let ws = seed ?? await desk.windows()
@@ -605,8 +605,8 @@ function isAlert(o: string) { return /^- alert/.test(o) }
 function isDialog(o: string) { return /^- (alert|dialog|file chooser)/.test(o) }
 // AT-SPI can map a dialog before its children, so a first read holds its root alone
 async function filled(w: Win, kept?: Kept) {
-  let o = await outline(w, {}, kept, Infinity)
-  for (let i = 0; i < 20 && isDialog(o) && !o.trim().includes('\n'); i++) { await sleep(50); o = await outline(w, {}, undefined, Infinity) }
+  let o = await look(w, {}, kept, Infinity)
+  for (let i = 0; i < 20 && isDialog(o.text) && !o.text.trim().includes('\n'); i++) { await sleep(50); o = await look(w, {}, undefined, Infinity) }
   return o
 }
 
@@ -1144,19 +1144,20 @@ async function typedInto(w: Win, text: string): Promise<{ fp?: Fp; kept?: Kept }
 async function texts(w: Win): Promise<Map<string, Text> | null> { return readTexts(w).catch(() => null) }
 async function readTexts(w: Win): Promise<Map<string, Text>> {
   const slot = pool(READS_AT_ONCE)
-  const nodes = parse(await snapOf(w)); const textual = (n: Node) => n.role === 'document' || n.role === 'terminal' || FIELD_ROLES.has(n.role); const bare = !nodes.some(textual)
-  const all = await Promise.all(nodes.map(async (n): Promise<[string, Text][]> => {
-    const field = textual(n)
-    if (n.value && !(field && n.value.length >= VALUE_CHARS)) return [[n.id, { value: n.value, field }]]
+  const snap = await snapOf(w); const nodes = parse(snap); const textual = (n: Node) => n.role === 'document' || n.role === 'terminal' || FIELD_ROLES.has(n.role); const bare = !nodes.some(textual)
+  const all = await Promise.all(nodes.map(async (n, i): Promise<[string, Text][]> => {
+    const field = textual(n); const secret = hidden(snap.nodes[i]) || undefined
+    if (n.value && !(field && n.value.length >= VALUE_CHARS)) return [[n.id, { value: n.value, field, secret }]]
     if (!field && !(bare && n.role === 'text' && n.focused)) return []
     const r = await slot(() => desk.read(n.id, { text: true, tail: true })).catch(() => null)
-    return [[n.id, { value: r?.value, field, cut: r?.truncated }]]
+    return [[n.id, { value: r?.value, field, cut: r?.truncated, secret }]]
   }))
   return new Map(all.flat())
 }
 async function hides(w: Win, read: Map<string, Text> | null) {
-  try { return !!read && (await snapOf(w)).nodes.some((n) => n.states.includes('protected') && n.states.includes('focused') && n.value === undefined && read.has(n.id) && read.get(n.id)?.value === undefined) } catch { return false }
+  try { return !!read && (await snapOf(w)).nodes.some((n) => hidden(n) && n.value === undefined && read.has(n.id) && read.get(n.id)?.value === undefined) } catch { return false }
 }
+function hidden(n: desk.El | undefined) { return !!n?.states.includes('protected') && n.states.includes('focused') }
 function whole(t: Map<string, Text> | null) { return !!t && [...t.values()].every((x) => !x.cut) }
 async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | null, rec: Rec) {
   const raw = text.split('\n'); const lines = raw.map((l) => l.replace(/\r$/, '')); const k = lines.findIndex(Boolean)
@@ -1345,12 +1346,13 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (s.web && w) await onPage(s.web, w)
     if (s.focus && s.focus !== 'unverified') await typingInto(s.focus, w)
     const dialog = !s.type.includes('\n') && !!w && ws.some((x) => x.title !== w.title && x.pid === w.pid)
-    const o = (nl || dialog) && w ? await filled(w, kept) : ''
+    const pre = (nl || dialog) && w ? await filled(w, kept) : null; const o = pre?.text ?? ''
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     const chooser = isChooser(o); const sub = chooser && nl
     const first = !typed; typed = true
     const held = !BG && !sub && nl && secure(s)
     const was = (BG || held) && w ? await texts(w) : null
+    if (pre?.snap?.nodes.some(hidden) || [...was?.values() ?? []].some((x) => x.secret)) { rec.secret = true; sealStep() }
     if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field in a plan that continues the flow from this step, which saves the fix into the flow`, await seen())
     // GTK preselects a file name only up to its last dot
     if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine(w)
@@ -1393,7 +1395,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     await refocused()
     const w = frontOf(await listNow())
     if (BG && !w) throw new Surprise('background gui_plan has no target window for the key: start the plan with an app step, or name the window with a wait step')
-    const o = /^(enter|return)$/i.test(s.key) && w ? await filled(w, kept) : ''
+    const o = /^(enter|return)$/i.test(s.key) && w ? (await filled(w, kept)).text : ''
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     if (w && isChooser(o)) { rec.submit = true; await submit(w, true); return }
     const t0 = Date.now(); heard(await desk.key(s.key, at(w)), rec, s); tick('act', t0)
@@ -1763,7 +1765,7 @@ function summary(steps: Step[]) {
 }
 
 function idempotent(steps: Step[]) { return steps.every((s) => s.type === undefined && (!s.key || /^(esc|escape|tab|shift\+tab)$/i.test(s.key))) }
-function bare(s: Step, p: Record<string, string>, hide = secure(s)) { return JSON.stringify(Object.entries(fill(s, p)).filter(([k]) => k !== 'fp' && k !== 'seen' && k !== 'blank' && !(k === 'secret' && hide && s.set)).map(([k, v]) => (k === 'type' || k === 'value') && hide && typeof v === 'string' ? [k, v.endsWith('\n')] : [k, v]).sort()) }
+function bare(s: Step, p: Record<string, string>, hide = secure(s)) { return JSON.stringify(Object.entries(fill(s, p)).filter(([k]) => k !== 'fp' && k !== 'seen' && k !== 'blank' && !(k === 'secret' && hide)).map(([k, v]) => (k === 'type' || k === 'value') && hide && typeof v === 'string' ? [k, v.endsWith('\n')] : [k, v]).sort()) }
 
 function store(chain: Chain) {
   const tpl = templated(chain.steps, chain.params)

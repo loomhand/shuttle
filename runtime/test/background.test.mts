@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { test, type TestContext } from 'node:test'
 
 import { daemon, gray, notepad, root, user } from './daemon.mts'
@@ -290,6 +291,29 @@ async function masks(t: TestContext, type: string) {
   assert.equal(r.ok, true, `${JSON.stringify(type)} ${JSON.stringify(r)}`)
   assert.ok(!JSON.stringify(r).includes('hunter2'), JSON.stringify(r))
 }
+
+test('a plain background type into a field its own read shows as a focused password field is sealed before it goes out and makes the desk calls of a secret step', async (t) => {
+  const run = mkdtempSync(`${tmpdir()}/run-`)
+  process.env.SHUTTLE_RUN = run
+  const partial = ((await import(`../lib/gui_plan.mts?${run}`)) as { main: typeof main }).main
+  delete process.env.SHUTTLE_RUN
+  const tools: string[][] = []
+  for (const step of [{ type: 'hunter13', secret: true }, { type: 'hunter13' }, { type: 'hunter13', secret: true }]) {
+    let value = ''; const shown: string[] = []
+    const d = desktop([user(), notepad()], ({ tool, args }) => {
+      if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), truncated: false, nodes: [{ ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: notepad().title, states: [] }, { ref: 1, id: 'p', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'focused', 'protected'], value }] })
+      if (tool === 'desk_type') { shown.push(readFileSync(`${run}/result.json`, 'utf8')); value += '•'.repeat(String(args.text).length); return JSON.stringify({ ok: true, chars: 8, unverified: 'unverifiable: Posted via CGEvent.' }) }
+      return undefined
+    })
+    await daemon(t, d.reply)
+    const r = await partial({ steps: [{ app: 'Notepad' }, step] })
+    assert.equal(r.ok, true, JSON.stringify(r))
+    const disk = ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
+    for (const text of [JSON.stringify(r), disk, ...shown]) assert.ok(!text.includes('hunter13'), `${JSON.stringify(step)} ${text}`)
+    tools.push(d.calls.map((c) => c.tool))
+  }
+  assert.deepEqual(tools[1], tools[2])
+})
 
 test('when the plan window is gone a window of the app with the same title never takes its place', async (t) => {
   const ws = [user(), notepad()]
