@@ -162,6 +162,38 @@ test('saving a plan whose password step adds a Return runs it again', async (t) 
   assert.deepEqual(typed, ['hunter7', 'Return'])
 })
 
+test('a value set into a password field is never written to a saved flow, the chain record or the run log, and saving the plan again still types nothing', async (t) => {
+  let value = ''; let lands = true
+  const field = () => ({ ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'protected'], value })
+  const typed: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_type') { typed.push(args.text); if (lands) value = String(args.text) }
+    if (tool === 'desk_windows') return JSON.stringify([notepad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field()] })
+    if (tool === 'desk_read') return JSON.stringify(field())
+    return '{"ok":true}'
+  })
+  const disk = () => ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
+  const steps = () => [{ app: 'Notepad' }, { set: 'Password', value: '{{password}}' }, { key: 'Return' }]
+  const ran = await main({ steps: steps(), params: { password: 'hunter8' } })
+  assert.equal(ran.ok, true, JSON.stringify(ran))
+  assert.ok(!disk().includes('hunter8'), disk())
+  typed.length = 0
+  const saved = await main({ steps: steps(), params: { password: 'hunter8' }, save: 'login8' })
+  assert.equal(saved.ran, false, JSON.stringify(saved))
+  assert.deepEqual(typed, [])
+  assert.ok(!readFileSync(`${process.env.SHUTTLE_FLOWS}/login8.json`, 'utf8').includes('hunter8'))
+  assert.deepEqual(flow('login8').steps[1], { set: 'Password', value: '{{password}}', secret: true, fp: { role: 'textbox', name: 'Password', parent: notepad.title, nth: 0 }, seen: notepad.title })
+  const literal = await main({ steps: [{ app: 'Notepad' }, { set: 'Password', value: 'hunter9' }], save: 'login9' })
+  assert.equal(literal.ok, true, JSON.stringify(literal))
+  assert.ok(!readFileSync(`${process.env.SHUTTLE_FLOWS}/login9.json`, 'utf8').includes('hunter9'))
+  assert.ok(!disk().includes('hunter9'), disk())
+  lands = false; value = ''
+  const stopped = await main({ steps: [{ app: 'Notepad' }, { set: 'Password', value: '{{password}}' }], params: { password: 'hunter10' } })
+  assert.equal(stopped.escalate?.step, 1, JSON.stringify(stopped))
+  assert.ok(!disk().includes('hunter10'), disk())
+})
+
 test('find names the saved flow the model picks, and no flow under 0.6 or within 0.25 of the runner-up', async (t) => {
   let probabilities: Record<string, number> = {}
   const usage = { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 }

@@ -37,7 +37,7 @@ type Rec = {
   i: number; op?: string; ms?: number; served?: unknown[]; how?: string; via?: string; window?: string; seen?: string; submit?: boolean; waited?: boolean
   blank?: Fp; fp?: Fp; was?: boolean | 'mixed' | null; now?: boolean; noop?: boolean; state?: string; opened?: number; path?: string[]; pick?: number[]
   focused?: string; p?: number; p_zoom?: number | null; p_full?: number | null; verdict?: Vision; ground_hit?: string; checked?: string; value?: string; ref?: string; unsaved?: boolean
-  unverified?: string; caveat?: string; confirmed?: boolean; fg?: boolean
+  unverified?: string; caveat?: string; confirmed?: boolean; fg?: boolean; secret?: boolean
 }
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
@@ -184,7 +184,7 @@ async function perform(p: Params): Promise<Result> {
   if (p.save && !flow && !p.start && !idempotent(plan)) {
     const c = pending()
     const was = c?.steps.filter((s) => !s.close) ?? []; const now = plan.filter((s) => !s.close)
-    if (c && was.length === now.length && was.every((s, i) => bare(s, c.params) === bare(now[i] ?? {}, params))) {
+    if (c && was.length === now.length && was.every((s, i) => bare(s, c.params) === bare(now[i] ?? {}, params, secure(s)))) {
       const r = await promote(p.save, p.params, true)
       if (r.ok) return { ...r, ran: false, why: 'these steps passed in the last plan, so they were saved without running them again; call without save to run them' }
     }
@@ -263,7 +263,7 @@ async function perform(p: Params): Promise<Result> {
       escalate = { step, plan_step: unrecorded(plan[step] ?? planned), reason, ...shown, ...(secure(plan[step] ?? planned) ? {} : { outline }) }; done = i; upto = step
       diverged = e instanceof Diverged
     }
-    stepWs = null
+    stepWs = null; if (rec.secret) planned.secret = true
     rec.ms = Date.now() - ts; if (desk.served.length > calls) rec.served = desk.served.slice(calls)
     log.push({ ...rec, ...T }); recs[i] = rec
     trace.push(traced(i, rec, s, !!escalate))
@@ -1589,6 +1589,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.check) { await setState(s, hit, rec); return }
   const raw = s.value
   if (raw === undefined) throw new Surprise(`set "${target}" needs a value`, await seen())
+  if (tree.snap.nodes[hit.i]?.states.includes('protected')) rec.secret = true
   const value = raw.endsWith('\n') ? raw.slice(0, -1) : raw
   const same = (v: string | undefined) => v !== undefined && holds(hit.n.role, v, value)
   const f = hit.n.role === 'combobox' ? nodes.find((x) => x.parent === hit.i && x.role === 'textbox') ?? hit.n : hit.n
@@ -1602,7 +1603,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   tick('act', t0)
   t0 = Date.now(); let got: string | undefined
   for (let i = 0; i < 10; i++) { try { got = (await desk.read(f.id)).value ?? '' } catch (e: unknown) { await unblocked(e, w); got = undefined }; if (same(got)) break; await sleep(40) }
-  tick('verify', t0); rec.value = got
+  tick('verify', t0); if (!rec.secret) rec.value = got
   if (!same(got)) throw new Surprise(`"${target}" reads "${got}" after set`, await seen())
   rec.confirmed = true
   if (raw.endsWith('\n')) { rec.submit = true; await submit(w, isChooser(render(nodes, 100, false))) }
@@ -1696,7 +1697,7 @@ function templated(steps: Step[], params: Record<string, string>) {
 
 function unsecret(steps: Step[], params: Record<string, string>) {
   const out = { ...params }
-  for (const s of steps) if (secure(s) && s.type) for (const [, n] of s.type.matchAll(/\{\{(\w+)/g)) if (n) delete out[n]
+  for (const s of steps) if (secure(s)) for (const v of [s.type, s.value]) for (const [, n] of (v ?? '').matchAll(/\{\{(\w+)/g)) if (n) delete out[n]
   return out
 }
 
@@ -1706,7 +1707,7 @@ function typedText(s: Step) { return secure(s) ? 'the password' : `"${s.type}"` 
 
 function sealed(c: Chain, plan: Step[]): Chain {
   const named = templated(c.steps, c.params).steps
-  const steps = c.steps.map((s, i) => secure(s) ? { ...unsaid(s), type: named[i]?.type ?? s.type } : s)
+  const steps = c.steps.map((s, i) => secure(s) ? { ...unsaid(s), type: named[i]?.type ?? s.type, value: named[i]?.value ?? s.value } : s)
   return { ...c, steps, params: unsecret([...steps, ...plan], c.params) }
 }
 
@@ -1747,7 +1748,7 @@ function summary(steps: Step[]) {
 }
 
 function idempotent(steps: Step[]) { return steps.every((s) => s.type === undefined && (!s.key || /^(esc|escape|tab|shift\+tab)$/i.test(s.key))) }
-function bare(s: Step, p: Record<string, string>) { return JSON.stringify(Object.entries(fill(s, p)).filter(([k]) => k !== 'fp' && k !== 'seen' && k !== 'blank').map(([k, v]) => k === 'type' && secure(s) && typeof v === 'string' ? [k, v.endsWith('\n')] : [k, v]).sort()) }
+function bare(s: Step, p: Record<string, string>, hide = secure(s)) { return JSON.stringify(Object.entries(fill(s, p)).filter(([k]) => k !== 'fp' && k !== 'seen' && k !== 'blank' && !(k === 'secret' && hide && s.set)).map(([k, v]) => (k === 'type' || k === 'value') && hide && typeof v === 'string' ? [k, v.endsWith('\n')] : [k, v]).sort()) }
 
 function store(chain: Chain) {
   const tpl = templated(chain.steps, chain.params)
