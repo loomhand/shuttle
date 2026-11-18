@@ -209,7 +209,7 @@ impl Recorder {
         }
     }
 
-    fn start_with<T: Send + 'static>(
+    pub(crate) fn start_with<T: Send + 'static>(
         &self,
         apps: Vec<String>,
         listen: impl FnOnce(

@@ -203,7 +203,8 @@ impl<H: Handler> Daemon<H> {
                     Value::Null => Vec::new(),
                     v => parse(v)?,
                 };
-                r.start(apps).map(|reply| reply.to_string())
+                self.unless_halted(r.start(apps))
+                    .map(|reply| reply.to_string())
             }
             "record_note" => {
                 let Value::String(text) = args.get_mut("text").map(Value::take).unwrap_or_default()
@@ -227,6 +228,15 @@ impl<H: Handler> Daemon<H> {
                 Ok(draft.to_string())
             }
         }
+    }
+
+    fn unless_halted(&self, started: Result<Value, String>) -> Result<Value, String> {
+        let reply = started?;
+        if *self.halted.borrow() {
+            self.recorder.end();
+            return Err(STOPPED.to_owned());
+        }
+        Ok(reply)
     }
 
     fn plugin(&self, tool: &str) -> Option<&Plugin> {
@@ -470,8 +480,7 @@ impl<H: Handler> Controls for Daemon<H> {
         if on && self.halted() {
             Err(STOPPED.to_owned())
         } else if on {
-            self.recorder
-                .start(Vec::new())
+            self.unless_halted(self.recorder.start(Vec::new()))
                 .map(|reply| reply["note"].as_str().map(str::to_owned))
         } else {
             self.recorder.end();
@@ -1158,6 +1167,15 @@ mod tests {
         let d = daemon(Echo, Guard::default()).with_recordings(std::env::temp_dir());
         d.halt(true);
         assert_eq!(d.record(true), Err(STOPPED.to_owned()));
+        assert!(!d.recording());
+    }
+
+    #[test]
+    fn a_stop_between_the_halt_check_and_the_start_leaves_no_recording() {
+        let d = daemon(Echo, Guard::default()).with_recordings(std::env::temp_dir());
+        d.halt(true);
+        let started = d.recorder.start_with(Vec::new(), |_, _, _| Ok(((), false)));
+        assert_eq!(d.unless_halted(started), Err(STOPPED.to_owned()));
         assert!(!d.recording());
     }
 
