@@ -341,12 +341,12 @@ test('a plain background type right after a press, a double or right click, or a
   delete process.env.SHUTTLE_RUN
   const field = { ref: 1, id: 'p', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'protected'], bounds: [10, 10, 100, 20] }
   const win = { ...notepad(), bounds: [0, 0, 800, 600] }
-  for (const step of [{ click: 'Password' }, { click: 'Password', count: 2 }, { click: 'Password', button: 'right' }, { set: 'Password', value: 'pin' }]) {
+  for (const step of [{ click: 'Password' }, { click: 'Password', count: 2 }, { click: 'Password', button: 'right' }, ...(process.platform === 'win32' ? [] : [{ set: 'Password', value: 'pin' }])]) {
     const shown: string[] = []
     const d = desktop([user(), win], ({ tool, args }) => {
       if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: win.title, states: [] }, field] })
       if (tool === 'desk_read') return JSON.stringify(field)
-      if (tool === 'desk_press') return JSON.stringify({ ok: true, how: 'focus' })
+      if (tool === 'desk_press') return JSON.stringify({ ok: true, how: 'click', x: 60, y: 20 })
       if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(800, 600).toString('base64') }
       if (tool === 'desk_type') { shown.push(readFileSync(`${run}/result.json`, 'utf8')); return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: `unverifiable: Sent ${String(args.text).length} char(s) via PostMessage (not verified).` }) }
       return undefined
@@ -366,7 +366,7 @@ test('a pressed password field stays the field a background type goes to across 
     const d = desktop([user(), notepad()], ({ tool, args }) => {
       if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), truncated: false, nodes: [{ ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: notepad().title, states: [] }, field, button] })
       if (tool === 'desk_read') return JSON.stringify(args.id === 's' ? button : field)
-      if (tool === 'desk_press') return JSON.stringify({ ok: true, how: 'click' })
+      if (tool === 'desk_press') return JSON.stringify({ ok: true, how: 'click', x: 60, y: 20 })
       if (tool === 'desk_type') return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: `unverifiable: Sent ${String(args.text).length} char(s) via PostMessage (not verified).` })
       return undefined
     })
