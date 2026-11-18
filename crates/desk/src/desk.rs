@@ -1371,7 +1371,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             None => (None, (a.x, a.y)),
         };
         if let Some(w) = named.as_ref().filter(|_| !self.bg() && self.os != Os::Mac) {
-            self.front(w, a.pid, (x, y)).await?;
+            self.front(w, (x, y)).await?;
         }
         let mut req = json!({"x": x, "y": y});
         if let Some(button) = a.button {
@@ -1624,7 +1624,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let (x, y) = match (a.x, a.y) {
             (Some(x), Some(y)) => match self.pointed(a.window.as_deref(), a.pid, (x, y)).await? {
                 Some((w, point)) => {
-                    if self.front(&w, a.pid, point).await? && self.os == Os::Windows {
+                    if self.front(&w, point).await? && self.os == Os::Windows {
                         tokio::time::sleep(WHEEL_SETTLE).await;
                     }
                     point
@@ -1646,18 +1646,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     (w, Vec::new())
                 } else if named {
                     let (_, w, _) = self.pick_window(a.window.as_deref(), a.pid).await?;
-                    let mut behind = false;
-                    if a.pid.is_some() || self.os != Os::Linux {
-                        let (pid, id, _) = window_key(&w)?;
-                        let raised = self.raise(Some((pid, id))).await?;
-                        let s = &raised["structuredContent"];
-                        behind = self.os == Os::Windows
-                            && (s["previous_fg_hwnd"].is_null()
-                                || s["previous_fg_hwnd"] != s["now_fg_hwnd"]);
-                    }
+                    let (pid, id, _) = window_key(&w)?;
+                    let raised = self.raise(Some((pid, id))).await?;
+                    let s = &raised["structuredContent"];
+                    let behind = self.os == Os::Windows
+                        && (s["previous_fg_hwnd"].is_null()
+                            || s["previous_fg_hwnd"] != s["now_fg_hwnd"]);
                     let [bx, by, bw, bh] = bounds(&w);
-                    self.front(&w, a.pid, (bx + bw / 2.0, by + bh / 2.0))
-                        .await?;
+                    self.front(&w, (bx + bw / 2.0, by + bh / 2.0)).await?;
                     if behind {
                         tokio::time::sleep(WHEEL_SETTLE).await;
                     }
@@ -1767,7 +1763,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 to = self.desk_point(&w, to).await?;
             }
             from = point;
-            self.front(&w, a.pid, from).await?;
+            self.front(&w, from).await?;
         }
         self.admit_point(from.0, from.1).await?;
         self.admit_point(to.0, to.1).await?;
@@ -1966,8 +1962,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(Some((pid, id)))
     }
 
-    async fn front(&self, w: &Value, pid: Option<u32>, at: (f64, f64)) -> Result<bool, String> {
-        let raised = self.raise_past(w, pid, at).await?;
+    async fn front(&self, w: &Value, at: (f64, f64)) -> Result<bool, String> {
+        let raised = self.raise_past(w, at).await?;
         if self.os != Os::Mac {
             return Ok(raised);
         }
@@ -1993,16 +1989,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(raised)
     }
 
-    /// Raises window `w`, the target of pointer input named by `window`, when the point lies in it and another window than one of [`Self::own_popup`] is on top there, under the rule [`Self::raised_window`] keeps.
-    async fn raise_past(
-        &self,
-        w: &Value,
-        pid: Option<u32>,
-        (x, y): (f64, f64),
-    ) -> Result<bool, String> {
-        if pid.is_none() && self.os == Os::Linux {
-            return Ok(false);
-        }
+    /// Raises window `w`, the target of pointer input named by `window` or `pid`, when the point lies in it and another window than one of [`Self::own_popup`] is on top there.
+    async fn raise_past(&self, w: &Value, (x, y): (f64, f64)) -> Result<bool, String> {
         let scale = self.scale().await?;
         let point = (x / scale, y / scale);
         let [bx, by, bw, bh] = bounds(w);
@@ -6383,6 +6371,82 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn on_linux_pointer_input_named_by_title_alone_raises_its_window_past_a_cover() {
+        let window = "Inbox";
+        let pointer = [
+            (
+                "desk_click",
+                json!({"x": 100.0, "y": 250.0, "window": window}),
+            ),
+            (
+                "desk_scroll",
+                json!({"direction": "down", "x": 100.0, "y": 250.0, "window": window}),
+            ),
+            (
+                "desk_scroll",
+                json!({"direction": "down", "window": window}),
+            ),
+            (
+                "desk_drag",
+                json!({"x": 100.0, "y": 100.0, "to_x": 200.0, "to_y": 150.0, "window": window}),
+            ),
+        ];
+        let cover = (4, "Untitled - Notepad");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(Apps),
+            BehindCover(Behind(Arc::clone(&calls)), AtomicBool::new(false), cover),
+            Os::Linux,
+        );
+        let mut replies = Vec::new();
+        for (tool, args) in pointer.clone() {
+            replies.push(desk.run(tool, args).await.map(|o| o.text));
+        }
+        let input: Vec<String> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(t, _)| ["bring_to_front", "click", "scroll", "drag"].contains(&t.as_str()))
+            .map(|(t, a)| format!("{t} {}", a["pid"].as_i64().unwrap_or(0)))
+            .collect();
+        assert_eq!(
+            input,
+            [
+                "bring_to_front 8",
+                "click 0",
+                "bring_to_front 8",
+                "scroll 0",
+                "bring_to_front 8",
+                "scroll 0",
+                "bring_to_front 8",
+                "drag 0"
+            ],
+            "{replies:?}"
+        );
+        assert!(replies.iter().all(Result::is_ok), "{replies:?}");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(Apps),
+            Topmost(BehindCover(
+                Behind(Arc::clone(&calls)),
+                AtomicBool::new(false),
+                cover,
+            )),
+            Os::Linux,
+        );
+        for (tool, args) in pointer {
+            let err = desk.run(tool, args).await.unwrap_err();
+            assert!(
+                err.contains("Untitled - Notepad") || err.contains("covers"),
+                "{tool}: {err}"
+            );
+        }
+        for tool in ["click", "scroll", "drag"] {
+            assert!(sent(&calls, tool).is_empty(), "{tool}: {:?}", order(&calls));
+        }
+    }
+
+    #[tokio::test]
     async fn pointer_input_at_window_pixels_outside_its_shot_sends_nothing() {
         let window = "Untitled - Notepad";
         let drag = |x: f64, to_x: f64| json!({"x": x, "y": 100.0, "to_x": to_x, "to_y": 100.0, "window": window});
@@ -8695,17 +8759,15 @@ pub(crate) mod tests {
         }
         let linux = Desk::new(|| Ok(Apps), Covered(calls.clone()), Os::Linux)
             .allow(&["notepad".into(), "mail".into()]);
-        let named = json!({"direction": "down", "window": "Untitled"});
-        let err = linux.run("desk_scroll", named).await.unwrap_err();
-        assert_eq!(
-            err,
-            "another window covers the named window's center, so nothing was scrolled"
-        );
-        assert!(sent(&calls, "bring_to_front").is_empty());
-        let by_pid = json!({"direction": "down", "window": "Untitled", "pid": 4});
-        let err = linux.run("desk_scroll", by_pid).await.unwrap_err();
-        assert!(err.contains("still covers the point"), "{err}");
-        assert!(!sent(&calls, "bring_to_front").is_empty());
+        for named in [
+            json!({"direction": "down", "window": "Untitled"}),
+            json!({"direction": "down", "window": "Untitled", "pid": 4}),
+        ] {
+            let raised = sent(&calls, "bring_to_front").len();
+            let err = linux.run("desk_scroll", named).await.unwrap_err();
+            assert!(err.contains("still covers the point"), "{err}");
+            assert!(sent(&calls, "bring_to_front").len() > raised);
+        }
         assert!(sent(&calls, "scroll").is_empty());
     }
 
