@@ -3480,7 +3480,7 @@ mod tests {
     #[test]
     fn the_ui_servers_focus_answer_decodes_and_null_is_no_focus() {
         let f: Option<Focus> = serde_json::from_str(
-            r#"{"editable":true,"password":false,"window":true,"id":null,"len":5,"hash":93184636,"tail":"ab \u4f60\u597d","bounds":[100,80,620,180]}"#,
+            r#"{"editable":true,"password":false,"window":true,"id":7,"len":5,"hash":93184636,"tail":"ab \u4f60\u597d","bounds":[100,80,620,180]}"#,
         )
         .unwrap();
         let f = f.unwrap();
