@@ -2437,8 +2437,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let raw = listed["structuredContent"]["windows"]
             .as_array()
             .map_or(&[][..], Vec::as_slice);
-        let same = framed(&f, raw, TITLE_TIERS - 1);
-        let fit = if same.len() > 1 || (twinned && f.number.is_none()) {
+        let exact = framed(&f, raw, TITLE_TIERS - 1);
+        let contained = exact.is_empty() && f.number.is_none();
+        let same = if contained {
+            framed(&f, raw, TITLE_TIERS)
+        } else {
+            exact
+        };
+        let fit = if same.len() > 1 || contained || (twinned && f.number.is_none()) {
             let root = id.to_owned();
             let frame = self
                 .access
@@ -8849,15 +8855,9 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn on_linux_a_driver_window_that_only_holds_the_frames_title_takes_no_input() {
-        let one = || {
-            Ok(Stub {
-                frames: vec![frame("w1", "Untitled - Notepad", 4, true, Some("Notepad"))],
-                ..Stub::default()
-            })
-        };
         let calls = Arc::new(Mutex::new(Vec::new()));
         let driver = Listed(Arc::clone(&calls), &[(7, "Untitled - Notepad 2", 2000.0)]);
-        let desk = Desk::new(one, driver, Os::Linux);
+        let desk = Desk::new(|| Ok(TwinDocs::new(false, true, false)), driver, Os::Linux);
         let err = desk
             .run(
                 "desk_focus",
@@ -8879,6 +8879,53 @@ pub(crate) mod tests {
             .unwrap_err();
         assert_eq!(err, BACKGROUND_TWINS);
         assert!(sent(&calls, "bring_to_front").is_empty() && sent(&calls, "click").is_empty());
+    }
+
+    #[tokio::test]
+    async fn on_linux_focus_by_id_takes_a_window_whose_title_holds_the_frames_only_where_its_bounds_fit()
+     {
+        let apart: &'static [(i64, &str, f64)] = &[
+            (5, "Untitled - Notepad \u{2014} Konsole", 0.0),
+            (7, "Untitled - Notepad \u{2014} Konsole", 900.0),
+        ];
+        for (id, raised) in [("w1", 5), ("w3", 7)] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(
+                || Ok(TwinDocs::new(false, true, false)),
+                Listed(Arc::clone(&calls), apart),
+                Os::Linux,
+            );
+            desk.run(
+                "desk_focus",
+                json!({"window": "Untitled - Notepad", "pid": 4, "id": id}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                sent(&calls, "bring_to_front"),
+                [json!({"pid": 4, "window_id": raised})],
+                "{id}"
+            );
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let level: &'static [(i64, &str, f64)] = &[
+            (5, "Untitled - Notepad \u{2014} Konsole", 0.0),
+            (7, "Untitled - Notepad \u{2014} Konsole", 0.0),
+        ];
+        let desk = Desk::new(
+            || Ok(TwinDocs::new(false, false, false)),
+            Listed(Arc::clone(&calls), level),
+            Os::Linux,
+        );
+        let err = desk
+            .run(
+                "desk_focus",
+                json!({"window": "Untitled - Notepad", "pid": 4, "id": "w1"}),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("shares its title and its bounds"), "{err}");
+        assert!(sent(&calls, "bring_to_front").is_empty());
     }
 
     #[tokio::test]
