@@ -225,7 +225,7 @@ async function perform(p: Params): Promise<Result> {
       }
       stepWs = { ws, at: since }; tops[i] = f?.title; prior = new Set(lastWs.map((x) => x.id)); lastWs = ws
       if (BG && doubt && !s.app && !s.wait) throw new Surprise(doubt, await seen())
-      if (BG && i > (p.start ?? 0)) stolen(ws, i - 1)
+      if (BG && i > (p.start ?? 0)) { const r = taken(ws); if (r) throw new Stolen(r, i - 1) }
       const m = s.close ? null : await hiddenModal(ws, f)
       if (m) throw new Surprise(modalBlocks(m), await seen())
       const r = reads(s)
@@ -254,7 +254,7 @@ async function perform(p: Params): Promise<Result> {
     } catch (e: unknown) {
       const sp = e instanceof Surprise ? e : new Surprise(e instanceof Error ? e.message : String(e), await seen())
       if ((sp.late || sp.seen.window === undefined) && sp.seen.outline === undefined && sp.reason !== NO_FRONT) sp.seen = await seen()
-      if (sp.reason === NO_FRONT || sp.seen.outline === `(${NO_FRONT})`) { const why = await frontless(); if (sp.reason === NO_FRONT) sp.reason = why; if (sp.seen.outline === `(${NO_FRONT})`) sp.seen.outline = `(${why})` }
+      if (sp.reason === NO_FRONT || sp.seen.outline === `(${NO_FRONT})`) { const u = await desk.unanswered().catch(() => null); const why = u ? `front app "${u.app ?? u.title}" (pid ${u.pid}) is not answering accessibility` : NO_FRONT; if (sp.reason === NO_FRONT) sp.reason = why; if (sp.seen.outline === `(${NO_FRONT})`) sp.seen.outline = `(${why})` }
       const step = e instanceof Stolen ? e.step : i
       const note = step === i ? recs[i - 1]?.unverified : undefined
       const theft = BG && !(e instanceof Stolen) ? taken(await desk.windows()) : null
@@ -371,7 +371,6 @@ function taken(ws: Win[]): string | null {
   if (!f || !target || fronted || f.pid !== target.pid || (userFront && f.id === userFront.id)) return null
   return `"${f.title || f.app || 'the app'}" brought itself to the front though the plan sent no fronting call: background input cannot keep this app behind`
 }
-function stolen(ws: Win[], step: number) { const r = taken(ws); if (r) throw new Stolen(r, step) }
 
 function terms(s: string) { return norm(s).split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !FILLER.has(w)).map((w) => w.length > 3 ? w.replace(/s$/, '') : w) }
 function norm(s: string) { return s.toLowerCase().replace(/[_…]|\.\.\.|:$/g, '').replace(/\s+/g, ' ').trim() }
@@ -545,10 +544,6 @@ function render(nodes: Node[], max: number, interactive: boolean, limit = Infini
 async function outline(w: Win | null, r: Reads = {}, kept?: Kept, max = 1800) {
   if (!w) return `(${NO_FRONT})`
   return (await look(w, r, kept, max)).text
-}
-async function frontless() {
-  const u = await desk.unanswered().catch(() => null)
-  return u ? `front app "${u.app ?? u.title}" (pid ${u.pid}) is not answering accessibility` : NO_FRONT
 }
 async function look(w: Win, r: Reads = {}, kept?: Kept, max = 1800): Promise<{ text: string; snap?: desk.Snap; nodes?: Node[] }> {
   try { const k = reuse(kept, w, r); const s = k?.snap ?? await snapOf(w, r); const nodes = k?.nodes ?? parse(s); const full = render(nodes, 100, nodes.length > 60, max + 1); return { text: `${full.slice(0, max)}${s.truncated ? TREE_CUT : full.length > max ? TEXT_CUT : ''}`, snap: s, nodes } } catch (e: unknown) { return { text: String(e) } }
