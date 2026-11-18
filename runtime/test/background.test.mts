@@ -599,3 +599,17 @@ test('a background locate that presses its element carries the note of a press t
   assert.equal(r.via, 'click', JSON.stringify(r))
   assert.equal(r.unverified, 'unverifiable: posted a click', JSON.stringify(r))
 })
+
+test('a background app step whose launch raised the running app\'s window takes that window in front as the plan\'s own', async (t) => {
+  const term = (): W => ({ id: 't', title: 'Windows PowerShell', role: 'window', pid: 12, active: false, app: 'WindowsTerminal' })
+  const ws = [user(), term()]
+  const d = desktop(ws, ({ tool }) => {
+    if (tool !== 'desk_launch') return undefined
+    ws[0] = { ...user(), active: false }; ws[1] = { ...term(), active: true }
+    return JSON.stringify({ ok: true, launched: 'raised', running: true, title: 'Windows PowerShell', pid: 12 })
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Windows Terminal' }, { type: 'dir' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'dir', window: 'Windows PowerShell', pid: 12 }])
+})

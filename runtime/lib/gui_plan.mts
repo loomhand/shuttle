@@ -1326,7 +1326,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       }
       tick('launch', t0)
     }
-    if (BG) { follow(w, await desk.windows()); known.add(w.title); rec.window = lastSeen = w.title; return }
+    if (BG) { if (started?.running) userFront = w; follow(w, await desk.windows()); known.add(w.title); rec.window = lastSeen = w.title; return }
     if (background || !w.active) { const t1 = Date.now(); const f = await desk.focus(w.title, w.pid); tick('focus', t1); if (f.path) rec.focused = `${f.path} front ${f.front ?? '-'}` }
     known.add(w.title); rec.window = lastSeen = w.title; await windowFor(w.title); return
   }
