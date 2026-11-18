@@ -34,6 +34,15 @@ async fn reach(endpoint: &str, call: &Call, embedded: bool) -> Result<Output, St
         Err(_) => {}
     }
     let (conn, child) = listening(endpoint, start(endpoint).await?).await?;
+    answered(endpoint, conn, child, call).await
+}
+
+async fn answered(
+    endpoint: &str,
+    conn: Conn,
+    child: Option<Child>,
+    call: &Call,
+) -> Result<Output, String> {
     match (server::exchange(conn, call).await, child) {
         (Err(e), Some(child)) => Err(daemon_error(child, e).await),
         (Err(e), None) => Err(opened_error(endpoint, e).await),
@@ -240,6 +249,31 @@ mod tests {
         assert_eq!(
             opened_error(&endpoint, eof).await,
             "no answer to desk_windows could be read; the daemon did not start: [android] sets no ui_jar"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_call_an_app_started_daemon_drops_is_answered_with_its_start_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let listener = tokio::net::UnixListener::bind(&endpoint).unwrap();
+        tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let _: Call = read_frame(&mut s).await.unwrap();
+        });
+        std::fs::write(failed(&endpoint), "[android] sets no ui_jar").unwrap();
+        let conn = server::connect(&endpoint).await.unwrap();
+        let ask = Call {
+            agent_id: "t".into(),
+            tool: "desk_windows".into(),
+            args: serde_json::json!({}),
+        };
+        let err = answered(&endpoint, conn, None, &ask).await.unwrap_err();
+        assert!(
+            err.starts_with("no answer to desk_windows could be read")
+                && err.ends_with("; the daemon did not start: [android] sets no ui_jar"),
+            "{err}"
         );
     }
 
