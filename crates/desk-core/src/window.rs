@@ -123,12 +123,15 @@ pub fn rivals<'a, W: Window + 'a>(
         .unwrap_or_else(|| windows.iter().filter(|w| of_app(w.title(), want)).count())
 }
 
-/// Whether `title` matches `want` at `tier`: 0 equal, 1 equal ignoring case and outer spaces, 2 containing it ignoring case.
+/// Whether `title` matches `want` at `tier`: 0 equal, 1 equal ignoring case and outer spaces, 2 containing it ignoring case; an empty `want` names only an untitled window.
 pub fn title_matches(tier: usize, title: &str, want: &str) -> bool {
     match tier {
         0 => title == want,
         1 => title.trim().to_lowercase() == want.trim().to_lowercase(),
-        _ => title.to_lowercase().contains(&want.trim().to_lowercase()),
+        _ => match want.trim().to_lowercase() {
+            part if part.is_empty() => title.trim().is_empty(),
+            part => title.to_lowercase().contains(&part),
+        },
     }
 }
 

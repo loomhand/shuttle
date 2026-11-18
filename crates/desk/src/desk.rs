@@ -427,13 +427,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         {
             return Ok(true);
         }
-        self.focus(WindowArgs {
-            window: window.unwrap_or_default(),
-            pid,
-            id,
-        })
-        .await
-        .map(|_| true)
+        let Some(window) = window else {
+            return Ok(!matches!(tool, "desk_press" | "desk_act"));
+        };
+        self.focus(WindowArgs { window, pid, id })
+            .await
+            .map(|_| true)
     }
 
     async fn dispatch(
@@ -932,7 +931,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let scale = self.scale().await?;
             let point = (f64::from(a.x) / scale, f64::from(a.y) / scale);
             let top = self.top_at(point).await?.ok_or(NO_WINDOW_AT)?;
-            a.window = Some(top["title"].as_str().unwrap_or_default().to_owned());
+            a.window = top["title"]
+                .as_str()
+                .filter(|t| !t.is_empty())
+                .map(str::to_owned);
             a.pid = top["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
             number = top["window_id"]
                 .as_u64()
@@ -948,7 +950,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 if uia
                     && !frames.iter().any(|f| {
                         f.pid == a.pid
-                            && window.is_some_and(|w| title_matches(TITLE_TIERS - 1, &f.title, w))
+                            && window.is_none_or(|w| title_matches(TITLE_TIERS - 1, &f.title, w))
                     })
                     && let Some(p) = b.owner_at(a.x, a.y).ok().flatten()
                 {
@@ -3476,6 +3478,62 @@ pub(crate) mod tests {
         assert_eq!(
             order(&calls),
             ["hotkey background", "bring_to_front -", "hotkey desktop"]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_auto_pointer_call_by_pid_alone_runs_in_the_foreground_among_several_windows_of_that_pid()
+     {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let driver = Twins(Arc::clone(&calls), 900.0, "Untitled - Notepad", 0.0);
+        let desk = Desk::new(|| Ok(TwinDocs::new(true, true, false)), driver, Os::Windows)
+            .background(true)
+            .auto(true);
+        desk.run(
+            "desk_drag",
+            json!({"x": 10.0, "y": 10.0, "to_x": 20.0, "to_y": 20.0, "pid": 4}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sent(&calls, "drag").len(), 1);
+        let err = desk
+            .run("desk_act", json!({"id": "x9", "action": "focus"}))
+            .await
+            .unwrap_err();
+        assert_eq!(err, BACKGROUND_UIA);
+        assert!(sent(&calls, "bring_to_front").is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_empty_window_title_names_only_an_untitled_window() {
+        for tool in ["desk_focus", "desk_key"] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let driver = Twins(Arc::clone(&calls), 900.0, "Untitled - Notepad", 0.0);
+            let desk = Desk::new(|| Ok(TwinDocs::new(true, true, false)), driver, Os::Windows);
+            let err = desk
+                .run(tool, json!({"window": "", "keys": "a"}))
+                .await
+                .unwrap_err();
+            assert!(
+                err.starts_with("no window \"\"; windows: "),
+                "{tool}: {err}"
+            );
+            assert!(
+                calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|(t, _)| t == "list_windows"),
+                "{tool}"
+            );
+        }
+        let untitled = vec![
+            frame("t", "Untitled - Notepad", 4, true, None),
+            frame("u", "", 4, false, None),
+        ];
+        assert_eq!(
+            window::pick(untitled, Some(""), None).map(|f| f.id),
+            Ok("u".to_owned())
         );
     }
 
