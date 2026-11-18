@@ -19,8 +19,8 @@ pub async fn call(endpoint: &str, call: &Call) -> Result<Output, String> {
 }
 
 async fn reach(endpoint: &str, call: &Call, embedded: bool) -> Result<Output, String> {
-    let (conn, child, opened) = match server::connect(endpoint).await {
-        Ok(conn) => (conn, None, false),
+    match server::connect(endpoint).await {
+        Ok(conn) => return server::exchange(conn, call).await,
         Err(e) if !matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
             return Err(format!("connect {endpoint}: {e}"));
         }
@@ -31,22 +31,14 @@ async fn reach(endpoint: &str, call: &Call, embedded: bool) -> Result<Output, St
                 EMBEDDED = crate::EMBEDDED
             ));
         }
-        Err(_) => {
-            let (conn, child) = started(endpoint).await?;
-            let opened = child.is_none();
-            (conn, child, opened)
-        }
-    };
+        Err(_) => {}
+    }
+    let (conn, child) = listening(endpoint, start(endpoint).await?).await?;
     match (server::exchange(conn, call).await, child) {
         (Err(e), Some(child)) => Err(daemon_error(child, e).await),
-        (Err(e), None) if opened => Err(opened_error(endpoint, e).await),
+        (Err(e), None) => Err(opened_error(endpoint, e).await),
         (out, _) => out,
     }
-}
-
-async fn started(endpoint: &str) -> Result<(Conn, Option<Child>), String> {
-    let child = start(endpoint).await?;
-    listening(endpoint, child).await
 }
 
 async fn listening(
