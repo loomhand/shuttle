@@ -144,7 +144,7 @@ fn reachable<B: Access>(
     if node.role.starts_with("menu") {
         if os == Os::Windows
             && !background
-            && let Some(cover) = b.menu_cover(id, cx, cy).map_err(|_| None)?
+            && let Some(cover) = b.menu_cover(id, chain, cx, cy).map_err(|_| None)?
         {
             return Err(Some(cover));
         }
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn a_windows_menu_entry_whose_point_another_window_holds_takes_no_click() {
-        let mut m = Menu(notepad(), Some((String::new(), Some(4242))));
+        let mut m = Menu(notepad(), Ok(Some((String::new(), Some(4242)))), 0);
         let err = hit_centre(&mut m, "file", Os::Windows, false).unwrap_err();
         assert_eq!(err, covered_text("", Some(4242)));
         assert_eq!(
@@ -240,7 +240,7 @@ mod tests {
             hit_centre(&mut m, "file", Os::Linux, false).unwrap(),
             Some((20, 10))
         );
-        m.1 = None;
+        m.1 = Ok(None);
         assert_eq!(
             hit_centre(&mut m, "file", Os::Windows, false).unwrap(),
             Some((20, 10))
@@ -248,9 +248,30 @@ mod tests {
     }
 
     #[test]
+    fn only_a_foreground_windows_menu_act_reads_the_window_at_the_entry() {
+        let mut m = Menu(notepad(), Ok(None), 0);
+        hit_centre(&mut m, "ok", Os::Windows, false).unwrap();
+        hit_centre(&mut m, "file", Os::Windows, true).unwrap();
+        hit_centre(&mut m, "file", Os::Linux, false).unwrap();
+        hit_centre(&mut m, "file", Os::Mac, false).unwrap();
+        assert_eq!(m.2, 0);
+        hit_centre(&mut m, "file", Os::Windows, false).unwrap();
+        assert_eq!(m.2, 1);
+    }
+
+    #[test]
+    fn a_windows_menu_entry_whose_own_window_cannot_be_read_takes_no_click_and_names_no_cover() {
+        let mut m = Menu(notepad(), Err("no own window".into()), 0);
+        assert_eq!(
+            hit_centre(&mut m, "file", Os::Windows, false).unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn a_windows_menu_entry_gone_or_off_screen_takes_no_click_and_a_live_one_without_bounds_is_pressed()
      {
-        let mut m = Menu(notepad(), None);
+        let mut m = Menu(notepad(), Ok(None), 0);
         m.0.add(
             "closed",
             Some("file"),
@@ -683,7 +704,7 @@ mod tests {
         (dir, office)
     }
 
-    struct Menu(Fake, Option<Cover>);
+    struct Menu(Fake, Result<Option<Cover>, String>, usize);
 
     impl Access for Menu {
         fn frames(&mut self) -> Result<Vec<Frame>, String> {
@@ -701,8 +722,15 @@ mod tests {
         fn at(&mut self, window: &str, x: i32, y: i32) -> Result<Option<String>, String> {
             self.0.at(window, x, y)
         }
-        fn menu_cover(&mut self, _: &str, _: i32, _: i32) -> Result<Option<Cover>, String> {
-            Ok(self.1.clone())
+        fn menu_cover(
+            &mut self,
+            _: &str,
+            _: &[String],
+            _: i32,
+            _: i32,
+        ) -> Result<Option<Cover>, String> {
+            self.2 += 1;
+            self.1.clone()
         }
         fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
             self.0.act(id, act)

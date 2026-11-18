@@ -328,27 +328,80 @@ mod tests {
 
     #[test]
     fn a_menu_click_goes_out_only_to_the_entrys_own_window_or_a_window_it_owns() {
-        let (form, dropdown, submenu, copy_b, copy_b_popup, toast) = (7, 12, 14, 20, 21, 30);
+        let (form, context, dropdown, submenu) = (7, 12, 13, 14);
+        let (notepad, popup_host, copy_b, copy_b_popup, toast) = (40, 41, 20, 21, 30);
         let owners = |w: isize| match w {
-            12 => vec![form],
+            12 | 13 => vec![form],
             14 => vec![dropdown, form],
+            41 => vec![notepad],
             21 => vec![copy_b],
             _ => Vec::new(),
         };
         let reaches = |at, own| menu_click_reaches(at, own, owners);
-        assert!(reaches(Some(dropdown), Some(dropdown)));
-        assert!(reaches(Some(form), Some(form)));
-        assert!(reaches(Some(dropdown), Some(form)));
-        assert!(reaches(Some(submenu), Some(form)));
-        assert!(reaches(Some(submenu), Some(dropdown)));
-        assert!(!reaches(Some(copy_b_popup), Some(dropdown)));
-        assert!(!reaches(Some(copy_b_popup), Some(form)));
-        assert!(!reaches(Some(toast), Some(dropdown)));
-        assert!(!reaches(Some(toast), Some(form)));
-        assert!(!reaches(Some(form), Some(dropdown)));
-        assert!(!reaches(None, Some(dropdown)));
-        assert!(!reaches(Some(dropdown), None));
-        assert!(!reaches(Some(0), Some(0)));
+        let passes = [
+            (
+                context,
+                context,
+                "a WinForms context menu entry (own = its popup)",
+            ),
+            (
+                dropdown,
+                form,
+                "a WinForms dropdown entry (own = the form, the popup owned by it)",
+            ),
+            (
+                popup_host,
+                popup_host,
+                "a Notepad popup entry (own = its PopupHost)",
+            ),
+            (
+                form,
+                form,
+                "a menu bar item (own = the app window at the point)",
+            ),
+            (
+                submenu,
+                form,
+                "a submenu entry of the app window's tree, two owner levels",
+            ),
+            (
+                submenu,
+                dropdown,
+                "a parent entry under its own open submenu, the accepted price",
+            ),
+        ];
+        for (at, own, row) in passes {
+            assert!(reaches(Some(at), Some(own)), "{row}");
+        }
+        let refusals = [
+            (
+                copy_b_popup,
+                context,
+                "copy B's popup over copy A's context menu entry",
+            ),
+            (
+                copy_b_popup,
+                form,
+                "copy B's popup over copy A's dropdown entry",
+            ),
+            (
+                toast,
+                context,
+                "a foreign top-most window over a context menu entry",
+            ),
+            (
+                toast,
+                form,
+                "a foreign top-most window over a dropdown entry",
+            ),
+            (form, context, "the owner form where the popup was"),
+            (0, 0, "a zero handle"),
+        ];
+        for (at, own, row) in refusals {
+            assert!(!reaches(Some(at), Some(own)), "{row}");
+        }
+        assert!(!reaches(None, Some(context)), "no window at the point");
+        assert!(!reaches(Some(context), None), "no own window");
     }
 
     #[test]

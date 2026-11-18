@@ -317,6 +317,7 @@ pub trait Access {
     fn menu_cover(
         &mut self,
         _id: &str,
+        _chain: &[String],
         _x: i32,
         _y: i32,
     ) -> Result<Option<(String, Option<u32>)>, String> {

@@ -178,24 +178,16 @@ impl Uia {
         }
     }
 
-    fn native_root(&self, id: &str) -> Result<Option<isize>, String> {
-        // SAFETY: `self.auto` is a live IUIAutomation of this thread.
-        let walker =
-            unsafe { self.auto.ControlViewWalker() }.map_err(|e| format!("UIA walker: {e}"))?;
-        let mut at = self.element(id)?;
-        for _ in 0..MAX_DEPTH {
-            // SAFETY: `at` is a live UIA element of this thread; a stale one answers an error.
-            let hwnd = unsafe { at.CurrentNativeWindowHandle() }.unwrap_or_default();
+    fn native_root(&self, id: &str, chain: &[String]) -> Result<Option<isize>, String> {
+        for held in std::iter::once(id).chain(chain.iter().rev().map(String::as_str)) {
+            let el = self.element(held)?;
+            // SAFETY: `el` is a live UIA element of this thread; a stale one answers an error.
+            let hwnd = unsafe { el.CurrentNativeWindowHandle() }.unwrap_or_default();
             if !hwnd.is_invalid() {
                 // SAFETY: GetAncestor takes any handle; a stale one answers a null handle.
                 let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
                 return Ok((!root.is_invalid()).then_some(root.0 as isize));
             }
-            // SAFETY: `walker` and `at` are live UIA objects of this thread.
-            let Ok(parent) = (unsafe { walker.GetParentElement(&at) }) else {
-                break;
-            };
-            at = parent;
         }
         Ok(None)
     }
@@ -556,12 +548,15 @@ impl Access for Uia {
     fn menu_cover(
         &mut self,
         id: &str,
+        chain: &[String],
         x: i32,
         y: i32,
     ) -> Result<Option<(String, Option<u32>)>, String> {
-        let own = self.native_root(id)?;
+        let own = self
+            .native_root(id, chain)?
+            .ok_or("the menu entry's own window could not be read")?;
         let at = top_at(x, y);
-        if uia_roles::menu_click_reaches(at, own, owners_of) {
+        if uia_roles::menu_click_reaches(at, Some(own), owners_of) {
             return Ok(None);
         }
         Ok(Some(at.map_or((String::new(), None), |w| {
