@@ -558,7 +558,11 @@ fn window_of<'a>(windows: &'a [Value], at: &Value) -> Option<&'a Value> {
     path.iter().find_map(|n| {
         windows.iter().find(|w| match n["id"].as_str() {
             Some(id) => w["id"].as_str() == Some(id),
-            None => n["role"] == "window" && w["title"] == n["name"] && w["pid"].as_u64() == pid,
+            None => {
+                (n["role"] == "window" || (n["role"] == "dialog" && w["role"] == "dialog"))
+                    && w["title"] == n["name"]
+                    && w["pid"].as_u64() == pid
+            }
         })
     })
 }
@@ -911,6 +915,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_click_in_a_dialog_window_keeps_that_window_and_a_crop_of_it() {
+        let desk = Desk {
+            more: vec![
+                json!({"id": "7/3", "title": "Confirm", "role": "dialog", "pid": 7, "active": false, "app": "TextEdit", "bounds": [40, 50, 150, 100]}),
+            ],
+            ..Desk::new(Value::Null)
+        };
+        let ok = Input::Click {
+            x: 100.0,
+            y: 80.0,
+            right: false,
+            count: 1,
+            mods: Vec::new(),
+            found: Some(Hit {
+                role: "button",
+                pid: Some(7),
+                path: vec![("dialog", "Confirm".into())],
+                ..Hit::default()
+            }),
+        };
+        let r = run(&desk, &[], vec![ok]).await;
+        let e = &r["events"][0];
+        assert_eq!(
+            e["window"],
+            json!({"title": "Confirm", "bounds": [40, 50, 150, 100]}),
+            "{e}"
+        );
+        assert!(e["crop"].is_string(), "{e}");
+    }
+
+    #[tokio::test]
     async fn a_click_on_a_document_root_is_marked_root() {
         let desk = Desk::new(
             json!({"found": {"role": "document", "name": ""}, "path": [{"id": "7/1", "role": "window", "name": "Untitled"}], "pid": 7}),
@@ -1223,6 +1258,7 @@ mod tests {
     struct Desk {
         front: Mutex<&'static str>,
         hit: Value,
+        more: Vec<Value>,
         shots: Mutex<Vec<Value>>,
         webs: Mutex<Vec<Value>>,
         released: Mutex<Vec<String>>,
@@ -1233,6 +1269,7 @@ mod tests {
             Self {
                 front: Mutex::new("Untitled"),
                 hit,
+                more: Vec::new(),
                 shots: Mutex::default(),
                 webs: Mutex::default(),
                 released: Mutex::default(),
@@ -1244,14 +1281,18 @@ mod tests {
         async fn answer(&self, call: Call) -> Output {
             let front = *lock(&self.front);
             match call.tool.as_str() {
-                "desk_windows" => Output::text(
-                    json!([
+                "desk_windows" => {
+                    let mut listed = json!([
                         {"id": "7/1", "title": front, "role": "window", "pid": 7, "active": true, "app": "TextEdit", "bounds": [10, 20, 300, 200]},
                         {"id": "9/1", "title": "Vault", "role": "window", "pid": 9, "active": false, "app": "1Password"},
                         {"id": "5/1", "title": "未命名", "role": "window", "pid": 5, "active": false, "app": "文本编辑", "bundle": "TextEdit"},
-                    ])
-                    .to_string(),
-                ),
+                    ]);
+                    listed
+                        .as_array_mut()
+                        .unwrap()
+                        .extend(self.more.iter().cloned());
+                    Output::text(listed.to_string())
+                }
                 "desk_at" if call.args["x"].is_i64() && call.args["y"].is_i64() => {
                     match &self.hit {
                         Value::String(refused) => Output::error(refused.clone()),
