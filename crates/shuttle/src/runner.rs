@@ -16,6 +16,7 @@ use tokio::task::JoinSet;
 const DEFAULT_TIMEOUT_S: u64 = 90;
 const MAX_TIMEOUT_S: u64 = 110;
 const MAX_OUTPUT: usize = 32 << 10;
+const MAX_RESULT: u64 = 16 << 20;
 const STDERR_TAIL: usize = 2 << 10;
 const PIPE_GRACE: Duration = Duration::from_millis(500);
 #[cfg(unix)]
@@ -241,7 +242,7 @@ impl Runner {
                 let status = status.map_err(|e| format!("wait for the script: {e}"))?;
                 report["exit_code"] = status.code().into();
                 if !status.success() {
-                    let thrown = tokio::fs::read(scratch.join("error.json")).await;
+                    let thrown = read_capped(&scratch.join("error.json")).await;
                     report["error"] = thrown
                         .ok()
                         .and_then(|raw| serde_json::from_slice(&raw).ok())
@@ -252,11 +253,16 @@ impl Runner {
             }
         }
         report["stderr"] = stderr.into();
-        report["result"] = match tokio::fs::read(scratch.join("result.json")).await {
+        let result = match read_capped(&scratch.join("result.json")).await {
             Ok(raw) => serde_json::from_slice(&raw)
                 .unwrap_or_else(|_| String::from_utf8_lossy(&raw).into_owned().into()),
+            Err(Some(len)) if report["error"].is_null() => {
+                report["error"] = json!({"kind": "result_too_large", "message": format!("main returned {len} bytes of JSON, over the {MAX_RESULT}-byte cap; the run finished: return less (a Buffer becomes an array of numbers: return base64 or write a file)")});
+                Value::Null
+            }
             Err(_) => Value::Null,
         };
+        report["result"] = result;
         if let Ok(raw) = tokio::fs::read(scratch.join("usage.json")).await
             && let Ok(usage) = serde_json::from_slice::<Value>(&raw)
         {
@@ -354,6 +360,17 @@ fn exited(program: &Path, status: std::process::ExitStatus, stderr: &str) -> Str
     }
     let tail = &stderr[stderr.ceil_char_boundary(stderr.len().saturating_sub(STDERR_TAIL))..];
     format!("{name} exited with {status}; stderr: {tail}")
+}
+
+async fn read_capped(path: &Path) -> Result<Vec<u8>, Option<u64>> {
+    let mut file = tokio::fs::File::open(path).await.map_err(|_| None)?;
+    let len = file.metadata().await.map_err(|_| None)?.len();
+    if len > MAX_RESULT {
+        return Err(Some(len));
+    }
+    let mut raw = Vec::new();
+    file.read_to_end(&mut raw).await.map_err(|_| None)?;
+    Ok(raw)
 }
 
 fn text(captured: &Captured) -> String {
@@ -829,6 +846,26 @@ mod tests {
         let code = "export function main() { console.log('x'.repeat(100000)); return 1 }";
         let report = r.script(json!({"code": code}), "run-test").await.unwrap();
         assert_eq!(report["logs"].as_str().map(str::len), Some(MAX_OUTPUT));
+    }
+
+    #[tokio::test]
+    async fn a_run_whose_result_passes_the_cap_keeps_its_logs_and_says_it_ran() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = runner(dir.path());
+        let code = "console.log('acted')\nexport function main() { return 'x'.repeat(17 << 20) }";
+        let report = r.script(json!({"code": code}), "run-test").await.unwrap();
+        assert_eq!(
+            (report["error"]["kind"].as_str(), report["logs"].as_str()),
+            (Some("result_too_large"), Some("acted\n")),
+            "{}",
+            report["error"]
+        );
+        assert!(report["result"].is_null());
+        let message = report["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("the run finished") && message.contains("return less"),
+            "{message}"
+        );
     }
 
     #[tokio::test]
