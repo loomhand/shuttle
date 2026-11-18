@@ -385,17 +385,19 @@ impl Ax {
     }
 
     fn walk(&mut self, w: &mut Walk, el: &CFType, parent: Option<usize>, depth: usize) -> bool {
-        if w.nodes.len() >= MAX_NODES || Instant::now() >= w.deadline {
+        let asked = Instant::now();
+        if w.nodes.len() >= MAX_NODES || asked >= w.deadline {
             return true;
         }
         if depth > MAX_DEPTH || w.path.contains(el) {
             return false;
         }
         let mut a = attrs(&self.names, el);
+        let silent = a.role.is_empty() && late(asked.elapsed());
         let node = self.node_of(el, &mut a, w.extras, VALUE_CHARS, w.scale);
         let (parent, depth) = place(&mut w.nodes, node, parent, depth);
         w.path.push(el.clone());
-        let truncated = a.children.iter().any(|c| self.walk(w, c, parent, depth));
+        let truncated = silent || a.children.iter().any(|c| self.walk(w, c, parent, depth));
         w.path.pop();
         truncated
     }
