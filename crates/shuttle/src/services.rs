@@ -559,7 +559,7 @@ server.serve_forever()
     }
 
     #[tokio::test]
-    async fn a_left_copy_is_ended_with_the_children_in_its_process_group() {
+    async fn a_left_copy_in_this_cgroup_ends_with_the_children_in_its_process_group() {
         use std::os::unix::process::CommandExt;
 
         let dir = tempfile::tempdir().unwrap();
