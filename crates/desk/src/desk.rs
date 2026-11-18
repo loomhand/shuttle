@@ -898,14 +898,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 let (x, y) = self
                     .access
                     .run(CALL_LIMIT, turn.clone(), move |b| {
-                        if !bg {
-                            return Ok(hit_centre(b, &id, os)?.ok_or(ACT_CLICK_MISSED)?);
-                        }
-                        let [x, y, w, h] = b
-                            .node(&id, Extras::BOUNDS, 0)?
-                            .bounds
-                            .ok_or("the element has no screen position")?;
-                        Ok((x + w / 2, y + h / 2))
+                        Ok(hit_centre(b, &id, os, bg)?.ok_or(ACT_CLICK_MISSED)?)
                     })
                     .await?;
                 let note = self.click_element(a.id, (x, y), turn).await?;
@@ -6031,13 +6024,15 @@ pub(crate) mod tests {
         let desk = Desk::new(
             || {
                 let mut f = notepad();
+                f.add("lost", None, "window", &["showing"], Some([0, 0, 50, 50]));
                 f.add(
                     "orphan",
-                    None,
+                    Some("lost"),
                     "button",
                     &["showing"],
                     Some([10, 10, 20, 20]),
                 );
+                f.hits.insert((20, 20), "orphan".into());
                 Ok(f)
             },
             Overlaid(Arc::clone(&calls)),
@@ -6071,6 +6066,35 @@ pub(crate) mod tests {
             .unwrap_err();
         assert!(err.contains("own window could not be found"), "{err}");
         assert_eq!(sent(&calls, "click").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_background_element_click_whose_centre_another_element_of_its_window_takes_sends_nothing()
+     {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || {
+                let mut f = notepad();
+                f.add(
+                    "banner",
+                    Some("w"),
+                    "group",
+                    &["showing"],
+                    Some([110, 100, 60, 20]),
+                );
+                f.hits.insert((140, 110), "banner".into());
+                Ok(f)
+            },
+            Overlaid(Arc::clone(&calls)),
+            Os::Mac,
+        )
+        .background(true);
+        let err = desk
+            .run("desk_act", json!({"id": "ok", "action": "click"}))
+            .await
+            .unwrap_err();
+        assert_eq!(err, ACT_CLICK_MISSED);
+        assert!(sent(&calls, "click").is_empty());
     }
 
     #[tokio::test]

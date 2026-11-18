@@ -80,10 +80,11 @@ pub(crate) fn hit_centre<B: Access>(
     b: &mut B,
     id: &str,
     os: Os,
+    background: bool,
 ) -> Result<Option<(i32, i32)>, String> {
     let node = b.node(id, Extras::BOUNDS, 0)?;
     let chain = b.ancestors(id)?;
-    match reachable(b, id, &node, &chain, os, false) {
+    match reachable(b, id, &node, &chain, os, background) {
         Ok(point) => Ok(Some(point)),
         Err(None) => Ok(None),
         Err(Some(title)) => {
@@ -218,7 +219,7 @@ mod tests {
     fn a_linux_element_a_window_of_another_process_covers_takes_no_click() {
         let mut f = notepad();
         f.covers = Some(("Calculator".into(), Some(9)));
-        let err = hit_centre(&mut f, "ok", Os::Linux).unwrap_err();
+        let err = hit_centre(&mut f, "ok", Os::Linux, false).unwrap_err();
         assert!(err.starts_with("the window \"Calculator\" covers"), "{err}");
         assert_eq!(f.listings, 0);
         assert_eq!(
@@ -231,10 +232,10 @@ mod tests {
             Press::Click(20, 10)
         );
         f.covers = Some((String::new(), Some(9)));
-        let err = hit_centre(&mut f, "ok", Os::Linux).unwrap_err();
+        let err = hit_centre(&mut f, "ok", Os::Linux, false).unwrap_err();
         assert!(err.starts_with("another window covers"), "{err}");
         assert_eq!(
-            hit_centre(&mut f, "ok", Os::Windows).unwrap(),
+            hit_centre(&mut f, "ok", Os::Windows, false).unwrap(),
             Some((140, 110))
         );
     }
@@ -252,7 +253,7 @@ mod tests {
         );
         f.hits.insert((520, 510), "go".into());
         f.covers = Some((String::new(), Some(9)));
-        let err = hit_centre(&mut f, "go", Os::Linux).unwrap_err();
+        let err = hit_centre(&mut f, "go", Os::Linux, false).unwrap_err();
         assert!(err.starts_with("another window covers"), "{err}");
         assert_eq!(
             plan_press(&mut f, "go", Os::Linux, false).unwrap(),
@@ -265,7 +266,7 @@ mod tests {
         let mut f = notepad();
         for cover in [("Find - Notepad", Some(4)), ("w", Some(9)), ("w", None)] {
             f.covers = Some((cover.0.into(), cover.1));
-            let err = hit_centre(&mut f, "ok", Os::Linux).unwrap_err();
+            let err = hit_centre(&mut f, "ok", Os::Linux, false).unwrap_err();
             assert!(
                 err.starts_with(&format!("the window {:?} covers", cover.0)),
                 "{err}"
@@ -273,9 +274,37 @@ mod tests {
         }
         f.covers = None;
         assert_eq!(
-            hit_centre(&mut f, "ok", Os::Linux).unwrap(),
+            hit_centre(&mut f, "ok", Os::Linux, false).unwrap(),
             Some((140, 110))
         );
+    }
+
+    #[test]
+    fn a_background_hit_test_refuses_another_element_of_the_window_and_passes_another_window() {
+        let mut f = notepad();
+        f.add(
+            "banner",
+            Some("w"),
+            "group",
+            &["showing"],
+            Some([110, 100, 60, 20]),
+        );
+        f.add("calc", None, "window", &["showing"], Some([0, 0, 300, 300]));
+        f.add(
+            "key",
+            Some("calc"),
+            "button",
+            &["showing"],
+            Some([130, 100, 20, 20]),
+        );
+        f.hits.insert((140, 110), "banner".into());
+        assert_eq!(hit_centre(&mut f, "ok", Os::Mac, true).unwrap(), None);
+        f.hits.insert((140, 110), "key".into());
+        assert_eq!(
+            hit_centre(&mut f, "ok", Os::Mac, true).unwrap(),
+            Some((140, 110))
+        );
+        assert_eq!(hit_centre(&mut f, "ok", Os::Mac, false).unwrap(), None);
     }
 
     #[test]
@@ -304,7 +333,7 @@ mod tests {
         let mut f = notepad();
         f.behind = true;
         f.covers = Some(("Calculator".into(), Some(9)));
-        let err = hit_centre(&mut f, "ok", Os::Mac).unwrap_err();
+        let err = hit_centre(&mut f, "ok", Os::Mac, false).unwrap_err();
         assert!(err.starts_with("the window \"Calculator\" covers"), "{err}");
         assert_eq!(
             plan_press(&mut f, "ok", Os::Mac, false).unwrap(),
