@@ -6513,7 +6513,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn pointer_input_at_window_pixels_outside_its_shot_sends_nothing() {
+    async fn pointer_input_outside_the_window_it_names_sends_nothing_and_inside_it_goes() {
         let window = "Untitled - Notepad";
         let drag = |x: f64, to_x: f64| json!({"x": x, "y": 100.0, "to_x": to_x, "to_y": 100.0, "window": window});
         let outside = [
@@ -6540,9 +6540,39 @@ pub(crate) mod tests {
                 let err = desk.run(tool, args.clone()).await.unwrap_err();
                 assert_eq!(err, OUTSIDE_SHOT, "{bg} {args}");
             }
+            for (tool, args) in [
+                ("desk_click", json!({"x": 950.0, "y": 100.0, "pid": 4})),
+                (
+                    "desk_scroll",
+                    json!({"direction": "down", "x": 950.0, "y": 100.0, "pid": 4}),
+                ),
+            ] {
+                let err = desk.run(tool, args.clone()).await.unwrap_err();
+                assert_eq!(err, OUTSIDE_WINDOW, "{bg} {args}");
+            }
             for tool in ["click", "scroll", "drag", "bring_to_front"] {
                 assert!(sent(&calls, tool).is_empty(), "{bg} {tool}");
             }
+            for (tool, args) in [
+                (
+                    "desk_click",
+                    json!({"x": 100.0, "y": 100.0, "window": window}),
+                ),
+                (
+                    "desk_scroll",
+                    json!({"direction": "down", "x": 100.0, "y": 100.0, "window": window}),
+                ),
+                ("desk_drag", drag(100.0, 200.0)),
+                ("desk_click", json!({"x": 200.0, "y": 150.0, "pid": 4})),
+                (
+                    "desk_scroll",
+                    json!({"direction": "down", "x": 200.0, "y": 150.0, "pid": 4}),
+                ),
+            ] {
+                assert!(desk.run(tool, args.clone()).await.is_ok(), "{bg} {args}");
+            }
+            let went = ["click", "scroll", "drag"].map(|t| sent(&calls, t).len());
+            assert_eq!(went, [2, 2, 1], "{bg}");
         }
     }
 
