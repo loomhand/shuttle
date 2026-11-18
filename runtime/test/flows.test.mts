@@ -66,6 +66,26 @@ test('a plan marks the chain record dirty before it acts and clears the mark whe
   assert.equal(pend().steps.length, 3)
 })
 
+test('a plan that starts at an untitled window of another process does not continue a chain left at an untitled window, and one of the same process does', async (t) => {
+  const a = { id: 'a1', title: '', role: 'dialog', pid: 10, active: true, app: 'A', owner: 'a0' }
+  const b = { id: 'b1', title: '', role: 'dialog', pid: 20, active: true, app: 'B', owner: 'b0' }
+  let ws = [a]
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify(ws)
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: ws[0], truncated: false, nodes: [{ ref: 0, id: `${ws[0]?.id}/0`, parent: -1, depth: 0, role: 'dialog', name: '', states: ['showing'] }] })
+    return '{"ok":true}'
+  })
+  const chain = () => (JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as Record<string, { pid: number | null; steps: unknown[] }>)['']
+  mkdirSync(process.env.SHUTTLE_FLOWS ?? '', { recursive: true }); writeFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, '{}')
+  assert.equal((await main({ steps: [{ app: 'A' }] })).ok, true)
+  ws = [b]
+  assert.equal((await main({ steps: [{ key: 'shift+a' }] })).ok, true)
+  assert.deepEqual([chain()?.pid, chain()?.steps], [10, [{ app: 'A' }]])
+  ws = [a]
+  assert.equal((await main({ steps: [{ key: 'shift+a' }] })).ok, true)
+  assert.deepEqual([chain()?.pid, chain()?.steps], [10, [{ app: 'A' }, { key: 'shift+a' }]])
+})
+
 test('each caller extends and saves only its own chain, a run that names no caller shares one, and a chain written before callers were kept belongs to that one', async (t) => {
   const was = process.env.SHUTTLE_CALLER
   t.after(() => { if (was === undefined) delete process.env.SHUTTLE_CALLER; else process.env.SHUTTLE_CALLER = was })
