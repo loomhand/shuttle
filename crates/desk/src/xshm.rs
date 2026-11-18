@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use desk_core::window::{TITLE_TIERS, title_matches};
 use x11rb::connection::Connection;
+use x11rb::cookie::Cookie;
 use x11rb::errors::{ConnectionError, ReplyError};
 use x11rb::protocol::shape::{ConnectionExt as _, SK};
 use x11rb::protocol::shm::ConnectionExt as _;
@@ -18,6 +19,7 @@ use x11rb::protocol::xproto::{
 };
 use x11rb::protocol::{ErrorKind, Event};
 use x11rb::rust_connection::RustConnection;
+use x11rb::x11_utils::TryParse;
 
 use crate::lock;
 use crate::model::Modal;
@@ -82,10 +84,7 @@ impl Grabber {
                 screen.root_depth
             ));
         }
-        conn.shm_query_version()
-            .map_err(|e| format!("MIT-SHM: {e}"))?
-            .reply()
-            .map_err(|e| format!("MIT-SHM: {e}"))?;
+        ask(conn.shm_query_version(), "MIT-SHM")?;
         conn.change_window_attributes(
             root,
             &ChangeWindowAttributesAux::new()
@@ -93,7 +92,7 @@ impl Grabber {
         )
         .map_err(|e| format!("watch the root window: {e}"))?;
         let seg = conn.generate_id().map_err(|e| format!("X id: {e}"))?;
-        let _ = conn.xinput_xi_query_version(2, 2).map(|c| c.reply());
+        let _ = conn.xinput_xi_query_version(2, 2).map(Cookie::reply);
         let [
             net_wm_name,
             utf8,
@@ -133,7 +132,7 @@ impl Grabber {
             conn.intern_atom(false, name)
                 .ok()
                 .and_then(|c| c.reply().ok())
-                .map_or(u32::from(AtomEnum::NONE), |r| r.atom)
+                .map_or_else(|| u32::from(AtomEnum::NONE), |r| r.atom)
         });
         let size = usize::from(width) * usize::from(height) * 4;
         // SAFETY: a plain syscall that creates a private segment of `size` bytes.
@@ -186,12 +185,7 @@ impl Grabber {
 
     /// Whether a cua-driver cursor overlay is mapped with a visible shape; the driver's capture leaves it out.
     pub fn overlay_shown(&self) -> Result<bool, String> {
-        let tree = self
-            .conn
-            .query_tree(self.root)
-            .map_err(|e| format!("query tree: {e}"))?
-            .reply()
-            .map_err(|e| format!("query tree: {e}"))?;
+        let tree = ask(self.conn.query_tree(self.root), "query tree")?;
         let names = tree
             .children
             .iter()
@@ -308,23 +302,17 @@ impl Grabber {
 
     /// The window `_NET_ACTIVE_WINDOW` names, the one with keyboard focus.
     pub fn active(&self) -> Option<Window> {
-        let reply = self
-            .conn
-            .get_property(false, self.root, self.net_active, AtomEnum::WINDOW, 0, 1)
-            .ok()?
-            .reply()
-            .ok()?;
-        reply.value32()?.next().filter(|w| *w != 0)
+        self.first(self.root, self.net_active, AtomEnum::WINDOW)
+            .filter(|w| *w != 0)
     }
 
     /// Whether a window manager runs: the root's `_NET_SUPPORTING_WM_CHECK` names a window that exists.
     pub fn wm(&self) -> Result<bool, String> {
-        let check = self
-            .conn
-            .get_property(false, self.root, self.net_wm_check, AtomEnum::WINDOW, 0, 1)
-            .map_err(|e| format!("get _NET_SUPPORTING_WM_CHECK: {e}"))?
-            .reply()
-            .map_err(|e| format!("get _NET_SUPPORTING_WM_CHECK: {e}"))?;
+        let check = ask(
+            self.conn
+                .get_property(false, self.root, self.net_wm_check, AtomEnum::WINDOW, 0, 1),
+            "get _NET_SUPPORTING_WM_CHECK",
+        )?;
         let Some(w) = check
             .value32()
             .and_then(|mut v| v.next())
@@ -430,13 +418,7 @@ impl Grabber {
         if self.active() != Some(window) || self.masters() != Some(1) {
             return Ok(false);
         }
-        let focus = self
-            .conn
-            .get_input_focus()
-            .map_err(|e| format!("input focus: {e}"))?
-            .reply()
-            .map_err(|e| format!("input focus: {e}"))?
-            .focus;
+        let focus = ask(self.conn.get_input_focus(), "input focus")?.focus;
         if !self.inside(focus, window)? {
             return Ok(false);
         }
@@ -462,19 +444,15 @@ impl Grabber {
         let (async_, now) = (GrabMode::ASYNC, x11rb::CURRENT_TIME);
         let status = if pointer {
             let mask = EventMask::NO_EVENT;
-            self.conn
-                .grab_pointer(false, self.root, mask, async_, async_, 0u32, 0u32, now)
-                .map_err(|e| format!("grab pointer: {e}"))?
-                .reply()
-                .map_err(|e| format!("grab pointer: {e}"))?
-                .status
+            let grab = self
+                .conn
+                .grab_pointer(false, self.root, mask, async_, async_, 0u32, 0u32, now);
+            ask(grab, "grab pointer")?.status
         } else {
-            self.conn
-                .grab_keyboard(false, self.root, now, async_, async_)
-                .map_err(|e| format!("grab keyboard: {e}"))?
-                .reply()
-                .map_err(|e| format!("grab keyboard: {e}"))?
-                .status
+            let grab = self
+                .conn
+                .grab_keyboard(false, self.root, now, async_, async_);
+            ask(grab, "grab keyboard")?.status
         };
         if status == GrabStatus::SUCCESS {
             let released = if pointer {
@@ -524,13 +502,7 @@ impl Grabber {
 
     /// The `_NET_WM_PID` of window `w`.
     pub fn pid(&self, w: Window) -> Option<u32> {
-        let reply = self
-            .conn
-            .get_property(false, w, self.net_wm_pid, AtomEnum::CARDINAL, 0, 1)
-            .ok()?
-            .reply()
-            .ok()?;
-        reply.value32()?.next()
+        self.first(w, self.net_wm_pid, AtomEnum::CARDINAL)
     }
 
     /// The title and process of the window manager frame on top at the screen point `at` when it is not the frame of the window with accessibility `bounds`, process `pid` and name `title`; past the desktop shell's windows and the frames' shadows.
@@ -650,12 +622,7 @@ impl Grabber {
 
     /// The mapped children of the root with their geometry, past a cua-driver cursor overlay; the desktop shell's only with `shell`.
     fn children(&self, shell: bool) -> Result<Vec<Placement>, String> {
-        let tree = self
-            .conn
-            .query_tree(self.root)
-            .map_err(|e| format!("query tree: {e}"))?
-            .reply()
-            .map_err(|e| format!("query tree: {e}"))?;
+        let tree = ask(self.conn.query_tree(self.root), "query tree")?;
         let cookies = tree
             .children
             .iter()
@@ -693,19 +660,11 @@ impl Grabber {
 
     /// The windows the window manager manages, bottom to top.
     fn clients(&self) -> Result<Vec<Window>, String> {
-        Ok(self
+        let (root, stacking) = (self.root, self.net_stacking);
+        let sent = self
             .conn
-            .get_property(
-                false,
-                self.root,
-                self.net_stacking,
-                AtomEnum::WINDOW,
-                0,
-                1024,
-            )
-            .map_err(|e| format!("get _NET_CLIENT_LIST_STACKING: {e}"))?
-            .reply()
-            .map_err(|e| format!("get _NET_CLIENT_LIST_STACKING: {e}"))?
+            .get_property(false, root, stacking, AtomEnum::WINDOW, 0, 1024);
+        Ok(ask(sent, "get _NET_CLIENT_LIST_STACKING")?
             .value32()
             .map(Iterator::collect)
             .unwrap_or_default())
@@ -727,12 +686,13 @@ impl Grabber {
 
     /// The window `w` is transient for, if any.
     fn transient_for(&self, w: Window) -> Option<Window> {
-        self.conn
-            .get_property(false, w, AtomEnum::WM_TRANSIENT_FOR, AtomEnum::WINDOW, 0, 1)
-            .ok()
-            .and_then(|r| r.reply().ok())
-            .and_then(|r| r.value32().and_then(|mut v| v.next()))
+        self.first(w, AtomEnum::WM_TRANSIENT_FOR, AtomEnum::WINDOW)
             .filter(|w| *w != 0)
+    }
+
+    fn first(&self, w: Window, atom: impl Into<Atom>, kind: AtomEnum) -> Option<u32> {
+        let sent = self.conn.get_property(false, w, atom, kind, 0, 1);
+        sent.ok()?.reply().ok()?.value32()?.next()
     }
 
     /// Whether frame `w` or the client inside it is transient for `owner`, as a dialog that `owner` opened is.
@@ -923,21 +883,11 @@ impl Grabber {
         let narrow = |v: i32| i16::try_from(v).map_err(|_| format!("rectangle {x},{y} {w}x{h}"));
         let wide = |v: i32| u16::try_from(v).map_err(|_| format!("rectangle {x},{y} {w}x{h}"));
         let (rx, ry, rw, rh) = (narrow(x)?, narrow(y)?, wide(w)?, wide(h)?);
-        self.conn
-            .shm_get_image(
-                self.root,
-                rx,
-                ry,
-                rw,
-                rh,
-                !0,
-                ImageFormat::Z_PIXMAP.into(),
-                self.seg,
-                0,
-            )
-            .map_err(|e| format!("shm get image: {e}"))?
-            .reply()
-            .map_err(|e| format!("shm get image: {e}"))?;
+        let format = ImageFormat::Z_PIXMAP.into();
+        let sent = self
+            .conn
+            .shm_get_image(self.root, rx, ry, rw, rh, !0, format, self.seg, 0);
+        ask(sent, "shm get image")?;
         let len = usize::from(rw) * usize::from(rh) * 4;
         if len > self.size {
             return Err(format!("rectangle {x},{y} {w}x{h} exceeds the screen"));
@@ -980,6 +930,15 @@ struct Framed {
     rect: [i32; 4],
     input: [i32; 4],
     pid: Option<u32>,
+}
+
+pub(crate) fn ask<R: TryParse>(
+    sent: Result<Cookie<'_, RustConnection, R>, ConnectionError>,
+    what: &str,
+) -> Result<R, String> {
+    sent.map_err(|e| format!("{what}: {e}"))?
+        .reply()
+        .map_err(|e| format!("{what}: {e}"))
 }
 
 /// Which 16-pixel squares of a `width` by `height` screen, row-major, a dock rectangle of `docks` (`[x, y, w, h]`) overlaps.

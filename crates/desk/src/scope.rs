@@ -45,14 +45,11 @@ pub async fn adopt(launched: &Value) -> Result<bool, String> {
 }
 
 fn roots(s: &Value) -> Vec<u32> {
-    let mut out = Vec::new();
-    for v in [&s["launcher_pid"], &s["pid"]] {
-        if let Some(p) = v.as_u64().and_then(|p| u32::try_from(p).ok())
-            && !out.contains(&p)
-        {
-            out.push(p);
-        }
-    }
+    let mut out: Vec<u32> = [&s["launcher_pid"], &s["pid"]]
+        .into_iter()
+        .filter_map(|v| u32::try_from(v.as_u64()?).ok())
+        .collect();
+    out.dedup();
     out
 }
 
