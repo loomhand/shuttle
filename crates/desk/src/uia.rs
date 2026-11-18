@@ -91,6 +91,8 @@ pub struct Uia {
     root: IUIAutomationElement,
     ids: HashMap<String, IUIAutomationElement>,
     minted: u64,
+    unnamed: HashMap<String, Vec<(String, IUIAutomationElement)>>,
+    walking: Vec<(String, IUIAutomationElement)>,
     tops: HashMap<isize, Top>,
     walked: isize,
     shown: Vec<Shown>,
@@ -125,6 +127,8 @@ impl Uia {
             root,
             ids: HashMap::new(),
             minted: 0,
+            unnamed: HashMap::new(),
+            walking: Vec::new(),
             tops: HashMap::new(),
             walked: 0,
             shown: Vec::new(),
@@ -136,9 +140,29 @@ impl Uia {
     }
 
     fn id_of(&mut self, el: &IUIAutomationElement) -> Result<String, String> {
-        let id = own_id(runtime_id(el)?, &mut self.minted);
+        let runtime = runtime_id(el)?;
+        let unnamed = runtime.is_empty();
+        let id = own_id(runtime, &mut self.minted);
+        if unnamed {
+            self.walking.push((id.clone(), el.clone()));
+        }
         self.ids.entry(id.clone()).or_insert_with(|| el.clone());
         Ok(id)
+    }
+
+    fn found_id(&mut self, el: &IUIAutomationElement) -> Result<String, String> {
+        let runtime = runtime_id(el)?;
+        if !runtime.is_empty() {
+            self.ids
+                .entry(runtime.clone())
+                .or_insert_with(|| el.clone());
+            return Ok(runtime);
+        }
+        let walked = self.unnamed.values().flatten();
+        match known(walked, |c| same(&self.auto, el, c)) {
+            Some(id) => Ok(id),
+            None => self.id_of(el),
+        }
     }
 
     fn cached(
@@ -354,7 +378,9 @@ impl Access for Uia {
     }
 
     fn evict(&mut self) {
-        evict_ids(&mut self.ids, lock(&LAST).values());
+        if evict_ids(&mut self.ids, lock(&LAST).values()) {
+            self.unnamed.clear();
+        }
     }
 
     fn hint(&mut self) -> Option<u64> {
@@ -392,6 +418,7 @@ impl Access for Uia {
         }
         let fetched = started.elapsed().as_micros();
         let mut nodes = Vec::new();
+        self.walking.clear();
         let mut truncated = self.walk(&cached, &kids, None, 0, extras, &mut nodes)?;
         let walked = started.elapsed().as_micros() - fetched;
         if !truncated {
@@ -422,6 +449,8 @@ impl Access for Uia {
             }
         }
         let menus = started.elapsed().as_micros() - fetched - walked;
+        let unnamed = std::mem::take(&mut self.walking);
+        self.unnamed.insert(frame.id.clone(), unnamed);
         Ok(Tree {
             frame: frame.clone(),
             nodes,
@@ -456,11 +485,10 @@ impl Access for Uia {
             let Ok(parent) = (unsafe { walker.GetParentElement(&at) }) else {
                 break;
             };
-            // SAFETY: `self.auto`, `parent` and `self.root` are live UIA objects of this thread.
-            if unsafe { self.auto.CompareElements(&parent, &self.root) }.is_ok_and(BOOL::as_bool) {
+            if same(&self.auto, &parent, &self.root) {
                 break;
             }
-            chain.push(self.id_of(&parent)?);
+            chain.push(self.found_id(&parent)?);
             at = parent;
         }
         chain.reverse();
@@ -482,7 +510,7 @@ impl Access for Uia {
     fn at(&mut self, _: &str, x: i32, y: i32) -> Result<Option<String>, String> {
         let _bounded = Bounded::new(&self.auto);
         let hit = element_at(&self.auto, x, y)?;
-        self.id_of(&hit).map(Some)
+        self.found_id(&hit).map(Some)
     }
 
     fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
@@ -1061,6 +1089,27 @@ fn own_id(runtime: String, minted: &mut u64) -> String {
     format!("u{minted}")
 }
 
+fn known<'a, T: 'a>(
+    walked: impl IntoIterator<Item = &'a (String, T)>,
+    mut same: impl FnMut(&T) -> bool,
+) -> Option<String> {
+    let mut found = None;
+    for (id, el) in walked {
+        if same(el) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(id);
+        }
+    }
+    found.cloned()
+}
+
+fn same(auto: &IUIAutomation, a: &IUIAutomationElement, b: &IUIAutomationElement) -> bool {
+    // SAFETY: `auto`, `a` and `b` are live UIA objects of this thread.
+    unsafe { auto.CompareElements(a, b) }.is_ok_and(BOOL::as_bool)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1099,6 +1148,20 @@ mod tests {
         assert_eq!(own_id(String::new(), &mut minted), "u1");
         assert_eq!(own_id(String::new(), &mut minted), "u2");
         assert_eq!(minted, 2);
+    }
+
+    #[test]
+    fn a_looked_up_element_without_a_runtime_id_takes_the_id_of_the_one_walked_element_it_matches()
+    {
+        let walked = [
+            ("u1".to_owned(), 1),
+            ("u2".to_owned(), 5),
+            ("u3".to_owned(), 8),
+        ];
+        assert_eq!(known(&walked, |&e| e == 5).as_deref(), Some("u2"));
+        assert_eq!(known(&walked, |&e| e == 6), None);
+        assert_eq!(known(&walked, |_| true), None);
+        assert_eq!(known(&[] as &[(String, i32)], |_| true), None);
     }
 
     #[test]
