@@ -326,3 +326,19 @@ test('an app step with a title takes the titled window of its own app, the exact
   assert.equal(own.ok, true, JSON.stringify(own))
   assert.deepEqual(focused, [['Untitled 2', 8]])
 })
+
+test('an app step whose launch shows no window says that the launch went out, so a retry waits instead of launching again', async (t) => {
+  const other = { id: '1', title: 'Calculator', role: 'window', pid: 7, active: true, app: 'Calculator' }
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify([other])
+    if (tool === 'desk_launch') return JSON.stringify({ ok: true, launched: 'Slowpad' })
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: other, nodes: [], truncated: false })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'Slowpad' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(String(r.escalate?.reason), /^app "Slowpad" was launched and showed no window within 8 s; it may still open/, JSON.stringify(r))
+  assert.equal(calls.filter((c) => c === 'desk_launch').length, 1, calls.join(' '))
+})

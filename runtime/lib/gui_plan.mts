@@ -1322,7 +1322,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       const t0 = Date.now(); launched = true
       started = await desk.launch(s.app); background = started.background === true
       for (const end = Date.now() + 8000; !(w = await has()); await sleep(50)) {
-        if (Date.now() > end) throw new Surprise(`app "${s.app}" has no window`, await seen())
+        if (Date.now() > end) throw new Surprise(`app "${s.app}" was launched and showed no window within 8 s; it may still open: wait for it before launching it again`, await seen())
       }
       tick('launch', t0)
     }
