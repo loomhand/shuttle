@@ -875,7 +875,7 @@ impl Atspi {
 
     /// Asks the app on `bus` for its root's attributes once, as a screen reader does: Chromium builds its tree only after that.
     async fn wake(&self, bus: &str) {
-        if first_wake(bus) {
+        if !is_hung(bus) && first_wake(bus) {
             let root = Obj::at(bus, ROOT);
             let _ = self.reply(&root, ACCESSIBLE, "GetAttributes", &()).await;
         }
@@ -1794,12 +1794,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_hung_app_costs_its_wake_no_wait_and_is_not_asked_again() {
+    async fn a_hung_app_costs_its_wake_no_wait_and_keeps_it_for_its_next_tree() {
         let started = tokio::time::Instant::now();
         mark_hung(":9.95");
         Atspi::default().wake(":9.95").await;
         assert_eq!(started.elapsed(), Duration::ZERO);
-        assert!(!first_wake(":9.95"));
+        assert!(first_wake(":9.95"));
     }
 
     #[test]
