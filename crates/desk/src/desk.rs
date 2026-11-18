@@ -8882,6 +8882,38 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn on_linux_focus_by_id_fits_the_bounds_of_a_lone_window_whose_title_holds_the_frames() {
+        let elsewhere: &'static [(i64, &str, f64)] =
+            &[(7, "Untitled - Notepad \u{2014} Konsole", 900.0)];
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(LoneDoc),
+            Listed(Arc::clone(&calls), elsewhere),
+            Os::Linux,
+        );
+        let focus = json!({"window": "Untitled - Notepad", "pid": 4, "id": "w1"});
+        let err = desk.run("desk_focus", focus.clone()).await.unwrap_err();
+        assert_eq!(
+            err,
+            "window id \"w1\" is not in the driver's window list, so nothing was sent"
+        );
+        assert!(sent(&calls, "bring_to_front").is_empty());
+        let fitting: &'static [(i64, &str, f64)] =
+            &[(7, "Untitled - Notepad \u{2014} Konsole", 0.0)];
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(LoneDoc),
+            Listed(Arc::clone(&calls), fitting),
+            Os::Linux,
+        );
+        desk.run("desk_focus", focus).await.unwrap();
+        assert_eq!(
+            sent(&calls, "bring_to_front"),
+            [json!({"pid": 4, "window_id": 7})]
+        );
+    }
+
+    #[tokio::test]
     async fn on_linux_focus_by_id_takes_a_window_whose_title_holds_the_frames_only_where_its_bounds_fit()
      {
         let apart: &'static [(i64, &str, f64)] = &[
@@ -12582,6 +12614,52 @@ pub(crate) mod tests {
                 }}),
                 _ => json!({}),
             })
+        }
+    }
+
+    struct LoneDoc;
+
+    impl Access for LoneDoc {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            Ok(vec![frame(
+                "w1",
+                "Untitled - Notepad",
+                4,
+                true,
+                Some("Notepad"),
+            )])
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            Ok(Tree {
+                frame: frame.clone(),
+                ..Tree::default()
+            })
+        }
+
+        fn node(&mut self, id: &str, _: Extras, _: usize) -> Result<Node, String> {
+            Ok(Node {
+                id: id.into(),
+                role: "window",
+                bounds: Some([0, 0, 800, 600]),
+                ..Node::default()
+            })
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Ok(())
         }
     }
 
