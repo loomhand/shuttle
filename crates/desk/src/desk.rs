@@ -694,24 +694,25 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         };
         let (window, pid, id) = (a.window, a.pid, a.id);
         let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
-        let (tree, found) = self
+        let (tree, found, rivals) = self
             .access
             .run(TREE_LIMIT, (), move |b| {
                 b.evict();
                 let listed = frames(b, pid, &allow)?;
-                let frame = live(match id {
+                let (frame, rivals) = match id {
                     Some(id) => {
                         let Some(f) = listed.into_iter().find(|f| f.id == id) else {
                             return Err(away(b, background, |f| f.id == id)
                                 .unwrap_or_else(|| format!("no window {id}")));
                         };
                         allow.check_frame(Some(&f))?;
-                        f
+                        (f, 1)
                     }
                     None => pick(b, &allow, background, listed, window.as_deref(), pid)?,
-                })?;
+                };
+                let frame = live(frame)?;
                 let found = started.elapsed().as_micros();
-                Ok((b.tree(&frame, extras)?, found))
+                Ok((b.tree(&frame, extras)?, found, rivals))
             })
             .await?;
         let mut phases = Map::new();
@@ -725,6 +726,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             "truncated": tree.truncated,
         });
         out["phases"] = Value::Object(phases);
+        if rivals > 1 {
+            out["matches"] = rivals.into();
+        }
         if a.text {
             out["text"] = outline(&tree.nodes, a.max_chars.unwrap_or(NAME_CHARS)).into();
         } else {
@@ -751,13 +755,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         };
         let (window, pid) = (a.window, a.pid);
         let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
-        let mut tree = self
+        let (mut tree, rivals) = self
             .access
             .run(TREE_LIMIT, (), move |b| {
                 b.evict();
                 let listed = frames(b, pid, &allow)?;
-                let frame = live(pick(b, &allow, background, listed, window.as_deref(), pid)?)?;
-                b.tree(&frame, extras)
+                let (frame, rivals) = pick(b, &allow, background, listed, window.as_deref(), pid)?;
+                Ok((b.tree(&live(frame)?, extras)?, rivals))
             })
             .await?;
         let found: Vec<Value> = matches(&tree.nodes, &a.name, a.role.as_deref())
@@ -767,6 +771,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .collect();
         let mut out = json!({"window": tree.frame});
         out["found"] = Value::Array(found);
+        if rivals > 1 {
+            out["matches"] = rivals.into();
+        }
         Ok(out.to_string())
     }
 
@@ -960,7 +967,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     .flatten();
                 let frame = live(match held {
                     Some(held) => held?,
-                    None => pick(b, &allow, background, frames, window, a.pid)?,
+                    None => pick(b, &allow, background, frames, window, a.pid)?.0,
                 })?;
                 let Some(hit) = b.at(&frame.id, a.x, a.y)? else {
                     return Ok(json!({"found": null, "window": frame}).to_string());
@@ -1001,7 +1008,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.access
             .run(CALL_LIMIT, turn, move |b| {
                 let listed = frames(b, a.pid, &allow)?;
-                let frame = live(pick(b, &allow, background, listed, Some(&a.window), a.pid)?)?;
+                let frame = live(pick(b, &allow, background, listed, Some(&a.window), a.pid)?.0)?;
                 b.close(&frame)?;
                 Ok(
                     Value::from_iter([("ok", Value::from(true)), ("title", frame.title.into())])
@@ -2926,14 +2933,18 @@ fn pick<B: Access>(
     frames: Vec<Frame>,
     window: Option<&str>,
     pid: Option<u32>,
-) -> Result<Frame, String> {
-    allow.pick(frames, window, pid).map_err(|e| {
+) -> Result<(Frame, usize), String> {
+    let rivals = window.map_or(1, |want| {
+        window::rivals(frames.iter().filter(|f| allow.admits_frame(f)), want, pid)
+    });
+    let frame = allow.pick(frames, window, pid).map_err(|e| {
         let want = window.unwrap_or_default();
         let named = |f: &Frame| {
             pid.is_none_or(|p| f.pid == Some(p)) && title_matches(TITLE_TIERS - 1, &f.title, want)
         };
         window.and_then(|_| away(b, background, named)).unwrap_or(e)
-    })
+    })?;
+    Ok((frame, rivals))
 }
 
 fn away<B: Access>(b: &mut B, background: bool, named: impl Fn(&Frame) -> bool) -> Option<String> {
@@ -7200,6 +7211,38 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(menus, [false, true, true]);
+    }
+
+    #[tokio::test]
+    async fn a_read_by_a_title_two_windows_share_says_how_many_match() {
+        let twins = || {
+            Ok(Stub {
+                frames: vec![
+                    frame("a", "Untitled", 4, true, Some("TextEdit")),
+                    frame("b", "Untitled", 8, false, Some("Pages")),
+                ],
+                ..Stub::default()
+            })
+        };
+        let desk = Desk::new(twins, Slow(Arc::default()), Os::Mac);
+        for (tool, args) in [
+            ("desk_snapshot", json!({"window": "Untitled"})),
+            ("desk_find", json!({"name": "x", "window": "Untitled"})),
+        ] {
+            let out = desk.run(tool, args).await.unwrap();
+            let v: Value = serde_json::from_str(&out.text).unwrap();
+            assert_eq!(
+                (&v["window"]["id"], &v["matches"]),
+                (&json!("a"), &json!(2)),
+                "{tool}"
+            );
+        }
+        let one = desk
+            .run("desk_snapshot", json!({"window": "Untitled", "pid": 8}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&one.text).unwrap();
+        assert!(v.get("matches").is_none(), "{v}");
     }
 
     #[tokio::test]
