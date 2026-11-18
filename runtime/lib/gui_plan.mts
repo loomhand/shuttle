@@ -157,6 +157,7 @@ let prior = new Set<string>()
 let settleWs: { ws: Win[]; at: number; calls: number } | null = null
 let picked: Win[] = []
 let atStart = new Set<string>()
+let aimed = false
 let deadline = 0
 let sealStep = (): void => {}
 
@@ -209,6 +210,7 @@ async function perform(p: Params): Promise<Result> {
   const vetted = new Set<string>()
   const startTitles = new Set(known)
   const start = frontOf(ws0); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
+  const chained = !flow && !p.start && !!held && Date.now() - held.at < CHAIN_AGE && (held.window === startWindow || (held.pid !== null && held.pid === startPid)) && held.steps.some((x) => !!x.app || !!x.wait)
   const startRead = start && !start.title.trim() ? await look(start) : null
   const startAlert = !!startRead && isAlert(startRead.text)
   const startKept = start && startRead?.snap && startRead.nodes ? { id: start.id, snap: startRead.snap, nodes: startRead.nodes } : undefined
@@ -245,7 +247,7 @@ async function perform(p: Params): Promise<Result> {
       if (f && pre) vetted.add(`${f.id} ${f.pid} ${f.title}`)
       const kept = f && pre?.snap && pre.nodes && f.title !== pressed?.title ? { ...r, id: f.id, snap: pre.snap, nodes: pre.nodes } : undefined
       const prev = plan[i - 1]
-      unheard = undefined; actioned = false; picked = []; if (!(prev?.wait || prev?.expect || prev?.verify)) lastPress = pressedId; pressedId = undefined
+      unheard = undefined; actioned = false; picked = []; aimed = chained || plan.slice(0, i).some((x) => !!x.app || !!x.wait); if (!(prev?.wait || prev?.expect || prev?.verify)) lastPress = pressedId; pressedId = undefined
       const runs = desk.foreground.runs + foreground.steps
       sealStep = () => { rec.secret = true; if (secure(planned)) return; planned.secret = s.secret = true; left() }
       await run(s, rec, kept).catch(async (e: unknown) => {
@@ -734,14 +736,15 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
   }
 }
 function modalOver(w: Win, under: Win) {
-  if (alertIn(w, under)) throw new Surprise(`an untitled dialog of "${w.app ?? under.title}" is in front of "${under.title}" and takes all of its app's input until it closes, and a plan never presses a button of such a dialog: ${ALERT_WAYS}; nothing was sent`)
+  if (alertIn(w, under)) throw new Surprise(alertText(w, under))
 }
 function behindAlert(w: Win, ws: Win[]) {
   for (const x of ws) modalOver(x, w)
-  const under = lastSeen && atStart.has(w.id) ? ws.find((x) => x.title === lastSeen && x.pid === w.pid) : undefined
-  if (under) modalOver(w, under)
+  if (aimed && atStart.has(w.id) && lone(w)) throw new Surprise(alertText(w, lastSeen ? ws.find((x) => x.title === lastSeen && x.pid === w.pid) : undefined))
 }
-function alertIn(w: Win, under: Win) { return OS === 'darwin' && w.role === 'dialog' && !w.title.trim() && w.owner === undefined && w.pid === under.pid && w.id !== under.id }
+function alertText(w: Win, under?: Win) { return `an untitled dialog of "${w.app ?? under?.title ?? 'its app'}" ${under ? `is in front of "${under.title}" and ` : ''}takes all of its app's input until it closes, and a plan never presses a button of such a dialog: ${ALERT_WAYS}; nothing was sent` }
+function lone(w: Win) { return OS === 'darwin' && w.role === 'dialog' && !w.title.trim() && w.owner === undefined }
+function alertIn(w: Win, under: Win) { return lone(w) && w.pid === under.pid && w.id !== under.id }
 function awaited(title: string, want: string, saw?: string) { return norm(title).includes(norm(want)) || (!!saw && title === saw) }
 function found(w: Win, t0: number): Win { known.add(w.title); tick('wait', t0); return w }
 
@@ -1426,6 +1429,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     // close never shuts an app's main window unless the step names it
     const t0 = Date.now(); const ws = s.window ? [] : await listNow(); let w: Win | null = s.window ? await windowFor(s.window, 3000, s.seen) : frontOf(ws)
     if (w && s.window) behindAlert(w, picked)
+    const many = w && !s.window ? ws.filter((x) => lone(x) && x.pid === w?.pid) : []
+    if (w && many.length > 1) throw new Surprise(`${many.length} untitled dialogs of "${w.app ?? w.title}" are open, and a plan never picks one of them: press the button meant with the desk tool (snapshot with that dialog's id from desk windows, then press with the button's id); nothing was sent`)
     const o = w && !s.window ? await outline(w, {}, kept) : ''
     const self = w
     const others = self ? ws.filter((x) => x.pid === self.pid && x.title !== self.title && (!BG || ours(x, ws))) : []
@@ -1433,7 +1438,6 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     if (w && !s.window && !isDialog(o)) {
       const own = self ? ws.filter((x) => alertIn(x, self)) : []
-      if (own.length > 1) throw new Surprise(`${own.length} untitled dialogs of "${w.app ?? w.title}" are in front of "${w.title}", and a plan never picks one of them: press the button meant with the desk tool (snapshot with that dialog's id from desk windows, then press with the button's id); nothing was sent`)
       let d: Win | null = own[0] ?? null; if (!d) for (const x of others) if (isDialog(await outline(x))) { d = x; break }
       const pid = w.pid
       if (BG && !d && OS === 'darwin' && ws.some((x) => x.pid === pid && x.owner === undefined && x.role === 'dialog' && !!x.title.trim() && !adopted.has(x.id))) throw new Surprise(`a dialog of "${w.title}"'s app has no owner the OS names, and background close never guesses whether it belongs to the plan's window: name it with {close: true, window}`, await seen())
