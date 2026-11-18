@@ -113,18 +113,11 @@ impl Proc {
             .current_dir(home)
             .env(SOCKET_VAR, &self.socket)
             .env("SHUTTLE_SOCKET", &self.desk)
-            .stdin(Stdio::null())
-            .kill_on_drop(true);
+            .stdin(Stdio::null());
         for var in &self.key_vars {
             cmd.env_remove(var);
         }
-        #[cfg(unix)]
-        cmd.process_group(0);
-        let running = cmd
-            .spawn()
-            .map_err(|e| format!("start {}: {e}", self.bin.display()))
-            .and_then(|c| Running::new(c, false))?;
-        Ok(running)
+        Running::spawn(&mut cmd, false)
     }
 
     async fn supervise(self, mut stopped: oneshot::Receiver<()>) {

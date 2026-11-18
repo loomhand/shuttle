@@ -102,14 +102,8 @@ impl Proc {
             .envs(cfg!(target_os = "linux").then_some((REMOVE_MASTERS, "1")))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        #[cfg(unix)]
-        cmd.process_group(0);
-        let mut running = cmd
-            .spawn()
-            .map_err(|e| format!("start {}: {e}", self.bin.display()))
-            .and_then(|c| Running::new(c, true))?;
+            .stderr(Stdio::null());
+        let mut running = Running::spawn(&mut cmd, true)?;
         let mut waited = Duration::ZERO;
         while server::connect(&self.endpoint).await.is_err() {
             if let Ok(Some(status)) = running.child.try_wait() {
