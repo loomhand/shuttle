@@ -357,9 +357,6 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
         "desk_close" => {
             let a: WindowArgs = parse(args)?;
             let frame = named(frames(android).await?, &a)?;
-            if frame.guessed {
-                return Err(UNSETTLED.to_owned());
-            }
             if !frame.active {
                 return Err(format!(
                     "{} is not in front, and back closes only the front window",
@@ -1101,10 +1098,12 @@ fn front_id(
 }
 
 fn named(frames: Vec<Frame>, a: &WindowArgs) -> Result<Frame, String> {
-    match a.id.as_deref() {
+    let frame = match a.id.as_deref() {
         Some(id) => window::pick_id(frames, id, &a.window, a.pid, |f| f.id.as_str()),
         None => window::pick_input(frames, &a.window, a.pid, window::BY_ID),
-    }
+    }?;
+    frame.settled()?;
+    Ok(frame)
 }
 
 async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<bool, String> {
@@ -1139,7 +1138,6 @@ async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<bool, String>
 /// The window `window` names, which must be in front; a package name without a window starts its app.
 async fn focus(android: &Android, a: WindowArgs) -> Result<String, String> {
     let frame = match named(frames(android).await?, &a) {
-        Ok(f) if f.guessed => return Err(UNSETTLED.to_owned()),
         Ok(f) => f,
         Err(e) if a.id.is_none() && is_package(&a.window) && e.starts_with("no window") => {
             android.launch(&a.window).await?;

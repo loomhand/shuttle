@@ -2090,6 +2090,28 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_named_close_or_focus_while_no_window_is_in_front_is_refused_before_any_key() {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.windows("unsettled");
+        for verb in ["desk_close", "desk_focus"] {
+            for args in [
+                serde_json::json!({"window": "Settings"}),
+                serde_json::json!({"window": "Settings", "id": "7"}),
+            ] {
+                let err = desk(&fake, verb, args).await.unwrap_err();
+                assert!(
+                    err.starts_with("the device lists no window in front"),
+                    "{verb} {err}"
+                );
+            }
+        }
+        assert_eq!(log(&fake, "requests").matches("key").count(), 0);
+        assert_eq!(log(&fake, "adbinput"), "");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_close_sends_no_closing_back_while_the_list_after_the_keyboard_back_has_no_front() {
         let fake = Fake::new();
         fake.put("inject.answer", "true");
