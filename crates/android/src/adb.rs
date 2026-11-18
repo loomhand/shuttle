@@ -1929,7 +1929,7 @@ mod tests {
         fake.windows("landscape");
         fake.put(
             "dump.xml",
-            r#"<hierarchy window="7"><node text="Far" class="android.widget.TextView" clickable="true" visible="true" path="0.0" bounds="[900,200][1100,300]" /></hierarchy>"#,
+            r#"<hierarchy window="7"><node text="Far" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0" bounds="[900,200][1100,300]" /></hierarchy>"#,
         );
         let mut png = Vec::new();
         let mut enc = png::Encoder::new(&mut png, 1280, 720);
@@ -2319,7 +2319,7 @@ mod tests {
     #[tokio::test]
     async fn a_type_says_protected_when_a_line_went_into_a_password_field() {
         let secret = r#"{"editable":true,"password":true,"window":true,"id":7,"len":0,"hash":0,"tail":"","bounds":[0,0,720,100]}"#;
-        let pasted = r#"{"editable":true,"password":true,"window":true,"id":7,"len":2,"hash":5,"tail":"","bounds":[0,0,720,100]}"#;
+        let pasted = r#"{"editable":true,"password":true,"window":true,"id":7,"len":2,"hash":0,"tail":"","bounds":[0,0,720,100]}"#;
         for (focus, after, want) in [
             (
                 secret.to_owned(),
@@ -2396,19 +2396,12 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn an_unnamed_type_pastes_after_a_return_only_into_the_window_its_first_line_went_into() {
-        let focus = |id: i64, text: &str| {
-            format!(
-                r#"{{"editable":true,"password":false,"window":true,"id":{id},"len":{},"hash":{},"tail":"{text}","bounds":[0,0,720,100]}}"#,
-                text.len(),
-                text.len()
-            )
-        };
-        for (after_return, want) in [(focus(9, ""), false), (focus(7, "a"), true)] {
+        for (after_return, want) in [(focused(9, ""), false), (focused(7, "a"), true)] {
             let fake = Fake::new();
             fake.put("inject.answer", "true");
             fake.windows("");
-            fake.put("focus.json", &focus(7, ""));
-            fake.put("after-paste.json", &focus(7, "a"));
+            fake.put("focus.json", &focused(7, ""));
+            fake.put("after-paste.json", &focused(7, "a"));
             fake.put("after-key-focus.json", &after_return);
             let mut peer = controlled(&fake.android).await;
             tokio::spawn(async move {
@@ -3373,7 +3366,7 @@ mod tests {
     #[test]
     fn the_ui_servers_focus_answer_decodes_and_null_is_no_focus() {
         let f: Option<Focus> = serde_json::from_str(
-            r#"{"editable":true,"password":false,"window":true,"len":6,"hash":-1,"tail":"ab \u4f60\u597d","bounds":[100,80,620,180]}"#,
+            r#"{"editable":true,"password":false,"window":true,"id":null,"len":5,"hash":93184636,"tail":"ab \u4f60\u597d","bounds":[100,80,620,180]}"#,
         )
         .unwrap();
         let f = f.unwrap();
@@ -3603,8 +3596,8 @@ mod tests {
     fn focused(id: i64, text: &str) -> String {
         format!(
             r#"{{"editable":true,"password":false,"window":true,"id":{id},"len":{},"hash":{},"tail":"{text}","bounds":[0,0,720,100]}}"#,
-            text.len(),
-            text.len()
+            text.encode_utf16().count(),
+            java_hash(text)
         )
     }
 
@@ -3682,7 +3675,7 @@ mod tests {
             self.put(
                 name,
                 &format!(
-                    r#"<hierarchy{attr}><node text="OK" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0" bounds="[100,200][300,300]" /></hierarchy>"#
+                    r#"<hierarchy{attr}><node text="OK" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0" bounds="[100,200][300,300]" /></hierarchy>"#
                 ),
             );
         }
@@ -3732,7 +3725,7 @@ mod tests {
         fake.put(
             name,
             &format!(
-                r#"<hierarchy window="7"><node text="" class="androidx.recyclerview.widget.RecyclerView" scrollable="true" visible="true" path="0.0" bounds="[0,160][720,1184]" /><node text="Target" class="android.widget.TextView" clickable="true" visible="true" path="0.0.1" bounds="{target}" /></hierarchy>"#
+                r#"<hierarchy window="7"><node text="" class="androidx.recyclerview.widget.RecyclerView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="true" visible="true" path="0.0" bounds="[0,160][720,1184]" /><node text="Target" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.1" bounds="{target}" /></hierarchy>"#
             ),
         );
     }
@@ -3845,10 +3838,15 @@ mod tests {
             window: true,
             bounds: [100, 80, 620, 180],
             len: text.encode_utf16().count(),
-            hash: text.len() as i32,
+            hash: java_hash(text),
             tail: text.chars().skip(n.saturating_sub(32)).collect(),
             ..Focus::default()
         }
+    }
+
+    fn java_hash(text: &str) -> i32 {
+        text.encode_utf16()
+            .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(i32::from(c)))
     }
 
     async fn typed(
