@@ -2219,9 +2219,10 @@ mod tests {
         assert_eq!(log(&fake, "requests").matches("key 4").count(), 1);
         let fake = Fake::new();
         fake.put("inject.answer", "true");
+        fake.put("after-input.json", &documents(false));
         fake.windows("");
         desk(&fake, "desk_close", close()).await.unwrap();
-        assert_eq!(log(&fake, "requests"), "windows\nkey 4\n");
+        assert_eq!(log(&fake, "requests"), "windows\nkey 4\nwindows\n");
     }
 
     #[cfg(unix)]
@@ -2291,6 +2292,59 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("was not closed"), "{err}");
         assert_eq!(log(&fake, "requests").matches("key 4").count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_close_whose_back_a_popup_took_answers_ok_with_the_window_still_open() {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.windows("");
+        let app = log(&fake, "windows.json");
+        fake.put("after-input.json", &app);
+        let popup = r#"{"id":12,"type":1,"layer":1,"title":"","package":"com.android.settings","active":false,"focused":false,"bounds":[40,180,680,600]},"#;
+        fake.put("windows.json", &app.replacen('[', &format!("[{popup}"), 1));
+        let out = desk(
+            &fake,
+            "desk_close",
+            serde_json::json!({"window": "Settings - com.android.settings"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            out.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["ok", "title", "unverified"]
+        );
+        assert_eq!(out["title"], "Settings - com.android.settings");
+        assert_eq!(
+            out["unverified"],
+            "the window was sent the back key and is still open in front 1 s later, so a popup may have taken the key, or the app keeps the window open on back: read the window list before closing again"
+        );
+        assert_eq!(
+            log(&fake, "requests"),
+            format!("windows\nkey 4\n{}", "windows\n".repeat(10))
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_close_whose_window_leaves_at_the_first_read_answers_ok_after_one_more_list() {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.put("after-input.json", &documents(false));
+        fake.windows("");
+        let out = desk(
+            &fake,
+            "desk_close",
+            serde_json::json!({"window": "Settings"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            out,
+            serde_json::json!({"ok": true, "title": "Settings - com.android.settings"})
+        );
+        assert_eq!(log(&fake, "requests"), "windows\nkey 4\nwindows\n");
     }
 
     #[cfg(unix)]
