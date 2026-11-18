@@ -123,6 +123,10 @@ const RETRIED: [&str; 4] = [
     "end_session",
 ];
 
+tokio::task_local! {
+    static CALLER: String;
+}
+
 /// The computer verbs' state: the element tokens of each session's latest window state and the scale of its latest screenshot.
 pub struct Computer {
     driver: Arc<Driver>,
@@ -136,8 +140,8 @@ pub struct Computer {
     titles: std::sync::Mutex<HashMap<u32, String>>,
     /// Per session, screen pixels per image pixel of the last screenshot.
     scales: std::sync::Mutex<HashMap<String, f64>>,
-    /// Screen pixels per image pixel of the latest screenshot of any session, one-shot included.
-    last_scale: std::sync::Mutex<f64>,
+    /// Per caller, screen pixels per image pixel of its latest screenshot of any session, one-shot included.
+    last_scale: std::sync::Mutex<HashMap<String, f64>>,
     backing: std::sync::Mutex<f64>,
     /// The screen blocks that change while no action runs, which the settle ignores; sampled from the first computer call.
     volatile: OnceLock<Volatile>,
@@ -159,7 +163,7 @@ impl Computer {
             grabber: std::sync::Mutex::new(None),
             titles: std::sync::Mutex::new(HashMap::new()),
             scales: std::sync::Mutex::new(HashMap::new()),
-            last_scale: std::sync::Mutex::new(1.0),
+            last_scale: std::sync::Mutex::new(HashMap::new()),
             backing: std::sync::Mutex::new(1.0),
             volatile: OnceLock::new(),
             ids: AtomicU64::new(0),
@@ -190,6 +194,10 @@ impl Computer {
         if default {
             args["session"] = Self::default_session(agent).into();
         }
+        CALLER.scope(agent.to_owned(), self.verb(tool, args)).await
+    }
+
+    async fn verb(&self, tool: &str, args: Value) -> Result<Output, String> {
         match tool {
             "desk_computer_state" => self.state(args).await,
             "desk_computer_act" if self.background => Err(BACKGROUND_ACT.to_owned()),
@@ -505,14 +513,14 @@ impl Computer {
         })
     }
 
-    /// `region` {x, y, w, h} in the pixels of `session`'s last screenshot, else of any session's, at full resolution unless `max_edge` is smaller.
+    /// `region` {x, y, w, h} in the pixels of `session`'s last screenshot, else of the caller's latest, at full resolution unless `max_edge` is smaller.
     async fn zoom(
         &self,
         session: Option<&str>,
         region: &Value,
         max_edge: Option<u32>,
     ) -> Result<Output, String> {
-        let k = session.map_or_else(|| *lock(&self.last_scale), |s| self.scale_of(s));
+        let k = session.map_or_else(|| self.latest_scale(), |s| self.scale_of(s));
         let area = rect_of(region)
             .ok_or("region needs x, y, w and h")?
             .map(|v| v * k);
@@ -543,7 +551,7 @@ impl Computer {
         let (ox, oy) = (f64::from(rect[0]) / k, f64::from(rect[1]) / k);
         Ok(Output {
             text: format!(
-                "region of the screen: {}; its pixel px,py is x = {ox:.0} + px*{f:.2}, y = {oy:.0} + py*{f:.2} for computer_act",
+                "region of the screen: {}; its pixel px,py is x = {ox:.0} + px*{f:.2}, y = {oy:.0} + py*{f:.2} for computer_act with scale {k:.4}",
                 weigh(&image)
             ),
             image_b64: Some(image),
@@ -1188,14 +1196,19 @@ impl Computer {
             lock(&self.scales).insert(session.to_owned(), scale);
         }
         if !shared {
-            *lock(&self.last_scale) = scale;
+            let _ = CALLER.try_with(|a| lock(&self.last_scale).insert(a.clone(), scale));
         }
     }
 
-    /// Screen pixels per pixel of the last screenshot of `session`, else of any session, so its x,y map to the screen.
+    /// Screen pixels per pixel of the last screenshot of `session`, else of the caller's latest, so its x,y map to the screen.
     fn scale_of(&self, session: &str) -> f64 {
         let own = lock(&self.scales).get(session).copied();
-        own.unwrap_or_else(|| *lock(&self.last_scale))
+        own.unwrap_or_else(|| self.latest_scale())
+    }
+
+    fn latest_scale(&self) -> f64 {
+        let latest = CALLER.try_with(|a| lock(&self.last_scale).get(a).copied());
+        latest.ok().flatten().unwrap_or(1.0)
     }
 
     /// Runs `read` on the MIT-SHM grabber, opening it when needed or after the screen changed size; `None` when it is unavailable or fails.
@@ -3713,9 +3726,13 @@ mod tests {
         let calls = std::sync::Arc::default();
         let driver = shot_driver(&socket, &calls);
         let cua = cua(&socket);
-        cua.look(&json!({})).await.unwrap();
         let region = json!({"region": {"x": 10, "y": 10, "w": 10, "h": 10}, "max_edge": 0});
-        let out = cua.look(&region).await.unwrap();
+        let out = CALLER
+            .scope("a".into(), async {
+                cua.look(&json!({})).await.unwrap();
+                cua.look(&region).await.unwrap()
+            })
+            .await;
         assert!(out.text.contains("20x20"), "{}", out.text);
         assert!(
             out.text.contains("x = 10 + px*0.50, y = 10 + py*0.50"),
@@ -3866,20 +3883,24 @@ mod tests {
         let cua = cua(&socket);
         let click =
             |session: &str| json!({"action": "click", "x": 100.0, "y": 40.0, "session": session});
-        cua.screenshot_once(None).await.unwrap();
-        cua.act(click("after-default-shot")).await.unwrap();
-        cua.screenshot_once(Some(0)).await.unwrap();
-        cua.act(click("after-full-shot")).await.unwrap();
-        cua.state(json!({"session": "ended", "max_edge": 640}))
-            .await
-            .unwrap();
-        cua.end(json!({"session": "ended"})).await.unwrap();
-        cua.act(click("rotated")).await.unwrap();
-        cua.state(json!({"session": "own", "max_edge": 1280}))
-            .await
-            .unwrap();
-        cua.screenshot_once(None).await.unwrap();
-        cua.act(click("own")).await.unwrap();
+        CALLER
+            .scope("a".into(), async {
+                cua.screenshot_once(None).await.unwrap();
+                cua.act(click("after-default-shot")).await.unwrap();
+                cua.screenshot_once(Some(0)).await.unwrap();
+                cua.act(click("after-full-shot")).await.unwrap();
+                cua.state(json!({"session": "ended", "max_edge": 640}))
+                    .await
+                    .unwrap();
+                cua.end(json!({"session": "ended"})).await.unwrap();
+                cua.act(click("rotated")).await.unwrap();
+                cua.state(json!({"session": "own", "max_edge": 1280}))
+                    .await
+                    .unwrap();
+                cua.screenshot_once(None).await.unwrap();
+                cua.act(click("own")).await.unwrap();
+            })
+            .await;
         assert_eq!(
             *clicks.lock().unwrap(),
             [(125.0, 50.0), (100.0, 40.0), (200.0, 80.0), (100.0, 40.0)]
@@ -3894,18 +3915,22 @@ mod tests {
         let cua = cua(&socket);
         let click =
             |session: &str| json!({"action": "click", "x": 100.0, "y": 40.0, "session": session});
-        cua.state(json!({"session": "owner", "max_edge": 640}))
-            .await
-            .unwrap();
-        cua.end(json!({"session": "owner"})).await.unwrap();
-        cua.look(&json!({"session": "guest", "max_edge": 128, "workspace_only": true}))
-            .await
-            .unwrap();
-        cua.state(json!({"session": "guest", "max_edge": 256, "workspace_only": true}))
-            .await
-            .unwrap();
-        cua.act(click("rotated")).await.unwrap();
-        cua.act(click("guest")).await.unwrap();
+        CALLER
+            .scope("a".into(), async {
+                cua.state(json!({"session": "owner", "max_edge": 640}))
+                    .await
+                    .unwrap();
+                cua.end(json!({"session": "owner"})).await.unwrap();
+                cua.look(&json!({"session": "guest", "max_edge": 128, "workspace_only": true}))
+                    .await
+                    .unwrap();
+                cua.state(json!({"session": "guest", "max_edge": 256, "workspace_only": true}))
+                    .await
+                    .unwrap();
+                cua.act(click("rotated")).await.unwrap();
+                cua.act(click("guest")).await.unwrap();
+            })
+            .await;
         assert_eq!(*clicks.lock().unwrap(), [(200.0, 80.0), (500.0, 200.0)]);
         driver.abort();
     }
@@ -4292,6 +4317,41 @@ mod tests {
             assert!(req["args"]["target"].is_null(), "{req}");
             assert!(req["args"]["pid"].is_null(), "{req}");
         }
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_region_look_without_a_session_maps_by_the_callers_own_last_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let driver =
+            tokio::spawn(listener.serve(
+                move |req| match req["name"].as_str().unwrap_or_default() {
+                    "get_desktop_state" if req["args"]["session"] == "computer-a" => {
+                        full_shot(100, 100, 200)
+                    }
+                    "get_desktop_state" => full_shot(100, 100, 100),
+                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+                },
+            ));
+        let cua = cua_on(&socket, Os::Mac);
+        cua.run("a", "desk_computer_state", json!({}))
+            .await
+            .unwrap();
+        cua.run("b", "desk_computer_state", json!({}))
+            .await
+            .unwrap();
+        let region = json!({"region": {"x": 10, "y": 10, "w": 8, "h": 8}});
+        let out = cua.run("a", "desk_look", region).await.unwrap();
+        let image = B64.decode(out.image_b64.unwrap()).unwrap();
+        let webp = image_webp::WebPDecoder::new(std::io::Cursor::new(&image)).unwrap();
+        assert_eq!(webp.dimensions(), (16, 16), "{}", out.text);
+        assert!(
+            out.text.ends_with("for computer_act with scale 2.0000"),
+            "{}",
+            out.text
+        );
         driver.abort();
     }
 
