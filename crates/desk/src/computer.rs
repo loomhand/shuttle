@@ -1905,20 +1905,26 @@ impl Computer {
     }
 
     async fn reply(&self, name: &str, args: &Value) -> Result<Value, String> {
-        let foreground = self.driver.admit(name, args).await?;
+        let fail = |e: String| named(name, &e);
+        let foreground = self.driver.admit(name, args).await.map_err(fail)?;
         let sent = self.driver.line(name, args, REQUEST_TIMEOUT).await;
         if foreground {
             self.driver.stamp();
         }
-        let mut reply = sent?;
+        let mut reply = sent.map_err(fail)?;
         if RETRIED.contains(&name) && reply.trim().is_empty() {
             tokio::time::sleep(CONNECT_RETRY).await;
-            reply = self.driver.line(name, args, REQUEST_TIMEOUT).await?;
+            reply = self
+                .driver
+                .line(name, args, REQUEST_TIMEOUT)
+                .await
+                .map_err(fail)?;
         }
         if reply.is_empty() {
             return Err(named(name, crate::driver::CLOSED));
         }
-        serde_json::from_str::<Value>(&reply).map_err(|e| format!("decode cua-driver reply: {e}"))
+        serde_json::from_str::<Value>(&reply)
+            .map_err(|e| named(name, &format!("decode cua-driver reply: {e}")))
     }
 }
 
@@ -2924,6 +2930,41 @@ mod tests {
             format!("computer_state: {}", crate::driver::CLOSED)
         );
         driver.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_driver_call_that_times_out_or_cannot_connect_names_its_tool_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let driver = tokio::spawn(async move {
+            let mut held = Vec::new();
+            loop {
+                held.push(listener.accept().await.unwrap().0);
+            }
+        });
+        let held = cua(&socket);
+        let timed_out = crate::driver::TIMED_OUT;
+        for (tool, want) in [
+            (
+                "get_window_state",
+                format!("computer_state: cua-driver computer_state {timed_out}"),
+            ),
+            ("click", format!("click: cua-driver click {timed_out}")),
+        ] {
+            let err = held.request("s", tool, json!({})).await.unwrap_err();
+            assert_eq!(err, want);
+        }
+        driver.abort();
+        let dir = tempfile::tempdir().unwrap();
+        let err = cua(&endpoint(dir.path()))
+            .request("s", "get_window_state", json!({}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.starts_with("computer_state: connect cua-driver "),
+            "{err}"
+        );
     }
 
     #[tokio::test]
