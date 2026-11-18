@@ -613,3 +613,18 @@ test('a background app step whose launch raised the running app\'s window takes 
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'dir', window: 'Windows PowerShell', pid: 12 }])
 })
+
+test('a background terminal line into a window no read reaches waits for no settled read after its Return', async (t) => {
+  const term: W = { id: '1', title: 'Terminal', role: 'window', pid: 4, active: false }
+  const note = 'unverifiable: "Terminal" is on another Space'
+  const d = desktop([user(), term], ({ tool, args }) => {
+    if (tool === 'desk_snapshot') return { text: '"Terminal" is on another Space', error: true }
+    if (tool === 'desk_type') return JSON.stringify({ ok: true, chars: String(args.text).length, terminal: true, unverified: note })
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Terminal' }, { type: 'a\nb' }] })
+  assert.deepEqual(r.unverified, [{ step: 1, note }], JSON.stringify(r))
+  assert.deepEqual(sent(d.calls, 'desk_type').map((a) => a.text), ['a', 'b'])
+  assert.ok(sent(d.calls, 'desk_snapshot').length < 10, String(sent(d.calls, 'desk_snapshot').length))
+})

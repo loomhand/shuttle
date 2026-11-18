@@ -1197,7 +1197,7 @@ function cutShort(e: unknown, n: number, done: number, ret: boolean, from: numbe
 }
 async function settled(w: Win) {
   let a = await texts(w)
-  for (const end = Date.now() + BASE_SETTLE; Date.now() < end;) { const b = await texts(w); if (unchanged(a, b)) return b; a = b }
+  for (const end = Date.now() + BASE_SETTLE; a && Date.now() < end;) { const b = await texts(w); if (unchanged(a, b)) return b; a = b }
   return a
 }
 function unchanged(before: Map<string, Text> | null, after: Map<string, Text> | null) {
