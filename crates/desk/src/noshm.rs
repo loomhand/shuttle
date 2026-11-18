@@ -13,91 +13,41 @@ impl Grabber {
         Err("no MIT-SHM capture on this OS".to_owned())
     }
 
-    pub fn overlay_shown(&self) -> Result<bool, String> {
-        match *self {}
-    }
-
-    pub fn rgb(&self) -> Result<(u32, u32, Vec<u8>), String> {
-        match *self {}
-    }
-
-    pub fn region(&self, _: [i32; 4]) -> Result<Vec<u8>, String> {
-        match *self {}
-    }
-
-    pub fn blocks(&self) -> Result<Vec<u64>, String> {
-        match *self {}
-    }
-
     pub fn pixels(&mut self) -> Result<&[u8], String> {
         match *self {}
     }
+}
 
-    pub fn current(&self) -> bool {
-        match *self {}
-    }
+macro_rules! never {
+    ($($name:ident($($arg:ty),*) -> $out:ty;)*) => {
+        impl Grabber {
+            $(pub fn $name(&self, $(_: $arg),*) -> $out {
+                match *self {}
+            })*
+        }
+    };
+}
 
-    pub fn docks(&self) -> Arc<[bool]> {
-        match *self {}
-    }
-
-    pub fn shell_windows(&self) -> Vec<u32> {
-        match *self {}
-    }
-
-    pub fn size(&self) -> (usize, usize) {
-        match *self {}
-    }
-
-    pub fn mapped(&self) -> Result<Vec<Placement>, String> {
-        match *self {}
-    }
-
-    pub fn title(&self, _: u32) -> Option<String> {
-        match *self {}
-    }
-
-    pub fn active(&self) -> Option<u32> {
-        match *self {}
-    }
-
-    pub fn wm(&self) -> Result<bool, String> {
-        match *self {}
-    }
-
-    pub fn dialog(&self, _: u32) -> bool {
-        match *self {}
-    }
-
-    pub fn modals(&self) -> Result<Vec<Modal>, String> {
-        match *self {}
-    }
-
-    pub fn class(&self, _: u32) -> String {
-        match *self {}
-    }
-
-    pub fn keyboard(&self, _: u32, _: u32) -> Result<bool, String> {
-        match *self {}
-    }
-
-    pub fn grabbed(&self, _: bool) -> Result<bool, String> {
-        match *self {}
-    }
-
-    pub fn top_at(&self, _: i32, _: i32) -> Result<Option<Placement>, String> {
-        match *self {}
-    }
-
-    pub fn title_at(&self, _: i32, _: i32) -> Result<bool, String> {
-        match *self {}
-    }
-
-    pub fn top_level(&self, _: u32) -> Result<u32, String> {
-        match *self {}
-    }
-
-    pub fn pid(&self, _: u32) -> Option<u32> {
-        match *self {}
-    }
+never! {
+    overlay_shown() -> Result<bool, String>;
+    rgb() -> Result<(u32, u32, Vec<u8>), String>;
+    region([i32; 4]) -> Result<Vec<u8>, String>;
+    blocks() -> Result<Vec<u64>, String>;
+    current() -> bool;
+    docks() -> Arc<[bool]>;
+    shell_windows() -> Vec<u32>;
+    size() -> (usize, usize);
+    mapped() -> Result<Vec<Placement>, String>;
+    title(u32) -> Option<String>;
+    active() -> Option<u32>;
+    wm() -> Result<bool, String>;
+    dialog(u32) -> bool;
+    modals() -> Result<Vec<Modal>, String>;
+    class(u32) -> String;
+    keyboard(u32, u32) -> Result<bool, String>;
+    grabbed(bool) -> Result<bool, String>;
+    top_at(i32, i32) -> Result<Option<Placement>, String>;
+    title_at(i32, i32) -> Result<bool, String>;
+    top_level(u32) -> Result<u32, String>;
+    pid(u32) -> Option<u32>;
 }
