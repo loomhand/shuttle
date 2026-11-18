@@ -315,6 +315,27 @@ test('a plain background type into a field its own read shows as a focused passw
   assert.deepEqual(tools[1], tools[2])
 })
 
+test('a plain background type right after a click on a password field is sealed though the field reads as not focused, as UIA reads a window behind', async (t) => {
+  const run = mkdtempSync(`${tmpdir()}/run-`)
+  process.env.SHUTTLE_RUN = run
+  const partial = ((await import(`../lib/gui_plan.mts?${run}`)) as { main: typeof main }).main
+  delete process.env.SHUTTLE_RUN
+  const field = { ref: 1, id: 'p', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'protected'] }
+  const shown: string[] = []
+  const d = desktop([user(), notepad()], ({ tool, args }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), truncated: false, nodes: [{ ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: notepad().title, states: [] }, field] })
+    if (tool === 'desk_read') return JSON.stringify(field)
+    if (tool === 'desk_press') return JSON.stringify({ ok: true, how: 'focus' })
+    if (tool === 'desk_type') { shown.push(readFileSync(`${run}/result.json`, 'utf8')); return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: `unverifiable: Sent ${String(args.text).length} char(s) via PostMessage (not verified).` }) }
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await partial({ steps: [{ app: 'Notepad' }, { click: 'Password' }, { type: 'hunter2' }] })
+  const disk = ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
+  assert.equal(shown.length, 1)
+  for (const text of [JSON.stringify(r), disk, ...shown, readFileSync(`${run}/result.json`, 'utf8')]) assert.ok(!text.includes('hunter2'), text)
+})
+
 test('when the plan window is gone a window of the app with the same title never takes its place', async (t) => {
   const ws = [user(), notepad()]
   const d = desktop(ws, ({ tool }) => {

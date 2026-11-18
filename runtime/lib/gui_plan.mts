@@ -138,6 +138,8 @@ let recording = false
 let typed = false
 let pressed: { title: string; at: number } | null = null
 let acted: { id: string; at: number } | null = null
+let pressedId: string | undefined
+let lastPress: string | undefined
 let target: Win | null = null
 let listed: Win[] = []
 let targetSince = new Set<string>()
@@ -241,7 +243,7 @@ async function perform(p: Params): Promise<Result> {
       if (f && pre) vetted.add(`${f.id} ${f.pid} ${f.title}`)
       const kept = f && pre?.snap && pre.nodes && f.title !== pressed?.title ? { ...r, id: f.id, snap: pre.snap, nodes: pre.nodes } : undefined
       const prev = plan[i - 1]
-      unheard = undefined; actioned = false
+      unheard = undefined; actioned = false; lastPress = pressedId; pressedId = undefined
       const runs = desk.foreground.runs + foreground.steps
       sealStep = () => { rec.secret = true; if (secure(planned)) return; planned.secret = s.secret = true; left() }
       await run(s, rec, kept).catch(async (e: unknown) => {
@@ -1062,7 +1064,7 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
 
 async function act(n: Node) {
   return timed('act', async () => {
-    const r = await desk.press(n.id)
+    const r = await desk.press(n.id); pressedId = n.id
     if (!r.ok) throw new Surprise(`"${n.name}" took no ${r.how}`, await seen())
     if (BG && r.unverified) unheard ??= r.unverified
     if (OS === 'linux' && (r.how === 'action' || r.how === 'select')) actioned = true
@@ -1161,7 +1163,7 @@ async function hides(w: Win, read: Map<string, Text> | null) {
   try { return !!read && (await snapOf(w)).nodes.some((n) => hidden(n) && n.value === undefined && read.has(n.id) && read.get(n.id)?.value === undefined) } catch { return false }
 }
 function secretIn(t: Map<string, Text> | null) { for (const x of t?.values() ?? []) if (x.secret) return true; return false }
-function hidden(n: desk.El | undefined) { return !!n?.states.includes('protected') && n.states.includes('focused') }
+function hidden(n: desk.El | undefined) { return !!n?.states.includes('protected') && (n.states.includes('focused') || n.id === lastPress) }
 function whole(t: Map<string, Text> | null) { return !!t && [...t.values()].every((x) => !x.cut) }
 async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | null, rec: Rec) {
   const raw = text.split('\n'); const lines = raw.map((l) => l.replace(/\r$/, '')); const k = lines.findIndex(Boolean)
