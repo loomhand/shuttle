@@ -560,33 +560,25 @@ server.serve_forever()
 
     #[tokio::test]
     async fn a_left_copy_in_this_cgroup_ends_with_the_children_in_its_process_group() {
-        use std::os::unix::process::CommandExt;
+        let (child, _, gone) =
+            left_copy_and_child(r#"sleep 30 & echo $! > "$0"; wait"#, None).await;
+        assert!(gone, "the left copy's child {child} still runs");
+    }
 
-        let dir = tempfile::tempdir().unwrap();
-        let born = dir.path().join("child");
-        let mut leader = std::process::Command::new("/bin/sh")
-            .args(["-c", r#"sleep 30 & echo $! > "$0"; wait"#])
-            .arg(&born)
-            .process_group(0)
-            .spawn()
-            .unwrap();
-        let mut child = 0;
-        assert!(
-            crate::until(100, || {
-                child = std::fs::read_to_string(&born)
-                    .ok()
-                    .and_then(|p| p.trim().parse().ok())
-                    .unwrap_or_default();
-                child > 0
-            })
-            .await
-        );
-        assert!(crate::end_process(leader.id(), STOP_WAIT).await);
-        let _ = leader.wait();
-        let gone = crate::until(40, || crate::signal_pid(child, 0) == 0).await;
-        if !gone {
-            crate::signal_pid(child, libc::SIGKILL);
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_left_copy_ends_with_a_child_in_another_cgroup() {
+        let other =
+            Path::new("/sys/fs/cgroup").join(format!("shuttle-test-{}", std::process::id()));
+        if std::fs::create_dir(&other).is_err() {
+            println!("skipped: /sys/fs/cgroup is not writable");
+            return;
         }
+        let moved = r#"sleep 30 & echo $! > "$1/cgroup.procs" && echo $! > "$0"; wait"#;
+        let (child, at, gone) = left_copy_and_child(moved, Some(&other)).await;
+        let _ = std::fs::remove_dir(&other);
+        let name = other.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(at.contains(&name), "the child {child} was not moved: {at}");
         assert!(gone, "the left copy's child {child} still runs");
     }
 
@@ -977,6 +969,39 @@ server.serve_forever()
 
     async fn appears(path: &Path) -> bool {
         crate::until(100, || path.exists()).await
+    }
+
+    async fn left_copy_and_child(script: &str, cgroup: Option<&Path>) -> (u32, String, bool) {
+        use std::os::unix::process::CommandExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let born = dir.path().join("child");
+        let mut leader = std::process::Command::new("/bin/sh")
+            .args(["-c", script])
+            .arg(&born)
+            .args(cgroup)
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let mut child = 0;
+        assert!(
+            crate::until(100, || {
+                child = std::fs::read_to_string(&born)
+                    .ok()
+                    .and_then(|p| p.trim().parse().ok())
+                    .unwrap_or_default();
+                child > 0
+            })
+            .await
+        );
+        let at = std::fs::read_to_string(format!("/proc/{child}/cgroup")).unwrap_or_default();
+        assert!(crate::end_process(leader.id(), STOP_WAIT).await);
+        let _ = leader.wait();
+        let gone = crate::until(40, || crate::signal_pid(child, 0) == 0).await;
+        if !gone {
+            crate::signal_pid(child, libc::SIGKILL);
+        }
+        (child, at, gone)
     }
 
     async fn stale_copy_is_stopped(leader: bool) {
