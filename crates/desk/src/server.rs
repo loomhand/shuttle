@@ -343,7 +343,7 @@ pub async fn call(endpoint: &str, call: &Call) -> Result<Output, String> {
 }
 
 pub fn cache_endpoint(var: &str, pipe: &str, dir: &str, file: &str) -> String {
-    if let Some(e) = std::env::var(var).ok().filter(|e| !e.is_empty()) {
+    if let Some(e) = crate::env(var) {
         return e;
     }
     #[cfg(windows)]
@@ -355,10 +355,7 @@ pub fn cache_endpoint(var: &str, pipe: &str, dir: &str, file: &str) -> String {
     }
     let home = std::env::var("HOME").unwrap_or_default();
     if cfg!(target_os = "linux") {
-        let cache = std::env::var("XDG_CACHE_HOME")
-            .ok()
-            .filter(|c| !c.is_empty())
-            .unwrap_or_else(|| format!("{home}/.cache"));
+        let cache = crate::env("XDG_CACHE_HOME").unwrap_or_else(|| format!("{home}/.cache"));
         return format!("{cache}/{dir}/{file}");
     }
     format!("{home}/Library/Caches/{dir}/{file}")
@@ -662,12 +659,7 @@ fn refusal<H: Handler, P: Peer>(handler: &H, tool: &str, peer: &P) -> Option<Out
 
 /// Returns once the client closes its side of the connection; bytes it sends after its call are ignored.
 async fn closed<R: AsyncRead + Unpin>(rx: &mut R) {
-    let mut buf = [0; 64];
-    while let Ok(n) = rx.read(&mut buf).await {
-        if n == 0 {
-            return;
-        }
-    }
+    while rx.read(&mut [0; 64]).await.is_ok_and(|n| n > 0) {}
 }
 
 #[cfg(all(test, unix))]
