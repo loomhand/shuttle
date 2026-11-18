@@ -89,13 +89,15 @@ impl Runner {
     }
 
     /// `gui_plan` for `agent`: the plan executor of the runtime with `args`; its result comes back as is.
-    pub async fn plan(&self, args: Value, agent: &str) -> Result<Value, String> {
-        self.module_result("gui_plan", args, agent).await
+    pub async fn plan(&self, args: Value, agent: &str, caller: &str) -> Result<Value, String> {
+        let env = [("SHUTTLE_AGENT", agent), ("SHUTTLE_CALLER", caller)];
+        self.module_result("gui_plan", args, &env).await
     }
 
     /// The draft plan of a recording for `agent`: the runtime's draft builder with `args`.
     pub async fn draft(&self, args: Value, agent: &str) -> Result<Value, String> {
-        self.module_result("draft", args, agent).await
+        self.module_result("draft", args, &[("SHUTTLE_AGENT", agent)])
+            .await
     }
 
     /// A plugin tool's run for `agent`: `script_run`'s contract with the plugin's program `bin` in place of Node.
@@ -117,11 +119,17 @@ impl Runner {
             _ => return Err("pass code or script".to_owned()),
         };
         let params = a.params.unwrap_or_else(|| json!({}));
-        self.run(bin, &script, &params, a.timeout_s, scratch.path(), agent)
+        let env = [("SHUTTLE_AGENT", agent)];
+        self.run(bin, &script, &params, a.timeout_s, scratch.path(), &env)
             .await
     }
 
-    async fn module_result(&self, name: &str, args: Value, agent: &str) -> Result<Value, String> {
+    async fn module_result(
+        &self,
+        name: &str,
+        args: Value,
+        env: &[(&str, &str)],
+    ) -> Result<Value, String> {
         let timeout_s = args.get("timeout_s").and_then(Value::as_u64);
         let scratch = scratch()?;
         let mut report = self
@@ -131,7 +139,7 @@ impl Runner {
                 &args,
                 timeout_s,
                 scratch.path(),
-                agent,
+                env,
             )
             .await?;
         let usage = report
@@ -155,7 +163,7 @@ impl Runner {
         params: &Value,
         timeout_s: Option<u64>,
         scratch: &Path,
-        agent: &str,
+        env: &[(&str, &str)],
     ) -> Result<Value, String> {
         write_private(
             &scratch.join("params.json"),
@@ -173,7 +181,7 @@ impl Runner {
             .env("SHUTTLE_SCRIPT", script)
             .env("SHUTTLE_RUN", scratch)
             .env("SHUTTLE_FLOWS", &self.flows)
-            .env("SHUTTLE_AGENT", agent)
+            .envs(env.iter().copied())
             .env("SHUTTLE_INPUT", self.input)
             .env(
                 "SHUTTLE_DESK",
@@ -567,7 +575,7 @@ mod tests {
         )
         .unwrap();
         let err = r
-            .plan(json!({"steps": [], "timeout_s": 2}), "run-test")
+            .plan(json!({"steps": [], "timeout_s": 2}), "run-test", "")
             .await
             .unwrap_err();
         assert_eq!(
@@ -813,7 +821,10 @@ mod tests {
         assert!(message.starts_with("node exited with "), "{message}");
         assert!(message.contains("Error: late boom"), "{message}");
         std::fs::write(dir.path().join("gui_plan.mts"), crash).unwrap();
-        let plan = r.plan(json!({"steps": []}), "run-test").await.unwrap_err();
+        let plan = r
+            .plan(json!({"steps": []}), "run-test", "")
+            .await
+            .unwrap_err();
         assert!(plan.starts_with("gui_plan: node exited with "), "{plan}");
         assert!(plan.contains("Error: late boom"), "{plan}");
     }
@@ -924,7 +935,7 @@ mod tests {
             json!([1, "entry.mjs", "function", "function"]),
             "{report}"
         );
-        let plan = r.plan(json!({"steps": []}), "run-test").await.unwrap();
+        let plan = r.plan(json!({"steps": []}), "run-test", "").await.unwrap();
         assert_eq!(plan["error"], "pass steps, flow or find", "{plan}");
     }
 
@@ -955,21 +966,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_plan_runs_the_runtime_plan_executor_with_the_daemon_socket_and_no_hidden_variables()
-    {
+    async fn a_plan_gets_the_daemon_socket_and_its_caller_and_no_hidden_variables() {
         let dir = tempfile::tempdir().unwrap();
         let r = runner(dir.path());
         let out = r
             .plan(
                 json!({"steps": [{"app": "TextEdit"}, {"key": "cmd+n"}]}),
                 "run-test",
+                "mcp-a",
             )
             .await
             .unwrap();
         assert_eq!(
             out,
-            json!({"ok": true, "steps": 2, "socket": "/tmp/desk.sock", "home": true})
+            json!({"ok": true, "steps": 2, "socket": "/tmp/desk.sock", "home": true, "caller": "mcp-a"})
         );
+        let code = "export function main() { return process.env.SHUTTLE_CALLER ?? null }";
+        let script = r.script(json!({"code": code}), "run-test").await.unwrap();
+        assert_eq!(script["result"], Value::Null, "{script}");
     }
 
     fn runner(dir: &Path) -> Runner {
@@ -978,7 +992,7 @@ mod tests {
         std::fs::write(dir.join("desk.mts"), "export const here = true\n").unwrap();
         std::fs::write(
             dir.join("gui_plan.mts"),
-            "export async function main(p) { return { ok: true, steps: p.steps.length, socket: process.env.SHUTTLE_SOCKET, home: process.env.HOME === undefined && process.env.CARGO_PKG_NAME === undefined } }\n",
+            "export async function main(p) { return { ok: true, steps: p.steps.length, socket: process.env.SHUTTLE_SOCKET, home: process.env.HOME === undefined && process.env.CARGO_PKG_NAME === undefined, caller: process.env.SHUTTLE_CALLER } }\n",
         )
         .unwrap();
         Runner::new(

@@ -45,13 +45,13 @@ test('a chain that ends in an untitled window keeps that window\'s process', { s
   })
   const r = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+s' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
-  const chain = JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as { pid: number | null }
-  assert.equal(chain.pid, 4242)
+  const chain = (JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as Record<string, { pid: number | null }>)['']
+  assert.equal(chain?.pid, 4242)
 })
 
 test('a plan marks the chain record dirty before it acts and clears the mark when it ends, so a killed run never chains over its steps', async (t) => {
   const seen: (boolean | undefined)[] = []; let watch = false
-  const pend = () => JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as { dirty?: boolean; steps: unknown[] }
+  const pend = () => (JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as Record<string, { dirty?: boolean; steps: unknown[] }>)[''] ?? { steps: [] }
   await daemon(t, (c) => {
     if (watch && c.tool === 'desk_type') seen.push(pend().dirty)
     return answer(() => [notepad])(c)
@@ -64,6 +64,33 @@ test('a plan marks the chain record dirty before it acts and clears the mark whe
   assert.deepEqual(seen, [true])
   assert.equal(pend().dirty, false)
   assert.equal(pend().steps.length, 3)
+})
+
+test('each caller extends and saves only its own chain, a run that names no caller shares one, and a chain written before callers were kept belongs to that one', async (t) => {
+  const was = process.env.SHUTTLE_CALLER
+  t.after(() => { if (was === undefined) delete process.env.SHUTTLE_CALLER; else process.env.SHUTTLE_CALLER = was })
+  await daemon(t, answer(() => [notepad]))
+  const as = (who: string | undefined, p: Parameters<typeof main>[0]) => { if (who === undefined) delete process.env.SHUTTLE_CALLER; else process.env.SHUTTLE_CALLER = who; return main(p) }
+  const kinds = (name: string) => flow(name).steps.map((s) => s.app ?? s.key ?? s.type)
+  assert.equal((await as('mcp-a', { steps: [{ app: 'Notepad' }, { type: 'memo' }] })).ok, true)
+  assert.equal((await as('mcp-b', { steps: [{ key: 'ctrl+s' }] })).ok, true)
+  assert.equal((await as('mcp-b', { save: 'b-flow' })).ok, false)
+  assert.equal((await as('mcp-b', { steps: [{ app: 'Notepad' }, { type: 'other' }] })).ok, true)
+  assert.equal((await as('mcp-a', { steps: [{ type: ' more' }] })).ok, true)
+  const a = await as('mcp-a', { save: 'a-flow' })
+  assert.equal(a.ok, true, JSON.stringify(a))
+  assert.deepEqual(kinds('a-flow'), ['Notepad', '{{text}}', '{{text_2}}'])
+  assert.deepEqual(flow('a-flow').params, { text: 'memo', text_2: ' more' })
+  assert.equal((await as('mcp-b', { save: 'b-flow' })).ok, true)
+  assert.deepEqual(flow('b-flow').params, { text: 'other' })
+  assert.equal((await as(undefined, { steps: [{ app: 'Notepad' }, { type: 'x' }] })).ok, true)
+  assert.equal((await as('', { steps: [{ key: 'ctrl+s' }] })).ok, true)
+  assert.equal((await as(undefined, { save: 'shared' })).ok, true)
+  assert.deepEqual(kinds('shared'), ['Notepad', '{{text}}', 'ctrl+s'])
+  writeFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, JSON.stringify({ at: Date.now(), window: notepad.title, pid: notepad.pid, params: {}, steps: [{ app: 'Notepad' }, { type: 'old' }], dirty: false, saved: true, usage: {} }))
+  assert.equal((await as('mcp-a', { save: 'taken' })).ok, false)
+  assert.equal((await as(undefined, { save: 'kept' })).ok, true)
+  assert.deepEqual(flow('kept').params, { text: 'old' })
 })
 
 test('a value typed into a password field is never written to a saved flow or the chain record', async (t) => {

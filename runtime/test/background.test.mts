@@ -601,8 +601,8 @@ test('a plan stopped for a step sent but not confirmed or for a theft counts as 
     assert.equal(r.ok, false, JSON.stringify(r))
     assert.equal(r.escalate?.step, 1, JSON.stringify(r))
     assert.equal(r.done, done, JSON.stringify(r))
-    const chain = JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as { steps: unknown[] }
-    assert.deepEqual(chain.steps, [{ app: 'Notepad' }], JSON.stringify(chain))
+    const chain = (JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as Record<string, { steps: unknown[] }>)['']
+    assert.deepEqual(chain?.steps, [{ app: 'Notepad' }], JSON.stringify(chain))
   }
 })
 

@@ -1796,13 +1796,19 @@ async function promote(name: string, params: Record<string, string> = {}, rerun 
   return { ok: true, saved: c.name, params: templated(c.steps, c.params).params, ...(idempotent(c.steps) ? {} : { note: 'a replay of this flow types again' }) }
 }
 
-function pending(): Chain | null {
-  try { return JSON.parse(readFileSync(PENDING, 'utf8')) as Chain | null } catch { return null }
-}
+function pending(): Chain | null { return chains()[caller()] ?? null }
 
 function putPending(c: Chain | null, plan: Step[] = []) {
-  try { writeFileSync(PENDING, JSON.stringify(c && sealed(c, plan)), PRIVATE) } catch {}
+  const all = Object.fromEntries(Object.entries(chains()).filter(([k, x]) => k !== caller() && Date.now() - x.at < CHAIN_AGE))
+  if (c) all[caller()] = sealed(c, plan)
+  try { writeFileSync(PENDING, JSON.stringify(all), PRIVATE) } catch {}
 }
+
+function chains(): Record<string, Chain> {
+  try { const v = JSON.parse(readFileSync(PENDING, 'utf8')) as Record<string, Chain> | Chain | null; return !v ? {} : Array.isArray(v.steps) ? { '': v as Chain } : v as Record<string, Chain> } catch { return {} }
+}
+
+function caller() { return process.env.SHUTTLE_CALLER ?? '' }
 
 function loadFlow(name: string): Flow {
   const path = `${FLOWS}/${slug(name)}.json`

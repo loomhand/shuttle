@@ -243,7 +243,7 @@ impl<H: Handler> Daemon<H> {
         self.plugins.iter().find(|p| p.name == tool)
     }
 
-    async fn run(&self, tool: &str, args: Value) -> Result<String, String> {
+    async fn run(&self, tool: &str, args: Value, caller: &str) -> Result<String, String> {
         let plugin = self.plugin(tool);
         if (tool == "script_run" || plugin.is_some()) && !self.guard.script_run {
             return Err(SCRIPT_RUN_OFF.to_owned());
@@ -269,7 +269,7 @@ impl<H: Handler> Daemon<H> {
         let _held = Defer(|| self.desk.release(&agent));
         let report = match plugin {
             Some(p) => self.runner.plugin(&p.bin, args, &agent).await,
-            None if tool == "gui_plan" => self.runner.plan(args, &agent).await,
+            None if tool == "gui_plan" => self.runner.plan(args, &agent, caller).await,
             None => self.runner.script(args, &agent).await,
         }?;
         if report["error"].is_null() {
@@ -400,7 +400,7 @@ impl<H: Handler> Handler for Daemon<H> {
         }
         if tool == "gui_plan" || tool == "script_run" || self.plugin(tool).is_some() {
             return self
-                .run(tool, call.args)
+                .run(tool, call.args, &call.agent_id)
                 .await
                 .map_or_else(Output::error, Output::text);
         }
@@ -1419,6 +1419,40 @@ mod tests {
             .await;
         let report: Value = serde_json::from_str(&out.text).unwrap();
         assert_eq!(report["result"], 42, "{report}");
+    }
+
+    #[tokio::test]
+    async fn a_plan_runs_with_the_agent_of_its_call_as_its_caller() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
+        std::fs::copy(lib.join("entry.mts"), dir.path().join("entry.mts")).unwrap();
+        std::fs::write(dir.path().join("desk.mts"), "export const here = true\n").unwrap();
+        std::fs::write(
+            dir.path().join("gui_plan.mts"),
+            "export function main() { return process.env.SHUTTLE_CALLER }\n",
+        )
+        .unwrap();
+        let runner = Runner::new(
+            "node".into(),
+            dir.path().to_path_buf(),
+            "unused".into(),
+            dir.path().join("flows"),
+            Vec::new(),
+        );
+        let d = Daemon::new(
+            Echo,
+            Ok(Models::new(Config::default())),
+            runner,
+            Guard::default(),
+        );
+        let out = d
+            .answer(Call {
+                agent_id: "mcp-claude-ab12".into(),
+                tool: "gui_plan".into(),
+                args: json!({"steps": []}),
+            })
+            .await;
+        assert_eq!(out.text, "\"mcp-claude-ab12\"", "{}", out.text);
     }
 
     #[tokio::test]
