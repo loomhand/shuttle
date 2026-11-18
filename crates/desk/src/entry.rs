@@ -86,18 +86,13 @@ fn shown_name(body: &str) -> Option<&str> {
 }
 
 fn dirs() -> Vec<PathBuf> {
-    let home = std::env::var("XDG_DATA_HOME")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| format!("{h}/.local/share"))
-        });
-    let system = std::env::var("XDG_DATA_DIRS")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "/usr/local/share:/usr/share".to_owned());
+    let home = crate::env("XDG_DATA_HOME").or_else(|| {
+        std::env::var("HOME")
+            .ok()
+            .map(|h| format!("{h}/.local/share"))
+    });
+    let system =
+        crate::env("XDG_DATA_DIRS").unwrap_or_else(|| "/usr/local/share:/usr/share".to_owned());
     home.into_iter()
         .chain(system.split(':').map(str::to_owned))
         .map(|d| PathBuf::from(d).join("applications"))
