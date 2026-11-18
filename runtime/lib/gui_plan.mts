@@ -379,6 +379,7 @@ function worded(text: string, part: string) { const p = words(part); return !!p 
 function words(s: string) { return norm(s).split(/[^\p{L}\p{N}]+/u).filter(Boolean).join(' ') }
 function slug(s: string) { return norm(s).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) }
 function tick(k: string, t0: number) { T[k] = (T[k] ?? 0) + Date.now() - t0 }
+async function timed<R>(k: string, f: () => Promise<R>) { const t0 = Date.now(); try { return await f() } finally { tick(k, t0) } }
 function* up<N extends { parent: number }>(nodes: N[], from: number): Generator<[number, N]> {
   for (let p = from; p >= 0;) { const n = nodes[p]; if (!n) return; yield [p, n]; p = n.parent }
 }
@@ -616,23 +617,20 @@ function plus(a: desk.Usage = {}, b: desk.Usage = {}): desk.Usage {
 }
 
 async function decide(state: unknown, q: Record<string, desk.Question>) {
-  const t0 = Date.now()
-  try { return await desk.decide(state, q) } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
+  try { return await timed('jev', () => desk.decide(state, q)) } finally { T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
 
 async function vision(prompt: string, shot: Buffer, field: 'ok' | 'on'): Promise<Vision> {
-  const t0 = Date.now()
-  try {
+  return timed('vision', async () => {
     const a = await desk.ask(`${prompt}\nAnswer with one JSON object and nothing else.`, [shot])
     const v = JSON.parse(a.slice(a.indexOf('{'), a.lastIndexOf('}') + 1)) as Vision
     if (typeof v[field] !== 'boolean') throw new Error(`the screen check answered no true or false for "${field}"`)
     return v
-  } finally { tick('vision', t0) }
+  })
 }
 
 async function checked(n: Node): Promise<boolean | 'mixed' | null> {
-  const t0 = Date.now()
-  try { const r = await desk.read(n.id); return r.states.includes('mixed') ? 'mixed' : r.states.includes('checked') || r.states.includes('pressed') } catch { return null } finally { tick('state', t0) }
+  return timed('state', async () => { try { const r = await desk.read(n.id); return r.states.includes('mixed') ? 'mixed' : r.states.includes('checked') || r.states.includes('pressed') } catch { return null } })
 }
 // a command-line word may extend the app name: gnome-terminal-server for gnome-terminal
 function ownedBy(pid: number | null, app: string) {
@@ -1054,27 +1052,25 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
 }
 
 async function act(n: Node) {
-  const t0 = Date.now()
-  try {
+  return timed('act', async () => {
     const r = await desk.press(n.id)
     if (!r.ok) throw new Surprise(`"${n.name}" took no ${r.how}`, await seen())
     if (BG && r.unverified) unheard ??= r.unverified
     if (OS === 'linux' && (r.how === 'action' || r.how === 'select')) actioned = true
     return r.how
-  } finally { tick('act', t0) }
+  })
 }
 
 // a menu entry with a shortcut takes the shortcut, since an AT-SPI action can open a modal dialog that deadlocks the app on the first key
 async function choose(nodes: Node[], n: Node, rec: { via?: string }, open = false, w: Win | null = null) {
-  const t0 = Date.now()
-  try {
+  return timed('act', async () => {
     const mods = n.shortcut.split('+').slice(0, -1)
     if (OS !== 'darwin' && n.shortcut && (mods.some((x) => x !== 'shift') || /^f\d+$/.test(n.shortcut))) {
       if (open) for (const _ of menus(nodes, n.parent)) await desk.key('Escape', at(w))
       try { const k = await desk.key(n.shortcut, at(w)); if (BG && k.unverified) unheard ??= k.unverified; rec.via = 'shortcut'; return } catch (e: unknown) { if (e instanceof Error && (MAY_HAVE_RUN.some((x) => e.message.includes(x)) || e.message.startsWith('declined by the user'))) throw e }
     }
     rec.via = await act(n)
-  } finally { tick('act', t0) }
+  })
 }
 
 async function settle(before: string | undefined) {
@@ -1236,13 +1232,12 @@ async function holdsText(w: Win, fp: Fp) {
 }
 
 async function documents(w: Win) {
-  const t0 = Date.now()
-  try {
+  return timed('verify', async () => {
     const ws = await desk.windows()
     const d = BG ? ownerOf(w, ws) : ws.find((x) => x.title !== w.title && x.pid === w.pid); if (!d) return null
     const ids = parse(await snapOf(d)).filter((n) => n.role === 'textbox').map((n) => n.id)
     return async () => (await Promise.all(ids.map(async (id) => { try { return (await desk.read(id, { text: true })).value ?? '' } catch { return '' } }))).join('\n')
-  } catch { return null } finally { tick('verify', t0) }
+  }).catch(() => null)
 }
 async function replaced(nodes: Node[], read: () => Promise<string>, before: string | undefined) {
   const t0 = Date.now(); let now = await read()
