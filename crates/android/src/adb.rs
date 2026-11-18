@@ -2532,6 +2532,59 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_password_field_the_focus_read_finds_only_after_a_tree_read_still_seals_the_reply() {
+        let view = r#"{"editable":false,"password":false,"window":true,"id":7,"len":0,"hash":0,"tail":"","bounds":[0,160,720,658]}"#;
+        let secret = r#"{"editable":true,"password":true,"window":true,"id":7,"len":0,"hash":0,"tail":"","bounds":[0,0,720,100]}"#;
+        let pasted = r#"{"editable":true,"password":true,"window":true,"id":7,"len":2,"hash":0,"tail":"","bounds":[0,0,720,100]}"#;
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.windows("");
+        fake.put("focus.json", view);
+        fake.put("after-dump-focus.json", secret);
+        fake.put("after-paste.json", pasted);
+        acked(&fake).await;
+        let out = desk(&fake, "desk_type", serde_json::json!({"text": "pw"})).await;
+        let requests = log(&fake, "requests");
+        assert_eq!(
+            out,
+            Ok(serde_json::json!({"ok": true, "chars": 2, "typed": null, "protected": true})),
+            "{requests}"
+        );
+        assert_eq!(requests.matches("dump 7").count(), 1, "{requests}");
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.windows("");
+        fake.put("focus.json", view);
+        fake.put("after-dump-focus.json", secret);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        fake.put("port", &listener.local_addr().unwrap().port().to_string());
+        let mut peer = controlled(&fake.android).await;
+        let device = tokio::spawn(async move {
+            let mut set = vec![0; clipboard_message("pw", 1).len()];
+            peer.read_exact(&mut set).await.unwrap();
+            let (mut fresh, _) = listener.accept().await.unwrap();
+            fresh.write_all(&[0]).await.unwrap();
+            let mut clear = vec![0; clipboard_message("", 1).len()];
+            fresh.read_exact(&mut clear).await.unwrap();
+            fresh.write_all(&ack(1)).await.unwrap();
+            drop(peer);
+            clear
+        });
+        let err = desk(&fake, "desk_type", serde_json::json!({"text": "pw"}))
+            .await
+            .unwrap_err();
+        let requests = log(&fake, "requests");
+        assert_eq!(
+            err, "scrcpy control: no clipboard acknowledgement (into a password field)",
+            "{requests}"
+        );
+        assert_eq!(requests.matches("dump 7").count(), 1, "{requests}");
+        assert_eq!(requests.matches("paste").count(), 0, "{requests}");
+        assert_eq!(device.await.unwrap(), clipboard_message("", 1));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_type_says_protected_when_a_line_went_into_a_password_field() {
         let secret = r#"{"editable":true,"password":true,"window":true,"id":7,"len":0,"hash":0,"tail":"","bounds":[0,0,720,100]}"#;
         let pasted = r#"{"editable":true,"password":true,"window":true,"id":7,"len":2,"hash":0,"tail":"","bounds":[0,0,720,100]}"#;
