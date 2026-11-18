@@ -393,7 +393,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     /// Brings the window of an auto action to the front before the foreground runs it; false when the action names none.
     async fn front_target(&self, tool: &str, args: &Value) -> Result<bool, String> {
-        let (window, pid) = if let Some(id) = args["id"]
+        let (window, pid, id) = if let Some(id) = args["id"]
             .as_str()
             .filter(|_| tool == "desk_press" || tool == "desk_act")
         {
@@ -402,17 +402,19 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 .run(CALL_LIMIT, (), move |b| {
                     let pid = b.pid_of(&id)?;
                     let root = b.ancestors(&id)?.into_iter().next().unwrap_or(id);
-                    let title = pid
+                    let frame = pid
                         .map(|p| b.frames_of(p))
                         .transpose()?
-                        .and_then(|fs| fs.into_iter().find(|f| f.id == root))
-                        .map(|f| f.title);
-                    Ok((title, pid))
+                        .and_then(|fs| fs.into_iter().find(|f| f.id == root));
+                    Ok(match frame {
+                        Some(f) => (Some(f.title), pid, Some(f.id)),
+                        None => (None, pid, None),
+                    })
                 })
                 .await?
         } else {
             let pid = args["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
-            (args["window"].as_str().map(str::to_owned), pid)
+            (args["window"].as_str().map(str::to_owned), pid, None)
         };
         if window.is_none() && pid.is_none() {
             return Ok(false);
@@ -425,7 +427,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.focus(WindowArgs {
             window: window.unwrap_or_default(),
             pid,
-            id: None,
+            id,
         })
         .await
         .map(|_| true)
@@ -3455,6 +3457,29 @@ pub(crate) mod tests {
         assert_eq!(
             order(&calls),
             ["hotkey background", "bring_to_front -", "hotkey desktop"]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_auto_act_refused_in_the_background_fronts_its_own_one_of_two_same_titled_windows() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let driver = Twins(Arc::clone(&calls), 900.0, "Untitled - Notepad", 0.0);
+        let desk = Desk::new(|| Ok(TwinDocs::new(true, true, false)), driver, Os::Windows)
+            .background(true)
+            .auto(true);
+        let out = desk
+            .run("desk_act", json!({"id": "b3", "action": "focus"}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(
+            (&v["ok"], &v["input"]),
+            (&json!(true), &json!("foreground")),
+            "{v}"
+        );
+        assert_eq!(
+            sent(&calls, "bring_to_front"),
+            [json!({"pid": 4, "window_id": 3})]
         );
     }
 
