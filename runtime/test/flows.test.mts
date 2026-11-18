@@ -194,6 +194,24 @@ test('a value set into a password field is never written to a saved flow, the ch
   assert.ok(!disk().includes('hunter10'), disk())
 })
 
+test('a literal value set into a password field that reads back otherwise stops with neither the value nor the read-back in the reply or on disk', async (t) => {
+  let value = ''
+  const field = () => ({ ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'protected'], value })
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_type') value = `rb-${String(args.text)}`
+    if (tool === 'desk_windows') return JSON.stringify([notepad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field()] })
+    if (tool === 'desk_read') return JSON.stringify(field())
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'Notepad' }, { set: 'Password', value: 'hunter2' }] })
+  assert.equal(r.escalate?.step, 1, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, '"Password" does not read back the value after set')
+  assert.equal(r.escalate?.outline, undefined, JSON.stringify(r))
+  const disk = ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
+  for (const text of [JSON.stringify(r), disk]) assert.ok(!text.includes('hunter2'), text)
+})
+
 test('find names the saved flow the model picks, and no flow under 0.6 or within 0.25 of the runner-up', async (t) => {
   let probabilities: Record<string, number> = {}
   const usage = { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 }

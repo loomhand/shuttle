@@ -244,7 +244,7 @@ async function perform(p: Params): Promise<Result> {
         for (const end = Date.now() + 3000; ; await sleep(200)) {
           try { return await run(s, rec) } catch (again: unknown) { if (!late(again) || Date.now() > end) throw again }
         }
-      })
+      }).finally(() => { if (rec.secret) planned.secret = true })
       if (s.after && await landed(s.after, s.timeout_ms ?? 5000, ws)) rec.confirmed = true
       if (unheard && !rec.unverified) rec.unverified = unheard
       if (actioned && !s.after) rec.caveat = ACTION_ONLY
@@ -263,7 +263,7 @@ async function perform(p: Params): Promise<Result> {
       escalate = { step, plan_step: unrecorded(plan[step] ?? planned), reason, ...shown, ...(secure(plan[step] ?? planned) ? {} : { outline }) }; done = i; upto = step
       diverged = e instanceof Diverged
     }
-    stepWs = null; if (rec.secret) planned.secret = true
+    stepWs = null
     rec.ms = Date.now() - ts; if (desk.served.length > calls) rec.served = desk.served.slice(calls)
     log.push({ ...rec, ...T }); recs[i] = rec
     trace.push(traced(i, rec, s, !!escalate))
@@ -343,9 +343,9 @@ function noted(recs: Rec[]) {
   return { ...(notes.length ? { unverified: notes } : {}), ...(caveats.length ? { caveats } : {}) }
 }
 
-function unrecorded({ recorded: _, fp: __, blank: ___, ...s }: Step): Bare { return literal(s) ? { ...unsaid(s), type: 'the password' } : s }
+function unrecorded({ recorded: _, fp: __, blank: ___, ...s }: Step): Bare { return literal(s, s.type) ? { ...unsaid(s), type: 'the password' } : literal(s, s.value) ? { ...unsaid(s), value: 'the password' } : s }
 
-function literal(s: Step) { return (secure(s) || (s.secret !== undefined && s.secret !== false)) && typeof s.type === 'string' && !!s.type.replace(/\{\{\w+(?::base)?\}\}|\n/g, '') }
+function literal(s: Step, v: string | undefined) { return (secure(s) || (s.secret !== undefined && s.secret !== false)) && typeof v === 'string' && !!v.replace(/\{\{\w+(?::base)?\}\}|\n/g, '') }
 
 function unsaid<T extends Step>({ intent: _, ...s }: T) { return s }
 
@@ -1609,7 +1609,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   t0 = Date.now(); let got: string | undefined
   for (let i = 0; i < 10; i++) { try { got = (await desk.read(f.id)).value ?? '' } catch (e: unknown) { await unblocked(e, w); got = undefined }; if (same(got)) break; await sleep(40) }
   tick('verify', t0); if (!rec.secret) rec.value = got
-  if (!same(got)) throw new Surprise(`"${target}" reads "${got}" after set`, await seen())
+  if (!same(got)) throw new Surprise(rec.secret ? `"${target}" does not read back the value after set` : `"${target}" reads "${got}" after set`, await seen())
   rec.confirmed = true
   if (raw.endsWith('\n')) { rec.submit = true; await submit(w, isChooser(render(nodes, 100, false))) }
 }
