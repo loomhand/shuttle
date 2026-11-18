@@ -358,6 +358,12 @@ pub fn text_of(v: &Value) -> String {
         .join("\n")
 }
 
+pub fn without_name<'a>(tool: &str, text: &'a str) -> &'a str {
+    text.strip_prefix(tool)
+        .and_then(|t| t.strip_prefix(": "))
+        .unwrap_or(text)
+}
+
 /// The base64 data of a driver result's first image block.
 pub fn image_of(v: &Value) -> Option<&str> {
     v["content"]
@@ -386,7 +392,10 @@ fn result(tool: &str, reply: &str) -> Result<Value, String> {
     if v["ok"] != true {
         return Err(format!(
             "{tool}: {}",
-            v["error"].as_str().unwrap_or("cua-driver call failed")
+            without_name(
+                tool,
+                v["error"].as_str().unwrap_or("cua-driver call failed")
+            )
         ));
     }
     let mut out = v["result"].take();
@@ -404,7 +413,10 @@ fn result(tool: &str, reply: &str) -> Result<Value, String> {
             return Err(format!("{tool}: {ENDED}"));
         }
         let text = text_of(&out);
-        let text = text.split_once(NEXT_HINT).map_or(text.as_str(), |(t, _)| t);
+        let text = without_name(
+            tool,
+            text.split_once(NEXT_HINT).map_or(text.as_str(), |(t, _)| t),
+        );
         let mut e = match out["structuredContent"]["reason"].as_str() {
             Some(reason) => format!("{tool}: {reason}: {text}"),
             None => format!("{tool}: {text}"),
@@ -644,6 +656,55 @@ mod tests {
             format!("bring_to_front: foreground activation failed{ACTUAL_FRONT}7")
         );
         assert!(result("click", "").is_err());
+    }
+
+    #[test]
+    fn a_driver_error_names_its_tool_once_whether_or_not_its_text_starts_with_it() {
+        let failed = |text: &str, reason: Option<&str>| {
+            let mut out = json!({"isError": true, "content": [{"type": "text", "text": text}]});
+            if let Some(reason) = reason {
+                out["structuredContent"] = json!({"reason": reason});
+            }
+            json!({"ok": true, "result": out}).to_string()
+        };
+        let own = "bring_to_front: no window_id given and no windows found for pid 4.";
+        for (tool, reply, want) in [
+            ("bring_to_front", failed(own, None), own.to_owned()),
+            (
+                "click",
+                failed(
+                    "click: unknown button \"x\" — expected one of left, right, middle.",
+                    None,
+                ),
+                "click: unknown button \"x\" — expected one of left, right, middle.".to_owned(),
+            ),
+            (
+                "click",
+                failed(
+                    "click: element [3] (pid 4) has no usable on-screen bounds",
+                    Some("window_never_read"),
+                ),
+                "click: window_never_read: element [3] (pid 4) has no usable on-screen bounds"
+                    .to_owned(),
+            ),
+            (
+                "click",
+                failed("off screen", None),
+                "click: off screen".to_owned(),
+            ),
+            (
+                "click",
+                json!({"ok": false, "error": "click: no permission"}).to_string(),
+                "click: no permission".to_owned(),
+            ),
+            (
+                "clicked",
+                failed("click: off screen", None),
+                "clicked: click: off screen".to_owned(),
+            ),
+        ] {
+            assert_eq!(result(tool, &reply).unwrap_err(), want, "{tool} {reply}");
+        }
     }
 
     #[cfg(unix)]

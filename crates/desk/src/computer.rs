@@ -25,7 +25,7 @@ use crate::desk::{
     BUSY, RAISE_WAIT, TURN_WAIT, Turn, Typer, WAIT_POLL, launch_name, runs_app, text_runs,
     without_protocol_tail, xtest,
 };
-use crate::driver::{CONNECT_RETRY, Driver, ended, image_of, text_of};
+use crate::driver::{CONNECT_RETRY, Driver, ended, image_of, text_of, without_name};
 use crate::keys::{Os, hid_plus, key_names};
 use crate::lock;
 use crate::model::Modal;
@@ -796,7 +796,7 @@ impl Computer {
             match self.call(target, "type_text", req).await {
                 Ok(v) if v["isError"] == true || text_of(&v).contains(SKIPPED) => {
                     typed += landed(run, &v);
-                    failure = Some(format!("type_text: {}", told(&v)));
+                    failure = Some(named("type_text", &v));
                 }
                 Ok(_) => typed += run.chars().count(),
                 Err(e) => failure = Some(e),
@@ -2354,19 +2354,9 @@ fn rect_of(v: &Value) -> Option<[f64; 4]> {
     Some([x, y, w, h])
 }
 
-fn told(result: &Value) -> String {
-    text_of(result).replace("get_window_state", "computer_state")
-}
-
 fn named(tool: &str, result: &Value) -> String {
-    let own = text_of(result)
-        .strip_prefix(tool)
-        .is_some_and(|t| t.starts_with(": "));
-    if own {
-        told(result)
-    } else {
-        format!("{tool}: {}", told(result))
-    }
+    format!("{tool}: {}", without_name(tool, &text_of(result)))
+        .replace("get_window_state", "computer_state")
 }
 
 /// Whether the driver refused a `verify_hit` click before sending it.
