@@ -355,6 +355,26 @@ test('an Option-typed character stays inside its typed run', async (t) => {
   assert.deepEqual(d.steps.map(({ intent: _, ...s }) => s), [{ app: 'TextEdit' }, { type: '{{to}}', focus: 'unverified' }])
 })
 
+test('a draft names the clicks past its caption time budget by their point, and captions a merged double click once', async (t) => {
+  const real = Date.now; let now = real()
+  Date.now = () => now
+  t.after(() => { Date.now = real })
+  let asked = 0
+  await daemon(t, ({ tool }) => {
+    if (tool !== 'model_ask') return '{"ok":true}'
+    asked += 1; now += 80_000
+    return JSON.stringify({ text: 'the Green button', usage: { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 } })
+  })
+  const at = (k: number, more: object = {}): Event => ({ t: k, kind: 'click', x: 20 + k * 30, y: 100, app: 'Game', element: { role: 'button', name: '' }, root: false, window: win('board'), crop, ...more })
+  const many = await main({ recording: { id: 'rec-21', events: Array.from({ length: 10 }, (_, k) => at(k)) } })
+  assert.equal(asked, 4)
+  assert.deepEqual(many.steps.slice(1).map((s) => s.click), [...Array<string>(4).fill('the Green button'), ...[4, 5, 6, 7, 8, 9].map((k) => `the button at ${20 + k * 30}, 100`)])
+  asked = 0; now = real()
+  const twice = await main({ recording: { id: 'rec-22', events: [at(0), at(1, { x: 21, count: 2 })] } })
+  assert.equal(asked, 1)
+  assert.deepEqual(twice.steps.slice(1).map(({ intent: _, recorded: __, ...s }) => s), [{ click: 'the Green button', count: 2 }])
+})
+
 test('a model caption keeps its first line and at most 80 characters', async (t) => {
   let text = ''
   await daemon(t, ({ tool }) => tool === 'model_ask' ? JSON.stringify({ text, usage: { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 } }) : '{"ok":true}')
