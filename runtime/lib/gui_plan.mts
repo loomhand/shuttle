@@ -735,6 +735,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
 function modalOver(w: Win, under: Win, why = '') {
   if (alertIn(w, under)) throw new Surprise(`an untitled dialog of "${w.app ?? under.title}" is in front of "${under.title}" and takes all of its app's input until it closes${why}: answer it with {click: "<its button>"} and no window, or close it with {close: true}; nothing was sent`)
 }
+function namedBehind(w: Win) { for (const x of picked) modalOver(x, w, `, and a step that names "${w.title}" never acts in the dialog`) }
 function alertIn(w: Win, under: Win) { return OS === 'darwin' && w.role === 'dialog' && !w.title.trim() && w.owner === undefined && w.pid === under.pid && w.id !== under.id }
 function awaited(title: string, want: string, saw?: string) { return norm(title).includes(norm(want)) || (!!saw && title === saw) }
 function found(w: Win, t0: number): Win { known.add(w.title); tick('wait', t0); return w }
@@ -1419,13 +1420,15 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.close) {
     // close never shuts an app's main window unless the step names it
     const t0 = Date.now(); const ws = s.window ? [] : await listNow(); let w: Win | null = s.window ? await windowFor(s.window, 3000, s.seen) : frontOf(ws)
+    if (w && s.window) namedBehind(w)
     const o = w && !s.window ? await outline(w, {}, kept) : ''
     const self = w
     const others = self ? ws.filter((x) => x.pid === self.pid && x.title !== self.title && (!BG || ours(x, ws))) : []
     if (w && blocked(o) && others.length) { rec.seen = w.title; rec.how = 'wm'; unique(w); await desk.close(w.title, w.pid, twinId(w, ws)); await settle(w.title); tick('act', t0); if (!await closed(w.title, w.pid, w.id)) throw new Surprise(`"${w.title}" is still open after a close`, await seen()); return }
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     if (w && !s.window && !isDialog(o)) {
-      let d: Win | null = null; for (const x of others) if (isDialog(await outline(x))) { d = x; break }
+      const own = self ? ws.filter((x) => alertIn(x, self)) : []
+      let d: Win | null = own.length === 1 ? own[0] ?? null : null; if (!d) for (const x of others) if (isDialog(await outline(x))) { d = x; break }
       const pid = w.pid
       if (BG && !d && OS === 'darwin' && ws.some((x) => x.pid === pid && x.owner === undefined && x.role === 'dialog' && !adopted.has(x.id))) throw new Surprise(`a dialog of "${w.title}"'s app has no owner the OS names, and background close never guesses whether it belongs to the plan's window: name it with {close: true, window}`, await seen())
       w = d
@@ -1441,7 +1444,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   let w = await windowFor(s.window, 3000, s.seen, kept)
   const r = reads(s); const goal = s.click ?? s.check ?? s.set ?? s.menu
   const over = goal === undefined ? undefined : picked.find((x) => alertIn(x, w))
-  if (over && s.window) modalOver(over, w, `, and a step that names "${w.title}" never acts in the dialog`)
+  if (over && s.window) namedBehind(w)
   const own = over && await readTree(over, r)
   if (over && own) {
     const has = async (t: Tree) => !!await resolve(t.nodes, goal ?? '', targetRole(s), undefined, s.set ? 0.5 : 0.7, undefined, false)

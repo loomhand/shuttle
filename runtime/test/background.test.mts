@@ -287,7 +287,7 @@ test('a macOS background step, named for its window or not, stops with nothing s
 })
 
 test('a macOS background step behind an alert of the app open before the plan stops with nothing sent when it is meant for the window behind, names that window, types or keys, or clicks a name both have, and a click on a button only the alert has goes through', { skip: process.platform !== 'darwin' }, async (t) => {
-  for (const [step, want, risky] of [[{ click: 'Tool' }, BASE, 'Delete'], [{ click: 'Tool', window: 'r89aN3' }, NAMED, 'Delete'], [{ type: 'x' }, INPUT, 'Delete'], [{ key: 'return' }, INPUT, 'Delete'], [{ click: 'OK' }, '', 'Delete'], [{ click: 'Delete', window: 'r89aN3' }, NAMED, 'Delete'], [{ click: 'OK', window: 'r89aN3' }, NAMED, 'Delete'], [{ click: 'Delete' }, BOTH, 'Delete'], [{ click: 'Delete' }, BOTH, 'Delete…']] as const) {
+  for (const [step, want, risky] of [[{ click: 'Tool' }, BASE, 'Delete'], [{ click: 'Tool', window: 'r89aN3' }, NAMED, 'Delete'], [{ type: 'x' }, INPUT, 'Delete'], [{ key: 'return' }, INPUT, 'Delete'], [{ click: 'OK' }, '', 'Delete'], [{ click: 'Delete', window: 'r89aN3' }, NAMED, 'Delete'], [{ click: 'OK', window: 'r89aN3' }, NAMED, 'Delete'], [{ click: 'Delete' }, BOTH, 'Delete'], [{ click: 'Delete' }, BOTH, 'Delete…'], [{ close: true, window: 'r89aN3' }, NAMED, 'Delete'], [{ close: true }, '', 'Delete']] as const) {
     const doc: W = { id: '198', title: 'r89aN3', role: 'window', pid: 4, active: false, app: 'R89Kit' }
     const alert: W = { id: '201', title: '', role: 'dialog', pid: 4, active: false, app: 'R89Kit' }
     const nodes = [{ ref: 0, id: '198/0', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }, { ref: 1, id: '198/2', parent: 0, depth: 1, role: 'button', name: 'Tool', states: ['showing'] }, { ref: 2, id: '198/3', parent: 0, depth: 1, role: 'button', name: 'Delete', states: ['showing'] }]
@@ -296,12 +296,13 @@ test('a macOS background step behind an alert of the app open before the plan st
     const d = desktop(ws, ({ tool, args }) => {
       if (tool === 'desk_snapshot') return JSON.stringify(args.id === alert.id ? { window: alert, nodes: own, truncated: false } : { window: doc, nodes, truncated: false })
       if (tool === 'desk_press') { if (args.id === '201/1') ws.pop(); return '{"ok":true,"how":"action"}' }
+      if (tool === 'desk_key' && args.keys === 'Escape' && ws.includes(alert)) ws.pop()
       return undefined
     })
     await daemon(t, d.reply)
     const r = await main({ steps: [{ app: 'R89Kit' }, step] })
-    const input = d.calls.filter((c) => ['desk_press', 'desk_type', 'desk_key', 'desk_click'].includes(c.tool)).map((c) => c.args.id ?? c.tool)
-    if (!want) { assert.equal(r.ok, true, JSON.stringify(r)); assert.deepEqual(input, ['201/1']); continue }
+    const input = d.calls.filter((c) => ['desk_press', 'desk_type', 'desk_key', 'desk_click', 'desk_close'].includes(c.tool)).map((c) => c.args.id ?? c.tool)
+    if (!want) { assert.equal(r.ok, true, JSON.stringify(r)); assert.deepEqual(input, 'close' in step ? ['desk_key'] : ['201/1']); continue }
     assert.equal(r.escalate?.step, 1, `${JSON.stringify(step)} ${JSON.stringify(r)}`)
     assert.equal(r.escalate?.reason, want, JSON.stringify(step))
     assert.deepEqual(input, [], JSON.stringify(step))
