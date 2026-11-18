@@ -7968,6 +7968,21 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_masked_shot_whose_windows_never_hold_still_is_refused_after_its_tries() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let driver = Churning(Desktop(calls.clone()), AtomicUsize::new(0));
+        let desk = Desk::new(|| Ok(Apps), driver, Os::Windows).allow(&["notepad".into()]);
+        let out = desk.run("desk_shot", json!({})).await;
+        assert_eq!(out.unwrap_err(), WINDOWS_MOVING);
+        let calls = calls.lock().unwrap();
+        let count = |tool: &str| calls.iter().filter(|t| *t == tool).count();
+        assert_eq!(
+            (count("get_desktop_state"), count("list_windows")),
+            (MASK_TRIES, 2 * MASK_TRIES)
+        );
+    }
+
+    #[tokio::test]
     async fn at_a_point_reads_the_window_the_driver_lists_there_by_its_number_not_its_elided_title()
     {
         let desk = Desk::new(|| Ok(Long), Elided(Arc::default()), Os::Mac);
@@ -12017,6 +12032,19 @@ pub(crate) mod tests {
                 }
                 _ => json!({}),
             })
+        }
+    }
+
+    struct Churning(Desktop, AtomicUsize);
+
+    impl Input for Churning {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let mut v = self.0.call(tool, args).await?;
+            if tool == "list_windows" {
+                let x = self.1.fetch_add(1, Ordering::SeqCst) as f64;
+                v["structuredContent"]["windows"][1]["bounds"]["x"] = x.into();
+            }
+            Ok(v)
         }
     }
 
