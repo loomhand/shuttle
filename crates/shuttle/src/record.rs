@@ -49,6 +49,17 @@ const SECURE_INPUT: &str = "secure input is on, so macOS hides every key from th
 type Listening = Tap;
 #[cfg(not(target_os = "macos"))]
 type Listening = std::convert::Infallible;
+type Keyboard = Box<dyn Fn() -> Vec<u32> + Send + Sync>;
+type Listen = Box<
+    dyn Fn(
+            UnboundedSender<Input>,
+            Arc<AtomicUsize>,
+            &[String],
+            Vec<u32>,
+        ) -> Result<(Box<dyn Send>, bool), String>
+        + Send
+        + Sync,
+>;
 
 /// One thing the user did, in desk coordinates, or a note.
 #[derive(Debug)]
@@ -117,6 +128,8 @@ pub struct Recorder {
     sessions: Mutex<Option<UnboundedReceiver<Session>>>,
     live: Mutex<Option<Live>>,
     ended: Mutex<Option<Ended>>,
+    keyboard: Keyboard,
+    listen: Listen,
 }
 
 impl Recorder {
@@ -130,7 +143,31 @@ impl Recorder {
             sessions: Mutex::new(Some(sessions)),
             live: Mutex::new(None),
             ended: Mutex::new(None),
+            keyboard: Box::new(keyboard),
+            listen: Box::new(|tx, acting, apps, layout| {
+                listen(tx, acting, apps, layout)
+                    .map(|(tap, held)| (Box::new(tap) as Box<dyn Send>, held))
+            }),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tapped(
+        mut self,
+        keyboard: impl Fn() -> Vec<u32> + Send + Sync + 'static,
+        listen: impl Fn(
+            UnboundedSender<Input>,
+            Arc<AtomicUsize>,
+            &[String],
+            Vec<u32>,
+        ) -> Result<(Box<dyn Send>, bool), String>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.keyboard = Box::new(keyboard);
+        self.listen = Box::new(listen);
+        self
     }
 
     /// The sessions for the one worker that runs them; `None` after the first call.
@@ -144,7 +181,7 @@ impl Recorder {
 
     /// Starts recording the user's input, in `apps` alone when it names any, unless `halted`; answers the recording's id, and a note while secure input hides the keys.
     pub fn start(&self, apps: Vec<String>, halted: impl Fn() -> bool) -> Result<Value, String> {
-        self.start_with(apps, halted, keyboard, listen)
+        self.start_with(apps, halted, &self.keyboard, &self.listen)
     }
 
     /// Adds the user's note to the running recording, where it is now.

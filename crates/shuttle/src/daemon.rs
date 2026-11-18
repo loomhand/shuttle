@@ -1163,6 +1163,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn record_start_answers_stopped_for_a_stop_after_its_check_and_ends_one_during_its_start()
+    {
+        let (d, listened, halter) = halts_while_starting(true);
+        let out = d.answer(call("record_start", json!({}))).await;
+        halter.join().unwrap();
+        assert_eq!((out.is_error, out.text.as_str()), (true, STOPPED));
+        assert!(!listened.load(Ordering::Relaxed) && !d.recording());
+        let (d, dropped, halter) = halts_while_starting(false);
+        let out = d.answer(call("record_start", json!({}))).await;
+        halter.join().unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        assert!(dropped.load(Ordering::Relaxed) && !d.recording());
+    }
+
+    #[test]
+    fn the_menu_answers_stopped_for_a_stop_after_its_check_and_ends_one_during_its_start() {
+        let (d, listened, halter) = halts_while_starting(true);
+        let out = d.record(true);
+        halter.join().unwrap();
+        assert_eq!(out, Err(STOPPED.to_owned()));
+        assert!(!listened.load(Ordering::Relaxed) && !d.recording());
+        let (d, dropped, halter) = halts_while_starting(false);
+        let out = d.record(true);
+        halter.join().unwrap();
+        assert_eq!(out, Ok(None));
+        assert!(dropped.load(Ordering::Relaxed) && !d.recording());
+    }
+
+    #[tokio::test]
     async fn record_start_asks_under_confirm_and_a_no_starts_nothing() {
         let asked = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&asked);
@@ -1756,6 +1785,54 @@ mod tests {
 
     fn daemon<H: Handler>(desk: H, guard: Guard) -> Daemon<H> {
         Daemon::new(desk, Ok(Models::new(Config::default())), runner(), guard)
+    }
+
+    struct Flag(Arc<AtomicBool>);
+
+    impl Drop for Flag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn halts_while_starting(
+        before_lock: bool,
+    ) -> (
+        Arc<Daemon<Echo>>,
+        Arc<AtomicBool>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let (go, halt) = std::sync::mpsc::channel::<()>();
+        let (halted, done) = std::sync::mpsc::channel::<()>();
+        let done = Mutex::new(done);
+        let seen = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&seen);
+        let early = go.clone();
+        let keyboard = move || {
+            if before_lock {
+                early.send(()).unwrap();
+                done.lock().unwrap().recv().unwrap();
+            }
+            Vec::new()
+        };
+        let listen = move |_, _, _: &[String], _| -> Result<(Box<dyn Send>, bool), String> {
+            if before_lock {
+                flag.store(true, Ordering::Relaxed);
+                return Ok((Box::new(()), false));
+            }
+            go.send(()).unwrap();
+            Ok((Box::new(Flag(Arc::clone(&flag))), false))
+        };
+        let mut d = daemon(Echo, Guard::default());
+        d.recorder = Recorder::new(std::env::temp_dir(), Arc::default()).tapped(keyboard, listen);
+        let d = Arc::new(d);
+        let stopper = Arc::clone(&d);
+        let halter = std::thread::spawn(move || {
+            halt.recv().unwrap();
+            stopper.halt(true);
+            let _ = halted.send(());
+        });
+        (d, seen, halter)
     }
 
     fn held() -> (Asker, Arc<Mutex<Option<oneshot::Sender<bool>>>>) {
