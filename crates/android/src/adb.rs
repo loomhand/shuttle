@@ -2085,6 +2085,25 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_close_sends_no_closing_back_while_the_list_after_the_keyboard_back_has_no_front() {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.windows("unsettled");
+        fake.put("after-input.json", &log(&fake, "windows.json"));
+        fake.windows("keyboard");
+        let err = desk(
+            &fake,
+            "desk_close",
+            serde_json::json!({"window": "Settings"}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("was not closed"), "{err}");
+        assert_eq!(log(&fake, "requests").matches("key 4").count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn an_action_that_ran_is_reported_even_when_the_screenshot_after_it_fails() {
         let fake = Fake::new();
         fake.put("inject.answer", "true");

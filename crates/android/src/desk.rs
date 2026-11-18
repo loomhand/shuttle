@@ -1120,7 +1120,7 @@ async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<bool, String>
             .find(|f| f.id == frame.id)
         {
             None => return Ok(false),
-            Some(f) if f.keyboard => {}
+            Some(f) if f.keyboard || f.guessed => {}
             Some(f) if f.active => return Ok(true),
             Some(_) => {
                 return Err(format!(
