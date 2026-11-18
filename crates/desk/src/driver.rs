@@ -283,15 +283,18 @@ impl Input for Driver {
             ending.session = None;
             return done;
         }
-        let foreground = self.admit(tool, &args).await?;
-        let done = match point {
-            Some(point) => self.spaced(point, self.call_session(tool, args)).await,
-            None => self.call_session(tool, args).await,
+        let sent = async {
+            let foreground = self.admit(tool, &args).await?;
+            let done = self.call_session(tool, args).await;
+            if foreground {
+                self.stamp();
+            }
+            done
         };
-        if foreground {
-            self.stamp();
+        match point {
+            Some(point) => self.spaced(point, sent).await,
+            None => sent.await,
         }
-        done
     }
 }
 
@@ -1034,6 +1037,33 @@ mod tests {
         );
         drop(d);
         daemon.await.unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_near_repeat_click_checks_the_user_after_the_spacing_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let daemon = answering(&socket);
+        let d = Driver::new(socket.to_string_lossy().into_owned());
+        user_input_since(f64::INFINITY);
+        USER_WINDOW.set(Some((7, 42)));
+        let back = json!({"x": 100, "y": 100, "delivery_mode": "background"});
+        d.call("click", back).await.unwrap();
+        let user = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            user_input_since(0.0);
+        });
+        let err = d
+            .call("click", json!({"x": 104, "y": 100}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("nothing was sent"), "{err}");
+        user.await.unwrap();
+        user_input_since(f64::INFINITY);
+        drop(d);
+        let lines = daemon.await.unwrap();
+        assert_eq!(lines.iter().filter(|l| l["name"] == "click").count(), 1);
     }
 
     #[tokio::test(start_paused = true)]
