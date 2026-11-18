@@ -3824,6 +3824,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_action_list_stops_at_its_first_failed_action_and_says_how_many_did_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, clicks, driver) = scaling_driver(dir.path(), 1280);
+        let cua = cua(&socket);
+        let click = |x: f64| json!({"action": "click", "x": x, "y": 30.0});
+        cua.state(json!({"max_edge": 0})).await.unwrap();
+        let typo = json!({"action": "clik", "x": 1.0, "y": 1.0});
+        let list = json!({"actions": [click(100.0), typo, click(120.0)]});
+        let out = cua.act(list).await.unwrap();
+        assert!(out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("2. clik failed: unknown action clik")
+                && out.text.contains("the remaining 1 actions did not run")
+                && !out.text.contains("3. "),
+            "{}",
+            out.text
+        );
+        assert_eq!(*clicks.lock().unwrap(), [(100.0, 30.0)]);
+        driver.abort();
+    }
+
+    #[tokio::test]
     async fn an_action_list_captures_the_screen_after_its_last_action_only() {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
