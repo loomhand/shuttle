@@ -3379,6 +3379,7 @@ mod tests {
             run(
                 Some(7),
                 |_| Some(Focus {
+                    window: false,
                     id: None,
                     ..field("")
                 }),
@@ -3391,6 +3392,7 @@ mod tests {
             run(
                 Some(7),
                 |_| Some(Focus {
+                    window: false,
                     id: None,
                     ..field("")
                 }),
@@ -3950,6 +3952,7 @@ mod tests {
         Focus {
             editable: true,
             window: true,
+            id: Some(7),
             bounds: [100, 80, 620, 180],
             len: text.encode_utf16().count(),
             hash: java_hash(text),
