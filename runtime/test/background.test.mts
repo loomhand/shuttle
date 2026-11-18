@@ -406,6 +406,26 @@ test('a pressed password field stays the field a background type goes to across 
   }
 })
 
+test('a macOS background plan with no app step after another app\'s plan left its chain at that app\'s untitled alert works in that alert by the chain, never in the alert of the other app, and with no chain has no window at all', { skip: process.platform !== 'darwin' }, async (t) => {
+  const other: W = { id: '301', title: '', role: 'dialog', pid: 3000, active: false, app: 'Other' }
+  const alert: W = { id: '201', title: '', role: 'dialog', pid: 4, active: false, app: 'R89Kit' }
+  const d = desktop([user(), other, alert], ({ tool, args }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: args.id === alert.id ? alert : other, nodes: [{ ref: 0, id: `${String(args.id)}/0`, parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }, { ref: 1, id: `${String(args.id)}/1`, parent: 0, depth: 1, role: 'button', name: 'OK', states: ['showing'] }], truncated: false })
+    return undefined
+  })
+  await daemon(t, d.reply)
+  rmSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, { force: true })
+  assert.equal((await main({ steps: [{ app: 'Other' }] })).ok, true)
+  const r = await main({ steps: [{ click: 'OK' }] })
+  assert.equal(r.escalate?.reason, TEXT.replace('"R89Kit" is in front of "r89aN3" and', '"Other"'), JSON.stringify(r))
+  const chain = JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as Record<string, { pid: number; steps: unknown[] }>
+  assert.deepEqual([chain['']?.pid, chain['']?.steps], [3000, [{ app: 'Other' }]])
+  rmSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, { force: true })
+  const fresh = await main({ steps: [{ click: 'OK' }] })
+  assert.match(String(fresh.escalate?.reason), /^background gui_plan has no target window/, JSON.stringify(fresh))
+  assert.ok(!d.calls.some((c) => ['desk_press', 'desk_click', 'desk_key', 'desk_type'].includes(c.tool)), JSON.stringify(d.calls.map((c) => c.tool)))
+})
+
 test('a macOS background call that continues the chain of an app step that failed at its first step sends nothing to an untitled dialog of the app', { skip: process.platform !== 'darwin' }, async (t) => {
   const alert: W = { id: '201', title: '', role: 'dialog', pid: 4, active: true, app: 'R89Kit' }
   const doc: W = { id: '198', title: 'r89aN3', role: 'window', pid: 4, active: false, app: 'R89Kit' }
