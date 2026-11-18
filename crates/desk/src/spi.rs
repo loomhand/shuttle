@@ -186,7 +186,7 @@ impl Access for Spi {
     }
 
     fn close(&mut self, frame: &Frame) -> Result<(), String> {
-        close(&frame.title, frame.pid)
+        close(&frame.title, frame.pid, frame.number)
     }
 
     fn shells(&mut self) -> Vec<u32> {
@@ -327,7 +327,7 @@ fn node(n: atspi::Node) -> Node {
 }
 
 /// Asks the window manager to close the managed window titled `want` of process `pid`; refuses a title two windows share.
-fn close(want: &str, pid: Option<u32>) -> Result<(), String> {
+fn close(want: &str, pid: Option<u32>, window: Option<u32>) -> Result<(), String> {
     let (conn, n) = x11rb::connect(None).map_err(|e| format!("connect X: {e}"))?;
     let root = conn.setup().roots[n].root;
     let atom = |name: &[u8]| ask(conn.intern_atom(false, name), "intern atom").map(|r| r.atom);
@@ -355,26 +355,31 @@ fn close(want: &str, pid: Option<u32>) -> Result<(), String> {
             "close {want:?}: the window manager does not support _NET_CLOSE_WINDOW"
         ));
     }
-    let clients: Vec<u32> = prop(root, list, AtomEnum::WINDOW.into())
-        .and_then(|r| r.value32().map(Iterator::collect))
-        .unwrap_or_default();
-    let windows: Vec<(u32, String)> = clients
-        .into_iter()
-        .filter(|&w| {
-            pid.is_none_or(|p| {
-                prop(w, wm_pid, AtomEnum::CARDINAL.into())
-                    .and_then(|r| r.value32().and_then(|mut v| v.next()))
-                    == Some(p)
-            })
-        })
-        .map(|w| {
-            let title = prop(w, name, utf8)
-                .map(|r| String::from_utf8_lossy(&r.value).into_owned())
+    let w = match window {
+        Some(w) => w,
+        None => {
+            let clients: Vec<u32> = prop(root, list, AtomEnum::WINDOW.into())
+                .and_then(|r| r.value32().map(Iterator::collect))
                 .unwrap_or_default();
-            (w, title)
-        })
-        .collect();
-    let w = pick_window(&windows, want)?;
+            let windows: Vec<(u32, String)> = clients
+                .into_iter()
+                .filter(|&w| {
+                    pid.is_none_or(|p| {
+                        prop(w, wm_pid, AtomEnum::CARDINAL.into())
+                            .and_then(|r| r.value32().and_then(|mut v| v.next()))
+                            == Some(p)
+                    })
+                })
+                .map(|w| {
+                    let title = prop(w, name, utf8)
+                        .map(|r| String::from_utf8_lossy(&r.value).into_owned())
+                        .unwrap_or_default();
+                    (w, title)
+                })
+                .collect();
+            pick_window(&windows, want)?
+        }
+    };
     let event = ClientMessageEvent::new(32, w, close, [0, 2, 0, 0, 0]);
     conn.send_event(
         false,

@@ -1016,6 +1016,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn close(&self, a: WindowArgs, turn: Option<Turn>) -> Result<String, String> {
         let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
+        let window = match a.id.as_deref() {
+            Some(id) if self.os == Os::Linux => {
+                self.id_window(id, &a.window, a.pid).await?.id.parse().ok()
+            }
+            _ => None,
+        };
         self.access
             .run(CALL_LIMIT, turn, move |b| {
                 let listed = frames(b, a.pid, &allow)?;
@@ -1032,7 +1038,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         f
                     }
                 };
-                let frame = live(frame)?;
+                let frame = live(Frame {
+                    number: window.or(frame.number),
+                    ..frame
+                })?;
                 let note = match b.close(&frame) {
                     Ok(()) => None,
                     Err(e) if e == CLOSE_UNANSWERED => Some(e),
@@ -7744,7 +7753,7 @@ pub(crate) mod tests {
                 ..Stub::default()
             })
         };
-        let desk = Desk::new(twins, Slow(Arc::default()), Os::Linux);
+        let desk = Desk::new(twins, Slow(Arc::default()), Os::Mac);
         let close = |args: Value| desk.run("desk_close", args);
         assert_eq!(
             close(json!({"window": "Untitled - Notepad", "pid": 4}))
@@ -8825,6 +8834,55 @@ pub(crate) mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn on_linux_close_by_id_closes_the_x_window_of_that_one_of_two_same_titled_windows() {
+        let open = || -> Desk<TwinDocs, Twins> {
+            let driver = Twins(
+                Arc::new(Mutex::new(Vec::new())),
+                900.0,
+                "Untitled - Notepad",
+                0.0,
+            );
+            Desk::new(|| Ok(TwinDocs::new(false, true, false)), driver, Os::Linux)
+        };
+        for (id, window) in [("w1", 1), ("w3", 3)] {
+            let desk = open();
+            desk.run(
+                "desk_close",
+                json!({"window": "Untitled - Notepad", "pid": 4, "id": id}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                desk.access
+                    .run(CALL_LIMIT, (), |b| Ok(b.closed.clone()))
+                    .await
+                    .unwrap(),
+                [(id.to_owned(), Some(window))]
+            );
+        }
+        let desk = open();
+        for (args, want) in [
+            (
+                json!({"window": "Untitled - Notepad", "pid": 4, "id": "w9"}),
+                "no window id \"w9\" of pid 4 in the window list, so nothing was sent",
+            ),
+            (
+                json!({"window": "Untitled - Notepad", "pid": 4}),
+                "2 windows match the title \"Untitled - Notepad\", so nothing was sent: pass the window's id from desk windows",
+            ),
+        ] {
+            assert_eq!(desk.run("desk_close", args).await.unwrap_err(), want);
+        }
+        assert!(
+            desk.access
+                .run(CALL_LIMIT, (), |b| Ok(b.closed.clone()))
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -12734,6 +12792,7 @@ pub(crate) mod tests {
         numbered: bool,
         apart: bool,
         flipped: bool,
+        closed: Vec<(String, Option<u32>)>,
     }
 
     impl TwinDocs {
@@ -12742,6 +12801,7 @@ pub(crate) mod tests {
                 numbered,
                 apart,
                 flipped,
+                closed: Vec::new(),
             }
         }
     }
@@ -12800,7 +12860,8 @@ pub(crate) mod tests {
             Ok(true)
         }
 
-        fn close(&mut self, _: &Frame) -> Result<(), String> {
+        fn close(&mut self, frame: &Frame) -> Result<(), String> {
+            self.closed.push((frame.id.clone(), frame.number));
             Ok(())
         }
     }
