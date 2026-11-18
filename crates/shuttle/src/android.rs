@@ -118,6 +118,75 @@ mod tests {
         assert_eq!((out.is_error, out.text.as_str()), (false, "ended"));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_released_holder_on_a_device_loses_its_element_list_and_no_other() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let adb = dir.path().join("adb");
+        std::fs::write(
+            &adb,
+            r#"#!/bin/sh
+case "$*" in
+*"wm size"*) echo 'Physical size: 720x1280';;
+*screencap*) printf png;;
+*app_process*)
+  echo ready
+  while read l; do
+    case "$l" in
+      windows) echo '[{"id":7,"type":1,"layer":0,"title":"Settings","package":"com.android.settings","active":true,"focused":true,"bounds":[0,0,720,1280]}]';;
+      tap*) printf true;;
+      shot) printf '<error>java.io.IOException: no screenshot</error>';;
+      *) echo '<hierarchy window="7"><node text="OK" class="android.widget.Button" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0" bounds="[100,200][300,300]" /></hierarchy>';;
+    esac
+    echo
+    echo '<<end>>'
+  done;;
+esac
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let desks = Desks::<shuttle_desk::server::NoDesk>::Android(Box::new(
+            device(
+                AndroidSettings {
+                    adb,
+                    serial: None,
+                    ui_jar: Some("/u.jar".into()),
+                    scrcpy_jar: "/s.jar".into(),
+                    su: None,
+                },
+                Path::new("/shuttle"),
+            )
+            .unwrap(),
+        ));
+        let call = |agent: &str, tool: &str, args: Value| Call {
+            agent_id: agent.into(),
+            tool: tool.into(),
+            args,
+        };
+        for agent in ["run-a", "run-b"] {
+            let state = desks
+                .answer(call(agent, "desk_computer_state", serde_json::json!({})))
+                .await;
+            assert!(!state.is_error, "{}", state.text);
+        }
+        desks.release("run-a");
+        let tap = serde_json::json!({"action": "tap", "element": 0});
+        let released = desks
+            .answer(call("run-a", "desk_computer_act", tap.clone()))
+            .await;
+        assert_eq!(
+            (released.is_error, released.text.as_str()),
+            (true, "no element [0] in the latest computer_state")
+        );
+        let kept = desks.answer(call("run-b", "desk_computer_act", tap)).await;
+        assert_eq!(
+            (kept.is_error, kept.text.as_str()),
+            (false, "tapped 200,250")
+        );
+    }
+
     #[test]
     fn a_computer_verb_without_a_session_takes_its_callers_own() {
         let tool = "desk_computer_act";
