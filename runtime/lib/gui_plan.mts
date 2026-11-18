@@ -770,25 +770,10 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   const t0 = Date.now()
   const pinned = byFp(nodes, fp, within)
   if (pinned) { tick('ax', t0); return pinned }
-  const placed = nodes.some((n) => !!n.bounds)
   const pool = candidates(nodes, role, within)
   const want = norm(target)
-  const covers = (n: Node) => {
-    const nm = norm(n.name); if (!nm) return false
-    const a = nm.split(' '), b = want.split(' ')
-    return (` ${nm} `.includes(` ${want} `) && b.length * 2 >= a.length) || (a.length >= 2 && ` ${want} `.includes(` ${nm} `))
-  }
   const said = role || /\b(radio|spin|option|check) button\b/.test(want) ? undefined : Object.entries(SAID).find(([w]) => want.split(' ').includes(w))?.[1]
-  const core = want.split(' ').filter((w) => !FILLER.has(w)).join(' ')
-  const exact = (n: Node) => norm(n.name) === want || (!!core && norm(n.name) === core)
-  const inside = (n: Node, i: number) => { for (const [p] of up(nodes, n.parent)) if (p === i) return true; return false }
-  for (const f of [exact, (n: Node) => covers(n) && (!said || said.includes(n.role))]) {
-    const all = pool.filter(({ n }) => f(n)); const drawn = all.filter(({ n }) => n.shown && (!!n.bounds || !placed))
-    const some = drawn.length ? drawn : all.filter(({ n }) => n.role.startsWith('menu'))
-    const hit = some.filter(({ n, i }) => !some.some((o) => o.i !== i && norm(o.n.name) === norm(n.name) && inside(o.n, i)))
-    const [one, two] = hit
-    if (one && !two) { tick('ax', t0); return { ...one, how: 'ax' } }
-  }
+  for (const [one, two] of matching(nodes, pool, target, role)) if (one && !two) { tick('ax', t0); return { ...one, how: 'ax' } }
   const shown = pool.filter(({ n }) => n.shown)
   tick('ax', t0)
   if (!shown.length || !ask) return null
@@ -813,6 +798,25 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
     throw new Surprise(`ambiguous target "${target}": ${near}; name the element more exactly`, await seen())
   }
   return { ...hit.c, how: `${viewed ? 'jev-image' : 'jev'}(${p1.toFixed(2)})`, p: p1, margin: p1 - p2 }
+}
+
+function matching(nodes: Node[], pool: { n: Node; i: number }[], target: string, role?: string) {
+  const placed = nodes.some((n) => !!n.bounds)
+  const want = norm(target)
+  const covers = (n: Node) => {
+    const nm = norm(n.name); if (!nm) return false
+    const a = nm.split(' '), b = want.split(' ')
+    return (` ${nm} `.includes(` ${want} `) && b.length * 2 >= a.length) || (a.length >= 2 && ` ${want} `.includes(` ${nm} `))
+  }
+  const said = role || /\b(radio|spin|option|check) button\b/.test(want) ? undefined : Object.entries(SAID).find(([w]) => want.split(' ').includes(w))?.[1]
+  const core = want.split(' ').filter((w) => !FILLER.has(w)).join(' ')
+  const exact = (n: Node) => norm(n.name) === want || (!!core && norm(n.name) === core)
+  const inside = (n: Node, i: number) => { for (const [p] of up(nodes, n.parent)) if (p === i) return true; return false }
+  return [exact, (n: Node) => covers(n) && (!said || said.includes(n.role))].map((f) => {
+    const all = pool.filter(({ n }) => f(n)); const drawn = all.filter(({ n }) => n.shown && (!!n.bounds || !placed))
+    const some = drawn.length ? drawn : all.filter(({ n }) => n.role.startsWith('menu'))
+    return some.filter(({ n, i }) => !some.some((o) => o.i !== i && norm(o.n.name) === norm(n.name) && inside(o.n, i)))
+  })
 }
 
 // LibreOffice repeats its menu bar, so a repeated bar entry resolves in the first one
@@ -1447,9 +1451,14 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (over && s.window) namedBehind(w)
   const own = over && await readTree(over, r).catch((e: unknown) => { throw new Surprise(`the untitled dialog of "${over.app ?? w.title}" in front of "${w.title}" gave no accessibility read (${e instanceof Error ? e.message : String(e)}): nothing was sent`) })
   if (over && own) {
-    const has = async (t: Tree) => !!await resolve(t.nodes, goal ?? '', targetRole(s), undefined, s.set ? 0.5 : 0.7, undefined, false)
-    if (!await has(own)) modalOver(over, w)
-    if (await has(reuse(kept, w, r) ?? await readTree(w, r).catch(async (e: unknown) => { await unblocked(e, w); throw e }))) throw new Surprise(`"${goal}" is in both the untitled dialog of "${over.app ?? w.title}" and "${w.title}" behind it, and the step never guesses which one it means: answer the dialog with a button only it has, or close it with {close: true}, then click "${goal}"; nothing was sent`)
+    const hits = (t: Tree) => matching(t.nodes, candidates(t.nodes, targetRole(s)), goal ?? '', targetRole(s))
+    const mine = hits(own); const app = over.app ?? w.title
+    if (!mine.some((h) => h.length)) modalOver(over, w)
+    const behind = reuse(kept, w, r) ?? await readTree(w, r).catch(async (e: unknown) => { await unblocked(e, w); throw e })
+    const there = hits(behind).some((h) => h.length)
+    if (!there && (behind.snap.truncated || behind.snap.nodes.some((n) => n.truncated))) throw new Surprise(`"${w.title}" behind the untitled dialog of "${app}" could not be read whole, so the step cannot tell whether "${goal}" is there too: close the dialog with {close: true}; nothing was sent`)
+    if (!there && !mine.some((h) => h.length === 1)) throw new Surprise(`${Math.max(...mine.map((h) => h.length))} elements of the untitled dialog of "${app}" match "${goal}", and the step never guesses which one it means: answer it with a name only one of its buttons has, or close it with {close: true}; nothing was sent`)
+    if (there) throw new Surprise(`"${goal}" is in both the untitled dialog of "${over.app ?? w.title}" and "${w.title}" behind it, and the step never guesses which one it means: answer the dialog with a button only it has, or close it with {close: true}, then click "${goal}"; nothing was sent`)
     w = over
   }
   rec.seen = w.title; if (w.title.trim()) lastSeen = w.title
