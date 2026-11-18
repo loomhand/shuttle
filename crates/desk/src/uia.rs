@@ -1,4 +1,4 @@
-//! The Windows desk backend: Win32 top-level windows and window trees from one cached UIA request; ids are runtime ids.
+//! The Windows desk backend: Win32 top-level windows and window trees from one cached UIA request; ids are runtime ids, or `uN` for an element whose runtime id is empty.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -90,6 +90,7 @@ pub struct Uia {
     top: IUIAutomationCacheRequest,
     root: IUIAutomationElement,
     ids: HashMap<String, IUIAutomationElement>,
+    minted: u64,
     tops: HashMap<isize, Top>,
     walked: isize,
     shown: Vec<Shown>,
@@ -123,6 +124,7 @@ impl Uia {
             top,
             root,
             ids: HashMap::new(),
+            minted: 0,
             tops: HashMap::new(),
             walked: 0,
             shown: Vec::new(),
@@ -134,7 +136,7 @@ impl Uia {
     }
 
     fn id_of(&mut self, el: &IUIAutomationElement) -> Result<String, String> {
-        let id = runtime_id(el)?;
+        let id = own_id(runtime_id(el)?, &mut self.minted);
         self.ids.entry(id.clone()).or_insert_with(|| el.clone());
         Ok(id)
     }
@@ -151,6 +153,7 @@ impl Uia {
     fn node_of(
         &mut self,
         el: &IUIAutomationElement,
+        id: String,
         extras: Extras,
         chars: usize,
     ) -> Result<Node, String> {
@@ -181,7 +184,7 @@ impl Uia {
             .or_else(|| r.range.map(format_number))
             .map(|v| clip(v, chars, extras.tail));
         Ok(Node {
-            id: self.id_of(el)?,
+            id,
             role,
             native_role: mapped
                 .is_none()
@@ -215,7 +218,8 @@ impl Uia {
         if out.len() >= MAX_NODES {
             return Ok(true);
         }
-        let node = self.node_of(el, extras, VALUE_CHARS)?;
+        let id = self.id_of(el)?;
+        let node = self.node_of(el, id, extras, VALUE_CHARS)?;
         let (parent, depth) = place(out, node, parent, depth);
         if depth > MAX_DEPTH {
             return Ok(false);
@@ -428,7 +432,7 @@ impl Access for Uia {
     fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String> {
         let el = self.element(id)?;
         let fresh = self.cached(&el, &self.single)?;
-        let mut node = self.node_of(&fresh, extras, chars)?;
+        let mut node = self.node_of(&fresh, id.to_owned(), extras, chars)?;
         if extras.values
             && node.value.is_none()
             && node.url.is_none()
@@ -1048,6 +1052,14 @@ fn runtime_id(el: &IUIAutomationElement) -> Result<String, String> {
     }
 }
 
+fn own_id(runtime: String, minted: &mut u64) -> String {
+    if !runtime.is_empty() {
+        return runtime;
+    }
+    *minted += 1;
+    format!("u{minted}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1077,6 +1089,15 @@ mod tests {
         assert_eq!(head_units(65_537), 131_075);
         assert_eq!(head_units(80), 161);
         assert_eq!(head_units(usize::MAX), i32::MAX);
+    }
+
+    #[test]
+    fn an_element_with_an_empty_runtime_id_gets_an_id_no_other_element_shares() {
+        let mut minted = 0;
+        assert_eq!(own_id("42-656186".into(), &mut minted), "42-656186");
+        assert_eq!(own_id(String::new(), &mut minted), "u1");
+        assert_eq!(own_id(String::new(), &mut minted), "u2");
+        assert_eq!(minted, 2);
     }
 
     #[test]
