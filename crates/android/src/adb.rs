@@ -1700,6 +1700,38 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_press_whose_read_after_its_scroll_fails_says_it_scrolled_and_sends_no_tap() {
+        let id = "com.android.settings:0.0.1:button:Target";
+        for after in ["empty", "gone"] {
+            let fake = Fake::new();
+            fake.put("inject.answer", "true");
+            fake.put("show.answer", "false");
+            fake.windows("");
+            list(&fake, "dump.xml", "[0,1300][720,1400]");
+            match after {
+                "empty" => fake.put("after-swipe.xml", "<hierarchy></hierarchy>"),
+                _ => {
+                    list(&fake, "after-swipe.xml", "[0,600][720,700]");
+                    let other = log(&fake, "after-swipe.xml").replace("Target", "Other");
+                    fake.put("after-swipe.xml", &other);
+                }
+            }
+            let err = desk(&fake, "desk_press", serde_json::json!({"id": id}))
+                .await
+                .unwrap_err();
+            assert!(
+                err.starts_with(&format!(
+                    "the list of element {id} was scrolled, then this stopped the tap: "
+                )),
+                "{after}: {err}"
+            );
+            assert_eq!(log(&fake, "adbinput").matches("swipe").count(), 1);
+            assert_eq!(log(&fake, "requests").matches("tap").count(), 0);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_press_or_act_while_no_window_is_in_front_is_refused_before_any_tap() {
         let fake = Fake::new();
         fake.put("inject.answer", "true");

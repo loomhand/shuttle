@@ -957,13 +957,20 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
             "element {id} is behind an open drawer; close it first"
         ));
     }
-    let scrolled = |e: String| {
-        format!("the list of element {id} was scrolled, then this stopped the tap: {e}")
+    let mut sent = None;
+    let stopped = |sent: Option<&str>, e: String| match sent {
+        Some(what) => {
+            format!("the list of element {id} was {what}, then this stopped the tap: {e}")
+        }
+        None => e,
     };
     let mut ask = true;
     for _ in 0..SCROLL_TRIES {
         if let Some((x, y)) = frame.tap_at(&node) {
-            android.tap((x, y)).await?;
+            android.tap((x, y)).await.map_err(|e| match sent {
+                Some(what) => format!("{e}; the list of element {id} was {what} before it"),
+                None => e,
+            })?;
             return Ok(json!({"ok": true, "how": "click", "x": x, "y": y}).to_string());
         }
         let Some([sx, sy, sw, sh]) = node.scroller else {
@@ -972,8 +979,11 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
         if ask {
             ask = false;
             if android.show(&frame.id, &node.path).await {
-                let (refreshed, mut nodes) = app_tree(android, &frame.package).await?;
-                refreshed.settled().map_err(scrolled)?;
+                sent = Some("asked to scroll it into view");
+                let (refreshed, mut nodes) = app_tree(android, &frame.package)
+                    .await
+                    .map_err(|e| stopped(sent, e))?;
+                refreshed.settled().map_err(|e| stopped(sent, e))?;
                 frame = refreshed;
                 if let Some(i) = unique(&nodes, node.role, &node.name) {
                     let next = nodes.swap_remove(i);
@@ -987,14 +997,28 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
         }
         let (cx, from, to) = frame
             .swipe([sx, sy, sw, sh], node.bounds[1])
-            .ok_or_else(|| format!("element {id} is off the screen, and its list is covered"))?;
-        android.swipe((cx, from), (cx, to), SCROLL_MS).await?;
+            .ok_or_else(|| {
+                stopped(
+                    sent,
+                    format!("element {id} is off the screen, and its list is covered"),
+                )
+            })?;
+        android
+            .swipe((cx, from), (cx, to), SCROLL_MS)
+            .await
+            .map_err(|e| stopped(sent, e))?;
+        sent = Some("scrolled");
         tokio::time::sleep(SCROLL_SETTLE).await;
-        let (refreshed, mut nodes) = app_tree(android, &frame.package).await?;
-        refreshed.settled().map_err(scrolled)?;
+        let (refreshed, mut nodes) = app_tree(android, &frame.package)
+            .await
+            .map_err(|e| stopped(sent, e))?;
+        refreshed.settled().map_err(|e| stopped(sent, e))?;
         frame = refreshed;
         let i = unique(&nodes, node.role, &node.name).ok_or_else(|| {
-            format!("element {id} is gone or not unique after a scroll; read the window again")
+            stopped(
+                sent,
+                format!("element {id} is gone or not unique after a scroll; read the window again"),
+            )
         })?;
         node = nodes.swap_remove(i);
     }
@@ -1003,7 +1027,7 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
     } else {
         "is off the screen"
     };
-    Err(format!("element {id} {why}"))
+    Err(stopped(sent, format!("element {id} {why}")))
 }
 
 /// The innermost element at a screen point, with its ancestors.
