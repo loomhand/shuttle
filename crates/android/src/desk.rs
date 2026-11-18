@@ -151,6 +151,13 @@ impl Frame {
         self.screen
     }
 
+    pub(crate) fn settled(&self) -> Result<(), String> {
+        match self.guessed {
+            true => Err(UNSETTLED.to_owned()),
+            false => Ok(()),
+        }
+    }
+
     /// Whether a window above this one covers screen point `(x, y)`.
     pub(crate) fn covered(&self, (x, y): (i32, i32)) -> bool {
         self.covers
@@ -945,6 +952,7 @@ fn read_out(mut node: Node, app: &str, text: bool, tail: bool) -> Value {
 /// Taps an element, after scrolling its list until it shows.
 async fn press(android: &Android, id: &str) -> Result<String, String> {
     let (mut frame, mut node) = node(android, id).await?;
+    frame.settled()?;
     if node.states.contains(&"covered") {
         return Err(format!(
             "element {id} is behind an open drawer; close it first"

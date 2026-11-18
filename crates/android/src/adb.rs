@@ -1670,6 +1670,28 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_press_or_act_while_no_window_is_in_front_is_refused_before_any_tap() {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.windows("unsettled");
+        list(&fake, "dump.xml", "[0,200][720,300]");
+        let id = "com.android.settings:0.0.1:button:Target";
+        for (verb, args) in [
+            ("desk_press", serde_json::json!({"id": id})),
+            ("desk_act", serde_json::json!({"id": id, "action": "click"})),
+        ] {
+            let err = desk(&fake, verb, args).await.unwrap_err();
+            assert!(
+                err.starts_with("the device lists no window in front"),
+                "{verb} {err}"
+            );
+        }
+        assert_eq!(log(&fake, "requests").matches("tap").count(), 0);
+        assert_eq!(log(&fake, "adbinput"), "");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_tap_and_a_single_key_are_injected_by_the_ui_server() {
         let fake = Fake::new();
         fake.put("inject.answer", "true");
@@ -3493,6 +3515,7 @@ mod tests {
                     app(true).replace("[0,0,720,1280]", "[0,0,1280,720]")
                 ),
                 "none" => "[]".to_owned(),
+                "unsettled" => format!("[{bar},{}]", app(false)),
                 _ => format!("[{bar},{}]", app(true)),
             };
             self.put("windows.json", &list);
