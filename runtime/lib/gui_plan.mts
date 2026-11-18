@@ -1407,7 +1407,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const o = w && !s.window ? await outline(w, {}, kept) : ''
     const self = w
     const others = self ? ws.filter((x) => x.pid === self.pid && x.title !== self.title && (!BG || ours(x, ws))) : []
-    if (w && blocked(o) && others.length) { rec.seen = w.title; rec.how = 'wm'; unique(w); await desk.close(w.title, w.pid); await settle(w.title); tick('act', t0); return }
+    if (w && blocked(o) && others.length) { rec.seen = w.title; rec.how = 'wm'; unique(w); await desk.close(w.title, w.pid); await settle(w.title); tick('act', t0); if (!await closed(w.title, w.pid)) throw new Surprise(`"${w.title}" is still open after a close`, await seen()); return }
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     if (w && !s.window && !isDialog(o)) {
       let d: Win | null = null; for (const x of others) if (isDialog(await outline(x))) { d = x; break }

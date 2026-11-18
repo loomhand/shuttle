@@ -68,6 +68,24 @@ test('close on a window that answers no accessibility call escalates even when i
   assert.ok(!calls.includes('desk_key'), calls.join(' '))
 })
 
+test('close on a window that answers no accessibility call passes only when the window manager close takes it off the list', async (t) => {
+  const doc = { id: '1', title: 'a.odt - Writer', role: 'window', pid: process.pid, active: false }
+  const win = { id: '2', title: 'Exporting', role: 'dialog', pid: process.pid, active: true }
+  let takes = false; let shut = false
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify(shut ? [{ ...doc, active: true }] : [doc, win])
+    if (tool === 'desk_snapshot') return { text: 'no accessibility answer within 10000 ms; the app may hang', error: true }
+    if (tool === 'desk_close') shut = takes
+    return '{"ok":true}'
+  })
+  const stays = await main({ steps: [{ close: true }] })
+  assert.equal(stays.ok, false, JSON.stringify(stays))
+  assert.equal(stays.escalate?.reason, '"Exporting" is still open after a close')
+  takes = true
+  const gone = await main({ steps: [{ close: true }] })
+  assert.equal(gone.ok, true, JSON.stringify(gone))
+})
+
 test('typing a Windows path into a dialog field finds it in the outline, backslashes and all', async (t) => {
   const doc = { id: '1', title: 'a.txt - Notepad', role: 'window', pid: process.pid, active: false }
   const dialog = { id: '2', title: 'Open', role: 'dialog', pid: process.pid, active: true }
