@@ -2499,9 +2499,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             == 1;
         if !self.allow.is_open() || !unique {
             let background = self.bg();
-            let frames = self
+            let (frames, front) = self
                 .access
-                .run(CALL_LIMIT, (), move |b| shown(b, background))
+                .run(CALL_LIMIT, (), move |b| {
+                    Ok((shown(b, background)?, b.foreground()))
+                })
                 .await?;
             for w in &mut windows {
                 let of = frame_of(&frames, w.pid);
@@ -2517,9 +2519,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         w.active = f.active;
                     }
                     None => {
-                        w.active = frames
-                            .iter()
-                            .any(|f| f.active && f.pid == w.pid && f.title == w.title);
+                        w.active = match front {
+                            Some(front) => w.id.parse::<i64>().ok() == Some(front),
+                            None => frames
+                                .iter()
+                                .any(|f| f.active && f.pid == w.pid && f.title == w.title),
+                        };
                     }
                 }
             }
@@ -8840,6 +8845,36 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn on_linux_input_by_pid_alone_after_focus_by_id_goes_to_the_window_focus_raised() {
+        for bg in [false, true] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let driver = Twins(Arc::clone(&calls), 900.0, "Untitled - Notepad", 0.0);
+            let desk = Desk::new(|| Ok(TwinDocs::new(false, true, false)), driver, Os::Linux)
+                .background(bg);
+            let typed = |args: Value| desk.run("desk_type", args);
+            let err = typed(json!({"text": "a", "window": "Untitled - Notepad", "pid": 4}))
+                .await
+                .unwrap_err();
+            assert!(err.contains("desk focus and its id"), "{bg}: {err}");
+            desk.run(
+                "desk_focus",
+                json!({"window": "Untitled - Notepad", "pid": 4, "id": "w1"}),
+            )
+            .await
+            .unwrap();
+            typed(json!({"text": "a", "pid": 4})).await.unwrap();
+            let raised: Vec<Value> = sent(&calls, "bring_to_front")
+                .iter()
+                .map(|r| r["window_id"].clone())
+                .collect();
+            assert!(raised.iter().all(|w| *w == 1), "{bg}: {raised:?}");
+            for t in sent(&calls, "type_text") {
+                assert!(t["window_id"].is_null() || t["window_id"] == 1, "{bg}: {t}");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn a_shared_title_refusal_names_focus_by_id_when_the_pid_given_owns_both_windows() {
         let twins = || {
             Ok(Stub {
@@ -12418,6 +12453,10 @@ pub(crate) mod tests {
 
         fn pid_of(&mut self, _: &str) -> Result<Option<u32>, String> {
             Ok(Some(4))
+        }
+
+        fn foreground(&mut self) -> Option<i64> {
+            (!self.numbered).then_some(1)
         }
 
         fn at(&mut self, window: &str, _: i32, _: i32) -> Result<Option<String>, String> {

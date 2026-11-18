@@ -193,6 +193,10 @@ impl Access for Spi {
         self.shm(|g| Ok(g.shell_pids())).unwrap_or_default()
     }
 
+    fn foreground(&mut self) -> Option<i64> {
+        self.shm(|g| Ok(g.active())).flatten().map(i64::from)
+    }
+
     fn frame_extents(&mut self, windows: &[u32]) -> Vec<[u32; 4]> {
         self.shm(|g| Ok(g.frame_extents(windows)))
             .unwrap_or_default()
