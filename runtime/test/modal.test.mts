@@ -39,6 +39,20 @@ test('a step in a window whose app holds a modal dialog the screen does not show
   assert.ok(calls.includes('desk_type'), calls.join(' '))
 })
 
+test('a hidden modal dialog with no title names the ways out that close it on this system', async (t) => {
+  const doc = { id: '1.13/117', title: 'Untitled 1 - Mousepad', role: 'window', pid: 833, active: true }
+  const wins = [doc, { id: '1.13/339', title: '', role: 'dialog', pid: 833, active: false, modal: 'hidden', blocks: doc.title }]
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify(wins)
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: doc, nodes: [], truncated: false })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ type: 'hello' }] })
+  const desk = 'press its button with the desk tool (snapshot with the dialog\'s id from desk windows, then press with the button\'s id)'
+  const ways = process.platform === 'darwin' ? `${desk}, or close it with {close: true} when it has a Cancel button` : `close it with {close: true}, or ${desk}`
+  assert.equal(r.escalate?.reason, `modal dialog "" is open but hidden, and "Untitled 1 - Mousepad" takes no input until it closes: finish it, or ${ways}`)
+})
+
 test('a close step fails when the dialog it closes stays open', async (t) => {
   const editor = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: false }
   const find = { id: '2', title: 'Find', role: 'dialog', pid: process.pid, active: true }

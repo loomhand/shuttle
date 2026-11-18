@@ -579,7 +579,7 @@ async function hiddenModal(ws: Win[], f: Win | null) {
   await sleep(200)
   return of(await desk.windows()) ?? null
 }
-function modalBlocks(m: Win) { return `modal dialog "${m.title}" is open but ${m.modal}, and ${m.blocks ? `"${m.blocks}"` : 'its app'} takes no input until it closes: finish it, or ${m.title.trim() ? `close it with {close: true, window: "${m.title}"}` : ALERT_WAYS}` }
+function modalBlocks(m: Win) { return `modal dialog "${m.title}" is open but ${m.modal}, and ${m.blocks ? `"${m.blocks}"` : 'its app'} takes no input until it closes: finish it, or ${m.title.trim() ? `close it with {close: true, window: "${m.title}"}` : OS === 'darwin' ? ALERT_WAYS : `close it with {close: true}, or ${ALERT_DESK}`}` }
 function blocked(o: string) { return /AT-SPI peer \S+ is not responding|no accessibility answer within/.test(o) }
 async function unblocked(e: unknown, w: Win) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()) }
 function isChooser(o: string) { return isDialog(o) && CHOOSER.test(o) }
