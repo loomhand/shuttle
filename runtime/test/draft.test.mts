@@ -42,9 +42,9 @@ test('a recording becomes gui_plan steps with menus merged, typed values and win
   assert.deepEqual(ops, [
     { app: 'TextEdit' },
     { menu: 'File > New', after: 'Untitled' },
-    { type: '{{body}}' },
+    { type: '{{body}}', focus: 'unverified' },
     { menu: 'File > Save…' },
-    { type: '{{name}}' },
+    { type: '{{name}}', focus: 'unverified' },
     { click: 'Save', role: 'button', after: '{{name}}' },
     { key: 'cmd+w' },
     { app: 'Safari', title: 'canvas' },
@@ -87,7 +87,7 @@ test('a password field that took the focus with no click becomes one secret pass
     { t: 2, kind: 'password', app: 'Safari' },
   ]
   const d = await main({ recording: { id: 'rec-4', events }, params: { user: 'alice' } })
-  assert.deepEqual(d.steps.map(({ intent: _, recorded: __, ...s }) => s), [{ app: 'Safari', title: 'pw' }, { click: 'the user field' }, { type: '{{user}}' }, { key: 'tab' }, { type: '{{password}}', focus: { secure: true } }])
+  assert.deepEqual(d.steps.map(({ intent: _, recorded: __, ...s }) => s), [{ app: 'Safari', title: 'pw' }, { click: 'the user field' }, { type: '{{user}}', focus: 'unverified' }, { key: 'tab' }, { type: '{{password}}', focus: { secure: true } }])
 })
 
 test('a click near the screen edge keeps its crop offset for the replay', async (t) => {
@@ -137,7 +137,7 @@ test('shift stays on a key combo and leaves only typed text', async (t) => {
     { t: 3, kind: 'key', code: 1, text: 's', mods: ['cmd', 'shift'], app: 'TextEdit' },
   ]
   const d = await main({ recording: { id: 'rec-8', events } })
-  assert.deepEqual(d.steps.map(({ intent: _, ...s }) => s), [{ app: 'TextEdit' }, { type: 'Ab' }, { key: 'shift+tab' }, { key: 'cmd+shift+s' }])
+  assert.deepEqual(d.steps.map(({ intent: _, ...s }) => s), [{ app: 'TextEdit' }, { type: 'Ab', focus: 'unverified' }, { key: 'shift+tab' }, { key: 'cmd+shift+s' }])
 })
 
 test('a right click, a double click and a click with modifiers keep their button, count and mods', async (t) => {
@@ -262,12 +262,12 @@ test('input that moves to another app or another window of the app first switche
   assert.deepEqual(d.steps.map(({ intent: _, recorded: __, ...s }) => s), [
     { app: 'TextEdit', title: 'a.txt' },
     { click: 'OK', role: 'button' },
-    { type: 'x' },
+    { type: 'x', focus: 'unverified' },
     { app: 'TextEdit', title: 'b.txt' },
     { click: 'OK', role: 'button', after: 'c.txt' },
     { click: 'OK', role: 'button' },
     { app: 'Notes' },
-    { type: 'y' },
+    { type: 'y', focus: 'unverified' },
   ])
 })
 
@@ -314,11 +314,23 @@ test('a recording in a web page opens its address and keeps the page and DOM id 
   assert.equal(d.steps[0]?.intent, 'open https://shop.test/order?ref=mail in Browser')
 })
 
+test('a typed run that a retitled window splits from the keys before it, with no field read, is unverified', async (t) => {
+  await daemon(t, () => '{"ok":true}')
+  const field = { role: 'textbox', name: 'Body', frame: 'window' }
+  const events: Event[] = [
+    { t: 0, kind: 'key', code: 0, text: 'a', mods: [], app: 'TextEdit', focus: field },
+    { t: 1, kind: 'after', window: 'Untitled — Edited', role: 'window', app: 'TextEdit' },
+    { t: 2, kind: 'key', code: 0, text: 'b', mods: [], app: 'TextEdit' },
+  ]
+  const d = await main({ recording: { id: 'rec-18', events } })
+  assert.deepEqual(d.steps.filter((s) => 'type' in s).map(({ type, focus }) => ({ type, focus })), [{ type: 'a', focus: field }, { type: 'b', focus: 'unverified' }])
+})
+
 test('an Option-typed character stays inside its typed run', async (t) => {
   await daemon(t, () => '{"ok":true}')
   const events: Event[] = [...keys('an'), { t: 2, kind: 'key', code: 37, text: '@', mods: ['alt'], app: 'TextEdit' }, ...keys('b.de')]
   const d = await main({ recording: { id: 'rec-14', events }, params: { to: 'an@b.de' } })
-  assert.deepEqual(d.steps.map(({ intent: _, ...s }) => s), [{ app: 'TextEdit' }, { type: '{{to}}' }])
+  assert.deepEqual(d.steps.map(({ intent: _, ...s }) => s), [{ app: 'TextEdit' }, { type: '{{to}}', focus: 'unverified' }])
 })
 
 test('a model caption keeps its first line and at most 80 characters', async (t) => {
