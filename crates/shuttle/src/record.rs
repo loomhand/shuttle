@@ -326,8 +326,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                         let win = window_of(&windows, &at);
                         let named = win.filter(|w| w["app"].is_string()).or_else(|| of_pid(&windows, pid));
                         let app = named.and_then(|w| w["app"].as_str()).map(str::to_owned);
-                        let bundle = named.and_then(|w| w["bundle"].as_str()).map(str::to_owned);
-                        if (app.is_some() || pid.is_none()) && kept(app.as_deref(), bundle.as_deref(), pid, &apps) {
+                        if (app.is_some() || pid.is_none()) && kept(app.as_deref(), named.and_then(|w| w["bundle"].as_str()), pid, &apps) {
                             let late = frame.as_ref().is_none_or(|f| f.at < acted || win.is_none_or(|w| w["id"] != f.window.as_str()));
                             if late {
                                 frame = framed(desk, &windows, win, &apps).await;
@@ -360,8 +359,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                         windows = list(desk).await;
                         let named = of_pid(&windows, pid.map(u64::from));
                         let app = named.and_then(|w| w["app"].as_str()).map(str::to_owned);
-                        let bundle = named.and_then(|w| w["bundle"].as_str()).map(str::to_owned);
-                        if app.is_some() && kept(app.as_deref(), bundle.as_deref(), pid.map(u64::from), &apps) {
+                        if app.is_some() && kept(app.as_deref(), named.and_then(|w| w["bundle"].as_str()), pid.map(u64::from), &apps) {
                             json!({"t": t, "kind": "password", "app": app, "focus": focus})
                         } else {
                             json!({"t": t, "kind": "skipped"})
@@ -385,8 +383,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                             None => front.as_ref(),
                         };
                         let app = named.and_then(|w| w["app"].as_str()).map(str::to_owned);
-                        let bundle = named.and_then(|w| w["bundle"].as_str()).map(str::to_owned);
-                        if (app.is_none() && pid.is_some()) || pid == Some(u64::from(std::process::id())) || !kept(app.as_deref(), bundle.as_deref(), pid, &apps) {
+                        if (app.is_none() && pid.is_some()) || pid == Some(u64::from(std::process::id())) || !kept(app.as_deref(), named.and_then(|w| w["bundle"].as_str()), pid, &apps) {
                             json!({"t": t, "kind": "skipped"})
                         } else if secret {
                             json!({"t": t, "kind": "key", "secret": true, "app": app})
@@ -497,7 +494,7 @@ fn crop(f: &Frame, x: f64, y: f64, per_point: f64) -> Option<(String, f64, [f64;
     )
     .ok()?;
     let offset =
-        [x - (left + right) / 2.0, y - (top + bottom) / 2.0].map(|v| (v * 10.0).round() / 10.0);
+        [x - left.midpoint(right), y - top.midpoint(bottom)].map(|v| (v * 10.0).round() / 10.0);
     Some((B64.encode(png), f.factor, offset))
 }
 
@@ -519,6 +516,15 @@ fn kept(app: Option<&str>, bundle: Option<&str>, pid: Option<u64>, apps: &[Strin
         return apps.is_empty();
     };
     !blocked(app, pid) && (covers(apps, app) || bundle.is_some_and(|b| covers(apps, b)))
+}
+
+fn window_kept(w: &Value, apps: &[String]) -> bool {
+    kept(
+        w["app"].as_str(),
+        w["bundle"].as_str(),
+        w["pid"].as_u64(),
+        apps,
+    )
 }
 
 fn blocked(app: &str, pid: Option<u64>) -> bool {
@@ -562,7 +568,7 @@ fn front_of(windows: &[Value]) -> Option<Value> {
 
 fn came(now: Option<&Value>, was: Option<&Value>, apps: &[String], t0: Instant) -> Option<Value> {
     let w = now?;
-    (Some(&w["title"]) != was.map(|w| &w["title"]) && kept(w["app"].as_str(), w["bundle"].as_str(), w["pid"].as_u64(), apps)).then(|| {
+    (Some(&w["title"]) != was.map(|w| &w["title"]) && window_kept(w, apps)).then(|| {
         json!({"t": t0.elapsed().as_millis(), "kind": "after", "window": w["title"], "role": w["role"], "app": w["app"]})
     })
 }
@@ -573,12 +579,7 @@ async fn light<H: Handler>(desk: &H, windows: &[Value], apps: &[String], asked: 
         let Some(pid) = w["pid"].as_u64().filter(|p| !asked.contains(p)) else {
             continue;
         };
-        if !kept(
-            w["app"].as_str(),
-            w["bundle"].as_str(),
-            w["pid"].as_u64(),
-            apps,
-        ) {
+        if !window_kept(w, apps) {
             continue;
         }
         asked.push(pid);
@@ -587,14 +588,10 @@ async fn light<H: Handler>(desk: &H, windows: &[Value], apps: &[String], asked: 
 }
 
 async fn list<H: Handler>(desk: &H) -> Vec<Value> {
-    call(desk, "desk_windows", json!({}))
-        .await
-        .ok()
-        .and_then(|v| match v {
-            Value::Array(a) => Some(a),
-            _ => None,
-        })
-        .unwrap_or_default()
+    match call(desk, "desk_windows", json!({})).await {
+        Ok(Value::Array(a)) => a,
+        _ => Vec::new(),
+    }
 }
 
 async fn framed<H: Handler>(
@@ -610,12 +607,7 @@ async fn framed<H: Handler>(
         };
         w = windows.iter().find(|x| x["id"].as_str() == Some(owner))?;
     }
-    if !kept(
-        w["app"].as_str(),
-        w["bundle"].as_str(),
-        w["pid"].as_u64(),
-        apps,
-    ) {
+    if !window_kept(w, apps) {
         return None;
     }
     let bounds = <[f64; 4]>::deserialize(&w["bounds"]).ok()?;
