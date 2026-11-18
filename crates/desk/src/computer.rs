@@ -197,6 +197,15 @@ impl Computer {
         CALLER.scope(agent.to_owned(), self.verb(tool, args)).await
     }
 
+    pub fn release(self: &Arc<Self>, agent: &str) {
+        lock(&self.last_scale).remove(agent);
+        let session = Self::default_session(agent);
+        if lock(&self.scales).contains_key(&session) {
+            let computer = Arc::clone(self);
+            tokio::spawn(async move { computer.end(json!({"session": session})).await });
+        }
+    }
+
     async fn verb(&self, tool: &str, args: Value) -> Result<Output, String> {
         match tool {
             "desk_computer_state" => self.state(args).await,
@@ -4423,6 +4432,60 @@ mod tests {
         for refusal in [false, true] {
             ended_default(refusal).await;
         }
+    }
+
+    #[tokio::test]
+    async fn a_released_caller_loses_its_default_session_and_the_driver_ends_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+        let log = std::sync::Arc::clone(&calls);
+        let full = full_shot(64, 40, 64);
+        let driver = tokio::spawn(listener.serve(move |req| {
+            let name = req["name"].as_str().unwrap_or_default().to_owned();
+            let session = req["args"]["session"].as_str().unwrap_or_default();
+            log.lock().unwrap().push((name.clone(), session.to_owned()));
+            match name.as_str() {
+                "list_windows" => json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Mousepad", "title": "notes", "bounds": {"x": 0, "y": 0, "width": 800, "height": 600}, "z_index": 1}]}}}),
+                "get_window_state" => json!({"ok": true, "result": {"structuredContent": {"elements": [{"element_index": 0, "element_token": "t0", "role": "push button", "label": "OK"}]}}}),
+                "get_desktop_state" => full.clone(),
+                _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+            }
+        }));
+        let cua = Arc::new(cua(&socket));
+        let state = cua.run("run-x-1", "desk_computer_state", json!({}));
+        assert!(!state.await.unwrap().is_error);
+        cua.run("run-x-2", "desk_look", json!({})).await.unwrap();
+        for agent in ["run-x-1", "run-x-2", "run-x-3"] {
+            cua.release(agent);
+        }
+        let ended = || -> Vec<String> {
+            let calls = calls.lock().unwrap();
+            let ends = calls
+                .iter()
+                .filter(|(n, s)| n == "end_session" && s.starts_with("computer"));
+            ends.map(|(_, s)| s.clone()).collect()
+        };
+        for _ in 0..300 {
+            if !ended().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(ended(), ["computer-run-x-1"]);
+        assert!(cua.last.lock().await.is_empty());
+        assert!(lock(&cua.scales).is_empty() && lock(&cua.last_scale).is_empty());
+        let act = cua.run(
+            "run-x-1",
+            "desk_computer_act",
+            json!({"action": "click", "element": 0}),
+        );
+        assert_eq!(
+            act.await.unwrap_err(),
+            "no element list yet; call computer_state first"
+        );
+        driver.abort();
     }
 
     async fn ended_default(refusal: bool) {

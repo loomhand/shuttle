@@ -227,7 +227,7 @@ struct Entry {
 /// A desk with the computer verbs: the desk verbs and, with no app allowlist, the computer verbs.
 struct Native<B> {
     desk: Desk<B, Arc<Driver>>,
-    computer: Computer,
+    computer: Arc<Computer>,
     driver: Arc<Driver>,
     open: bool,
 }
@@ -249,6 +249,7 @@ impl<B: Access + 'static> Handler for Native<B> {
 
     fn release(&self, holder: &str) {
         self.desk.release(holder);
+        self.computer.release(holder);
     }
 
     fn allowed(&self) {
@@ -402,9 +403,11 @@ pub fn native(
         .auto(auto)
         .locked_input(locked_input);
     Native {
-        computer: Computer::new(Arc::clone(&driver), HOST)
-            .turn(desk.turn())
-            .background(background),
+        computer: Arc::new(
+            Computer::new(Arc::clone(&driver), HOST)
+                .turn(desk.turn())
+                .background(background),
+        ),
         desk,
         driver,
         open: apps.is_empty(),
