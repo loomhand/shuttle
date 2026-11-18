@@ -405,7 +405,12 @@ impl Android {
         let mut wipe = Wipe(Some(Arc::clone(&self.control)));
         let typed = self.type_lines(text, at, check).await;
         wipe.0 = None;
-        wiped(&self.control).await;
+        if wiped(&self.control).await
+            && let Ok(mut control) = self.open_control().await
+            && control.set_clipboard("").await.is_ok()
+        {
+            *self.control.lock().await = Some(control);
+        }
         typed
     }
 
@@ -788,6 +793,7 @@ impl Android {
             stream,
             sequence: 0,
             pending: false,
+            filled: false,
             _server: server,
             _forward: forward,
         })
@@ -899,6 +905,7 @@ struct Control {
     stream: TcpStream,
     sequence: u64,
     pending: bool,
+    filled: bool,
     _server: Child,
     _forward: Forward,
 }
@@ -919,11 +926,14 @@ impl Control {
         }
         self.sequence += 1;
         self.pending = true;
+        self.filled |= !text.is_empty();
         self.stream
             .write_all(&clipboard_message(text, self.sequence))
             .await
             .map_err(|e| format!("send clipboard: {e}"))?;
-        self.ack().await
+        self.ack().await?;
+        self.filled = !text.is_empty();
+        Ok(())
     }
 
     async fn ack(&mut self) -> Result<(), String> {
@@ -1321,13 +1331,17 @@ async fn connect_control(port: &str) -> Result<TcpStream, String> {
     Err("scrcpy control did not start".to_owned())
 }
 
-async fn wiped(slot: &Mutex<Option<Control>>) {
+async fn wiped(slot: &Mutex<Option<Control>>) -> bool {
     let mut slot = slot.lock().await;
-    if let Some(control) = slot.as_mut().filter(|c| c.is_open())
-        && control.set_clipboard("").await.is_err()
-    {
-        *slot = None;
+    let Some(control) = slot.as_mut() else {
+        return false;
+    };
+    if control.is_open() && control.set_clipboard("").await.is_ok() {
+        return false;
     }
+    let filled = control.filled;
+    *slot = None;
+    filled
 }
 
 /// Reads the device message that acknowledges the clipboard of `sequence`, the only one a server without clipboard autosync sends.
@@ -2527,6 +2541,57 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_clear_through_a_session_that_ended_after_the_paste_goes_through_a_new_one() {
+        let fake = Fake::new();
+        fake.put("focus.json", &focused(7, ""));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        fake.put("port", &listener.local_addr().unwrap().port().to_string());
+        let mut peer = controlled(&fake.android).await;
+        let mut ack = vec![ACK_CLIPBOARD];
+        ack.extend_from_slice(&1u64.to_be_bytes());
+        let device = tokio::spawn(async move {
+            let mut set = vec![0; clipboard_message("secret", 1).len()];
+            peer.read_exact(&mut set).await.unwrap();
+            peer.write_all(&ack).await.unwrap();
+            drop(peer);
+            let (mut fresh, _) = listener.accept().await.unwrap();
+            fresh.write_all(&[0]).await.unwrap();
+            let mut clear = vec![0; clipboard_message("", 1).len()];
+            fresh.read_exact(&mut clear).await.unwrap();
+            fresh.write_all(&ack).await.unwrap();
+            (set, clear)
+        });
+        let typed = fake
+            .android
+            .type_text("secret", None, || async { Ok(None) })
+            .await;
+        assert!(typed.is_ok(), "{typed:?}");
+        let sent = tokio::time::timeout(Duration::from_secs(5), device)
+            .await
+            .expect("no clear through a new session")
+            .unwrap();
+        assert_eq!(
+            sent,
+            (clipboard_message("secret", 1), clipboard_message("", 1))
+        );
+        assert!(fake.android.control.lock().await.is_some());
+        drop(controlled(&fake.android).await);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        fake.put("port", &listener.local_addr().unwrap().port().to_string());
+        let typed = fake
+            .android
+            .type_text("", None, || async { Ok(None) })
+            .await;
+        assert_eq!(typed, Ok(Some(true)));
+        let reopened = tokio::time::timeout(Duration::from_millis(300), listener.accept()).await;
+        assert!(
+            reopened.is_err(),
+            "a session was opened to clear what no paste set"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_double_tap_is_two_server_taps_inside_the_double_tap_window() {
         let fake = Fake::new();
         fake.put("inject.answer", "true");
@@ -3473,6 +3538,7 @@ mod tests {
             stream,
             sequence: 0,
             pending: false,
+            filled: false,
             _server: Command::new("sleep")
                 .arg("30")
                 .kill_on_drop(true)
