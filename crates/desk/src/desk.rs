@@ -1521,30 +1521,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             None if picked["pid"].as_u64() == Some(u64::from(pid)) => vec![picked],
             None => Vec::new(),
         };
-        let tiers: &[[f64; 4]] = match self.os {
-            Os::Windows => &[[FRAME_BORDER; 4]],
-            Os::Linux => &[
-                [2.0; 4],
-                [FRAME_BORDER, TITLE_BAR, FRAME_BORDER, FRAME_BORDER],
-            ],
-            Os::Mac => &[[2.0; 4]],
-        };
-        let fits = |w: &Value, border: [f64; 4]| {
-            let [x, y, width, height] = bounds(w);
-            frame.is_some_and(|[l, t, fw, fh]| {
-                let [l, t, r, b] = [l, t, l + fw, t + fh].map(|v| f64::from(v) / scale);
-                [x - l, y - t, r - x - width, b - y - height]
-                    .iter()
-                    .zip(border)
-                    .all(|(d, most)| (-2.0..=most).contains(d))
-            })
-        };
-        let fit: Vec<&Value> = tiers
-            .iter()
-            .map(|&t| same.iter().filter(|w| fits(w, t)).collect::<Vec<_>>())
-            .find(|m| !m.is_empty())
-            .unwrap_or_default();
-        match fit.as_slice() {
+        match fitting(self.os, frame, scale, &same).as_slice() {
             [w] => self.click_in(req, w, point).await,
             _ => Err(BACKGROUND_TWINS.to_owned()),
         }
@@ -2422,7 +2399,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let raw = listed["structuredContent"]["windows"]
             .as_array()
             .map_or(&[][..], Vec::as_slice);
-        let same: Vec<&Value> = raw
+        let same: Vec<Value> = raw
             .iter()
             .filter(|r| match f.number {
                 Some(n) => r["window_id"].as_u64() == Some(n.into()),
@@ -2431,8 +2408,21 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         && title_matches(1, r["title"].as_str().unwrap_or_default(), &f.title)
                 }
             })
+            .cloned()
             .collect();
-        match same.as_slice() {
+        let fit = if same.len() > 1 {
+            let root = id.to_owned();
+            let frame = self
+                .access
+                .run(CALL_LIMIT, (), move |b| {
+                    Ok(b.node(&root, Extras::FRAME, 0)?.bounds)
+                })
+                .await?;
+            fitting(self.os, frame, self.scale().await?, &same)
+        } else {
+            same.iter().collect()
+        };
+        match fit.as_slice() {
             [r] => {
                 self.classify(r);
                 Ok(Frame {
@@ -2443,8 +2433,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             [] => Err(format!(
                 "window id {id:?} is not in the driver's window list, so nothing was sent"
             )),
-            _ => Err(format!(
-                "window id {id:?} shares its title with another window of its process, and on this system the driver's window list cannot tell which of them that id is, so nothing was sent"
+            [_, ..] => Err(format!(
+                "window id {id:?} shares its title and its bounds with another window of its process, so the desk cannot tell which of them that id is, and nothing was sent"
             )),
         }
     }
@@ -3246,6 +3236,32 @@ fn ok_with(unverified: Option<String>) -> String {
         }
         None => OK.to_owned(),
     }
+}
+
+fn fitting(os: Os, frame: Option<[i32; 4]>, scale: f64, same: &[Value]) -> Vec<&Value> {
+    let tiers: &[[f64; 4]] = match os {
+        Os::Windows => &[[FRAME_BORDER; 4]],
+        Os::Linux => &[
+            [2.0; 4],
+            [FRAME_BORDER, TITLE_BAR, FRAME_BORDER, FRAME_BORDER],
+        ],
+        Os::Mac => &[[2.0; 4]],
+    };
+    let fits = |w: &Value, border: [f64; 4]| {
+        let [x, y, width, height] = bounds(w);
+        frame.is_some_and(|[l, t, fw, fh]| {
+            let [l, t, r, b] = [l, t, l + fw, t + fh].map(|v| f64::from(v) / scale);
+            [x - l, y - t, r - x - width, b - y - height]
+                .iter()
+                .zip(border)
+                .all(|(d, most)| (-2.0..=most).contains(d))
+        })
+    };
+    tiers
+        .iter()
+        .map(|&t| same.iter().filter(|w| fits(w, t)).collect::<Vec<_>>())
+        .find(|m| !m.is_empty())
+        .unwrap_or_default()
 }
 
 fn bounds(w: &Value) -> [f64; 4] {
@@ -8393,15 +8409,6 @@ pub(crate) mod tests {
                 ..Stub::default()
             })
         };
-        let together = || {
-            Ok(Stub {
-                frames: vec![
-                    frame("a", "Untitled - Notepad", 4, true, Some("Notepad")),
-                    frame("b", "Untitled - Notepad", 4, false, Some("Notepad")),
-                ],
-                ..Stub::default()
-            })
-        };
         for os in [Os::Windows, Os::Linux] {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let desk = Desk::new(apart, TwoWindows(calls.clone()), os);
@@ -8416,22 +8423,6 @@ pub(crate) mod tests {
                 [json!({"pid": 8, "window_id": 2})],
                 "{os:?}"
             );
-            let calls = Arc::new(Mutex::new(Vec::new()));
-            let driver = Twins(Arc::clone(&calls), 900.0, "Untitled - Notepad", 0.0);
-            let desk = Desk::new(together, driver, os);
-            let err = desk
-                .run(
-                    "desk_focus",
-                    json!({"window": "Untitled - Notepad", "pid": 4, "id": "b"}),
-                )
-                .await
-                .unwrap_err();
-            assert_eq!(
-                err,
-                "window id \"b\" shares its title with another window of its process, and on this system the driver's window list cannot tell which of them that id is, so nothing was sent",
-                "{os:?}"
-            );
-            assert!(sent(&calls, "bring_to_front").is_empty(), "{os:?}");
         }
     }
 
@@ -8459,6 +8450,41 @@ pub(crate) mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn focus_by_id_on_linux_tells_same_titled_windows_of_one_process_apart_by_their_bounds() {
+        for (id, number) in [("w3", 3), ("w1", 1)] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let driver = Twins(Arc::clone(&calls), 900.0, "Untitled - Notepad", 0.0);
+            let desk = Desk::new(|| Ok(TwinDocs::new(false, true, false)), driver, Os::Linux);
+            desk.run(
+                "desk_focus",
+                json!({"window": "Untitled - Notepad", "pid": 4, "id": id}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                sent(&calls, "bring_to_front"),
+                [json!({"pid": 4, "window_id": number})],
+                "{id}"
+            );
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let driver = Twins(Arc::clone(&calls), 0.0, "Untitled - Notepad", 0.0);
+        let desk = Desk::new(|| Ok(TwinDocs::new(false, false, false)), driver, Os::Linux);
+        let err = desk
+            .run(
+                "desk_focus",
+                json!({"window": "Untitled - Notepad", "pid": 4, "id": "w3"}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "window id \"w3\" shares its title and its bounds with another window of its process, so the desk cannot tell which of them that id is, and nothing was sent"
+        );
+        assert!(sent(&calls, "bring_to_front").is_empty());
     }
 
     #[tokio::test]
