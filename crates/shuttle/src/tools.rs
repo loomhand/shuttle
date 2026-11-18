@@ -115,7 +115,7 @@ fn builtins() -> Value {
     json!({"tools": [
         {
             "name": "gui_plan",
-            "description": "Run a desktop-app GUI plan in one call: each step runs on the accessibility tree, is checked, and the plan stops at the first surprise, also before it acts in a window behind an untitled alert of its app on macOS; caveats lists the steps whose effect no later step read back, such as an accessibility action's reply on Linux or an Android type the device could not check: read their effect before relying on them. One op per step: {app}, {menu}, {click}, {check, on}, {set, value}, {type}, {key}, {wait}, {expect}, {verify}, {close: true}. A {verify} with timeout_ms re-reads the window until its element shows, with its value, on or enabled when given, and with gone: true until the element is gone. A password typed at a terminal prompt (read -s, sudo, ssh) goes in its own step as {type, secret: true}, one line, so it is never quoted back or saved as text. A passing plan can be saved as a flow with save, and replayed with flow and params. An error that says what it left reports the steps that ran before it.",
+            "description": "Run a desktop-app GUI plan in one call: each step runs on the accessibility tree, is checked, and the plan stops at the first surprise, also before it acts in a window behind an untitled alert of its app on macOS; caveats lists the steps whose effect no later step read back, such as an accessibility action's reply on Linux or an Android type the device could not check: read their effect before relying on them. One op per step: {app}, {menu}, {click}, {check, on}, {set, value}, {type}, {key}, {wait}, {expect}, {verify}, {close: true}. A {verify} with timeout_ms re-reads the window until its element shows, with its value, on or enabled when given, and with gone: true until the element is gone. A password typed at a terminal prompt (read -s, sudo, ssh) goes in its own step as {type, secret: true}, one line, and a password into a field as {type, secret: true} or {set, value, secret: true}, so it is never quoted back or saved as text. A passing plan can be saved as a flow with save, and replayed with flow and params. An error that says what it left reports the steps that ran before it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -287,6 +287,24 @@ mod tests {
         }
         assert!(routed.len() > DESK_VERBS.len(), "{routed:?}");
         assert!(!routed.iter().any(|t| t.contains("safety")), "{routed:?}");
+    }
+
+    #[test]
+    fn the_gui_plan_tool_marks_a_password_into_a_field_secret() {
+        let tools = list(&Plugins::default());
+        let plan = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "gui_plan")
+            .unwrap();
+        let text = plan["description"].as_str().unwrap();
+        assert!(
+            text.contains(
+                "a password into a field as {type, secret: true} or {set, value, secret: true}"
+            ),
+            "{text}"
+        );
     }
 
     #[test]
