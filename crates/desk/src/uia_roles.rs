@@ -141,11 +141,34 @@ pub fn menu_click_reaches(
     at: Option<isize>,
     own: Option<isize>,
     owners: impl FnOnce(isize) -> Vec<isize>,
+    menu_at: impl FnOnce() -> bool,
 ) -> bool {
     let (Some(at), Some(own)) = (at, own) else {
         return false;
     };
-    at != 0 && own != 0 && (at == own || owners(at).contains(&own))
+    at != 0 && own != 0 && (at == own || owners(at).contains(&own) && menu_at())
+}
+
+pub fn menu_family(control_type: i32) -> bool {
+    matches!(control_type, 50009..=50011)
+}
+
+pub fn menu_up_to_root(
+    steps: impl IntoIterator<Item = (bool, Option<(isize, isize)>)>,
+    at: isize,
+) -> bool {
+    for (menu, window) in steps {
+        if menu {
+            return true;
+        }
+        if let Some((hwnd, root)) = window
+            && hwnd != 0
+            && (hwnd == at || root != at)
+        {
+            return false;
+        }
+    }
+    false
 }
 
 pub fn walked_id<'a, K: PartialEq + 'a>(
@@ -327,6 +350,73 @@ mod tests {
     }
 
     #[test]
+    fn a_window_the_entrys_window_owns_passes_only_while_a_menu_is_at_the_point() {
+        let (form, dropdown, palette, toast) = (7, 13, 15, 30);
+        let owners = |w: isize| {
+            if w == dropdown || w == palette {
+                vec![form]
+            } else {
+                Vec::new()
+            }
+        };
+        assert!(
+            menu_click_reaches(Some(dropdown), Some(form), owners, || true),
+            "a WinForms dropdown entry, the hit element its menu \"ViewDropDown\""
+        );
+        assert!(
+            !menu_click_reaches(Some(palette), Some(form), owners, || false),
+            "a topmost tool window the form owns, no menu at the point"
+        );
+        let mut asked = 0;
+        let mut menu = |answer| {
+            asked += 1;
+            answer
+        };
+        assert!(menu_click_reaches(Some(form), Some(form), owners, || menu(
+            false
+        )));
+        assert!(!menu_click_reaches(Some(toast), Some(form), owners, || {
+            menu(true)
+        }));
+        assert!(!menu_click_reaches(None, Some(form), owners, || menu(true)));
+        assert_eq!(asked, 0);
+        let child = 16;
+        assert!(
+            menu_up_to_root([(true, None)], dropdown),
+            "the dropdown's own root is its menu \"ViewDropDown\""
+        );
+        assert!(
+            !menu_up_to_root(
+                [
+                    (false, Some((0, 0))),
+                    (false, Some((palette, palette))),
+                    (true, None)
+                ],
+                palette
+            ),
+            "a tool window with no menu up to its own root, though the form above it has a menu bar"
+        );
+        assert!(
+            !menu_up_to_root([(false, Some((form, form))), (true, None)], palette),
+            "a hit element in another window than the one at the point"
+        );
+        assert!(
+            menu_up_to_root(
+                [
+                    (false, Some((0, 0))),
+                    (false, Some((child, palette))),
+                    (true, None)
+                ],
+                palette
+            ),
+            "the residual: a menu inside the owned window, above a child window of it"
+        );
+        assert!(!menu_up_to_root([], palette), "no hit element");
+        assert!([50009, 50010, 50011].into_iter().all(menu_family));
+        assert!(![50000, 50021, 50032].into_iter().any(menu_family));
+    }
+
+    #[test]
     fn a_menu_click_goes_out_only_to_the_entrys_own_window_or_a_window_it_owns() {
         let (form, context, dropdown, submenu) = (7, 12, 13, 14);
         let (notepad, popup_host, copy_b, copy_b_popup, toast) = (40, 41, 20, 21, 30);
@@ -337,7 +427,7 @@ mod tests {
             21 => vec![copy_b],
             _ => Vec::new(),
         };
-        let reaches = |at, own| menu_click_reaches(at, own, owners);
+        let reaches = |at, own| menu_click_reaches(at, own, owners, || true);
         let passes = [
             (
                 context,

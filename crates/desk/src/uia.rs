@@ -192,6 +192,35 @@ impl Uia {
         Ok(None)
     }
 
+    fn menu_in(&self, at: isize, x: i32, y: i32) -> bool {
+        let _bounded = Bounded::new(&self.auto);
+        // SAFETY: `self.auto` is a live IUIAutomation of this thread.
+        let Ok(walker) = (unsafe { self.auto.ControlViewWalker() }) else {
+            return false;
+        };
+        let mut hit = element_at(&self.auto, x, y).ok();
+        let mut last: Option<IUIAutomationElement> = None;
+        let steps = std::iter::from_fn(|| {
+            let el = match hit.take() {
+                Some(el) => el,
+                // SAFETY: `walker` and the last element are live UIA objects of this thread.
+                None => unsafe { walker.GetParentElement(last.as_ref()?) }.ok()?,
+            };
+            // SAFETY: `el` is a live UIA element of this thread; a stale one answers an error.
+            let kind = unsafe { el.CurrentControlType() }.ok()?;
+            if uia_roles::menu_family(kind.0) {
+                return Some((true, None));
+            }
+            // SAFETY: as above.
+            let hwnd = unsafe { el.CurrentNativeWindowHandle() }.ok()?;
+            // SAFETY: GetAncestor takes any handle; a null or stale one answers a null handle.
+            let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+            last = Some(el);
+            Some((false, Some((hwnd.0 as isize, root.0 as isize))))
+        });
+        uia_roles::menu_up_to_root(steps.take(MAX_DEPTH), at)
+    }
+
     fn cached(
         &self,
         el: &IUIAutomationElement,
@@ -556,7 +585,8 @@ impl Access for Uia {
             .native_root(id, chain)?
             .ok_or("the menu entry's own window could not be read")?;
         let at = top_at(x, y);
-        if uia_roles::menu_click_reaches(at, Some(own), owners_of) {
+        let menu_at = || at.is_some_and(|w| self.menu_in(w, x, y));
+        if uia_roles::menu_click_reaches(at, Some(own), owners_of, menu_at) {
             return Ok(None);
         }
         Ok(Some(at.map_or((String::new(), None), |w| {
