@@ -260,7 +260,14 @@ mod tests {
         assert_eq!(m.2, 1);
         plan_press(&mut m, "file", Os::Windows, false).unwrap();
         assert_eq!(m.2, 2);
-        plan_press(&mut m, "save", Os::Windows, false).unwrap();
+        m.0.add(
+            "open",
+            Some("file"),
+            "menuitem",
+            &["showing"],
+            Some([0, 20, 40, 20]),
+        );
+        plan_press(&mut m, "open", Os::Windows, false).unwrap();
         assert_eq!(m.2, 2);
     }
 

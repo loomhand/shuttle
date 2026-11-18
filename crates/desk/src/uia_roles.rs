@@ -420,7 +420,11 @@ mod tests {
         assert!(!menu_click_reaches(None, Some(form), owners, || menu(true)));
         assert_eq!(asked, 0);
         assert!([50009, 50010, 50011].into_iter().all(menu_family));
-        assert!(![50000, 50021, 50032].into_iter().any(menu_family));
+        assert!(
+            ![50000, 50008, 50012, 50021, 50032]
+                .into_iter()
+                .any(menu_family)
+        );
     }
 
     #[test]
