@@ -134,6 +134,13 @@ impl Runner {
                 agent,
             )
             .await?;
+        let usage = report
+            .get("usage")
+            .filter(|_| !report["error"].is_null())
+            .cloned();
+        if let (Some(usage), Some(left)) = (usage, report["result"].as_object_mut()) {
+            left.insert("usage".to_owned(), usage);
+        }
         match report["error"]["message"].as_str() {
             Some(e) if report["result"].is_null() => Err(format!("{name}: {e}")),
             Some(e) => Err(format!("{name}: {e}; what it left: {}", report["result"])),
@@ -559,7 +566,7 @@ mod tests {
         let r = runner(dir.path());
         std::fs::write(
             dir.path().join("gui_plan.mts"),
-            "import { writeFileSync } from 'node:fs'\nexport async function main() { process.on('SIGTERM', () => { writeFileSync(`${process.env.SHUTTLE_RUN}/result.json`, '{\"done\":1}'); process.exit(1) }); await new Promise((r) => setTimeout(r, 30000)) }\n",
+            "import { writeFileSync } from 'node:fs'\nexport async function main() { writeFileSync(`${process.env.SHUTTLE_RUN}/usage.json`, '{\"m\":{\"calls\":2}}'); process.on('SIGTERM', () => { writeFileSync(`${process.env.SHUTTLE_RUN}/result.json`, '{\"done\":1}'); process.exit(1) }); await new Promise((r) => setTimeout(r, 30000)) }\n",
         )
         .unwrap();
         let err = r
@@ -568,7 +575,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             err,
-            "gui_plan: the run passed 2s and was stopped; what it left: {\"done\":1}"
+            "gui_plan: the run passed 2s and was stopped; what it left: {\"done\":1,\"usage\":{\"m\":{\"calls\":2}}}"
         );
     }
 
