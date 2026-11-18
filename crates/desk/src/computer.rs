@@ -903,7 +903,7 @@ impl Computer {
             };
             Ok((pixels, blocks, g.mapped()?, active, page, wait))
         }) {
-            let (volatile, paused) = self.volatile.get_or_init(Volatile::start).begin(&blocks);
+            let (volatile, paused) = self.volatile().begin(&blocks);
             return Some(Before {
                 probe: None,
                 paused: Some(paused),
@@ -1096,7 +1096,12 @@ impl Computer {
     }
 
     fn touch(&self) {
-        self.volatile.get_or_init(Volatile::start).touch();
+        self.volatile().touch();
+    }
+
+    fn volatile(&self) -> &Volatile {
+        self.volatile
+            .get_or_init(|| Volatile::start(Arc::clone(&self.input)))
     }
 
     /// The windows that opened, closed or moved between `before` and `after`, and a new front window.
