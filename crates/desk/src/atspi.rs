@@ -513,12 +513,8 @@ impl Atspi {
                 }
             }))
             .await;
-            let mut listed: HashMap<Rc<Obj>, Vec<Rc<Obj>>> = HashMap::new();
-            for (o, list) in live.iter().zip(lists) {
-                if let Ok(list) = list {
-                    listed.insert(Rc::clone(o), list);
-                }
-            }
+            let (mut listed, cut) = listed_of(&live, lists);
+            truncated |= cut;
             let mut queued: HashSet<&Rc<Obj>> = HashSet::new();
             let mut unknown: Vec<Rc<Obj>> = live
                 .iter()
@@ -1357,6 +1353,23 @@ fn needs_live(r: &Raw, cached: Option<&Vec<(i32, Rc<Obj>)>>) -> bool {
         || cached.is_some_and(|c| c.iter().any(|(i, _)| *i < 0))
 }
 
+fn listed_of(
+    live: &[&Rc<Obj>],
+    lists: Vec<Result<Vec<Rc<Obj>>, String>>,
+) -> (HashMap<Rc<Obj>, Vec<Rc<Obj>>>, bool) {
+    let mut listed = HashMap::with_capacity(lists.len());
+    let mut cut = false;
+    for (o, list) in live.iter().zip(lists) {
+        match list {
+            Ok(list) => {
+                listed.insert(Rc::clone(o), list);
+            }
+            Err(_) => cut = true,
+        }
+    }
+    (listed, cut)
+}
+
 fn capped(nodes: &mut Vec<Node>) -> bool {
     let cut = nodes.len() > MAX_NODES;
     nodes.truncate(MAX_NODES);
@@ -1643,6 +1656,22 @@ mod tests {
                 "{children}"
             );
         }
+    }
+
+    #[test]
+    fn a_children_read_that_fails_cuts_the_tree_and_keeps_the_lists_that_answered() {
+        let o = |p: &str| Rc::new(Obj::at(":1.9", &format!("{PATH_PREFIX}/{p}")));
+        let (a, b) = (o("a"), o("b"));
+        let (listed, cut) = listed_of(&[&a, &b], vec![Ok(vec![o("a1")]), Ok(Vec::new())]);
+        assert_eq!((listed.len(), cut), (2, false));
+        let (listed, cut) = listed_of(
+            &[&a, &b],
+            vec![Ok(vec![o("a1")]), Err(not_responding(":1.9"))],
+        );
+        assert_eq!(
+            (listed[&a].clone(), listed.contains_key(&b), cut),
+            (vec![o("a1")], false, true)
+        );
     }
 
     #[test]
