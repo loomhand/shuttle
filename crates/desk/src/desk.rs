@@ -3369,6 +3369,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::model::{MAX_IDS, Tree, evict_ids, lookup};
+    use crate::press::ACT_TIMED_OUT;
     use crate::server::Handler;
 
     const PID_CALLS: [(&str, &str); 4] = [
@@ -10568,6 +10569,9 @@ pub(crate) mod tests {
             }
             if id == "slow" {
                 return Err("the action timed out".into());
+            }
+            if id == "stuck" {
+                return Err(ACT_TIMED_OUT.into());
             }
             if self.nodes.get(id).is_some_and(|(n, _)| n.role == "menu") {
                 self.opened = true;

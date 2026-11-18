@@ -37,11 +37,11 @@ use crate::model::{
     Access, Act, Extras, Frame, MAX_DEPTH, MAX_NODES, Node, Tree, VALUE_CHARS, evict_ids,
     format_number, is_active, lookup, place,
 };
+use crate::press::ACT_TIMED_OUT;
 use crate::uia_roles::{self, Facts, Kind};
 
 const ACT_TIMEOUT_MS: u32 = 2_000;
 const TIMED_OUT: HRESULT = HRESULT(UIA_E_TIMEOUT.cast_signed());
-const ACT_TIMED_OUT: &str = "the app did not answer the action within 2 s, as when the action opens a modal dialog; it may have taken effect: read the window before acting again";
 const TITLE_CHARS: usize = 512;
 const TAIL_LINES: i32 = 256;
 const TAIL_ROUNDS: u32 = 12;
