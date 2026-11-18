@@ -830,6 +830,7 @@ server.serve_forever()
                 }))
                 .unwrap(),
             ],
+            script_run_off: false,
         };
         let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
         let runner = Runner::new(

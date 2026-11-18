@@ -47,6 +47,9 @@ pub fn list(plugins: &Plugins) -> Value {
     let mut listed = builtins();
     let script = listed["tools"][1]["inputSchema"].clone();
     if let Some(tools) = listed["tools"].as_array_mut() {
+        if plugins.script_run_off {
+            tools.remove(1);
+        }
         tools.extend(plugins.runs.iter().map(|p| {
             let mut tool = json!({"name": p.name, "description": p.description});
             tool["inputSchema"] = script.clone();
@@ -296,6 +299,7 @@ mod tests {
                 resources: Vec::new(),
             }],
             services: Vec::new(),
+            script_run_off: false,
         };
         let listed = list(&plugins);
         let names = names(&listed);
@@ -306,6 +310,17 @@ mod tests {
             listed["tools"][1]["inputSchema"]
         );
         assert_eq!(listed["tools"][1]["name"], "script_run");
+    }
+
+    #[test]
+    fn script_run_is_not_listed_while_it_is_off() {
+        let off = list(&Plugins {
+            script_run_off: true,
+            ..Plugins::default()
+        });
+        let mut without = NAMES.to_vec();
+        without.remove(1);
+        assert_eq!(names(&off), without);
     }
 
     #[tokio::test]
@@ -323,6 +338,7 @@ mod tests {
                 }))
                 .unwrap(),
             ],
+            script_run_off: false,
         };
         let listed = list(&plugins);
         let tools = listed["tools"].as_array().unwrap();

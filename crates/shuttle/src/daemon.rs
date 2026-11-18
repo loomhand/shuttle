@@ -28,8 +28,7 @@ use crate::services;
 use crate::{NAME, STOPPED, lock};
 
 const BUSY: &str = "desk busy: another run or action is still going";
-const SCRIPT_RUN_OFF: &str =
-    "script_run is turned off: set script_run = true under [tools] in config.toml";
+const SCRIPT_RUN_OFF: &str = "script_run is off in the user's configuration ([tools] script_run in config.toml), which the daemon reads when it starts: a change takes effect once the daemon restarts";
 const DECLINED: &str = "declined by the user";
 const ENDING: &str = "the daemon is stopping, so nothing ran: call again in a few seconds";
 #[cfg(target_os = "linux")]
@@ -1304,7 +1303,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn script_run_turned_off_answers_how_to_turn_it_on() {
+    async fn script_run_turned_off_says_the_users_configuration_holds_it_off_until_a_restart() {
         let d = daemon(
             Echo,
             Guard {
@@ -1318,7 +1317,13 @@ mod tests {
                 json!({"code": "export function main() { return 1 }"}),
             ))
             .await;
-        assert_eq!((out.is_error, out.text.as_str()), (true, SCRIPT_RUN_OFF));
+        assert_eq!(
+            (out.is_error, out.text.as_str()),
+            (
+                true,
+                "script_run is off in the user's configuration ([tools] script_run in config.toml), which the daemon reads when it starts: a change takes effect once the daemon restarts"
+            )
+        );
     }
 
     #[tokio::test]
@@ -1555,7 +1560,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn with_script_run_off_a_plugin_answers_how_to_turn_it_on() {
+    async fn with_script_run_off_a_plugin_is_refused_like_script_run() {
         let d = daemon(
             Echo,
             Guard {

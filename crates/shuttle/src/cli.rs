@@ -56,6 +56,7 @@ pub fn run(args: &[String]) -> ExitCode {
             let mut listed = plugins::configured(&config, &path, &tools::NAMES);
             if !config.as_ref().is_ok_and(|c| c.tools.script_run) {
                 listed.runs.clear();
+                listed.script_run_off = true;
             }
             match rest {
                 [] => {
