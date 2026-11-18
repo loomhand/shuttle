@@ -149,6 +149,18 @@ pub fn menu_click_reaches(
     at != 0 && own != 0 && (at == own || owners(at).contains(&own) && menu_at())
 }
 
+pub fn first_window(
+    handles: impl IntoIterator<Item = Result<isize, String>>,
+) -> Result<Option<isize>, String> {
+    for handle in handles {
+        let handle = handle?;
+        if handle != 0 {
+            return Ok(Some(handle));
+        }
+    }
+    Ok(None)
+}
+
 pub fn menu_family(control_type: i32) -> bool {
     matches!(control_type, 50009..=50011)
 }
@@ -347,6 +359,31 @@ mod tests {
         let ids = |l: &[(String, i32)]| l.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
         assert_eq!(ids(&popup), ["u2", "u3"]);
         assert_eq!(ids(&frame), ["u1", "u4", "u5"]);
+    }
+
+    #[test]
+    fn an_entrys_own_window_is_its_first_handle_and_a_failed_read_before_it_is_an_error() {
+        let gone = || Err("element not available".to_owned());
+        assert_eq!(first_window([Ok(0), Ok(0), Ok(1179760)]), Ok(Some(1179760)));
+        assert_eq!(
+            first_window([Ok(0), Ok(1376446), gone()]),
+            Ok(Some(1376446))
+        );
+        assert_eq!(first_window([Ok(0), Ok(0)]), Ok(None));
+        assert_eq!(
+            first_window([Ok(0), gone(), Ok(7)]),
+            Err("element not available".to_owned()),
+            "the popup vanished: its entry has no window and the popup's own read fails"
+        );
+        assert_eq!(
+            first_window([gone()]),
+            Err("element not available".to_owned())
+        );
+        assert_eq!(
+            first_window([gone(), Ok(0x0012_0070)]),
+            Err("element not available".to_owned()),
+            "a WinForms context entry: the read on its popup fails, and the form beyond it, whose root is not the popup's, has a handle"
+        );
     }
 
     #[test]

@@ -179,17 +179,20 @@ impl Uia {
     }
 
     fn native_root(&self, id: &str, chain: &[String]) -> Result<Option<isize>, String> {
-        for held in std::iter::once(id).chain(chain.iter().rev().map(String::as_str)) {
+        let held = std::iter::once(id).chain(chain.iter().rev().map(String::as_str));
+        let handles = held.map(|held| {
             let el = self.element(held)?;
             // SAFETY: `el` is a live UIA element of this thread; a stale one answers an error.
-            let hwnd = unsafe { el.CurrentNativeWindowHandle() }.unwrap_or_default();
-            if !hwnd.is_invalid() {
-                // SAFETY: GetAncestor takes any handle; a stale one answers a null handle.
-                let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
-                return Ok((!root.is_invalid()).then_some(root.0 as isize));
-            }
-        }
-        Ok(None)
+            unsafe { el.CurrentNativeWindowHandle() }
+                .map(|h| h.0 as isize)
+                .map_err(|e| format!("UIA window handle: {e}"))
+        });
+        let Some(hwnd) = uia_roles::first_window(handles)? else {
+            return Ok(None);
+        };
+        // SAFETY: GetAncestor takes any handle; a stale one answers a null handle.
+        let root = unsafe { GetAncestor(HWND(hwnd as *mut core::ffi::c_void), GA_ROOT) };
+        Ok((!root.is_invalid()).then_some(root.0 as isize))
     }
 
     fn menu_in(&self, at: isize, x: i32, y: i32) -> bool {
