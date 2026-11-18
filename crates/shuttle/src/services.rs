@@ -1,10 +1,11 @@
 //! Service plugins: the daemon runs each as its child, starts it again when it exits, and splices the connections of its tools' calls to its socket.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 #[cfg(unix)]
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use desk_core::wire::write_body;
@@ -16,7 +17,7 @@ use tokio::task::JoinSet;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::plugins::Service;
-use crate::{Backoff, Running, log};
+use crate::{Backoff, Running, lock, log};
 
 const SOCKET_VAR: &str = "SHUTTLE_SERVICE_SOCKET";
 #[cfg(unix)]
@@ -25,6 +26,8 @@ const STOP_WAIT: Duration = Duration::from_secs(3);
 const LISTEN_WAIT: Duration = Duration::from_secs(10);
 const POLL: Duration = Duration::from_millis(50);
 const SPLICE_BUF: usize = 64 << 10;
+
+static LAST_RUN: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
 
 /// The services this daemon runs.
 pub struct Services {
@@ -133,16 +136,26 @@ impl Proc {
                             terminate(&mut running).await;
                             return;
                         }
-                        status = running.child.wait() => log(format_args!("service {} exited with {status:?}; starting it again", self.name)),
+                        status = running.child.wait() => {
+                            log(format_args!("service {} exited with {status:?}; starting it again", self.name));
+                            self.ended(status.map_or_else(|e| e.to_string(), |s| format!("exited with {s}")));
+                        }
                     }
                 }
-                Err(e) => log(format_args!("service {}: {e}", self.name)),
+                Err(e) => {
+                    log(format_args!("service {}: {e}", self.name));
+                    self.ended(e);
+                }
             }
             tokio::select! {
                 _ = &mut stopped => return,
                 () = tokio::time::sleep(backoff.after(started.elapsed())) => {}
             }
         }
+    }
+
+    fn ended(&self, how: String) {
+        lock(&LAST_RUN).insert(self.socket.clone(), how);
     }
 
     #[cfg(unix)]
@@ -222,7 +235,11 @@ async fn listening(socket: &str) -> Result<server::Conn, String> {
             Err(_) => "the pipe stays busy".to_owned(),
         };
         if tokio::time::Instant::now() >= deadline {
-            return Err(format!("no service listens at {socket}: {e}"));
+            let last = lock(&LAST_RUN)
+                .get(socket)
+                .map(|how| format!("; the service's last run: {how}"))
+                .unwrap_or_default();
+            return Err(format!("no service listens at {socket}: {e}{last}"));
         }
         tokio::time::sleep(POLL).await;
     }
@@ -539,6 +556,50 @@ server.serve_forever()
     #[tokio::test]
     async fn a_left_copy_that_leads_no_process_group_is_stopped_too() {
         stale_copy_is_stopped(false).await;
+    }
+
+    #[tokio::test]
+    async fn a_call_to_a_service_that_cannot_start_names_its_last_exit_or_start_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let service = |name: &str, bin: &str| -> Service {
+            serde_json::from_value(json!({
+                "service": name,
+                "bin": bin,
+                "args": ["-c", "exit 3"],
+                "tools": [{"name": format!("{name}_echo"), "description": "d", "input_schema": {"type": "object"}}],
+            }))
+            .unwrap()
+        };
+        let running = Services::start(
+            &[
+                service("quits", "/bin/sh"),
+                service("absent", "/no/such/bin"),
+            ],
+            &endpoint,
+            &[],
+        )
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::pause();
+        let mut errs = Vec::new();
+        for name in ["quits", "absent"] {
+            let (_near, mut far) = tokio::io::duplex(64);
+            let body = Zeroizing::new(b"{}".to_vec());
+            errs.push(
+                route(&socket(&endpoint, name), body, &mut far)
+                    .await
+                    .unwrap_err(),
+            );
+        }
+        running.stop().await;
+        assert!(
+            errs[0].contains("no service listens")
+                && errs[0].ends_with("exited with exit status: 3"),
+            "{}",
+            errs[0]
+        );
+        assert!(errs[1].contains("start /no/such/bin: "), "{}", errs[1]);
     }
 
     #[tokio::test]
