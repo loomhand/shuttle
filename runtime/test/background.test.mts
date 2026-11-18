@@ -408,6 +408,31 @@ test('a Windows menu toggle that needs pixels refuses in the background and clos
   assert.equal(state.open, false)
 })
 
+test('a Windows menu toggle read as already on passes with no note of the unconfirmed click that opened its menu', { skip: process.platform !== 'win32' }, async (t) => {
+  const state = { open: false }
+  const item = { ref: 4, id: 'p/2', parent: 3, depth: 2, role: 'menuitemcheckbox', name: 'Status bar', states: ['showing', 'checked'], bounds: [100, 20, 140, 22] }
+  const nodes = () => [
+    { ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad().title, states: ['showing'] },
+    { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'menubar', name: 'Application', states: ['showing'] },
+    { ref: 2, id: '1/3', parent: 1, depth: 2, role: 'menu', name: 'View', states: ['showing'], bounds: [100, 0, 40, 20] },
+    ...(state.open ? [{ ref: 3, id: 'p/1', parent: 0, depth: 1, role: 'menu', name: 'View', states: ['showing'], bounds: [100, 20, 140, 44] }, item] : []),
+  ]
+  const d = desktop([user(), notepad()], ({ tool, args }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes: nodes(), truncated: false })
+    if (tool === 'desk_read') return JSON.stringify(item)
+    if (tool === 'desk_press' && args.id === '1/3') { state.open = true; return JSON.stringify({ ok: true, how: 'click', unverified: 'unverifiable: Sent, effect not verified: Performed UIA Invoke at (129,49) for pid 4.' }) }
+    if (tool === 'desk_key' && args.keys === 'Escape') state.open = false
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { menu: 'View > Status bar', on: true }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.unverified, undefined, JSON.stringify(r))
+  assert.deepEqual([r.trace?.[1]?.was, r.trace?.[1]?.noop], ['on', true], JSON.stringify(r))
+  assert.deepEqual(sent(d.calls, 'desk_press').map((a) => a.id), ['1/3'])
+  assert.equal(state.open, false)
+})
+
 test('a recorded after names a new window of the app, which the background plan then takes as its target', async (t) => {
   const ws = [user(), notepad()]
   const d = desktop(ws, ({ tool }) => {

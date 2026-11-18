@@ -1496,7 +1496,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     }
     if ((hit.n.role === 'menuitemcheckbox' || hit.n.role === 'menuitemradio') && OS !== 'darwin') {
       const now = await checked(hit.n); rec.was = now; rec.state = 'atspi'
-      if (now === s.on) { for (let k = 0; k < (rec.opened ?? 0); k++) await desk.key('Escape', at(w)); rec.noop = true; return }
+      if (now === s.on) { for (let k = 0; k < (rec.opened ?? 0); k++) await desk.key('Escape', at(w)); rec.noop = true; unheard = undefined; return }
       if (now !== null) {
         const got = await flip(hit.n, s.on); await settle(w.title)
         if (got === null) { rec.caveat = TOGGLE_UNREAD; return }
