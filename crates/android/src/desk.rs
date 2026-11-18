@@ -343,7 +343,7 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
         "desk_focus" => focus(android, parse(args)?).await?,
         "desk_close" => {
             let a: WindowArgs = parse(args)?;
-            let frame = window::pick(frames(android).await?, Some(&a.window), a.pid)?;
+            let frame = window::pick_input(frames(android).await?, &a.window, a.pid)?;
             if !frame.active {
                 return Err(format!(
                     "{} is not in front, and back closes only the front window",
@@ -1037,7 +1037,15 @@ async fn in_front(
     if window.is_none() && pid.is_none() {
         return Ok(None);
     }
-    let frames = frames(android).await?;
+    front_id(frames(android).await?, window, pid, pinned)
+}
+
+fn front_id(
+    frames: Vec<Frame>,
+    window: Option<&str>,
+    pid: Option<u32>,
+    pinned: Option<i64>,
+) -> Result<Option<i64>, String> {
     let frame = match pinned {
         Some(id) => frames
             .into_iter()
@@ -1048,7 +1056,10 @@ async fn in_front(
                     window.unwrap_or("of the process")
                 )
             })?,
-        None => window::pick(frames, window, pid)?,
+        None => match window {
+            Some(want) => window::pick_input(frames, want, pid)?,
+            None => window::pick(frames, None, pid)?,
+        },
     };
     if frame.active {
         Ok(frame.id.parse().ok())
@@ -1088,7 +1099,7 @@ async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<bool, String>
 
 /// The window `window` names, which must be in front; a package name without a window starts its app.
 async fn focus(android: &Android, a: WindowArgs) -> Result<String, String> {
-    let frame = match window::pick(frames(android).await?, Some(&a.window), a.pid) {
+    let frame = match window::pick_input(frames(android).await?, &a.window, a.pid) {
         Ok(f) => f,
         Err(e) if is_package(&a.window) && e.starts_with("no window") => {
             android.launch(&a.window).await?;
@@ -1218,6 +1229,20 @@ mod tests {
             assert_eq!(out.get("truncated").is_some(), cut, "{text} {tail}");
             assert_eq!(out["parent"], -1);
         }
+    }
+
+    #[test]
+    fn input_by_a_page_title_goes_nowhere_while_only_a_dialog_of_its_app_is_listed() {
+        let dialog = WindowInfo {
+            id: 30,
+            title: "Device name".into(),
+            ..window([18, 435, 702, 797])
+        };
+        let frames = frames_of(vec![bar(18, 3, 1, [0, 0, 720, 48]), dialog], REDROID);
+        assert_eq!(
+            front_id(frames, Some("About phone - com.android.settings"), None, None),
+            Err("no window titled \"About phone - com.android.settings\", so nothing was sent; \"Device name - com.android.settings\" of the same app is in front: name it to send there".to_owned())
+        );
     }
 
     #[test]

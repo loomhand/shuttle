@@ -1,4 +1,4 @@
-//! Window choice by title: exact, then ignoring case and outer spaces, then contained, then the window of the app a stale title names.
+//! Window choice by title: exact, then ignoring case and outer spaces, then contained, then for a read the window of the app a stale title names; input takes one window of its own title or none.
 
 /// How many title tiers [`title_matches`] has.
 pub const TITLE_TIERS: usize = 3;
@@ -40,6 +40,29 @@ pub fn pick<W: Window>(
         },
     };
     Ok(windows.swap_remove(i))
+}
+
+pub fn pick_input<W: Window>(windows: Vec<W>, want: &str, pid: Option<u32>) -> Result<W, String> {
+    let rivals = rivals(&windows, want, pid);
+    let w = pick(windows, Some(want), pid)?;
+    input_to(&w, want, rivals)?;
+    Ok(w)
+}
+
+pub fn input_to<W: Window>(w: &W, want: &str, rivals: usize) -> Result<(), String> {
+    if !(0..TITLE_TIERS).any(|tier| title_matches(tier, w.title(), want)) {
+        let shown = if w.active() { "in front" } else { "open" };
+        return Err(format!(
+            "no window titled {want:?}, so nothing was sent; {:?} of the same app is {shown}: name it to send there",
+            w.title()
+        ));
+    }
+    if rivals > 1 {
+        return Err(format!(
+            "{rivals} windows match the title {want:?}, so nothing was sent: pass a longer title that only one window matches or the pid of its process, or give the window a title of its own"
+        ));
+    }
+    Ok(())
 }
 
 /// How many of `windows` [`pick`] weighs as equals for `want`: those at the first tier any matches, else those its app part names.
@@ -209,6 +232,44 @@ mod tests {
         assert_eq!(
             app_window(&[w("a", false, 1)], "report - Writer").unwrap_err(),
             "no window \"report - Writer\"; windows: [\"a\"]"
+        );
+    }
+
+    #[test]
+    fn input_takes_a_window_only_by_its_own_title_and_only_the_one_that_matches() {
+        let windows = || {
+            vec![
+                w("images - Thunar", true, 4),
+                w("Report", false, 5),
+                w("Report", false, 6),
+                w("notes.txt - Mousepad", false, 7),
+            ]
+        };
+        let title = |want, pid| pick_input(windows(), want, pid).map(|w| (w.title, w.pid));
+        assert_eq!(title("images", None).unwrap(), ("images - Thunar", 4));
+        assert_eq!(title("Report", Some(6)).unwrap(), ("Report", 6));
+        assert_eq!(
+            pick(windows(), Some("inbox - Thunar"), None).unwrap().title,
+            "images - Thunar"
+        );
+        assert_eq!(
+            title("inbox - Thunar", None).unwrap_err(),
+            "no window titled \"inbox - Thunar\", so nothing was sent; \"images - Thunar\" of the same app is in front: name it to send there"
+        );
+        assert!(
+            title("todo.txt - Mousepad", None)
+                .unwrap_err()
+                .contains("\"notes.txt - Mousepad\" of the same app is open:")
+        );
+        assert!(
+            title("report", None)
+                .unwrap_err()
+                .starts_with("2 windows match the title \"report\", so nothing was sent")
+        );
+        assert!(
+            title("letter - Writer", None)
+                .unwrap_err()
+                .starts_with("no window \"letter - Writer\"; windows:")
         );
     }
 

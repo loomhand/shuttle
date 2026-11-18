@@ -1002,7 +1002,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.access
             .run(CALL_LIMIT, turn, move |b| {
                 let listed = frames(b, a.pid, &allow)?;
-                let frame = live(pick(b, &allow, background, listed, Some(&a.window), a.pid)?.0)?;
+                let (frame, rivals) = pick(b, &allow, background, listed, Some(&a.window), a.pid)?;
+                window::input_to(&frame, &a.window, rivals)?;
+                let frame = live(frame)?;
                 let note = match b.close(&frame) {
                     Ok(()) => None,
                     Err(e) if e == CLOSE_UNANSWERED => Some(e),
@@ -1647,7 +1649,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             _ => {
                 let named = a.window.is_some() || a.pid.is_some();
                 let (mut target, listed) = if named && self.os == Os::Mac {
-                    let (_, w, _) = self.pick_window(a.window.as_deref(), a.pid).await?;
+                    let (_, w) = self.input_window(a.window.as_deref(), a.pid).await?;
                     if w["is_on_screen"] == false || off_space(&w) {
                         return Err(format!(
                             "{:?} is not on screen (minimized or on another Space), so nothing was scrolled",
@@ -1658,7 +1660,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     self.raise(Some((pid, id))).await?;
                     (w, Vec::new())
                 } else if named {
-                    let (_, w, _) = self.pick_window(a.window.as_deref(), a.pid).await?;
+                    let (_, w) = self.input_window(a.window.as_deref(), a.pid).await?;
                     let (pid, id, _) = window_key(&w)?;
                     let raised = self.raise(Some((pid, id))).await?;
                     let s = &raised["structuredContent"];
@@ -1969,7 +1971,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if self.bg() || (window.is_none() && pid.is_none()) {
             return Ok(None);
         }
-        let (_, w, _) = self.pick_window(window, pid).await?;
+        let (_, w) = self.input_window(window, pid).await?;
         let (pid, id, _) = window_key(&w)?;
         Ok(Some((pid, id)))
     }
@@ -2186,7 +2188,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if window.is_none() && pid.is_none() {
             return Err(BACKGROUND_TARGET.to_owned());
         }
-        let (_, w, _) = self.pick_window(window, pid).await?;
+        let (_, w) = self.input_window(window, pid).await?;
         let to = w["pid"]
             .as_i64()
             .zip(w["window_id"].as_i64())
@@ -2200,12 +2202,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         window: &str,
         pid: Option<u32>,
     ) -> Result<((i64, i64), Value), String> {
-        let (_, w, rivals) = self.pick_window(Some(window), pid).await?;
-        if rivals > 1 {
-            return Err(format!(
-                "{rivals} windows match the title {window:?}, so the pixels of a shot by that title may be another window's: pass a longer title that only one window matches, give the window a title of its own, or pass desk coordinates without window"
-            ));
-        }
+        let (_, w) = self.input_window(Some(window), pid).await?;
         let (pid, id, _) = window_key(&w)?;
         Ok(((pid, id), w))
     }
@@ -2342,7 +2339,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn focus(&self, a: WindowArgs) -> Result<String, String> {
-        let (w, _, _) = self.pick_window(Some(&a.window), a.pid).await?;
+        let (w, _) = self.input_window(Some(&a.window), a.pid).await?;
         let window_id: i64 =
             w.id.parse()
                 .map_err(|_| format!("window id {:?} is not a number", w.id))?;
@@ -2370,6 +2367,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     ) -> Result<(Frame, Value, usize), String> {
         let listed = self.call("list_windows", json!({})).await?;
         self.pick_listed(listed, window, pid, true).await
+    }
+
+    async fn input_window(
+        &self,
+        window: Option<&str>,
+        pid: Option<u32>,
+    ) -> Result<(Frame, Value), String> {
+        let (f, w, rivals) = self.pick_window(window, pid).await?;
+        if let Some(want) = window {
+            window::input_to(&f, want, rivals)?;
+        }
+        Ok((f, w))
     }
 
     /// The driver window titled like `window` or of `pid`, as a frame and as the driver lists it, with how many listed windows its title picks among.
@@ -7239,21 +7248,35 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn closing_one_of_two_same_titled_windows_closes_the_active_one() {
+    async fn closing_a_title_two_windows_share_closes_neither_unless_pid_names_one() {
         let twins = || {
             Ok(Stub {
                 frames: vec![
                     frame("front", "Untitled - Notepad", 4, true, None),
-                    frame("back", "Untitled - Notepad", 4, false, None),
+                    frame("back", "Untitled - Notepad", 8, false, None),
                 ],
                 ..Stub::default()
             })
         };
         let desk = Desk::new(twins, Slow(Arc::default()), Os::Mac);
-        desk.run("desk_close", json!({"window": "Untitled - Notepad"}))
+        let err = desk
+            .run("desk_close", json!({"window": "Untitled - Notepad"}))
             .await
-            .unwrap();
-        assert_eq!(closed(&desk).await, ["front"]);
+            .unwrap_err();
+        assert!(
+            err.starts_with(
+                "2 windows match the title \"Untitled - Notepad\", so nothing was sent"
+            ),
+            "{err}"
+        );
+        assert!(closed(&desk).await.is_empty());
+        desk.run(
+            "desk_close",
+            json!({"window": "Untitled - Notepad", "pid": 8}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(closed(&desk).await, ["back"]);
     }
 
     #[tokio::test]
@@ -8084,30 +8107,110 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn focus_takes_the_active_window_among_equal_titles() {
+    async fn input_by_a_title_two_windows_share_is_refused_unless_pid_names_one() {
+        let two = || {
+            Ok(Stub {
+                frames: vec![
+                    frame("a", "Report - Writer", 4, true, Some("writer")),
+                    frame("b", "Report - Writer", 8, false, Some("writer")),
+                ],
+                ..Stub::default()
+            })
+        };
         for os in [Os::Linux, Os::Mac, Os::Windows] {
+            for bg in [false, true] {
+                let calls = Arc::new(Mutex::new(Vec::new()));
+                let desk = Desk::new(two, TwoWindows(calls.clone()), os).background(bg);
+                for (tool, args) in [
+                    ("desk_focus", json!({"window": "Report - Writer"})),
+                    (
+                        "desk_key",
+                        json!({"keys": "a", "window": "Report - Writer"}),
+                    ),
+                    (
+                        "desk_type",
+                        json!({"text": "a", "window": "Report - Writer"}),
+                    ),
+                ] {
+                    let err = desk.run(tool, args).await.unwrap_err();
+                    assert!(
+                        err.starts_with(
+                            "2 windows match the title \"Report - Writer\", so nothing was sent"
+                        ),
+                        "{os:?} {bg} {tool}: {err}"
+                    );
+                }
+                assert!(
+                    calls
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .all(|(t, _)| t == "list_windows"),
+                    "{os:?} {bg}"
+                );
+            }
             let calls = Arc::new(Mutex::new(Vec::new()));
-            let two = || {
-                Ok(Stub {
-                    frames: vec![
-                        frame("a", "Report - Writer", 4, true, Some("writer")),
-                        frame("b", "Report - Writer", 8, false, Some("writer")),
-                    ],
-                    ..Stub::default()
-                })
-            };
             let desk = Desk::new(two, TwoWindows(calls.clone()), os);
-            desk.run("desk_focus", json!({"window": "Report - Writer"}))
+            desk.run("desk_focus", json!({"window": "Report - Writer", "pid": 8}))
                 .await
                 .unwrap();
             assert_eq!(
                 calls.lock().unwrap().last().cloned().unwrap(),
                 (
                     "bring_to_front".to_owned(),
-                    json!({"pid": 4, "window_id": 1})
+                    json!({"pid": 8, "window_id": 2})
                 ),
                 "{os:?}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn input_by_a_title_only_its_app_part_names_is_refused_with_nothing_sent() {
+        let open = || {
+            Ok(Stub {
+                frames: vec![
+                    frame("w", "Untitled - Notepad", 4, true, Some("Notepad")),
+                    frame("m", "Inbox", 8, false, Some("Mail")),
+                ],
+                ..Stub::default()
+            })
+        };
+        let want = "no window titled \"notes.txt - Notepad\", so nothing was sent; \"Untitled - Notepad\" of the same app is in front: name it to send there";
+        let stale = "notes.txt - Notepad";
+        for os in [Os::Mac, Os::Windows, Os::Linux] {
+            for bg in [false, true] {
+                let calls = Arc::new(Mutex::new(Vec::new()));
+                let desk = Desk::new(open, Behind(Arc::clone(&calls)), os).background(bg);
+                for (tool, args) in [
+                    ("desk_key", json!({"keys": "a", "window": stale})),
+                    ("desk_type", json!({"text": "a", "window": stale})),
+                    ("desk_click", json!({"x": 10.0, "y": 10.0, "window": stale})),
+                    ("desk_scroll", json!({"direction": "down", "window": stale})),
+                    (
+                        "desk_scroll",
+                        json!({"direction": "down", "x": 10.0, "y": 10.0, "window": stale}),
+                    ),
+                    (
+                        "desk_drag",
+                        json!({"x": 10.0, "y": 10.0, "to_x": 20.0, "to_y": 20.0, "window": stale}),
+                    ),
+                    ("desk_focus", json!({"window": stale})),
+                    ("desk_close", json!({"window": stale})),
+                ] {
+                    let err = desk.run(tool, args).await.unwrap_err();
+                    assert_eq!(err, want, "{os:?} {bg} {tool}");
+                }
+                let sent: Vec<String> = calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|(t, _)| t.clone())
+                    .filter(|t| !["list_windows", "get_screen_size"].contains(&t.as_str()))
+                    .collect();
+                assert!(sent.is_empty(), "{os:?} {bg}: {sent:?}");
+                assert!(closed(&desk).await.is_empty(), "{os:?} {bg}");
+            }
         }
     }
 
