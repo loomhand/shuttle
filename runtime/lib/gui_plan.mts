@@ -149,6 +149,7 @@ let adopted = new Set<string>()
 let doubt: string | null = null
 let unheard: string | undefined
 let actioned = false
+let noop = false
 let userFront: Win | null = null
 let BG = BEHIND
 let fronted = false
@@ -248,7 +249,7 @@ async function perform(p: Params): Promise<Result> {
       if (f && pre) vetted.add(`${f.id} ${f.pid} ${f.title}`)
       const kept = f && pre?.snap && pre.nodes && f.title !== pressed?.title ? { ...r, id: f.id, snap: pre.snap, nodes: pre.nodes } : undefined
       const prev = plan[i - 1]
-      unheard = undefined; actioned = false; picked = []; aimed = chained || plan.slice(0, i).some((x) => !!x.app || !!x.wait); if (!(prev?.wait || prev?.expect || prev?.verify)) lastPress = pressedId; pressedId = undefined
+      unheard = undefined; actioned = false; noop = false; picked = []; aimed = chained || plan.slice(0, i).some((x) => !!x.app || !!x.wait); if (!(prev?.wait || prev?.expect || prev?.verify)) lastPress = pressedId; pressedId = undefined
       const runs = desk.foreground.runs + foreground.steps
       sealStep = () => { rec.secret = true; if (secure(planned)) return; planned.secret = s.secret = true; left() }
       await run(s, rec, kept).catch(async (e: unknown) => {
@@ -261,6 +262,7 @@ async function perform(p: Params): Promise<Result> {
       if (s.after && await landed(s.after, s.timeout_ms ?? 5000, ws)) rec.confirmed = true
       if (unheard && !rec.unverified) rec.unverified = unheard
       if (actioned && !s.after) rec.caveat = ACTION_ONLY
+      if (noop) rec.caveat ??= NOOP
       if (desk.foreground.runs + foreground.steps > runs) { rec.fg = true; fronted = true; BG = false; settleWs = null }
       const before = recs[i - 1]
       if (before && (s.expect || (s.verify && ((s.value ?? s.on ?? s.enabled) !== undefined || rec.waited)) || (s.wait && rec.seen !== tops[i - 1]))) before.confirmed = true
@@ -508,7 +510,8 @@ function traced(i: number, rec: Rec, s: Step, escalated: boolean): Trace {
   }
 }
 
-function heard(r: desk.Sent, rec: Rec, s: Step, sent?: string) { if (r.protected) sealStep(); if (r.typed === false) throw new Surprise(`${typedText(s)} did not show in the focused field${sent?.includes('\n') ? ', after all its lines and the Returns between them were sent' : ''}`, {}); if (r.typed === null && !secure(s)) rec.caveat ??= UNCHECKED; if ((!BG || r.input === 'foreground') && r.effect === 'suspected_noop') rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
+function heard(r: desk.Sent, rec: Rec, s: Step, sent?: string) { if (r.protected) sealStep(); if (r.typed === false) throw new Surprise(`${typedText(s)} did not show in the focused field${sent?.includes('\n') ? ', after all its lines and the Returns between them were sent' : ''}`, {}); if (r.typed === null && !secure(s)) rec.caveat ??= UNCHECKED; if (nooped(r)) rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
+function nooped(r: { input?: string; effect?: string }) { return (!BG || r.input === 'foreground') && r.effect === 'suspected_noop' }
 function hush(note: string) { return `unverifiable: the password was sent and the target did not confirm it${note.includes(TERMINAL) ? ` (${TERMINAL})` : ''}; do not type it again` }
 async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
   let ws = seed ?? await desk.windows()
@@ -1077,6 +1080,7 @@ async function act(n: Node) {
     const r = await desk.press(n.id); pressedId = n.id
     if (!r.ok) throw new Surprise(`"${n.name}" took no ${r.how}`, await seen())
     if (BG && r.unverified) unheard ??= r.unverified
+    noop ||= nooped(r)
     if (OS === 'linux' && (r.how === 'action' || r.how === 'select')) actioned = true
     return r.how
   })
@@ -1087,7 +1091,7 @@ async function choose(nodes: Node[], n: Node, rec: { via?: string }, open = fals
   const mods = n.shortcut.split('+').slice(0, -1)
   if (OS !== 'darwin' && n.shortcut && (mods.some((x) => x !== 'shift') || /^f\d+$/.test(n.shortcut)) && await timed('act', async () => {
     if (open) for (const _ of menus(nodes, n.parent)) await desk.key('Escape', at(w))
-    try { const k = await desk.key(n.shortcut, at(w)); if (BG && k.unverified) unheard ??= k.unverified; rec.via = 'shortcut'; return true } catch (e: unknown) { if (e instanceof Error && (MAY_HAVE_RUN.some((x) => e.message.includes(x)) || e.message.startsWith('declined by the user'))) throw e; return false }
+    try { const k = await desk.key(n.shortcut, at(w)); if (BG && k.unverified) unheard ??= k.unverified; noop ||= nooped(k); rec.via = 'shortcut'; return true } catch (e: unknown) { if (e instanceof Error && (MAY_HAVE_RUN.some((x) => e.message.includes(x)) || e.message.startsWith('declined by the user'))) throw e; return false }
   })) return
   rec.via = await act(n)
 }
@@ -1587,7 +1591,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (BG && !AUTO) throw new Surprise(`no element of "${w.title}" matches "${target}", and finding it on the screen is out: ${NO_PIXELS}`, {}, true)
     if (BG) await front(w)
     const [x, y] = await spot(s.recorded, target, w, rec)
-    t0 = Date.now(); await desk.click(x, y, { ...pointer(s), ...at(w) }); tick('act', t0)
+    t0 = Date.now(); if (nooped(await desk.click(x, y, { ...pointer(s), ...at(w) }))) noop = true; tick('act', t0)
     if (!s.recorded) rec.unsaved = true
     await settle(w.title); return
   }
@@ -1612,6 +1616,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (c?.check === 'covered-hit' || c?.check === 'foreign-hit') throw new Surprise(`the centre of ${rec.ref} is on ${told(c)}, so the click was not sent`, await seen())
     t0 = Date.now(); const sent = await desk.click(x, y, { ...pointer(s), ...into }); pressedId = hit.n.id; tick('act', t0)
     if (BG && sent.unverified) unheard ??= sent.unverified
+    noop ||= nooped(sent)
     await settle(w.title); return
   }
   if (s.click && hit.n.role === 'menuitem') {

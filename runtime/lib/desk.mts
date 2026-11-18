@@ -48,7 +48,7 @@ export const snapshot = (window?: string, o: { pid?: number | null; id?: string;
 export const outline = async (window?: string): Promise<string> => (await call<{ text: string }>('snapshot', { window, text: true })).text
 export const find = (name: string, o: { role?: string; window?: string; urls?: boolean } = {}): Promise<{ window: Win; found: El[] }> => call('find', { name, ...o })
 export const read = (id: string, o: { text?: boolean; tail?: boolean; web?: boolean } = {}): Promise<El> => call('read', { id, text: o.text, tail: o.tail, web: o.web })
-export const press = async (id: string): Promise<{ ok: boolean; how: string; unverified?: string; input?: 'foreground' }> => ran(await call('press', { id }))
+export const press = async (id: string): Promise<{ ok: boolean; how: string; unverified?: string; input?: 'foreground'; effect?: string }> => ran(await call('press', { id }))
 export const act = async (id: string, action: 'click' | 'action' | 'select' | 'focus'): Promise<{ ok: boolean; input?: 'foreground' }> => ran(await call('act', { id, action }))
 export const at = (x: number, y: number, window?: string, pid?: number | null): Promise<{ found: El | null; path?: { id: string; role: string; name: string }[]; pid?: number | null; covered?: { title: string; pid: number | null } }> => call('at', { x: Math.round(x), y: Math.round(y), window, pid: pid ?? undefined })
 export const key = async (keys: string, to: Target = {}, repeat?: number): Promise<Sent> => ran(await call('key', { keys, ...target(to), repeat }))

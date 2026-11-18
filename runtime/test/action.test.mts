@@ -135,6 +135,41 @@ async function twoClicks(t: TestContext, o: { after?: string; handoff?: boolean 
   return { lists: [count(tools.slice(first + 1, second)), count(tools.slice(second + 1))], tools }
 }
 
+test('a foreground press or pointer click the driver suspects changed nothing carries a caveat, as does one auto ran in the foreground', async (t) => {
+  const NOOP = [{ step: 1, note: 'the input was sent, and the driver saw nothing change where it expected a change; no later step read its effect' }]
+  const doc = { id: '1', title: 'Untitled - Notepad', role: 'window', pid: 4, active: true }
+  const nodes = [
+    { ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] },
+    { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'Export', states: ['showing'], bounds: [420, 300, 80, 30] },
+  ]
+  let ws = [doc]; let input: { input?: 'foreground' } = {}
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify(ws)
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: doc, nodes, truncated: false })
+    if (tool === 'desk_read') return JSON.stringify(nodes.find((n) => n.id === args.id))
+    if (tool === 'desk_at') return JSON.stringify({ found: nodes[1], path: [{ id: doc.id, role: 'window', name: doc.title }], pid: doc.pid })
+    if (tool === 'desk_press') return JSON.stringify({ ok: true, how: 'click', ...input, effect: 'suspected_noop' })
+    if (tool === 'desk_click') return JSON.stringify({ ok: true, effect: 'suspected_noop' })
+    return '{"ok":true}'
+  })
+  const pressed = await plan({ steps: [{ app: 'Notepad' }, { click: 'Export' }] })
+  assert.equal(pressed.ok, true, JSON.stringify(pressed))
+  assert.deepEqual(pressed.caveats, NOOP, JSON.stringify(pressed))
+  const twice = await plan({ steps: [{ app: 'Notepad' }, { click: 'Export', count: 2 }] })
+  assert.equal(twice.ok, true, JSON.stringify(twice))
+  assert.deepEqual(twice.caveats, NOOP, JSON.stringify(twice))
+  process.env.SHUTTLE_INPUT = 'auto'
+  const auto = ((await import(`../lib/gui_plan.mts?${process.env.SHUTTLE_INPUT}`)) as { main: typeof plan }).main
+  delete process.env.SHUTTLE_INPUT
+  ws = [{ id: 'c', title: 'Calculator', role: 'window', pid: 9, active: true }, { ...doc, active: false }]
+  const behind = await auto({ steps: [{ app: 'Notepad' }, { click: 'Export' }] })
+  assert.equal(behind.caveats, undefined, JSON.stringify(behind))
+  input = { input: 'foreground' }
+  const fell = await auto({ steps: [{ app: 'Notepad' }, { click: 'Export' }] })
+  assert.equal(fell.ok, true, JSON.stringify(fell))
+  assert.deepEqual(fell.caveats, NOOP, JSON.stringify(fell))
+})
+
 test('a dialog that opens half a second after the last step still stops the plan at its end', async (t) => {
   const doc = { id: '1', title: 'Untitled - Editor', role: 'window', pid: process.pid, active: true }
   const dialog = { id: '2', title: 'Confirm', role: 'dialog', pid: process.pid, active: true }
