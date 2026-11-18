@@ -655,6 +655,7 @@ impl Android {
                 .ok_or_else(|| format!("no element [{i}] in the latest computer_state"))?
         };
         let front = desk::front(self).await?;
+        front.settled()?;
         if window.is_empty() || front.window().is_empty() {
             return Err(
                 "the window list is unavailable; use x,y or call computer_state again".to_owned(),
@@ -1805,6 +1806,35 @@ mod tests {
         .unwrap();
         fake.windows("shade");
         assert_eq!(fake.android.point(&explicit).await, Ok(Some((360, 760))));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_indexed_tap_while_no_window_is_in_front_is_refused_before_any_tap() {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.windows("unsettled");
+        fake.android.saved().insert(
+            "s".into(),
+            Saved {
+                window: "7".into(),
+                screen: (720, 1280),
+                points: vec![(360, 760)],
+            },
+        );
+        for action in ["tap", "type"] {
+            let err = fake
+                .android
+                .act(serde_json::json!({"session": "s", "action": action, "element": 0, "text": "a"}))
+                .await
+                .unwrap_err();
+            assert!(
+                err.starts_with("the device lists no window in front"),
+                "{action} {err}"
+            );
+        }
+        assert_eq!(log(&fake, "requests").matches("tap").count(), 0);
+        assert_eq!(log(&fake, "requests").matches("paste").count(), 0);
     }
 
     #[cfg(unix)]
