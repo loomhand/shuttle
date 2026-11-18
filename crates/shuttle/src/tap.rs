@@ -241,6 +241,7 @@ fn read(e: &Event, kind: u32, seen: &Seen) -> Option<Input> {
         }
         KEY_DOWN => {
             let (pid, secret) = ax::typing();
+            let pid = pid.or_else(ax::front_app);
             let read = seen.fresh.get();
             let focus = if read { focused() } else { None };
             let text = if secret { String::new() } else { e.text() };

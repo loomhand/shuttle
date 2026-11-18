@@ -326,7 +326,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                         let win = window_of(&windows, &at);
                         let named = win.filter(|w| w["app"].is_string()).or_else(|| of_pid(&windows, pid));
                         let app = named.and_then(|w| w["app"].as_str()).map(str::to_owned);
-                        if (app.is_some() || pid.is_none()) && kept(app.as_deref(), named.and_then(|w| w["bundle"].as_str()), pid, &apps) {
+                        if !at.is_null() && (app.is_some() || pid.is_none()) && kept(app.as_deref(), named.and_then(|w| w["bundle"].as_str()), pid, &apps) {
                             let late = frame.as_ref().is_none_or(|f| f.at < acted || win.is_none_or(|w| w["id"] != f.window.as_str()));
                             if late {
                                 frame = framed(desk, &windows, win, &apps).await;
@@ -1080,6 +1080,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_click_the_desk_refuses_to_look_under_is_skipped_without_its_point() {
+        let desk = Desk::new(json!(
+            "the app allowlist leaves out the app under the point"
+        ));
+        let r = run(&desk, &[], vec![click(5.0, 5.0)]).await;
+        assert_eq!(
+            r["events"][0],
+            json!({"t": r["events"][0]["t"], "kind": "skipped"})
+        );
+    }
+
+    #[tokio::test]
     async fn finishing_waits_until_the_ended_recording_is_saved() {
         let dir = tempfile::tempdir().unwrap();
         let r = Recorder::new(dir.path().into(), Arc::default());
@@ -1203,7 +1215,11 @@ mod tests {
                     .to_string(),
                 ),
                 "desk_at" if call.args["x"].is_i64() && call.args["y"].is_i64() => {
-                    Output::text(self.hit.to_string())
+                    match &self.hit {
+                        Value::String(refused) => Output::error(refused.clone()),
+                        Value::Null => Output::text(json!({"found": null}).to_string()),
+                        hit => Output::text(hit.to_string()),
+                    }
                 }
                 "desk_web" if call.args["pid"] == 7 => {
                     lock(&self.webs).push(call.args);

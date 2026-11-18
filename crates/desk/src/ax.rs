@@ -989,6 +989,13 @@ pub fn bundle_stem(pid: i32) -> Option<String> {
     Some(bundle.file_stem()?.to_string_lossy().into_owned())
 }
 
+pub fn front_app() -> Option<u32> {
+    objc2::rc::autoreleasepool(|_| {
+        let app = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+        u32::try_from(app.processIdentifier()).ok()
+    })
+}
+
 fn main_bundle(exe: &Path) -> Option<String> {
     let macos = exe.parent()?;
     let contents = macos.parent()?;
@@ -1382,13 +1389,6 @@ fn late(waited: Duration) -> bool {
 
 fn unread<T>(read: &[Option<T>; 5], waited: Duration) -> bool {
     late(waited) && read[4].is_none()
-}
-
-fn front_app() -> Option<u32> {
-    objc2::rc::autoreleasepool(|_| {
-        let app = NSWorkspace::sharedWorkspace().frontmostApplication()?;
-        u32::try_from(app.processIdentifier()).ok()
-    })
 }
 
 fn frontmost(claims: bool, pid: u32, system: Option<u32>) -> bool {
