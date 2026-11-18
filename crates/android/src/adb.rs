@@ -105,7 +105,7 @@ pub struct Device {
 /// adb on an Android device, with the front window and element centres of each session's latest computer_state.
 pub struct Android {
     device: Device,
-    points: Mutex<HashMap<String, Saved>>,
+    points: std::sync::Mutex<HashMap<String, Saved>>,
     ui: Mutex<Option<UiServer>>,
     server_input: AtomicBool,
     control: Arc<Mutex<Option<Control>>>,
@@ -116,7 +116,7 @@ impl Android {
     pub fn new(device: Device) -> Self {
         Self {
             device,
-            points: Mutex::new(HashMap::new()),
+            points: std::sync::Mutex::new(HashMap::new()),
             ui: Mutex::new(None),
             server_input: AtomicBool::new(true),
             control: Arc::default(),
@@ -176,7 +176,7 @@ impl Android {
             screen: front.screen(),
             points: elements.iter().map(Node::center).collect(),
         };
-        self.points.lock().await.insert(args.session, saved);
+        self.saved().insert(args.session, saved);
         let mut out = shot?;
         out.text = if text.is_empty() {
             "no UI elements".to_owned()
@@ -273,9 +273,12 @@ impl Android {
 
     /// Forgets the element centres of a session, the default one when none is named.
     pub async fn end(&self, args: &Value) -> Result<String, String> {
-        let session = args["session"].as_str().unwrap_or_default();
-        self.points.lock().await.remove(session);
+        self.release(args["session"].as_str().unwrap_or_default());
         Ok("ended".to_owned())
+    }
+
+    pub fn release(&self, session: &str) {
+        self.saved().remove(session);
     }
 
     /// Starts component `app`, or the launcher activity of package `app`; its component.
@@ -644,8 +647,7 @@ impl Android {
             return Ok(args.x.zip(args.y).map(|(x, y)| (x as i32, y as i32)));
         };
         let (window, screen, point) = {
-            let saved = self.points.lock().await;
-            saved
+            self.saved()
                 .get(&args.session)
                 .and_then(|s| Some((s.window.clone(), s.screen, *s.points.get(i)?)))
                 .ok_or_else(|| format!("no element [{i}] in the latest computer_state"))?
@@ -665,6 +667,12 @@ impl Android {
             ));
         }
         Ok(Some(point))
+    }
+
+    fn saved(&self) -> std::sync::MutexGuard<'_, HashMap<String, Saved>> {
+        self.points
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// One answer of the UI server, which is dropped when it fails or is cancelled mid-answer.
@@ -1740,7 +1748,7 @@ mod tests {
     async fn an_indexed_point_is_refused_once_the_screen_it_came_from_changed() {
         let fake = Fake::new();
         fake.windows("");
-        fake.android.points.lock().await.insert(
+        fake.android.saved().insert(
             "s".into(),
             Saved {
                 window: "7".into(),
@@ -1781,7 +1789,7 @@ mod tests {
         let fake = Fake::new();
         let unavailable = "the window list is unavailable; use x,y or call computer_state again";
         fake.windows("none");
-        fake.android.points.lock().await.insert(
+        fake.android.saved().insert(
             "known".into(),
             Saved {
                 window: "7".into(),
@@ -1789,7 +1797,7 @@ mod tests {
                 points: vec![(360, 760)],
             },
         );
-        fake.android.points.lock().await.insert(
+        fake.android.saved().insert(
             "unknown".into(),
             Saved {
                 window: String::new(),
@@ -1820,12 +1828,7 @@ mod tests {
         let out = fake.android.state(serde_json::json!({})).await.unwrap();
         assert_eq!(out.text, "[0] button \"OK\" at 200,250");
         assert_eq!(
-            fake.android
-                .points
-                .lock()
-                .await
-                .get("")
-                .map(|s| s.window.as_str()),
+            fake.android.saved().get("").map(|s| s.window.as_str()),
             Some("7")
         );
         fake.dump("dump.xml", "9");
@@ -2656,7 +2659,7 @@ mod tests {
     async fn a_session_end_forgets_only_that_sessions_elements() {
         let android = android_at("/nonexistent/adb");
         {
-            let mut points = android.points.lock().await;
+            let mut points = android.saved();
             points.insert("cu-1".into(), saved(vec![(10, 20)]));
             points.insert("cu-2".into(), saved(vec![(30, 40)]));
         }
@@ -2667,16 +2670,36 @@ mod tests {
                 .unwrap(),
             "ended"
         );
-        let points = android.points.lock().await;
+        let points = android.saved();
         assert!(!points.contains_key("cu-1"));
         assert_eq!(points.get("cu-2").map(|s| &s.points), Some(&vec![(30, 40)]));
+    }
+
+    #[tokio::test]
+    async fn a_released_holder_loses_its_default_sessions_elements_and_no_other() {
+        let android = android_at("/nonexistent/adb");
+        {
+            let mut points = android.saved();
+            points.insert("run-a".into(), saved(vec![(10, 20)]));
+            points.insert("run-b".into(), saved(vec![(30, 40)]));
+        }
+        android.release("run-a");
+        let err = android
+            .act(serde_json::json!({"session": "run-a", "action": "tap", "element": 0}))
+            .await
+            .unwrap_err();
+        assert_eq!(err, "no element [0] in the latest computer_state");
+        assert_eq!(
+            android.saved().get("run-b").map(|s| &s.points),
+            Some(&vec![(30, 40)])
+        );
     }
 
     #[tokio::test]
     async fn an_end_without_a_session_forgets_the_default_one_and_ends_are_idempotent() {
         let android = android_at("/nonexistent/adb");
         {
-            let mut points = android.points.lock().await;
+            let mut points = android.saved();
             points.insert(String::new(), saved(vec![(10, 20)]));
             points.insert("cu-2".into(), saved(vec![(30, 40)]));
         }
@@ -2685,14 +2708,14 @@ mod tests {
             async move { android.end(&args).await.unwrap() }
         };
         assert_eq!(end(serde_json::json!({})).await, "ended");
-        assert!(!android.points.lock().await.contains_key(""));
+        assert!(!android.saved().contains_key(""));
         assert_eq!(
             end(serde_json::json!({"session": "unknown"})).await,
             "ended"
         );
         assert_eq!(end(serde_json::json!({"session": "cu-2"})).await, "ended");
         assert_eq!(end(serde_json::json!({"session": "cu-2"})).await, "ended");
-        assert!(android.points.lock().await.is_empty());
+        assert!(android.saved().is_empty());
     }
 
     #[test]

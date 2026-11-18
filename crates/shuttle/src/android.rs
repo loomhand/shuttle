@@ -26,8 +26,9 @@ impl<N: Handler> Handler for Desks<N> {
     }
 
     fn release(&self, holder: &str) {
-        if let Self::Native(native) = self {
-            native.release(holder);
+        match self {
+            Self::Native(native) => native.release(holder),
+            Self::Android(android) => android.release(holder),
         }
     }
 
