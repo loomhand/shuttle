@@ -143,7 +143,7 @@ impl Uia {
         let runtime = runtime_id(el)?;
         let unnamed = runtime.is_empty();
         let id = own_id(runtime);
-        if unnamed && let Some((_, list)) = self.walking.last_mut() {
+        if unnamed && let Some((_, _, list)) = self.walking.last_mut() {
             list.push((id.clone(), key(el)));
         }
         self.ids.entry(id.clone()).or_insert_with(|| el.clone());
@@ -169,8 +169,10 @@ impl Uia {
             None if w > 0 && h > 0 => top_at(x + w / 2, y + h / 2),
             None => None,
         };
+        let owners = top.map(owners_of).unwrap_or_default();
         let now = |id: &str| Some(key(&self.cached(self.ids.get(id)?, &self.single).ok()?));
-        match uia_roles::walked_id(self.unnamed.values().flatten(), top, &seen, now) {
+        let walked = self.unnamed.values().flatten();
+        match uia_roles::walked_id(walked, top, &owners, &seen, now) {
             Some(id) => Ok(id),
             None => self.id_of(el),
         }
@@ -432,7 +434,7 @@ impl Access for Uia {
         }
         let fetched = started.elapsed().as_micros();
         let mut nodes = Vec::new();
-        self.walking = vec![(self.walked, Vec::new())];
+        self.walking = vec![(self.walked, false, Vec::new())];
         let mut truncated = self.walk(&cached, &kids, None, 0, extras, &mut nodes)?;
         let walked = started.elapsed().as_micros() - fetched;
         if !truncated {
@@ -455,15 +457,15 @@ impl Access for Uia {
                     .ok()
                     .and_then(|id| nodes.iter().position(|n| n.id == id));
                 if let Some(root) = listed
-                    && let Some((_, frame)) = self.walking.first_mut()
+                    && let Some((_, _, frame)) = self.walking.first_mut()
                 {
                     let entries = uia_roles::popup_entries(&nodes, root, frame);
-                    self.walking.push((popup, entries));
+                    self.walking.push((popup, false, entries));
                 }
                 if truncated || listed.is_some() {
                     continue;
                 }
-                self.walking.push((popup, Vec::new()));
+                self.walking.push((popup, false, Vec::new()));
                 truncated = self.walk(
                     &menu,
                     &children(&menu),
@@ -475,6 +477,10 @@ impl Access for Uia {
             }
         }
         let menus = started.elapsed().as_micros() - fetched - walked;
+        if let Some((_, _, frame)) = self.walking.first_mut() {
+            let owned = uia_roles::owned_entries(&nodes, frame);
+            self.walking.push((self.walked, true, owned));
+        }
         let unnamed = std::mem::take(&mut self.walking);
         self.unnamed.insert(frame.id.clone(), unnamed);
         Ok(Tree {
@@ -682,7 +688,7 @@ enum Val {
 }
 
 type Key = (i32, String, [i32; 4]);
-type Walked = (isize, Vec<(String, Key)>);
+type Walked = (isize, bool, Vec<(String, Key)>);
 
 /// Whether the windows `a` and `b` belong to one process.
 pub(crate) fn same_process(a: i64, b: i64) -> bool {
@@ -1126,6 +1132,23 @@ fn top_at(x: i32, y: i32) -> Option<isize> {
     // SAFETY: WindowFromPoint takes a point and GetAncestor a handle; neither writes through a pointer.
     let top = unsafe { GetAncestor(WindowFromPoint(POINT { x, y }), GA_ROOT) };
     (!top.is_invalid()).then_some(top.0 as isize)
+}
+
+fn owners_of(top: isize) -> Vec<isize> {
+    let mut owners = Vec::new();
+    let mut at = HWND(top as *mut core::ffi::c_void);
+    while owners.len() < MAX_DEPTH {
+        // SAFETY: GetWindow takes any handle; a stale or unowned one answers an error or a null handle.
+        let Ok(owner) = (unsafe { GetWindow(at, GW_OWNER) }) else {
+            break;
+        };
+        if owner.is_invalid() {
+            break;
+        }
+        owners.push(owner.0 as isize);
+        at = owner;
+    }
+    owners
 }
 
 fn same(auto: &IUIAutomation, a: &IUIAutomationElement, b: &IUIAutomationElement) -> bool {

@@ -129,9 +129,18 @@ pub fn popup_entries<K>(
     popup
 }
 
+pub fn owned_entries<K>(nodes: &[model::Node], frame: &mut Vec<(String, K)>) -> Vec<(String, K)> {
+    let mut owned = Vec::new();
+    for root in (0..nodes.len()).filter(|&i| nodes[i].role == "menu") {
+        owned.extend(popup_entries(nodes, root, frame));
+    }
+    owned
+}
+
 pub fn walked_id<'a, K: PartialEq + 'a>(
-    lists: impl IntoIterator<Item = &'a (isize, Vec<(String, K)>)>,
+    lists: impl IntoIterator<Item = &'a (isize, bool, Vec<(String, K)>)>,
     top: Option<isize>,
+    owners: &[isize],
     seen: &K,
     now: impl FnOnce(&str) -> Option<K>,
 ) -> Option<String> {
@@ -139,8 +148,8 @@ pub fn walked_id<'a, K: PartialEq + 'a>(
     let mut found = None;
     for (id, key) in lists
         .into_iter()
-        .filter(|(walked, _)| *walked == top)
-        .flat_map(|(_, list)| list)
+        .filter(|(walked, popups, _)| *walked == top || *popups && owners.contains(walked))
+        .flat_map(|(_, _, list)| list)
     {
         if key == seen {
             if found.is_some() {
@@ -241,18 +250,20 @@ mod tests {
     fn an_element_without_a_runtime_id_takes_a_walked_id_only_from_its_own_top_level_window() {
         let item = |name: &str, y: i32| (name.to_owned(), [90, y, 296, 13]);
         let lists = [
-            (7, vec![("u1".to_owned(), item("item 5", 145))]),
-            (9, vec![("u2".to_owned(), item("Yes", 300))]),
+            (7, false, vec![("u1".to_owned(), item("item 5", 145))]),
+            (9, false, vec![("u2".to_owned(), item("Yes", 300))]),
             (
                 11,
+                false,
                 vec![
                     ("u3".to_owned(), item("No", 330)),
                     ("u4".to_owned(), item("No", 330)),
                 ],
             ),
         ];
-        let found =
-            |top, seen: (String, [i32; 4])| walked_id(&lists, top, &seen, |_| Some(seen.clone()));
+        let found = |top, seen: (String, [i32; 4])| {
+            walked_id(&lists, top, &[], &seen, |_| Some(seen.clone()))
+        };
         assert_eq!(found(Some(7), item("item 5", 145)).as_deref(), Some("u1"));
         assert_eq!(found(Some(8), item("item 5", 145)), None);
         assert_eq!(found(Some(9), item("item 5", 145)), None);
@@ -267,11 +278,12 @@ mod tests {
     fn an_entry_of_a_popup_menu_walked_with_its_frame_resolves_only_under_the_popup() {
         let entry = |name: &str| (name.to_owned(), [100, 60, 120, 22]);
         let frame = [
-            (7, vec![("u1".to_owned(), entry("View"))]),
-            (12, vec![("u2".to_owned(), entry("Status Bar"))]),
+            (7, false, vec![("u1".to_owned(), entry("View"))]),
+            (12, false, vec![("u2".to_owned(), entry("Status Bar"))]),
         ];
-        let found =
-            |top, seen: (String, [i32; 4])| walked_id(&frame, top, &seen, |_| Some(seen.clone()));
+        let found = |top, seen: (String, [i32; 4])| {
+            walked_id(&frame, top, &[], &seen, |_| Some(seen.clone()))
+        };
         assert_eq!(found(Some(12), entry("Status Bar")).as_deref(), Some("u2"));
         assert_eq!(found(Some(7), entry("Status Bar")), None);
         assert_eq!(found(Some(7), entry("View")).as_deref(), Some("u1"));
@@ -308,10 +320,11 @@ mod tests {
         let row = |y: i32| ("row".to_owned(), [90, y, 296, 13]);
         let lists = [(
             7,
+            false,
             vec![("u1".to_owned(), row(93)), ("u2".to_owned(), row(106))],
         )];
         let at = |now: Option<(String, [i32; 4])>| {
-            walked_id(&lists, Some(7), &row(106), move |id| {
+            walked_id(&lists, Some(7), &[], &row(106), move |id| {
                 assert_eq!(id, "u2");
                 now
             })
@@ -319,5 +332,65 @@ mod tests {
         assert_eq!(at(Some(row(106))).as_deref(), Some("u2"));
         assert_eq!(at(Some(row(93))), None);
         assert_eq!(at(None), None);
+    }
+
+    #[test]
+    fn an_entry_of_a_popup_owned_by_a_walked_window_resolves_through_the_owner() {
+        let entry = |name: &str, y: i32| (name.to_owned(), [100, y, 120, 22]);
+        let lists = [
+            (7, false, vec![("u1".to_owned(), entry("Status Bar", 60))]),
+            (7, true, vec![("u2".to_owned(), entry("Bravo", 80))]),
+            (9, true, vec![("u3".to_owned(), entry("Bravo", 80))]),
+            (
+                11,
+                true,
+                vec![
+                    ("u4".to_owned(), entry("Alpha", 60)),
+                    ("u5".to_owned(), entry("Alpha", 60)),
+                ],
+            ),
+        ];
+        let found = |top, owners: &[isize], seen: (String, [i32; 4])| {
+            walked_id(&lists, top, owners, &seen, |_| Some(seen.clone()))
+        };
+        assert_eq!(
+            found(Some(12), &[7], entry("Bravo", 80)).as_deref(),
+            Some("u2")
+        );
+        assert_eq!(found(Some(12), &[8], entry("Bravo", 80)), None);
+        assert_eq!(found(Some(12), &[], entry("Bravo", 80)), None);
+        assert_eq!(found(Some(12), &[7], entry("Status Bar", 60)), None);
+        assert_eq!(
+            found(Some(7), &[], entry("Bravo", 80)).as_deref(),
+            Some("u2")
+        );
+        assert_eq!(found(Some(12), &[11], entry("Alpha", 60)), None);
+    }
+
+    #[test]
+    fn the_entries_under_every_menu_node_leave_the_frame_for_its_popup_segment() {
+        let node = |id: &str, depth, role| model::Node {
+            id: id.into(),
+            depth,
+            role,
+            ..model::Node::default()
+        };
+        let nodes = [
+            node("w", 0, "window"),
+            node("u1", 1, "button"),
+            node("v", 1, "menu"),
+            node("u2", 2, "menuitem"),
+            node("d", 1, "menu"),
+            node("u3", 2, "menuitem"),
+            node("u4", 1, "listitem"),
+        ];
+        let mut frame: Vec<(String, i32)> = ["u1", "u2", "u3", "u4"]
+            .iter()
+            .map(|id| ((*id).to_owned(), 0))
+            .collect();
+        let owned = owned_entries(&nodes, &mut frame);
+        let ids = |l: &[(String, i32)]| l.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&owned), ["u2", "u3"]);
+        assert_eq!(ids(&frame), ["u1", "u4"]);
     }
 }
