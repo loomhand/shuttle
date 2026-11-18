@@ -116,7 +116,8 @@ const UNSEEN_TYPED: &str = "the app may not repaint a window nobody sees, so the
 
 const MASK_TRIES: usize = 3;
 const OUTSIDE_SHOT: &str = "the point is outside the named window's shot image, so nothing was sent: pass pixels of that window's shot, or leave window out to pass desk coordinates";
-const WINDOW_OFF_SCREEN: &str = "the window is off the left or top edge of the screen, so its screenshot could not be masked to the app allowlist; move it onto the screen";
+const WINDOW_OFF_SCREEN: &str = "the window is partly or wholly off the screen, or on another display, so its screenshot could not be masked to the app allowlist; move it onto the screen";
+const WINDOW_NOT_SHOWN: &str = "the window is not on the screen where the window list places it: it moved, or it is minimized or hidden, so its screenshot could not be masked to the app allowlist; take it again once the window shows";
 const WINDOWS_MOVING: &str = "the windows kept changing while the screenshot was taken, so it could not be masked to the app allowlist; take it again";
 
 const EFFECTS: [&str; 4] = ["confirmed", "unverifiable", "partial", "suspected_noop"];
@@ -2495,7 +2496,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         } else {
             let (grab, shown) = self.steady_grab(rect).await?;
             if still_at.is_some_and(|at| !shown.iter().any(|&(r, admitted)| admitted && r == at)) {
-                return Err(WINDOWS_MOVING.to_owned());
+                return Err(WINDOW_NOT_SHOWN.to_owned());
             }
             (grab, Some(shown))
         };
@@ -8281,7 +8282,7 @@ pub(crate) mod tests {
         let (off, _) = at(&listed, beside, [100.0; 3], true).await;
         assert_eq!(off.unwrap_err(), "the rectangle is off the window");
         let (moved, _) = at(&listed, whole.clone(), [100.0, 150.0, 100.0], true).await;
-        assert_eq!(moved.unwrap_err(), WINDOWS_MOVING);
+        assert_eq!(moved.unwrap_err(), WINDOW_NOT_SHOWN);
         let (cut, _) = at(&listed, whole.clone(), [-100.0, -100.0, 100.0], true).await;
         assert_eq!(cut.unwrap_err(), WINDOW_OFF_SCREEN);
         let shown =
@@ -8294,6 +8295,10 @@ pub(crate) mod tests {
         assert!(out.unwrap().text.contains(r#""origin":[100,100]"#));
         let (above, _) = at(&listed, whole.clone(), [100.0, 100.0, -100.0], true).await;
         assert_eq!(above.unwrap_err(), WINDOW_OFF_SCREEN);
+        for xs in [[2000.0, 2000.0, 0.0], [100.0, 100.0, 2000.0]] {
+            let (past, _) = at(&listed, whole.clone(), xs, true).await;
+            assert_eq!(past.unwrap_err(), WINDOW_OFF_SCREEN, "{xs:?}");
+        }
         for (allow, composited) in [(&listed[..], false), (&[], true)] {
             let (out, grabs) = at(allow, whole.clone(), [100.0; 3], composited).await;
             let out = out.unwrap();
