@@ -19,8 +19,8 @@ pub async fn call(endpoint: &str, call: &Call) -> Result<Output, String> {
 }
 
 async fn reach(endpoint: &str, call: &Call, embedded: bool) -> Result<Output, String> {
-    let (conn, child) = match server::connect(endpoint).await {
-        Ok(conn) => (conn, None),
+    let (conn, child, opened) = match server::connect(endpoint).await {
+        Ok(conn) => (conn, None, false),
         Err(e) if !matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
             return Err(format!("connect {endpoint}: {e}"));
         }
@@ -31,10 +31,15 @@ async fn reach(endpoint: &str, call: &Call, embedded: bool) -> Result<Output, St
                 EMBEDDED = crate::EMBEDDED
             ));
         }
-        Err(_) => started(endpoint).await?,
+        Err(_) => {
+            let (conn, child) = started(endpoint).await?;
+            let opened = child.is_none();
+            (conn, child, opened)
+        }
     };
     match (server::exchange(conn, call).await, child) {
         (Err(e), Some(child)) => Err(daemon_error(child, e).await),
+        (Err(e), None) if opened => Err(opened_error(endpoint, e).await),
         (out, _) => out,
     }
 }
@@ -77,6 +82,18 @@ async fn daemon_error(mut child: Child, e: String) -> String {
         Ok(Ok(status)) => format!("{e}; {}", exited(status)),
         _ => e,
     }
+}
+
+async fn opened_error(endpoint: &str, e: String) -> String {
+    let mut waited = Duration::ZERO;
+    while waited < EXIT_WAIT {
+        if let Ok(why) = std::fs::read_to_string(failed(endpoint)) {
+            return format!("{e}; the daemon did not start: {why}");
+        }
+        tokio::time::sleep(START_POLL).await;
+        waited += START_POLL;
+    }
+    e
 }
 
 fn exited(status: ExitStatus) -> String {
@@ -216,6 +233,21 @@ mod tests {
             started.elapsed() < Duration::from_secs(1),
             "{:?}",
             started.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_daemon_started_through_its_app_that_drops_the_call_and_fails_names_its_own_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let eof = "no answer to desk_windows could be read".to_owned();
+        tokio::time::pause();
+        assert_eq!(opened_error(&endpoint, eof.clone()).await, eof);
+        std::fs::write(failed(&endpoint), "[android] sets no ui_jar").unwrap();
+        assert_eq!(
+            opened_error(&endpoint, eof).await,
+            "no answer to desk_windows could be read; the daemon did not start: [android] sets no ui_jar"
         );
     }
 
