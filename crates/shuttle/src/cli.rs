@@ -380,13 +380,14 @@ async fn serve(
     );
     let recorder = Arc::clone(&daemon);
     tokio::spawn(async move { recorder.recordings().await });
+    let stopping = shutdown();
     #[cfg(any(target_os = "macos", windows))]
     ready(daemon.clone(), safety, hotkey.filter(|_| local), mode);
     let ending = Arc::clone(&daemon);
     let mut serving = tokio::spawn(server::serve(daemon, listener));
     let served = tokio::select! {
         r = &mut serving => r.unwrap_or_else(|e| Err(format!("serve: {e}"))),
-        () = shutdown() => Ok(()),
+        () = stopping => Ok(()),
     };
     ending.stop_answering();
     ending.end_recording().await;
@@ -408,20 +409,23 @@ fn key_vars(configured: Option<&str>) -> Vec<String> {
 }
 
 #[cfg(unix)]
-async fn shutdown() {
+fn shutdown() -> impl Future<Output = ()> {
     use tokio::signal::unix::{SignalKind, signal};
 
-    let (Ok(mut term), Ok(mut int), Ok(mut hup)) = (
+    let signals = (
         signal(SignalKind::terminate()),
         signal(SignalKind::interrupt()),
         signal(SignalKind::hangup()),
-    ) else {
-        return std::future::pending().await;
-    };
-    tokio::select! {
-        _ = term.recv() => {}
-        _ = int.recv() => {}
-        _ = hup.recv() => {}
+    );
+    async move {
+        let (Ok(mut term), Ok(mut int), Ok(mut hup)) = signals else {
+            return std::future::pending().await;
+        };
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = int.recv() => {}
+            _ = hup.recv() => {}
+        }
     }
 }
 
@@ -468,6 +472,16 @@ fn fail(e: impl Display) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_signal_that_comes_before_the_shutdown_is_awaited_still_ends_it() {
+        let stopping = shutdown();
+        assert_eq!(crate::signal_pid(std::process::id(), libc::SIGHUP), 1);
+        tokio::time::timeout(std::time::Duration::from_secs(5), stopping)
+            .await
+            .expect("the signal sent before the first poll ends the shutdown wait");
+    }
 
     #[test]
     fn no_run_gets_a_model_key_or_the_http_token() {
