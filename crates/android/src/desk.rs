@@ -34,6 +34,7 @@ const MIN_SPAN: i32 = 8;
 const MIN_SWIPE: i32 = 48;
 const WAIT_MAX: Duration = Duration::from_secs(5);
 const WAIT_POLL: Duration = Duration::from_millis(10);
+const UNSETTLED: &str = "the device lists no window in front at this moment, as while a window opens or closes, so the input was refused: retry once the screen settles";
 
 /// One element of a window as the desk and computer_state show it.
 #[derive(Debug)]
@@ -134,6 +135,7 @@ pub(crate) struct Frame {
     dialog: bool,
     pid: u32,
     active: bool,
+    guessed: bool,
     bounds: [i32; 4],
     covers: Vec<[i32; 4]>,
     screen: (i32, i32),
@@ -344,6 +346,9 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
         "desk_close" => {
             let a: WindowArgs = parse(args)?;
             let frame = window::pick_input(frames(android).await?, &a.window, a.pid)?;
+            if frame.guessed {
+                return Err(UNSETTLED.to_owned());
+            }
             if !frame.active {
                 return Err(format!(
                     "{} is not in front, and back closes only the front window",
@@ -452,6 +457,7 @@ fn turned((w, h): (i32, i32), list: &[WindowInfo]) -> (i32, i32) {
 fn frames_of(list: Vec<WindowInfo>, screen: (i32, i32)) -> Vec<Frame> {
     let layers: Vec<(i64, [i32; 4])> = list.iter().map(|w| (w.layer, w.bounds)).collect();
     let keyboard = list.iter().any(|w| w.kind == INPUT_METHOD);
+    let guessed = !list.iter().any(|w| w.active);
     let shown = listed(list);
     let alone = shown.len() == 1;
     shown
@@ -465,6 +471,7 @@ fn frames_of(list: Vec<WindowInfo>, screen: (i32, i32)) -> Vec<Frame> {
             Frame {
                 covers,
                 keyboard,
+                guessed,
                 ..frame(w, alone, screen)
             }
         })
@@ -499,6 +506,7 @@ fn frame(w: WindowInfo, alone: bool, screen: (i32, i32)) -> Frame {
         title,
         dialog: !full,
         active: w.active,
+        guessed: false,
         bounds: [l, t, r - l, b - t],
         covers: Vec::new(),
         screen,
@@ -1061,6 +1069,9 @@ fn front_id(
             None => window::pick(frames, None, pid)?,
         },
     };
+    if frame.guessed {
+        return Err(UNSETTLED.to_owned());
+    }
     if frame.active {
         Ok(frame.id.parse().ok())
     } else {
@@ -1100,6 +1111,7 @@ async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<bool, String>
 /// The window `window` names, which must be in front; a package name without a window starts its app.
 async fn focus(android: &Android, a: WindowArgs) -> Result<String, String> {
     let frame = match window::pick_input(frames(android).await?, &a.window, a.pid) {
+        Ok(f) if f.guessed => return Err(UNSETTLED.to_owned()),
         Ok(f) => f,
         Err(e) if is_package(&a.window) && e.starts_with("no window") => {
             android.launch(&a.window).await?;
@@ -1243,6 +1255,30 @@ mod tests {
             front_id(frames, Some("About phone - com.android.settings"), None, None),
             Err("no window titled \"About phone - com.android.settings\", so nothing was sent; \"Device name - com.android.settings\" of the same app is in front: name it to send there".to_owned())
         );
+    }
+
+    #[test]
+    fn input_is_refused_while_the_window_list_marks_no_window_in_front() {
+        let page = || WindowInfo {
+            title: "About phone".into(),
+            ..window([0, 0, 720, 1280])
+        };
+        let opening = || WindowInfo {
+            active: false,
+            focused: false,
+            ..page()
+        };
+        let named = Some("About phone - com.android.settings");
+        let settled = frames_of(vec![bar(18, 3, 1, [0, 0, 720, 48]), page()], REDROID);
+        assert_eq!(front_id(settled, named, None, None), Ok(Some(7)));
+        for pinned in [None, Some(7)] {
+            let switching = frames_of(vec![bar(18, 3, 1, [0, 0, 720, 48]), opening()], REDROID);
+            assert_eq!(
+                front_id(switching, named, None, pinned),
+                Err("the device lists no window in front at this moment, as while a window opens or closes, so the input was refused: retry once the screen settles".to_owned()),
+                "{pinned:?}"
+            );
+        }
     }
 
     #[test]
