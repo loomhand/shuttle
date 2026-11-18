@@ -305,8 +305,8 @@ mod tests {
             format!("a window of pid 4242{tail}")
         );
         assert_eq!(
-            covered_text("r90-menu", Some(7)),
-            format!("the window \"r90-menu\" (pid 7){tail}")
+            covered_text("Menus", Some(7)),
+            format!("the window \"Menus\" (pid 7){tail}")
         );
         assert_eq!(
             covered_text("Calculator", None),
