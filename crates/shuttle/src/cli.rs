@@ -221,7 +221,7 @@ fn save_image(b64: &str) -> Result<PathBuf, String> {
 #[cfg(any(target_os = "macos", windows))]
 fn controls_serve(endpoint: String) -> ExitCode {
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let serving = std::thread::spawn(move || {
         let ready = move |controls, safety: Safety, hotkey: Option<Hotkey>, input: &str| {
             let _ = tx.send(Ui {
                 controls,
@@ -248,7 +248,7 @@ fn controls_serve(endpoint: String) -> ExitCode {
         std::process::exit(i32::from(done.is_err()));
     });
     match rx.recv() {
-        Ok(ui) => controls::run(ui),
+        Ok(ui) => controls::run(ui, serving),
         Err(_) => loop {
             std::thread::park();
         },
