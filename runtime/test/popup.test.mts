@@ -40,3 +40,28 @@ test('a click that opens a combo box\'s list leaves the next step in the dialog,
   assert.deepEqual(pressed.slice(2), ['1.14/400', '1.14/403'])
   assert.ok(snapped.every((w) => w === 'Mousepad Preferences'), snapped.join(' '))
 })
+
+test('a macOS click step with an untitled app-modal alert of the app in front stops before it acts behind the alert, and the plan is not saved', { skip: process.platform !== 'darwin' }, async (t) => {
+  const doc = { id: '198', title: 'r89aN3', role: 'window', pid: 1966, active: true, app: 'R89Kit', bounds: [100, 120, 520, 400] }
+  const alert = { id: '201', title: '', role: 'dialog', pid: 1966, active: true, app: 'R89Kit', bounds: [510, 155, 260, 208] }
+  const nodes = [
+    { ref: 0, id: '198/0', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] },
+    { ref: 1, id: '198/1', parent: 0, depth: 1, role: 'button', name: 'Alert now', states: ['showing'], bounds: [120, 200, 80, 30] },
+    { ref: 2, id: '198/2', parent: 0, depth: 1, role: 'button', name: 'Tool', states: ['showing'], bounds: [560, 140, 40, 30] },
+  ]
+  const shown = [{ ref: 0, id: '201/0', parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }, { ref: 1, id: '201/1', parent: 0, depth: 1, role: 'button', name: 'Close', states: ['showing'] }]
+  let up = false
+  const pressed: string[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify(!up ? [doc] : pressed.includes('198/2') ? [doc, { ...alert, active: false }] : [{ ...doc, active: false }, alert])
+    if (tool === 'desk_snapshot') return JSON.stringify(args.window === doc.title ? { window: doc, nodes, truncated: false } : { window: alert, nodes: shown, truncated: false })
+    if (tool === 'desk_press') { pressed.push(String(args.id)); up ||= args.id === '198/1'; return '{"ok":true,"how":"ax"}' }
+    return '{"ok":true}'
+  })
+  const r = await plan({ steps: [{ app: 'R89Kit' }, { click: 'Alert now' }, { click: 'Tool' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.saved, undefined, JSON.stringify(r))
+  assert.equal(r.escalate?.step, 2, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, 'an untitled dialog of "R89Kit" is in front of "r89aN3", and on macOS such an alert takes all of its app\'s input until it closes: nothing was sent; answer it in a plan that starts with it in front, or close it with {close: true}')
+  assert.deepEqual(pressed, ['198/1'])
+})

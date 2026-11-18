@@ -689,7 +689,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
     const [plan, ...twins] = !w && lastSeen ? ws.filter((x) => x.title === lastSeen) : []
     if (plan && !twins.length) { w = plan; await desk.focus(w.title, w.pid) }
     // an untitled focused window that is no alert (a completion popup) leaves the step in the window the plan was in
-    if (w && !w.title.trim() && lastSeen && (kept?.id === w.id || !isAlert(await outline(w)))) { const pid = w.pid; w = ws.find((x) => x.title === lastSeen && x.pid === pid) ?? w }
+    if (w && !w.title.trim() && lastSeen && (kept?.id === w.id || !isAlert(await outline(w)))) { const pid = w.pid; const under = ws.find((x) => x.title === lastSeen && x.pid === pid); if (under) modalOver(w, under); w = under ?? w }
     tick('wait', t0); if (!w) throw new Surprise(NO_FRONT, {}, true); return w
   }
   const end = Date.now() + ms; let asked: string | null = null; let many = 0
@@ -705,7 +705,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
     } else if ((!w || known.has(w.title)) && Date.now() - t0 > 150) {
       const hits = ws.filter((x) => norm(x.title).includes(norm(want)) && (!!w || x.role !== 'alert'))
       const [bg, other] = hits; many = hits.length
-      if (bg && !other) { await desk.focus(bg.title, bg.pid); return found(bg, t0) }
+      if (bg && !other) { if (w) modalOver(w, bg); await desk.focus(bg.title, bg.pid); return found(bg, t0) }
     }
     if (w && !known.has(w.title) && !prior.has(w.id) && w.title !== asked && Date.now() - t0 > 250) {
       asked = w.title
@@ -719,6 +719,9 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
     if (Date.now() > end) { tick('wait', t0); throw new Surprise(many > 1 ? `${many} windows match "${want}", and the step never guesses which one: name the window more exactly` : `expected window "${want}" did not appear`, await seen()) }
     await sleep(30)
   }
+}
+function modalOver(w: Win, under: Win) {
+  if (OS === 'darwin' && w.role === 'dialog' && !w.title.trim() && w.owner === undefined && w.pid === under.pid && w.id !== under.id) throw new Surprise(`an untitled dialog of "${w.app ?? under.title}" is in front of "${under.title}", and on macOS such an alert takes all of its app's input until it closes: nothing was sent; answer it in a plan that starts with it in front, or close it with {close: true}`)
 }
 function awaited(title: string, want: string, saw?: string) { return norm(title).includes(norm(want)) || (!!saw && title === saw) }
 function found(w: Win, t0: number): Win { known.add(w.title); tick('wait', t0); return w }
