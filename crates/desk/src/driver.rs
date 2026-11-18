@@ -668,6 +668,11 @@ mod tests {
             json!({"ok": true, "result": out}).to_string()
         };
         let own = "bring_to_front: no window_id given and no windows found for pid 4.";
+        let bounds = "no usable on-screen bounds were resolved for it";
+        let placed = format!(
+            "element [3] (pid 4) has no usable on-screen bounds ({bounds}) and pid 4 has no window to activate; no input was sent."
+        );
+        let unread = "No screenshot of window 491 in this session: it has not been read yet. Call get_window_state(pid:4, window_id:491) and take x,y from that window's own screenshot; pixels read off another window's screenshot do not apply to it.";
         for (tool, reply, want) in [
             ("bring_to_front", failed(own, None), own.to_owned()),
             (
@@ -680,12 +685,13 @@ mod tests {
             ),
             (
                 "click",
-                failed(
-                    "click: element [3] (pid 4) has no usable on-screen bounds",
-                    Some("window_never_read"),
-                ),
-                "click: window_never_read: element [3] (pid 4) has no usable on-screen bounds"
-                    .to_owned(),
+                failed(&format!("click: {placed}"), Some(bounds)),
+                format!("click: {bounds}: {placed}"),
+            ),
+            (
+                "click",
+                failed(unread, Some("window_never_read")),
+                format!("click: window_never_read: {unread}"),
             ),
             (
                 "click",
