@@ -919,7 +919,6 @@ server.serve_forever()
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
         let tool = |name: &str, mcp: bool| json!({"name": name, "description": name, "input_schema": {"type": "object", "properties": {"say": {"type": "string"}}}, "mcp": mcp});
         let plugins = Plugins {
-            runs: Vec::new(),
             services: vec![
                 serde_json::from_value(json!({
                     "service": "demo",
@@ -929,7 +928,7 @@ server.serve_forever()
                 }))
                 .unwrap(),
             ],
-            script_run_off: false,
+            ..Plugins::default()
         };
         let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
         let runner = Runner::new(

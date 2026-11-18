@@ -298,8 +298,7 @@ mod tests {
                 bin: "/usr/bin/demo".into(),
                 resources: Vec::new(),
             }],
-            services: Vec::new(),
-            script_run_off: false,
+            ..Plugins::default()
         };
         let listed = list(&plugins);
         let names = names(&listed);
@@ -326,7 +325,6 @@ mod tests {
     #[tokio::test]
     async fn a_service_tool_is_listed_with_its_own_schema_unless_it_is_for_the_wire_only() {
         let plugins = Plugins {
-            runs: Vec::new(),
             services: vec![
                 serde_json::from_value(json!({
                     "service": "demo",
@@ -338,7 +336,7 @@ mod tests {
                 }))
                 .unwrap(),
             ],
-            script_run_off: false,
+            ..Plugins::default()
         };
         let listed = list(&plugins);
         let tools = listed["tools"].as_array().unwrap();

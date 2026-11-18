@@ -457,8 +457,7 @@ mod tests {
         ];
         let plugins = Plugins {
             runs: vec![plugin],
-            services: Vec::new(),
-            script_run_off: false,
+            ..Plugins::default()
         };
         let out = session_with(&lines, &endpoint, &plugins).await;
         let without = session(&lines[..3], &endpoint).await;
