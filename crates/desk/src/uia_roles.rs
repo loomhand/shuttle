@@ -245,6 +245,20 @@ mod tests {
     }
 
     #[test]
+    fn an_entry_of_a_popup_menu_walked_with_its_frame_resolves_only_under_the_popup() {
+        let entry = |name: &str| (name.to_owned(), [100, 60, 120, 22]);
+        let frame = [
+            (7, vec![("u1".to_owned(), entry("View"))]),
+            (12, vec![("u2".to_owned(), entry("Status Bar"))]),
+        ];
+        let found =
+            |top, seen: (String, [i32; 4])| walked_id(&frame, top, &seen, |_| Some(seen.clone()));
+        assert_eq!(found(Some(12), entry("Status Bar")).as_deref(), Some("u2"));
+        assert_eq!(found(Some(7), entry("Status Bar")), None);
+        assert_eq!(found(Some(7), entry("View")).as_deref(), Some("u1"));
+    }
+
+    #[test]
     fn a_walked_element_that_no_longer_has_its_recorded_type_name_and_bounds_gives_no_id() {
         let row = |y: i32| ("row".to_owned(), [90, y, 296, 13]);
         let lists = [(

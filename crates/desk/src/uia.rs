@@ -92,8 +92,8 @@ pub struct Uia {
     top: IUIAutomationCacheRequest,
     root: IUIAutomationElement,
     ids: HashMap<String, IUIAutomationElement>,
-    unnamed: HashMap<String, (isize, Vec<(String, Key)>)>,
-    walking: Vec<(String, Key)>,
+    unnamed: HashMap<String, Vec<Walked>>,
+    walking: Vec<Walked>,
     tops: HashMap<isize, Top>,
     walked: isize,
     shown: Vec<Shown>,
@@ -143,8 +143,8 @@ impl Uia {
         let runtime = runtime_id(el)?;
         let unnamed = runtime.is_empty();
         let id = own_id(runtime);
-        if unnamed {
-            self.walking.push((id.clone(), key(el)));
+        if unnamed && let Some((_, list)) = self.walking.last_mut() {
+            list.push((id.clone(), key(el)));
         }
         self.ids.entry(id.clone()).or_insert_with(|| el.clone());
         Ok(id)
@@ -170,7 +170,7 @@ impl Uia {
             None => None,
         };
         let now = |id: &str| Some(key(&self.cached(self.ids.get(id)?, &self.single).ok()?));
-        match uia_roles::walked_id(self.unnamed.values(), top, &seen, now) {
+        match uia_roles::walked_id(self.unnamed.values().flatten(), top, &seen, now) {
             Some(id) => Ok(id),
             None => self.id_of(el),
         }
@@ -432,7 +432,7 @@ impl Access for Uia {
         }
         let fetched = started.elapsed().as_micros();
         let mut nodes = Vec::new();
-        self.walking.clear();
+        self.walking = vec![(self.walked, Vec::new())];
         let mut truncated = self.walk(&cached, &kids, None, 0, extras, &mut nodes)?;
         let walked = started.elapsed().as_micros() - fetched;
         if !truncated {
@@ -444,14 +444,18 @@ impl Access for Uia {
                 .filter_map(|i| {
                     let t = self.top_of(&shown[i])?;
                     let el = (t.control_type == UIA_MenuControlTypeId.0).then(|| t.el.clone())?;
-                    self.cached(&el, &self.subtree).ok()
+                    Some((
+                        shown[i].hwnd.0 as isize,
+                        self.cached(&el, &self.subtree).ok()?,
+                    ))
                 })
                 .collect();
-            for menu in menus {
+            for (popup, menu) in menus {
                 let listed = runtime_id(&menu).is_ok_and(|id| nodes.iter().any(|n| n.id == id));
                 if truncated || listed {
                     continue;
                 }
+                self.walking.push((popup, Vec::new()));
                 truncated = self.walk(
                     &menu,
                     &children(&menu),
@@ -464,8 +468,7 @@ impl Access for Uia {
         }
         let menus = started.elapsed().as_micros() - fetched - walked;
         let unnamed = std::mem::take(&mut self.walking);
-        self.unnamed
-            .insert(frame.id.clone(), (self.walked, unnamed));
+        self.unnamed.insert(frame.id.clone(), unnamed);
         Ok(Tree {
             frame: frame.clone(),
             nodes,
@@ -671,6 +674,7 @@ enum Val {
 }
 
 type Key = (i32, String, [i32; 4]);
+type Walked = (isize, Vec<(String, Key)>);
 
 /// Whether the windows `a` and `b` belong to one process.
 pub(crate) fn same_process(a: i64, b: i64) -> bool {
