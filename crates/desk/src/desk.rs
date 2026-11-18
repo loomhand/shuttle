@@ -2419,11 +2419,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .access
             .run(CALL_LIMIT, (), move |b| {
                 let frames = shown(b, background)?;
-                let f = window::pick_id(frames.clone(), &named, &title, pid, |f| f.id.as_str())?;
+                let twinned = frames.iter().find(|f| f.id == named).is_some_and(|f| {
+                    frames
+                        .iter()
+                        .any(|o| o.id != f.id && o.pid == f.pid && o.title == f.title)
+                });
+                let f = window::pick_id(frames, &named, &title, pid, |f| f.id.as_str())?;
                 allow.check_frame(Some(&f))?;
-                let twinned = frames
-                    .iter()
-                    .any(|o| o.id != f.id && o.pid == f.pid && o.title == f.title);
                 Ok((f, twinned))
             })
             .await?;
