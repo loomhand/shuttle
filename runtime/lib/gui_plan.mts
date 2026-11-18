@@ -1847,7 +1847,9 @@ async function located(target: string, press: boolean) {
   if (!hit) return { found: false, why: `no element of "${w.title}" matches`, window: w.title, ms: Date.now() - t0 }
   const out: Record<string, unknown> = { found: true, how: hit.how, role: hit.n.role, name: hit.n.name, bounds: hit.n.bounds ?? null, shown: hit.n.shown, shift: drawnShift(nodes, hit.i), window: at.title, pid: at.pid }
   if (press) {
+    unheard = undefined
     if (hit.n.role === 'menuitem') await choose(nodes, hit.n, out, true, w); else out.via = await act(hit.n)
+    if (unheard) out.unverified = unheard
     await settle(w.title)
   }
   return { ...out, ms: Date.now() - t0 }

@@ -580,3 +580,22 @@ test('a plan stopped for a step sent but not confirmed or for a theft counts as 
     assert.deepEqual(chain.steps, [{ app: 'Notepad' }], JSON.stringify(chain))
   }
 })
+
+test('a background locate that presses its element carries the note of a press the driver could not confirm', async (t) => {
+  const nodes = [
+    { ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: 'Calculator', states: [] },
+    { ref: 1, id: 'b', parent: 0, depth: 1, role: 'button', name: 'Bold', states: ['showing'], bounds: [10, 10, 20, 20] },
+  ]
+  const d = desktop([user(), notepad()], ({ tool }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: user(), nodes, truncated: false })
+    if (tool === 'desk_press') return JSON.stringify({ ok: true, how: 'click', unverified: 'unverifiable: posted a click' })
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const query = 'locate'
+  const fresh = ((await import(`../lib/gui_plan.mts?${query}`)) as typeof import('../lib/gui_plan.mts')).main
+  const r = await fresh({ locate: { target: 'Bold', press: true } })
+  assert.equal(r.found, true, JSON.stringify(r))
+  assert.equal(r.via, 'click', JSON.stringify(r))
+  assert.equal(r.unverified, 'unverifiable: posted a click', JSON.stringify(r))
+})
