@@ -2439,9 +2439,7 @@ mod tests {
     #[tokio::test]
     async fn a_type_empties_the_device_clipboard_after_it() {
         let (android, mut peer) = session("/nonexistent/adb").await;
-        let mut ack = vec![ACK_CLIPBOARD];
-        ack.extend_from_slice(&1u64.to_be_bytes());
-        peer.write_all(&ack).await.unwrap();
+        peer.write_all(&ack(1)).await.unwrap();
         let device = tokio::spawn(async move {
             let mut buf = [0; 64];
             let n = peer.read(&mut buf).await.unwrap();
@@ -2489,9 +2487,7 @@ mod tests {
             }
         }
         assert_eq!(set, clipboard_message("secret", 1));
-        let mut ack = vec![ACK_CLIPBOARD];
-        ack.extend_from_slice(&1u64.to_be_bytes());
-        peer.write_all(&ack).await.unwrap();
+        peer.write_all(&ack(1)).await.unwrap();
         let mut clear = vec![0; clipboard_message("", 2).len()];
         tokio::time::timeout(Duration::from_secs(5), peer.read_exact(&mut clear))
             .await
@@ -2516,9 +2512,7 @@ mod tests {
             fresh.write_all(&[0]).await.unwrap();
             let mut clear = vec![0; clipboard_message("", 1).len()];
             fresh.read_exact(&mut clear).await.unwrap();
-            let mut ack = vec![ACK_CLIPBOARD];
-            ack.extend_from_slice(&1u64.to_be_bytes());
-            fresh.write_all(&ack).await.unwrap();
+            fresh.write_all(&ack(1)).await.unwrap();
             (set, clear)
         });
         let typed = fake
@@ -2547,18 +2541,16 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         fake.put("port", &listener.local_addr().unwrap().port().to_string());
         let mut peer = controlled(&fake.android).await;
-        let mut ack = vec![ACK_CLIPBOARD];
-        ack.extend_from_slice(&1u64.to_be_bytes());
         let device = tokio::spawn(async move {
             let mut set = vec![0; clipboard_message("secret", 1).len()];
             peer.read_exact(&mut set).await.unwrap();
-            peer.write_all(&ack).await.unwrap();
+            peer.write_all(&ack(1)).await.unwrap();
             drop(peer);
             let (mut fresh, _) = listener.accept().await.unwrap();
             fresh.write_all(&[0]).await.unwrap();
             let mut clear = vec![0; clipboard_message("", 1).len()];
             fresh.read_exact(&mut clear).await.unwrap();
-            fresh.write_all(&ack).await.unwrap();
+            fresh.write_all(&ack(1)).await.unwrap();
             (set, clear)
         });
         let typed = fake
@@ -2687,11 +2679,6 @@ mod tests {
 
     #[tokio::test]
     async fn the_paste_takes_only_its_own_acknowledgement() {
-        let ack = |sequence: u64| {
-            let mut msg = vec![ACK_CLIPBOARD];
-            msg.extend_from_slice(&sequence.to_be_bytes());
-            msg
-        };
         assert_eq!(read_ack(&mut ack(7).as_slice(), 7).await, Ok(()));
         assert!(read_ack(&mut ack(6).as_slice(), 7).await.is_err());
         assert!(
@@ -3552,15 +3539,19 @@ mod tests {
         peer
     }
 
+    fn ack(sequence: u64) -> Vec<u8> {
+        let mut msg = vec![ACK_CLIPBOARD];
+        msg.extend_from_slice(&sequence.to_be_bytes());
+        msg
+    }
+
     #[cfg(unix)]
     async fn paste_through(
         android: &Android,
         mut peer: TcpStream,
         mut ui: Command,
     ) -> Result<bool, String> {
-        let mut ack = vec![ACK_CLIPBOARD];
-        ack.extend_from_slice(&1u64.to_be_bytes());
-        peer.write_all(&ack).await.unwrap();
+        peer.write_all(&ack(1)).await.unwrap();
         let device = tokio::spawn(async move {
             let mut buf = [0; 64];
             let n = peer.read(&mut buf).await.unwrap();
