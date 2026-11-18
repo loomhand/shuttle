@@ -1744,6 +1744,73 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_press_whose_swipe_fails_or_has_no_room_says_what_went_before_it() {
+        let id = "com.android.settings:0.0.1:button:Target";
+        let shown = "asked to scroll it into view";
+        for (fails, showed, what) in [
+            (true, true, shown),
+            (true, false, "scrolled"),
+            (false, true, shown),
+            (false, false, "scrolled"),
+        ] {
+            let fake = Fake::new();
+            fake.put("inject.answer", "true");
+            fake.put("show.answer", if showed { "true" } else { "false" });
+            list(&fake, "dump.xml", "[0,1300][720,1400]");
+            fake.windows("shade");
+            let shade = log(&fake, "windows.json");
+            fake.windows("");
+            match (fails, showed) {
+                (true, true) => fake.put("input.fail", ""),
+                (true, false) => fake.put("after-swipe.fail", ""),
+                (false, true) => fake.put("windows.json", &shade),
+                (false, false) => fake.put("after-swipe.json", &shade),
+            }
+            let err = desk(&fake, "desk_press", serde_json::json!({"id": id}))
+                .await
+                .unwrap_err();
+            assert!(
+                err.starts_with(&format!(
+                    "the list of element {id} was {what}, then this stopped the tap: "
+                )),
+                "{fails} {showed}: {err}"
+            );
+            if !fails {
+                assert!(
+                    err.ends_with(&format!(
+                        "element {id} is off the screen, and its list is covered"
+                    )),
+                    "{err}"
+                );
+            }
+            assert_eq!(log(&fake, "requests").matches("tap").count(), 0);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_tap_that_fails_after_a_scroll_keeps_its_own_text_and_says_the_list_was_scrolled() {
+        let id = "com.android.settings:0.0.1:button:Target";
+        let fake = Fake::new();
+        fake.put("inject.answer", "false");
+        fake.put("show.answer", "false");
+        fake.windows("");
+        list(&fake, "dump.xml", "[0,1300][720,1400]");
+        list(&fake, "after-swipe.xml", "[0,600][720,700]");
+        let err = desk(&fake, "desk_press", serde_json::json!({"id": id}))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            format!(
+                "tap 360,650 is unconfirmed (the injection was not confirmed) and was not repeated, since it may have reached the device; the list of element {id} was scrolled before it"
+            )
+        );
+        assert_eq!(log(&fake, "adbinput").matches("swipe").count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_press_whose_read_after_its_scroll_fails_says_it_scrolled_and_sends_no_tap() {
         let id = "com.android.settings:0.0.1:button:Target";
         for after in ["empty", "gone"] {
@@ -3745,7 +3812,7 @@ mod tests {
             let adb = dir.path().join("adb");
             script(
                 &adb,
-                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"forward tcp:0\"*) cat \"$DIR/port\" 2>/dev/null;;\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi; if [ -f \"$DIR/after-swipe.json\" ]; then mv \"$DIR/after-swipe.json\" \"$DIR/windows.json\"; fi;;\n*screencap*) if [ -f \"$DIR/screencap.fail\" ]; then exit 1; fi; cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo start >> \"$DIR/starts\"\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) if [ -f \"$DIR/after-key-focus.json\" ]; then mv \"$DIR/after-key-focus.json\" \"$DIR/focus.json\"; fi; if [ -f \"$DIR/after-input.json\" ]; then mv \"$DIR/after-input.json\" \"$DIR/windows.json\"; fi; a=$(head -n 1 \"$DIR/inject.answer\" 2>/dev/null); if [ -f \"$DIR/inject.answer\" ] && [ \"$(wc -l < \"$DIR/inject.answer\")\" -ge 1 ]; then tail -n +2 \"$DIR/inject.answer\" > \"$DIR/inject.next\"; mv \"$DIR/inject.next\" \"$DIR/inject.answer\"; fi; if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi; if [ -f \"$DIR/after-show.json\" ]; then mv \"$DIR/after-show.json\" \"$DIR/windows.json\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      \"focus live\") if [ -f \"$DIR/live.fail\" ]; then printf '<error>focus read failed</error>'; else cat \"$DIR/focus.json\" 2>/dev/null; fi;;\n      focus*) cat \"$DIR/focus.json\" 2>/dev/null;;\n      paste) if [ -f \"$DIR/after-paste.json\" ]; then mv \"$DIR/after-paste.json\" \"$DIR/focus.json\"; fi; printf true;;\n      dump*) if [ -f \"$DIR/after-dump-focus.json\" ]; then mv \"$DIR/after-dump-focus.json\" \"$DIR/focus.json\"; fi; if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
+                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"forward tcp:0\"*) cat \"$DIR/port\" 2>/dev/null;;\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) if [ -f \"$DIR/input.fail\" ]; then exit 1; fi; echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.fail\" ]; then mv \"$DIR/after-swipe.fail\" \"$DIR/input.fail\"; fi; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi; if [ -f \"$DIR/after-swipe.json\" ]; then mv \"$DIR/after-swipe.json\" \"$DIR/windows.json\"; fi;;\n*screencap*) if [ -f \"$DIR/screencap.fail\" ]; then exit 1; fi; cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo start >> \"$DIR/starts\"\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) if [ -f \"$DIR/after-key-focus.json\" ]; then mv \"$DIR/after-key-focus.json\" \"$DIR/focus.json\"; fi; if [ -f \"$DIR/after-input.json\" ]; then mv \"$DIR/after-input.json\" \"$DIR/windows.json\"; fi; a=$(head -n 1 \"$DIR/inject.answer\" 2>/dev/null); if [ -f \"$DIR/inject.answer\" ] && [ \"$(wc -l < \"$DIR/inject.answer\")\" -ge 1 ]; then tail -n +2 \"$DIR/inject.answer\" > \"$DIR/inject.next\"; mv \"$DIR/inject.next\" \"$DIR/inject.answer\"; fi; if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi; if [ -f \"$DIR/after-show.json\" ]; then mv \"$DIR/after-show.json\" \"$DIR/windows.json\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      \"focus live\") if [ -f \"$DIR/live.fail\" ]; then printf '<error>focus read failed</error>'; else cat \"$DIR/focus.json\" 2>/dev/null; fi;;\n      focus*) cat \"$DIR/focus.json\" 2>/dev/null;;\n      paste) if [ -f \"$DIR/after-paste.json\" ]; then mv \"$DIR/after-paste.json\" \"$DIR/focus.json\"; fi; printf true;;\n      dump*) if [ -f \"$DIR/after-dump-focus.json\" ]; then mv \"$DIR/after-dump-focus.json\" \"$DIR/focus.json\"; fi; if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
             );
             let android = android_at(adb);
             Self { dir, android }
