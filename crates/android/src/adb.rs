@@ -453,7 +453,12 @@ impl Android {
             if line.is_empty() {
                 if i == 0 && window.is_none() && at.is_none() && rows.iter().any(|l| !l.is_empty())
                 {
-                    let (id, password) = self.field_window().await?.ok_or(NO_FIELD_FIRST)?;
+                    let (id, password) = self
+                        .field_focus(true, None, &AtomicBool::new(false))
+                        .await?
+                        .filter(|f| f.editable && f.window)
+                        .and_then(|f| f.id.map(|id| (id, f.password)))
+                        .ok_or(NO_FIELD_FIRST)?;
                     *protected |= password;
                     pin = Some(id);
                 }
@@ -519,15 +524,6 @@ impl Android {
             return self.focus(live).await;
         }
         Ok(focus)
-    }
-
-    async fn field_window(&self) -> Result<Option<(i64, bool)>, String> {
-        let focus = self
-            .field_focus(true, None, &AtomicBool::new(false))
-            .await?;
-        Ok(focus
-            .filter(|f| f.editable && f.window)
-            .and_then(|f| f.id.map(|id| (id, f.password))))
     }
 
     /// The screen size `wm size` reports in the device's natural rotation, read once per device.
@@ -1367,9 +1363,7 @@ async fn wiped(slot: &Mutex<Option<Control>>) -> bool {
     if control.is_open() && control.set_clipboard("").await.is_ok() {
         return false;
     }
-    let filled = control.filled;
-    *slot = None;
-    filled
+    slot.take().is_some_and(|c| c.filled)
 }
 
 /// Reads the device message that acknowledges the clipboard of `sequence`, the only one a server without clipboard autosync sends.

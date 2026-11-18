@@ -522,11 +522,9 @@ fn frame(w: WindowInfo, alone: bool, screen: (i32, i32)) -> Frame {
         title,
         dialog: !full,
         active: w.active,
-        guessed: false,
         bounds: [l, t, r - l, b - t],
-        covers: Vec::new(),
         screen,
-        keyboard: false,
+        ..Frame::default()
     }
 }
 
@@ -1122,9 +1120,7 @@ fn front_id(
             None => window::pick(frames, None, pid)?,
         },
     };
-    if frame.guessed {
-        return Err(UNSETTLED.to_owned());
-    }
+    frame.settled()?;
     if frame.active {
         Ok(frame.id.parse().ok())
     } else {
