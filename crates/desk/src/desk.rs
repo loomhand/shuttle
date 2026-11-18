@@ -1512,36 +1512,41 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return self.click_at(req, turn).await;
         }
         let point = (f64::from(x), f64::from(y));
-        let (pid, title, frame) = self
+        let (frame, bounds) = self
             .access
             .run(CALL_LIMIT, (), move |b| {
                 let pid = b.pid_of(&id)?.ok_or(BACKGROUND_ELEMENT)?;
                 let root = b.ancestors(&id)?.into_iter().next().unwrap_or(id);
-                let title = b.frames_of(pid)?.into_iter().find(|f| f.id == root);
-                let frame = b.node(&root, Extras::FRAME, 0)?.bounds;
-                Ok((pid, title.ok_or(BACKGROUND_ELEMENT)?.title, frame))
+                let frame = b.frames_of(pid)?.into_iter().find(|f| f.id == root);
+                let frame = frame.ok_or(BACKGROUND_ELEMENT)?;
+                let bounds = match frame.number {
+                    Some(_) => None,
+                    None => b.node(&root, Extras::FRAME, 0)?.bounds,
+                };
+                Ok((frame, bounds))
             })
             .await?;
-        let mut listed = self.call("list_windows", json!({})).await?;
-        let (_, picked, _) = self
-            .pick_listed(listed.clone(), Some(&title), Some(pid), false)
-            .await?;
-        let scale = self.scale().await?;
-        let Value::Array(windows) = listed["structuredContent"]["windows"].take() else {
-            return Err(BACKGROUND_ELEMENT.to_owned());
-        };
-        let titled = |w: &Value, tier: usize| {
-            w["pid"].as_u64() == Some(u64::from(pid))
-                && title_matches(tier, w["title"].as_str().unwrap_or_default(), &title)
-        };
-        let tier = (0..TITLE_TIERS).find(|&t| windows.iter().any(|w| titled(w, t)));
-        let same: Vec<Value> = match tier {
-            Some(t) => windows.into_iter().filter(|w| titled(w, t)).collect(),
-            None if picked["pid"].as_u64() == Some(u64::from(pid)) => vec![picked],
-            None => Vec::new(),
-        };
-        match fitting(self.os, frame, scale, &same).as_slice() {
+        let listed = self.call("list_windows", json!({})).await?;
+        let raw = listed["structuredContent"]["windows"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice);
+        let picked;
+        let mut same = framed(&frame, raw);
+        if frame.number.is_none() {
+            if same.is_empty() {
+                picked = self
+                    .pick_listed(listed.clone(), Some(&frame.title), frame.pid, false)
+                    .await?
+                    .1;
+                if picked["pid"].as_u64() == frame.pid.map(u64::from) {
+                    same.push(&picked);
+                }
+            }
+            same = fitting(self.os, bounds, self.scale().await?, &same);
+        }
+        match same.as_slice() {
             [w] => self.click_in(req, w, point).await,
+            [] if frame.number.is_some() => Err(BACKGROUND_ELEMENT.to_owned()),
             _ => Err(BACKGROUND_TWINS.to_owned()),
         }
     }
@@ -2426,17 +2431,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let raw = listed["structuredContent"]["windows"]
             .as_array()
             .map_or(&[][..], Vec::as_slice);
-        let same: Vec<Value> = raw
-            .iter()
-            .filter(|r| match f.number {
-                Some(n) => r["window_id"].as_u64() == Some(n.into()),
-                None => {
-                    r["pid"].as_u64() == f.pid.map(u64::from)
-                        && title_matches(1, r["title"].as_str().unwrap_or_default(), &f.title)
-                }
-            })
-            .cloned()
-            .collect();
+        let same = framed(&f, raw);
         let fit = if same.len() > 1 || (twinned && f.number.is_none()) {
             let root = id.to_owned();
             let frame = self
@@ -2447,7 +2442,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 .await?;
             fitting(self.os, frame, self.scale().await?, &same)
         } else {
-            same.iter().collect()
+            same
         };
         match fit.as_slice() {
             [r] => {
@@ -3265,7 +3260,24 @@ fn ok_with(unverified: Option<String>) -> String {
     }
 }
 
-fn fitting(os: Os, frame: Option<[i32; 4]>, scale: f64, same: &[Value]) -> Vec<&Value> {
+fn framed<'a>(f: &Frame, listed: &'a [Value]) -> Vec<&'a Value> {
+    if let Some(n) = f.number {
+        return listed
+            .iter()
+            .filter(|r| r["window_id"].as_u64() == Some(n.into()))
+            .collect();
+    }
+    let titled = |r: &Value, tier| {
+        r["pid"].as_u64() == f.pid.map(u64::from)
+            && title_matches(tier, r["title"].as_str().unwrap_or_default(), &f.title)
+    };
+    (0..TITLE_TIERS)
+        .map(|t| listed.iter().filter(|r| titled(r, t)).collect::<Vec<_>>())
+        .find(|m| !m.is_empty())
+        .unwrap_or_default()
+}
+
+fn fitting<'a>(os: Os, frame: Option<[i32; 4]>, scale: f64, same: &[&'a Value]) -> Vec<&'a Value> {
     let tiers: &[[f64; 4]] = match os {
         Os::Windows => &[[FRAME_BORDER; 4]],
         Os::Linux => &[
@@ -3286,7 +3298,12 @@ fn fitting(os: Os, frame: Option<[i32; 4]>, scale: f64, same: &[Value]) -> Vec<&
     };
     tiers
         .iter()
-        .map(|&t| same.iter().filter(|w| fits(w, t)).collect::<Vec<_>>())
+        .map(|&t| {
+            same.iter()
+                .copied()
+                .filter(|w| fits(w, t))
+                .collect::<Vec<_>>()
+        })
         .find(|m| !m.is_empty())
         .unwrap_or_default()
 }
@@ -6661,6 +6678,23 @@ pub(crate) mod tests {
                     .is_ok(),
                 "{action}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_background_element_click_goes_to_its_frames_numbered_window_among_same_titled_twins_of_one_size()
+     {
+        for os in [Os::Windows, Os::Mac] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let driver = Twins(Arc::clone(&calls), 0.0, "Untitled - Notepad", 0.0);
+            let desk =
+                Desk::new(|| Ok(TwinDocs::new(true, false, false)), driver, os).background(true);
+            desk.run("desk_act", json!({"id": "b3", "action": "click"}))
+                .await
+                .unwrap();
+            let clicks = sent(&calls, "click");
+            assert_eq!(clicks.len(), 1, "{os:?}");
+            assert_eq!(clicks[0]["window_id"], 3, "{os:?}");
         }
     }
 
@@ -12368,6 +12402,7 @@ pub(crate) mod tests {
                 id: id.into(),
                 role: "window",
                 bounds: Some([x, 0, 800, 600]),
+                states: vec!["showing"],
                 ..Node::default()
             })
         }
@@ -12383,8 +12418,8 @@ pub(crate) mod tests {
             Ok(Some(4))
         }
 
-        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
-            Ok(None)
+        fn at(&mut self, window: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok(window.strip_prefix('w').map(|n| format!("b{n}")))
         }
 
         fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
