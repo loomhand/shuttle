@@ -144,7 +144,7 @@ fn builtins() -> Value {
         },
         {
             "name": "desk",
-            "description": "One desk call on this desktop: list windows, name the front window of an app that stopped answering accessibility, or wait for windows to change, snapshot or search a window's accessibility tree, read, press or act on an element, send keys, type, click, scroll or drag, wait for the screen to hold still, focus, close or launch, or crop the screen. Focus and close by a title several windows share are refused: pass the window's id from desk windows. In a macOS Qt app with no accessibility focus, such as WeChat, background typing into a search field can land in another field: reach a chat by scrolling its list, or use foreground input. A key, type, click, scroll or drag result with unverified, a type error that counts the lines typed before it, and a key error that counts the presses sent before it, may have taken effect.",
+            "description": "One desk call on this desktop: list windows, name the front window of an app that stopped answering accessibility, or wait for windows to change, snapshot or search a window's accessibility tree, read, press or act on an element, send keys, type, click, scroll or drag, wait for the screen to hold still, focus, close or launch, or crop the screen. Focus and close by a title several windows share are refused: pass the window's id from desk windows. Key, type, click, scroll and drag by title act only in the one window whose own title matches, and a stale title is refused, naming the window of the same app; a read by a stale title reads that window and names it. In a macOS Qt app with no accessibility focus, such as WeChat, background typing into a search field can land in another field: reach a chat by scrolling its list, or use foreground input. A key, type, click, scroll or drag result with unverified, a type error that counts the lines typed before it, and a key error that counts the presses sent before it, may have taken effect.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -287,6 +287,23 @@ mod tests {
         }
         assert!(routed.len() > DESK_VERBS.len(), "{routed:?}");
         assert!(!routed.iter().any(|t| t.contains("safety")), "{routed:?}");
+    }
+
+    #[test]
+    fn the_desk_tool_tells_input_by_title_from_reads_by_title() {
+        let tools = list(&Plugins::default());
+        let desk = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "desk")
+            .unwrap();
+        let text = desk["description"].as_str().unwrap();
+        assert!(
+            text.contains("Key, type, click, scroll and drag by title act only in the one window whose own title matches")
+                && text.contains("a read by a stale title reads that window and names it"),
+            "{text}"
+        );
     }
 
     #[test]
