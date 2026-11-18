@@ -359,10 +359,13 @@ test('a draft names the clicks past its caption time budget by their point, and 
   const real = Date.now; let now = real()
   Date.now = () => now
   t.after(() => { Date.now = real })
-  let asked = 0
-  await daemon(t, ({ tool }) => {
+  const wait = setTimeout
+  let asked = 0; let hang = false; let answer = (): void => {}
+  const held = new Promise<void>((go) => { answer = go })
+  await daemon(t, async ({ tool }) => {
     if (tool !== 'model_ask') return '{"ok":true}'
-    asked += 1; now += 80_000
+    asked += 1
+    if (hang) await held; else now += 80_000
     return JSON.stringify({ text: 'the Green button', usage: { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 } })
   })
   const at = (k: number, more: object = {}): Event => ({ t: k, kind: 'click', x: 20 + k * 30, y: 100, app: 'Game', element: { role: 'button', name: '' }, root: false, window: win('board'), crop, ...more })
@@ -373,6 +376,13 @@ test('a draft names the clicks past its caption time budget by their point, and 
   const twice = await main({ recording: { id: 'rec-22', events: [at(0), at(1, { x: 21, count: 2 })] } })
   assert.equal(asked, 1)
   assert.deepEqual(twice.steps.slice(1).map(({ intent: _, recorded: __, ...s }) => s), [{ click: 'the Green button', count: 2 }])
+  asked = 0; now = real(); hang = true
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const drafting = main({ recording: { id: 'rec-23', events: [at(0), at(1)] } })
+  now += 75_000; t.mock.timers.tick(75_000)
+  const late = await Promise.race([drafting, new Promise<null>((done) => { wait(done, 2000, null).unref() })])
+  answer()
+  assert.deepEqual(late?.steps.slice(1).map((s) => s.click), ['the button at 20, 100', 'the button at 50, 100'])
 })
 
 test('a model caption keeps its first line and at most 80 characters', async (t) => {

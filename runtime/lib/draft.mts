@@ -59,7 +59,7 @@ export async function main(p: Params): Promise<Draft> {
   const input = (e: Event) => e.kind === 'click' || e.kind === 'key' || e.kind === 'password'
   const doubled = (e: Event, i: number) => { const n = events.find((x, j) => j > i && input(x)); return n?.kind === 'click' && (n.count ?? 1) > 1 && near(n, e) }
   const slot = pool(CAPTIONS_AT_ONCE)
-  const captions = new Map(events.flatMap((e, i) => e.kind === 'click' && e.crop && !own(e) && !doubled(e, i) ? [[e, slot(async () => Date.now() < until ? await caption(e.crop ?? '', e.crop_scale ?? 1, e.crop_offset ?? [0, 0], e.element?.role) : '')] as const] : []))
+  const captions = new Map(events.flatMap((e, i) => e.kind === 'click' && e.crop && !own(e) && !doubled(e, i) ? [[e, slot(() => caption(e.crop ?? '', e.crop_scale ?? 1, e.crop_offset ?? [0, 0], until, e.element?.role))] as const] : []))
   const first = events.find(input)
   const app = events.find((e) => input(e) && e.app)?.app
   const opened = first ? windowOf(first) : undefined
@@ -177,11 +177,15 @@ function click(e: Event, templ: (s: string) => string, captioned = ''): Step {
   }
 }
 
-async function caption(crop: string, scale: number, [dx, dy]: [number, number], role?: string): Promise<string> {
+async function caption(crop: string, scale: number, [dx, dy]: [number, number], until: number, role?: string): Promise<string> {
+  const left = until - Date.now()
+  if (left <= 0) return ''
+  let timer: NodeJS.Timeout | undefined
   try {
     const img = unpng(Buffer.from(crop, 'base64'))
     const marked = ring(img, Math.round(img.w / 2 + dx * scale), Math.round(img.h / 2 + dy * scale), Math.round(RING_PT * scale))
     const kind = role && role !== 'generic' && role !== 'document' ? ` The accessibility tree calls it a ${role} with no name.` : ''
-    return ((await desk.ask(`${CAPTION}${kind}`, marked)).trim().split('\n')[0] ?? '').slice(0, 80).trim().replace(/[."]+$/g, '').replace(/^"/, '')
-  } catch { return '' }
+    const late = new Promise<string>((done) => { timer = setTimeout(done, left, '') })
+    return ((await Promise.race([desk.ask(`${CAPTION}${kind}`, marked), late])).trim().split('\n')[0] ?? '').slice(0, 80).trim().replace(/[."]+$/g, '').replace(/^"/, '')
+  } catch { return '' } finally { clearTimeout(timer) }
 }
