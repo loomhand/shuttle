@@ -145,32 +145,7 @@ impl Recorder {
 
     /// Starts recording the user's input, in `apps` alone when it names any; answers the recording's id, and a note while secure input hides the keys.
     pub fn start(&self, apps: Vec<String>) -> Result<Value, String> {
-        let mut live = lock(&self.live);
-        if live.is_some() {
-            return Err(RECORDING.to_owned());
-        }
-        let (notes, inputs) = unbounded_channel();
-        let (tap, held) = listen(notes.clone(), Arc::clone(&self.acting), &apps)?;
-        let id = format!("rec-{}", now_ms());
-        let path = self.path(&id);
-        let (done, made) = oneshot::channel();
-        self.queue
-            .send(Session {
-                id: id.clone(),
-                apps,
-                per_point: per_point(),
-                path: path.clone(),
-                inputs,
-                done,
-            })
-            .map_err(|_| GONE.to_owned())?;
-        *live = Some(Live {
-            path,
-            notes,
-            made,
-            _tap: tap,
-        });
-        Ok(started(id, held))
+        self.start_with(apps, listen)
     }
 
     /// Adds the user's note to the running recording, where it is now.
@@ -227,6 +202,46 @@ impl Recorder {
                 .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))
                 .map_err(|e| format!("read {}: {e}", path.display())),
         }
+    }
+
+    fn start_with(
+        &self,
+        apps: Vec<String>,
+        listen: impl FnOnce(
+            UnboundedSender<Input>,
+            Arc<AtomicUsize>,
+            &[String],
+        ) -> Result<(Listening, bool), String>,
+    ) -> Result<Value, String> {
+        if self.recording() {
+            return Err(RECORDING.to_owned());
+        }
+        let (notes, inputs) = unbounded_channel();
+        let (tap, held) = listen(notes.clone(), Arc::clone(&self.acting), &apps)?;
+        let mut live = lock(&self.live);
+        if live.is_some() {
+            return Err(RECORDING.to_owned());
+        }
+        let id = format!("rec-{}", now_ms());
+        let path = self.path(&id);
+        let (done, made) = oneshot::channel();
+        self.queue
+            .send(Session {
+                id: id.clone(),
+                apps,
+                per_point: per_point(),
+                path: path.clone(),
+                inputs,
+                done,
+            })
+            .map_err(|_| GONE.to_owned())?;
+        *live = Some(Live {
+            path,
+            notes,
+            made,
+            _tap: tap,
+        });
+        Ok(started(id, held))
     }
 }
 
@@ -1106,6 +1121,20 @@ mod tests {
         assert!(covers(&["terminal".to_owned()], "Terminal"));
         assert!(!covers(&["Safari".to_owned()], "Terminal"));
         assert!(hidden("Terminal").starts_with("Terminal's Secure Keyboard Entry is on"));
+    }
+
+    #[test]
+    fn a_start_listens_with_no_lock_the_main_thread_takes() {
+        let r = Recorder::new(std::env::temp_dir(), Arc::default());
+        let out = r.start_with(Vec::new(), |_, _, _| {
+            assert!(
+                r.live.try_lock().is_ok(),
+                "the live lock is held while the tap starts"
+            );
+            Err("no tap".to_owned())
+        });
+        assert_eq!(out, Err("no tap".to_owned()));
+        assert!(!r.recording());
     }
 
     #[test]
