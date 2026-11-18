@@ -327,10 +327,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let Some(app) = args.as_object_mut().and_then(|a| a.remove("app")) else {
             return Ok(());
         };
-        let app = match app {
-            Value::String(s) => s,
-            _ => String::new(),
-        };
+        let app = app.as_str().unwrap_or_default().to_owned();
         if args["pid"].is_u64() {
             return Ok(());
         }
@@ -341,16 +338,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .iter()
             .find(|f| names(&f.app))
             .or_else(|| listed.iter().find(|f| names(&f.bundle)))
-            .and_then(|f| f.pid);
-        match pid {
-            Some(pid) => {
-                args["pid"] = pid.into();
-                Ok(())
-            }
-            None => Err(format!(
-                "app {app:?} has no window to take the input, so nothing was sent"
-            )),
-        }
+            .and_then(|f| f.pid)
+            .ok_or_else(|| {
+                format!("app {app:?} has no window to take the input, so nothing was sent")
+            })?;
+        args["pid"] = pid.into();
+        Ok(())
     }
 
     fn check_mode(&self, args: &Value) -> Result<(), String> {
@@ -389,16 +382,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         {
             return Err(e);
         }
-        let mut out = FOREGROUND
+        let out = FOREGROUND
             .scope(true, self.dispatch(tool, args, turn))
             .await?;
-        if let Ok(mut v) = serde_json::from_str::<Value>(&out.text)
-            && v.is_object()
-        {
-            v["input"] = "foreground".into();
-            out.text = v.to_string();
-        }
-        Ok(out)
+        Ok(with_effect(out, Some(json!({"input": "foreground"}))))
     }
 
     /// Brings the window of an auto action to the front before the foreground runs it; false when the action names none.
@@ -626,12 +613,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let now = self.access.run(CALL_LIMIT, (), |b| Ok(b.hint())).await?;
             let over = self.now() - started >= limit;
             let moved = now.is_some() && now != hint;
-            let due = self.now() - checked
-                >= if now.is_some() {
-                    last.max(WAIT_CHECK)
-                } else {
-                    last
-                };
+            let due = self.now() - checked >= last.max(now.map_or(Duration::ZERO, |_| WAIT_CHECK));
             if !over && !moved && !due {
                 continue;
             }
@@ -712,9 +694,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             bounds: a.bounds.unwrap_or(true),
             keys: a.keys,
             menus: a.menus,
-            frame: false,
             urls: a.urls && !a.text,
-            tail: false,
+            ..Extras::default()
         };
         let (window, pid, id) = (a.window, a.pid, a.id);
         let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
@@ -727,7 +708,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     Some(id) => {
                         let Some(f) = listed.into_iter().find(|f| f.id == id) else {
                             return Err(away(b, background, |f| f.id == id)
-                                .unwrap_or(format!("no window {id}")));
+                                .unwrap_or_else(|| format!("no window {id}")));
                         };
                         allow.check_frame(Some(&f))?;
                         f
@@ -769,11 +750,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let extras = Extras {
             values: true,
             bounds: true,
-            keys: false,
             menus: true,
-            frame: false,
             urls: a.urls,
-            tail: false,
+            ..Extras::default()
         };
         let (window, pid) = (a.window, a.pid);
         let (allow, background) = (self.allow.clone(), self.bg() && !self.auto);
@@ -804,10 +783,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             values: true,
             bounds: true,
             keys: true,
-            menus: false,
-            frame: false,
             urls: true,
             tail: a.tail,
+            ..Extras::default()
         };
         let (text, tail) = (a.text, a.tail);
         let chars = if text { READ_CHARS + 1 } else { NAME_CHARS };
@@ -894,9 +872,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             Press::Selected => Ok(json!({"ok": true, "how": "select"}).to_string()),
             Press::Acted(ok) => Ok(json!({"ok": ok, "how": "action"}).to_string()),
             Press::Click(x, y) => {
-                let note = self
-                    .click_element(id, json!({"x": x, "y": y}), turn)
-                    .await?;
+                let note = self.click_element(id, (x, y), turn).await?;
                 let mut out = json!({"ok": true, "how": "click", "x": x, "y": y});
                 if let Some(note) = note {
                     out["unverified"] = note.into();
@@ -921,7 +897,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     .access
                     .run(CALL_LIMIT, turn.clone(), move |b| {
                         if !bg {
-                            return hit_centre(b, &id, os)?.ok_or(ACT_CLICK_MISSED.to_owned());
+                            return Ok(hit_centre(b, &id, os)?.ok_or(ACT_CLICK_MISSED)?);
                         }
                         let [x, y, w, h] = b
                             .node(&id, Extras::BOUNDS, 0)?
@@ -930,9 +906,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         Ok((x + w / 2, y + h / 2))
                     })
                     .await?;
-                let note = self
-                    .click_element(a.id, json!({"x": x, "y": y}), turn)
-                    .await?;
+                let note = self.click_element(a.id, (x, y), turn).await?;
                 return Ok(ok_with(note));
             }
             other => {
@@ -971,9 +945,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 if uia
                     && !frames.iter().any(|f| {
                         f.pid == a.pid
-                            && window.is_some_and(|w| {
-                                (0..TITLE_TIERS).any(|t| title_matches(t, &f.title, w))
-                            })
+                            && window.is_some_and(|w| title_matches(TITLE_TIERS - 1, &f.title, w))
                     })
                     && let Some(p) = b.owner_at(a.x, a.y).ok().flatten()
                 {
@@ -1407,9 +1379,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn click(&self, a: ClickArgs, turn: Option<Turn>) -> Result<String, String> {
         let named = match a.window.as_deref() {
             Some(window) => Some(self.shot_window(window, a.pid).await?.1),
-            None if self.bg() && a.pid.is_some() => {
-                Some(self.pick_window(None, a.pid, true).await?.1)
-            }
+            None if self.bg() && a.pid.is_some() => Some(self.pick_window(None, a.pid).await?.1),
             None => None,
         };
         let (x, y) = match &named {
@@ -1485,16 +1455,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn click_element(
         &self,
         id: String,
-        req: Value,
+        (x, y): (i32, i32),
         turn: Option<Turn>,
     ) -> Result<Option<String>, String> {
+        let req = json!({"x": x, "y": y});
         if !self.bg() {
             return self.click_at(req, turn).await;
         }
-        let point = req["x"]
-            .as_f64()
-            .zip(req["y"].as_f64())
-            .ok_or(BACKGROUND_ELEMENT)?;
+        let point = (f64::from(x), f64::from(y));
         let (pid, title, frame) = self
             .access
             .run(CALL_LIMIT, (), move |b| {
@@ -1668,8 +1636,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 None => (x, y),
             },
             _ => {
-                if self.os == Os::Mac && (a.window.is_some() || a.pid.is_some()) {
-                    let (_, w, _) = self.pick_window(a.window.as_deref(), a.pid, true).await?;
+                let named = a.window.is_some() || a.pid.is_some();
+                let (mut target, listed) = if named && self.os == Os::Mac {
+                    let (_, w, _) = self.pick_window(a.window.as_deref(), a.pid).await?;
                     if w["is_on_screen"] == false || off_space(&w) {
                         return Err(format!(
                             "{:?} is not on screen (minimized or on another Space), so nothing was scrolled",
@@ -1678,15 +1647,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     }
                     let (pid, id, _) = window_key(&w)?;
                     self.raise(Some((pid, id))).await?;
-                    req["pid"] = pid.into();
-                    req["window_id"] = id.into();
-                    req["session"] = WINDOW_SESSION.into();
-                    self.call("scroll", req).await?;
-                    return Ok(OK.to_owned());
-                }
-                let named = a.window.is_some() || a.pid.is_some();
-                let (mut target, listed) = if named {
-                    let (_, w, _) = self.pick_window(a.window.as_deref(), a.pid, true).await?;
+                    (w, Vec::new())
+                } else if named {
+                    let (_, w, _) = self.pick_window(a.window.as_deref(), a.pid).await?;
                     let mut behind = false;
                     if a.pid.is_some() || self.os != Os::Linux {
                         let (pid, id, _) = window_key(&w)?;
@@ -1864,7 +1827,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             cover = self.cover(&req, w.pid).await?;
         }
         let cached = lock(&self.read)
-            .filter(|r| (r.pid, r.id, r.bounds) == (w.pid, w.id, w.bounds))
+            .filter(|r| r.key == (w.pid, w.id, w.bounds))
             .map(|r| r.k);
         let k = match cached {
             Some(k) => Some(k),
@@ -1929,7 +1892,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         match cover {
             Some(COVER_UNKNOWN) => Err(COVER_UNCHECKED_NO_CLICK.to_owned()),
             Some(_) => Err(COVERED_NO_CLICK.to_owned()),
-            None => self.desktop_click(req).await.map(|()| None),
+            None if self.bg() => Err(BACKGROUND_DESKTOP.to_owned()),
+            None => self.call("click", desktop(req)).await.map(|_| None),
         }
     }
 
@@ -1962,14 +1926,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .as_str()
             .map_or_else(|| format!("process {top}"), str::to_owned);
         Ok(Some(format!("{app} {COVERED}")))
-    }
-
-    async fn desktop_click(&self, req: Value) -> Result<(), String> {
-        if self.bg() {
-            return Err(BACKGROUND_DESKTOP.to_owned());
-        }
-        self.call("click", desktop(req)).await?;
-        Ok(())
     }
 
     async fn target(
@@ -2008,7 +1964,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if self.bg() || !named {
             return Ok(None);
         }
-        let (_, w, _) = self.pick_window(window, pid, true).await?;
+        let (_, w, _) = self.pick_window(window, pid).await?;
         let (pid, id, _) = window_key(&w)?;
         Ok(Some((pid, id)))
     }
@@ -2112,7 +2068,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let Some(w) = window else {
             return Ok(Value::Null);
         };
-        if self.os == Os::Mac && self.fronted(w).await {
+        if self.os == Os::Mac && self.front_frame(w).await.is_some() {
             return Ok(Value::Null);
         }
         self.bring(w).await
@@ -2125,7 +2081,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return Ok(Some(front));
         }
         self.bring(w).await?;
-        Ok(self.first_front(w).await)
+        if let Some(front) = self.front_frame(w).await {
+            return Ok(Some(front));
+        }
+        Ok(self.front_frame(w).await)
     }
 
     async fn bring(&self, (pid, window_id): (i64, i64)) -> Result<Value, String> {
@@ -2156,13 +2115,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             Some(title) => format!("{e}; the front window is {title:?}"),
             None => e,
         })
-    }
-
-    async fn first_front(&self, w: (i64, i64)) -> Option<String> {
-        match self.front_frame(w).await {
-            None => self.front_frame(w).await,
-            found => found,
-        }
     }
 
     async fn answered_move(
@@ -2202,10 +2154,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         })
     }
 
-    async fn fronted(&self, w: (i64, i64)) -> bool {
-        self.front_frame(w).await.is_some()
-    }
-
     /// The active frame that puts window `(pid, window_id)` in front: on macOS the window by its number or a focused sheet of it, elsewhere an active window of its process.
     async fn front_frame(&self, w: (i64, i64)) -> Option<String> {
         self.front_read(w).await.and_then(|(_, front)| front)
@@ -2241,7 +2189,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if window.is_none() && pid.is_none() {
             return Err(BACKGROUND_TARGET.to_owned());
         }
-        let (_, w, _) = self.pick_window(window, pid, true).await?;
+        let (_, w, _) = self.pick_window(window, pid).await?;
         let to = w["pid"]
             .as_i64()
             .zip(w["window_id"].as_i64())
@@ -2255,7 +2203,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         window: &str,
         pid: Option<u32>,
     ) -> Result<((i64, i64), Value), String> {
-        let (_, w, rivals) = self.pick_window(Some(window), pid, true).await?;
+        let (_, w, rivals) = self.pick_window(Some(window), pid).await?;
         if rivals > 1 {
             return Err(format!(
                 "{rivals} windows match the title {window:?}, so the pixels of a shot by that title may be another window's: pass a longer title that only one window matches, give the window a title of its own, or pass desk coordinates without window"
@@ -2270,7 +2218,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let scale = self.scale().await?;
         let under = Under::of(w, (x / scale, y / scale)).ok_or(BACKGROUND_TARGET)?;
         let cached = lock(&self.read)
-            .filter(|r| (r.pid, r.id, r.bounds) == (under.pid, under.id, under.bounds))
+            .filter(|r| r.key == (under.pid, under.id, under.bounds))
             .map(|r| r.k);
         let (kx, ky) = match cached {
             Some(k) => k,
@@ -2347,7 +2295,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     /// Keeps the image scale of read `v` of window `(pid, id, bounds)`, which the driver maps the next window click by.
     fn remember(
         &self,
-        (pid, id, bounds): (i64, i64, [f64; 4]),
+        key: (i64, i64, [f64; 4]),
         v: &Value,
         full: bool,
     ) -> Result<Option<(f64, f64)>, String> {
@@ -2355,14 +2303,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if refuses_pointer(v) {
             return Ok(None);
         }
-        let k = image_scale(v, id)?;
-        *lock(&self.read) = Some(Read {
-            pid,
-            id,
-            bounds,
-            k,
-            full,
-        });
+        let k = image_scale(v, key.1)?;
+        *lock(&self.read) = Some(Read { key, k, full });
         Ok(Some(k))
     }
 
@@ -2370,7 +2312,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn desk_point(&self, w: &Value, (x, y): (f64, f64)) -> Result<(f64, f64), String> {
         let key = window_key(w)?;
         let cached = lock(&self.read)
-            .filter(|r| r.full && (r.pid, r.id, r.bounds) == key)
+            .filter(|r| r.full && r.key == key)
             .map(|r| r.k);
         let (kx, ky) = match cached {
             Some(k) => k,
@@ -2400,7 +2342,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn focus(&self, a: WindowArgs) -> Result<String, String> {
-        let (w, _, _) = self.pick_window(Some(&a.window), a.pid, true).await?;
+        let (w, _, _) = self.pick_window(Some(&a.window), a.pid).await?;
         let window_id: i64 =
             w.id.parse()
                 .map_err(|_| format!("window id {:?} is not a number", w.id))?;
@@ -2425,10 +2367,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         &self,
         window: Option<&str>,
         pid: Option<u32>,
-        by_title: bool,
     ) -> Result<(Frame, Value, usize), String> {
         let listed = self.call("list_windows", json!({})).await?;
-        self.pick_listed(listed, window, pid, by_title).await
+        self.pick_listed(listed, window, pid, true).await
     }
 
     /// The driver window titled like `window` or of `pid`, as a frame and as the driver lists it, with how many listed windows its title picks among.
@@ -2545,7 +2486,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return self.window_shot(window, a.pid, rect).await;
         }
         let (w, h, png) = self.screen_png(rect, None).await?;
-        Ok(delivered(png, sized(w, h)))
+        Ok(delivered(&png, sized(w, h)))
     }
 
     async fn screen_png(
@@ -2605,7 +2546,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         })?;
         let mut out = sized(w, h);
         out["origin"] = json!([x as u32, y as u32]);
-        Ok(delivered(png, out))
+        Ok(delivered(&png, out))
     }
 
     async fn grab(&self, rect: [f64; 4]) -> Result<Grab, String> {
@@ -2650,7 +2591,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         pid: Option<u32>,
         rect: [f64; 4],
     ) -> Result<Output, String> {
-        let (_, w, _) = self.pick_window(Some(window), pid, true).await?;
+        let (_, w, _) = self.pick_window(Some(window), pid).await?;
         let key = window_key(&w)?;
         let stale = lock(&self.unseen)
             .get(&(key.0, key.1))
@@ -2689,7 +2630,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             out["stale"] = true.into();
             out["note"] = note.into();
         }
-        Ok(delivered(png, out))
+        Ok(delivered(&png, out))
     }
 
     async fn mask(
@@ -2709,7 +2650,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn mask_rects(&self) -> Result<Vec<([f64; 4], bool)>, String> {
         let mut windows = self.on_screen().await?;
-        let frames = self.access.run(CALL_LIMIT, (), |b| b.frames()).await?;
+        let frames = self.access.run(CALL_LIMIT, (), B::frames).await?;
         windows.sort_by_key(|w| w["z_index"].as_i64().unwrap_or(i64::MIN));
         Ok(windows
             .into_iter()
@@ -2762,9 +2703,7 @@ struct Held {
 
 #[derive(Clone, Copy)]
 struct Read {
-    pid: i64,
-    id: i64,
-    bounds: [f64; 4],
+    key: (i64, i64, [f64; 4]),
     k: (f64, f64),
     full: bool,
 }
@@ -2987,8 +2926,7 @@ fn pick<B: Access>(
     allow.pick(frames, window, pid).map_err(|e| {
         let want = window.unwrap_or_default();
         let named = |f: &Frame| {
-            pid.is_none_or(|p| f.pid == Some(p))
-                && (0..TITLE_TIERS).any(|t| title_matches(t, &f.title, want))
+            pid.is_none_or(|p| f.pid == Some(p)) && title_matches(TITLE_TIERS - 1, &f.title, want)
         };
         window.and_then(|_| away(b, background, named)).unwrap_or(e)
     })
@@ -3015,10 +2953,10 @@ fn live(frame: Frame) -> Result<Frame, String> {
     Ok(frame)
 }
 
-fn delivered(png: Vec<u8>, out: Value) -> Output {
+fn delivered(png: &[u8], out: Value) -> Output {
     Output {
         text: out.to_string(),
-        image_b64: Some(B64.encode(&png)),
+        image_b64: Some(B64.encode(png)),
         ..Output::default()
     }
 }
@@ -3049,16 +2987,11 @@ fn is_windows_terminal(w: &Value) -> bool {
     })
 }
 
-fn key_request(mut keys: Vec<String>) -> (&'static str, Value) {
-    let mut req = json!({});
-    if keys.len() == 1
-        && let Some(key) = keys.pop()
-    {
-        req["key"] = key.into();
-        return ("press_key", req);
+fn key_request(keys: Vec<String>) -> (&'static str, Value) {
+    match <[String; 1]>::try_from(keys) {
+        Ok([key]) => ("press_key", Value::from_iter([("key", Value::from(key))])),
+        Err(keys) => ("hotkey", Value::from_iter([("keys", Value::from(keys))])),
     }
-    req["keys"] = keys.into();
-    ("hotkey", req)
 }
 
 fn sheet_window<'a>(frames: &'a [Frame], f: &'a Frame) -> Option<&'a Frame> {
@@ -3077,10 +3010,8 @@ fn lists_top_level(frames: &[Frame], w: &Value) -> bool {
     frames.iter().any(|f| {
         f.pid == pid
             && f.owner.is_none()
-            && match f.number {
-                Some(n) => Some(n) == number,
-                None => f.title.trim() == title,
-            }
+            && f.number
+                .map_or_else(|| f.title.trim() == title, |n| Some(n) == number)
     })
 }
 
