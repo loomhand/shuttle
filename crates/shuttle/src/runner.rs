@@ -84,12 +84,7 @@ impl Runner {
 
     /// `script_run` for `agent`: one module, `code` or the absolute file `script`; its `main(params)` value comes back as `result`.
     pub async fn script(&self, args: Value, agent: &str) -> Result<Value, String> {
-        self.script_on(&self.node, args, agent).await
-    }
-
-    /// A plugin tool's run for `agent`: `script_run`'s contract with the plugin's program `bin` in place of Node.
-    pub async fn plugin(&self, bin: &Path, args: Value, agent: &str) -> Result<Value, String> {
-        self.script_on(bin, args, agent).await
+        self.plugin(&self.node, args, agent).await
     }
 
     /// `gui_plan` for `agent`: the plan executor of the runtime with `args`; its result comes back as is.
@@ -102,7 +97,8 @@ impl Runner {
         self.module_result("draft", args, agent).await
     }
 
-    async fn script_on(&self, program: &Path, args: Value, agent: &str) -> Result<Value, String> {
+    /// A plugin tool's run for `agent`: `script_run`'s contract with the plugin's program `bin` in place of Node.
+    pub async fn plugin(&self, bin: &Path, args: Value, agent: &str) -> Result<Value, String> {
         let a: ScriptArgs = parse(args)?;
         let scratch = scratch()?;
         let script = match (a.code, a.script) {
@@ -120,15 +116,8 @@ impl Runner {
             _ => return Err("pass code or script".to_owned()),
         };
         let params = a.params.unwrap_or_else(|| json!({}));
-        self.run(
-            program,
-            &script,
-            &params,
-            a.timeout_s,
-            scratch.path(),
-            agent,
-        )
-        .await
+        self.run(bin, &script, &params, a.timeout_s, scratch.path(), agent)
+            .await
     }
 
     async fn module_result(&self, name: &str, args: Value, agent: &str) -> Result<Value, String> {
