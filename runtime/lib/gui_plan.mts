@@ -1600,7 +1600,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.check) { await setState(s, hit, rec); return }
   const raw = s.value
   if (raw === undefined) throw new Surprise(`set "${target}" needs a value`, await seen())
-  if (tree.snap.nodes[hit.i]?.states.includes('protected')) { rec.secret = true; sealStep() }
+  const guarded = !!tree.snap.nodes[hit.i]?.states.includes('protected')
+  if (guarded || secure(s)) { rec.secret = true; sealStep() }
   const value = raw.endsWith('\n') ? raw.slice(0, -1) : raw
   const same = (v: string | undefined) => v !== undefined && holds(hit.n.role, v, value)
   const f = hit.n.role === 'combobox' ? nodes.find((x) => x.parent === hit.i && x.role === 'textbox') ?? hit.n : hit.n
@@ -1617,7 +1618,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   for (let i = 0; i < 10; i++) { try { got = (await desk.read(f.id)).value ?? '' } catch (e: unknown) { await unblocked(e, w); got = undefined }; if (back(got)) break; await sleep(40) }
   tick('verify', t0); if (!rec.secret) rec.value = got
   if (back(got)) rec.confirmed = true
-  else if (rec.secret && !got) rec.caveat = UNREAD_SECRET
+  else if (guarded && !got) rec.caveat = UNREAD_SECRET
   else throw new Surprise(rec.secret ? `"${target}" does not read back the value after set` : `"${target}" reads "${got}" after set`, await seen())
   if (raw.endsWith('\n')) { rec.submit = true; await submit(w, isChooser(render(nodes, 100, false))) }
 }
