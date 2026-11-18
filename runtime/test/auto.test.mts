@@ -830,8 +830,8 @@ test('a background type of several lines counts what went in when its first line
   const fails = (text: string) => (c: Call) => c.tool === 'desk_type' && c.args.text === text ? { text: 'type_text: nothing was sent', error: true } : undefined
   for (const [mode, plan] of modes) {
     for (const [type, text, want] of [
-      ['\n\nfoo', 'foo', '2 of 3 lines and the Return after line 2 were typed, then this stopped the rest: type_text: nothing was sent'],
-      ['\nfoo\nbar', '\nbar', '2 of 3 lines were typed, then this stopped the rest: type_text: nothing was sent'],
+      ['\n\nfoo', 'foo', '2 of 3 lines and the Return after line 2 were typed, then this stopped the rest: type_text: the rest were not sent'],
+      ['\nfoo\nbar', '\nbar', '2 of 3 lines were typed, then this stopped the rest: type_text: the rest were not sent'],
       ['foo\nbar', 'foo', 'type_text: nothing was sent'],
     ] as const) {
       const d = desktop((b, s) => b + s, false)
@@ -845,9 +845,17 @@ test('a background type of several lines counts what went in when its first line
 test('a terminal type that a later Return or line stops says how many lines of the step went in', async (t) => {
   for (const [mode, plan] of modes) {
     const line = await terminal(t, plan, (screen, text) => { if (text === 'pwd') throw new Error('type_text: nothing was sent'); return screen + text }, { type: 'ls\npwd\n', sure: () => true })
-    assert.match(String(line.r.escalate?.reason), /^1 of 3 lines and the Return after line 1 were typed, then this stopped the rest: .*type_text: nothing was sent/, mode)
+    assert.match(String(line.r.escalate?.reason), /^1 of 3 lines and the Return after line 1 were typed, then this stopped the rest: .*type_text: the rest were not sent/, mode)
     const key = await terminal(t, plan, (screen, text) => screen + text, { type: 'ls\npwd\n', sure: () => true, answer: () => { throw new Error('press_key: nothing was sent') } })
-    assert.match(String(key.r.escalate?.reason), /^1 of 3 lines were typed, then this stopped the rest: .*press_key: nothing was sent/, mode)
+    assert.match(String(key.r.escalate?.reason), /^1 of 3 lines were typed, then this stopped the rest: .*press_key: the rest were not sent/, mode)
+  }
+})
+
+test('a terminal line whose window lost its title after a Return says the rest were not sent, not that nothing was', async (t) => {
+  const refused = 'no window titled "r89term", so nothing was sent; "r89term: ~/x" of the same app is in front: name it to send there'
+  for (const [mode, plan] of modes) {
+    const { r } = await terminal(t, plan, (screen, text) => { if (text === 'pwd') throw new Error(refused); return screen + text }, { type: 'ls\npwd\n', sure: () => true })
+    assert.equal(r.escalate?.reason, '1 of 3 lines and the Return after line 1 were typed, then this stopped the rest: Error: no window titled "r89term", so the rest were not sent; "r89term: ~/x" of the same app is in front: name it to send there', mode)
   }
 })
 

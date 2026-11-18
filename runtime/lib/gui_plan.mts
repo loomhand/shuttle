@@ -1199,7 +1199,7 @@ function cutShort(e: unknown, n: number, done: number, ret: boolean, from: numbe
   const m = e instanceof Error ? e.message : String(e)
   const d = /^(\d+) of \d+ lines( and the Return after line \d+)? were typed, then (?:this stopped the rest: ([^]*)|([^]+, so the rest were not sent))$/.exec(m)
   const [i, r, then] = d ? [from + Number(d[1]), !!d[2], d[4] ?? `this stopped the rest: ${d[3]}`] : [done, ret, `this stopped the rest: ${m}`]
-  return i ? new Error(`${i} of ${n} lines${r ? ` and the Return after line ${i}` : ''} were typed, then ${then}`) : e
+  return i ? new Error(`${i} of ${n} lines${r ? ` and the Return after line ${i}` : ''} were typed, then ${then.replace(/nothing was sent|the input was refused/g, 'the rest were not sent')}`) : e
 }
 async function settled(w: Win) {
   let away = false
