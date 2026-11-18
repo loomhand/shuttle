@@ -298,6 +298,7 @@ impl Uia {
                     pid: Some(s.pid),
                     active: s.hwnd == foreground,
                     app,
+                    number: u32::try_from(key).ok(),
                     ..Frame::default()
                 };
                 lock(&LAST).insert(key, frame.clone());

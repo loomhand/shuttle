@@ -8436,6 +8436,32 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn focus_by_id_raises_that_one_of_two_same_titled_windows_of_one_process_on_windows() {
+        let opens: [fn() -> Result<TwinDocs, String>; 2] = [
+            || Ok(TwinDocs::new(true, true, false)),
+            || Ok(TwinDocs::new(true, true, true)),
+        ];
+        for open in opens {
+            for (id, number) in [("w3", 3), ("w1", 1)] {
+                let calls = Arc::new(Mutex::new(Vec::new()));
+                let driver = Twins(Arc::clone(&calls), 900.0, "Untitled - Notepad", 0.0);
+                let desk = Desk::new(open, driver, Os::Windows);
+                desk.run(
+                    "desk_focus",
+                    json!({"window": "Untitled - Notepad", "pid": 4, "id": id}),
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    sent(&calls, "bring_to_front"),
+                    [json!({"pid": 4, "window_id": number})],
+                    "{id}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn input_by_a_title_only_its_app_part_names_is_refused_with_nothing_sent() {
         let open = || {
             Ok(Stub {
@@ -11771,6 +11797,76 @@ pub(crate) mod tests {
                 }
                 _ => json!({}),
             })
+        }
+    }
+
+    struct TwinDocs {
+        numbered: bool,
+        apart: bool,
+        flipped: bool,
+    }
+
+    impl TwinDocs {
+        fn new(numbered: bool, apart: bool, flipped: bool) -> Self {
+            Self {
+                numbered,
+                apart,
+                flipped,
+            }
+        }
+    }
+
+    impl Access for TwinDocs {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            let doc = |id: &str, n: u32, active| Frame {
+                number: self.numbered.then_some(n),
+                ..frame(id, "Untitled - Notepad", 4, active, Some("Notepad"))
+            };
+            let mut frames = vec![doc("w1", 1, true), doc("w3", 3, false)];
+            if self.flipped {
+                frames.reverse();
+            }
+            Ok(frames)
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            Ok(Tree {
+                frame: frame.clone(),
+                ..Tree::default()
+            })
+        }
+
+        fn node(&mut self, id: &str, _: Extras, _: usize) -> Result<Node, String> {
+            let x = if id == "w3" && self.apart { 900 } else { 0 };
+            Ok(Node {
+                id: id.into(),
+                role: "window",
+                bounds: Some([x, 0, 800, 600]),
+                ..Node::default()
+            })
+        }
+
+        fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
+            Ok(match id.strip_prefix('b') {
+                Some(n) => vec![format!("w{n}")],
+                None => Vec::new(),
+            })
+        }
+
+        fn pid_of(&mut self, _: &str) -> Result<Option<u32>, String> {
+            Ok(Some(4))
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Ok(())
         }
     }
 
