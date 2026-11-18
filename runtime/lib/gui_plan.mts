@@ -122,6 +122,7 @@ const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
 const ACTION_ONLY = 'an accessibility action ran, and on Linux its success does not show its effect; no later step read it back'
 const NOOP = 'the input was sent, and the driver saw nothing change where it expected a change; no later step read its effect'
 const UNCHECKED = 'the text was sent, and the device did not check that it showed, as for a web view, a field that changes what is typed, or a first line pasted where no field reports the input focus; no later step read it back'
+const UNREAD_SECRET = 'the password was entered, and its field reads back nothing, so it was not checked: do not set it again; no later step read what it unlocks'
 const MAY_HAVE_RUN = ['input_delivery_stalled:', 'closed the connection without an answer', 'timed out']
 const TOGGLE_UNREAD = 'the menu toggle was pressed, and its state after the press could not be read; no later step read it back'
 const SHORTCUT_VERBS: Record<string, string> = { 'ctrl+n': 'new', 'ctrl+s': 'save', 'ctrl+shift+s': 'save as', 'ctrl+o': 'open' }
@@ -1608,10 +1609,11 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (f.role === 'textbox' && !lines) await selectLine(w); else await desk.key(SELECT_ALL, at(w)); if (value) await desk.typeText(value, at(w)); else await desk.key('delete', at(w)); if (hit.n.role === 'spinbutton' || hit.n.role === 'slider') { await desk.key('tab', at(w)); await desk.key('shift+tab', at(w)) }
   tick('act', t0)
   t0 = Date.now(); let got: string | undefined
-  for (let i = 0; i < 10; i++) { try { got = (await desk.read(f.id)).value ?? '' } catch (e: unknown) { await unblocked(e, w); got = undefined }; if (same(got)) break; await sleep(40) }
+  const back = (v: string | undefined) => rec.secret ? !v || same(v) || (/^[•●*]+$/u.test(v) && [...v].length === [...value].length) : same(v)
+  for (let i = 0; i < 10; i++) { try { got = (await desk.read(f.id)).value ?? '' } catch (e: unknown) { await unblocked(e, w); got = undefined }; if (back(got)) break; await sleep(40) }
   tick('verify', t0); if (!rec.secret) rec.value = got
-  if (!same(got)) throw new Surprise(rec.secret ? `"${target}" does not read back the value after set` : `"${target}" reads "${got}" after set`, await seen())
-  rec.confirmed = true
+  if (!back(got)) throw new Surprise(rec.secret ? `"${target}" does not read back the value after set` : `"${target}" reads "${got}" after set`, await seen())
+  if (rec.secret && !got && value) rec.caveat = UNREAD_SECRET; else rec.confirmed = true
   if (raw.endsWith('\n')) { rec.submit = true; await submit(w, isChooser(render(nodes, 100, false))) }
 }
 
