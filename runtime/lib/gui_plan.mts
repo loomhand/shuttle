@@ -445,13 +445,11 @@ function targetIn(ws: Win[]): Win | null {
   const leaves = owned.filter((x) => !owned.some((y) => y.owner === x.id))
   return leaves.find((x) => x.active) ?? leaves.at(-1) ?? live
 }
-function ours(x: Win, ws: Win[]) {
-  for (let y: Win | undefined = x, k = 0; y && k < ws.length; y = ws.find((z) => z.id === y?.owner), k++) if ((y.id === target?.id && y.pid === target.pid) || adopted.has(y.id)) return true
-  return false
-}
+function* chain(w: Win, ws: Win[]) { for (let x: Win | undefined = w, k = 0; x && k <= ws.length; x = ws.find((y) => y.id === x?.owner), k++) yield x }
+function host(w: Win, ws: Win[]) { let x = w; for (let o = OS === 'darwin' ? x.owner : undefined; o; o = x.owner) { const up = ws.find((y) => y.id === o); if (!up) break; x = up } return x }
+function ours(x: Win, ws: Win[]) { return [...chain(x, ws)].some((y) => (y.id === target?.id && y.pid === target.pid) || adopted.has(y.id)) }
 function ownerOf(w: Win, ws: Win[]) {
-  let x = w
-  for (let k = 0; k < ws.length; k++) { const o = ws.find((y) => y.id === x.owner); if (!o) break; x = o }
+  const x = [...chain(w, ws)].at(-1) ?? w
   return x.id !== w.id ? x : ws.find((y) => y.id === target?.id && y.pid === target.pid && y.id !== w.id)
 }
 async function front(w: Win | null) {
@@ -466,18 +464,14 @@ function at(w: Win | null): desk.Target {
   if (!BG) return FG
   if (!w) return {}
   if (doubt) throw new Surprise(doubt)
-  let x = w
-  for (let o = OS === 'darwin' ? x.owner : undefined; o; o = x.owner) { const up = listed.find((y) => y.id === o); if (!up) break; x = up }
-  const to = x
+  const to = host(w, listed)
   unique(to)
   for (const y of listed) targetSince.add(y.id)
   return { window: to.title, pid: to.pid }
 }
 function lined(w: Win | null, ws: Win[], text: string): desk.Target {
   if (BG || ANDROID || OS === 'linux' || !w?.active || !/\n[^]/.test(text)) return at(w)
-  let x = w
-  for (let o = OS === 'darwin' ? x.owner : undefined; o; o = x.owner) { const up = ws.find((y) => y.id === o); if (!up) break; x = up }
-  const to = x
+  const to = host(w, ws)
   const under = (y: Win) => { let z: Win | undefined = y; for (let k = 0; z && k <= ws.length; k++, z = ws.find((v) => v.id === z?.owner)) if (z.id === to.id) return true; return false }
   return !to.title.trim() || ws.some((y) => !under(y) && y.pid === to.pid && y.title === to.title) ? FG : { ...FG, window: to.title, pid: to.pid }
 }
