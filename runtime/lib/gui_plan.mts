@@ -204,7 +204,7 @@ async function perform(p: Params): Promise<Result> {
   const startAlert = !!startRead && isAlert(startRead.text)
   const startKept = start && startRead?.snap && startRead.nodes ? { id: start.id, snap: startRead.snap, nodes: startRead.nodes } : undefined
   const recs: Rec[] = []; const tops: (string | undefined)[] = []
-  let escalate: Escalation | null = null; let done = plan.length; let upto = plan.length; let diverged = false; let lastWs = ws0
+  let escalate: Escalation | null = null; let done = plan.length; let diverged = false; let lastWs = ws0
   if (held && !held.dirty) putPending({ ...held, dirty: true })
   const left = () => {
     const at = (p.start ?? 0) + trace.length
@@ -260,7 +260,7 @@ async function perform(p: Params): Promise<Result> {
       const theft = BG && !(e instanceof Stolen) ? taken(await desk.windows()) : null
       const reason = `${sp.reason}${note ? ` (the step before was sent but not confirmed: ${note})` : ''}${theft ? `; meanwhile ${theft}` : ''}`
       const { outline, ...shown } = sp.seen
-      escalate = { step, plan_step: unrecorded(plan[step] ?? planned), reason, ...shown, ...(secure(plan[step] ?? planned) ? {} : { outline }) }; done = i; upto = step
+      escalate = { step, plan_step: unrecorded(plan[step] ?? planned), reason, ...shown, ...(secure(plan[step] ?? planned) ? {} : { outline }) }; done = i
       diverged = e instanceof Diverged
     }
     stepWs = null
@@ -286,13 +286,14 @@ async function perform(p: Params): Promise<Result> {
     const left = f && !startTitles.has(f.title) && isDialog(o) && !(last.wait || last.app || (last.window && norm(f.title).includes(norm(last.window))))
     const theft = BG ? taken(ws) : null
     const open = recs.find((r) => r?.unverified && !r.confirmed)
-    if (theft) { escalate = { step: plan.length - 1, reason: theft, ...(await seen()) }; upto = plan.length - 1 }
-    else if (open) { const { outline, ...shown } = await seen(); escalate = { step: open.i, reason: `step ${open.i} (${open.op}) was sent but not confirmed, and no later step read its effect, so the plan cannot say it landed: ${open.unverified}`, ...shown, ...(secure(plan[open.i] ?? {}) ? {} : { outline }) }; upto = open.i }
-    else if (f && blocked(o) && recs.at(-1)?.how !== 'wm') { escalate = { step: plan.length, reason: unanswered(f.title), ...(await seen()) }; done = plan.length }
-    else if (f && (isAlert(o) || left)) { escalate = { step: plan.length, reason: `the plan ended with "${f.title || o.split('\n')[0]}" still in front`, ...(await seen()) }; done = plan.length }
+    if (theft) escalate = { step: plan.length - 1, reason: theft, ...(await seen()) }
+    else if (open) { const { outline, ...shown } = await seen(); escalate = { step: open.i, reason: `step ${open.i} (${open.op}) was sent but not confirmed, and no later step read its effect, so the plan cannot say it landed: ${open.unverified}`, ...shown, ...(secure(plan[open.i] ?? {}) ? {} : { outline }) } }
+    else if (f && blocked(o) && recs.at(-1)?.how !== 'wm') escalate = { step: plan.length, reason: unanswered(f.title), ...(await seen()) }
+    else if (f && (isAlert(o) || left)) escalate = { step: plan.length, reason: `the plan ended with "${f.title || o.split('\n')[0]}" still in front`, ...(await seen()) }
     opened = !!f && !startTitles.has(f.title) && isDialog(o)
   }
   let saved: string | undefined
+  const upto = escalate?.step ?? plan.length
   const jevs = recs.filter((r) => r?.pick).length
   const settled = !escalate && !opened
   if (flow) {
