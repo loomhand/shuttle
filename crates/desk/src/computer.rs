@@ -440,7 +440,7 @@ impl Computer {
                 }
                 match self.call(target, tool, req).await {
                     Ok(v) if v["isError"] == true => {
-                        let text = named(tool, &v);
+                        let text = named(tool, &text_of(&v));
                         if self.os != Os::Windows && is_hit_refusal(&v) {
                             match self.request(target, "click", pressed).await {
                                 Err(e) if e.contains(AX_UNSUPPORTED) => Err(text),
@@ -796,7 +796,7 @@ impl Computer {
             match self.call(target, "type_text", req).await {
                 Ok(v) if v["isError"] == true || text_of(&v).contains(SKIPPED) => {
                     typed += landed(run, &v);
-                    failure = Some(named("type_text", &v));
+                    failure = Some(named("type_text", &text_of(&v)));
                 }
                 Ok(_) => typed += run.chars().count(),
                 Err(e) => failure = Some(e),
@@ -1881,7 +1881,7 @@ impl Computer {
             None => self.call(session, name, args).await,
         }?;
         if result["isError"] == true {
-            return Err(named(name, &result));
+            return Err(named(name, &text_of(&result)));
         }
         Ok(result)
     }
@@ -1896,9 +1896,9 @@ impl Computer {
             v = self.reply(name, &args).await?;
         }
         if v["ok"] != true {
-            return Err(format!(
-                "{name}: {}",
-                v["error"].as_str().unwrap_or("cua-driver call failed")
+            return Err(named(
+                name,
+                v["error"].as_str().unwrap_or("cua-driver call failed"),
             ));
         }
         Ok(v["result"].take())
@@ -1916,7 +1916,7 @@ impl Computer {
             reply = self.driver.line(name, args, REQUEST_TIMEOUT).await?;
         }
         if reply.is_empty() {
-            return Err(format!("{name}: {}", crate::driver::CLOSED));
+            return Err(named(name, crate::driver::CLOSED));
         }
         serde_json::from_str::<Value>(&reply).map_err(|e| format!("decode cua-driver reply: {e}"))
     }
@@ -2354,9 +2354,8 @@ fn rect_of(v: &Value) -> Option<[f64; 4]> {
     Some([x, y, w, h])
 }
 
-fn named(tool: &str, result: &Value) -> String {
-    format!("{tool}: {}", without_name(tool, &text_of(result)))
-        .replace("get_window_state", "computer_state")
+fn named(tool: &str, text: &str) -> String {
+    format!("{tool}: {}", without_name(tool, text)).replace("get_window_state", "computer_state")
 }
 
 /// Whether the driver refused a `verify_hit` click before sending it.
@@ -2888,6 +2887,41 @@ mod tests {
         assert_eq!(
             out.unwrap_err(),
             format!("click: {}", crate::driver::CLOSED)
+        );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_state_read_refused_by_the_driver_or_cut_off_names_computer_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let driver = tokio::spawn(Fake::bind(&socket).unwrap().serve(|_| {
+            json!({"ok": false, "error": "Permission denied: authorization context expired", "exit_code": 1})
+        }));
+        let out = cua(&socket)
+            .request("s", "get_window_state", json!({}))
+            .await;
+        assert_eq!(
+            out.unwrap_err(),
+            "computer_state: Permission denied: authorization context expired"
+        );
+        driver.abort();
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let driver = tokio::spawn(async move {
+            loop {
+                let (stream, ()) = listener.accept().await.unwrap();
+                let mut line = String::new();
+                BufReader::new(stream).read_line(&mut line).await.unwrap();
+            }
+        });
+        let out = cua(&socket)
+            .request("s", "get_window_state", json!({}))
+            .await;
+        assert_eq!(
+            out.unwrap_err(),
+            format!("computer_state: {}", crate::driver::CLOSED)
         );
         driver.abort();
     }
