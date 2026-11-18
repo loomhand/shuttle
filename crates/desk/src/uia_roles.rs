@@ -104,6 +104,28 @@ pub fn states(role: &str, f: Facts) -> Vec<&'static str> {
     })
 }
 
+pub fn walked_id<'a, K: PartialEq + 'a>(
+    lists: impl IntoIterator<Item = &'a (isize, Vec<(String, K)>)>,
+    top: Option<isize>,
+    seen: &K,
+) -> Option<String> {
+    let top = top.filter(|&t| t != 0)?;
+    let mut found = None;
+    for (id, key) in lists
+        .into_iter()
+        .filter(|(walked, _)| *walked == top)
+        .flat_map(|(_, list)| list)
+    {
+        if key == seen {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(id);
+        }
+    }
+    found.cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,5 +197,35 @@ mod tests {
             ..Facts::default()
         };
         assert_eq!(states("textbox", pw), ["protected"]);
+    }
+
+    #[test]
+    fn an_element_without_a_runtime_id_takes_a_walked_id_only_from_its_own_top_level_window() {
+        let item = |name: &str, y: i32| (name.to_owned(), [90, y, 296, 13]);
+        let lists = [
+            (7, vec![("u1".to_owned(), item("item 5", 145))]),
+            (9, vec![("u2".to_owned(), item("Yes", 300))]),
+            (
+                11,
+                vec![
+                    ("u3".to_owned(), item("No", 330)),
+                    ("u4".to_owned(), item("No", 330)),
+                ],
+            ),
+        ];
+        assert_eq!(
+            walked_id(&lists, Some(7), &item("item 5", 145)).as_deref(),
+            Some("u1")
+        );
+        assert_eq!(walked_id(&lists, Some(8), &item("item 5", 145)), None);
+        assert_eq!(walked_id(&lists, Some(9), &item("item 5", 145)), None);
+        assert_eq!(
+            walked_id(&lists, Some(9), &item("Yes", 300)).as_deref(),
+            Some("u2")
+        );
+        assert_eq!(walked_id(&lists, Some(7), &item("Yes", 300)), None);
+        assert_eq!(walked_id(&lists, None, &item("item 5", 145)), None);
+        assert_eq!(walked_id(&lists, Some(11), &item("No", 330)), None);
+        assert_eq!(walked_id(&lists, Some(7), &item("item 5", 158)), None);
     }
 }

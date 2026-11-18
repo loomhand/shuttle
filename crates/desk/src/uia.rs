@@ -25,9 +25,9 @@ use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GW_OWNER, GetForegroundWindow, GetWindow, GetWindowTextW,
+    EnumWindows, GA_ROOT, GW_OWNER, GetAncestor, GetForegroundWindow, GetWindow, GetWindowTextW,
     GetWindowThreadProcessId, IsHungAppWindow, IsWindowVisible, PostMessageW, SMTO_ABORTIFHUNG,
-    SMTO_BLOCK, SendMessageTimeoutW, WM_CLOSE, WM_NULL,
+    SMTO_BLOCK, SendMessageTimeoutW, WM_CLOSE, WM_NULL, WindowFromPoint,
 };
 use windows::core::{BOOL, HRESULT, Interface, PWSTR};
 
@@ -92,7 +92,7 @@ pub struct Uia {
     top: IUIAutomationCacheRequest,
     root: IUIAutomationElement,
     ids: HashMap<String, IUIAutomationElement>,
-    unnamed: HashMap<String, Vec<(String, Key)>>,
+    unnamed: HashMap<String, (isize, Vec<(String, Key)>)>,
     walking: Vec<(String, Key)>,
     tops: HashMap<isize, Top>,
     walked: isize,
@@ -150,7 +150,11 @@ impl Uia {
         Ok(id)
     }
 
-    fn found_id(&mut self, el: &IUIAutomationElement) -> Result<String, String> {
+    fn found_id(
+        &mut self,
+        el: &IUIAutomationElement,
+        point: Option<(i32, i32)>,
+    ) -> Result<String, String> {
         let runtime = runtime_id(el)?;
         if !runtime.is_empty() {
             self.ids
@@ -159,8 +163,13 @@ impl Uia {
             return Ok(runtime);
         }
         let seen = key(&self.cached(el, &self.single)?);
-        let walked = self.unnamed.values().flatten();
-        match known(walked, |k| *k == seen) {
+        let [x, y, w, h] = seen.2;
+        let top = match point {
+            Some((px, py)) => top_at(px, py),
+            None if w > 0 && h > 0 => top_at(x + w / 2, y + h / 2),
+            None => None,
+        };
+        match uia_roles::walked_id(self.unnamed.values(), top, &seen) {
             Some(id) => Ok(id),
             None => self.id_of(el),
         }
@@ -454,7 +463,8 @@ impl Access for Uia {
         }
         let menus = started.elapsed().as_micros() - fetched - walked;
         let unnamed = std::mem::take(&mut self.walking);
-        self.unnamed.insert(frame.id.clone(), unnamed);
+        self.unnamed
+            .insert(frame.id.clone(), (self.walked, unnamed));
         Ok(Tree {
             frame: frame.clone(),
             nodes,
@@ -492,7 +502,7 @@ impl Access for Uia {
             if same(&self.auto, &parent, &self.root) {
                 break;
             }
-            chain.push(self.found_id(&parent)?);
+            chain.push(self.found_id(&parent, None)?);
             at = parent;
         }
         chain.reverse();
@@ -514,7 +524,7 @@ impl Access for Uia {
     fn at(&mut self, _: &str, x: i32, y: i32) -> Result<Option<String>, String> {
         let _bounded = Bounded::new(&self.auto);
         let hit = element_at(&self.auto, x, y)?;
-        self.found_id(&hit).map(Some)
+        self.found_id(&hit, Some((x, y))).map(Some)
     }
 
     fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
@@ -1098,25 +1108,15 @@ fn own_id(runtime: String) -> String {
     format!("u{}", MINTED.fetch_add(1, Ordering::Relaxed) + 1)
 }
 
-fn known<'a, T: 'a>(
-    walked: impl IntoIterator<Item = &'a (String, T)>,
-    mut same: impl FnMut(&T) -> bool,
-) -> Option<String> {
-    let mut found = None;
-    for (id, el) in walked {
-        if same(el) {
-            if found.is_some() {
-                return None;
-            }
-            found = Some(id);
-        }
-    }
-    found.cloned()
-}
-
 fn key(el: &IUIAutomationElement) -> Key {
     let r = raw(el, Extras::default());
     (r.control_type, r.name, r.bounds)
+}
+
+fn top_at(x: i32, y: i32) -> Option<isize> {
+    // SAFETY: WindowFromPoint takes a point and GetAncestor a handle; neither writes through a pointer.
+    let top = unsafe { GetAncestor(WindowFromPoint(POINT { x, y }), GA_ROOT) };
+    (!top.is_invalid()).then_some(top.0 as isize)
 }
 
 fn same(auto: &IUIAutomation, a: &IUIAutomationElement, b: &IUIAutomationElement) -> bool {
@@ -1163,39 +1163,6 @@ mod tests {
         let all: std::collections::HashSet<_> = first.iter().chain(&reopened).collect();
         assert_eq!(all.len(), 20);
         assert!(all.iter().all(|id| id.starts_with('u') && id.len() > 1));
-    }
-
-    #[test]
-    fn a_looked_up_element_without_a_runtime_id_takes_the_id_of_the_one_walked_element_it_matches()
-    {
-        let walked = [
-            ("u1".to_owned(), 1),
-            ("u2".to_owned(), 5),
-            ("u3".to_owned(), 8),
-        ];
-        assert_eq!(known(&walked, |&e| e == 5).as_deref(), Some("u2"));
-        assert_eq!(known(&walked, |&e| e == 6), None);
-        assert_eq!(known(&walked, |_| true), None);
-        assert_eq!(known(&[] as &[(String, i32)], |_| true), None);
-    }
-
-    #[test]
-    fn a_looked_up_element_without_a_runtime_id_matches_a_walked_one_by_type_name_and_bounds() {
-        let item = |name: &str, y| -> Key {
-            (
-                UIA_ListItemControlTypeId.0,
-                name.to_owned(),
-                [90, y, 296, 13],
-            )
-        };
-        let walked = [
-            ("u1".to_owned(), item("item 1", 93)),
-            ("u5".to_owned(), item("item 5", 145)),
-        ];
-        let found = |seen: Key| known(&walked, |k| *k == seen);
-        assert_eq!(found(item("item 5", 145)).as_deref(), Some("u5"));
-        assert_eq!(found(item("item 5", 158)), None);
-        assert_eq!(found(item("item 3", 119)), None);
     }
 
     #[test]
