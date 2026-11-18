@@ -6,20 +6,25 @@ use serde_json::{Map, Value};
 
 const MAX_REPEAT: u16 = 256;
 
-#[derive(Default, Deserialize)]
-#[serde(default)]
+#[derive(Deserialize)]
 pub struct SnapArgs {
     pub window: Option<String>,
     pub id: Option<String>,
     pub pid: Option<u32>,
+    #[serde(default)]
     pub text: bool,
+    #[serde(default)]
     pub keys: bool,
+    #[serde(default)]
     pub menus: bool,
+    #[serde(default)]
     pub urls: bool,
     pub bounds: Option<bool>,
     pub max_chars: Option<usize>,
     /// Whether the answer is the diff against the caller's last read of the window.
+    #[serde(default)]
     pub since: bool,
+    #[serde(default)]
     pub holder: String,
 }
 

@@ -327,11 +327,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let Some(app) = args.as_object_mut().and_then(|a| a.remove("app")) else {
             return Ok(());
         };
-        let app = app.as_str().unwrap_or_default().to_owned();
+        let app = app.as_str().unwrap_or_default();
         if args["pid"].is_u64() {
             return Ok(());
         }
-        let key = app_key(&app);
+        let key = app_key(app);
         let listed = self.listed().await?;
         let names = |name: &Option<String>| name.as_deref().is_some_and(|a| app_key(a) == key);
         let pid = listed

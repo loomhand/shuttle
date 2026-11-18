@@ -447,9 +447,9 @@ function targetIn(ws: Win[]): Win | null {
 }
 function* chain(w: Win, ws: Win[]) { for (let x: Win | undefined = w, k = 0; x && k <= ws.length; x = ws.find((y) => y.id === x?.owner), k++) yield x }
 function host(w: Win, ws: Win[]) { let x = w; for (let o = OS === 'darwin' ? x.owner : undefined; o; o = x.owner) { const up = ws.find((y) => y.id === o); if (!up) break; x = up } return x }
-function ours(x: Win, ws: Win[]) { return [...chain(x, ws)].some((y) => (y.id === target?.id && y.pid === target.pid) || adopted.has(y.id)) }
+function ours(x: Win, ws: Win[]) { for (const y of chain(x, ws)) if ((y.id === target?.id && y.pid === target.pid) || adopted.has(y.id)) return true; return false }
 function ownerOf(w: Win, ws: Win[]) {
-  const x = [...chain(w, ws)].at(-1) ?? w
+  let x = w; for (const y of chain(w, ws)) x = y
   return x.id !== w.id ? x : ws.find((y) => y.id === target?.id && y.pid === target.pid && y.id !== w.id)
 }
 async function front(w: Win | null) {
