@@ -1908,6 +1908,51 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_close_with_the_keyboard_up_hides_it_then_closes_the_window() {
+        let close = || serde_json::json!({"window": "Settings"});
+        let keyboard_then = |after: &str| {
+            let fake = Fake::new();
+            fake.put("inject.answer", "true");
+            fake.put("after-input.json", after);
+            fake.windows("keyboard");
+            fake
+        };
+        let layout = |name: &str| {
+            let fake = Fake::new();
+            fake.windows(name);
+            log(&fake, "windows.json")
+        };
+        let fake = keyboard_then(&layout(""));
+        let out = desk(&fake, "desk_close", close()).await.unwrap();
+        assert_eq!(out["title"], "Settings - com.android.settings");
+        assert_eq!(log(&fake, "requests").matches("key 4").count(), 2);
+        let fake = keyboard_then(&documents(false));
+        let out = desk(&fake, "desk_close", close()).await.unwrap();
+        assert_eq!(out["title"], "Settings - com.android.settings");
+        assert_eq!(log(&fake, "requests").matches("key 4").count(), 1);
+        let fake = keyboard_then(&layout("shade"));
+        let err = desk(&fake, "desk_close", close()).await.unwrap_err();
+        assert_eq!(
+            err,
+            "Settings - com.android.settings left the front after a back key to hide the keyboard, so no closing back was sent"
+        );
+        assert_eq!(log(&fake, "requests").matches("key 4").count(), 1);
+        let fake = keyboard_then(&layout("keyboard"));
+        let err = desk(&fake, "desk_close", close()).await.unwrap_err();
+        assert_eq!(
+            err,
+            "the keyboard stayed up after a back key, so Settings - com.android.settings was not closed"
+        );
+        assert_eq!(log(&fake, "requests").matches("key 4").count(), 1);
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.windows("");
+        desk(&fake, "desk_close", close()).await.unwrap();
+        assert_eq!(log(&fake, "requests"), "windows\nkey 4\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn an_action_that_ran_is_reported_even_when_the_screenshot_after_it_fails() {
         let fake = Fake::new();
         fake.put("inject.answer", "true");

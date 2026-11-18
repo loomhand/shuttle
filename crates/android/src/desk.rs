@@ -22,6 +22,7 @@ use serde_json::{Value, json};
 use crate::adb::{Android, is_package};
 
 const APPLICATION: i64 = 1;
+const INPUT_METHOD: i64 = 2;
 const PID_BASE: u32 = 1 << 22;
 const FOCUS_WAIT: Duration = Duration::from_secs(5);
 const FOCUS_POLL: Duration = Duration::from_millis(100);
@@ -136,6 +137,7 @@ pub(crate) struct Frame {
     bounds: [i32; 4],
     covers: Vec<[i32; 4]>,
     screen: (i32, i32),
+    keyboard: bool,
 }
 
 impl Frame {
@@ -344,7 +346,9 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
                     frame.title
                 ));
             }
-            android.keys("back").await?;
+            if !frame.keyboard || hide_keyboard(android, &frame).await? {
+                android.keys("back").await?;
+            }
             let mut out = json!({"ok": true});
             out["title"] = frame.title.into();
             out.to_string()
@@ -443,6 +447,7 @@ fn turned((w, h): (i32, i32), list: &[WindowInfo]) -> (i32, i32) {
 
 fn frames_of(list: Vec<WindowInfo>, screen: (i32, i32)) -> Vec<Frame> {
     let layers: Vec<(i64, [i32; 4])> = list.iter().map(|w| (w.layer, w.bounds)).collect();
+    let keyboard = list.iter().any(|w| w.kind == INPUT_METHOD);
     let shown = listed(list);
     let alone = shown.len() == 1;
     shown
@@ -455,6 +460,7 @@ fn frames_of(list: Vec<WindowInfo>, screen: (i32, i32)) -> Vec<Frame> {
                 .collect();
             Frame {
                 covers,
+                keyboard,
                 ..frame(w, alone, screen)
             }
         })
@@ -492,6 +498,7 @@ fn frame(w: WindowInfo, alone: bool, screen: (i32, i32)) -> Frame {
         bounds: [l, t, r - l, b - t],
         covers: Vec::new(),
         screen,
+        keyboard: false,
     }
 }
 
@@ -1047,6 +1054,32 @@ async fn in_front(
             frame.title
         ))
     }
+}
+
+async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<bool, String> {
+    android.keys("back").await?;
+    for _ in 0..SWITCH_POLLS {
+        tokio::time::sleep(FOCUS_POLL).await;
+        match frames(android)
+            .await?
+            .into_iter()
+            .find(|f| f.id == frame.id)
+        {
+            None => return Ok(false),
+            Some(f) if f.keyboard => {}
+            Some(f) if f.active => return Ok(true),
+            Some(_) => {
+                return Err(format!(
+                    "{} left the front after a back key to hide the keyboard, so no closing back was sent",
+                    frame.title
+                ));
+            }
+        }
+    }
+    Err(format!(
+        "the keyboard stayed up after a back key, so {} was not closed",
+        frame.title
+    ))
 }
 
 /// The window `window` names, which must be in front; a package name without a window starts its app.
