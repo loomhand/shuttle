@@ -97,7 +97,7 @@ test('typing that did not land and left the front alone runs once in the foregro
   const au = await run(t, auto, (b) => b, true)
   assert.equal(au.r.ok, true, JSON.stringify(au.r))
   assert.equal(au.doc, 'xhi')
-  assert.deepEqual(au.calls.filter((c) => c.tool === 'desk_focus').map((c) => c.args), [{ window: 'Untitled - Notepad', pid: 4, id: '1' }])
+  assert.deepEqual(au.calls.filter((c) => c.tool === 'desk_focus').map((c) => c.args), [{ window: 'Untitled - Notepad', pid: 4 }])
   assert.equal(au.r.trace?.[1]?.how, 'foreground')
 })
 

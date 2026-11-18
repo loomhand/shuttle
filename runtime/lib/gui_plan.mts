@@ -511,6 +511,7 @@ async function current(bound = SETTLE) {
 }
 function isShell(w: Win) { return !!w.shell || (OS === 'win32' && w.title === 'Program Manager') }
 function titledIn(ws: Win[], title: string, pid: number | null, id?: string) { return pid !== null && ws.some((x) => x.title === title && x.pid === pid && (id === undefined || x.id === id)) }
+function twinId(w: Win, ws: Win[]) { return ws.some((x) => x.id !== w.id && x.pid === w.pid && x.title === w.title) ? w.id : undefined }
 async function snapOf(w: Win, r: Reads = {}): Promise<desk.Snap> {
   return BG ? desk.snapshot(undefined, { id: w.id, ...r }) : desk.snapshot(w.title, { pid: w.pid, ...r })
 }
@@ -692,7 +693,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
     const ws = await current(); let w = frontOf(ws)
     if (BG && !w) { tick('wait', t0); throw new Surprise('background gui_plan has no target window: start the plan with an app step, or name the window with a wait step') }
     const [plan, ...twins] = !w && lastSeen ? ws.filter((x) => x.title === lastSeen) : []
-    if (plan && !twins.length) { w = plan; await desk.focus(w.title, w.pid, w.id) }
+    if (plan && !twins.length) { w = plan; await desk.focus(w.title, w.pid, twinId(w, ws)) }
     // an untitled focused window that is no alert (a completion popup) leaves the step in the window the plan was in
     if (w && !w.title.trim() && lastSeen && (kept?.id === w.id || !isAlert(await outline(w)))) { const pid = w.pid; const under = ws.find((x) => x.title === lastSeen && x.pid === pid); if (under) modalOver(w, under); w = under ?? w }
     tick('wait', t0); if (!w) throw new Surprise(NO_FRONT, {}, true); return w
@@ -710,7 +711,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
     } else if ((!w || known.has(w.title)) && Date.now() - t0 > 150) {
       const hits = ws.filter((x) => norm(x.title).includes(norm(want)) && (!!w || x.role !== 'alert'))
       const [bg, other] = hits; many = hits.length
-      if (bg && !other) { if (w) modalOver(w, bg); await desk.focus(bg.title, bg.pid, bg.id); return found(bg, t0) }
+      if (bg && !other) { if (w) modalOver(w, bg); await desk.focus(bg.title, bg.pid, twinId(bg, ws)); return found(bg, t0) }
     }
     if (w && !known.has(w.title) && !prior.has(w.id) && w.title !== asked && Date.now() - t0 > 250) {
       asked = w.title
@@ -921,7 +922,7 @@ async function openPage(app: string, url: string, rec: Rec) {
       if (!samePage(at, url)) continue
       tick('launch', t0); known.add(w.title); rec.window = lastSeen = w.title
       if (BG) { follow(w, ws); return }
-      if (!w.active) await desk.focus(w.title, w.pid, w.id)
+      if (!w.active) await desk.focus(w.title, w.pid, twinId(w, ws))
       await windowFor(w.title); return
     }
     if (Date.now() > end) throw new Surprise(`${app} shows no window at ${url}`, await seen())
@@ -1316,8 +1317,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const own = (w: Win) => titled(w) || (word && (ownedBy(w.pid, name) || entries.some((e) => worded(w.title, e))))
     const rank = (w: Win) => { const of = [w.app, w.bundle].filter((a): a is string => !!a); return (of.some((a) => norm(a) === app) ? 0 : of.some((a) => worded(a, app)) ? 2 : 4) + (norm(w.title) === name ? 0 : 1) }
     const mine = (ws: Win[]) => s.title ? ws.filter(titled).sort((a, b) => rank(a) - rank(b)) : [...ws.filter(named), ...ws.filter(own)]
-    let started: Awaited<ReturnType<typeof desk.launch>> | undefined
-    const has = async () => { const ws = await desk.windows(); return mine(ws)[0] ?? (s.title ? undefined : started?.running ? ws.find((w) => w.title === started?.title && w.pid === started?.pid) : launched ? ws.find((w) => w.title && !before.has(w.id) && (!pids.has(w.pid) || (!!w.app && terms(w.app).some((x) => terms(app).includes(x))))) : undefined) }
+    let started: Awaited<ReturnType<typeof desk.launch>> | undefined; let read = ws
+    const has = async () => { const ws = read = await desk.windows(); return mine(ws)[0] ?? (s.title ? undefined : started?.running ? ws.find((w) => w.title === started?.title && w.pid === started?.pid) : launched ? ws.find((w) => w.title && !before.has(w.id) && (!pids.has(w.pid) || (!!w.app && terms(w.app).some((x) => terms(app).includes(x))))) : undefined) }
     const owned = mine(ws); let w = (BG ? owned.find((x) => !!x.title.trim()) : undefined) ?? owned[0] ?? (s.url ? ws.find((x) => x.stale && [x.app, x.bundle].some((a) => !!a && ` ${words(app)}`.endsWith(` ${words(a)}`))) : undefined)
     const hung = w ? (w.stale ? w : null) : await desk.unanswered().catch(() => null)
     if (hung && (hung === w || own(hung) || named(hung))) throw new Surprise(unresponsive(s.app, hung), { window: hung.title, windows: titles(ws) })
@@ -1334,7 +1335,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       tick('launch', t0)
     }
     if (BG) { if (started?.running) userFront = w; follow(w, await desk.windows()); known.add(w.title); rec.window = lastSeen = w.title; return }
-    if (background || !w.active) { const t1 = Date.now(); const f = await desk.focus(w.title, w.pid, w.id); tick('focus', t1); if (f.path) rec.focused = `${f.path} front ${f.front ?? '-'}` }
+    if (background || !w.active) { const t1 = Date.now(); const f = await desk.focus(w.title, w.pid, twinId(w, read)); tick('focus', t1); if (f.path) rec.focused = `${f.path} front ${f.front ?? '-'}` }
     known.add(w.title); rec.window = lastSeen = w.title; await windowFor(w.title); return
   }
   if (s.type !== undefined) {
@@ -1367,7 +1368,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       if (tty && secure(s) && shown) throw await echoed(w, s.type, now)
       const sealed = OS === 'win32' && !shown && !tty && secure(s) && !!was && !!now && [...now].every(([id, t]) => t.value === was.get(id)?.value) && await hides(w, now)
       if (AUTO && !tty && !secure(s) && !shown && unchanged(was, now) && whole(was) && whole(now) && !taken(await desk.windows())) {
-        await desk.focus(w.title, w.pid, w.id)
+        await desk.focus(w.title, w.pid, twinId(w, ws))
         const again = await desk.typeText(s.type, FG)
         rec.how = 'foreground'; rec.unverified = undefined; fronted = true; BG = false
         heard(again, rec, s)
@@ -1407,7 +1408,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const o = w && !s.window ? await outline(w, {}, kept) : ''
     const self = w
     const others = self ? ws.filter((x) => x.pid === self.pid && x.title !== self.title && (!BG || ours(x, ws))) : []
-    if (w && blocked(o) && others.length) { rec.seen = w.title; rec.how = 'wm'; unique(w); await desk.close(w.title, w.pid, w.id); await settle(w.title); tick('act', t0); if (!await closed(w.title, w.pid, w.id)) throw new Surprise(`"${w.title}" is still open after a close`, await seen()); return }
+    if (w && blocked(o) && others.length) { rec.seen = w.title; rec.how = 'wm'; unique(w); await desk.close(w.title, w.pid, twinId(w, ws)); await settle(w.title); tick('act', t0); if (!await closed(w.title, w.pid, w.id)) throw new Surprise(`"${w.title}" is still open after a close`, await seen()); return }
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     if (w && !s.window && !isDialog(o)) {
       let d: Win | null = null; for (const x of others) if (isDialog(await outline(x))) { d = x; break }
@@ -1418,8 +1419,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const hung = self ? undefined : ws.find((x) => x.stale && !isShell(x))
     if (hung) throw new Surprise(`no window is in front, and "${hung.title || hung.app}" is listed as not answering accessibility, as an app hung behind its own dialog leaves it: nothing was sent; wait for it, or close the app`, await seen())
     if (!w) { rec.noop = true; tick('act', t0); return }
-    const [title, pid, id] = [w.title, w.pid, w.id]; rec.seen = title; if (!w.active && !BG) await desk.focus(title, pid, id); await desk.key('Escape', at(w))
-    if (titledIn(await settle(w.title), title, pid, id)) { unique(w); await desk.close(title, pid, id) }
+    const [title, pid, id, twin] = [w.title, w.pid, w.id, twinId(w, ws)]; rec.seen = title; if (!w.active && !BG) await desk.focus(title, pid, twin); await desk.key('Escape', at(w))
+    if (titledIn(await settle(w.title), title, pid, id)) { unique(w); await desk.close(title, pid, twin) }
     tick('act', t0); if (!await closed(title, pid, id)) throw new Surprise(`"${title}" is still open after Escape and a close`, await seen())
     return
   }
