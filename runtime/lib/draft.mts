@@ -106,7 +106,7 @@ export async function main(p: Params): Promise<Draft> {
     } else if (e.kind === 'click') {
       const el = e.element ?? {}
       const next = events.find((n, j) => j > i && n.kind === 'click')
-      if (el.role === 'menu' && next?.element?.role === 'menuitem') continue
+      if (el.role === 'menu' && /^menu(item)?$/.test(next?.element?.role ?? '')) continue
       const prev = events.findLast((n, j) => j < i && n.kind === 'click')
       if (el.role === 'menuitem' && prev?.element?.role === 'menu') {
         const chain = (e.path ?? []).filter((n) => n.role === 'menu').map((n) => n.name).reverse()
