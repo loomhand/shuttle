@@ -2000,6 +2000,34 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_close_that_fails_after_the_back_that_hid_the_keyboard_says_it_was_sent() {
+        let close = || serde_json::json!({"window": "Settings"});
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.put("after-input.json", "not json");
+        fake.windows("keyboard");
+        let err = desk(&fake, "desk_close", close()).await.unwrap_err();
+        assert!(err.starts_with("decode windows: "), "{err}");
+        assert!(
+            err.ends_with(", after a back key to hide the keyboard, so no closing back was sent"),
+            "{err}"
+        );
+        assert_eq!(log(&fake, "requests").matches("key 4").count(), 1);
+        let fake = Fake::new();
+        fake.put("inject.answer", "true\nfalse");
+        fake.windows("");
+        fake.put("after-input.json", &log(&fake, "windows.json"));
+        fake.windows("keyboard");
+        let err = desk(&fake, "desk_close", close()).await.unwrap_err();
+        assert_eq!(
+            err,
+            "key back is unconfirmed (the injection was not confirmed) and was not repeated, since it may have reached the device; a back key had hidden the keyboard before it"
+        );
+        assert_eq!(log(&fake, "requests").matches("key 4").count(), 2);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn an_action_that_ran_is_reported_even_when_the_screenshot_after_it_fails() {
         let fake = Fake::new();
         fake.put("inject.answer", "true");

@@ -356,7 +356,13 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
                 ));
             }
             if !frame.keyboard || hide_keyboard(android, &frame).await? {
-                android.keys("back").await?;
+                android
+                    .keys("back")
+                    .await
+                    .map_err(|e| match frame.keyboard {
+                        true => format!("{e}; a back key had hidden the keyboard before it"),
+                        false => e,
+                    })?;
             }
             let mut out = json!({"ok": true});
             out["title"] = frame.title.into();
@@ -1094,7 +1100,10 @@ async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<bool, String>
     for _ in 0..SWITCH_POLLS {
         tokio::time::sleep(FOCUS_POLL).await;
         match frames(android)
-            .await?
+            .await
+            .map_err(|e| {
+                format!("{e}, after a back key to hide the keyboard, so no closing back was sent")
+            })?
             .into_iter()
             .find(|f| f.id == frame.id)
         {
