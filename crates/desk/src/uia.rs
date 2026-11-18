@@ -561,7 +561,7 @@ impl Access for Uia {
     ) -> Result<Option<(String, Option<u32>)>, String> {
         let own = self.native_root(id)?;
         let at = top_at(x, y);
-        if uia_roles::same_window(at, own) {
+        if uia_roles::menu_click_reaches(at, own, owners_of) {
             return Ok(None);
         }
         Ok(Some(at.map_or((String::new(), None), |w| {

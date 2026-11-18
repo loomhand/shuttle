@@ -137,8 +137,15 @@ pub fn owned_entries<K>(nodes: &[model::Node], frame: &mut Vec<(String, K)>) -> 
     owned
 }
 
-pub fn same_window(at: Option<isize>, own: Option<isize>) -> bool {
-    at.is_some_and(|a| a != 0 && Some(a) == own)
+pub fn menu_click_reaches(
+    at: Option<isize>,
+    own: Option<isize>,
+    owners: impl FnOnce(isize) -> Vec<isize>,
+) -> bool {
+    let (Some(at), Some(own)) = (at, own) else {
+        return false;
+    };
+    at != 0 && own != 0 && (at == own || owners(at).contains(&own))
 }
 
 pub fn walked_id<'a, K: PartialEq + 'a>(
@@ -320,18 +327,28 @@ mod tests {
     }
 
     #[test]
-    fn a_menu_click_goes_out_only_when_the_window_at_the_point_is_the_entrys_own_window() {
-        let (form, dropdown, submenu, copy_b, toast) = (7, 12, 14, 21, 30);
-        assert!(same_window(Some(dropdown), Some(dropdown)));
-        assert!(same_window(Some(form), Some(form)));
-        assert!(same_window(Some(submenu), Some(submenu)));
-        assert!(!same_window(Some(submenu), Some(dropdown)));
-        assert!(!same_window(Some(copy_b), Some(dropdown)));
-        assert!(!same_window(Some(toast), Some(dropdown)));
-        assert!(!same_window(Some(form), Some(dropdown)));
-        assert!(!same_window(None, Some(dropdown)));
-        assert!(!same_window(Some(dropdown), None));
-        assert!(!same_window(Some(0), Some(0)));
+    fn a_menu_click_goes_out_only_to_the_entrys_own_window_or_a_window_it_owns() {
+        let (form, dropdown, submenu, copy_b, copy_b_popup, toast) = (7, 12, 14, 20, 21, 30);
+        let owners = |w: isize| match w {
+            12 => vec![form],
+            14 => vec![dropdown, form],
+            21 => vec![copy_b],
+            _ => Vec::new(),
+        };
+        let reaches = |at, own| menu_click_reaches(at, own, owners);
+        assert!(reaches(Some(dropdown), Some(dropdown)));
+        assert!(reaches(Some(form), Some(form)));
+        assert!(reaches(Some(dropdown), Some(form)));
+        assert!(reaches(Some(submenu), Some(form)));
+        assert!(reaches(Some(submenu), Some(dropdown)));
+        assert!(!reaches(Some(copy_b_popup), Some(dropdown)));
+        assert!(!reaches(Some(copy_b_popup), Some(form)));
+        assert!(!reaches(Some(toast), Some(dropdown)));
+        assert!(!reaches(Some(toast), Some(form)));
+        assert!(!reaches(Some(form), Some(dropdown)));
+        assert!(!reaches(None, Some(dropdown)));
+        assert!(!reaches(Some(dropdown), None));
+        assert!(!reaches(Some(0), Some(0)));
     }
 
     #[test]
