@@ -379,7 +379,7 @@ pub async fn exchange(mut conn: Conn, call: &Call) -> Result<Output, String> {
     write_frame(&mut conn, call).await?;
     read_frame(&mut conn).await.map_err(|e| {
         format!(
-            "the daemon closed the connection before it answered {}, so whether it ran is not known: check its effect before sending it again ({e})",
+            "no answer to {} could be read, so whether it ran is not known: check its effect before sending it again ({e})",
             call.tool
         )
     })

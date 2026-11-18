@@ -241,7 +241,7 @@ mod tests {
         };
         let err = call(&endpoint, &ask).await.unwrap_err();
         assert!(
-            err.contains("closed the connection before it answered desk_type")
+            err.contains("no answer to desk_type could be read")
                 && err.contains("whether it ran is not known"),
             "{err}"
         );

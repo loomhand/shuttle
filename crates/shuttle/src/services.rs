@@ -690,7 +690,7 @@ server.serve_forever()
         };
         let err = server::call(&s.endpoint, &call).await.unwrap_err();
         assert!(
-            err.contains("before it answered demo_gone, so whether it ran is not known"),
+            err.contains("no answer to demo_gone could be read, so whether it ran is not known"),
             "{err}"
         );
         s.stop().await;
