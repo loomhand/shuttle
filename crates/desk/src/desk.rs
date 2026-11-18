@@ -415,6 +415,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if window.is_none() && pid.is_none() {
             return Ok(false);
         }
+        let raises = match tool {
+            "desk_key" | "desk_type" => pid.is_some() || self.os != Os::Linux,
+            "desk_scroll" => args["x"].is_null(),
+            _ => false,
+        };
+        if raises {
+            return Ok(true);
+        }
         self.focus(WindowArgs {
             window: window.unwrap_or_default(),
             pid,
@@ -3283,14 +3291,28 @@ pub(crate) mod tests {
         assert_eq!(v["input"], "foreground", "{v}");
         assert_eq!(
             order(&calls),
-            [
-                "hotkey background",
-                "bring_to_front -",
-                "bring_to_front -",
-                "hotkey desktop"
-            ]
+            ["hotkey background", "bring_to_front -", "hotkey desktop"]
         );
         assert_eq!(sent(&calls, "bring_to_front")[0]["window_id"], 1);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let linux = Desk::new(
+            || Ok(Apps),
+            Refuses(Behind(Arc::clone(&calls)), |t, _| t == "hotkey"),
+            Os::Linux,
+        )
+        .background(true)
+        .auto(true);
+        linux
+            .run(
+                "desk_key",
+                json!({"keys": "ctrl+a", "window": "Untitled - Notepad"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            order(&calls),
+            ["hotkey background", "bring_to_front -", "hotkey desktop"]
+        );
     }
 
     #[tokio::test]
