@@ -262,6 +262,25 @@ test('two new macOS dialogs of the app with no owner make background input refus
   assert.ok(!d.calls.some((c) => c.tool === 'desk_type'))
 })
 
+test('a macOS background step, named for its window or not, stops with nothing sent while an untitled alert of the app is in front of it', { skip: process.platform !== 'darwin' }, async (t) => {
+  const doc: W = { id: '198', title: 'r89aN3', role: 'window', pid: 4, active: false, app: 'R89Kit' }
+  const alert: W = { id: '201', title: '', role: 'dialog', pid: 4, active: false, app: 'R89Kit' }
+  for (const step of [{ click: 'Tool', window: 'r89aN3' }, { click: 'Tool' }]) {
+    const ws = [user(), doc]
+    const nodes = [{ ref: 0, id: '198/0', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }, { ref: 1, id: '198/1', parent: 0, depth: 1, role: 'button', name: 'Alert now', states: ['showing'] }, { ref: 2, id: '198/2', parent: 0, depth: 1, role: 'button', name: 'Tool', states: ['showing'] }]
+    const d = desktop(ws, ({ tool, args }) => {
+      if (tool === 'desk_snapshot') return JSON.stringify(args.id === alert.id ? { window: alert, nodes: [{ ref: 0, id: '201/0', parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }], truncated: false } : { window: doc, nodes, truncated: false })
+      if (tool === 'desk_press') { if (args.id === '198/1') ws.push(alert); return '{"ok":true,"how":"click"}' }
+      return undefined
+    })
+    await daemon(t, d.reply)
+    const r = await main({ steps: [{ app: 'R89Kit' }, { click: 'Alert now' }, step] })
+    assert.equal(r.escalate?.step, 2, JSON.stringify(r))
+    assert.equal(r.escalate?.reason, 'an untitled dialog of "R89Kit" is in front of "r89aN3", and on macOS such an alert takes all of its app\'s input until it closes: nothing was sent; answer it in a plan that starts with it in front, or close it with {close: true}')
+    assert.deepEqual(sent(d.calls, 'desk_press'), [{ id: '198/1' }])
+  }
+})
+
 test('an untitled macOS popup of the app, such as AutoFill, is never taken for the plan\'s window', { skip: process.platform !== 'darwin' }, async (t) => {
   const ws = [user(), notepad()]
   const d = desktop(ws, ({ tool }) => {

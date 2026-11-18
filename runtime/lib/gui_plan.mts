@@ -712,7 +712,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
       const hits = ws.filter((x) => awaited(x.title, want, saw)); const own = hits.filter((x) => x.pid === t?.pid)
       const pool = own.length ? own : hits; const exact = pool.filter((x) => norm(x.title) === norm(want))
       const [bg, other] = exact.length ? exact : pool; many = exact.length || pool.length
-      if (bg && !other) { follow(bg, ws); return found(bg, t0) }
+      if (bg && !other) { if (w) modalOver(w, bg); follow(bg, ws); return found(bg, t0) }
     } else if ((!w || known.has(w.title)) && Date.now() - t0 > 150) {
       const hits = ws.filter((x) => norm(x.title).includes(norm(want)) && (!!w || x.role !== 'alert'))
       const [bg, other] = hits; many = hits.length
