@@ -376,11 +376,12 @@ async fn serve(
     #[cfg(any(target_os = "macos", windows))]
     ready(daemon.clone(), safety, hotkey.filter(|_| local), mode);
     let ending = Arc::clone(&daemon);
-    let mut serving = Box::pin(server::serve(daemon, listener));
+    let mut serving = tokio::spawn(server::serve(daemon, listener));
     let served = tokio::select! {
-        r = &mut serving => r,
+        r = &mut serving => r.unwrap_or_else(|e| Err(format!("serve: {e}"))),
         () = shutdown() => Ok(()),
     };
+    ending.stop_answering();
     ending.end_recording().await;
     #[cfg(unix)]
     crate::kill_graced();

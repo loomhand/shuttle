@@ -604,6 +604,23 @@ server.serve_forever()
     }
 
     #[tokio::test]
+    async fn a_service_call_while_the_daemon_ends_is_refused_before_it_reaches_the_service() {
+        let s = served(Guard::default()).await;
+        s.daemon.stop_answering();
+        let refused = s.echo().await;
+        assert!(
+            refused.is_error
+                && refused
+                    .text
+                    .starts_with("the daemon is stopping, so nothing ran"),
+            "{}",
+            refused.text
+        );
+        assert!(!s.state("frame").exists());
+        s.stop().await;
+    }
+
+    #[tokio::test]
     async fn script_run_off_leaves_a_service_running_and_routed() {
         let s = served(Guard {
             script_run: false,

@@ -31,6 +31,7 @@ const BUSY: &str = "desk busy: another run or action is still going";
 const SCRIPT_RUN_OFF: &str =
     "script_run is turned off: set script_run = true under [tools] in config.toml";
 const DECLINED: &str = "declined by the user";
+const ENDING: &str = "the daemon is stopping, so nothing ran: call again in a few seconds";
 #[cfg(target_os = "linux")]
 const PLAN_BACKGROUND: &str = "background gui_plan is not measured on Linux: set [desk] input = \"foreground\" for plans, or use the desk verbs with a window";
 const NO_ASK: &str = "confirm needs the menu-bar controls, which this OS does not have yet: set confirm = \"off\" under [safety] in config.toml";
@@ -101,6 +102,7 @@ pub struct Daemon<H> {
     halted: watch::Sender<bool>,
     actions: Arc<AtomicUsize>,
     asking: AtomicBool,
+    ending: AtomicBool,
     turn: tokio::sync::Mutex<()>,
     running: Mutex<Option<String>>,
     nonce: u64,
@@ -124,6 +126,7 @@ impl<H: Handler> Daemon<H> {
             recorder: Recorder::new(PathBuf::new(), Arc::clone(&actions)),
             actions,
             asking: AtomicBool::new(false),
+            ending: AtomicBool::new(false),
             turn: tokio::sync::Mutex::new(()),
             running: Mutex::new(None),
             nonce: RandomState::new().hash_one(std::process::id()),
@@ -151,6 +154,10 @@ impl<H: Handler> Daemon<H> {
 
     pub async fn end_recording(&self) {
         self.recorder.finish().await;
+    }
+
+    pub fn stop_answering(&self) {
+        self.ending.store(true, Ordering::Relaxed);
     }
 
     /// Adds the plugin tools, which run only while `script_run` is on.
@@ -363,6 +370,9 @@ impl<H: Handler> Handler for Daemon<H> {
             "safety_resume" => return self.stop(false),
             _ => {}
         }
+        if self.ending.load(Ordering::Relaxed) {
+            return Output::error(ENDING);
+        }
         if *self.halted.borrow() {
             return Output::error(STOPPED);
         }
@@ -416,7 +426,9 @@ impl<H: Handler> Handler for Daemon<H> {
             return;
         };
         let mut halted = self.halted.subscribe();
-        let refused = if *self.halted.borrow() {
+        let refused = if self.ending.load(Ordering::Relaxed) {
+            Some(ENDING.to_owned())
+        } else if *self.halted.borrow() {
             Some(STOPPED.to_owned())
         } else {
             tokio::select! {
@@ -1277,6 +1289,18 @@ mod tests {
         let out = d.answer(call("record_note", json!([1]))).await;
         assert!(out.is_error);
         assert_eq!(out.text, "record_note needs text");
+    }
+
+    #[tokio::test]
+    async fn a_call_while_the_daemon_ends_reaches_nothing_but_a_stop_still_works() {
+        let d = daemon(Echo, Guard::default());
+        d.stop_answering();
+        for tool in ["desk_click", "desk_windows", "script_run", "model_ask"] {
+            let out = d.answer(call(tool, json!({}))).await;
+            assert_eq!((out.is_error, out.text.as_str()), (true, ENDING), "{tool}");
+        }
+        assert!(!d.answer(call("safety_stop", json!({}))).await.is_error);
+        assert!(d.halted());
     }
 
     #[tokio::test]
