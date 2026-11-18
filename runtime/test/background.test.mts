@@ -359,6 +359,25 @@ test('a plain background type right after a press, a double or right click, or a
   }
 })
 
+test('a pressed password field stays the field a background type goes to across a step that sends nothing, and a press on another element drops it', async (t) => {
+  const field = { ref: 1, id: 'p', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'protected'] }
+  const button = { ref: 2, id: 's', parent: 0, depth: 1, role: 'button', name: 'Sign in', states: ['showing'] }
+  for (const [between, sealed] of [[{ verify: 'Sign in' }, true], [{ click: 'Sign in' }, false]] as const) {
+    const d = desktop([user(), notepad()], ({ tool, args }) => {
+      if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), truncated: false, nodes: [{ ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: notepad().title, states: [] }, field, button] })
+      if (tool === 'desk_read') return JSON.stringify(args.id === 's' ? button : field)
+      if (tool === 'desk_press') return JSON.stringify({ ok: true, how: 'click' })
+      if (tool === 'desk_type') return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: `unverifiable: Sent ${String(args.text).length} char(s) via PostMessage (not verified).` })
+      return undefined
+    })
+    await daemon(t, d.reply)
+    const r = await main({ steps: [{ app: 'Notepad' }, { click: 'Password' }, between, { type: 'hunter2' }] })
+    assert.ok(d.calls.some((c) => c.tool === 'desk_type' && c.args.text === 'hunter2'), `${JSON.stringify(between)} ${JSON.stringify(r)}`)
+    const disk = ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
+    assert.equal([JSON.stringify(r), disk].some((x) => x.includes('hunter2')), !sealed, `${JSON.stringify(between)} ${JSON.stringify(r)}`)
+  }
+})
+
 test('when the plan window is gone a window of the app with the same title never takes its place', async (t) => {
   const ws = [user(), notepad()]
   const d = desktop(ws, ({ tool }) => {

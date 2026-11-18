@@ -179,7 +179,7 @@ async function perform(p: Params): Promise<Result> {
   const plan: Step[] = flow ? flow.steps : p.steps ?? []
   if (!plan.length) return { ok: false, error: 'pass steps, flow or find' }
   recording = !flow && !!plan[0]?.app && !p.start
-  lastSeen = ''
+  lastSeen = ''; lastPress = undefined
   const trace: Trace[] = []; const log: Record<string, unknown>[] = []
   const limit = Math.min(p.timeout_s ?? RUN_S, RUN_MAX_S) * 1000
   deadline = performance.timeOrigin + limit - RUN_SPARE
@@ -243,7 +243,7 @@ async function perform(p: Params): Promise<Result> {
       if (f && pre) vetted.add(`${f.id} ${f.pid} ${f.title}`)
       const kept = f && pre?.snap && pre.nodes && f.title !== pressed?.title ? { ...r, id: f.id, snap: pre.snap, nodes: pre.nodes } : undefined
       const prev = plan[i - 1]
-      unheard = undefined; actioned = false; lastPress = pressedId; pressedId = undefined
+      unheard = undefined; actioned = false; if (!(prev?.wait || prev?.expect || prev?.verify)) lastPress = pressedId; pressedId = undefined
       const runs = desk.foreground.runs + foreground.steps
       sealStep = () => { rec.secret = true; if (secure(planned)) return; planned.secret = s.secret = true; left() }
       await run(s, rec, kept).catch(async (e: unknown) => {
