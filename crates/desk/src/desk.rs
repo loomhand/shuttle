@@ -2408,14 +2408,16 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     async fn id_window(&self, id: &str, want: &str, pid: Option<u32>) -> Result<Frame, String> {
         let (allow, background) = (self.allow.clone(), self.bg());
         let (named, title) = (id.to_owned(), want.to_owned());
-        let f = self
+        let (f, twinned) = self
             .access
             .run(CALL_LIMIT, (), move |b| {
-                let f = window::pick_id(shown(b, background)?, &named, &title, pid, |f| {
-                    f.id.as_str()
-                })?;
+                let frames = shown(b, background)?;
+                let f = window::pick_id(frames.clone(), &named, &title, pid, |f| f.id.as_str())?;
                 allow.check_frame(Some(&f))?;
-                Ok(f)
+                let twinned = frames
+                    .iter()
+                    .any(|o| o.id != f.id && o.pid == f.pid && o.title == f.title);
+                Ok((f, twinned))
             })
             .await?;
         let listed = self.call("list_windows", json!({})).await?;
@@ -2433,7 +2435,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             })
             .cloned()
             .collect();
-        let fit = if same.len() > 1 {
+        let fit = if same.len() > 1 || (twinned && f.number.is_none()) {
             let root = id.to_owned();
             let frame = self
                 .access
@@ -8706,6 +8708,32 @@ pub(crate) mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn focus_by_id_on_linux_refuses_a_listed_twin_the_driver_no_longer_lists() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(TwinDocs::new(false, true, false)),
+            Overlaid(Arc::clone(&calls)),
+            Os::Linux,
+        );
+        let focus = |id: &str| {
+            desk.run(
+                "desk_focus",
+                json!({"window": "Untitled - Notepad", "pid": 4, "id": id}),
+            )
+        };
+        assert_eq!(
+            focus("w3").await.unwrap_err(),
+            "window id \"w3\" is not in the driver's window list, so nothing was sent"
+        );
+        assert!(sent(&calls, "bring_to_front").is_empty());
+        focus("w1").await.unwrap();
+        assert_eq!(
+            sent(&calls, "bring_to_front"),
+            [json!({"pid": 4, "window_id": 1})]
+        );
     }
 
     #[tokio::test]
