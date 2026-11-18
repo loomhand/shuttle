@@ -81,6 +81,7 @@ impl Tap {
                 let source = CFMachPortCreateRunLoopSource(std::ptr::null(), port, 0);
                 CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
                 CGEventTapEnable(port, true);
+                ax::bound_waits();
                 let mut secure = ax::secure_input() && !ax::focused().is_some_and(|f| f.secure);
                 let _ = ready.send(Ok(secure));
                 while !ended.load(Ordering::Acquire) {

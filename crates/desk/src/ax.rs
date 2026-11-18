@@ -1020,6 +1020,10 @@ pub fn front_app() -> Option<u32> {
     })
 }
 
+pub fn bound_waits() {
+    set_timeout(&system_wide());
+}
+
 fn main_bundle(exe: &Path) -> Option<String> {
     let macos = exe.parent()?;
     let contents = macos.parent()?;
