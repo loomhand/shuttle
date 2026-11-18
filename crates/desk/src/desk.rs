@@ -1662,7 +1662,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             _ => {
                 let named = a.window.is_some() || a.pid.is_some();
                 let (mut target, listed) = if named && self.os == Os::Mac {
-                    let (_, w) = self.input_window(a.window.as_deref(), a.pid).await?;
+                    let (_, w) = self.input_window(a.window.as_deref(), a.pid, None).await?;
                     if w["is_on_screen"] == false || off_space(&w) {
                         return Err(format!(
                             "{:?} is not on screen (minimized or on another Space), so nothing was scrolled",
@@ -1673,7 +1673,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     self.raise(Some((pid, id))).await?;
                     (w, Vec::new())
                 } else if named {
-                    let (_, w) = self.input_window(a.window.as_deref(), a.pid).await?;
+                    let (_, w) = self.input_window(a.window.as_deref(), a.pid, None).await?;
                     let (pid, id, _) = window_key(&w)?;
                     let raised = self.raise(Some((pid, id))).await?;
                     let s = &raised["structuredContent"];
@@ -1984,7 +1984,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if self.bg() || (window.is_none() && pid.is_none()) {
             return Ok(None);
         }
-        let (_, w) = self.input_window(window, pid).await?;
+        let (_, w) = self.input_window(window, pid, None).await?;
         let (pid, id, _) = window_key(&w)?;
         Ok(Some((pid, id)))
     }
@@ -2201,7 +2201,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if window.is_none() && pid.is_none() {
             return Err(BACKGROUND_TARGET.to_owned());
         }
-        let (_, w) = self.input_window(window, pid).await?;
+        let (_, w) = self.input_window(window, pid, None).await?;
         let to = w["pid"]
             .as_i64()
             .zip(w["window_id"].as_i64())
@@ -2215,7 +2215,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         window: &str,
         pid: Option<u32>,
     ) -> Result<((i64, i64), Value), String> {
-        let (_, w) = self.input_window(Some(window), pid).await?;
+        let (_, w) = self.input_window(Some(window), pid, None).await?;
         let (pid, id, _) = window_key(&w)?;
         Ok(((pid, id), w))
     }
@@ -2355,9 +2355,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let w = match a.id.as_deref() {
             Some(id) => self.id_window(id, &a.window, a.pid).await?,
             None => {
-                let (f, _, rivals) = self.pick_window(Some(&a.window), a.pid).await?;
-                window::input_to(&f, &a.window, rivals, window::BY_ID)?;
-                f
+                self.input_window(Some(&a.window), a.pid, Some(window::BY_ID))
+                    .await?
+                    .0
             }
         };
         let window_id: i64 =
@@ -2393,14 +2393,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         &self,
         window: Option<&str>,
         pid: Option<u32>,
+        way_out: Option<&str>,
     ) -> Result<(Frame, Value), String> {
         let (f, w, rivals) = self.pick_window(window, pid).await?;
         if let Some(want) = window {
-            let way_out = match pid {
+            let way_out = way_out.unwrap_or(match pid {
                 None => window::BY_TITLE,
                 Some(_) if self.bg() => FOCUS_THEN_PID,
                 Some(_) => FOCUS_THEN_FRONT,
-            };
+            });
             window::input_to(&f, want, rivals, way_out)?;
         }
         Ok((f, w))
