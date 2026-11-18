@@ -4,12 +4,8 @@ import { test } from 'node:test'
 import { daemon } from './daemon.mts'
 import { main as plan } from '../lib/gui_plan.mts'
 
-const BASE = 'an untitled dialog of "R89Kit" is in front of "r89aN3" and takes all of its app\'s input until it closes: answer it with {click: "<its button>"} and no window, or close it with {close: true}; nothing was sent'
-const NAMED = 'an untitled dialog of "R89Kit" is in front of "r89aN3" and takes all of its app\'s input until it closes, and a step that names "r89aN3" never acts in the dialog: answer it with {click: "<its button>"} and no window, or close it with {close: true}; nothing was sent'
-const INPUT = 'an untitled dialog of "R89Kit" is in front of "r89aN3" and takes all of its app\'s input until it closes, and a type or key would go into it: answer it with {click: "<its button>"} and no window, or close it with {close: true}; nothing was sent'
-const TWO = '2 elements of the untitled dialog of "R89Kit" match "Delete", and the step never guesses which one it means: answer it with a name only one of its buttons has, or close it with {close: true}; nothing was sent'
-const CUT = '"r89aN3" behind the untitled dialog of "R89Kit" could not be read whole, so the step cannot tell whether "Delete" is there too: close the dialog with {close: true}; nothing was sent'
-const BOTH = '"Delete" is in both the untitled dialog of "R89Kit" and "r89aN3" behind it, and the step never guesses which one it means: answer the dialog with a button only it has, or close it with {close: true}, then click "Delete"; nothing was sent'
+const TEXT = 'an untitled dialog of "R89Kit" is in front of "r89aN3" and takes all of its app\'s input until it closes, and a plan never presses a button of such a dialog: close it with {close: true}, or press its button with the desk tool (snapshot with the dialog\'s id from desk windows, then press with the button\'s id); nothing was sent'
+const SEVERAL = '2 untitled dialogs of "R89Kit" are in front of "r89aN3", and a plan never picks one of them: press the button meant with the desk tool (snapshot with that dialog\'s id from desk windows, then press with the button\'s id); nothing was sent'
 
 test('a click that opens a combo box\'s list leaves the next step in the dialog, whose tree holds the list\'s entries, also in a new plan', async (t) => {
   const wm = { id: '1.3/1', title: '', role: 'window', pid: 687, active: true }
@@ -69,44 +65,47 @@ test('a macOS click step with an untitled app-modal alert of the app in front st
   assert.equal(r.ok, false, JSON.stringify(r))
   assert.equal(r.saved, undefined, JSON.stringify(r))
   assert.equal(r.escalate?.step, 2, JSON.stringify(r))
-  assert.equal(r.escalate?.reason, BASE)
+  assert.equal(r.escalate?.reason, TEXT)
   assert.deepEqual(pressed, ['198/1'])
 })
 
-test('a macOS alert of the app open before the plan stops a step meant for the window behind it, one that names that window, a type or key, and a click whose name both have, each with nothing sent, and lets a click on a button only it has through', { skip: process.platform !== 'darwin' }, async (t) => {
-  for (const [step, want, risky] of [[{ click: 'Tool', window: 'r89aN3' }, NAMED, 'Delete'], [{ click: 'Tool' }, BASE, 'Delete'], [{ type: 'x' }, INPUT, 'Delete'], [{ key: 'return' }, INPUT, 'Delete'], [{ click: 'OK' }, '', 'Delete'], [{ click: 'Delete', window: 'r89aN3' }, NAMED, 'Delete'], [{ click: 'OK', window: 'r89aN3' }, NAMED, 'Delete'], [{ click: 'Delete' }, BOTH, 'Delete'], [{ click: 'Delete' }, BOTH, 'Delete…'], [{ close: true, window: 'r89aN3' }, NAMED, 'Delete'], [{ close: true }, '', 'Delete'], [{ click: 'Delete' }, BOTH, 'two behind'], [{ click: 'Delete' }, TWO, 'two in the dialog'], [{ click: 'Delete' }, CUT, 'cut behind']] as const) {
-    const doc = { id: '198', title: 'r89aN3', role: 'window', pid: 1966, active: true, app: 'R89Kit' }
-    const alert = { id: '201', title: '', role: 'dialog', pid: 1966, active: false, app: 'R89Kit' }
-    const nodes = [{ ref: 0, id: '198/0', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }, { ref: 1, id: '198/2', parent: 0, depth: 1, role: 'button', name: 'Tool', states: ['showing'] }, ...(risky === 'two in the dialog' || risky === 'cut behind' ? [] : [{ ref: 2, id: '198/3', parent: 0, depth: 1, role: 'button', name: 'Delete', states: ['showing'] }]), ...(risky === 'two behind' ? [{ ref: 3, id: '198/4', parent: 0, depth: 1, role: 'button', name: 'Delete', states: ['showing'] }] : [])]
-    const own = [{ ref: 0, id: '201/0', parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }, { ref: 1, id: '201/1', parent: 0, depth: 1, role: 'button', name: 'OK', states: ['showing'] }, { ref: 2, id: '201/2', parent: 0, depth: 1, role: 'button', name: risky === 'Delete…' ? risky : 'Delete', states: ['showing'] }, ...(risky === 'two in the dialog' ? [{ ref: 3, id: '201/3', parent: 0, depth: 1, role: 'button', name: 'Delete', states: ['showing'] }] : [])]
+test('a macOS key into an untitled alert the plan\'s own step opened goes into the alert, as before the rule for an alert open before the plan', { skip: process.platform !== 'darwin' }, async (t) => {
+  const doc = { id: '198', title: 'r89aN3', role: 'window', pid: 1966, active: true, app: 'R89Kit' }
+  const alert = { id: '201', title: '', role: 'dialog', pid: 1966, active: true, app: 'R89Kit' }
+  const nodes = [{ ref: 0, id: '198/0', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }, { ref: 1, id: '198/1', parent: 0, depth: 1, role: 'button', name: 'Alert now', states: ['showing'] }]
+  let up = false; const keys: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify(up ? [{ ...doc, active: false }, alert] : [doc])
+    if (tool === 'desk_snapshot') return JSON.stringify(args.window === doc.title ? { window: doc, nodes, truncated: false } : { window: alert, nodes: [{ ref: 0, id: '201/0', parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }], truncated: false })
+    if (tool === 'desk_press') { up ||= args.id === '198/1'; return '{"ok":true,"how":"action"}' }
+    if (tool === 'desk_key') { keys.push(args.keys); up = false }
+    return '{"ok":true}'
+  })
+  const r = await plan({ steps: [{ app: 'R89Kit' }, { click: 'Alert now' }, { key: 'return' }] })
+  assert.deepEqual(keys, ['return'], JSON.stringify(r))
+})
+
+test('a macOS alert of the app open before the plan stops every input step, named or not, with nothing sent, an unnamed close closes it, and an unnamed close among two such dialogs stops', { skip: process.platform !== 'darwin' }, async (t) => {
+  for (const [step, want, variant] of [[{ click: 'Tool', window: 'r89aN3' }, TEXT, ''], [{ click: 'Tool' }, TEXT, ''], [{ click: 'OK' }, TEXT, ''], [{ click: 'Delete' }, TEXT, 'menu'], [{ click: 'Delete', fp: { role: 'button', name: 'Tool', parent: 'r89aN3', nth: 0 } }, TEXT, ''], [{ click: 'Delete' }, TEXT, 'hidden'], [{ click: 'Delete' }, TEXT, 'unbounded'], [{ click: 'Delete' }, TEXT, 'static'], [{ check: 'Wrap', on: true }, TEXT, ''], [{ set: 'Name', value: 'x' }, TEXT, ''], [{ menu: 'Edit > Delete' }, TEXT, 'menu'], [{ type: 'x' }, TEXT, ''], [{ key: 'return' }, TEXT, ''], [{ close: true, window: 'r89aN3' }, TEXT, ''], [{ close: true }, '', ''], [{ close: true }, SEVERAL, 'two dialogs'], [{ type: 'x' }, TEXT, 'front'], [{ key: 'return' }, TEXT, 'front'], [{ click: 'OK' }, TEXT, 'front']] as const) {
+    const doc = { id: '198', title: 'r89aN3', role: 'window', pid: 1966, active: variant !== 'front', app: 'R89Kit' }
+    const alert = { id: '201', title: '', role: 'dialog', pid: 1966, active: variant === 'front', app: 'R89Kit' }
+    const second = { id: '202', title: '', role: 'dialog', pid: 1966, active: false, app: 'R89Kit' }
+    const at = variant === 'unbounded' ? { bounds: [10, 10, 40, 20] } : {}
+    const nodes = [{ ref: 0, id: '198/0', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }, { ref: 1, id: '198/2', parent: 0, depth: 1, role: 'button', name: 'Tool', states: ['showing'], ...at }, { ref: 2, id: '198/3', parent: 0, depth: 1, role: variant === 'static' ? 'text' : 'button', name: variant === 'menu' ? 'Wrap' : 'Delete', states: variant === 'hidden' ? [] : ['showing'] }, { ref: 3, id: '198/4', parent: 0, depth: 1, role: 'checkbox', name: 'Wrap', states: ['showing'] }, { ref: 4, id: '198/5', parent: 0, depth: 1, role: 'textbox', name: 'Name', states: ['showing'] }, { ref: 5, id: '198/6', parent: 0, depth: 1, role: 'menubar', name: '', states: ['showing'] }, { ref: 6, id: '198/7', parent: 5, depth: 2, role: 'menu', name: 'Edit', states: ['showing'] }, { ref: 7, id: '198/8', parent: 6, depth: 3, role: 'menuitem', name: 'Delete', states: [] }]
+    const own = [{ ref: 0, id: '201/0', parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }, { ref: 1, id: '201/1', parent: 0, depth: 1, role: 'button', name: 'OK', states: ['showing'] }, { ref: 2, id: '201/2', parent: 0, depth: 1, role: 'button', name: 'Cancel', states: ['showing'] }, { ref: 3, id: '201/3', parent: 0, depth: 1, role: 'button', name: 'Delete', states: ['showing'] }]
     let open = true; const input: string[] = []
     await daemon(t, ({ tool, args }) => {
-      if (tool === 'desk_windows') return JSON.stringify(open ? [doc, alert] : [doc])
-      if (tool === 'desk_snapshot') return JSON.stringify(args.window === '' || args.id === alert.id ? { window: alert, nodes: own, truncated: false } : { window: doc, nodes, truncated: risky === 'cut behind' })
-      if (tool === 'desk_press') { input.push(String(args.id)); open &&= args.id !== '201/1'; return '{"ok":true,"how":"action"}' }
-      if (tool === 'desk_type' || tool === 'desk_key' || tool === 'desk_click' || tool === 'desk_close') input.push(tool)
+      if (tool === 'desk_windows') return JSON.stringify([doc, ...(open ? [alert] : []), ...(variant === 'two dialogs' ? [second] : [])])
+      if (tool === 'desk_snapshot') return JSON.stringify(args.window === doc.title ? { window: doc, nodes, truncated: false } : { window: alert, nodes: own, truncated: false })
+      if (['desk_press', 'desk_type', 'desk_key', 'desk_click', 'desk_close'].includes(tool)) input.push(tool)
       if (tool === 'desk_key' && args.keys === 'Escape') open = false
       return '{"ok":true}'
     })
     const r = await plan({ steps: [{ app: 'R89Kit' }, step] })
-    if (!want) { assert.equal(r.ok, true, JSON.stringify(r)); assert.deepEqual(input, 'close' in step ? ['desk_key'] : ['201/1']); continue }
+    if (!want) { assert.equal(r.ok, true, JSON.stringify(r)); assert.deepEqual(input, ['desk_key']); continue }
     assert.equal(r.escalate?.step, 1, `${JSON.stringify(step)} ${JSON.stringify(r)}`)
     assert.equal(r.escalate?.reason, want, JSON.stringify(step))
     assert.deepEqual(input, [], JSON.stringify(step))
   }
 })
 
-test('a macOS step whose read of the app\'s untitled alert fails names the alert and sends nothing', { skip: process.platform !== 'darwin' }, async (t) => {
-  const doc = { id: '198', title: 'r89aN3', role: 'window', pid: 1966, active: true, app: 'R89Kit' }
-  const alert = { id: '201', title: '', role: 'dialog', pid: 1966, active: false, app: 'R89Kit' }
-  const sent: string[] = []
-  await daemon(t, ({ tool, args }) => {
-    if (tool === 'desk_windows') return JSON.stringify([doc, alert])
-    if (tool === 'desk_snapshot') return args.window === '' || args.id === alert.id ? { text: 'snapshot failed: AXError -25204', error: true } : JSON.stringify({ window: doc, nodes: [{ ref: 0, id: '198/0', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }], truncated: false })
-    if (['desk_press', 'desk_click', 'desk_type', 'desk_key', 'desk_close'].includes(tool)) sent.push(tool)
-    return '{"ok":true}'
-  })
-  const r = await plan({ steps: [{ app: 'R89Kit' }, { click: 'OK' }] })
-  assert.equal(r.escalate?.reason, 'the untitled dialog of "R89Kit" in front of "r89aN3" gave no accessibility read (snapshot failed: AXError -25204): nothing was sent', JSON.stringify(r))
-  assert.deepEqual(sent, [])
-})

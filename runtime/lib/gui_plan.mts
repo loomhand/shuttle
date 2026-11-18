@@ -106,7 +106,7 @@ const RUN_MAX_S = 110
 const RUN_SPARE = 3000
 const BUSY_MS = 3000
 const INTO_PASSWORD = ' (into a password field)'
-const INTO_ALERT = ', and a type or key would go into it'
+const ALERT_WAYS = 'close it with {close: true}, or press its button with the desk tool (snapshot with the dialog\'s id from desk windows, then press with the button\'s id)'
 const INERT_KEY = /^shift\+[^+]$/i
 const ARROW_KEY = /^(shift\+)?(arrow)?(up|down|left|right)$/i
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
@@ -156,6 +156,7 @@ let stepWs: { ws: Win[]; at: number } | null = null
 let prior = new Set<string>()
 let settleWs: { ws: Win[]; at: number; calls: number } | null = null
 let picked: Win[] = []
+let atStart = new Set<string>()
 let deadline = 0
 let sealStep = (): void => {}
 
@@ -203,7 +204,7 @@ async function perform(p: Params): Promise<Result> {
   if (gapStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: unrecorded(gapStep), reason: `no value for {{${unfilled(gapStep)}}}: pass it in params; nothing ran` } }
   BG = BEHIND
   const held = pending()
-  const ws0 = await desk.windows(); const at0 = Date.now(); for (const w of ws0) known.add(w.title)
+  const ws0 = await desk.windows(); const at0 = Date.now(); for (const w of ws0) known.add(w.title); atStart = new Set(ws0.map((w) => w.id))
   if (BG) { target = null; adopted = new Set(); doubt = null; fronted = false; userFront = desk.front(ws0); rejoin(held, ws0) }
   const vetted = new Set<string>()
   const startTitles = new Set(known)
@@ -574,7 +575,7 @@ async function hiddenModal(ws: Win[], f: Win | null) {
   await sleep(200)
   return of(await desk.windows()) ?? null
 }
-function modalBlocks(m: Win) { return `modal dialog "${m.title}" is open but ${m.modal}, and ${m.blocks ? `"${m.blocks}"` : 'its app'} takes no input until it closes: finish it, or close it with {close: true, window: "${m.title}"}` }
+function modalBlocks(m: Win) { return `modal dialog "${m.title}" is open but ${m.modal}, and ${m.blocks ? `"${m.blocks}"` : 'its app'} takes no input until it closes: finish it, or ${m.title.trim() ? `close it with {close: true, window: "${m.title}"}` : ALERT_WAYS}` }
 function blocked(o: string) { return /AT-SPI peer \S+ is not responding|no accessibility answer within/.test(o) }
 async function unblocked(e: unknown, w: Win) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()) }
 function isChooser(o: string) { return isDialog(o) && CHOOSER.test(o) }
@@ -701,7 +702,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
     const [plan, ...twins] = !w && lastSeen ? ws.filter((x) => x.title === lastSeen) : []
     if (plan && !twins.length) { w = plan; await desk.focus(w.title, w.pid, twinId(w, ws)) }
     // an untitled focused window that is no alert (a completion popup) leaves the step in the window the plan was in
-    if (w && !w.title.trim() && lastSeen && (kept?.id === w.id || !isAlert(await outline(w)))) { const pid = w.pid; w = ws.find((x) => x.title === lastSeen && x.pid === pid) ?? w }
+    if (w && !w.title.trim() && lastSeen && (kept?.id === w.id || !isAlert(await outline(w)))) { const pid = w.pid; const under = ws.find((x) => x.title === lastSeen && x.pid === pid); if (under) modalOver(w, under); w = under ?? w }
     tick('wait', t0); if (!w) throw new Surprise(NO_FRONT, {}, true); return w
   }
   const end = Date.now() + ms; let asked: string | null = null; let many = 0
@@ -732,10 +733,14 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
     await sleep(30)
   }
 }
-function modalOver(w: Win, under: Win, why = '') {
-  if (alertIn(w, under)) throw new Surprise(`an untitled dialog of "${w.app ?? under.title}" is in front of "${under.title}" and takes all of its app's input until it closes${why}: answer it with {click: "<its button>"} and no window, or close it with {close: true}; nothing was sent`)
+function modalOver(w: Win, under: Win) {
+  if (alertIn(w, under)) throw new Surprise(`an untitled dialog of "${w.app ?? under.title}" is in front of "${under.title}" and takes all of its app's input until it closes, and a plan never presses a button of such a dialog: ${ALERT_WAYS}; nothing was sent`)
 }
-function namedBehind(w: Win) { for (const x of picked) modalOver(x, w, `, and a step that names "${w.title}" never acts in the dialog`) }
+function behindAlert(w: Win, ws: Win[]) {
+  for (const x of ws) modalOver(x, w)
+  const under = lastSeen && atStart.has(w.id) ? ws.find((x) => x.title === lastSeen && x.pid === w.pid) : undefined
+  if (under) modalOver(w, under)
+}
 function alertIn(w: Win, under: Win) { return OS === 'darwin' && w.role === 'dialog' && !w.title.trim() && w.owner === undefined && w.pid === under.pid && w.id !== under.id }
 function awaited(title: string, want: string, saw?: string) { return norm(title).includes(norm(want)) || (!!saw && title === saw) }
 function found(w: Win, t0: number): Win { known.add(w.title); tick('wait', t0); return w }
@@ -770,10 +775,25 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   const t0 = Date.now()
   const pinned = byFp(nodes, fp, within)
   if (pinned) { tick('ax', t0); return pinned }
+  const placed = nodes.some((n) => !!n.bounds)
   const pool = candidates(nodes, role, within)
   const want = norm(target)
+  const covers = (n: Node) => {
+    const nm = norm(n.name); if (!nm) return false
+    const a = nm.split(' '), b = want.split(' ')
+    return (` ${nm} `.includes(` ${want} `) && b.length * 2 >= a.length) || (a.length >= 2 && ` ${want} `.includes(` ${nm} `))
+  }
   const said = role || /\b(radio|spin|option|check) button\b/.test(want) ? undefined : Object.entries(SAID).find(([w]) => want.split(' ').includes(w))?.[1]
-  for (const [one, two] of matching(nodes, pool, target, role)) if (one && !two) { tick('ax', t0); return { ...one, how: 'ax' } }
+  const core = want.split(' ').filter((w) => !FILLER.has(w)).join(' ')
+  const exact = (n: Node) => norm(n.name) === want || (!!core && norm(n.name) === core)
+  const inside = (n: Node, i: number) => { for (const [p] of up(nodes, n.parent)) if (p === i) return true; return false }
+  for (const f of [exact, (n: Node) => covers(n) && (!said || said.includes(n.role))]) {
+    const all = pool.filter(({ n }) => f(n)); const drawn = all.filter(({ n }) => n.shown && (!!n.bounds || !placed))
+    const some = drawn.length ? drawn : all.filter(({ n }) => n.role.startsWith('menu'))
+    const hit = some.filter(({ n, i }) => !some.some((o) => o.i !== i && norm(o.n.name) === norm(n.name) && inside(o.n, i)))
+    const [one, two] = hit
+    if (one && !two) { tick('ax', t0); return { ...one, how: 'ax' } }
+  }
   const shown = pool.filter(({ n }) => n.shown)
   tick('ax', t0)
   if (!shown.length || !ask) return null
@@ -798,25 +818,6 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
     throw new Surprise(`ambiguous target "${target}": ${near}; name the element more exactly`, await seen())
   }
   return { ...hit.c, how: `${viewed ? 'jev-image' : 'jev'}(${p1.toFixed(2)})`, p: p1, margin: p1 - p2 }
-}
-
-function* matching(nodes: Node[], pool: { n: Node; i: number }[], target: string, role?: string) {
-  const placed = nodes.some((n) => !!n.bounds)
-  const want = norm(target)
-  const covers = (n: Node) => {
-    const nm = norm(n.name); if (!nm) return false
-    const a = nm.split(' '), b = want.split(' ')
-    return (` ${nm} `.includes(` ${want} `) && b.length * 2 >= a.length) || (a.length >= 2 && ` ${want} `.includes(` ${nm} `))
-  }
-  const said = role || /\b(radio|spin|option|check) button\b/.test(want) ? undefined : Object.entries(SAID).find(([w]) => want.split(' ').includes(w))?.[1]
-  const core = want.split(' ').filter((w) => !FILLER.has(w)).join(' ')
-  const exact = (n: Node) => norm(n.name) === want || (!!core && norm(n.name) === core)
-  const inside = (n: Node, i: number) => { for (const [p] of up(nodes, n.parent)) if (p === i) return true; return false }
-  for (const f of [exact, (n: Node) => covers(n) && (!said || said.includes(n.role))]) {
-    const all = pool.filter(({ n }) => f(n)); const drawn = all.filter(({ n }) => n.shown && (!!n.bounds || !placed))
-    const some = drawn.length ? drawn : all.filter(({ n }) => n.role.startsWith('menu'))
-    yield some.filter(({ n, i }) => !some.some((o) => o.i !== i && norm(o.n.name) === norm(n.name) && inside(o.n, i)))
-  }
 }
 
 // LibreOffice repeats its menu bar, so a repeated bar entry resolves in the first one
@@ -1356,7 +1357,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.type !== undefined) {
     await refocused()
     const nl = s.type.endsWith('\n'); const ws = await current(nl ? OPENING : SETTLE); const w = frontOf(ws); const t0 = Date.now()
-    if (w) for (const x of ws) modalOver(x, w, INTO_ALERT)
+    if (w) behindAlert(w, ws)
     if (BG && !w) throw new Surprise('background gui_plan has no target window to type into: start the plan with an app step, or name the window with a wait step')
     if (s.web && w) await onPage(s.web, w)
     if (s.focus && s.focus !== 'unverified') await typingInto(s.focus, w)
@@ -1410,7 +1411,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.key) {
     await refocused()
     const ws = await listNow(); const w = frontOf(ws)
-    if (w) for (const x of ws) modalOver(x, w, INTO_ALERT)
+    if (w) behindAlert(w, ws)
     if (BG && !w) throw new Surprise('background gui_plan has no target window for the key: start the plan with an app step, or name the window with a wait step')
     const o = /^(enter|return)$/i.test(s.key) && w ? (await filled(w, kept)).text : ''
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
@@ -1424,7 +1425,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.close) {
     // close never shuts an app's main window unless the step names it
     const t0 = Date.now(); const ws = s.window ? [] : await listNow(); let w: Win | null = s.window ? await windowFor(s.window, 3000, s.seen) : frontOf(ws)
-    if (w && s.window) namedBehind(w)
+    if (w && s.window) behindAlert(w, picked)
     const o = w && !s.window ? await outline(w, {}, kept) : ''
     const self = w
     const others = self ? ws.filter((x) => x.pid === self.pid && x.title !== self.title && (!BG || ours(x, ws))) : []
@@ -1432,9 +1433,10 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     if (w && !s.window && !isDialog(o)) {
       const own = self ? ws.filter((x) => alertIn(x, self)) : []
-      let d: Win | null = own.length === 1 ? own[0] ?? null : null; if (!d) for (const x of others) if (isDialog(await outline(x))) { d = x; break }
+      if (own.length > 1) throw new Surprise(`${own.length} untitled dialogs of "${w.app ?? w.title}" are in front of "${w.title}", and a plan never picks one of them: press the button meant with the desk tool (snapshot with that dialog's id from desk windows, then press with the button's id); nothing was sent`)
+      let d: Win | null = own[0] ?? null; if (!d) for (const x of others) if (isDialog(await outline(x))) { d = x; break }
       const pid = w.pid
-      if (BG && !d && OS === 'darwin' && ws.some((x) => x.pid === pid && x.owner === undefined && x.role === 'dialog' && !adopted.has(x.id))) throw new Surprise(`a dialog of "${w.title}"'s app has no owner the OS names, and background close never guesses whether it belongs to the plan's window: name it with {close: true, window}`, await seen())
+      if (BG && !d && OS === 'darwin' && ws.some((x) => x.pid === pid && x.owner === undefined && x.role === 'dialog' && !!x.title.trim() && !adopted.has(x.id))) throw new Surprise(`a dialog of "${w.title}"'s app has no owner the OS names, and background close never guesses whether it belongs to the plan's window: name it with {close: true, window}`, await seen())
       w = d
     }
     const hung = self ? undefined : ws.find((x) => x.stale && !isShell(x))
@@ -1445,25 +1447,12 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     tick('act', t0); if (!await closed(title, pid, id)) throw new Surprise(`"${title}" is still open after Escape and a close`, await seen())
     return
   }
-  let w = await windowFor(s.window, 3000, s.seen, kept)
-  const r = reads(s); const goal = s.click ?? s.check ?? s.set ?? s.menu
-  const over = goal === undefined ? undefined : picked.find((x) => alertIn(x, w))
-  if (over && s.window) namedBehind(w)
-  const own = over && await readTree(over, r).catch((e: unknown) => { throw new Surprise(`the untitled dialog of "${over.app ?? w.title}" in front of "${w.title}" gave no accessibility read (${e instanceof Error ? e.message : String(e)}): nothing was sent`) })
-  if (over && own) {
-    const hits = (t: Tree) => [...matching(t.nodes, candidates(t.nodes, targetRole(s)), goal ?? '', targetRole(s))]
-    const mine = hits(own); const app = over.app ?? w.title
-    if (!mine.some((h) => h.length)) modalOver(over, w)
-    const behind = reuse(kept, w, r) ?? await readTree(w, r).catch(async (e: unknown) => { await unblocked(e, w); throw e })
-    const there = hits(behind).some((h) => h.length)
-    if (!there && (behind.snap.truncated || behind.snap.nodes.some((n) => n.truncated))) throw new Surprise(`"${w.title}" behind the untitled dialog of "${app}" could not be read whole, so the step cannot tell whether "${goal}" is there too: close the dialog with {close: true}; nothing was sent`)
-    if (!there && !mine.some((h) => h.length === 1)) throw new Surprise(`${Math.max(...mine.map((h) => h.length))} elements of the untitled dialog of "${app}" match "${goal}", and the step never guesses which one it means: answer it with a name only one of its buttons has, or close it with {close: true}; nothing was sent`)
-    if (there) throw new Surprise(`"${goal}" is in both the untitled dialog of "${over.app ?? w.title}" and "${w.title}" behind it, and the step never guesses which one it means: answer the dialog with a button only it has, or close it with {close: true}, then click "${goal}"; nothing was sent`)
-    w = over
-  }
+  const w = await windowFor(s.window, 3000, s.seen, kept)
+  if (s.click || s.check || s.set || s.menu) behindAlert(w, picked)
   rec.seen = w.title; if (w.title.trim()) lastSeen = w.title
   let t0 = Date.now(); let tree: Tree
-  try { tree = own || (reuse(kept, w, r) ?? await readTree(w, r)) } catch (e: unknown) { await unblocked(e, w); throw e }
+  const r = reads(s)
+  try { tree = reuse(kept, w, r) ?? await readTree(w, r) } catch (e: unknown) { await unblocked(e, w); throw e }
   tick('snap', t0)
   const aim = s.verify ?? s.click ?? s.check
   let read = r
