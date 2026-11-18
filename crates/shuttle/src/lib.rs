@@ -144,6 +144,14 @@ pub(crate) fn private_dir(dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))
 }
 
+pub(crate) fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+    open.open(path)?.write_all(body)
+}
+
 /// Sends `sig` to the live members of the group `group` leads that share this process's cgroup; how many it reached.
 #[cfg(target_os = "linux")]
 pub(crate) fn signal_group(group: u32, sig: libc::c_int) -> usize {

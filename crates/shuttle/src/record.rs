@@ -1,6 +1,5 @@
 //! Recordings of what the user does: each click and key with what the desk saw then, for a draft of replayable steps.
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
@@ -19,7 +18,7 @@ use tokio::time::Instant;
 
 #[cfg(target_os = "macos")]
 use crate::tap::{self, Tap};
-use crate::{STOPPED, lock};
+use crate::{STOPPED, lock, write_private};
 
 const SETTLE: Duration = Duration::from_millis(700);
 const CROP_PT: [f64; 2] = [200.0, 100.0];
@@ -708,14 +707,6 @@ fn save(path: &Path, recording: &Value) -> Result<(), String> {
     }
     let body = serde_json::to_vec(recording).map_err(|e| e.to_string())?;
     write_private(path, &body).map_err(|e| format!("write {}: {e}", path.display()))
-}
-
-fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
-    let mut open = std::fs::OpenOptions::new();
-    open.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
-    open.open(path)?.write_all(body)
 }
 
 fn now_ms() -> u128 {
