@@ -392,17 +392,15 @@ impl Access for Uia {
         if !truncated {
             let shown = self.shown.clone();
             let roots = self.roots(&shown);
-            let mut menus = Vec::new();
-            for i in roots
+            let menus: Vec<_> = roots
                 .into_iter()
                 .filter(|&i| Some(shown[i].pid) == frame.pid)
-            {
-                let el = match self.top_of(&shown[i]) {
-                    Some(t) if t.control_type == UIA_MenuControlTypeId.0 => t.el.clone(),
-                    _ => continue,
-                };
-                menus.extend(self.cached(&el, &self.subtree).ok());
-            }
+                .filter_map(|i| {
+                    let t = self.top_of(&shown[i])?;
+                    let el = (t.control_type == UIA_MenuControlTypeId.0).then(|| t.el.clone())?;
+                    self.cached(&el, &self.subtree).ok()
+                })
+                .collect();
             for menu in menus {
                 let listed = runtime_id(&menu).is_ok_and(|id| nodes.iter().any(|n| n.id == id));
                 if truncated || listed {
@@ -454,9 +452,7 @@ impl Access for Uia {
                 break;
             };
             // SAFETY: `self.auto`, `parent` and `self.root` are live UIA objects of this thread.
-            if unsafe { self.auto.CompareElements(&parent, &self.root) }
-                .is_ok_and(|same| same.as_bool())
-            {
+            if unsafe { self.auto.CompareElements(&parent, &self.root) }.is_ok_and(BOOL::as_bool) {
                 break;
             }
             chain.push(self.id_of(&parent)?);
@@ -713,25 +709,20 @@ fn raw(el: &IUIAutomationElement, extras: Extras) -> Raw {
         } else {
             String::new()
         },
-        value: match (values && (extras.values || extras.urls))
-            .then(|| value(el, UIA_ValueValuePropertyId))
-        {
-            Some(Val::Text(s)) => Some(s),
-            _ => None,
-        },
+        value: (values && (extras.values || extras.urls)).then(|| text(UIA_ValueValuePropertyId)),
         range: match (ranges && extras.values).then(|| value(el, UIA_RangeValueValuePropertyId)) {
             Some(Val::Real(f)) => Some(f),
             _ => None,
         },
-        dialog: boolean(UIA_IsDialogPropertyId).unwrap_or(false),
+        dialog: has(UIA_IsDialogPropertyId),
         toggles,
         facts: Facts {
             enabled: boolean(UIA_IsEnabledPropertyId).unwrap_or(true),
-            focused: boolean(UIA_HasKeyboardFocusPropertyId).unwrap_or(false),
-            focusable: boolean(UIA_IsKeyboardFocusablePropertyId).unwrap_or(false),
-            offscreen: boolean(UIA_IsOffscreenPropertyId).unwrap_or(false),
-            password: boolean(UIA_IsPasswordPropertyId).unwrap_or(false),
-            modal: window && boolean(UIA_WindowIsModalPropertyId).unwrap_or(false),
+            focused: has(UIA_HasKeyboardFocusPropertyId),
+            focusable: has(UIA_IsKeyboardFocusablePropertyId),
+            offscreen: has(UIA_IsOffscreenPropertyId),
+            password: has(UIA_IsPasswordPropertyId),
+            modal: window && has(UIA_WindowIsModalPropertyId),
             read_only: values
                 .then(|| boolean(UIA_ValueIsReadOnlyPropertyId))
                 .flatten(),
