@@ -248,7 +248,8 @@ mod tests {
     }
 
     #[test]
-    fn only_a_foreground_windows_menu_act_reads_the_window_at_the_entry() {
+    fn a_foreground_windows_click_on_a_menu_role_element_by_act_or_press_reads_the_window_at_its_center()
+     {
         let mut m = Menu(notepad(), Ok(None), 0);
         hit_centre(&mut m, "ok", Os::Windows, false).unwrap();
         hit_centre(&mut m, "file", Os::Windows, true).unwrap();
@@ -257,6 +258,30 @@ mod tests {
         assert_eq!(m.2, 0);
         hit_centre(&mut m, "file", Os::Windows, false).unwrap();
         assert_eq!(m.2, 1);
+        plan_press(&mut m, "file", Os::Windows, false).unwrap();
+        assert_eq!(m.2, 2);
+        plan_press(&mut m, "save", Os::Windows, false).unwrap();
+        assert_eq!(m.2, 2);
+    }
+
+    #[test]
+    fn a_windows_press_on_a_covered_menu_runs_its_action_and_a_clear_one_is_clicked() {
+        let mut m = Menu(notepad(), Ok(Some(("Palette".into(), Some(7)))), 0);
+        assert_eq!(
+            plan_press(&mut m, "file", Os::Windows, false).unwrap(),
+            Press::Acted(true)
+        );
+        m.1 = Err("no own window".into());
+        assert_eq!(
+            plan_press(&mut m, "file", Os::Windows, false).unwrap(),
+            Press::Acted(true)
+        );
+        m.1 = Ok(None);
+        assert_eq!(
+            plan_press(&mut m, "file", Os::Windows, false).unwrap(),
+            Press::Click(20, 10)
+        );
+        assert_eq!(m.0.acts.len(), 2);
     }
 
     #[test]
