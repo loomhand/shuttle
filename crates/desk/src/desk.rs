@@ -2518,7 +2518,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
     }
 
-    async fn screen_at(&self, bounds: [f64; 4], rect: [f64; 4]) -> Result<Output, String> {
+    async fn screen_at(
+        &self,
+        bounds: [f64; 4],
+        rect: [f64; 4],
+    ) -> Result<(Value, Vec<u8>), String> {
         let scale = self.scale().await?;
         let [bx, by, bw, bh] = bounds.map(|v| v * scale);
         let (x, y) = (rect[0].clamp(0.0, bw), rect[1].clamp(0.0, bh));
@@ -2542,7 +2546,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         })?;
         let mut out = sized(w, h);
         out["origin"] = json!([x as u32, y as u32]);
-        Ok(delivered(&png, out))
+        Ok((out, png))
     }
 
     async fn grab(&self, rect: [f64; 4]) -> Result<Grab, String> {
@@ -2587,7 +2591,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         pid: Option<u32>,
         rect: [f64; 4],
     ) -> Result<Output, String> {
-        let (_, w, _) = self.pick_window(Some(window), pid).await?;
+        let (_, w, rivals) = self.pick_window(Some(window), pid).await?;
         let key = window_key(&w)?;
         let stale = lock(&self.unseen)
             .get(&(key.0, key.1))
@@ -2606,25 +2610,32 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .await?;
         let _ = self.remember(key, &v, true);
         drop(session);
-        if !self.allow.is_open() && v["structuredContent"]["screenshot_composited"] == true {
-            return self.screen_at(key.2, rect).await;
-        }
-        let png = image_of(&v).ok_or("the driver returned no screenshot of the window")?;
-        let png = B64
-            .decode(png)
-            .map_err(|e| format!("decode screenshot: {e}"))?;
-        let (w, h, png) = crop_png(&png, rect, 1.0, None).map_err(|e| {
-            if e == OFF_SCREEN {
-                "the rectangle is off the window".to_owned()
+        let (mut out, png) =
+            if !self.allow.is_open() && v["structuredContent"]["screenshot_composited"] == true {
+                self.screen_at(key.2, rect).await?
             } else {
-                e
-            }
-        })?;
-        let mut out = sized(w, h);
-        out["origin"] = json!([rect[0].max(0.0) as u32, rect[1].max(0.0) as u32]);
-        if let Some(note) = stale {
-            out["stale"] = true.into();
-            out["note"] = note.into();
+                let png = image_of(&v).ok_or("the driver returned no screenshot of the window")?;
+                let png = B64
+                    .decode(png)
+                    .map_err(|e| format!("decode screenshot: {e}"))?;
+                let (width, height, png) = crop_png(&png, rect, 1.0, None).map_err(|e| {
+                    if e == OFF_SCREEN {
+                        "the rectangle is off the window".to_owned()
+                    } else {
+                        e
+                    }
+                })?;
+                let mut out = sized(width, height);
+                out["origin"] = json!([rect[0].max(0.0) as u32, rect[1].max(0.0) as u32]);
+                if let Some(note) = stale {
+                    out["stale"] = true.into();
+                    out["note"] = note.into();
+                }
+                (out, png)
+            };
+        out["window_id"] = key.1.into();
+        if rivals > 1 {
+            out["matches"] = rivals.into();
         }
         Ok(delivered(&png, out))
     }
@@ -4861,6 +4872,17 @@ pub(crate) mod tests {
             assert!(err.contains("a title of its own"), "{tool}: {err}");
         }
         assert!(driver.sent("click").is_empty() && driver.sent("scroll").is_empty());
+        let shot = desk
+            .run("desk_shot", json!({"window": "Wide"}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&shot.text).unwrap();
+        let read = driver.sent("get_window_state");
+        assert_eq!(
+            (&v["window_id"], &v["matches"]),
+            (&read[read.len() - 1]["window_id"], &json!(2)),
+            "{v}"
+        );
         desk.run("desk_click", json!({"x": -800.0, "y": 400.0}))
             .await
             .unwrap();
@@ -8246,7 +8268,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             serde_json::from_str::<Value>(&out.text).unwrap(),
-            json!({"ok": true, "width": 8, "height": 8, "origin": [0, 0]})
+            json!({"ok": true, "width": 8, "height": 8, "origin": [0, 0], "window_id": 1})
         );
         assert_eq!(grabs, 1);
         let part =
