@@ -210,7 +210,7 @@ async function perform(p: Params): Promise<Result> {
   const vetted = new Set<string>()
   const startTitles = new Set(known)
   const start = frontOf(ws0); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
-  const chained = !flow && !!held && Date.now() - held.at < CHAIN_AGE && (held.window === startWindow || (held.pid !== null && held.pid === startPid))
+  const chained = !flow && follows(held, startWindow, startPid)
   const startRead = start && !start.title.trim() ? await look(start) : null
   const startAlert = !!startRead && isAlert(startRead.text)
   const startKept = start && startRead?.snap && startRead.nodes ? { id: start.id, snap: startRead.snap, nodes: startRead.nodes } : undefined
@@ -326,7 +326,7 @@ async function perform(p: Params): Promise<Result> {
     const dirty = recs.some((r) => r?.unsaved)
     let chain: Chain | null = null; const prev = held
     if (plan[0]?.app && !(p.start ?? 0)) chain = { at: Date.now(), window: null, pid: null, params: { ...(p.params ?? {}) }, steps: ran, dirty, usage: plus({}, desk.usage) }
-    else if (prev && Date.now() - prev.at < CHAIN_AGE && (prev.window === startWindow || (prev.pid !== null && prev.pid === startPid))) chain = { ...prev, at: Date.now(), params: { ...prev.params, ...(p.params ?? {}) }, steps: [...prev.steps, ...ran], dirty: prev.dirty || dirty, usage: plus(prev.usage, desk.usage) }
+    else if (follows(prev, startWindow, startPid)) chain = { ...prev, at: Date.now(), params: { ...prev.params, ...(p.params ?? {}) }, steps: [...prev.steps, ...ran], dirty: prev.dirty || dirty, usage: plus(prev.usage, desk.usage) }
     if (chain) {
       if (p.save) { chain.name = slug(p.save); chain.named = true }
       const changes = chain.steps.some((s) => s.check || s.set || s.type !== undefined || (s.menu && s.on !== undefined))
@@ -474,6 +474,7 @@ async function front(w: Win | null) {
   BG = false; fronted = true; foreground.steps += 1
 }
 function follow(w: Win, ws: Win[]) { target = w; doubt = null; targetSince = new Set(ws.map((x) => x.id)) }
+function follows(c: Chain | null, title: string | null, pid: number | null): c is Chain { return !!c && Date.now() - c.at < CHAIN_AGE && ((!!title && c.window === title) || (c.pid !== null && c.pid === pid)) }
 function rejoin(c: Chain | null, ws: Win[]) { const was = c && Date.now() - c.at < CHAIN_AGE ? ws.find((w) => w.title === c.window && w.pid === c.pid) : undefined; if (was) follow(was, ws) }
 // a macOS sheet has no window of its own, so its input goes to the window it hangs on
 function at(w: Win | null): desk.Target {

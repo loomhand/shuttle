@@ -114,6 +114,28 @@ test('a macOS alert of the app open before the plan stops every input step, name
   }
 })
 
+test('a plan with no app step acts in an untitled dialog of another process right after a plan of another app left its chain at an untitled window, and a call of the same process continues the chain by its pid', { skip: process.platform !== 'darwin' }, async (t) => {
+  const other = { id: '301', title: '', role: 'dialog', pid: 3000, active: true, app: 'Other' }
+  const alert = { id: '201', title: '', role: 'dialog', pid: 1966, active: true, app: 'R89Kit' }
+  let ws = [other]; const pressed: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify(ws)
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: ws[0], nodes: [{ ref: 0, id: `${ws[0]?.id}/0`, parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }, { ref: 1, id: `${ws[0]?.id}/1`, parent: 0, depth: 1, role: 'button', name: 'OK', states: ['showing'] }], truncated: false })
+    if (tool === 'desk_press') pressed.push(args.id)
+    return '{"ok":true}'
+  })
+  rmSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, { force: true })
+  assert.equal((await plan({ steps: [{ app: 'Other' }] })).ok, true)
+  ws = [alert]
+  const fresh = await plan({ steps: [{ click: 'OK' }] })
+  assert.equal(fresh.ok, true, JSON.stringify(fresh))
+  assert.deepEqual(pressed, ['201/1'])
+  ws = [other]
+  const same = await plan({ steps: [{ click: 'OK' }] })
+  assert.equal(same.escalate?.reason, ALONE.replace('R89Kit', 'Other'), JSON.stringify(same))
+  assert.deepEqual(pressed, ['201/1'])
+})
+
 test('a call that continues the chain of a plan that named its app stops at an untitled dialog of the app open before the plan, also when it is retried from a later step', { skip: process.platform !== 'darwin' }, async (t) => {
   const alert = { id: '201', title: '', role: 'dialog', pid: 1966, active: true, app: 'R89Kit' }
   const doc = { id: '198', title: 'r89aN3', role: 'window', pid: 1966, active: false, app: 'R89Kit' }
