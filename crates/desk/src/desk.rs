@@ -416,12 +416,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if window.is_none() && pid.is_none() {
             return Ok(false);
         }
-        let raises = match tool {
-            "desk_key" | "desk_type" => pid.is_some() || self.os != Os::Linux,
-            "desk_scroll" => args["x"].is_null(),
-            _ => false,
-        };
-        if raises {
+        if matches!(tool, "desk_key" | "desk_type")
+            || (tool == "desk_scroll" && args["x"].is_null())
+        {
             return Ok(true);
         }
         self.focus(WindowArgs {
@@ -1962,8 +1959,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         window: Option<&str>,
         pid: Option<u32>,
     ) -> Result<Option<(i64, i64)>, String> {
-        let named = pid.is_some() || (self.os != Os::Linux && window.is_some());
-        if self.bg() || !named {
+        if self.bg() || (window.is_none() && pid.is_none()) {
             return Ok(None);
         }
         let (_, w, _) = self.pick_window(window, pid).await?;
@@ -3766,6 +3762,31 @@ pub(crate) mod tests {
             "1 of 3 lines and the Return after line 1 were typed, then the window left the front, so the rest were not sent"
         );
         assert_eq!(sent(&calls, "press_key").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn on_linux_foreground_keys_and_text_named_by_title_alone_raise_their_window_first() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Linux);
+        desk.run("desk_key", json!({"keys": "a", "window": "Inbox"}))
+            .await
+            .unwrap();
+        desk.run("desk_type", json!({"text": "r89k", "window": "Inbox"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            order(&calls),
+            [
+                "bring_to_front -",
+                "press_key desktop",
+                "bring_to_front -",
+                "type_text desktop"
+            ]
+        );
+        assert_eq!(
+            sent(&calls, "bring_to_front"),
+            vec![json!({"pid": 8, "window_id": 2}); 2]
+        );
     }
 
     #[tokio::test]
