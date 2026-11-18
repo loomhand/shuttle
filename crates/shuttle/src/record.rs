@@ -380,7 +380,8 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                         }
                         let named = match pid {
                             Some(_) => of_pid(&windows, pid),
-                            None => front.as_ref(),
+                            None if apps.is_empty() => front.as_ref(),
+                            None => None,
                         };
                         let app = named.and_then(|w| w["app"].as_str()).map(str::to_owned);
                         if (app.is_none() && pid.is_some()) || pid == Some(u64::from(std::process::id())) || !kept(app.as_deref(), named.and_then(|w| w["bundle"].as_str()), pid, &apps) {
@@ -1113,6 +1114,18 @@ mod tests {
         };
         let r = run(&desk, &["TextEdit"], vec![typed]).await;
         assert_eq!(r["events"][0]["kind"], "key", "{r}");
+    }
+
+    #[tokio::test]
+    async fn a_key_that_no_app_can_be_named_for_is_skipped_under_an_app_list() {
+        let desk = Desk::new(json!({}));
+        let listed = run(&desk, &["TextEdit"], vec![key("x", false)]).await;
+        assert_eq!(
+            listed["events"][0],
+            json!({"t": listed["events"][0]["t"], "kind": "skipped"})
+        );
+        let open = run(&desk, &[], vec![key("x", false)]).await;
+        assert_eq!(open["events"][0]["app"], "TextEdit", "{open}");
     }
 
     #[cfg(target_os = "macos")]
