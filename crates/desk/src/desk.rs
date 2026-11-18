@@ -68,6 +68,7 @@ pub(crate) const CALL_LIMIT: Duration = Duration::from_secs(3);
 pub(crate) const RAISE_WAIT: Duration = Duration::from_millis(500);
 pub(crate) const WAIT_POLL: Duration = Duration::from_millis(10);
 pub(crate) const BUSY: &str = "desk busy: a previous action is still running";
+pub(crate) const CLOSE_UNANSWERED: &str = "the app was sent the close and did not answer within 500 ms, so the window may still be closing, be asking to save, or not respond: read the window list before closing again";
 #[cfg(target_os = "linux")]
 pub(crate) const TYPER: Typer = crate::xtest::type_mapped;
 #[cfg(not(target_os = "linux"))]
@@ -1002,11 +1003,17 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .run(CALL_LIMIT, turn, move |b| {
                 let listed = frames(b, a.pid, &allow)?;
                 let frame = live(pick(b, &allow, background, listed, Some(&a.window), a.pid)?.0)?;
-                b.close(&frame)?;
-                Ok(
-                    Value::from_iter([("ok", Value::from(true)), ("title", frame.title.into())])
-                        .to_string(),
-                )
+                let note = match b.close(&frame) {
+                    Ok(()) => None,
+                    Err(e) if e == CLOSE_UNANSWERED => Some(e),
+                    Err(e) => return Err(e),
+                };
+                let mut out =
+                    Value::from_iter([("ok", Value::from(true)), ("title", frame.title.into())]);
+                if let Some(note) = note {
+                    out["unverified"] = note.into();
+                }
+                Ok(out.to_string())
             })
             .await
     }
@@ -7220,6 +7227,32 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_close_the_app_does_not_answer_in_time_is_ok_with_a_note_and_another_failure_stays_an_error()
+     {
+        let windows = || {
+            Ok(Stub {
+                frames: vec![
+                    frame("plain", "Plain", 4, true, None),
+                    frame("asking", "Asking", 4, false, None),
+                    frame("dead", "Dead", 4, false, None),
+                ],
+                ..Stub::default()
+            })
+        };
+        let desk = Desk::new(windows, Slow(Arc::default()), Os::Mac);
+        let reply = |out: Output| serde_json::from_str::<Value>(&out.text).unwrap();
+        let plain = desk.run("desk_close", json!({"window": "Plain"})).await;
+        assert_eq!(reply(plain.unwrap()), json!({"ok": true, "title": "Plain"}));
+        let asking = desk.run("desk_close", json!({"window": "Asking"})).await;
+        assert_eq!(
+            reply(asking.unwrap()),
+            json!({"ok": true, "title": "Asking", "unverified": CLOSE_UNANSWERED})
+        );
+        let dead = desk.run("desk_close", json!({"window": "Dead"})).await;
+        assert_eq!(dead.unwrap_err(), "the close button did not respond");
+    }
+
+    #[tokio::test]
     async fn a_snapshot_takes_the_menu_bar_only_when_asked_and_find_always_searches_it() {
         let desk = Desk::new(|| Ok(notepad()), Slow(Arc::default()), Os::Mac);
         desk.run("desk_snapshot", json!({})).await.unwrap();
@@ -9587,7 +9620,11 @@ pub(crate) mod tests {
 
         fn close(&mut self, frame: &Frame) -> Result<(), String> {
             self.closed.push(frame.id.clone());
-            Ok(())
+            match frame.id.as_str() {
+                "asking" => Err(CLOSE_UNANSWERED.into()),
+                "dead" => Err("the close button did not respond".into()),
+                _ => Ok(()),
+            }
         }
 
         fn shells(&mut self) -> Vec<u32> {

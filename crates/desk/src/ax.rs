@@ -22,6 +22,7 @@ use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 use objc2_foundation::NSString;
 
 use crate::ax_roles::{self, Facts, Kind};
+use crate::desk::CLOSE_UNANSWERED;
 use crate::keys::ax_combo;
 use crate::lock;
 use crate::model::{
@@ -664,10 +665,10 @@ impl Access for Ax {
     fn close(&mut self, frame: &Frame) -> Result<(), String> {
         let w = self.element(&frame.id)?;
         let button = attr(&w, "AXCloseButton").ok_or("the window has no close button")?;
-        if perform(&button, "AXPress") {
-            Ok(())
-        } else {
-            Err("the close button did not respond".to_owned())
+        match perform_code(&button, "AXPress") {
+            AX_SUCCESS => Ok(()),
+            AX_CANNOT_COMPLETE => Err(CLOSE_UNANSWERED.to_owned()),
+            _ => Err("the close button did not respond".to_owned()),
         }
     }
 }
