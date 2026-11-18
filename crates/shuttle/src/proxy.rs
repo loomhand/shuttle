@@ -61,7 +61,7 @@ async fn started(endpoint: &str) -> Result<(Conn, Option<Child>), String> {
 
 async fn daemon_error(mut child: Child, e: String) -> String {
     match tokio::time::timeout(EXIT_WAIT, child.wait()).await {
-        Ok(Ok(status)) => exited(status),
+        Ok(Ok(status)) => format!("{e}; {}", exited(status)),
         _ => e,
     }
 }
@@ -167,7 +167,11 @@ mod tests {
     async fn a_started_daemon_that_exits_before_it_answers_names_its_exit() {
         let gone = Command::new("sh").args(["-c", "exit 3"]).spawn().unwrap();
         let err = daemon_error(gone, "read frame length: early eof".to_owned()).await;
-        assert!(err.contains("exited with exit status: 3"), "{err}");
+        assert!(
+            err.starts_with("read frame length: early eof; ")
+                && err.contains("exited with exit status: 3"),
+            "{err}"
+        );
         let alive = Command::new("sleep")
             .arg("5")
             .kill_on_drop(true)
@@ -199,7 +203,12 @@ mod tests {
             tool: "desk_type".into(),
             args: serde_json::json!({"text": "once"}),
         };
-        assert!(call(&endpoint, &ask).await.is_err());
+        let err = call(&endpoint, &ask).await.unwrap_err();
+        assert!(
+            err.contains("closed the connection before it answered desk_type")
+                && err.contains("whether it ran is not known"),
+            "{err}"
+        );
         assert_eq!(*seen.lock().unwrap(), 1);
     }
 

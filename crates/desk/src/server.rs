@@ -376,7 +376,12 @@ pub async fn connect(endpoint: &str) -> std::io::Result<Conn> {
 /// Sends `call` on `conn` and reads its output.
 pub async fn exchange(mut conn: Conn, call: &Call) -> Result<Output, String> {
     write_frame(&mut conn, call).await?;
-    read_frame(&mut conn).await
+    read_frame(&mut conn).await.map_err(|e| {
+        format!(
+            "the daemon closed the connection before it answered {}, so whether it ran is not known: check its effect before sending it again ({e})",
+            call.tool
+        )
+    })
 }
 
 /// This OS's desk with the computer verbs, its input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.

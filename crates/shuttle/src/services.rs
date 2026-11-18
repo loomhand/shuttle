@@ -588,6 +588,22 @@ server.serve_forever()
     }
 
     #[tokio::test]
+    async fn a_service_that_closes_without_an_answer_leaves_whether_the_call_ran_unknown() {
+        let s = served(Guard::default()).await;
+        let call = Call {
+            agent_id: "agent-1".into(),
+            tool: "demo_gone".into(),
+            args: json!({}),
+        };
+        let err = server::call(&s.endpoint, &call).await.unwrap_err();
+        assert!(
+            err.contains("before it answered demo_gone, so whether it ran is not known"),
+            "{err}"
+        );
+        s.stop().await;
+    }
+
+    #[tokio::test]
     async fn script_run_off_leaves_a_service_running_and_routed() {
         let s = served(Guard {
             script_run: false,
@@ -793,7 +809,7 @@ server.serve_forever()
                     "service": "demo",
                     "bin": bin,
                     "args": [state],
-                    "tools": [tool("demo_echo", true), tool("demo_stream", false), tool("demo_blob", false), tool("demo_hold", false), tool("demo_early", false)],
+                    "tools": [tool("demo_echo", true), tool("demo_stream", false), tool("demo_blob", false), tool("demo_hold", false), tool("demo_early", false), tool("demo_gone", false)],
                 }))
                 .unwrap(),
             ],
