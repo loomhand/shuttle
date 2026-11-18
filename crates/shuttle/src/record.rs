@@ -1245,6 +1245,31 @@ mod tests {
     }
 
     #[test]
+    fn a_start_whose_tap_fails_leaves_the_next_start_free_to_try() {
+        let r = Recorder::new(std::env::temp_dir(), Arc::default());
+        let failed = r.start_with(
+            Vec::new(),
+            || false,
+            Vec::new,
+            |_, _, _, _| Err::<((), bool), _>("no event tap".to_owned()),
+        );
+        assert_eq!(failed, Err("no event tap".to_owned()));
+        assert!(!r.recording());
+        let mut tried = false;
+        let next = r.start_with(
+            Vec::new(),
+            || false,
+            Vec::new,
+            |_, _, _, _| {
+                tried = true;
+                Ok(((), false))
+            },
+        );
+        assert!(tried && next.is_ok(), "{next:?}");
+        r.end();
+    }
+
+    #[test]
     fn a_second_start_while_one_is_live_is_refused() {
         let r = Recorder::new(std::env::temp_dir(), Arc::default());
         let first = r.start_with(Vec::new(), || false, Vec::new, |_, _, _, _| Ok(((), false)));
