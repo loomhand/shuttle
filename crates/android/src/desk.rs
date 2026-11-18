@@ -73,14 +73,10 @@ impl Node {
 
     /// Whether the name, description or value contains lowercase `q`, ignoring their case.
     pub(crate) fn mentions(&self, q: &str) -> bool {
-        [
-            Some(self.name.as_str()),
-            Some(self.description.as_str()),
-            self.value.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        .any(|t| t.to_lowercase().contains(q))
+        [self.name.as_str(), self.description.as_str()]
+            .into_iter()
+            .chain(self.value.as_deref())
+            .any(|t| t.to_lowercase().contains(q))
     }
 
     /// The part of the element that shows: its bounds cut to its list and the screen; none when nothing shows.
@@ -507,18 +503,6 @@ fn package_pid(package: &str) -> u32 {
     PID_BASE + hash % PID_BASE
 }
 
-/// The window an id or title names, else the focused one, with its nodes: the window itself first.
-async fn tree(
-    android: &Android,
-    id: Option<&str>,
-    title: Option<&str>,
-    pid: Option<u32>,
-) -> Result<(Frame, Vec<Node>), String> {
-    let frame = picked(android, id, title, pid).await?;
-    let nodes = dumped(android, &frame).await?;
-    Ok((frame, nodes))
-}
-
 async fn picked(
     android: &Android,
     id: Option<&str>,
@@ -558,7 +542,7 @@ async fn dumped(android: &Android, frame: &Frame) -> Result<Vec<Node>, String> {
 }
 
 async fn dump(android: &Android, frame: &Frame) -> Result<(Vec<Node>, bool), String> {
-    let xml = android.tree(Some(&frame.id)).await?;
+    let xml = android.tree(&frame.id).await?;
     let raws = raws(&xml);
     Ok((nodes(frame, &raws), !raws.is_empty()))
 }
@@ -655,15 +639,13 @@ fn bounds(value: &str) -> Option<Rect> {
         .map(str::parse)
         .collect::<Result<_, _>>()
         .ok()?;
-    match nums[..] {
-        [left, top, right, bottom] => Some(Rect {
-            left,
-            top,
-            right,
-            bottom,
-        }),
-        _ => None,
-    }
+    let [left, top, right, bottom] = <[i32; 4]>::try_from(nums).ok()?;
+    Some(Rect {
+        left,
+        top,
+        right,
+        bottom,
+    })
 }
 
 /// The window, then each element that shows text or takes input; a toggle in a checkable row is the row.
@@ -880,7 +862,8 @@ fn outline(nodes: &[Node], app: &str, max_chars: usize) -> String {
 }
 
 async fn find(android: &Android, a: FindArgs) -> Result<String, String> {
-    let (frame, nodes) = tree(android, None, a.window.as_deref(), a.pid).await?;
+    let frame = picked(android, None, a.window.as_deref(), a.pid).await?;
+    let nodes = dumped(android, &frame).await?;
     let found: Vec<Value> = matches(&nodes, &a.name, a.role.as_deref())
         .into_iter()
         .take(MAX_FOUND)
@@ -987,7 +970,8 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
 
 /// The innermost element at a screen point, with its ancestors.
 async fn at(android: &Android, a: AtArgs) -> Result<String, String> {
-    let (frame, nodes) = tree(android, None, a.window.as_deref(), a.pid).await?;
+    let frame = picked(android, None, a.window.as_deref(), a.pid).await?;
+    let nodes = dumped(android, &frame).await?;
     let inside = |n: &Node| {
         let [x, y, w, h] = n.bounds;
         a.x >= x && a.x < x + w && a.y >= y && a.y < y + h

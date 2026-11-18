@@ -148,7 +148,8 @@ impl Android {
         let args: StateArgs = parse(args)?;
         let mut tries = 0;
         let (xml, shot, front) = loop {
-            let (xml, shot, front) = tokio::join!(self.tree(None), self.look(), desk::front(self));
+            let (xml, shot, front) =
+                tokio::join!(self.served("dump"), self.look(), desk::front(self));
             let (xml, front) = (xml?, front?);
             if desk::same_window(&xml, &front) {
                 break (xml, shot, front);
@@ -373,12 +374,9 @@ impl Android {
             .await
     }
 
-    /// The UI tree of window `window`, else of the active one, from the UI server.
-    pub(crate) async fn tree(&self, window: Option<&str>) -> Result<String, String> {
-        match window {
-            Some(w) => self.served(&format!("dump {w}")).await,
-            None => self.served("dump").await,
-        }
+    /// The UI tree of window `window` from the UI server.
+    pub(crate) async fn tree(&self, window: &str) -> Result<String, String> {
+        self.served(&format!("dump {window}")).await
     }
 
     /// Whether the element at `path` of window `window` took the UI server's request to scroll itself into view.
