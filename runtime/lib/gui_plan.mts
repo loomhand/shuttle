@@ -695,7 +695,7 @@ function gtkToggle(pid: number, label: string): boolean | null {
 async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept?: Kept): Promise<Win> {
   const t0 = Date.now()
   if (!want) {
-    const ws = await current(); let w = frontOf(ws)
+    const ws = picked = await current(); let w = frontOf(ws)
     if (BG && !w) { tick('wait', t0); throw new Surprise('background gui_plan has no target window: start the plan with an app step, or name the window with a wait step') }
     const [plan, ...twins] = !w && lastSeen ? ws.filter((x) => x.title === lastSeen) : []
     if (plan && !twins.length) { w = plan; await desk.focus(w.title, w.pid, twinId(w, ws)) }
@@ -732,8 +732,9 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
   }
 }
 function modalOver(w: Win, under: Win) {
-  if (OS === 'darwin' && w.role === 'dialog' && !w.title.trim() && w.owner === undefined && w.pid === under.pid && w.id !== under.id) throw new Surprise(`an untitled dialog of "${w.app ?? under.title}" is in front of "${under.title}", and on macOS such an alert takes all of its app's input until it closes: nothing was sent; answer it in a plan that starts with it in front, or close it with {close: true}`)
+  if (alertIn(w, under)) throw new Surprise(`an untitled dialog of "${w.app ?? under.title}" is in front of "${under.title}", and on macOS such an alert takes all of its app's input until it closes: nothing was sent; answer it in a plan that starts with it in front, or close it with {close: true}`)
 }
+function alertIn(w: Win, under: Win) { return OS === 'darwin' && w.role === 'dialog' && !w.title.trim() && w.owner === undefined && w.pid === under.pid && w.id !== under.id }
 function awaited(title: string, want: string, saw?: string) { return norm(title).includes(norm(want)) || (!!saw && title === saw) }
 function found(w: Win, t0: number): Win { known.add(w.title); tick('wait', t0); return w }
 
@@ -1349,6 +1350,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.type !== undefined) {
     await refocused()
     const nl = s.type.endsWith('\n'); const ws = await current(nl ? OPENING : SETTLE); const w = frontOf(ws); const t0 = Date.now()
+    if (w) for (const x of ws) modalOver(x, w)
     if (BG && !w) throw new Surprise('background gui_plan has no target window to type into: start the plan with an app step, or name the window with a wait step')
     if (s.web && w) await onPage(s.web, w)
     if (s.focus && s.focus !== 'unverified') await typingInto(s.focus, w)
@@ -1401,7 +1403,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   }
   if (s.key) {
     await refocused()
-    const w = frontOf(await listNow())
+    const ws = await listNow(); const w = frontOf(ws)
+    if (w) for (const x of ws) modalOver(x, w)
     if (BG && !w) throw new Surprise('background gui_plan has no target window for the key: start the plan with an app step, or name the window with a wait step')
     const o = /^(enter|return)$/i.test(s.key) && w ? (await filled(w, kept)).text : ''
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
@@ -1434,11 +1437,14 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     tick('act', t0); if (!await closed(title, pid, id)) throw new Surprise(`"${title}" is still open after Escape and a close`, await seen())
     return
   }
-  const w = await windowFor(s.window, 3000, s.seen, kept)
+  let w = await windowFor(s.window, 3000, s.seen, kept)
+  const r = reads(s); const goal = s.click ?? s.check ?? s.set ?? s.menu
+  const over = goal === undefined ? undefined : picked.find((x) => alertIn(x, w))
+  const own = over && await readTree(over, r)
+  if (over && own) { if (!await resolve(own.nodes, goal ?? '', targetRole(s), undefined, 0.7, undefined, false)) modalOver(over, w); w = over }
   rec.seen = w.title; if (w.title.trim()) lastSeen = w.title
   let t0 = Date.now(); let tree: Tree
-  const r = reads(s)
-  try { tree = reuse(kept, w, r) ?? await readTree(w, r) } catch (e: unknown) { await unblocked(e, w); throw e }
+  try { tree = own || (reuse(kept, w, r) ?? await readTree(w, r)) } catch (e: unknown) { await unblocked(e, w); throw e }
   tick('snap', t0)
   const aim = s.verify ?? s.click ?? s.check
   let read = r

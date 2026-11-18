@@ -65,3 +65,25 @@ test('a macOS click step with an untitled app-modal alert of the app in front st
   assert.equal(r.escalate?.reason, 'an untitled dialog of "R89Kit" is in front of "r89aN3", and on macOS such an alert takes all of its app\'s input until it closes: nothing was sent; answer it in a plan that starts with it in front, or close it with {close: true}')
   assert.deepEqual(pressed, ['198/1'])
 })
+
+test('a macOS alert of the app open before the plan stops a step meant for the window behind it with nothing sent, and a click on its own button goes through', { skip: process.platform !== 'darwin' }, async (t) => {
+  for (const step of [{ click: 'Tool' }, { click: 'Tool', window: 'r89aN3' }, { type: 'x' }, { key: 'cmd+s' }, { click: 'OK' }]) {
+    const doc = { id: '198', title: 'r89aN3', role: 'window', pid: 1966, active: true, app: 'R89Kit' }
+    const alert = { id: '201', title: '', role: 'dialog', pid: 1966, active: false, app: 'R89Kit' }
+    const nodes = [{ ref: 0, id: '198/0', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }, { ref: 1, id: '198/2', parent: 0, depth: 1, role: 'button', name: 'Tool', states: ['showing'] }]
+    const own = [{ ref: 0, id: '201/0', parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }, { ref: 1, id: '201/1', parent: 0, depth: 1, role: 'button', name: 'OK', states: ['showing'] }]
+    let open = true; const sent: string[] = []
+    await daemon(t, ({ tool, args }) => {
+      if (tool === 'desk_windows') return JSON.stringify(open ? [doc, alert] : [doc])
+      if (tool === 'desk_snapshot') return JSON.stringify(args.window === '' || args.id === alert.id ? { window: alert, nodes: own, truncated: false } : { window: doc, nodes, truncated: false })
+      if (tool === 'desk_press') { sent.push(String(args.id)); open &&= args.id !== '201/1'; return '{"ok":true,"how":"action"}' }
+      if (tool === 'desk_type' || tool === 'desk_key') sent.push(tool)
+      return '{"ok":true}'
+    })
+    const r = await plan({ steps: [{ app: 'R89Kit' }, step] })
+    if (step.click === 'OK') { assert.equal(r.ok, true, JSON.stringify(r)); assert.deepEqual(sent, ['201/1']); continue }
+    assert.equal(r.escalate?.step, 1, `${JSON.stringify(step)} ${JSON.stringify(r)}`)
+    assert.equal(r.escalate?.reason, 'an untitled dialog of "R89Kit" is in front of "r89aN3", and on macOS such an alert takes all of its app\'s input until it closes: nothing was sent; answer it in a plan that starts with it in front, or close it with {close: true}')
+    assert.deepEqual(sent, [], JSON.stringify(step))
+  }
+})
