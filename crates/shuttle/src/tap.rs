@@ -291,7 +291,6 @@ fn read(e: &Event, kind: u32, seen: &Seen) -> Option<Input> {
         }
         KEY_DOWN => {
             let (pid, secret) = ax::typing();
-            let pid = pid.or_else(ax::front_app);
             let read = seen.fresh.get();
             let focus = if read { focused() } else { None };
             let text = if secret {
@@ -407,6 +406,11 @@ mod tests {
             ],
             ["c", "c", "[", "ç", "\u{1b}"]
         );
+    }
+
+    #[test]
+    fn typing_names_the_app_in_front_when_no_focused_element_names_one() {
+        assert!(ax::typing().0.is_some() || ax::front_app().is_none());
     }
 
     #[link(name = "CoreGraphics", kind = "framework")]

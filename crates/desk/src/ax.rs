@@ -928,13 +928,14 @@ pub fn secure_keyboard_entry(wanted: impl Fn(&str) -> bool) -> Option<&'static s
     .map(|(app, ..)| *app)
 }
 
-/// The process of the focused element, and whether typing goes to a password field.
+/// The process of the focused element, or the app in front when no element is named, and whether typing goes to a password field.
 pub fn typing() -> (Option<u32>, bool) {
     let focused = attr(&system_wide(), "AXFocusedUIElement");
     let pid = focused
         .as_ref()
         .and_then(pid)
-        .and_then(|p| u32::try_from(p).ok());
+        .and_then(|p| u32::try_from(p).ok())
+        .or_else(front_app);
     let secure = secure_input();
     let field = focused.is_some_and(|f| {
         [attr(&f, "AXSubrole"), attr(&f, "AXRole")]
