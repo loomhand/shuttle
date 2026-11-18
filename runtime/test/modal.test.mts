@@ -55,6 +55,22 @@ test('a close step fails when the dialog it closes stays open', async (t) => {
   assert.ok(calls.includes('desk_close'), calls.join(' '))
 })
 
+test('a close step closes the dialog it read by its id, and a dialog of the same title and process stays and does not fail it', async (t) => {
+  const editor = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: false }
+  const finds = [{ id: '2', title: 'Find', role: 'dialog', pid: process.pid, active: true }, { id: '3', title: 'Find', role: 'dialog', pid: process.pid, active: false }]
+  const closes: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([editor, ...finds])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: finds[0], truncated: false, nodes: [{ ref: 0, id: '2/1', parent: -1, depth: 0, role: 'dialog', name: 'Find', states: ['showing'] }] })
+    if (tool === 'desk_close') { closes.push(args.id); finds.splice(finds.findIndex((f) => f.id === args.id), 1); editor.active = true }
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ close: true }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(closes, ['2'])
+  assert.deepEqual(finds.map((f) => f.id), ['3'])
+})
+
 test('a close step with no window in front and a window listed as not answering sends nothing and is not ok', async (t) => {
   const panel = { id: '1.2/38', title: '', role: 'window', pid: 1206, active: false, app: 'xfce4-panel', shell: true }
   const editor = { id: '1.9/116', title: '~/a.txt - Mousepad', role: 'window', pid: 1339, active: false, app: 'mousepad', stale: true }

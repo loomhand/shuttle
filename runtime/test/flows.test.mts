@@ -217,6 +217,26 @@ test('a literal value set into a password field that reads back otherwise stops 
   for (const text of [JSON.stringify(r), disk]) assert.ok(!text.includes('hunter2'), text)
 })
 
+test('a replay fronts the window of its own read by id among two of one title, and the saved flow holds no window id', async (t) => {
+  let docs: { id: string; title: string; role: string; pid: number; active: boolean; app: string }[] = []
+  const focused: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([{ id: 'calc', title: 'Calculator', role: 'window', pid: 9, active: !docs.some((d) => d.active) }, ...docs])
+    if (tool === 'desk_focus') { focused.push(args.id); for (const d of docs) d.active = d.id === args.id; return JSON.stringify({ ok: true, title: args.window, pid: args.pid }) }
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: docs[0], truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: 'Untitled', states: ['showing'] }] })
+    return '{"ok":true}'
+  })
+  const two = (a: string, b: string) => [a, b].map((id) => ({ id, title: 'Untitled', role: 'window', pid: process.pid, active: false, app: 'TextEdit' }))
+  docs = two('w-41', 'w-42')
+  const first = await main({ steps: [{ app: 'TextEdit' }, { key: 'ctrl+b' }], save: 'bold-twins' })
+  assert.equal(first.saved, 'bold-twins', JSON.stringify(first))
+  docs = two('w-51', 'w-52')
+  const replay = await main({ flow: 'bold-twins' })
+  assert.equal(replay.ok, true, JSON.stringify(replay))
+  assert.deepEqual(focused, ['w-41', 'w-51'])
+  assert.ok(!readFileSync(`${process.env.SHUTTLE_FLOWS}/bold-twins.json`, 'utf8').includes('w-'), readFileSync(`${process.env.SHUTTLE_FLOWS}/bold-twins.json`, 'utf8'))
+})
+
 test('a flow saved with the password of a set into a password field drops it when a replay rewrites the flow', async (t) => {
   let value: string | undefined
   const field = () => ({ ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'protected'], ...(value === undefined ? {} : { value }) })

@@ -24,6 +24,23 @@ test('an app step finds a running app by the app its windows name, whatever thei
   assert.ok(!calls.includes('desk_launch'), calls.join(' '))
 })
 
+test('an app step and a named window step front the window they read by its id, also when another window of the process has its title', async (t) => {
+  const docs = [{ id: '41', title: 'Untitled', role: 'window', pid: process.pid, active: false, app: 'TextEdit' }, { id: '42', title: 'Untitled', role: 'window', pid: process.pid, active: false, app: 'TextEdit' }, { id: '43', title: 'Report', role: 'window', pid: process.pid, active: false, app: 'TextEdit' }]
+  const focused: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([{ id: 'c', title: 'Calculator', role: 'window', pid: 9, active: !docs.some((d) => d.active) }, ...docs])
+    if (tool === 'desk_focus') { focused.push(args.id); for (const d of docs) d.active = d.id === args.id; return JSON.stringify({ ok: true, title: args.window, pid: args.pid }) }
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: docs[0], nodes: [], truncated: false })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'TextEdit' }, { key: 'ctrl+b' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  for (const d of docs) d.active = false
+  const named = await main({ steps: [{ wait: 'Report' }] })
+  assert.equal(named.ok, true, JSON.stringify(named))
+  assert.deepEqual(focused, ['41', '43'])
+})
+
 test('an app step finds a running app by the bundle its localized windows come from', async (t) => {
   const doc = { id: '1', title: '未命名', role: 'window', pid: process.pid, active: false, app: '文本编辑', bundle: 'TextEdit' }
   const calls: string[] = []
