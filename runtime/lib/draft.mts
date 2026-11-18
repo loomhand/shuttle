@@ -109,7 +109,8 @@ export async function main(p: Params): Promise<Draft> {
       if (el.role === 'menu' && next?.element?.role === 'menuitem') continue
       const prev = events.findLast((n, j) => j < i && n.kind === 'click')
       if (el.role === 'menuitem' && prev?.element?.role === 'menu') {
-        const menu = `${prev.element.name} > ${el.name}`
+        const chain = (e.path ?? []).filter((n) => n.role === 'menu').map((n) => n.name).reverse()
+        const menu = [...(chain.length ? chain : [prev.element.name]), el.name].join(' > ')
         draft.steps.push({ menu, intent: `choose ${menu}` })
         continue
       }

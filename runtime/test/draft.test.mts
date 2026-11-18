@@ -326,6 +326,16 @@ test('a typed run that a retitled window splits from the keys before it, with no
   assert.deepEqual(d.steps.filter((s) => 'type' in s).map(({ type, focus }) => ({ type, focus })), [{ type: 'a', focus: field }, { type: 'b', focus: 'unverified' }])
 })
 
+test('a submenu choice drafts the whole menu path its item\'s menus recorded', async (t) => {
+  await daemon(t, () => '{"ok":true}')
+  const events: Event[] = [
+    { t: 0, kind: 'click', x: 135, y: 14, app: 'Preview', element: { role: 'menu', name: 'File' }, root: false, crop },
+    { t: 1, kind: 'click', x: 300, y: 120, app: 'Preview', element: { role: 'menuitem', name: 'PDF' }, root: false, crop, path: [{ role: 'generic', name: '' }, { role: 'menu', name: 'Export' }, { role: 'generic', name: '' }, { role: 'menu', name: 'File' }, { role: 'menubar', name: '' }] },
+  ]
+  const d = await main({ recording: { id: 'rec-19', events } })
+  assert.deepEqual(d.steps.map(({ intent: _, ...s }) => s), [{ app: 'Preview' }, { menu: 'File > Export > PDF' }])
+})
+
 test('an Option-typed character stays inside its typed run', async (t) => {
   await daemon(t, () => '{"ok":true}')
   const events: Event[] = [...keys('an'), { t: 2, kind: 'key', code: 37, text: '@', mods: ['alt'], app: 'TextEdit' }, ...keys('b.de')]
