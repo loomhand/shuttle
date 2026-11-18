@@ -186,11 +186,7 @@ pub(crate) fn signal_group(group: u32, sig: libc::c_int) -> usize {
 /// Sends `sig` to the group `group` leads; 1 when it reached a process, so signal 0 tells whether one is left.
 #[cfg(all(unix, not(target_os = "linux")))]
 pub(crate) fn signal_group(group: u32, sig: libc::c_int) -> usize {
-    let Ok(pid) = libc::pid_t::try_from(group) else {
-        return 0;
-    };
-    // SAFETY: kill takes no pointers; the negative pid names the process group the child leads.
-    usize::from(unsafe { libc::kill(-pid, sig) } == 0)
+    signal_tree(group, sig)
 }
 
 /// Ends the group `group` leads: TERM, then KILL whatever is left after `grace`.
@@ -204,8 +200,8 @@ pub(crate) async fn end_group(group: u32, grace: Duration) {
 
 #[cfg(unix)]
 pub(crate) async fn end_process(pid: u32, grace: Duration) -> bool {
-    if signal_group(pid, libc::SIGTERM) > 0 {
-        kill_after(grace, |sig| signal_group(pid, sig)).await;
+    if signal_tree(pid, libc::SIGTERM) > 0 {
+        kill_after(grace, |sig| signal_tree(pid, sig)).await;
         return true;
     }
     if signal_pid(pid, libc::SIGTERM) == 0 {
@@ -248,6 +244,15 @@ pub(crate) fn signal_pid(pid: u32, sig: libc::c_int) -> usize {
     };
     // SAFETY: kill takes no pointers; `pid` names one process.
     usize::from(unsafe { libc::kill(pid, sig) } == 0)
+}
+
+#[cfg(unix)]
+fn signal_tree(group: u32, sig: libc::c_int) -> usize {
+    let Ok(pid) = libc::pid_t::try_from(group) else {
+        return 0;
+    };
+    // SAFETY: kill takes no pointers; the negative pid names the process group the child leads.
+    usize::from(unsafe { libc::kill(-pid, sig) } == 0)
 }
 
 /// KILLs whatever `signal` still reaches once `grace` has passed, or nothing once it reaches no process.

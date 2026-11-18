@@ -559,6 +559,38 @@ server.serve_forever()
     }
 
     #[tokio::test]
+    async fn a_left_copy_is_ended_with_the_children_in_its_process_group() {
+        use std::os::unix::process::CommandExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let born = dir.path().join("child");
+        let mut leader = std::process::Command::new("/bin/sh")
+            .args(["-c", r#"sleep 30 & echo $! > "$0"; wait"#])
+            .arg(&born)
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let mut child = 0;
+        assert!(
+            crate::until(100, || {
+                child = std::fs::read_to_string(&born)
+                    .ok()
+                    .and_then(|p| p.trim().parse().ok())
+                    .unwrap_or_default();
+                child > 0
+            })
+            .await
+        );
+        assert!(crate::end_process(leader.id(), STOP_WAIT).await);
+        let _ = leader.wait();
+        let gone = crate::until(40, || crate::signal_pid(child, 0) == 0).await;
+        if !gone {
+            crate::signal_pid(child, libc::SIGKILL);
+        }
+        assert!(gone, "the left copy's child {child} still runs");
+    }
+
+    #[tokio::test]
     async fn a_call_to_a_service_that_cannot_start_names_its_last_exit_or_start_error() {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
