@@ -302,13 +302,8 @@ impl Grabber {
 
     /// The window `_NET_ACTIVE_WINDOW` names, the one with keyboard focus.
     pub fn active(&self) -> Option<Window> {
-        let reply = self
-            .conn
-            .get_property(false, self.root, self.net_active, AtomEnum::WINDOW, 0, 1)
-            .ok()?
-            .reply()
-            .ok()?;
-        reply.value32()?.next().filter(|w| *w != 0)
+        self.first(self.root, self.net_active, AtomEnum::WINDOW)
+            .filter(|w| *w != 0)
     }
 
     /// Whether a window manager runs: the root's `_NET_SUPPORTING_WM_CHECK` names a window that exists.
@@ -507,13 +502,7 @@ impl Grabber {
 
     /// The `_NET_WM_PID` of window `w`.
     pub fn pid(&self, w: Window) -> Option<u32> {
-        let reply = self
-            .conn
-            .get_property(false, w, self.net_wm_pid, AtomEnum::CARDINAL, 0, 1)
-            .ok()?
-            .reply()
-            .ok()?;
-        reply.value32()?.next()
+        self.first(w, self.net_wm_pid, AtomEnum::CARDINAL)
     }
 
     /// The title and process of the window manager frame on top at the screen point `at` when it is not the frame of the window with accessibility `bounds`, process `pid` and name `title`; past the desktop shell's windows and the frames' shadows.
@@ -697,12 +686,13 @@ impl Grabber {
 
     /// The window `w` is transient for, if any.
     fn transient_for(&self, w: Window) -> Option<Window> {
-        self.conn
-            .get_property(false, w, AtomEnum::WM_TRANSIENT_FOR, AtomEnum::WINDOW, 0, 1)
-            .ok()
-            .and_then(|r| r.reply().ok())
-            .and_then(|r| r.value32().and_then(|mut v| v.next()))
+        self.first(w, AtomEnum::WM_TRANSIENT_FOR, AtomEnum::WINDOW)
             .filter(|w| *w != 0)
+    }
+
+    fn first(&self, w: Window, atom: impl Into<Atom>, kind: AtomEnum) -> Option<u32> {
+        let sent = self.conn.get_property(false, w, atom, kind, 0, 1);
+        sent.ok()?.reply().ok()?.value32()?.next()
     }
 
     /// Whether frame `w` or the client inside it is transient for `owner`, as a dialog that `owner` opened is.
