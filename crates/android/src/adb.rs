@@ -508,12 +508,14 @@ impl Android {
     async fn paste(&self, text: &str) -> Result<bool, String> {
         {
             let mut slot = self.control.lock().await;
-            let mut control = match slot.take() {
-                Some(control) if control.is_open() => control,
-                _ => self.open_control().await?,
+            let control = match slot.take() {
+                Some(control) if control.is_open() => slot.insert(control),
+                _ => slot.insert(self.open_control().await?),
             };
-            control.set_clipboard(text).await?;
-            *slot = Some(control);
+            if let Err(e) = control.set_clipboard(text).await {
+                *slot = self.open_control().await.ok();
+                return Err(e);
+            }
         }
         match tokio::time::timeout(PASTE_TIMEOUT, self.served("paste")).await {
             Ok(answer) => answer.map(|a| a.trim() == "true"),
@@ -761,6 +763,7 @@ impl Android {
         Ok(Control {
             stream,
             sequence: 0,
+            pending: false,
             _server: server,
             _forward: forward,
         })
@@ -870,28 +873,40 @@ impl UiServer {
 struct Control {
     stream: TcpStream,
     sequence: u64,
+    pending: bool,
     _server: Child,
     _forward: Forward,
 }
 
 impl Control {
-    /// Whether the server still holds the session; it sends nothing unasked, so anything readable is its end.
+    /// Whether the server still holds the session; it sends nothing unasked, so anything readable but a due acknowledgement is its end.
     fn is_open(&self) -> bool {
-        matches!(
-            self.stream.try_read(&mut [0; 1]),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-        )
+        self.pending
+            || matches!(
+                self.stream.try_read(&mut [0; 1]),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+            )
     }
 
     async fn set_clipboard(&mut self, text: &str) -> Result<(), String> {
+        if self.pending {
+            self.ack().await?;
+        }
         self.sequence += 1;
+        self.pending = true;
         self.stream
             .write_all(&clipboard_message(text, self.sequence))
             .await
             .map_err(|e| format!("send clipboard: {e}"))?;
+        self.ack().await
+    }
+
+    async fn ack(&mut self) -> Result<(), String> {
         tokio::time::timeout(ACK_TIMEOUT, read_ack(&mut self.stream, self.sequence))
             .await
-            .map_err(|_| "scrcpy control: no clipboard acknowledgement".to_owned())?
+            .map_err(|_| "scrcpy control: no clipboard acknowledgement".to_owned())??;
+        self.pending = false;
+        Ok(())
     }
 }
 
@@ -2324,6 +2339,73 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_type_dropped_while_its_clipboard_waits_for_the_ack_still_empties_it() {
+        let fake = Fake::new();
+        fake.put("focus.json", &focused(7, ""));
+        let mut peer = controlled(&fake.android).await;
+        let typing = fake
+            .android
+            .type_text("secret", None, || async { Ok(None) });
+        let mut set = vec![0; clipboard_message("secret", 1).len()];
+        tokio::select! {
+            _ = typing => panic!("the type ended without an acknowledgement"),
+            read = peer.read_exact(&mut set) => {
+                read.unwrap();
+            }
+        }
+        assert_eq!(set, clipboard_message("secret", 1));
+        let mut ack = vec![ACK_CLIPBOARD];
+        ack.extend_from_slice(&1u64.to_be_bytes());
+        peer.write_all(&ack).await.unwrap();
+        let mut clear = vec![0; clipboard_message("", 2).len()];
+        tokio::time::timeout(Duration::from_secs(5), peer.read_exact(&mut clear))
+            .await
+            .expect("no clear after the dropped type")
+            .unwrap();
+        assert_eq!(clear, clipboard_message("", 2));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clipboard_set_without_an_ack_is_emptied_through_a_new_session() {
+        let fake = Fake::new();
+        fake.put("focus.json", &focused(7, ""));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        fake.put("port", &listener.local_addr().unwrap().port().to_string());
+        let mut peer = controlled(&fake.android).await;
+        let device = tokio::spawn(async move {
+            let mut set = vec![0; clipboard_message("secret", 1).len()];
+            peer.read_exact(&mut set).await.unwrap();
+            drop(peer);
+            let (mut fresh, _) = listener.accept().await.unwrap();
+            fresh.write_all(&[0]).await.unwrap();
+            let mut clear = vec![0; clipboard_message("", 1).len()];
+            fresh.read_exact(&mut clear).await.unwrap();
+            let mut ack = vec![ACK_CLIPBOARD];
+            ack.extend_from_slice(&1u64.to_be_bytes());
+            fresh.write_all(&ack).await.unwrap();
+            (set, clear)
+        });
+        let typed = fake
+            .android
+            .type_text("secret", None, || async { Ok(None) })
+            .await;
+        assert_eq!(
+            typed,
+            Err("read scrcpy control: unexpected end of file".to_owned())
+        );
+        let sent = tokio::time::timeout(Duration::from_secs(5), device)
+            .await
+            .expect("no clear through a new session")
+            .unwrap();
+        assert_eq!(
+            sent,
+            (clipboard_message("secret", 1), clipboard_message("", 1))
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_double_tap_is_two_server_taps_inside_the_double_tap_window() {
         let fake = Fake::new();
         fake.put("inject.answer", "true");
@@ -3126,7 +3208,7 @@ mod tests {
             let adb = dir.path().join("adb");
             script(
                 &adb,
-                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi;;\n*screencap*) if [ -f \"$DIR/screencap.fail\" ]; then exit 1; fi; cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo start >> \"$DIR/starts\"\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) if [ -f \"$DIR/after-key-focus.json\" ]; then mv \"$DIR/after-key-focus.json\" \"$DIR/focus.json\"; fi; if [ -f \"$DIR/after-input.json\" ]; then mv \"$DIR/after-input.json\" \"$DIR/windows.json\"; fi; a=$(head -n 1 \"$DIR/inject.answer\" 2>/dev/null); if [ -f \"$DIR/inject.answer\" ] && [ \"$(wc -l < \"$DIR/inject.answer\")\" -ge 1 ]; then tail -n +2 \"$DIR/inject.answer\" > \"$DIR/inject.next\"; mv \"$DIR/inject.next\" \"$DIR/inject.answer\"; fi; if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      focus*) cat \"$DIR/focus.json\" 2>/dev/null;;\n      paste) if [ -f \"$DIR/after-paste.json\" ]; then mv \"$DIR/after-paste.json\" \"$DIR/focus.json\"; fi; printf true;;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
+                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"forward tcp:0\"*) cat \"$DIR/port\" 2>/dev/null;;\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi;;\n*screencap*) if [ -f \"$DIR/screencap.fail\" ]; then exit 1; fi; cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo start >> \"$DIR/starts\"\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) if [ -f \"$DIR/after-key-focus.json\" ]; then mv \"$DIR/after-key-focus.json\" \"$DIR/focus.json\"; fi; if [ -f \"$DIR/after-input.json\" ]; then mv \"$DIR/after-input.json\" \"$DIR/windows.json\"; fi; a=$(head -n 1 \"$DIR/inject.answer\" 2>/dev/null); if [ -f \"$DIR/inject.answer\" ] && [ \"$(wc -l < \"$DIR/inject.answer\")\" -ge 1 ]; then tail -n +2 \"$DIR/inject.answer\" > \"$DIR/inject.next\"; mv \"$DIR/inject.next\" \"$DIR/inject.answer\"; fi; if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      focus*) cat \"$DIR/focus.json\" 2>/dev/null;;\n      paste) if [ -f \"$DIR/after-paste.json\" ]; then mv \"$DIR/after-paste.json\" \"$DIR/focus.json\"; fi; printf true;;\n      dump*) if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
             );
             let android = android_at(adb);
             Self { dir, android }
@@ -3268,6 +3350,7 @@ mod tests {
         *android.control.lock().await = Some(Control {
             stream,
             sequence: 0,
+            pending: false,
             _server: Command::new("sleep")
                 .arg("30")
                 .kill_on_drop(true)
