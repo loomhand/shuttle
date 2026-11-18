@@ -199,6 +199,27 @@ for (const [producer, back] of [['mask characters of its length, as on macOS', (
   })
 }
 
+test('a value set into a password field waits out empty read-backs for its mask characters, and a field empty for the whole wait passes with a caveat that it was not checked', async (t) => {
+  let after = -1; let bullets = 2
+  const field = (v: string) => ({ ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'protected'], value: v })
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_type') after = 0
+    if (tool === 'desk_windows') return JSON.stringify([notepad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field('')] })
+    if (tool === 'desk_read') return JSON.stringify(field(after >= 0 && after++ >= bullets ? '•••••••' : ''))
+    return '{"ok":true}'
+  })
+  const late = await main({ steps: [{ app: 'Notepad' }, { set: 'Password', value: 'hunter2' }] })
+  assert.equal(late.ok, true, JSON.stringify(late))
+  assert.equal(late.caveats, undefined, JSON.stringify(late))
+  assert.equal(after, bullets + 1)
+  after = -1; bullets = Infinity
+  const empty = await main({ steps: [{ app: 'Notepad' }, { set: 'Password', value: 'hunter2' }] })
+  assert.equal(empty.ok, true, JSON.stringify(empty))
+  assert.deepEqual(empty.caveats, [{ step: 1, note: 'the value was sent to the password field, and the field reads back nothing, so it was not checked: do not set it again; no later step read what it unlocks' }])
+  assert.equal(after, 10)
+})
+
 test('a literal value set into a password field that reads back otherwise stops with neither the value nor the read-back in the reply or on disk', async (t) => {
   let value = ''
   const field = () => ({ ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'protected'], value })
