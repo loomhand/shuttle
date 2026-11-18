@@ -307,7 +307,7 @@ async function perform(p: Params): Promise<Result> {
       const rewrites = recs.filter((r, i) => r?.fp && flow.steps[i] && pinned(flow.steps[i]) && !isDeepStrictEqual(r.fp, flow.steps[i].fp))
       if (rewrites.length) {
         recs.forEach((r, i) => { const st = flow.steps[i]; if (!st || !pinned(st)) return; if (r?.fp) st.fp = r.fp; if (r?.seen) st.seen = r.seen })
-        flow.saved_at = new Date().toISOString(); saveFlow(flow, `replay re-resolved ${rewrites.length} step(s)`)
+        flow.saved_at = new Date().toISOString(); flow.params = unsecret(flow.steps, flow.params); saveFlow(flow, `replay re-resolved ${rewrites.length} step(s)`)
       }
       saved = flow.name
     }

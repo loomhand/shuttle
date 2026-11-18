@@ -217,6 +217,25 @@ test('a literal value set into a password field that reads back otherwise stops 
   for (const text of [JSON.stringify(r), disk]) assert.ok(!text.includes('hunter2'), text)
 })
 
+test('a flow saved with the password of a set into a password field drops it when a replay rewrites the flow', async (t) => {
+  let value: string | undefined
+  const field = () => ({ ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'protected'], ...(value === undefined ? {} : { value }) })
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_type') value = '•'.repeat(String(args.text).length)
+    if (tool === 'desk_windows') return JSON.stringify([notepad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field()] })
+    if (tool === 'desk_read') return JSON.stringify(field())
+    return '{"ok":true}'
+  })
+  const old = { name: 'old-login', params: { password: 'hunter11' }, steps: [{ app: 'Notepad' }, { set: 'Password', value: '{{password}}', fp: { role: 'textbox', name: 'Pass', parent: notepad.title, nth: 0 } }], idempotent: true, saved_at: '2026-11-01T00:00:00.000Z' }
+  mkdirSync(String(process.env.SHUTTLE_FLOWS), { recursive: true })
+  writeFileSync(`${process.env.SHUTTLE_FLOWS}/old-login.json`, JSON.stringify(old))
+  const r = await main({ flow: 'old-login' })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(flow('old-login').steps[1]?.secret, true, JSON.stringify(flow('old-login')))
+  assert.deepEqual(flow('old-login').params, {})
+})
+
 test('a literal value set as a secret or into a password field is in no partial result, stop report or reason of the next step', async (t) => {
   const run = mkdtempSync(`${tmpdir()}/run-`)
   process.env.SHUTTLE_RUN = run
