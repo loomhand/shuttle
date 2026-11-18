@@ -1576,7 +1576,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       rec.confirmed = true; return
     }
     const opened = rec.opened ?? 0
-    if (BG) { for (let k = 0; k < opened; k++) await desk.key('Escape', at(w)); throw new Surprise(`the state of "${hit.n.name}" needs a look at the screen: ${NO_PIXELS}`, await seen()) }
+    if (BG && (!AUTO || opened)) { for (let k = 0; k < opened; k++) await desk.key('Escape', at(w)); throw new Surprise(`the state of "${hit.n.name}" needs a look at the screen: ${NO_PIXELS}`, await seen()) }
+    if (BG) await front(w)
     if (!opened) for (const q of chain) { await act(q); await sleep(120) }
     const on = await cropState(hit.n); rec.was = on; rec.state = 'vision'
     if (on === s.on) { for (let k = 0; k < (opened || chain.length); k++) await desk.key('Escape', at(w)); rec.noop = true; return }
