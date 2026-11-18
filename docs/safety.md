@@ -75,6 +75,10 @@ A [service plugin](wire.md#service-plugins) is a program you install in the plug
 - **App allowlist and confirm.** They do not cover what a service does itself, such as reading files or running commands. Only the desk calls it makes on `SHUTTLE_SOCKET` pass them, as any other desk call.
 - **Reach.** On macOS and Linux its socket is in a directory only your user reaches (0700), so a call reaches it only through the daemon, with the stop applied; on Windows the security the service gives its pipe decides.
 
+## Passwords in plans
+
+A plan that types a password marks the step: `{type, secret: true}` or `{set, value, secret: true}`. A marked step's text stays out of the reply, the saved flow, the chain record and the run log. Without the mark shuttle keeps a password out only where it sees the password field, and some foreground types read no field ([config.md](config.md#saved-flows)).
+
 ## Input on macOS
 
 macOS has one pointer and one keyboard focus, shared by you and shuttle:
@@ -83,6 +87,8 @@ macOS has one pointer and one keyboard focus, shared by you and shuttle:
 2. **Keys to the desktop.** Keys and typed text go through cua-driver to the focused window, so the target window must be in front.
 3. **Coordinate clicks.** A click at a point goes through cua-driver to the window under it, which shuttle brings to the front first, and moves your pointer there; when another app's window, such as a floating panel, covers the point, the click goes to the window in the background instead and says so; a window that refuses pointer input, such as a sheet, gets a desktop click. On macOS, foreground input through cua-driver (a click, drag, scroll, pointer move, key or typed text) and bringing a window to the front wait up to 1.5 s for a pause, and then refuse and send nothing, when you used the mouse or keyboard in the last second, more than 0.6 s after shuttle's own last input ended, since macOS can take in shuttle's own input that late, and your answer to a confirm question counts as shuttle's own; the agent can try again once you stop. When another window came to the front during the wait, as a sheet of the same window does not, or the front app's focused window could not be read, as when it shows no window (Finder's desktop only), the input is not sent either. The check runs just before the input and each time it polls during the wait, so a click can still land on something you opened in that instant, and it does not see you move while shuttle's own drag or typing runs or in the 0.6 s after it. Background input does not check, since it leaves your pointer and keys alone; Windows and Linux do not check yet.
 4. **Computer actions.** `desk computer_act` input at a screen point acts like a human click: it drives the real pointer and may bring the app it clicks to the front. Background input refuses it.
+
+A `gui_plan` step stops with nothing sent when an untitled dialog of its app with no owner the OS names is in front of the window the step would act in, in the foreground as under background input: such an alert takes all of its app's input until it closes.
 
 On Windows the same order holds with UI Automation patterns and cua-driver input. On Linux AT-SPI actions come first too.
 
