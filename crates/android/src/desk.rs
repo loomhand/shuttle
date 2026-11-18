@@ -957,6 +957,9 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
             "element {id} is behind an open drawer; close it first"
         ));
     }
+    let scrolled = |e: String| {
+        format!("the list of element {id} was scrolled, then this stopped the tap: {e}")
+    };
     let mut ask = true;
     for _ in 0..SCROLL_TRIES {
         if let Some((x, y)) = frame.tap_at(&node) {
@@ -970,6 +973,7 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
             ask = false;
             if android.show(&frame.id, &node.path).await {
                 let (refreshed, mut nodes) = app_tree(android, &frame.package).await?;
+                refreshed.settled().map_err(scrolled)?;
                 frame = refreshed;
                 if let Some(i) = unique(&nodes, node.role, &node.name) {
                     let next = nodes.swap_remove(i);
@@ -987,6 +991,7 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
         android.swipe((cx, from), (cx, to), SCROLL_MS).await?;
         tokio::time::sleep(SCROLL_SETTLE).await;
         let (refreshed, mut nodes) = app_tree(android, &frame.package).await?;
+        refreshed.settled().map_err(scrolled)?;
         frame = refreshed;
         let i = unique(&nodes, node.role, &node.name).ok_or_else(|| {
             format!("element {id} is gone or not unique after a scroll; read the window again")
