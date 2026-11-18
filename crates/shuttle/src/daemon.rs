@@ -193,7 +193,7 @@ impl<H: Handler> Daemon<H> {
                         return Err(STOPPED.to_owned());
                     }
                 }
-                let apps = match args["apps"].take() {
+                let apps = match args.get_mut("apps").map(Value::take).unwrap_or_default() {
                     Value::Null => Vec::new(),
                     v => parse(v)?,
                 };
@@ -201,7 +201,8 @@ impl<H: Handler> Daemon<H> {
                     .map(|id| json!({"ok": true, "id": id}).to_string())
             }
             "record_note" => {
-                let Value::String(text) = args["text"].take() else {
+                let Value::String(text) = args.get_mut("text").map(Value::take).unwrap_or_default()
+                else {
                     return Err("record_note needs text".to_owned());
                 };
                 r.note(text).map(|()| r#"{"ok":true}"#.to_owned())
@@ -209,7 +210,7 @@ impl<H: Handler> Daemon<H> {
             _ => {
                 let recording = r.stop().await?;
                 let id = recording["id"].as_str().unwrap_or_default().to_owned();
-                let params = match args["params"].take() {
+                let params = match args.get_mut("params").map(Value::take).unwrap_or_default() {
                     Value::Null => json!({}),
                     p => p,
                 };
@@ -1290,6 +1291,14 @@ mod tests {
             );
         }
         assert!(!d.recording());
+    }
+
+    #[tokio::test]
+    async fn record_note_with_arguments_that_are_no_object_needs_text() {
+        let d = daemon(Echo, Guard::default()).with_recordings(std::env::temp_dir());
+        let out = d.answer(call("record_note", json!([1]))).await;
+        assert!(out.is_error);
+        assert_eq!(out.text, "record_note needs text");
     }
 
     #[tokio::test]
