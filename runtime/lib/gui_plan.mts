@@ -800,7 +800,7 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   return { ...hit.c, how: `${viewed ? 'jev-image' : 'jev'}(${p1.toFixed(2)})`, p: p1, margin: p1 - p2 }
 }
 
-function matching(nodes: Node[], pool: { n: Node; i: number }[], target: string, role?: string) {
+function* matching(nodes: Node[], pool: { n: Node; i: number }[], target: string, role?: string) {
   const placed = nodes.some((n) => !!n.bounds)
   const want = norm(target)
   const covers = (n: Node) => {
@@ -812,11 +812,11 @@ function matching(nodes: Node[], pool: { n: Node; i: number }[], target: string,
   const core = want.split(' ').filter((w) => !FILLER.has(w)).join(' ')
   const exact = (n: Node) => norm(n.name) === want || (!!core && norm(n.name) === core)
   const inside = (n: Node, i: number) => { for (const [p] of up(nodes, n.parent)) if (p === i) return true; return false }
-  return [exact, (n: Node) => covers(n) && (!said || said.includes(n.role))].map((f) => {
+  for (const f of [exact, (n: Node) => covers(n) && (!said || said.includes(n.role))]) {
     const all = pool.filter(({ n }) => f(n)); const drawn = all.filter(({ n }) => n.shown && (!!n.bounds || !placed))
     const some = drawn.length ? drawn : all.filter(({ n }) => n.role.startsWith('menu'))
-    return some.filter(({ n, i }) => !some.some((o) => o.i !== i && norm(o.n.name) === norm(n.name) && inside(o.n, i)))
-  })
+    yield some.filter(({ n, i }) => !some.some((o) => o.i !== i && norm(o.n.name) === norm(n.name) && inside(o.n, i)))
+  }
 }
 
 // LibreOffice repeats its menu bar, so a repeated bar entry resolves in the first one
@@ -1451,7 +1451,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (over && s.window) namedBehind(w)
   const own = over && await readTree(over, r).catch((e: unknown) => { throw new Surprise(`the untitled dialog of "${over.app ?? w.title}" in front of "${w.title}" gave no accessibility read (${e instanceof Error ? e.message : String(e)}): nothing was sent`) })
   if (over && own) {
-    const hits = (t: Tree) => matching(t.nodes, candidates(t.nodes, targetRole(s)), goal ?? '', targetRole(s))
+    const hits = (t: Tree) => [...matching(t.nodes, candidates(t.nodes, targetRole(s)), goal ?? '', targetRole(s))]
     const mine = hits(own); const app = over.app ?? w.title
     if (!mine.some((h) => h.length)) modalOver(over, w)
     const behind = reuse(kept, w, r) ?? await readTree(w, r).catch(async (e: unknown) => { await unblocked(e, w); throw e })
