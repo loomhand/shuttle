@@ -1594,7 +1594,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const [x, y, into] = await inWindow(w, b[0] + b[2] / 2, b[1] + b[3] / 2)
     const c = into === FG && !hit.n.role.startsWith('menu') ? await placed(x, y, w) : null
     if (c?.check === 'covered-hit' || c?.check === 'foreign-hit') throw new Surprise(`the centre of ${rec.ref} is on ${told(c)}, so the click was not sent`, await seen())
-    t0 = Date.now(); const sent = await desk.click(x, y, { ...pointer(s), ...into }); tick('act', t0)
+    t0 = Date.now(); const sent = await desk.click(x, y, { ...pointer(s), ...into }); pressedId = hit.n.id; tick('act', t0)
     if (BG && sent.unverified) unheard ??= sent.unverified
     await settle(w.title); return
   }
@@ -1622,6 +1622,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (hit.how.startsWith('jev') && lines) throw new Surprise(`"${target}" is closest to a multi-line text (${hit.how}), and set would replace all of it: wait for the window with that field, or name it exactly`, await seen())
   t0 = Date.now()
   if (!(await desk.act(f.id, 'focus')).ok) throw new Surprise(`"${target}" takes no focus, and set would type into another field`, await seen())
+  pressedId = f.id
   if (f.role === 'textbox' && !lines) await selectLine(w); else await desk.key(SELECT_ALL, at(w)); if (value) await desk.typeText(value, at(w)); else await desk.key('delete', at(w)); if (hit.n.role === 'spinbutton' || hit.n.role === 'slider') { await desk.key('tab', at(w)); await desk.key('shift+tab', at(w)) }
   tick('act', t0)
   t0 = Date.now(); let got: string | undefined
