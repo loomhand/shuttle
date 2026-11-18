@@ -21,6 +21,9 @@ const DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
 const DISABLED_BY_INPUT: u32 = 0xFFFF_FFFF;
 const CLICK_STATE: u32 = 1;
 const KEY_CODE: u32 = 9;
+const KEYBOARD_TYPE: u32 = 10;
+const KEY_ACTION_DOWN: u16 = 0;
+const NO_DEAD_KEYS: u32 = 1;
 const TURN_S: f64 = 0.1;
 const CMD: u64 = 1 << 20;
 const CTRL: u64 = 1 << 18;
@@ -48,6 +51,7 @@ impl Tap {
         let (ready, started) = std::sync::mpsc::channel();
         let done = Arc::new(AtomicBool::new(false));
         let ended = Arc::clone(&done);
+        let layout = dispatch2::run_on_main(|_| layout());
         let thread = std::thread::spawn(move || {
             let seen = Box::into_raw(Box::new(Seen {
                 tx,
@@ -55,6 +59,7 @@ impl Tap {
                 port: std::ptr::null_mut(),
                 scale: ax::display_scale(),
                 fresh: Cell::new(true),
+                layout,
             }));
             let mask = (1u64 << LEFT_DOWN) | (1u64 << RIGHT_DOWN) | (1u64 << KEY_DOWN);
             // SAFETY: `seen` outlives the tap: it is freed below, after the run loop that calls `heard` ends; the source and port are released after use.
@@ -126,6 +131,7 @@ struct Seen {
     scale: f64,
     /// Whether the next key starts a run of typing, whose target the tap reads.
     fresh: Cell<bool>,
+    layout: Vec<u32>,
 }
 
 /// The live event a tap callback gets, for the length of the call.
@@ -147,11 +153,30 @@ impl Event {
         unsafe { CGEventGetIntegerValueField(self.0, f) }
     }
 
-    fn text(&self) -> String {
+    fn text(&self, flags: u64, layout: &[u32]) -> String {
         let mut buf = [0u16; 8];
         let mut len = 0usize;
-        // SAFETY: the event is live for the callback that wraps it, and the call writes at most `buf.len()` units into `buf`.
-        unsafe { CGEventKeyboardGetUnicodeString(self.0, buf.len(), &mut len, buf.as_mut_ptr()) };
+        // SAFETY: the event is live for the callback that wraps it, `layout` holds a whole keyboard layout, and each call writes at most `buf.len()` units into `buf`.
+        unsafe {
+            if flags & (CMD | CTRL) != 0 && !layout.is_empty() {
+                let mut dead = 0u32;
+                UCKeyTranslate(
+                    layout.as_ptr().cast(),
+                    self.field(KEY_CODE) as u16,
+                    KEY_ACTION_DOWN,
+                    0,
+                    self.field(KEYBOARD_TYPE) as u32,
+                    NO_DEAD_KEYS,
+                    &mut dead,
+                    buf.len(),
+                    &mut len,
+                    buf.as_mut_ptr(),
+                );
+            }
+            if len == 0 {
+                CGEventKeyboardGetUnicodeString(self.0, buf.len(), &mut len, buf.as_mut_ptr());
+            }
+        }
         String::from_utf16_lossy(&buf[..len.min(buf.len())])
     }
 }
@@ -194,6 +219,25 @@ extern "C" fn heard(
         let _ = seen.tx.send(input);
     }
     event
+}
+
+fn layout() -> Vec<u32> {
+    // SAFETY: the source is released after its layout data, which it owns, is copied out whole.
+    unsafe {
+        let source = TISCopyCurrentKeyboardLayoutInputSource();
+        if source.is_null() {
+            return Vec::new();
+        }
+        let data = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData);
+        let mut words = Vec::new();
+        if !data.is_null() {
+            let len = usize::try_from(CFDataGetLength(data)).unwrap_or_default();
+            words = vec![0u32; len.div_ceil(4)];
+            std::ptr::copy_nonoverlapping(CFDataGetBytePtr(data), words.as_mut_ptr().cast(), len);
+        }
+        CFRelease(source);
+        words
+    }
 }
 
 fn focused() -> Option<Field> {
@@ -250,7 +294,11 @@ fn read(e: &Event, kind: u32, seen: &Seen) -> Option<Input> {
             let pid = pid.or_else(ax::front_app);
             let read = seen.fresh.get();
             let focus = if read { focused() } else { None };
-            let text = if secret { String::new() } else { e.text() };
+            let text = if secret {
+                String::new()
+            } else {
+                e.text(flags, &seen.layout)
+            };
             let plain = !text.is_empty()
                 && !text.chars().any(char::is_control)
                 && flags & (CMD | CTRL) == 0;
@@ -307,4 +355,64 @@ unsafe extern "C" {
     fn CFRunLoopAddSource(run_loop: *mut c_void, source: *mut c_void, mode: *const c_void);
     fn CFRunLoopRunInMode(mode: *const c_void, seconds: f64, once: bool) -> i32;
     fn CFRelease(cf: *const c_void);
+    fn CFDataGetLength(data: *const c_void) -> isize;
+    fn CFDataGetBytePtr(data: *const c_void) -> *const u8;
+}
+
+#[link(name = "Carbon", kind = "framework")]
+unsafe extern "C" {
+    static kTISPropertyUnicodeKeyLayoutData: *const c_void;
+    fn TISCopyCurrentKeyboardLayoutInputSource() -> *mut c_void;
+    fn TISGetInputSourceProperty(source: *mut c_void, key: *const c_void) -> *const c_void;
+    fn UCKeyTranslate(
+        layout: *const c_void,
+        code: u16,
+        action: u16,
+        mods: u32,
+        keyboard: u32,
+        options: u32,
+        dead: *mut u32,
+        max: usize,
+        actual: *mut usize,
+        chars: *mut u16,
+    ) -> i32;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_chord_records_the_key_it_is_on_and_plain_typing_the_character_it_makes() {
+        let layout = layout();
+        let press = |code: u16, text: &str, flags: u64| {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            // SAFETY: the event is created here, read while it lives and released after.
+            unsafe {
+                let event = CGEventCreateKeyboardEvent(std::ptr::null(), code, true);
+                CGEventKeyboardSetUnicodeString(event, units.len(), units.as_ptr());
+                CGEventSetFlags(event, flags);
+                let text = Event(event).text(flags, &layout);
+                CFRelease(event);
+                text
+            }
+        };
+        assert_eq!(
+            [
+                press(8, "\u{3}", CTRL),
+                press(8, "ç", CMD | (1 << 19)),
+                press(33, "\u{1b}", CTRL | (1 << 17)),
+                press(8, "ç", 1 << 19),
+                press(53, "\u{1b}", 0),
+            ],
+            ["c", "c", "[", "ç", "\u{1b}"]
+        );
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGEventCreateKeyboardEvent(source: *const c_void, code: u16, down: bool) -> *mut c_void;
+        fn CGEventKeyboardSetUnicodeString(event: *mut c_void, len: usize, chars: *const u16);
+        fn CGEventSetFlags(event: *mut c_void, flags: u64);
+    }
 }

@@ -390,7 +390,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                         } else if secret {
                             json!({"t": t, "kind": "key", "secret": true, "app": app})
                         } else {
-                            let mut e = json!({"t": t, "kind": "key", "code": code, "text": keyed(text, &mods), "mods": mods, "app": app});
+                            let mut e = json!({"t": t, "kind": "key", "code": code, "text": text, "mods": mods, "app": app});
                             if read {
                                 e["focus"] = json!(focus);
                             }
@@ -485,15 +485,6 @@ fn rooted(found: &Value) -> bool {
         || found["role"]
             .as_str()
             .is_some_and(|r| ROOT_ROLES.contains(&r))
-}
-
-fn keyed(text: String, mods: &[&str]) -> String {
-    match text.as_bytes() {
-        &[c @ 0..=0x1f] if mods.contains(&"ctrl") => {
-            char::from(c | 0x40).to_ascii_lowercase().to_string()
-        }
-        _ => text,
-    }
 }
 
 // the point's offset from the crop's centre is in desk units
@@ -1051,35 +1042,6 @@ mod tests {
             "{e}"
         );
         assert!(e[1].get("text").is_none(), "{e}");
-    }
-
-    #[tokio::test]
-    async fn a_control_chord_keeps_its_key_and_not_the_control_character_it_types() {
-        let desk = Desk::new(Value::Null);
-        let press = |text: &str, mods: Vec<&'static str>| Input::Key {
-            code: 0,
-            text: text.into(),
-            mods,
-            secret: false,
-            pid: None,
-            focus: None,
-            read: false,
-        };
-        let r = run(
-            &desk,
-            &[],
-            vec![
-                press("\u{3}", vec!["ctrl"]),
-                press("\u{1b}", vec!["ctrl", "shift"]),
-                press("\u{1b}", Vec::new()),
-            ],
-        )
-        .await;
-        assert_eq!(
-            each(&r, "text"),
-            [&json!("c"), &json!("["), &json!("\u{1b}")],
-            "{r}"
-        );
     }
 
     #[test]
