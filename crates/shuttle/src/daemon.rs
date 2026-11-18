@@ -1023,6 +1023,13 @@ mod tests {
         assert!(!none.acting() && !none.halted());
     }
 
+    #[tokio::test]
+    async fn a_stop_that_lands_as_a_confirm_is_allowed_runs_nothing() {
+        let d = halted_on_yes(Confirm::Every);
+        let out = d.answer(call("desk_key", json!({"keys": "a"}))).await;
+        assert_eq!((out.is_error, out.text.as_str()), (true, STOPPED));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_confirm_dialog_opens_only_once_the_actions_queued_before_it_are_done() {
         let (asker, pending) = held();
@@ -1267,6 +1274,14 @@ mod tests {
                 .await
                 .is_error
         );
+    }
+
+    #[tokio::test]
+    async fn a_stop_that_lands_as_record_start_is_allowed_starts_no_recording() {
+        let d = halted_on_yes(Confirm::Coordinate);
+        let out = d.answer(call("record_start", json!({}))).await;
+        assert_eq!((out.is_error, out.text.as_str()), (true, STOPPED));
+        assert!(!d.recording());
     }
 
     #[tokio::test]
@@ -1717,6 +1732,26 @@ mod tests {
             rx
         });
         (asker, pending)
+    }
+
+    fn halted_on_yes(confirm: Confirm) -> Arc<Daemon<Echo>> {
+        Arc::new_cyclic(|d: &std::sync::Weak<Daemon<Echo>>| {
+            let d = d.clone();
+            let asker: Asker = Arc::new(move |_| {
+                if let Some(d) = d.upgrade() {
+                    d.halt(true);
+                }
+                let (tx, rx) = oneshot::channel();
+                let _ = tx.send(true);
+                rx
+            });
+            let guard = Guard {
+                confirm,
+                asker: Some(asker),
+                ..Guard::default()
+            };
+            daemon(Echo, guard).with_recordings(std::env::temp_dir())
+        })
     }
 
     fn demo(bin: PathBuf) -> Plugin {
