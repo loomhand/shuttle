@@ -151,6 +151,7 @@ let stepWs: { ws: Win[]; at: number } | null = null
 let prior = new Set<string>()
 let settleWs: { ws: Win[]; at: number; calls: number } | null = null
 let deadline = 0
+let sealStep = (): void => {}
 
 export async function main(p: Params): Promise<Result> {
   return { ...(await perform(p)), usage: desk.usage }
@@ -239,13 +240,14 @@ async function perform(p: Params): Promise<Result> {
       const prev = plan[i - 1]
       unheard = undefined; actioned = false
       const runs = desk.foreground.runs + foreground.steps
+      sealStep = () => { planned.secret = true; left() }
       await run(s, rec, kept).catch(async (e: unknown) => {
         const late = (x: unknown) => x instanceof Surprise && x.late
         if (!late(e) || !(prev?.menu || prev?.click || prev?.key)) throw e
         for (const end = Date.now() + 3000; ; await sleep(200)) {
           try { return await run(s, rec) } catch (again: unknown) { if (!late(again) || Date.now() > end) throw again }
         }
-      }).finally(() => { if (rec.secret) planned.secret = true })
+      })
       if (s.after && await landed(s.after, s.timeout_ms ?? 5000, ws)) rec.confirmed = true
       if (unheard && !rec.unverified) rec.unverified = unheard
       if (actioned && !s.after) rec.caveat = ACTION_ONLY
@@ -1596,7 +1598,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.check) { await setState(s, hit, rec); return }
   const raw = s.value
   if (raw === undefined) throw new Surprise(`set "${target}" needs a value`, await seen())
-  if (tree.snap.nodes[hit.i]?.states.includes('protected')) rec.secret = true
+  if (tree.snap.nodes[hit.i]?.states.includes('protected')) { rec.secret = true; sealStep() }
   const value = raw.endsWith('\n') ? raw.slice(0, -1) : raw
   const same = (v: string | undefined) => v !== undefined && holds(hit.n.role, v, value)
   const f = hit.n.role === 'combobox' ? nodes.find((x) => x.parent === hit.i && x.role === 'textbox') ?? hit.n : hit.n

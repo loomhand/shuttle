@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 
 import { daemon } from './daemon.mts'
@@ -214,6 +215,33 @@ test('a literal value set into a password field that reads back otherwise stops 
   assert.equal(r.escalate?.outline, undefined, JSON.stringify(r))
   const disk = ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
   for (const text of [JSON.stringify(r), disk]) assert.ok(!text.includes('hunter2'), text)
+})
+
+test('a literal value set as a secret or into a password field is in no partial result, stop report or reason of the next step', async (t) => {
+  const run = mkdtempSync(`${tmpdir()}/run-`)
+  process.env.SHUTTLE_RUN = run
+  const partial = ((await import(`../lib/gui_plan.mts?${run}`)) as { main: typeof main }).main
+  delete process.env.SHUTTLE_RUN
+  let value: string | undefined; let stale = false; let typed = false
+  const field = () => ({ ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'protected'], ...(value === undefined ? {} : { value }) })
+  const shown: string[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_type') { typed = true; value = '•'.repeat(String(args.text).length); shown.push(readFileSync(`${run}/result.json`, 'utf8')) }
+    if (tool === 'desk_windows') return JSON.stringify([{ ...notepad, ...(stale && typed ? { stale: true } : {}) }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field()] })
+    if (tool === 'desk_read') return JSON.stringify(field())
+    return '{"ok":true}'
+  })
+  for (const secret of [{ secret: true }, {}]) {
+    const set = { set: 'Password', value: 'hunter2', ...secret }
+    value = undefined; stale = false; typed = false
+    const stopped = await partial({ steps: [{ app: 'Notepad' }, { ...set, after: 'Signed in', timeout_ms: 100 }] })
+    assert.equal(stopped.stopped?.step, 1, JSON.stringify(stopped))
+    value = undefined; stale = true; typed = false
+    const frozen = await partial({ steps: [{ app: 'Notepad' }, set, { key: 'Return' }] })
+    assert.match(frozen.escalate?.reason ?? '', /stopped answering accessibility after step 1/, JSON.stringify(frozen))
+    for (const text of [JSON.stringify(stopped), JSON.stringify(frozen), ...shown, readFileSync(`${run}/result.json`, 'utf8')]) assert.ok(!text.includes('hunter2'), `${JSON.stringify(secret)} ${text}`)
+  }
 })
 
 test('find names the saved flow the model picks, and no flow under 0.6 or within 0.25 of the runner-up', async (t) => {
