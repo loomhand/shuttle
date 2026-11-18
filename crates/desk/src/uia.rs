@@ -92,8 +92,8 @@ pub struct Uia {
     top: IUIAutomationCacheRequest,
     root: IUIAutomationElement,
     ids: HashMap<String, IUIAutomationElement>,
-    unnamed: HashMap<String, Vec<(String, IUIAutomationElement)>>,
-    walking: Vec<(String, IUIAutomationElement)>,
+    unnamed: HashMap<String, Vec<(String, Key)>>,
+    walking: Vec<(String, Key)>,
     tops: HashMap<isize, Top>,
     walked: isize,
     shown: Vec<Shown>,
@@ -144,7 +144,7 @@ impl Uia {
         let unnamed = runtime.is_empty();
         let id = own_id(runtime);
         if unnamed {
-            self.walking.push((id.clone(), el.clone()));
+            self.walking.push((id.clone(), key(el)));
         }
         self.ids.entry(id.clone()).or_insert_with(|| el.clone());
         Ok(id)
@@ -158,8 +158,9 @@ impl Uia {
                 .or_insert_with(|| el.clone());
             return Ok(runtime);
         }
+        let seen = key(&self.cached(el, &self.single)?);
         let walked = self.unnamed.values().flatten();
-        match known(walked, |c| same(&self.auto, el, c)) {
+        match known(walked, |k| *k == seen) {
             Some(id) => Ok(id),
             None => self.id_of(el),
         }
@@ -655,6 +656,8 @@ enum Val {
     Other,
 }
 
+type Key = (i32, String, [i32; 4]);
+
 /// Whether the windows `a` and `b` belong to one process.
 pub(crate) fn same_process(a: i64, b: i64) -> bool {
     let pid = |w: i64| {
@@ -1104,6 +1107,11 @@ fn known<'a, T: 'a>(
     found.cloned()
 }
 
+fn key(el: &IUIAutomationElement) -> Key {
+    let r = raw(el, Extras::default());
+    (r.control_type, r.name, r.bounds)
+}
+
 fn same(auto: &IUIAutomation, a: &IUIAutomationElement, b: &IUIAutomationElement) -> bool {
     // SAFETY: `auto`, `a` and `b` are live UIA objects of this thread.
     unsafe { auto.CompareElements(a, b) }.is_ok_and(BOOL::as_bool)
@@ -1162,6 +1170,25 @@ mod tests {
         assert_eq!(known(&walked, |&e| e == 6), None);
         assert_eq!(known(&walked, |_| true), None);
         assert_eq!(known(&[] as &[(String, i32)], |_| true), None);
+    }
+
+    #[test]
+    fn a_looked_up_element_without_a_runtime_id_matches_a_walked_one_by_type_name_and_bounds() {
+        let item = |name: &str, y| -> Key {
+            (
+                UIA_ListItemControlTypeId.0,
+                name.to_owned(),
+                [90, y, 296, 13],
+            )
+        };
+        let walked = [
+            ("u1".to_owned(), item("item 1", 93)),
+            ("u5".to_owned(), item("item 5", 145)),
+        ];
+        let found = |seen: Key| known(&walked, |k| *k == seen);
+        assert_eq!(found(item("item 5", 145)).as_deref(), Some("u5"));
+        assert_eq!(found(item("item 5", 158)), None);
+        assert_eq!(found(item("item 3", 119)), None);
     }
 
     #[test]
