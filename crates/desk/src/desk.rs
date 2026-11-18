@@ -1475,7 +1475,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn inside(&self, w: &Value, (x, y): (f64, f64)) -> Result<(f64, f64), String> {
         let (scale, [bx, by, bw, bh]) = (self.scale().await?, bounds(w));
-        if (bx..=bx + bw).contains(&(x / scale)) && (by..=by + bh).contains(&(y / scale)) {
+        if (bx..bx + bw).contains(&(x / scale)) && (by..by + bh).contains(&(y / scale)) {
             Ok((x, y))
         } else {
             Err(OUTSIDE_WINDOW.to_owned())
@@ -2328,7 +2328,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 }
             }
         };
-        if !(0.0..=key.2[2] * kx).contains(&x) || !(0.0..=key.2[3] * ky).contains(&y) {
+        if !(0.0..key.2[2] * kx).contains(&x) || !(0.0..key.2[3] * ky).contains(&y) {
             return Err(OUTSIDE_SHOT.to_owned());
         }
         let scale = self.scale().await?;
@@ -6607,14 +6607,14 @@ pub(crate) mod tests {
         let desk = Desk::new(|| Ok(Apps), Overlaid(Arc::clone(&calls)), Os::Mac)
             .allow(&["notepad".into()])
             .background(true);
-        let notepad = json!({"x": 50.0, "y": 600.0, "window": "Untitled"});
+        let notepad = json!({"x": 50.0, "y": 599.0, "window": "Untitled"});
         desk.run("desk_click", notepad.clone()).await.unwrap();
         let mut scroll = notepad.clone();
         scroll["direction"] = "down".into();
         desk.run("desk_scroll", scroll).await.unwrap();
         let mut drag = notepad;
         drag["to_x"] = 60.0.into();
-        drag["to_y"] = 600.0.into();
+        drag["to_y"] = 599.0.into();
         desk.run("desk_drag", drag).await.unwrap();
         for tool in ["click", "scroll", "drag"] {
             let all = sent(&calls, tool);
@@ -6852,6 +6852,69 @@ pub(crate) mod tests {
             }
             let went = ["click", "scroll", "drag"].map(|t| sent(&calls, t).len());
             assert_eq!(went, [2, 2, 1], "{bg}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_point_on_the_far_edge_of_a_window_is_outside_it_and_the_pixel_before_is_inside() {
+        let window = "Untitled - Notepad";
+        let by_window = |x: f64, y: f64| {
+            [
+                ("desk_click", json!({"x": x, "y": y, "window": window})),
+                (
+                    "desk_scroll",
+                    json!({"direction": "down", "x": x, "y": y, "window": window}),
+                ),
+                (
+                    "desk_drag",
+                    json!({"x": 10.0, "y": 10.0, "to_x": x, "to_y": y, "window": window}),
+                ),
+                (
+                    "desk_drag",
+                    json!({"x": x, "y": y, "to_x": 10.0, "to_y": 10.0, "window": window}),
+                ),
+            ]
+        };
+        let by_pid = |x: f64, y: f64| {
+            [
+                ("desk_click", json!({"x": x, "y": y, "pid": 4})),
+                (
+                    "desk_scroll",
+                    json!({"direction": "down", "x": x, "y": y, "pid": 4}),
+                ),
+                (
+                    "desk_drag",
+                    json!({"x": x, "y": y, "to_x": 200.0, "to_y": 200.0, "pid": 4}),
+                ),
+            ]
+        };
+        for bg in [false, true] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk =
+                Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), Os::Windows).background(bg);
+            for (x, y) in [(800.0, 100.0), (100.0, 600.0)] {
+                for (tool, args) in by_window(x, y) {
+                    let err = desk.run(tool, args.clone()).await.unwrap_err();
+                    assert_eq!(err, OUTSIDE_SHOT, "{bg} {args}");
+                }
+            }
+            for (x, y) in [(900.0, 100.0), (200.0, 650.0)] {
+                for (tool, args) in by_pid(x, y) {
+                    let err = desk.run(tool, args.clone()).await.unwrap_err();
+                    assert_eq!(err, OUTSIDE_WINDOW, "{bg} {args}");
+                }
+            }
+            for tool in ["click", "scroll", "drag", "bring_to_front"] {
+                assert!(sent(&calls, tool).is_empty(), "{bg} {tool}");
+            }
+            for (tool, args) in by_window(799.0, 599.0)
+                .into_iter()
+                .chain(by_pid(899.0, 649.0))
+            {
+                assert!(desk.run(tool, args.clone()).await.is_ok(), "{bg} {args}");
+            }
+            let went = ["click", "scroll", "drag"].map(|t| sent(&calls, t).len());
+            assert_eq!(went, [2, 2, 3], "{bg}");
         }
     }
 
