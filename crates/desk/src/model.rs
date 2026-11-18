@@ -389,6 +389,9 @@ pub trait Access {
     fn in_view(&mut self, _window: i64) -> Option<bool> {
         None
     }
+    fn frame_extents(&mut self, _windows: &[u32]) -> Vec<[u32; 4]> {
+        Vec::new()
+    }
 }
 
 /// Whether a caller can act on a node of `role`.

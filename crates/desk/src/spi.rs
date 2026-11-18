@@ -193,6 +193,11 @@ impl Access for Spi {
         self.shm(|g| Ok(g.shell_pids())).unwrap_or_default()
     }
 
+    fn frame_extents(&mut self, windows: &[u32]) -> Vec<[u32; 4]> {
+        self.shm(|g| Ok(g.frame_extents(windows)))
+            .unwrap_or_default()
+    }
+
     fn unanswered(&mut self) -> Option<Frame> {
         let (pid, title) =
             self.shm(|g| Ok(g.active().and_then(|w| Some((g.pid(w)?, g.title(w)?)))))??;

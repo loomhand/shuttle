@@ -56,6 +56,7 @@ pub struct Grabber {
     net_wm_type: Atom,
     type_dialog: Atom,
     gtk_extents: Atom,
+    net_extents: Atom,
     shell: Mutex<Shell>,
     resized: AtomicBool,
 }
@@ -110,6 +111,7 @@ impl Grabber {
             type_dock,
             type_desktop,
             gtk_extents,
+            net_extents,
         ] = [
             &b"_NET_WM_NAME"[..],
             b"UTF8_STRING",
@@ -127,6 +129,7 @@ impl Grabber {
             b"_NET_WM_WINDOW_TYPE_DOCK",
             b"_NET_WM_WINDOW_TYPE_DESKTOP",
             b"_GTK_FRAME_EXTENTS",
+            b"_NET_FRAME_EXTENTS",
         ]
         .map(|name| {
             conn.intern_atom(false, name)
@@ -175,6 +178,7 @@ impl Grabber {
             net_wm_type,
             type_dialog,
             gtk_extents,
+            net_extents,
             shell: Mutex::new(Shell::default()),
             resized: AtomicBool::new(false),
         };
@@ -498,6 +502,25 @@ impl Grabber {
             }
             w = parent;
         }
+    }
+
+    pub fn frame_extents(&self, windows: &[Window]) -> Vec<[u32; 4]> {
+        let asked: Vec<_> = windows
+            .iter()
+            .map(|&w| {
+                self.conn
+                    .get_property(false, w, self.net_extents, AtomEnum::CARDINAL, 0, 4)
+                    .ok()
+            })
+            .collect();
+        asked
+            .into_iter()
+            .map(|c| {
+                c.and_then(|c| c.reply().ok())
+                    .and_then(|r| <[u32; 4]>::try_from(r.value32()?.collect::<Vec<_>>()).ok())
+                    .unwrap_or_default()
+            })
+            .collect()
     }
 
     /// The `_NET_WM_PID` of window `w`.

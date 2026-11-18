@@ -2582,10 +2582,32 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let grab = self.grab(rect).await?;
             let after = self.mask_rects().await?;
             if after == before {
-                return Ok((grab, after));
+                return Ok((grab, self.framed(after).await?));
             }
         }
         Err(WINDOWS_MOVING.to_owned())
+    }
+
+    async fn framed(
+        &self,
+        shown: Vec<([f64; 4], bool, Option<u32>)>,
+    ) -> Result<Vec<([f64; 4], bool)>, String> {
+        let out: Vec<u32> = shown.iter().filter(|s| !s.1).filter_map(|s| s.2).collect();
+        let extents = if self.os == Os::Linux && !out.is_empty() {
+            self.access
+                .run(CALL_LIMIT, (), move |b| Ok(b.frame_extents(&out)))
+                .await?
+        } else {
+            Vec::new()
+        };
+        let mut extents = extents.into_iter();
+        Ok(shown
+            .into_iter()
+            .map(|(r, admitted, id)| match id {
+                Some(_) if !admitted => (grown(r, extents.next().unwrap_or_default()), false),
+                _ => (r, admitted),
+            })
+            .collect())
     }
 
     /// The image of the window titled `window`, as the driver captures that window alone, cropped to `rect` in its pixels; the masked screen there when, under an app allowlist, the driver says its image is the screen's.
@@ -2659,7 +2681,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         Ok(Some(mask))
     }
 
-    async fn mask_rects(&self) -> Result<Vec<([f64; 4], bool)>, String> {
+    async fn mask_rects(&self) -> Result<Vec<([f64; 4], bool, Option<u32>)>, String> {
         let mut windows = self.on_screen().await?;
         let frames = self.access.run(CALL_LIMIT, (), B::frames).await?;
         windows.sort_by_key(|w| w["z_index"].as_i64().unwrap_or(i64::MIN));
@@ -2671,6 +2693,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     bounds(&w),
                     frame_of(&frames, pid).is_some_and(|f| self.allow.admits_frame(f))
                         || self.allow.is_open(),
+                    w["window_id"]
+                        .as_u64()
+                        .and_then(|id| u32::try_from(id).ok()),
                 )
             })
             .collect())
@@ -3148,6 +3173,11 @@ fn ok_with(unverified: Option<String>) -> String {
 fn bounds(w: &Value) -> [f64; 4] {
     let b = &w["bounds"];
     ["x", "y", "width", "height"].map(|k| b[k].as_f64().unwrap_or(0.0))
+}
+
+fn grown([x, y, w, h]: [f64; 4], extents: [u32; 4]) -> [f64; 4] {
+    let [l, r, t, b] = extents.map(f64::from);
+    [x - l, y - t, w + l + r, h + t + b]
 }
 
 /// One line per node: `- role "name" [disabled] [checked] [shortcut] [id=ID]: "value"`, indented by depth.
@@ -8396,6 +8426,38 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_linux_mask_grows_each_left_out_window_by_its_own_frame_extents() {
+        let shot = |os: Os| async move {
+            let desk = Desk::new(|| Ok(Decorated::default()), Desktop(Arc::default()), os)
+                .allow(&["notepad".into()]);
+            let px = pixels(&desk.run("desk_shot", json!({})).await.unwrap());
+            let asked = desk
+                .access
+                .run(CALL_LIMIT, (), |b| Ok(b.0.clone()))
+                .await
+                .unwrap();
+            (
+                [px[4], px[5 * 10 + 4], px[3], px[6 * 10 + 5], px[5 * 10 + 9]],
+                asked,
+            )
+        };
+        assert_eq!(
+            shot(Os::Linux).await,
+            (
+                [[0; 3], [0; 3], [255; 3], [255; 3], [0; 3]],
+                vec![vec![2, 4]]
+            )
+        );
+        assert_eq!(
+            shot(Os::Windows).await,
+            (
+                [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3]],
+                Vec::new()
+            )
+        );
+    }
+
+    #[tokio::test]
     async fn an_allowlist_swaps_a_window_shot_the_driver_took_from_the_screen_for_the_masked_screen()
      {
         let at = |allow: &[String], args: Value, xs: [f64; 3], composited: bool| {
@@ -10884,6 +10946,44 @@ pub(crate) mod tests {
 
         fn close(&mut self, _: &Frame) -> Result<(), String> {
             Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct Decorated(Vec<Vec<u32>>);
+
+    impl Access for Decorated {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            Apps.frames()
+        }
+
+        fn tree(&mut self, frame: &Frame, extras: Extras) -> Result<Tree, String> {
+            Apps.tree(frame, extras)
+        }
+
+        fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String> {
+            Apps.node(id, extras, chars)
+        }
+
+        fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
+            Apps.ancestors(id)
+        }
+
+        fn at(&mut self, frame: &str, x: i32, y: i32) -> Result<Option<String>, String> {
+            Apps.at(frame, x, y)
+        }
+
+        fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
+            Apps.act(id, act)
+        }
+
+        fn close(&mut self, frame: &Frame) -> Result<(), String> {
+            Apps.close(frame)
+        }
+
+        fn frame_extents(&mut self, windows: &[u32]) -> Vec<[u32; 4]> {
+            self.0.push(windows.to_vec());
+            windows.iter().map(|_| [100, 0, 0, 100]).collect()
         }
     }
 
