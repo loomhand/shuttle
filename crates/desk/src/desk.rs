@@ -425,6 +425,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.focus(WindowArgs {
             window: window.unwrap_or_default(),
             pid,
+            id: None,
         })
         .await
         .map(|_| true)
@@ -563,6 +564,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let front = WindowArgs {
             window: w.title.clone(),
             pid: w.pid,
+            id: Some(w.id.clone()),
         };
         if self.focus(front).await.is_err() {
             return Ok(None);
@@ -1006,8 +1008,19 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.access
             .run(CALL_LIMIT, turn, move |b| {
                 let listed = frames(b, a.pid, &allow)?;
-                let (frame, rivals) = pick(b, &allow, background, listed, Some(&a.window), a.pid)?;
-                window::input_to(&frame, &a.window, rivals)?;
+                let frame = match a.id.as_deref() {
+                    Some(id) => {
+                        let f = window::pick_id(listed, id, &a.window, a.pid, |f| f.id.as_str())?;
+                        allow.check_frame(Some(&f))?;
+                        f
+                    }
+                    None => {
+                        let (f, rivals) =
+                            pick(b, &allow, background, listed, Some(&a.window), a.pid)?;
+                        window::input_to(&f, &a.window, rivals, window::BY_ID)?;
+                        f
+                    }
+                };
                 let frame = live(frame)?;
                 let note = match b.close(&frame) {
                     Ok(()) => None,
@@ -2343,7 +2356,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn focus(&self, a: WindowArgs) -> Result<String, String> {
-        let (w, _) = self.input_window(Some(&a.window), a.pid).await?;
+        let w = match a.id.as_deref() {
+            Some(id) => self.id_window(id, &a.window, a.pid).await?,
+            None => {
+                let (f, _, rivals) = self.pick_window(Some(&a.window), a.pid).await?;
+                window::input_to(&f, &a.window, rivals, window::BY_ID)?;
+                f
+            }
+        };
         let window_id: i64 =
             w.id.parse()
                 .map_err(|_| format!("window id {:?} is not a number", w.id))?;
@@ -2380,9 +2400,53 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     ) -> Result<(Frame, Value), String> {
         let (f, w, rivals) = self.pick_window(window, pid).await?;
         if let Some(want) = window {
-            window::input_to(&f, want, rivals)?;
+            window::input_to(&f, want, rivals, window::BY_TITLE)?;
         }
         Ok((f, w))
+    }
+
+    async fn id_window(&self, id: &str, want: &str, pid: Option<u32>) -> Result<Frame, String> {
+        let (allow, background) = (self.allow.clone(), self.bg());
+        let (named, title) = (id.to_owned(), want.to_owned());
+        let f = self
+            .access
+            .run(CALL_LIMIT, (), move |b| {
+                let f = window::pick_id(shown(b, background)?, &named, &title, pid, |f| {
+                    f.id.as_str()
+                })?;
+                allow.check_frame(Some(&f))?;
+                Ok(f)
+            })
+            .await?;
+        let listed = self.call("list_windows", json!({})).await?;
+        let raw = listed["structuredContent"]["windows"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice);
+        let same: Vec<&Value> = raw
+            .iter()
+            .filter(|r| match f.number {
+                Some(n) => r["window_id"].as_u64() == Some(n.into()),
+                None => {
+                    r["pid"].as_u64() == f.pid.map(u64::from)
+                        && title_matches(1, r["title"].as_str().unwrap_or_default(), &f.title)
+                }
+            })
+            .collect();
+        match same.as_slice() {
+            [r] => {
+                self.classify(r);
+                Ok(Frame {
+                    id: r["window_id"].to_string(),
+                    ..f
+                })
+            }
+            [] => Err(format!(
+                "window id {id:?} is not in the driver's window list, so nothing was sent"
+            )),
+            _ => Err(format!(
+                "window id {id:?} shares its title with another window of its process, and on this system the driver's window list cannot tell which of them that id is, so nothing was sent"
+            )),
+        }
     }
 
     /// The driver window titled like `window` or of `pid`, as a frame and as the driver lists it, with how many listed windows its title picks among.
@@ -7311,6 +7375,48 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn closing_by_id_takes_that_one_of_two_same_titled_windows_of_one_process() {
+        let twins = || {
+            Ok(Stub {
+                frames: vec![
+                    frame("front", "Untitled - Notepad", 4, true, None),
+                    frame("back", "Untitled - Notepad", 4, false, None),
+                ],
+                ..Stub::default()
+            })
+        };
+        let desk = Desk::new(twins, Slow(Arc::default()), Os::Linux);
+        let close = |args: Value| desk.run("desk_close", args);
+        assert_eq!(
+            close(json!({"window": "Untitled - Notepad", "pid": 4}))
+                .await
+                .unwrap_err(),
+            "2 windows match the title \"Untitled - Notepad\", so nothing was sent: pass the window's id from desk windows"
+        );
+        for (args, want) in [
+            (
+                json!({"window": "Untitled - Notepad", "pid": 4, "id": "gone"}),
+                "no window id \"gone\" of pid 4 in the window list, so nothing was sent",
+            ),
+            (
+                json!({"window": "Untitled - Notepad", "pid": 8, "id": "back"}),
+                "no window id \"back\" of pid 8 in the window list, so nothing was sent",
+            ),
+            (
+                json!({"window": "Report", "pid": 4, "id": "back"}),
+                "window id \"back\" is titled \"Untitled - Notepad\", not \"Report\", so nothing was sent",
+            ),
+        ] {
+            assert_eq!(close(args).await.unwrap_err(), want);
+        }
+        assert!(closed(&desk).await.is_empty());
+        close(json!({"window": "Untitled - Notepad", "pid": 4, "id": "back"}))
+            .await
+            .unwrap();
+        assert_eq!(closed(&desk).await, ["back"]);
+    }
+
+    #[tokio::test]
     async fn a_snapshot_takes_the_menu_bar_only_when_asked_and_find_always_searches_it() {
         let desk = Desk::new(|| Ok(notepad()), Slow(Arc::default()), Os::Mac);
         desk.run("desk_snapshot", json!({})).await.unwrap();
@@ -8220,6 +8326,112 @@ pub(crate) mod tests {
                 ),
                 "{os:?}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn focus_by_id_takes_that_one_of_two_same_titled_windows_of_one_process() {
+        let twins = || {
+            Ok(Stub {
+                frames: vec![
+                    Frame {
+                        number: Some(1),
+                        ..frame("1", "Untitled - Notepad", 4, true, Some("Notepad"))
+                    },
+                    Frame {
+                        number: Some(3),
+                        ..frame("3", "Untitled - Notepad", 4, false, Some("Notepad"))
+                    },
+                ],
+                ..Stub::default()
+            })
+        };
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let driver = Twins(Arc::clone(&calls), 900.0, "Untitled - Notepad", 0.0);
+        let desk = Desk::new(twins, driver, Os::Mac);
+        let focus = |args: Value| desk.run("desk_focus", args);
+        assert_eq!(
+            focus(json!({"window": "Untitled - Notepad", "pid": 4}))
+                .await
+                .unwrap_err(),
+            "2 windows match the title \"Untitled - Notepad\", so nothing was sent: pass the window's id from desk windows"
+        );
+        for (args, want) in [
+            (
+                json!({"window": "Untitled - Notepad", "pid": 4, "id": "7"}),
+                "no window id \"7\" of pid 4 in the window list, so nothing was sent",
+            ),
+            (
+                json!({"window": "Untitled - Notepad", "pid": 9, "id": "3"}),
+                "window id \"3\" belongs to pid 4, not 9, so nothing was sent",
+            ),
+            (
+                json!({"window": "Inbox", "id": "3"}),
+                "window id \"3\" is titled \"Untitled - Notepad\", not \"Inbox\", so nothing was sent",
+            ),
+        ] {
+            assert_eq!(focus(args).await.unwrap_err(), want);
+        }
+        assert!(sent(&calls, "bring_to_front").is_empty());
+        focus(json!({"window": "Untitled - Notepad", "pid": 4, "id": "3"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            sent(&calls, "bring_to_front"),
+            [json!({"pid": 4, "window_id": 3})]
+        );
+    }
+
+    #[tokio::test]
+    async fn focus_by_id_off_macos_takes_the_one_listed_window_of_that_process_and_title() {
+        let apart = || {
+            Ok(Stub {
+                frames: vec![
+                    frame("a", "Report - Writer", 4, true, Some("writer")),
+                    frame("b", "Report - Writer", 8, false, Some("writer")),
+                ],
+                ..Stub::default()
+            })
+        };
+        let together = || {
+            Ok(Stub {
+                frames: vec![
+                    frame("a", "Untitled - Notepad", 4, true, Some("Notepad")),
+                    frame("b", "Untitled - Notepad", 4, false, Some("Notepad")),
+                ],
+                ..Stub::default()
+            })
+        };
+        for os in [Os::Windows, Os::Linux] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(apart, TwoWindows(calls.clone()), os);
+            desk.run(
+                "desk_focus",
+                json!({"window": "Report - Writer", "pid": 8, "id": "b"}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                sent(&calls, "bring_to_front"),
+                [json!({"pid": 8, "window_id": 2})],
+                "{os:?}"
+            );
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let driver = Twins(Arc::clone(&calls), 900.0, "Untitled - Notepad", 0.0);
+            let desk = Desk::new(together, driver, os);
+            let err = desk
+                .run(
+                    "desk_focus",
+                    json!({"window": "Untitled - Notepad", "pid": 4, "id": "b"}),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err,
+                "window id \"b\" shares its title with another window of its process, and on this system the driver's window list cannot tell which of them that id is, so nothing was sent",
+                "{os:?}"
+            );
+            assert!(sent(&calls, "bring_to_front").is_empty(), "{os:?}");
         }
     }
 

@@ -2,6 +2,8 @@
 
 /// How many title tiers [`title_matches`] has.
 pub const TITLE_TIERS: usize = 3;
+pub const BY_TITLE: &str = "pass a longer title that only one window matches or the pid of its process, or give the window a title of its own";
+pub const BY_ID: &str = "pass the window's id from desk windows";
 
 const TITLE_SEPARATORS: [&str; 2] = [" - ", " — "];
 
@@ -42,14 +44,49 @@ pub fn pick<W: Window>(
     Ok(windows.swap_remove(i))
 }
 
-pub fn pick_input<W: Window>(windows: Vec<W>, want: &str, pid: Option<u32>) -> Result<W, String> {
+pub fn pick_input<W: Window>(
+    windows: Vec<W>,
+    want: &str,
+    pid: Option<u32>,
+    way_out: &str,
+) -> Result<W, String> {
     let rivals = rivals(&windows, want, pid);
     let w = pick(windows, Some(want), pid)?;
-    input_to(&w, want, rivals)?;
+    input_to(&w, want, rivals, way_out)?;
     Ok(w)
 }
 
-pub fn input_to<W: Window>(w: &W, want: &str, rivals: usize) -> Result<(), String> {
+pub fn pick_id<W: Window>(
+    windows: Vec<W>,
+    id: &str,
+    want: &str,
+    pid: Option<u32>,
+    id_of: impl Fn(&W) -> &str,
+) -> Result<W, String> {
+    let of = pid.map(|p| format!(" of pid {p}")).unwrap_or_default();
+    let w = windows
+        .into_iter()
+        .find(|w| w.listed() && id_of(w) == id)
+        .ok_or_else(|| {
+            format!("no window id {id:?}{of} in the window list, so nothing was sent")
+        })?;
+    if let Some(p) = pid.filter(|&p| w.pid() != Some(p)) {
+        return Err(format!(
+            "window id {id:?} belongs to pid {}, not {p}, so nothing was sent",
+            w.pid()
+                .map_or_else(|| "unknown".to_owned(), |p| p.to_string())
+        ));
+    }
+    if !(0..TITLE_TIERS).any(|tier| title_matches(tier, w.title(), want)) {
+        return Err(format!(
+            "window id {id:?} is titled {:?}, not {want:?}, so nothing was sent",
+            w.title()
+        ));
+    }
+    Ok(w)
+}
+
+pub fn input_to<W: Window>(w: &W, want: &str, rivals: usize, way_out: &str) -> Result<(), String> {
     if !(0..TITLE_TIERS).any(|tier| title_matches(tier, w.title(), want)) {
         let shown = if w.active() { "in front" } else { "open" };
         return Err(format!(
@@ -59,7 +96,7 @@ pub fn input_to<W: Window>(w: &W, want: &str, rivals: usize) -> Result<(), Strin
     }
     if rivals > 1 {
         return Err(format!(
-            "{rivals} windows match the title {want:?}, so nothing was sent: pass a longer title that only one window matches or the pid of its process, or give the window a title of its own"
+            "{rivals} windows match the title {want:?}, so nothing was sent: {way_out}"
         ));
     }
     Ok(())
@@ -245,7 +282,8 @@ mod tests {
                 w("notes.txt - Mousepad", false, 7),
             ]
         };
-        let title = |want, pid| pick_input(windows(), want, pid).map(|w| (w.title, w.pid));
+        let title =
+            |want, pid| pick_input(windows(), want, pid, BY_TITLE).map(|w| (w.title, w.pid));
         assert_eq!(title("images", None).unwrap(), ("images - Thunar", 4));
         assert_eq!(title("Report", Some(6)).unwrap(), ("Report", 6));
         assert_eq!(
@@ -270,6 +308,25 @@ mod tests {
             title("letter - Writer", None)
                 .unwrap_err()
                 .starts_with("no window \"letter - Writer\"; windows:")
+        );
+    }
+
+    #[test]
+    fn input_by_id_takes_that_window_only_with_its_pid_and_title() {
+        let windows = || vec![w("Untitled", true, 4), w("Untitled", false, 4)];
+        let by_id = |id, want, pid| pick_id(windows(), id, want, pid, |w: &W| w.title);
+        assert_eq!(by_id("Untitled", "untitled", Some(4)).unwrap().pid, 4);
+        assert_eq!(
+            by_id("Draft", "Untitled", None).unwrap_err(),
+            "no window id \"Draft\" in the window list, so nothing was sent"
+        );
+        assert_eq!(
+            by_id("Untitled", "Untitled", Some(9)).unwrap_err(),
+            "window id \"Untitled\" belongs to pid 4, not 9, so nothing was sent"
+        );
+        assert_eq!(
+            by_id("Untitled", "Report", None).unwrap_err(),
+            "window id \"Untitled\" is titled \"Untitled\", not \"Report\", so nothing was sent"
         );
     }
 

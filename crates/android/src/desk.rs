@@ -345,7 +345,7 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
         "desk_focus" => focus(android, parse(args)?).await?,
         "desk_close" => {
             let a: WindowArgs = parse(args)?;
-            let frame = window::pick_input(frames(android).await?, &a.window, a.pid)?;
+            let frame = named(frames(android).await?, &a)?;
             if frame.guessed {
                 return Err(UNSETTLED.to_owned());
             }
@@ -1065,7 +1065,7 @@ fn front_id(
                 )
             })?,
         None => match window {
-            Some(want) => window::pick_input(frames, want, pid)?,
+            Some(want) => window::pick_input(frames, want, pid, window::BY_TITLE)?,
             None => window::pick(frames, None, pid)?,
         },
     };
@@ -1079,6 +1079,13 @@ fn front_id(
             "{} is not in front, and input on a device reaches only the front window",
             frame.title
         ))
+    }
+}
+
+fn named(frames: Vec<Frame>, a: &WindowArgs) -> Result<Frame, String> {
+    match a.id.as_deref() {
+        Some(id) => window::pick_id(frames, id, &a.window, a.pid, |f| f.id.as_str()),
+        None => window::pick_input(frames, &a.window, a.pid, window::BY_ID),
     }
 }
 
@@ -1110,10 +1117,10 @@ async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<bool, String>
 
 /// The window `window` names, which must be in front; a package name without a window starts its app.
 async fn focus(android: &Android, a: WindowArgs) -> Result<String, String> {
-    let frame = match window::pick_input(frames(android).await?, &a.window, a.pid) {
+    let frame = match named(frames(android).await?, &a) {
         Ok(f) if f.guessed => return Err(UNSETTLED.to_owned()),
         Ok(f) => f,
-        Err(e) if is_package(&a.window) && e.starts_with("no window") => {
+        Err(e) if a.id.is_none() && is_package(&a.window) && e.starts_with("no window") => {
             android.launch(&a.window).await?;
             let end = Instant::now() + FOCUS_WAIT;
             loop {
@@ -1254,6 +1261,41 @@ mod tests {
         assert_eq!(
             front_id(frames, Some("About phone - com.android.settings"), None, None),
             Err("no window titled \"About phone - com.android.settings\", so nothing was sent; \"Device name - com.android.settings\" of the same app is in front: name it to send there".to_owned())
+        );
+    }
+
+    #[test]
+    fn focus_or_close_by_id_takes_that_one_of_two_same_titled_windows() {
+        let twins = || {
+            frames_of(
+                vec![
+                    window([0, 0, 720, 1280]),
+                    WindowInfo {
+                        id: 9,
+                        active: false,
+                        focused: false,
+                        ..window([0, 0, 720, 1280])
+                    },
+                ],
+                REDROID,
+            )
+        };
+        let args = |id: Option<&str>| WindowArgs {
+            window: "Settings - com.android.settings".into(),
+            pid: None,
+            id: id.map(str::to_owned),
+        };
+        assert_eq!(
+            named(twins(), &args(Some("9"))).map(|f| f.id),
+            Ok("9".to_owned())
+        );
+        assert_eq!(
+            named(twins(), &args(Some("5"))).map(|f| f.id),
+            Err("no window id \"5\" in the window list, so nothing was sent".to_owned())
+        );
+        assert_eq!(
+            named(twins(), &args(None)).map(|f| f.id),
+            Err("2 windows match the title \"Settings - com.android.settings\", so nothing was sent: pass the window's id from desk windows".to_owned())
         );
     }
 
