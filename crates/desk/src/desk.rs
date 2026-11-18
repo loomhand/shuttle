@@ -86,7 +86,7 @@ const TREE_LIMIT: Duration = Duration::from_secs(10);
 const WAIT_MAX: Duration = Duration::from_secs(5);
 const WAIT_CHECK: Duration = Duration::from_millis(100);
 const RETURN_SETTLE: Duration = Duration::from_millis(100);
-const WHEEL_SETTLE: Duration = Duration::from_millis(500);
+const WHEEL_SETTLE: Duration = Duration::from_millis(250);
 const ANSWER_WAIT: Duration = Duration::from_secs(2);
 
 const FRAME_BORDER: f64 = 16.0;
