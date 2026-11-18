@@ -378,7 +378,7 @@ pub trait Access {
     fn unanswered(&mut self) -> Option<Frame> {
         None
     }
-    /// The native handle of the foreground window, where the backend has one (Windows).
+    /// The foreground window as the driver lists it: the window handle on Windows, the X window `_NET_ACTIVE_WINDOW` names on Linux; none where the backend cannot tell.
     fn foreground(&mut self) -> Option<i64> {
         None
     }
