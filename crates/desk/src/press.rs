@@ -248,6 +248,35 @@ mod tests {
     }
 
     #[test]
+    fn a_windows_menu_entry_gone_or_off_screen_takes_no_click_and_a_live_one_without_bounds_is_pressed()
+     {
+        let mut m = Menu(notepad(), None);
+        m.0.add(
+            "closed",
+            Some("file"),
+            "menuitem",
+            &[],
+            Some([0, 20, 40, 20]),
+        );
+        assert_eq!(
+            hit_centre(&mut m, "gone", Os::Windows, false).unwrap_err(),
+            "gone"
+        );
+        assert_eq!(
+            hit_centre(&mut m, "closed", Os::Windows, false).unwrap(),
+            None
+        );
+        assert_eq!(
+            hit_centre(&mut m, "save", Os::Windows, false).unwrap(),
+            None
+        );
+        assert_eq!(
+            plan_press(&mut m, "save", Os::Windows, false).unwrap(),
+            Press::Acted(true)
+        );
+    }
+
+    #[test]
     fn a_cover_refusal_names_the_window_at_the_point_by_title_and_pid_when_known() {
         let tail = " covers the element's center, so nothing was clicked: bring the element's window to the front, or press it with desk press";
         assert_eq!(
