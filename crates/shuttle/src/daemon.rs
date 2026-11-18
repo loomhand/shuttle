@@ -73,8 +73,8 @@ pub trait Controls: Send + Sync {
     /// Whether a run or a desk action is in flight.
     fn acting(&self) -> bool;
     fn recording(&self) -> bool;
-    /// Starts or ends a recording of the user's input.
-    fn record(&self, on: bool) -> Result<(), String>;
+    /// Starts or ends a recording of the user's input; a start answers its note, if it has one.
+    fn record(&self, on: bool) -> Result<Option<String>, String>;
     fn hotkey(&self, code: u32);
 }
 
@@ -466,14 +466,16 @@ impl<H: Handler> Controls for Daemon<H> {
         self.recorder.recording()
     }
 
-    fn record(&self, on: bool) -> Result<(), String> {
+    fn record(&self, on: bool) -> Result<Option<String>, String> {
         if on && self.halted() {
             Err(STOPPED.to_owned())
         } else if on {
-            self.recorder.start(Vec::new()).map(drop)
+            self.recorder
+                .start(Vec::new())
+                .map(|reply| reply["note"].as_str().map(str::to_owned))
         } else {
             self.recorder.end();
-            Ok(())
+            Ok(None)
         }
     }
 }
