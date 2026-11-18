@@ -58,6 +58,7 @@ fn a_call_during_the_teardown_is_answered_that_nothing_ran() {
             None => break,
         }
     }
+    let after = during.as_ref().and_then(|_| ask(&socket));
     let deadline = Instant::now() + Duration::from_secs(10);
     while daemon.try_wait().unwrap().is_none() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
@@ -65,9 +66,12 @@ fn a_call_during_the_teardown_is_answered_that_nothing_ran() {
     let _ = daemon.kill();
     let _ = daemon.wait();
     assert!(up.is_some(), "the daemon never answered");
+    let stopping = "the daemon is stopping, so nothing ran: call again in a few seconds";
+    assert_eq!(during.as_deref(), Some(stopping));
     assert_eq!(
-        during.as_deref(),
-        Some("the daemon is stopping, so nothing ran: call again in a few seconds")
+        after.as_deref(),
+        Some(stopping),
+        "a call made after the shutdown began was not accepted"
     );
 }
 
