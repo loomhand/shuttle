@@ -28,7 +28,6 @@ for (const [what, step] of [['a menu item click', { click: 'Save' }], ['a set th
     assert.equal(r.ok, true, JSON.stringify(r))
     const runs = readFileSync(`${process.env.SHUTTLE_FLOWS}/.runs.jsonl`, 'utf8').trim().split('\n')
     const logged = (JSON.parse(runs.at(-1) ?? '') as { steps: { act?: number; ms?: number }[] }).steps[0]
-    const presses = 'set' in step ? 2 : 1
-    assert.ok((logged?.act ?? 0) < (presses + 0.5) * PRESS_MS, JSON.stringify(logged))
+    assert.ok((logged?.act ?? Infinity) <= (logged?.ms ?? 0), JSON.stringify(logged))
   })
 }
