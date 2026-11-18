@@ -1,7 +1,7 @@
 //! The way from the MCP server to the daemon: one call per connection, starting the daemon when nothing listens.
 
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
@@ -146,8 +146,8 @@ fn daemon(exe: &Path, endpoint: &str) -> Command {
     cmd
 }
 
-pub(crate) fn failed(endpoint: &str) -> String {
-    format!("{endpoint}.err")
+pub(crate) fn failed(endpoint: &str) -> PathBuf {
+    format!("{endpoint}.err").into()
 }
 
 pub(crate) fn app_bundle(exe: &Path) -> Option<&Path> {

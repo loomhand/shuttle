@@ -45,10 +45,6 @@ const NOTHING: &str = "no recording is running, and none was made since the daem
 const GONE: &str = "the recording worker is gone";
 const SECURE_INPUT: &str = "secure input is on, so macOS hides every key from the recorder until it ends: the recording keeps your clicks but no keys until then. An app holds it while it shows a password field or prompt or has Secure Keyboard Entry on, and it can be an app that is not in front: close that field, prompt or app to record typing";
 
-#[cfg(target_os = "macos")]
-type Listening = Tap;
-#[cfg(not(target_os = "macos"))]
-type Listening = std::convert::Infallible;
 type Keyboard = Box<dyn Fn() -> Vec<u32> + Send + Sync>;
 type Listen = Box<
     dyn Fn(
@@ -144,30 +140,8 @@ impl Recorder {
             live: Mutex::new(None),
             ended: Mutex::new(None),
             keyboard: Box::new(keyboard),
-            listen: Box::new(|tx, acting, apps, layout| {
-                listen(tx, acting, apps, layout)
-                    .map(|(tap, held)| (Box::new(tap) as Box<dyn Send>, held))
-            }),
+            listen: Box::new(listen),
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tapped(
-        mut self,
-        keyboard: impl Fn() -> Vec<u32> + Send + Sync + 'static,
-        listen: impl Fn(
-            UnboundedSender<Input>,
-            Arc<AtomicUsize>,
-            &[String],
-            Vec<u32>,
-        ) -> Result<(Box<dyn Send>, bool), String>
-        + Send
-        + Sync
-        + 'static,
-    ) -> Self {
-        self.keyboard = Box::new(keyboard);
-        self.listen = Box::new(listen);
-        self
     }
 
     /// The sessions for the one worker that runs them; `None` after the first call.
@@ -497,7 +471,7 @@ fn listen(
     acting: Arc<AtomicUsize>,
     apps: &[String],
     layout: Vec<u32>,
-) -> Result<(Listening, bool), String> {
+) -> Result<(Box<dyn Send>, bool), String> {
     if !tap::allowed() {
         tap::ask();
         return Err(INPUT_MONITORING.to_owned());
@@ -505,7 +479,7 @@ fn listen(
     if let Some(app) = shuttle_desk::ax::secure_keyboard_entry(|a| covers(apps, a)) {
         return Err(hidden(app));
     }
-    Tap::start(tx, acting, layout)
+    Tap::start(tx, acting, layout).map(|(tap, held)| (Box::new(tap) as Box<dyn Send>, held))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -514,7 +488,7 @@ fn listen(
     _: Arc<AtomicUsize>,
     _: &[String],
     _: Vec<u32>,
-) -> Result<(Listening, bool), String> {
+) -> Result<(Box<dyn Send>, bool), String> {
     Err(OTHER_OS.to_owned())
 }
 
@@ -757,6 +731,26 @@ mod tests {
     use desk_core::wire::Output;
 
     use super::*;
+
+    impl Recorder {
+        pub(crate) fn tapped(
+            mut self,
+            keyboard: impl Fn() -> Vec<u32> + Send + Sync + 'static,
+            listen: impl Fn(
+                UnboundedSender<Input>,
+                Arc<AtomicUsize>,
+                &[String],
+                Vec<u32>,
+            ) -> Result<(Box<dyn Send>, bool), String>
+            + Send
+            + Sync
+            + 'static,
+        ) -> Self {
+            self.keyboard = Box::new(keyboard);
+            self.listen = Box::new(listen);
+            self
+        }
+    }
 
     #[tokio::test]
     async fn a_click_keeps_the_element_under_it_its_window_and_a_crop_around_it() {

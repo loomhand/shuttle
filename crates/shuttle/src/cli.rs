@@ -241,10 +241,7 @@ fn controls_serve(endpoint: String) -> ExitCode {
         if let Err(e) = &done {
             log(e);
             #[cfg(target_os = "macos")]
-            let _ = crate::write_private(
-                std::path::Path::new(&crate::proxy::failed(&endpoint)),
-                e.as_bytes(),
-            );
+            let _ = crate::write_private(&crate::proxy::failed(&endpoint), e.as_bytes());
         }
         #[cfg(windows)]
         controls::shutdown();
