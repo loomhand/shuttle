@@ -86,10 +86,7 @@ impl Drop for Security {
 
 /// Whether the client at the far end of `pipe`, a server handle, runs as this process's user.
 pub fn client_is_owner(pipe: HANDLE) -> bool {
-    match (client_user(pipe), own_sid()) {
-        (Ok(user), Ok(own)) => user == own,
-        _ => false,
-    }
+    client_user(pipe).is_ok_and(|user| own_sid().is_ok_and(|own| user == own))
 }
 
 pub fn check_server(pipe: HANDLE, owner: Option<&str>) -> Result<(), String> {
