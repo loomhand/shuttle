@@ -94,6 +94,7 @@ const TITLE_BAR: f64 = 48.0;
 
 const OTHER_DISPLAY: &str =
     "; name the window with `window` to capture a window on another display";
+const WINDOW_GONE: &str = "(0x80070578)";
 const OUTSIDE_WINDOW: &str = "the point is outside the window the call's pid or app picks, so nothing was sent: name the window the point is in, or leave pid and app out to reach the window under the point";
 const NO_WINDOW_UNDER: &str =
     "no window under the point, and the app allowlist admits only windows";
@@ -1112,6 +1113,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let mut after_blank = false;
         for (i, line) in text.split('\n').enumerate() {
             let mut returned = false;
+            let mut closed = false;
             let sent: Result<(), String> = async {
                 let mut checked = false;
                 if i >= 2
@@ -1138,7 +1140,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 let line = line.trim_end_matches('\r');
                 if i > 0 {
                     self.send("press_key", json!({"key": "return"}), to, &mut note)
-                        .await?;
+                        .await
+                        .inspect_err(|e| closed = e.contains(WINDOW_GONE))?;
                     returned = true;
                     if let (Some(w), Some(f), false) =
                         (watched, &front, blind || (i + 1 == lines && ended))
@@ -1236,6 +1239,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 ),
                 (_, true) => format!(
                     "{i} of {lines} lines and the Return after line {i} were typed, then this stopped the rest: {e}"
+                ),
+                _ if closed => format!(
+                    "{i} of {lines} lines were typed, then this stopped the rest: the window closed while the Return after the last typed line was sent, so that Return may have reached it: {e}"
                 ),
                 _ => format!("{i} of {lines} lines were typed, then this stopped the rest: {e}"),
             })?;
@@ -4599,6 +4605,47 @@ pub(crate) mod tests {
             err,
             "2 of 3 lines were typed, then this stopped the rest: press_key: nothing was sent"
         );
+    }
+
+    #[tokio::test]
+    async fn a_windows_background_type_whose_return_meets_a_closed_window_says_that_return_may_have_reached_it()
+     {
+        let gone = "Invalid window handle. (0x80070578)";
+        let stale = "window_id 1 is closed, stale, or invalid.";
+        for (key, error, want) in [
+            (
+                "return",
+                gone,
+                format!(
+                    "1 of 2 lines were typed, then this stopped the rest: the window closed while the Return after the last typed line was sent, so that Return may have reached it: press_key: {gone}"
+                ),
+            ),
+            (
+                "return",
+                stale,
+                format!("1 of 2 lines were typed, then this stopped the rest: press_key: {stale}"),
+            ),
+            (
+                "b",
+                gone,
+                format!(
+                    "1 of 2 lines and the Return after line 1 were typed, then this stopped the rest: press_key: {gone}"
+                ),
+            ),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(
+                || Ok(notepad()),
+                Gone(Behind(Arc::clone(&calls)), key, error),
+                Os::Windows,
+            )
+            .background(true);
+            let err = desk
+                .run("desk_type", json!({"text": "alpha\nbravo", "pid": 4}))
+                .await
+                .unwrap_err();
+            assert_eq!(err, want, "{key} {error}");
+        }
     }
 
     #[tokio::test]
@@ -10372,6 +10419,19 @@ pub(crate) mod tests {
             let out = self.0.call(tool, args).await?;
             if tool == "press_key" && self.1.fetch_add(1, Ordering::SeqCst) == 1 {
                 return Err("press_key: nothing was sent".to_owned());
+            }
+            Ok(out)
+        }
+    }
+
+    struct Gone(Behind, &'static str, &'static str);
+
+    impl Input for Gone {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let key = args["key"] == self.1;
+            let out = self.0.call(tool, args).await?;
+            if tool == "press_key" && key {
+                return Err(format!("press_key: {}", self.2));
             }
             Ok(out)
         }
