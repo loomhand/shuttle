@@ -959,12 +959,17 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 let held = under
                     .then(|| holding(b, &frames, window, a.pid, (a.x, a.y)))
                     .flatten();
-                let frame = live(match held {
-                    Some(held) => held?,
-                    None => pick(b, &allow, background, frames, window, a.pid)?.0,
-                })?;
+                let (frame, rivals) = match held {
+                    Some(held) => (held?, 1),
+                    None => pick(b, &allow, background, frames, window, a.pid)?,
+                };
+                let frame = live(frame)?;
+                let mut out = json!({"found": null, "window": &frame});
+                if rivals > 1 {
+                    out["matches"] = rivals.into();
+                }
                 let Some(hit) = b.at(&frame.id, a.x, a.y)? else {
-                    return Ok(json!({"found": null, "window": frame}).to_string());
+                    return Ok(out.to_string());
                 };
                 let pid = b.pid_of(&hit)?;
                 if let Some(frames) = &kept {
@@ -984,7 +989,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                         ]))
                     })
                     .collect();
-                let mut out = json!({});
                 out["found"] = node.into_json(0);
                 out["path"] = Value::Array(path);
                 out["pid"] = pid.into();
@@ -2626,7 +2630,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         pid: Option<u32>,
         rect: [f64; 4],
     ) -> Result<Output, String> {
-        let (_, w, rivals) = self.pick_window(Some(window), pid).await?;
+        let (f, w, rivals) = self.pick_window(Some(window), pid).await?;
         let key = window_key(&w)?;
         let stale = lock(&self.unseen)
             .get(&(key.0, key.1))
@@ -2669,6 +2673,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 (out, png)
             };
         out["window_id"] = key.1.into();
+        out["title"] = f.title.into();
         if rivals > 1 {
             out["matches"] = rivals.into();
         }
@@ -7551,6 +7556,59 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn at_by_a_title_two_windows_share_reads_one_and_says_how_many_match() {
+        let twins = || {
+            Ok(Stub {
+                frames: vec![
+                    frame("front", "Untitled - Notepad", 4, true, None),
+                    frame("back", "Untitled - Notepad", 8, false, None),
+                ],
+                ..Stub::default()
+            })
+        };
+        let desk = Desk::new(twins, Slow(Arc::default()), Os::Linux);
+        let out = desk
+            .run(
+                "desk_at",
+                json!({"x": 10, "y": 10, "window": "Untitled - Notepad"}),
+            )
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(
+            (&v["window"]["id"], &v["matches"]),
+            (&json!("front"), &json!(2)),
+            "{v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_read_by_a_title_only_its_app_part_names_reads_that_window_and_names_it() {
+        let driver = Wide::with(1.0, ("Draft — Chrome", None), false);
+        let desk = Desk::new(|| Ok(notepad()), driver.clone(), Os::Mac);
+        let stale = "notes.txt - Notepad";
+        let read = |out: Output| serde_json::from_str::<Value>(&out.text).unwrap();
+        for (tool, args) in [
+            ("desk_snapshot", json!({"window": stale})),
+            ("desk_find", json!({"name": "ok", "window": stale})),
+            ("desk_at", json!({"x": 140, "y": 110, "window": stale})),
+        ] {
+            let v = read(desk.run(tool, args).await.unwrap());
+            assert_eq!(v["window"]["title"], "Untitled - Notepad", "{tool}: {v}");
+        }
+        let shot = read(
+            desk.run("desk_shot", json!({"window": "Report — Chrome"}))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            (&shot["title"], &shot["window_id"]),
+            (&json!("Draft — Chrome"), &json!(40)),
+            "{shot}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_windows_at_under_a_window_uia_does_not_list_reads_the_hit_tests_window() {
         let cloaked = || {
             let mut f = notepad();
@@ -8585,7 +8643,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             serde_json::from_str::<Value>(&out.text).unwrap(),
-            json!({"ok": true, "width": 8, "height": 8, "origin": [0, 0], "window_id": 1})
+            json!({"ok": true, "width": 8, "height": 8, "origin": [0, 0], "window_id": 1, "title": "Untitled - Notepad"})
         );
         assert_eq!(grabs, 1);
         let part =
