@@ -1178,6 +1178,30 @@ mod tests {
     }
 
     #[test]
+    fn a_stop_puts_its_flag_up_before_it_ends_the_recording() {
+        struct Witness(tokio::sync::watch::Receiver<bool>, Arc<AtomicBool>);
+        impl Drop for Witness {
+            fn drop(&mut self) {
+                self.1.store(*self.0.borrow(), Ordering::Relaxed);
+            }
+        }
+        let mut d = daemon(Echo, Guard::default());
+        let up = Arc::new(AtomicBool::new(false));
+        let tap = Mutex::new(Some(Witness(d.halted.subscribe(), Arc::clone(&up))));
+        let listen = move |_, _, _: &[String], _| -> Result<(Box<dyn Send>, bool), String> {
+            Ok((Box::new(tap.lock().unwrap().take()), false))
+        };
+        d.recorder = Recorder::new(std::env::temp_dir(), Arc::default()).tapped(Vec::new, listen);
+        assert_eq!(d.record(true), Ok(None));
+        d.halt(true);
+        assert!(
+            up.load(Ordering::Relaxed),
+            "the recording ended before the stop flag was up"
+        );
+        assert!(!d.recording());
+    }
+
+    #[test]
     fn the_menu_answers_stopped_for_a_stop_after_its_check_and_ends_one_during_its_start() {
         let (d, listened, halter) = halts_while_starting(true);
         let out = d.record(true);
