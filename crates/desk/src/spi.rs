@@ -7,10 +7,11 @@ use desk_core::window::{TITLE_TIERS, title_matches};
 use tokio::runtime::{Builder, Runtime};
 use x11rb::connection::Connection as _;
 use x11rb::protocol::xproto::{AtomEnum, ClientMessageEvent, ConnectionExt as _, EventMask};
+use x11rb::wrapper::ConnectionExt as _;
 
 use crate::atspi::{self, Atspi, Obj};
 use crate::model::{Access, Act, Capture, Extras, Frame, Modal, Node, Tree};
-use crate::xshm::{Grabber, clip};
+use crate::xshm::{Grabber, ask, clip};
 
 const FRAME_ROLES: [u32; 6] = [2, 16, 19, 20, 23, WINDOW_ROLE];
 const WINDOW_ROLE: u32 = 69;
@@ -320,13 +321,7 @@ fn node(n: atspi::Node) -> Node {
 fn close(want: &str, pid: Option<u32>) -> Result<(), String> {
     let (conn, n) = x11rb::connect(None).map_err(|e| format!("connect X: {e}"))?;
     let root = conn.setup().roots[n].root;
-    let atom = |name: &[u8]| -> Result<u32, String> {
-        conn.intern_atom(false, name)
-            .map_err(|e| format!("intern atom: {e}"))?
-            .reply()
-            .map(|r| r.atom)
-            .map_err(|e| format!("intern atom: {e}"))
-    };
+    let atom = |name: &[u8]| ask(conn.intern_atom(false, name), "intern atom").map(|r| r.atom);
     let [supported, list, name, utf8, wm_pid, close] = [
         &b"_NET_SUPPORTED"[..],
         b"_NET_CLIENT_LIST",
@@ -380,11 +375,7 @@ fn close(want: &str, pid: Option<u32>) -> Result<(), String> {
     )
     .map_err(|e| format!("close {want:?}: {e}"))?;
     // a round trip, not a flush: a connection that ends right after a flush can lose the event
-    conn.get_input_focus()
-        .map_err(|e| format!("close {want:?}: {e}"))?
-        .reply()
-        .map(drop)
-        .map_err(|e| format!("close {want:?}: {e}"))
+    conn.sync().map_err(|e| format!("close {want:?}: {e}"))
 }
 
 /// The one window of `windows` whose title matches `want` at the closest tier; two at that tier are refused.
