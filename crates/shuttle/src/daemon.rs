@@ -203,8 +203,7 @@ impl<H: Handler> Daemon<H> {
                     Value::Null => Vec::new(),
                     v => parse(v)?,
                 };
-                r.start(apps)
-                    .map(|id| json!({"ok": true, "id": id}).to_string())
+                r.start(apps).map(|reply| reply.to_string())
             }
             "record_note" => {
                 let Value::String(text) = args.get_mut("text").map(Value::take).unwrap_or_default()

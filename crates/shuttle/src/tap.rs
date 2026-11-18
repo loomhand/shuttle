@@ -40,8 +40,11 @@ pub struct Tap {
 }
 
 impl Tap {
-    /// Starts a tap on its own thread that sends each click and key to `tx`, but none while `acting` counts shuttle's own actions.
-    pub fn start(tx: UnboundedSender<Input>, acting: Arc<AtomicUsize>) -> Result<Self, String> {
+    /// Starts a tap on its own thread that sends each click and key to `tx`, but none while `acting` counts shuttle's own actions; also answers whether secure input hides the keys as it starts.
+    pub fn start(
+        tx: UnboundedSender<Input>,
+        acting: Arc<AtomicUsize>,
+    ) -> Result<(Self, bool), String> {
         let (ready, started) = std::sync::mpsc::channel();
         let done = Arc::new(AtomicBool::new(false));
         let ended = Arc::clone(&done);
@@ -73,8 +76,8 @@ impl Tap {
                 let source = CFMachPortCreateRunLoopSource(std::ptr::null(), port, 0);
                 CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
                 CGEventTapEnable(port, true);
-                let _ = ready.send(Ok(()));
                 let mut secure = ax::secure_input() && !ax::focused().is_some_and(|f| f.secure);
+                let _ = ready.send(Ok(secure));
                 while !ended.load(Ordering::Acquire) {
                     CFRunLoopRunInMode(kCFRunLoopDefaultMode, TURN_S, false);
                     let now = ax::secure_input();
@@ -94,13 +97,16 @@ impl Tap {
                 drop(Box::from_raw(seen));
             }
         });
-        started
+        let held = started
             .recv()
             .map_err(|_| "the event tap thread ended".to_owned())??;
-        Ok(Self {
-            done,
-            thread: Some(thread),
-        })
+        Ok((
+            Self {
+                done,
+                thread: Some(thread),
+            },
+            held,
+        ))
     }
 }
 

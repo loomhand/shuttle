@@ -44,6 +44,7 @@ const OTHER_OS: &str = "recording runs only on macOS";
 const RECORDING: &str = "a recording is already running: stop it first";
 const NOTHING: &str = "no recording is running, and none was made since the daemon started";
 const GONE: &str = "the recording worker is gone";
+const SECURE_INPUT: &str = "secure input is on, so macOS hides every key from the recorder until it ends: the recording keeps your clicks but no keys until then. An app holds it while it shows a password field or prompt or has Secure Keyboard Entry on, and it can be an app that is not in front: close that field, prompt or app to record typing";
 
 #[cfg(target_os = "macos")]
 type Listening = Tap;
@@ -142,14 +143,14 @@ impl Recorder {
         lock(&self.live).is_some()
     }
 
-    /// Starts recording the user's input, in `apps` alone when it names any; answers the recording's id.
-    pub fn start(&self, apps: Vec<String>) -> Result<String, String> {
+    /// Starts recording the user's input, in `apps` alone when it names any; answers the recording's id, and a note while secure input hides the keys.
+    pub fn start(&self, apps: Vec<String>) -> Result<Value, String> {
         let mut live = lock(&self.live);
         if live.is_some() {
             return Err(RECORDING.to_owned());
         }
         let (notes, inputs) = unbounded_channel();
-        let tap = listen(notes.clone(), Arc::clone(&self.acting), &apps)?;
+        let (tap, held) = listen(notes.clone(), Arc::clone(&self.acting), &apps)?;
         let id = format!("rec-{}", now_ms());
         let path = self.path(&id);
         let (done, made) = oneshot::channel();
@@ -169,7 +170,7 @@ impl Recorder {
             made,
             _tap: tap,
         });
-        Ok(id)
+        Ok(started(id, held))
     }
 
     /// Adds the user's note to the running recording, where it is now.
@@ -440,7 +441,7 @@ fn listen(
     tx: UnboundedSender<Input>,
     acting: Arc<AtomicUsize>,
     apps: &[String],
-) -> Result<Listening, String> {
+) -> Result<(Listening, bool), String> {
     if !tap::allowed() {
         tap::ask();
         return Err(INPUT_MONITORING.to_owned());
@@ -456,8 +457,16 @@ fn listen(
     _: UnboundedSender<Input>,
     _: Arc<AtomicUsize>,
     _: &[String],
-) -> Result<Listening, String> {
+) -> Result<(Listening, bool), String> {
     Err(OTHER_OS.to_owned())
+}
+
+fn started(id: String, held: bool) -> Value {
+    let mut reply = json!({"ok": true, "id": id});
+    if held {
+        reply["note"] = SECURE_INPUT.into();
+    }
+    reply
 }
 
 fn covers(apps: &[String], app: &str) -> bool {
@@ -1135,6 +1144,23 @@ mod tests {
         assert!(covers(&["terminal".to_owned()], "Terminal"));
         assert!(!covers(&["Safari".to_owned()], "Terminal"));
         assert!(hidden("Terminal").starts_with("Terminal's Secure Keyboard Entry is on"));
+    }
+
+    #[test]
+    fn a_start_while_secure_input_hides_the_keys_says_so_and_a_plain_start_does_not() {
+        assert_eq!(
+            started("rec-1".into(), false),
+            json!({"ok": true, "id": "rec-1"})
+        );
+        let held = started("rec-2".into(), true);
+        let note = held["note"].as_str().unwrap();
+        assert_eq!((&held["ok"], &held["id"]), (&json!(true), &json!("rec-2")));
+        assert!(
+            note.starts_with(
+                "secure input is on, so macOS hides every key from the recorder until it ends"
+            ) && note.contains("keeps your clicks but no keys"),
+            "{note}"
+        );
     }
 
     #[tokio::test]
