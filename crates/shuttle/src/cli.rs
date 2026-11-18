@@ -175,10 +175,14 @@ fn cli_args(rest: &[String]) -> Result<Value, String> {
 }
 
 fn send(call: &Call, what: impl Display) -> ExitCode {
-    match block_on(
-        Builder::new_current_thread(),
-        server::call(&desk_endpoint(), call),
-    ) {
+    let endpoint = desk_endpoint();
+    let answer = block_on(Builder::new_current_thread(), async {
+        let conn = server::connect(&endpoint)
+            .await
+            .map_err(|e| format!("no daemon answers: connect {endpoint}: {e}"))?;
+        server::exchange(conn, call).await
+    });
+    match answer {
         Ok(out) if !out.is_error => {
             let _ = writeln!(std::io::stdout(), "{}", out.text);
             if let Some(image) = &out.image_b64 {
@@ -192,7 +196,7 @@ fn send(call: &Call, what: impl Display) -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(out) => fail(format_args!("{what}: {}", out.text)),
-        Err(e) => fail(format_args!("{what}: no daemon answers: {e}")),
+        Err(e) => fail(format_args!("{what}: {e}")),
     }
 }
 
