@@ -117,6 +117,8 @@ const UNSEEN_SENT: &str = "the app may not repaint a window nobody sees, so the 
 const UNSEEN_TYPED: &str = "the app may not repaint a window nobody sees, so the text may be there even if a screenshot looks unchanged: do not type it again, and before you submit it with Return or Send, confirm that it is there by a read-back you can trust or by asking the user";
 
 const MASK_TRIES: usize = 3;
+const FOCUS_THEN_FRONT: &str = "bring that window to the front with desk focus and its id from desk windows, then send the input with neither window nor pid";
+const FOCUS_THEN_PID: &str = "bring that window to the front with desk focus and its id from desk windows, then send the input with pid alone";
 const OUTSIDE_SHOT: &str = "the point is outside the named window's shot image, so nothing was sent: pass pixels of that window's shot, or leave window out to pass desk coordinates";
 const WINDOW_OFF_SCREEN: &str = "the window is partly or wholly off the screen, or on another display, so its screenshot could not be masked to the app allowlist; move it onto the screen";
 const WINDOW_NOT_SHOWN: &str = "the window is not on the screen where the window list places it: it moved, or it is minimized or hidden, so its screenshot could not be masked to the app allowlist; take it again once the window shows";
@@ -2391,7 +2393,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     ) -> Result<(Frame, Value), String> {
         let (f, w, rivals) = self.pick_window(window, pid).await?;
         if let Some(want) = window {
-            window::input_to(&f, want, rivals, window::BY_TITLE)?;
+            let way_out = match pid {
+                None => window::BY_TITLE,
+                Some(_) if self.bg() => FOCUS_THEN_PID,
+                Some(_) => FOCUS_THEN_FRONT,
+            };
+            window::input_to(&f, want, rivals, way_out)?;
         }
         Ok((f, w))
     }
@@ -8676,6 +8683,60 @@ pub(crate) mod tests {
             "window id \"w3\" shares its title and its bounds with another window of its process, so the desk cannot tell which of them that id is, and nothing was sent"
         );
         assert!(sent(&calls, "bring_to_front").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_shared_title_refusal_names_focus_by_id_when_the_pid_given_owns_both_windows() {
+        let twins = || {
+            Ok(Stub {
+                frames: vec![
+                    frame("a", "Untitled - Notepad", 4, true, Some("Notepad")),
+                    frame("b", "Untitled - Notepad", 4, false, Some("Notepad")),
+                ],
+                ..Stub::default()
+            })
+        };
+        let start = "2 windows match the title \"Untitled - Notepad\", so nothing was sent: ";
+        for bg in [false, true] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let driver = Twins(Arc::clone(&calls), 900.0, "Untitled - Notepad", 0.0);
+            let desk = Desk::new(twins, driver, Os::Windows).background(bg);
+            let focus = if bg { FOCUS_THEN_PID } else { FOCUS_THEN_FRONT };
+            for (pid, ending) in [
+                (Some(4), focus),
+                (
+                    None,
+                    "pass a longer title that only one window matches or the pid of its process, or give the window a title of its own",
+                ),
+            ] {
+                for (tool, mut args) in [
+                    ("desk_key", json!({"keys": "a"})),
+                    ("desk_type", json!({"text": "a"})),
+                    ("desk_click", json!({"x": 10.0, "y": 10.0})),
+                    (
+                        "desk_scroll",
+                        json!({"direction": "down", "x": 10.0, "y": 10.0}),
+                    ),
+                    (
+                        "desk_drag",
+                        json!({"x": 10.0, "y": 10.0, "to_x": 20.0, "to_y": 20.0}),
+                    ),
+                ] {
+                    args["window"] = "Untitled - Notepad".into();
+                    args["pid"] = pid.into();
+                    let err = desk.run(tool, args).await.unwrap_err();
+                    assert_eq!(err, format!("{start}{ending}"), "{bg} {pid:?} {tool}");
+                }
+            }
+            assert!(
+                calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|(t, _)| t == "list_windows"),
+                "{bg}"
+            );
+        }
     }
 
     #[tokio::test]
