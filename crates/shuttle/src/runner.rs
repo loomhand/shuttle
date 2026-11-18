@@ -928,6 +928,32 @@ mod tests {
         assert_eq!(plan["error"], "pass steps, flow or find", "{plan}");
     }
 
+    #[test]
+    fn a_release_runner_finds_node_beside_the_exe_and_the_runtime_beside_it_or_in_the_bundle_resources()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let node = if cfg!(windows) { "node.exe" } else { "node" };
+        let found = |exe: &str| {
+            let bin = dir.path().join(exe);
+            std::fs::create_dir_all(&bin).unwrap();
+            let r = Runner::beside(
+                &bin.join("shuttle"),
+                "unused".into(),
+                dir.path().into(),
+                Vec::new(),
+            );
+            assert_eq!(r.node, bin.join(node));
+            r.runtime.canonicalize().unwrap()
+        };
+        for runtime in ["Resources/runtime", "flat/runtime"] {
+            std::fs::create_dir_all(dir.path().join(runtime)).unwrap();
+        }
+        let resources = dir.path().join("Resources/runtime").canonicalize().unwrap();
+        assert_eq!(found("MacOS"), resources);
+        let flat = dir.path().join("flat/runtime").canonicalize().unwrap();
+        assert_eq!(found("flat"), flat);
+    }
+
     #[tokio::test]
     async fn a_plan_runs_the_runtime_plan_executor_with_the_daemon_socket_and_no_hidden_variables()
     {
