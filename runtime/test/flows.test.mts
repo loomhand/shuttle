@@ -104,12 +104,12 @@ test('a plain type whose desk reply says it went into a password field is kept o
     return answer(() => [notepad])({ tool })
   })
   const disk = () => ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
-  const steps = [{ app: 'Notepad' }, { type: 'hunter12' }]
-  const ran = await partial({ steps })
+  const steps = () => [{ app: 'Notepad' }, { type: 'hunter12' }]
+  const ran = await partial({ steps: steps() })
   assert.equal(ran.ok, true, JSON.stringify(ran))
   for (const text of [JSON.stringify(ran), disk(), readFileSync(`${run}/result.json`, 'utf8')]) assert.ok(!text.includes('hunter12'), text)
   typed.length = 0
-  const saved = await partial({ steps, save: 'pin' })
+  const saved = await partial({ steps: steps(), save: 'pin' })
   assert.equal(saved.ran, false, JSON.stringify(saved))
   assert.deepEqual(typed, [])
   assert.deepEqual(flow('pin').steps[1], { type: '{{text}}', secret: true })
