@@ -18,7 +18,7 @@ use desk_core::diff::{Baselines, SINCE_TEXT};
 use desk_core::shot::{OFF_SCREEN, crop_png, rgb_png};
 use desk_core::text::{MAX_FOUND, NAME_CHARS, READ_CHARS, READ_TAIL, cut_read, matches, ms, quote};
 use desk_core::window::{self, TITLE_TIERS, title_matches};
-use desk_core::wire::{OK, Output};
+use desk_core::wire::{OK, Output, into_password_field};
 use serde_json::{Map, Value, json};
 
 use crate::allow::{Allow, app_key, frame_of};
@@ -1248,7 +1248,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     "{i} of {lines} lines were typed, then this stopped the rest: the window closed while the Return after the last typed line was sent, so that Return may have reached it: {e}"
                 ),
                 _ => format!("{i} of {lines} lines were typed, then this stopped the rest: {e}"),
-            })?;
+            })
+            .map_err(|e| into_password_field(e, focus.as_ref().is_some_and(|f| f.2)))?;
         }
         let mut protected = self.os == Os::Linux && to.is_none() && self.typed(text).await;
         let mut out = json!({"ok": true, "chars": text.chars().count()});
@@ -3332,7 +3333,7 @@ pub(crate) mod tests {
     use std::sync::{Mutex, OnceLock};
 
     use desk_core::text::clip;
-    use desk_core::wire::Call;
+    use desk_core::wire::{Call, INTO_PASSWORD_FIELD};
 
     use super::*;
     use crate::model::{MAX_IDS, Tree, evict_ids, lookup};
@@ -5677,6 +5678,36 @@ pub(crate) mod tests {
                 .is_some_and(|n| n.ends_with(FOCUS_UNKNOWN)),
             "{typed}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_macos_background_type_that_fails_after_its_focus_read_found_a_password_field_ends_by_saying_so()
+     {
+        type OpenSecret = fn() -> Result<Secret, String>;
+        let opens: [(OpenSecret, &str); 2] = [
+            (|| Ok(Secret(true, 0)), INTO_PASSWORD_FIELD),
+            (|| Ok(Secret(false, 0)), ""),
+        ];
+        for (open, clause) in opens {
+            for (text, failed) in [
+                ("b", "type_text: refused"),
+                (
+                    "a\nb",
+                    "1 of 2 lines and the Return after line 1 were typed, then this stopped the rest: type_text: refused",
+                ),
+            ] {
+                let desk = Desk::new(open, FailsText(Behind(Arc::default()), "b"), Os::Mac)
+                    .background(true);
+                let err = desk
+                    .run(
+                        "desk_type",
+                        json!({"text": text, "window": "Untitled - Notepad"}),
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(err, format!("{failed}{clause}"), "{text:?}");
+            }
+        }
     }
 
     #[tokio::test]
@@ -10712,6 +10743,17 @@ pub(crate) mod tests {
                 return Err("press_key: nothing was sent".to_owned());
             }
             Ok(out)
+        }
+    }
+
+    struct FailsText(Behind, &'static str);
+
+    impl Input for FailsText {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            if args["text"] == self.1 {
+                return Err(format!("{tool}: refused"));
+            }
+            self.0.call(tool, args).await
         }
     }
 

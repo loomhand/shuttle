@@ -11,7 +11,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use desk_core::args::parse;
 use desk_core::shot::png_size;
-use desk_core::wire::Output;
+use desk_core::wire::{Output, into_password_field};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -406,7 +406,8 @@ impl Android {
         Cf: Future<Output = Result<Option<i64>, String>>,
     {
         let mut wipe = Wipe(Some(Arc::clone(&self.control)));
-        let typed = self.type_lines(text, at, check).await;
+        let mut protected = false;
+        let typed = self.type_lines(text, at, check, &mut protected).await;
         wipe.0 = None;
         if wiped(&self.control).await
             && let Ok(mut control) = self.open_control().await
@@ -415,6 +416,8 @@ impl Android {
             *self.control.lock().await = Some(control);
         }
         typed
+            .map(|typed| (typed, protected))
+            .map_err(|e| into_password_field(e, protected))
     }
 
     async fn type_lines<C, Cf>(
@@ -422,13 +425,13 @@ impl Android {
         text: &str,
         at: Option<(i32, i32)>,
         mut check: C,
-    ) -> Result<(Option<bool>, bool), String>
+        protected: &mut bool,
+    ) -> Result<Option<bool>, String>
     where
         C: FnMut() -> Cf,
         Cf: Future<Output = Result<Option<i64>, String>>,
     {
         let mut typed = Some(true);
-        let mut protected = false;
         let mut pin = None;
         let rows: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
         let lines = rows.len();
@@ -474,19 +477,19 @@ impl Android {
                     self.paste(line)
                 },
             )
-            .await
-            .map_err(returned)?;
+            .await;
+            *protected |= took.is_some_and(|(_, password)| password);
+            let shown = shown.map_err(returned)?;
             if i == 0 {
                 pin = took.and_then(|(id, _)| id);
             }
-            protected |= took.is_some_and(|(_, password)| password);
             typed = match (typed, shown) {
                 (Some(false), _) | (_, Some(false)) => Some(false),
                 (None, _) | (_, None) => None,
                 _ => Some(true),
             };
         }
-        Ok((typed, protected))
+        Ok(typed)
     }
 
     async fn focus(&self, live: bool) -> Result<Option<Focus>, String> {
@@ -1373,6 +1376,8 @@ async fn read_ack<R: AsyncRead + Unpin>(r: &mut R, sequence: u64) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
+    use desk_core::wire::INTO_PASSWORD_FIELD;
+
     use super::*;
 
     const CRASH_LOG: &str = "10-19 08:01:40.100  3200  3200 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:40.100  3200  3200 F DEBUG   : Abort message: 'not ours'\n10-19 08:01:50.777  3318  3318 F DEBUG   : Cmdline: app_process / shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : pid: 3308, tid: 3308, name: main  >>> app_process <<<\n10-19 08:01:50.777  3318  3318 F DEBUG   : Abort message: 'No pending exception expected: java.lang.ClassNotFoundException: shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : (Throwable with empty stack trace)'\n10-19 08:01:51.000  3330  3330 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:51.000  3330  3330 F DEBUG   : Abort message: 'later, not ours'\n";
@@ -2287,6 +2292,56 @@ mod tests {
             acked(&fake).await;
             let out = desk(&fake, "desk_type", serde_json::json!({"text": "pw"})).await;
             assert_eq!(out, Ok(want), "{}", log(&fake, "requests"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_type_whose_paste_fails_after_its_focus_read_found_a_password_field_ends_by_saying_so()
+     {
+        let secret = r#"{"editable":true,"password":true,"window":true,"id":7,"len":0,"hash":0,"tail":"","bounds":[0,0,720,100]}"#;
+        let failed = "read scrcpy control: unexpected end of file";
+        for (text, focus, want) in [
+            (
+                "pw",
+                secret.to_owned(),
+                format!("{failed}{INTO_PASSWORD_FIELD}"),
+            ),
+            (
+                "\npw",
+                secret.to_owned(),
+                format!(
+                    "{failed}; 1 of 2 lines and the Return after line 1 were typed before it{INTO_PASSWORD_FIELD}"
+                ),
+            ),
+            ("pw", focused(7, ""), failed.to_owned()),
+        ] {
+            let fake = Fake::new();
+            fake.put("inject.answer", "true");
+            fake.windows("");
+            fake.put("focus.json", &focus);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            fake.put("port", &listener.local_addr().unwrap().port().to_string());
+            let mut peer = controlled(&fake.android).await;
+            let device = tokio::spawn(async move {
+                let mut set = vec![0; clipboard_message("pw", 1).len()];
+                peer.read_exact(&mut set).await.unwrap();
+                drop(peer);
+                let (mut fresh, _) = listener.accept().await.unwrap();
+                fresh.write_all(&[0]).await.unwrap();
+                let mut clear = vec![0; clipboard_message("", 1).len()];
+                fresh.read_exact(&mut clear).await.unwrap();
+                fresh.write_all(&ack(1)).await.unwrap();
+            });
+            let typed = fake
+                .android
+                .type_text(text, None, || async { Ok(None) })
+                .await;
+            assert_eq!(typed, Err(want), "{text:?}");
+            tokio::time::timeout(Duration::from_secs(5), device)
+                .await
+                .expect("no clear through a new session")
+                .unwrap();
         }
     }
 
