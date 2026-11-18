@@ -1376,8 +1376,6 @@ async fn read_ack<R: AsyncRead + Unpin>(r: &mut R, sequence: u64) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    use desk_core::wire::INTO_PASSWORD_FIELD;
-
     use super::*;
 
     const CRASH_LOG: &str = "10-19 08:01:40.100  3200  3200 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:40.100  3200  3200 F DEBUG   : Abort message: 'not ours'\n10-19 08:01:50.777  3318  3318 F DEBUG   : Cmdline: app_process / shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : pid: 3308, tid: 3308, name: main  >>> app_process <<<\n10-19 08:01:50.777  3318  3318 F DEBUG   : Abort message: 'No pending exception expected: java.lang.ClassNotFoundException: shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : (Throwable with empty stack trace)'\n10-19 08:01:51.000  3330  3330 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:51.000  3330  3330 F DEBUG   : Abort message: 'later, not ours'\n";
@@ -2347,6 +2345,8 @@ mod tests {
     #[tokio::test]
     async fn a_type_whose_paste_fails_after_its_focus_read_found_a_password_field_ends_by_saying_so()
      {
+        use desk_core::wire::INTO_PASSWORD_FIELD;
+
         let secret = r#"{"editable":true,"password":true,"window":true,"id":7,"len":0,"hash":0,"tail":"","bounds":[0,0,720,100]}"#;
         let failed = "read scrcpy control: unexpected end of file";
         for (text, focus, want) in [
