@@ -5,6 +5,16 @@ use std::sync::Arc;
 use crate::model::Modal;
 pub use crate::screen::{Placement, block_hashes, clip, visible};
 
+macro_rules! never {
+    ($($name:ident($($arg:ty),*) -> $out:ty;)*) => {
+        impl Grabber {
+            $(pub fn $name(&self, $(_: $arg),*) -> $out {
+                match *self {}
+            })*
+        }
+    };
+}
+
 /// No grabber exists off Linux: [`Grabber::open`] always fails, so no other method can run.
 pub enum Grabber {}
 
@@ -16,16 +26,6 @@ impl Grabber {
     pub fn pixels(&mut self) -> Result<&[u8], String> {
         match *self {}
     }
-}
-
-macro_rules! never {
-    ($($name:ident($($arg:ty),*) -> $out:ty;)*) => {
-        impl Grabber {
-            $(pub fn $name(&self, $(_: $arg),*) -> $out {
-                match *self {}
-            })*
-        }
-    };
 }
 
 never! {
