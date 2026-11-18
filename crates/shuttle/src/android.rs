@@ -70,24 +70,31 @@ async fn answer(android: &Android, call: Call) -> Output {
         tool,
         args,
     } = call;
-    let answered = match tool.as_str() {
-        "desk_computer_state" => android.state(with_session(agent_id, args)).await,
-        "desk_computer_act" => android.act(with_session(agent_id, args)).await,
-        "desk_computer_end" => android
-            .end(&with_session(agent_id, args))
-            .await
-            .map(Output::text),
-        "desk_look" => android.look().await,
-        verb => desk::run(android, verb, args).await,
+    let answered = async {
+        match tool.as_str() {
+            "desk_computer_state" => android.state(with_session(&tool, agent_id, args)?).await,
+            "desk_computer_act" => android.act(with_session(&tool, agent_id, args)?).await,
+            "desk_computer_end" => android
+                .end(&with_session(&tool, agent_id, args)?)
+                .await
+                .map(Output::text),
+            "desk_look" => android.look().await,
+            verb => desk::run(android, verb, args).await,
+        }
     };
-    answered.unwrap_or_else(Output::error)
+    answered.await.unwrap_or_else(Output::error)
 }
 
-fn with_session(agent: String, mut args: Value) -> Value {
-    if (args.is_object() || args.is_null()) && !args["session"].is_string() {
-        args["session"] = agent.into();
+fn with_session(tool: &str, agent: String, mut args: Value) -> Result<Value, String> {
+    if args.is_object() || args.is_null() {
+        match &args["session"] {
+            Value::String(_) => {}
+            Value::Number(n) => args["session"] = n.to_string().into(),
+            Value::Null => args["session"] = agent.into(),
+            _ => return Err(format!("{tool}: session takes a string; nothing was sent")),
+        }
     }
-    args
+    Ok(args)
 }
 
 #[cfg(test)]
@@ -96,17 +103,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_computer_session_end_is_answered_on_the_device() {
-        let android = device(
-            AndroidSettings {
-                adb: "/nonexistent/adb".into(),
-                serial: None,
-                ui_jar: Some("/u.jar".into()),
-                scrcpy_jar: "/s.jar".into(),
-                su: None,
-            },
-            Path::new("/shuttle"),
-        )
-        .unwrap();
+        let android = fake();
         let out = answer(
             &android,
             Call {
@@ -121,12 +118,47 @@ mod tests {
 
     #[test]
     fn a_computer_verb_without_a_session_takes_its_callers_own() {
-        let a = with_session("agent-a".into(), serde_json::json!({"action": "tap"}));
-        let b = with_session("agent-b".into(), Value::Null);
+        let tool = "desk_computer_act";
+        let a = with_session(tool, "agent-a".into(), serde_json::json!({"action": "tap"})).unwrap();
+        let b = with_session(tool, "agent-b".into(), Value::Null).unwrap();
         assert_ne!(a["session"], b["session"]);
         assert_eq!(a["session"], "agent-a");
-        let named = with_session("agent-a".into(), serde_json::json!({"session": "cu-1"}));
-        assert_eq!(named["session"], "cu-1");
+        let named = with_session(
+            tool,
+            "agent-a".into(),
+            serde_json::json!({"session": "cu-1"}),
+        );
+        assert_eq!(named.unwrap()["session"], "cu-1");
+    }
+
+    #[tokio::test]
+    async fn a_numbered_session_is_that_session_and_a_session_of_another_type_is_refused() {
+        let tool = "desk_computer_end";
+        let numbered = with_session(tool, "agent-a".into(), serde_json::json!({"session": 2}));
+        assert_eq!(numbered.unwrap()["session"], "2");
+        let android = fake();
+        for session in [
+            serde_json::json!({}),
+            serde_json::json!([2]),
+            serde_json::json!(true),
+        ] {
+            let out = answer(
+                &android,
+                Call {
+                    agent_id: "agent".into(),
+                    tool: tool.into(),
+                    args: serde_json::json!({"session": session}),
+                },
+            )
+            .await;
+            assert_eq!(
+                (out.is_error, out.text.as_str()),
+                (
+                    true,
+                    "desk_computer_end: session takes a string; nothing was sent"
+                )
+            );
+        }
     }
 
     #[test]
@@ -143,5 +175,19 @@ mod tests {
             ui_jar(Some("/u.jar".into()), &exe).unwrap(),
             PathBuf::from("/u.jar")
         );
+    }
+
+    fn fake() -> Android {
+        device(
+            AndroidSettings {
+                adb: "/nonexistent/adb".into(),
+                serial: None,
+                ui_jar: Some("/u.jar".into()),
+                scrcpy_jar: "/s.jar".into(),
+                su: None,
+            },
+            Path::new("/shuttle"),
+        )
+        .unwrap()
     }
 }
