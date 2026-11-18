@@ -440,7 +440,7 @@ impl Computer {
                 }
                 match self.call(target, tool, req).await {
                     Ok(v) if v["isError"] == true => {
-                        let text = format!("{tool}: {}", told(&v));
+                        let text = named(tool, &v);
                         if self.os != Os::Windows && is_hit_refusal(&v) {
                             match self.request(target, "click", pressed).await {
                                 Err(e) if e.contains(AX_UNSUPPORTED) => Err(text),
@@ -1881,7 +1881,7 @@ impl Computer {
             None => self.call(session, name, args).await,
         }?;
         if result["isError"] == true {
-            return Err(format!("{name}: {}", told(&result)));
+            return Err(named(name, &result));
         }
         Ok(result)
     }
@@ -2356,6 +2356,17 @@ fn rect_of(v: &Value) -> Option<[f64; 4]> {
 
 fn told(result: &Value) -> String {
     text_of(result).replace("get_window_state", "computer_state")
+}
+
+fn named(tool: &str, result: &Value) -> String {
+    let own = text_of(result)
+        .strip_prefix(tool)
+        .is_some_and(|t| t.starts_with(": "));
+    if own {
+        told(result)
+    } else {
+        format!("{tool}: {}", told(result))
+    }
 }
 
 /// Whether the driver refused a `verify_hit` click before sending it.
@@ -3182,7 +3193,7 @@ mod tests {
                         };
                         json!({"ok": true, "result": {"structuredContent": {"windows": windows}}})
                     }
-                    "bring_to_front" if !raises => refused("focus-stealing prevention kept the window behind"),
+                    "bring_to_front" if !raises => refused("bring_to_front: focus-stealing prevention kept the window behind"),
                     "launch_app" if !starts => refused("no app named TextEdit"),
                     "launch_app" => {
                         json!({"ok": true, "result": {"content": [{"type": "text", "text": "Launched TextEdit (pid 7)"}]}})
@@ -3598,8 +3609,8 @@ mod tests {
         let err = out.unwrap_err();
         assert!(
             err.contains(
-                "focus-stealing prevention kept the window behind; nothing was clicked or typed"
-            ),
+                "bring_to_front: focus-stealing prevention kept the window behind; nothing was clicked or typed"
+            ) && !err.contains("bring_to_front: bring_to_front"),
             "{err}"
         );
         assert_eq!(raises.len(), 1);
@@ -5408,7 +5419,7 @@ mod tests {
                 };
                 let reply = match name {
                     "bring_to_front" if hit == "refuses" => {
-                        json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "focus-stealing prevention kept the window behind"}]}})
+                        json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "bring_to_front: focus-stealing prevention kept the window behind"}]}})
                     }
                     "bring_to_front" if hit == "raises" || hit == "late" => {
                         lists.store(1, std::sync::atomic::Ordering::SeqCst);
