@@ -370,14 +370,11 @@ fn exited(program: &Path, status: std::process::ExitStatus, stderr: &str) -> Str
 }
 
 async fn read_capped(path: &Path) -> Result<Vec<u8>, Option<u64>> {
-    let mut file = tokio::fs::File::open(path).await.map_err(|_| None)?;
-    let len = file.metadata().await.map_err(|_| None)?.len();
+    let len = tokio::fs::metadata(path).await.map_err(|_| None)?.len();
     if len > MAX_RESULT {
         return Err(Some(len));
     }
-    let mut raw = Vec::new();
-    file.read_to_end(&mut raw).await.map_err(|_| None)?;
-    Ok(raw)
+    tokio::fs::read(path).await.map_err(|_| None)
 }
 
 fn text(captured: &Captured) -> String {
