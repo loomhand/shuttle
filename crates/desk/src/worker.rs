@@ -74,10 +74,7 @@ impl<B: 'static> Worker<B> {
         }
     }
 
-    pub fn post<F>(&self, f: F)
-    where
-        F: FnOnce(&mut B) + Send + 'static,
-    {
+    pub fn post(&self, f: impl FnOnce(&mut B) + Send + 'static) {
         let job: Job<B> = Box::new(move |backend| {
             if let Ok(b) = backend {
                 f(b);
